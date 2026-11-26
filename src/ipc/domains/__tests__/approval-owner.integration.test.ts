@@ -341,15 +341,19 @@ describe("live native approval ownership", () => {
   });
 
   it.each([
-    "moves its marker before saving",
-    "moves its marker while saving",
-    "loses its marker without changing its root path",
-    "is replaced at the same path",
-    "is replaced with a fresh working directory below it",
-    "is replaced as the working directory",
-    "keeps its root but replaces the working directory before saving",
-    "keeps its root but replaces the working directory while saving",
-  ])("refuses This project when the issued repository %s", async (scenario) => {
+    ["project", "moves its marker before saving"],
+    ["project", "moves its marker while saving"],
+    ["project", "loses its marker without changing its root path"],
+    ["project", "is replaced at the same path"],
+    ["project", "is replaced with a fresh working directory below it"],
+    ["project", "is replaced as the working directory"],
+    ["project", "keeps its root but replaces the working directory before saving"],
+    ["project", "keeps its root but replaces the working directory while saving"],
+    ["session", "keeps its root but replaces the working directory before saving"],
+    ["session", "keeps its root but replaces the working directory while saving"],
+    ["always", "keeps its root but replaces the working directory before saving"],
+    ["always", "keeps its root but replaces the working directory while saving"],
+  ] as const)("refuses the %s choice when the issued repository %s", async (scope, scenario) => {
     const f = await subject("default");
     vi.stubEnv("AVE_HOME", f.root);
     setShellSandboxRequestedAtBoot(false);
@@ -368,6 +372,7 @@ describe("live native approval ownership", () => {
       mkdirSync(join(marker, "refs"));
       writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
     }
+    const userStore = join(f.root, "permissions.json");
     const innerStore = projectRulesLocation(f.root, cwd);
     const outerStore = projectRulesLocation(f.root, outer);
     const issuedCwd = captureShellWorkingDirectoryIdentity(cwd);
@@ -383,7 +388,7 @@ describe("live native approval ownership", () => {
     });
     const running = invokeShell("nested-project-rule");
     const card = await f.waitForCard();
-    expect(card.shellRule).toMatchObject({ persistentAllowed: true, projectRoot: innerStore.projectRoot });
+    expect(card.shellRule).toMatchObject({ exactRule: "Bash(printf ready)", sessionAllowed: true, persistentAllowed: true, projectRoot: innerStore.projectRoot });
     const snapshot = f.gate.getRequestSnapshot(card.id);
     const replaced = replacesCwd || scenario === "is replaced at the same path";
     const currentStore = replaced || sameRootWithoutMarker ? innerStore : outerStore;
@@ -416,19 +421,30 @@ describe("live native approval ownership", () => {
       expect(projectRulesLocation(f.root, cwd)).toEqual(innerStore);
     } else if (!duringSave) {
       changeScope();
+    } else if (scope === "session") {
+      const append = f.audit.append.bind(f.audit);
+      vi.spyOn(f.audit, "append").mockImplementationOnce(async (...args) => {
+        await append(...args);
+        changeScope();
+      });
     } else {
       const read = homeTrust.readAveHomeInput;
-      vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async (...args) => {
+      const saveFile = scope === "always" ? userStore : innerStore.filePath;
+      const spy = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async (...args) => {
         const input = await read(...args);
-        if (args[0] === innerStore.filePath) changeScope();
+        if (args[0] === saveFile) {
+          spy.mockRestore();
+          expect.soft(existsSync(saveFile)).toBe(false);
+          changeScope();
+        }
         return input;
       });
     }
 
     const record = {
-      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "persistent",
+      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: scope === "session" ? "session" : "persistent",
       verdictAtApproval: snapshot?.verdictAtApproval,
-      rule: { action: "allow", scope: "project" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
+      rule: { action: "allow", scope }, intent: { inputOrigin: "user-keyboard", userActivation: true },
     };
     if (replacesCwd) {
       expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowB), record)).toEqual(UNAUTHORIZED_FRAME);
@@ -438,9 +454,11 @@ describe("live native approval ownership", () => {
     expect.soft(response).toMatchObject({ ok: false, error: "project-scope-changed" });
     expect.soft(existsSync(innerStore.filePath)).toBe(false);
     expect.soft(existsSync(outerStore.filePath)).toBe(false);
+    expect.soft(existsSync(userStore)).toBe(false);
+    expect.soft(f.manager.listSessionRules(SESSION_ID)).toEqual([]);
     expect(projectRulesLocation(f.root, cwd)).toEqual(currentStore);
+    expect.soft(f.windowA.webContents.send).toHaveBeenCalledWith(IPC_APPROVAL_SETTLED, { requestId: card.id });
     expect(f.gate.getRequestSnapshot(card.id)).toBeNull();
-    expect(f.windowA.webContents.send).toHaveBeenCalledWith(IPC_APPROVAL_SETTLED, { requestId: card.id });
     expect((await running)[0]?.is_error).toBe(true);
     expect(execute).not.toHaveBeenCalled();
 

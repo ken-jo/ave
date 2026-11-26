@@ -141,6 +141,7 @@ export async function saveApprovalCardRule(
       assertApprovalPersistenceCurrent(authority);
       permissionManager.addFloorSessionGrant(sessionId, floorGrant);
     } catch (error) {
+      if (error instanceof ProjectRuleScopeChangedError) return fail("project-scope-changed");
       return fail("rule-save-failed", errorMessage(error));
     }
     return saved;
@@ -184,6 +185,7 @@ export async function saveApprovalCardRule(
   try {
     await refreshApprovalPersistence(authority);
     await beforePersist?.(saved);
+    assertApprovalPersistenceCurrent(authority);
     if (scope === "session") {
       if (snapshot.sessionId === undefined) return fail("missing-session", "This request has no conversation session");
       await refreshApprovalPersistence(authority);
@@ -202,7 +204,6 @@ export async function saveApprovalCardRule(
       if (projectCwd === undefined) return fail("scope-not-offered", "This request has no project");
       const expectedProjectRoot = target.snapshot.shellRuleProjectRoot;
       if (target.kind === "shell" && expectedProjectRoot === undefined) return fail("project-scope-changed");
-      assertApprovalPersistenceCurrent(authority);
       await permissionManager.addRulePersist({ pattern, action }, {
         kind: "project",
         projectCwd,

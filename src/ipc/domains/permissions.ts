@@ -1219,28 +1219,25 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const authorityUnavailable = { ok: false, error: "no-such-request", message: "Approval authority is unavailable" } as const;
     if (!capturedAuthority) return authorityUnavailable;
     const rulePayload = body.rule === undefined ? undefined : payloadRecord(body.rule);
-    const isBoundProjectSave = rulePayload?.scope === "project" && rulePayload.action === "allow" &&
-      scope === "persistent" && decision === "allow" && !readjudicate && displayedVerdictAtApproval === snapshot.verdictAtApproval &&
-      snapshot.shellRuleProjectRoot !== undefined && snapshot.shellRule?.projectCwd !== undefined;
+    const isShellRuleSave = rulePayload !== undefined && snapshot.shellRule !== undefined;
     const isControllerCurrent = () => capturedAuthority.controller.isCurrent() && approvalGate.canAccessRendererRequest(requestId, e.sender, "desk");
     const settleChangedProjectScope = () => {
       if (!isControllerCurrent() || !approvalGate.mayRecordFrom(requestId, e.sender)) return authorityUnavailable;
-      approvalGate.cancelPendingRequest(requestId, snapshot.sessionId, "project-scope-changed");
-      return { ok: false, error: "project-scope-changed" } as const;
+      return approvalGate.cancelPendingRequest(requestId, snapshot.sessionId, "project-scope-changed")
+        ? { ok: false, error: "project-scope-changed" } as const
+        : authorityUnavailable;
     };
     const authority = {
       refresh: capturedAuthority.controller.refresh,
       isCurrent: () => {
         if (!isControllerCurrent()) return false;
         if (capturedAuthority.isWorkingDirectoryCurrent()) return true;
-        if (isBoundProjectSave) throw new ProjectRuleScopeChangedError();
+        if (isShellRuleSave) throw new ProjectRuleScopeChangedError();
         return false;
       },
     };
     if (!await authority.refresh() || !isControllerCurrent()) return authorityUnavailable;
-    if (!capturedAuthority.isWorkingDirectoryCurrent()) {
-      return isBoundProjectSave ? settleChangedProjectScope() : authorityUnavailable;
-    }
+    if (!isShellRuleSave && !capturedAuthority.isWorkingDirectoryCurrent()) return authorityUnavailable;
     if (readjudicate && (decision !== "allow" || snapshot.readjudication === undefined ||
         snapshot.verdictAtApproval !== "high" || body.rule !== undefined)) {
       return { ok: false, error: "readjudication-unavailable", message: "This request is not eligible for re-adjudication" };
