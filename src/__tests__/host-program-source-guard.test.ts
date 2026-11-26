@@ -66,6 +66,7 @@ const LAUNCH_FILES = [
   "permissions/confined-child.ts",
   "permissions/judge/external-judge.ts",
   "permissions/mxc-extension-process.ts",
+  "permissions/mxc-macos.ts",
   "permissions/mxc-policy-pipe.ts",
   "permissions/mxc-runtime-root.ts",
   "permissions/mxc-windows.ts",

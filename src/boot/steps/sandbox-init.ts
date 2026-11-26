@@ -22,6 +22,7 @@ import type { SandboxStartFailureCause } from "../../shared/sandbox-capability-i
 import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start-failure.js";
 import { denyUnenforceableKind, isObligationRefusal, setWindowsDenyUnenforceableAtBoot } from "../../permissions/admitted-obligation.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { isContainerShellRouteEnabled } from "../../shared/container-platform.js";
 import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
 import { AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, aveHomeBoundaryFailure, getAveHomePrivacyFailure, isAveHomePrivacyApprovable, setAveHomePrivacyAtBoot, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
@@ -286,6 +287,18 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
               establishMxcRuntimeRoot();
             } catch (error) {
               log.warn("boot: container runtime root unavailable: %s", errorMessage(error));
+            }
+          }
+          if (process.platform === "darwin" && shellRequested && isContainerShellRouteEnabled("darwin")) {
+            const [{ detectHostMxcMacShellSupport }, { setContainerShellSubstrate }, { getHostResources }] = await Promise.all([
+              import("../../permissions/mxc-macos.js"),
+              import("../../permissions/sandbox-capability.js"),
+              import("../../main/host-resources.js"),
+            ]);
+            const support = await detectHostMxcMacShellSupport(getHostResources().resourcePath, startupSignal);
+            setContainerShellSubstrate(support);
+            if (support.state === "unavailable") {
+              log.warn("boot: macOS container shell unavailable (%s)", support.reason);
             }
           }
           const sandboxTempRoot = useAppOwnedSandboxTempRoot();

@@ -59,13 +59,20 @@ describe("container route call sites", () => {
   });
 
   it("keeps the POSIX ranker disconnected from production launches", () => {
-    expect(callers(/\bmxc-posix\.[jt]s\b|\brankPosixContainerRows\b/u, "src/permissions/mxc-posix.ts")).toEqual([]);
+    expect(callers(/\bmxc-posix\.[jt]s\b|\brankPosixContainerRows\b/u, "src/permissions/mxc-posix.ts"))
+      .toEqual(["src/permissions/mxc-macos.ts"]);
+    expect(callers(/\bmxc-macos\.[jt]s\b|\bdetectHostMxcMacShellSupport\b/u, "src/permissions/mxc-macos.ts"))
+      .toEqual(["src/boot/steps/sandbox-init.ts"]);
+    expect(callers(/\bsetContainerShellSubstrate\s*\(/u, "src/permissions/sandbox-capability.ts"))
+      .toEqual(["src/boot/steps/sandbox-init.ts"]);
   });
 
   it("limits the route selector to relay startup and holder selection", () => {
     const definition = "src/shared/container-platform.ts";
     expect(callers(/\bisContainerRouteEnabled\b/u, definition)).toEqual([]);
-    expect(callers(/\bisContainerShellRouteEnabled\s*\(/u, definition)).toEqual(["src/permissions/asrt-sandbox.ts"]);
+    expect(callers(/\bisContainerShellRouteEnabled\s*\(/u, definition)).toEqual([
+      "src/boot/steps/sandbox-init.ts", "src/permissions/asrt-sandbox.ts", "src/permissions/sandbox-capability.ts",
+    ]);
     expect(callers(/\bisContainerHolderRouteEnabled\s*\(/u, definition))
       .toEqual(["src/permissions/asrt-sandbox.ts", "src/sandbox/wrap-bundled-command.ts"]);
   });

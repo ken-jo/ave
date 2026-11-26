@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { launcherPathFor } from "../mxc-launcher.js";
-import { parseSeatbeltProfile } from "../mxc-macos.js";
+import { _runSeatbeltCanaryForTest, parseSeatbeltProfile } from "../mxc-macos.js";
 import { posixPolicyLookups, rankPosixContainerRows } from "../mxc-posix.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-model.js";
 import { buildSeatbeltDenySuffix } from "../seatbelt-deny-suffix.js";
@@ -107,5 +107,12 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
       expect(pid).toBeGreaterThan(1);
       expect(() => process.kill(pid, 0), name).toThrow(expect.objectContaining({ code: "ESRCH" }));
     }
+  });
+
+  it("proves the boot canary against the installed launcher and cleans its staging", async () => {
+    const launcher = launcherPathFor(resolve("resources"), "darwin", "arm64");
+    if (launcher === undefined) throw new Error("macOS launcher path is missing");
+    await expect(_runSeatbeltCanaryForTest(launcher, root)).resolves.toBe("available");
+    expect(readdirSync(root)).toEqual(["work"]);
   });
 });

@@ -1,6 +1,7 @@
 // Reviewer relaxation requires live OS isolation; none forbids intent-only downgrades from MEDIUM/HIGH to LOW. Inactive gates publish verified none; audit stores the resulting verdict rather than the full capability (docs/architecture/permission-policy-design.md).
 
 import { assertSandboxWindowsExtensionPlan, egressProtocolCoverageFor } from "../shared/sandbox-capability-info.js";
+import { isContainerShellRouteEnabled } from "../shared/container-platform.js";
 import { getAveHomePrivacyFailure, isAveHomePrivacyApprovable, isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
 import { windowsDenyUnenforceableAtBoot } from "./admitted-obligation.js";
 import { t } from "../i18n/index.js";
@@ -8,6 +9,7 @@ import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
   SandboxBootOutcome,
   SandboxConfinement,
+  SandboxMacContainerShellSupport,
   SandboxWindowsSubstrateInfo,
   SandboxWindowsExtensionPlan,
 } from "../shared/sandbox-capability-info.js";
@@ -250,10 +252,24 @@ export function getWindowsExtensionBackendPlan(): SandboxWindowsExtensionPlan | 
   return _windowsSubstrate?.extensionPlan;
 }
 
+let _containerShellSubstrate: SandboxMacContainerShellSupport | undefined;
+const MAC_CONTAINER_SHELL_CAPABILITY: SandboxCapability = Object.freeze({
+  kind: "asrt", platform: "darwin", confidence: "verified", reason: "macOS container shell verified",
+  confines: Object.freeze({ filesystem: true, process: true, network: true }),
+});
+
+export function setContainerShellSubstrate(support: SandboxMacContainerShellSupport): void {
+  _containerShellSubstrate = Object.freeze({ ...support });
+  _sandboxGeneration += 1;
+  notifySandboxStatusChanged();
+}
+
 // The capability of a Bash/PowerShell tool command launched in an MXC container, or undefined when that route is not live: MXC carries the shells this boot, the shell sandbox was requested, and the process-wide ASRT runtime (whose proxy the containers reach) is still published.
 export function detectMxcShellCapability(): SandboxCapability | undefined {
-  if (_mxcShellCapability === undefined || !_shellSandboxRequestedAtBoot) return undefined;
-  if (_activeCapability?.kind !== "asrt") return undefined;
+  if (!_shellSandboxRequestedAtBoot || _activeCapability?.kind !== "asrt") return undefined;
+  if (process.platform === "darwin" && isContainerShellRouteEnabled("darwin")) {
+    return _containerShellSubstrate?.state === "available" ? MAC_CONTAINER_SHELL_CAPABILITY : undefined;
+  }
   return _mxcShellCapability;
 }
 

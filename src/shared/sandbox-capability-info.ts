@@ -270,6 +270,14 @@ const MXC_UNAVAILABLE_REASONS = {
 } as const;
 export type SandboxMxcUnavailableReason = keyof typeof MXC_UNAVAILABLE_REASONS;
 
+export type SandboxMacContainerShellUnavailableReason = Extract<SandboxMxcUnavailableReason,
+  "unsupported-arch" | "binary-missing" | "launcher-mismatch" | "runtime-root-unproved" | "request-rejected"
+> | "shell-start-failed";
+
+export type SandboxMacContainerShellSupport =
+  | { readonly state: "available" }
+  | { readonly state: "unavailable"; readonly reason: SandboxMacContainerShellUnavailableReason };
+
 /** A plan is selection evidence, never proof that a particular process has started. */
 export interface SandboxWindowsExtensionPlan {
   readonly requestedBackend: "mxc" | "none";
