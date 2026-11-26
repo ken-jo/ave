@@ -5,7 +5,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import {
-  assertWindowsPathKindInvocation, assertWindowsPathKindMachine, windowsPathKindCompiler, windowsPathKindPath,
+  assertWindowsPathKindInputDigests, assertWindowsPathKindInvocation, assertWindowsPathKindLinkInputs,
+  assertWindowsPathKindMachine, windowsPathKindCompiler,
+  windowsPathKindCrateFiles, windowsPathKindPath,
   windowsPathKindReceipt, windowsPathKindReceiptPath, windowsPathKindSourceDigest, windowsPathKindSystemEnvironment,
 } from "./lib/windows-path-kind-build.mjs";
 
@@ -32,6 +34,13 @@ export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture
   const output = (name) => join(targetDir, identity.target, identity.profile, `${name}.exe`);
   try {
     mkdirSync(cargoHome);
+    // Cargo runs rustc in the crate directory. Stage only the declared sources there.
+    for (const file of windowsPathKindCrateFiles(root)) {
+      const destination = join(buildDir, file);
+      mkdirSync(dirname(destination), { recursive: true });
+      copyFileSync(join(root, file), destination);
+    }
+    if (windowsPathKindSourceDigest(root, buildDir) !== source) throw new Error("Windows path helper sources changed during staging");
     const env = {
       ...windowsPathKindSystemEnvironment(),
       TEMP: buildDir,
@@ -49,28 +58,32 @@ export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture
       const result = spawnSync(identity.cargo, [
         "build", "-v", "--color", "never", "--locked", "--offline",
         "--profile", identity.profile, ...profile, "--target", identity.target, "--target-dir", targetDir,
-        "--manifest-path", resolve(root, "native/windows-path-kind/Cargo.toml"), "--bin", name, ...features,
+        "--manifest-path", join(buildDir, "native/windows-path-kind/Cargo.toml"), "--bin", name, ...features,
       ], { cwd: buildDir, env, encoding: "utf8", windowsHide: true });
-      if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
       if (result.error) throw result.error;
       if (result.status !== 0) throw new Error(`Windows path helper Cargo build failed (exit ${result.status})`);
       const commands = result.stderr.split(/\r?\n/u).filter(line => /^\s*Running\b/u.test(line));
       const match = /^\s*Running `(.+)`$/u.exec(commands[0] ?? "");
       if (commands.length !== 1 || !match) throw new Error("Expected one Windows path helper compiler invocation");
-      return { identity, targetDir, invocation: match[1] };
+      const build = { identity, targetDir, invocation: match[1] };
+      assertWindowsPathKindInvocation(build, name === "ave-path-pin-test");
+      assertWindowsPathKindLinkInputs(result.stdout, identity, buildDir,
+        join(targetDir, identity.target, identity.profile, "deps", `${name.replaceAll("-", "_")}.exe`));
+      return build;
     };
     const build = cargo("ave-path-kind");
     const binary = readFileSync(output("ave-path-kind"));
     const receipt = windowsPathKindReceipt(root, arch, build, binary);
+    let fixtureBytes;
     if (fixture) {
-      const fixtureBuild = cargo("ave-path-pin-test", ["--features", "fixture"]);
-      assertWindowsPathKindInvocation(fixtureBuild, true);
-      const test = output("ave-path-pin-test");
-      assertWindowsPathKindMachine(readFileSync(test), arch);
-      copyFileSync(test, join(tmpdir(), "ave-path-pin-test.exe"));
+      cargo("ave-path-pin-test", ["--features", "fixture"]);
+      fixtureBytes = readFileSync(output("ave-path-pin-test"));
+      assertWindowsPathKindMachine(fixtureBytes, arch);
     }
     if (receipt.sourceSha256 !== source) throw new Error("Windows path helper sources changed during build");
+    assertWindowsPathKindInputDigests(identity.inputs);
+    if (fixtureBytes) writeFileSync(join(tmpdir(), "ave-path-pin-test.exe"), fixtureBytes);
     const exe = join(root, windowsPathKindPath(arch));
     const manifest = join(root, windowsPathKindReceiptPath(arch));
     mkdirSync(dirname(exe), { recursive: true });

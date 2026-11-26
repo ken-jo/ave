@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -15,7 +15,7 @@ import {
 } from "../../scripts/prepare-windows-job.mjs";
 import {
   WINDOWS_PATH_KIND_PROFILE, WINDOWS_PATH_KIND_PROFILE_SETTINGS, windowsPathKindCompilerCommand,
-  windowsPathKindReceipt, windowsPathKindReceiptPath, windowsPathKindRustflags, windowsPathKindToolPaths,
+  windowsPathKindPath, windowsPathKindReceipt, windowsPathKindReceiptPath, windowsPathKindRustflags, windowsPathKindToolPaths,
   verifyWindowsPathKindBuild,
 } from "../../scripts/lib/windows-path-kind-build.mjs";
 
@@ -61,10 +61,24 @@ function stagePathKind(root: string, machine = 0x8664): void {
   const rustupRoot = "C:\\example\\.rustup";
   const host = "x86_64-pc-windows-msvc";
   const tools = windowsPathKindToolPaths(rustupRoot, toolchain, host);
+  const sysroot = win32.dirname(win32.dirname(tools.rustc));
+  const sdkImports = "C:\\example\\sdk\\um\\x64";
+  const staticCrt = ["libcmt.lib", "libvcruntime.lib", "libucrt.lib"].map((name) => win32.join("C:\\example\\static-crt", name));
+  const files = (paths: string[]) => paths.map((path) => ({ path, sha256: "0".repeat(64) }));
+  const inputs = {
+    sysroot, sdkImports, staticCrt,
+    tools: files(Object.values(tools)),
+    rustLibraries: files([win32.join(sysroot, "lib", "libstd.rlib")]),
+    libraries: files([
+      ...["advapi32.lib", "bcrypt.lib", "dbghelp.lib", "kernel32.lib", "ntdll.lib", "ole32.lib", "shell32.lib", "userenv.lib", "ws2_32.lib"]
+        .map((name) => win32.join(sdkImports, name)),
+      ...staticCrt,
+    ]),
+  };
   const identity = {
-    toolchain, compiler: `release: ${toolchain}\nhost: ${host}`, host, target: host, rustupRoot, ...tools,
+    toolchain, compiler: `release: ${toolchain}\nhost: ${host}`, host, target: host, rustupRoot, ...tools, inputs,
     profile: WINDOWS_PATH_KIND_PROFILE, profileSettings: WINDOWS_PATH_KIND_PROFILE_SETTINGS,
-    rustflags: windowsPathKindRustflags(tools.linker),
+    rustflags: windowsPathKindRustflags(tools.linker, inputs),
   };
   const targetDir = "C:\\example\\target";
   const invocation = windowsPathKindCompilerCommand(identity, targetDir, "0123456789abcdef");
@@ -107,23 +121,28 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+function pathKindBuildFixture() {
+  const root = fixtureRoot({ pathKind: false });
+  const crate = "native/windows-path-kind";
+  cpSync(resolve(crate, "src"), join(root, crate, "src"), { recursive: true });
+  for (const file of RUST_INPUTS.filter((input) => !input.endsWith(".rs"))) {
+    cpSync(resolve(file), join(root, file));
+  }
+  const buildTemp = mkdtempSync(join(tmpdir(), "ave cargo temp-"));
+  roots.push(buildTemp);
+  const builder = pathToFileURL(resolve("scripts/build-windows-path-kind.mjs")).href;
+  const runBuild = (overrides: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [
+    "--input-type=module", "--eval",
+    'const {buildWindowsPathKind} = await import(process.argv[1]); buildWindowsPathKind({root: process.argv[2], arch: process.arch});',
+    builder, root,
+  ], { encoding: "utf8", windowsHide: true, env: { ...process.env, TMP: buildTemp, TEMP: buildTemp, TMPDIR: buildTemp, ...overrides, ELECTRON_RUN_AS_NODE: "1" } });
+  const receiptPath = join(root, windowsPathKindReceiptPath(process.arch));
+  return { root, crate, runBuild, receiptPath };
+}
+
 describe("Windows path helper build", () => {
   it.skipIf(process.platform !== "win32")("seals a real offline Cargo build and verifies its executed compiler command", () => {
-    const root = fixtureRoot({ pathKind: false });
-    const crate = "native/windows-path-kind";
-    cpSync(resolve(crate, "src"), join(root, crate, "src"), { recursive: true });
-    for (const file of RUST_INPUTS.filter((input) => !input.endsWith(".rs"))) {
-      cpSync(resolve(file), join(root, file));
-    }
-    const buildTemp = mkdtempSync(join(tmpdir(), "ave cargo temp-"));
-    roots.push(buildTemp);
-    const builder = pathToFileURL(resolve("scripts/build-windows-path-kind.mjs")).href;
-    const runBuild = (overrides: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [
-      "--input-type=module", "--eval",
-      'const {buildWindowsPathKind} = await import(process.argv[1]); buildWindowsPathKind({root: process.argv[2], arch: process.arch});',
-      builder, root,
-    ], { encoding: "utf8", windowsHide: true, env: { ...process.env, TMP: buildTemp, TEMP: buildTemp, TMPDIR: buildTemp, ...overrides, ELECTRON_RUN_AS_NODE: "1" } });
-    const receiptPath = join(root, windowsPathKindReceiptPath(process.arch));
+    const { root, crate, runBuild, receiptPath } = pathKindBuildFixture();
     const clean = runBuild();
     expect(clean.status, clean.stderr).toBe(0);
     const cleanReceipt = JSON.parse(readFileSync(receiptPath, "utf8"));
@@ -181,6 +200,27 @@ describe("Windows path helper build", () => {
     const blocked = runBuild({ TMP: parent, TEMP: parent, TMPDIR: parent, AVE_TEST_TMP_ROOT: parent });
     expect(blocked.status).toBe(1);
     expect(blocked.stderr).toContain("Unexpected Cargo config above the Windows path helper build directory");
+  }, 60_000);
+
+  it.skipIf(process.platform !== "win32")("isolates the link from crate-local libraries", () => {
+    const { root, crate, runBuild, receiptPath } = pathKindBuildFixture();
+    const clean = runBuild();
+    expect(clean.status, clean.stderr).toBe(0);
+    const executable = join(root, windowsPathKindPath(process.arch));
+    const binary = readFileSync(executable);
+    const cleanReceipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+
+    writeFileSync(join(root, crate, "libucrt.lib"), "unexpected archive");
+    writeFileSync(join(root, "kernel32.lib"), "unexpected archive");
+    const shadowed = runBuild();
+    expect(shadowed.status, shadowed.stderr).toBe(0);
+    expect(readFileSync(executable)).toEqual(binary);
+    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+    expect(receipt.identity.inputs).toEqual(cleanReceipt.identity.inputs);
+    expect(receipt.identity.inputs.libraries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: expect.stringMatching(/libucrt\.lib$/iu), sha256: expect.stringMatching(/^[a-f0-9]{64}$/u) }),
+    ]));
+    verifyWindowsPathKindBuild(root, process.arch);
   }, 60_000);
 
   it.each([
