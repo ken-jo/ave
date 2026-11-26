@@ -37,10 +37,8 @@ const SANDBOX_PROTECTED_ROOT_ENTRIES = [...new Set([
 // edit them without that card. The two children are named, not `.ave` itself: under a write root that holds the Ave home,
 // `<root>/.ave` is the home, and a deny there would take the command's own HOME and temp with it. `.codex` and a project `.aws`
 // are not named (owner decision 2026-11-25).
-// Linux carries one row per root for each entry. macOS carries none here; its wrap appends rules anchored at the write roots
-// (macos-sandbox-wrap.ts), because a row per root costs the root's length for every entry, which the longest supported darwin
-// layout cannot fit in MAX_POSIX_WRITE_DENY_POLICY_BYTES, and because the `.ave` directory itself can be pinned there. The Windows
-// floor is stamped and watched per row and is not changed here.
+// Linux and Windows carry one row per root for each entry. The macOS wrap appends rules anchored at the write roots
+// (macos-sandbox-wrap.ts) to fit the policy budget and pin the `.ave` directory itself.
 export const SANDBOX_NAMED_ENTRIES = [".agents", ".ave/commands", ".ave/hooks"] as const;
 function caseInsensitivePattern(path: string): string {
   return path.replace(/[a-z]/gu, character => `[${character}${character.toUpperCase()}]`);
@@ -1001,7 +999,9 @@ export function buildMandatorySandboxWritePolicy(
     // A marked literal already carries the admitted identity; discovery must retain that canonical path.
     return { original, physical: typeof entry === "string" ? resolvePolicyPath(original, process.cwd()) : original };
   });
-  const rootEntries = process.platform === "linux" ? [...SANDBOX_PROTECTED_ROOT_ENTRIES, ...SANDBOX_NAMED_ENTRIES] : SANDBOX_PROTECTED_ROOT_ENTRIES;
+  const rootEntries = process.platform === "linux" || process.platform === "win32"
+    ? [...SANDBOX_PROTECTED_ROOT_ENTRIES, ...SANDBOX_NAMED_ENTRIES]
+    : SANDBOX_PROTECTED_ROOT_ENTRIES;
   const paths = new Set([
     ...rootSnapshots.flatMap(({ original, physical }) => [original, physical]).flatMap((root) =>
       rootEntries.map((entry) => join(root, entry))),

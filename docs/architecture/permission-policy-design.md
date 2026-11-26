@@ -828,11 +828,11 @@ each admitted write root, taking precedence over grants:
   load, and `.ave/commands` and `.ave/hooks`, which Ave loads. Other agents'
   folders such as `.claude` and `.codex` are not on this floor, and the file
   tools do not ask about them: each host protects its own (owner decision
-  2026-11-25). On Linux these are entries beneath each write root. On macOS
+  2026-11-25). Linux and Windows carry a row for each of these exact paths at
+  each admitted write root. On macOS
   rules appended to the Seatbelt profile, anchored at the write roots, deny the
   same entries, and also refuse to create, remove or rename `.ave` directly
-  beneath a root, so its parts cannot be moved out from under their names. The
-  Windows floor does not carry these entries yet;
+  beneath a root, so its parts cannot be moved out from under their names;
 - configured `core.hooksPath` directories, including absent targets and their
   physical symlink targets;
 - Ave settings, permission settings, rules, policies and approval grants, with
@@ -862,9 +862,9 @@ Ave home or one of the confined processes' private roots, writes to that directo
 are denied except under the wrap's own write roots inside it. Linux masks both
 with a mount.
 
-The Windows MXC PowerShell container receives the same denies from the same
-policy builder: an existing protected entry inside a write grant becomes
-read-only and an absent one is denied, so it cannot be created.
+On Windows, both the container and ACL-backed routes receive these rows from
+the shared policy builder. Present entries receive the backend's write deny.
+Reachable absent entries follow the [protected-name watch](architecture.md#ave-home-boundary-and-protected-name-mechanics).
 
 Loader denies apply to isolated processes through the common filesystem policy,
 including the persistent conversation shell and worker confinement when enabled.
