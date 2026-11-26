@@ -131,6 +131,7 @@ export class MemoryMapHost {
       else missing.push({ record, key });
     }
     const cached = total - missing.length;
+    const progressStride = process.platform === "win32" ? Math.max(1, Math.ceil(total / 64)) : 1;
     if (cached) {
       assertCurrent();
       commitUnderAdmission(assertModelAdmission, () => report({ jobId, phase: 'embedding', completed: cached, total }));
@@ -153,10 +154,12 @@ export class MemoryMapHost {
       assertCurrent();
       const vectors = await this.runWorker<number[][]>(folder, task, signal, progress => {
         const completed = progress.completed;
-        if (progress.phase === 'embedding' && texts[completed - 1] !== undefined) {
+        const overall = cached + start + completed;
+        if (progress.phase === 'embedding' && texts[completed - 1] !== undefined
+          && (overall === cached + 1 || overall === total || overall % progressStride === 0)) {
           const { record } = missing[start + completed - 1];
           try {
-            report({ jobId, phase: 'embedding', completed: cached + start + completed, total, memoryId: record.memoryId });
+            report({ jobId, phase: 'embedding', completed: overall, total, memoryId: record.memoryId });
           } catch { /* Refused. */ }
         }
       });

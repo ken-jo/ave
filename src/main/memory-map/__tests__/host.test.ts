@@ -78,6 +78,35 @@ describe('memory graph publication', () => {
     expect(onProgress).not.toHaveBeenCalled();
   });
 
+  it.runIf(process.platform === 'win32').each([false, true])('bounds cold embedding catalog reads and suppresses stale progress (stale: %s)', async stale => {
+    const f = await fixture();
+    f.catalog.records = Array.from({ length: 192 }, (_, index) => ({
+      ...f.catalog.records[0], memoryId: `note-${index}`,
+    }));
+    let catalog = f.catalog;
+    const readCatalog = vi.fn(() => catalog);
+    const onProgress = vi.fn((event: { completed: number }) => {
+      if (stale && event.completed === 96) catalog = { ...catalog, authorizationScopeId: 'replacement' };
+    });
+    const runWorker: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
+      const [, task, , report] = args;
+      if (task.kind === 'embed-batch') {
+        task.texts.forEach((_, index) => report?.({
+          jobId: task.jobId, phase: 'embedding', completed: index + 1, total: task.texts.length,
+        }));
+      }
+      return f.runWorker<T>(...args);
+    };
+    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker, onProgress });
+    const result = host.build(readCatalog);
+    if (stale) await expect(result).rejects.toMatchObject({ code: 'request-stale' });
+    else await expect(result).resolves.toMatchObject({ coverage: { embedded: 192 } });
+    const updates = onProgress.mock.calls.map(([progress]) => progress.completed);
+    expect(updates[0]).toBe(1);
+    expect(updates.at(-1)).toBe(stale ? 96 : 192);
+    expect(readCatalog.mock.calls.length).toBeLessThan(80);
+  });
+
   it('refuses saved graph hydration after the caller scope changes', async () => {
     const f = await fixture();
     const options = { namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: f.runWorker };
