@@ -54,6 +54,63 @@ async function fixture() {
   return { root, namespace, catalog, runWorker };
 }
 describe('memory graph publication', () => {
+  it('refuses saved graph hydration after the caller scope changes', async () => {
+    const f = await fixture();
+    const options = { namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: f.runWorker };
+    const ready = await new MemoryMapHost(options).build(() => f.catalog);
+    let catalog = f.catalog;
+    const host = new MemoryMapHost(options);
+    const reading = deferred<void>();
+    const resume = deferred<void>();
+    const readJson = f.namespace.readJson;
+    f.namespace.readJson = async (name, fallback) => {
+      const saved = await readJson(name, fallback);
+      reading.resolve();
+      await resume.promise;
+      return saved;
+    };
+    const result = host.get(() => catalog);
+    await reading.promise;
+    catalog = { ...catalog, authorizationScopeId: 'replacement' };
+    resume.resolve();
+    await expect(result).rejects.toMatchObject({ code: 'request-stale' });
+    expect(await host.get(() => f.catalog)).toEqual(ready);
+  });
+
+  it('refuses a held old clear while another scope is building', async () => {
+    const f = await fixture();
+    const preparingClear = deferred<void>();
+    const resumeClear = deferred<void>();
+    const preparingBuild = deferred<void>();
+    const resumeBuild = deferred<void>();
+    let holdBuild = false;
+    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal,
+      validatedModelPath: async (...args) => {
+        if (holdBuild) { preparingBuild.resolve(); await resumeBuild.promise; }
+        return validatedModelPath(...args);
+      }, runWorker: f.runWorker });
+    await host.build(() => f.catalog);
+    const destination = join(f.root, 'snapshot.json');
+    const saved = await readFile(destination, 'utf8');
+    const childDir = f.namespace.childDir;
+    f.namespace.childDir = async (name, options) => {
+      preparingClear.resolve();
+      await resumeClear.promise;
+      options?.assertStillValid?.();
+      return childDir(name, options);
+    };
+    const result = host.get(() => ({ ...f.catalog, records: [] }));
+    await preparingClear.promise;
+    holdBuild = true;
+    const build = host.build(() => ({ ...f.catalog, authorizationScopeId: 'replacement' }));
+    await preparingBuild.promise;
+    try {
+      resumeClear.resolve();
+      await expect(result).rejects.toMatchObject({ code: 'request-stale' });
+      expect(await readFile(destination, 'utf8')).toBe(saved);
+    } finally { resumeBuild.resolve(); await build; }
+  });
+
   it.each([
     ['before projection', 'local-runtime-unavailable'],
     ['before publication', 'local-runtime-unavailable'],

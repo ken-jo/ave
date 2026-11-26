@@ -45,8 +45,18 @@ export class MemoryMapHost {
   async invalidate(): Promise<void> {
     this.cancel(); this.snapshot = null; this.cache = {}; this.hydrated = true;
     const generation = this.generation;
-    await this.namespace.childDir('');
-    await writeFileAtomicAtPathIf(join(this.namespace.dir, 'snapshot.json'), JSON.stringify({ cache: {}, snapshot: null }), () => generation === this.generation);
+    await this.clearSaved(() => {
+      if (this.generation !== generation) throw new MemoryMapHostError('request-stale');
+    });
+  }
+  private async clearSaved(assertCurrent: () => void): Promise<void> {
+    await this.namespace.childDir('', { assertStillValid: assertCurrent });
+    const cleared = await writeFileAtomicAtPathIf(join(this.namespace.dir, 'snapshot.json'), JSON.stringify({ cache: {}, snapshot: null }), () => {
+      assertCurrent();
+      return true;
+    });
+    if (!cleared) throw new MemoryMapHostError('request-stale');
+    assertCurrent();
   }
   private selectedNamespace(): EmbeddingNamespace { return this.options.provider?.namespace() ?? LOCAL_NAMESPACE; }
   protected activate(catalog: MemoryMapCatalog): void {
@@ -84,17 +94,28 @@ export class MemoryMapHost {
   }
   async get(readCatalog: ReadMemoryMapCatalog): Promise<GraphSnapshot | null> {
     const catalog = readCatalog(); this.activate(catalog);
+    const revision = catalogRevision(catalog.records);
+    const selected = this.selectedNamespace();
+    const assertCurrent = (generation: number) => {
+      if (generation !== this.generation || !sameNamespace(selected, this.selectedNamespace())) throw new MemoryMapHostError('request-stale');
+      const latest = readCatalog();
+      if (latest.authorizationScopeId !== catalog.authorizationScopeId || catalogRevision(latest.records) !== revision) throw new MemoryMapHostError('request-stale');
+    };
+    const matchesCatalog = (snapshot: GraphSnapshot) => snapshot.authorizationScopeId === catalog.authorizationScopeId
+      && snapshot.catalogRevision === revision && sameNamespace(snapshot.model.namespace, selected);
     if (!this.hydrated) {
       const generation = this.generation;
       const saved = await this.readSaved();
-      if (generation !== this.generation) throw new MemoryMapHostError('request-stale');
-      this.hydrated = true;
-      if (saved.snapshot) { this.snapshot = saved.snapshot; this.cache = saved.cache; }
+      commitUnderAdmission(() => assertCurrent(generation), () => {
+        this.hydrated = true;
+        if (saved.snapshot) { this.snapshot = saved.snapshot; this.cache = saved.cache; }
+      });
     }
-    if ((this.snapshot && (this.snapshot.catalogRevision !== catalogRevision(catalog.records) || this.snapshot.authorizationScopeId !== catalog.authorizationScopeId || !sameNamespace(this.snapshot.model.namespace, this.selectedNamespace()))) || (this.pending && (this.pending.catalogRevision !== catalogRevision(catalog.records) || !sameNamespace(this.pending.model.namespace, this.selectedNamespace())))) {
+    if ((this.snapshot && !matchesCatalog(this.snapshot)) || (this.pending && !matchesCatalog(this.pending))) {
       this.cancel(); this.snapshot = null; this.cache = {};
-      await this.namespace.childDir('');
-      await writeFileAtomicAtPathIf(join(this.namespace.dir, 'snapshot.json'), JSON.stringify({ cache: {}, snapshot: null }), () => this.snapshot === null);
+      const clearGeneration = this.generation;
+      await this.clearSaved(() => assertCurrent(clearGeneration));
+      assertCurrent(clearGeneration);
     }
     if (this.snapshot) this.validateSnapshot(this.snapshot, catalog);
     return this.pending ?? this.snapshot;
