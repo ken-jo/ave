@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BootHost } from "../../boot/host-runtime.js";
 import type { HostResources } from "../host-resources.js";
+import { windowsPeImageDigest } from "../../../scripts/lib/windows-pe-image-digest.mjs";
 
 const io = vi.hoisted(() => ({
   helperExists: vi.fn(),
@@ -76,8 +76,19 @@ vi.mock("../../data/settings-store.js", () => ({
 
 const PROJECT_ROOT = "C:\\project";
 const PACKAGED_RESOURCES = "C:\\bundle\\resources";
-const BUILT_HELPER = Buffer.from("fresh build output");
-const BUILT_HELPER_SHA256 = createHash("sha256").update(BUILT_HELPER).digest("hex");
+function helperImage(marker: string): Buffer {
+  const image = Buffer.alloc(0x400);
+  image.writeUInt16LE(0x5a4d);
+  image.writeUInt32LE(64, 60);
+  image.writeUInt32LE(0x4550, 64);
+  image.writeUInt16LE(240, 84);
+  image.writeUInt16LE(0x20b, 88);
+  image.writeUInt32LE(16, 88 + 108);
+  image.write(marker, 0x200);
+  return image;
+}
+const BUILT_HELPER = helperImage("fresh build output");
+const BUILT_HELPER_SHA256 = windowsPeImageDigest(BUILT_HELPER);
 
 beforeEach(() => {
   vi.resetModules();
@@ -108,12 +119,12 @@ afterEach(() => {
 });
 
 describe("desktop host resource startup", () => {
-  it("refuses independently supplied checkout bytes before starting the unpackaged host", async () => {
+  it.each([false, true])("refuses an independently supplied helper image before starting the host (packaged: %s)", async (isPackaged) => {
     const { app } = await import("electron");
-    Object.defineProperty(app, "isPackaged", { value: false });
+    Object.defineProperty(app, "isPackaged", { value: isPackaged });
     const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
     vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
-    io.helperBytes.mockReturnValue(Buffer.from("independently supplied executable"));
+    io.helperBytes.mockReturnValue(helperImage("independently supplied executable"));
     io.lstat.mockClear();
 
     const start = vi.fn(() => createDesktopBootHost(PROJECT_ROOT));
@@ -124,7 +135,7 @@ describe("desktop host resource startup", () => {
   });
 
   it.each([false, true])("configures resources before early boot and host construction (packaged: %s)", async (isPackaged) => {
-    if (!isPackaged) vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
+    vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
     const { app } = await import("electron");
     const { desktopResourcePath } = await import("../desktop-resource-path.js");
     const { configureHostResources, getConfiguredHostResources } = await import("../host-resources.js");
@@ -158,7 +169,7 @@ describe("desktop host resource startup", () => {
   });
 
   it.each([false, true])("builds the desktop host without global resources (packaged: %s)", async (isPackaged) => {
-    if (!isPackaged) vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
+    vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
     const { app } = await import("electron");
     const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
     const { protectedControlEntryFor } = await import("../../permissions/sensitive-paths.js");

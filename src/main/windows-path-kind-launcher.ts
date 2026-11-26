@@ -1,12 +1,13 @@
 import { execFile, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { access, readFile } from "node:fs/promises";
-import { dirname, join, resolve, win32 } from "node:path";
+import { readFile } from "node:fs/promises";
+import { dirname, join, win32 } from "node:path";
+import { windowsPeImageDigest } from "../../scripts/lib/windows-pe-image-digest.mjs";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
-import { getConfiguredHostResources, getHostResources } from "./host-resources.js";
+import { getHostResources } from "./host-resources.js";
 
+// The signing-stable image digest of the helper built with this bundle; packaging requires the shipped helper to match.
 declare const __AVE_WINDOWS_PATH_KIND_SHA256__: string | null;
 
 // The helper's one answer about a drive: the OS has no mapping for it (native/windows-path-kind/README.md).
@@ -27,25 +28,25 @@ export function resolveWindowsPathKindHelper(resourcePath = getHostResources().r
   if (!existsSync(binary)) {
     throw missingWindowsPathKindHelper();
   }
-  if (requiresCheckoutBuild(resourcePath)) verifyCheckoutWindowsPathKindHelper(resourcePath);
+  verifyWindowsPathKindHelper(resourcePath);
   return binary;
 }
 
-function requiresCheckoutBuild(resourcePath: string): boolean {
-  if (typeof __AVE_WINDOWS_PATH_KIND_SHA256__ === "undefined") return false; // Source modules used by unit tests.
-  const host = getConfiguredHostResources();
-  return !(host?.isPackaged && host.resourcePath === resourcePath
-    && resolve(resourcePath) === resolve(dirname(process.execPath), "resources"));
-}
-
-function assertBuiltHelper(bytes: Uint8Array): void {
-  if (typeof __AVE_WINDOWS_PATH_KIND_SHA256__ === "undefined"
-    || createHash("sha256").update(bytes).digest("hex") !== __AVE_WINDOWS_PATH_KIND_SHA256__) {
-    throw windowsPathKindHelperUnavailable("Windows folder classifier does not match the development build. Rebuild the main bundle.");
+function assertBuiltHelper(bytes: Buffer): void {
+  if (typeof __AVE_WINDOWS_PATH_KIND_SHA256__ === "undefined") return; // Unbundled source modules under unit tests.
+  let digest: string | undefined;
+  try {
+    digest = windowsPeImageDigest(bytes);
+  } catch {
+    digest = undefined;
+  }
+  if (digest === undefined || digest !== __AVE_WINDOWS_PATH_KIND_SHA256__) {
+    throw windowsPathKindHelperUnavailable(`Windows folder classifier does not match this build of Ave. ${REPAIR}`);
   }
 }
 
-export function verifyCheckoutWindowsPathKindHelper(resourcePath: string): void {
+/** Packaged, system-directory and checkout helpers alike must carry the image this bundle was built with. */
+export function verifyWindowsPathKindHelper(resourcePath: string): void {
   let bytes: Buffer;
   try {
     bytes = readFileSync(windowsPathKindHelperIn(resourcePath));
@@ -157,20 +158,18 @@ export function queryDosDevice(drive: string): Promise<string | null> {
   });
 }
 
-// The packaged helper asks the OS directly; environment variables cannot choose a system verifier.
+// The helper asks the OS directly; environment variables cannot choose a system verifier.
 export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT_POLICY.globalCeilingMs, deadline?: number): Promise<string> {
   if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
   const { resourcePath } = getHostResources();
   const helper = windowsPathKindHelperIn(resourcePath);
-  const checkout = requiresCheckoutBuild(resourcePath);
-  let bytes: Buffer | undefined;
+  let bytes: Buffer;
   try {
-    if (checkout) bytes = await readFile(helper);
-    else await access(helper);
+    bytes = await readFile(helper);
   } catch {
     throw missingWindowsPathKindHelper();
   }
-  if (bytes) assertBuiltHelper(bytes);
+  assertBuiltHelper(bytes);
   return new Promise((resolve, reject) => {
     const options = windowsSystemDirectorySpawnOptions(helper);
     const remaining = deadline === undefined ? timeout : Math.min(timeout, deadline - performance.now());
