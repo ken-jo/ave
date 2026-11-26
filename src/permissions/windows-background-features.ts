@@ -82,10 +82,15 @@ export async function refreshWindowsBackgroundAdmission(scope: "all" | "switches
     return admissionOver(() => undefined);
   }
   const refreshed = await refreshWindowsBackendEvidence();
-  return admissionOver((owner) => {
-    const evidence = refreshed.get(owner);
-    return evidence !== undefined && owner.current() === evidence ? evidence.state : undefined;
+  const receiptsAreCurrent = () => WINDOWS_BACKEND_EVIDENCE.every((owner) => {
+    const receipt = refreshed.get(owner);
+    return receipt !== undefined && owner.isCurrent(receipt);
   });
+  const admission = admissionOver((owner) => refreshed.get(owner)?.state);
+  return {
+    areSwitchesAvailable: () => receiptsAreCurrent() && admission.areSwitchesAvailable(),
+    searchIndexPolicy: (preference) => receiptsAreCurrent() ? admission.searchIndexPolicy(preference) : "inactive",
+  };
 }
 
 /** The session stores' policy: the settled read for repair deferral, a refreshed admission for each database operation. */

@@ -5,7 +5,7 @@ import {
   isWindowsAccountConfinementOperational,
 } from "./asrt-sandbox.js";
 import { detectHostMxcPrerequisites, probeHostMxcPowerShellStart, requireHostWxcExecFile } from "./mxc-windows.js";
-import { detectMxcShellCapability, getWindowsSandboxSubstrate } from "./sandbox-capability.js";
+import { detectMxcShellCapability, getSandboxGeneration, getWindowsSandboxSubstrate } from "./sandbox-capability.js";
 
 export type WindowsBackendState = "operational" | "absent" | "unavailable";
 
@@ -31,22 +31,28 @@ function sameRoute(left: readonly unknown[], right: readonly unknown[]): boolean
   return left.length === right.length && left.every((identity, index) => Object.is(identity, right[index]));
 }
 
-/** Holds one backend's evidence. A refresh never demotes settled evidence; only its result, an invalidation or a route change replaces it. */
+/** Owns the epoch and the exact receipt issued by its current probe. */
 export class WindowsBackendEvidenceOwner {
   private epoch = 0;
   private settled: (WindowsBackendEvidence & { readonly route: readonly unknown[] }) | undefined;
-  private pending: Promise<void> | undefined;
+  private pending: Promise<WindowsBackendEvidence | undefined> | undefined;
 
   constructor(readonly provider: WindowsBackendEvidenceProvider) {}
 
   /** One probe at a time: callers arriving during a probe share its result. */
-  refresh(): Promise<void> {
-    this.pending ??= this.probe().finally(() => { this.pending = undefined; });
-    return this.pending;
+  refresh(): Promise<WindowsBackendEvidence | undefined> {
+    if (this.pending !== undefined) return this.pending;
+    const epoch = ++this.epoch;
+    this.settled = undefined;
+    const pending = Promise.resolve().then(() => this.probe(epoch)).finally(() => {
+      if (this.pending === pending) this.pending = undefined;
+    });
+    this.pending = pending;
+    return pending;
   }
 
-  private async probe(): Promise<void> {
-    const epoch = ++this.epoch;
+  private async probe(epoch: number): Promise<WindowsBackendEvidence | undefined> {
+    if (epoch !== this.epoch) return undefined;
     let route: readonly unknown[] | undefined;
     let state: WindowsBackendState = "unavailable";
     try {
@@ -62,20 +68,28 @@ export class WindowsBackendEvidenceOwner {
       state = "unavailable";
     }
     // An invalidation or a route change during the probe voids its answer.
-    if (epoch !== this.epoch) return;
-    this.settled = undefined;
+    if (epoch !== this.epoch) return undefined;
     try {
-      if (route !== undefined && sameRoute(route, this.provider.route())) this.settled = { epoch, state, route };
+      if (route !== undefined && sameRoute(route, this.provider.route())) {
+        this.settled = { epoch, state, route };
+        return this.settled;
+      }
     } catch { /* No route identity, no evidence. */ }
+    return undefined;
   }
 
   invalidate(): void {
     this.epoch += 1;
     this.settled = undefined;
+    this.pending = undefined;
+  }
+
+  isCurrent(receipt: WindowsBackendEvidence): boolean {
+    return receipt.epoch === this.epoch && this.current() === receipt;
   }
 
   current(): WindowsBackendEvidence | undefined {
-    if (this.settled === undefined) return undefined;
+    if (this.settled?.epoch !== this.epoch) return undefined;
     try {
       if (sameRoute(this.settled.route, this.provider.route())) return this.settled;
     } catch { /* Fall through to invalidation. */ }
@@ -91,7 +105,7 @@ export function isWindowsAccountBackendAbsent(dependencies: Awaited<ReturnType<t
 }
 
 const accountBackend = new WindowsBackendEvidenceOwner({
-  route: () => [...getWindowsConfinementRoute(), getWindowsSandboxSubstrate()],
+  route: () => [getSandboxGeneration(), ...getWindowsConfinementRoute(), getWindowsSandboxSubstrate()],
   probeRoute: () => isWindowsAccountConfinementOperational(),
   probeAbsence: async () => isWindowsAccountBackendAbsent(await checkAsrtDependencies()),
   isRoutePublished: (substrate) => substrate.srtWinReady && substrate.accountBackendAbsent !== true,
@@ -99,7 +113,7 @@ const accountBackend = new WindowsBackendEvidenceOwner({
 });
 
 const containerBackend = new WindowsBackendEvidenceOwner({
-  route: () => [...getWindowsConfinementRoute(), getWindowsSandboxSubstrate(), detectMxcShellCapability()],
+  route: () => [getSandboxGeneration(), ...getWindowsConfinementRoute(), getWindowsSandboxSubstrate(), detectMxcShellCapability()],
   probeRoute: async () => {
     requireHostWxcExecFile();
     return (await probeHostMxcPowerShellStart()).state === "available";
@@ -125,6 +139,6 @@ export function invalidateWindowsBackendEvidence(): void {
 
 /** Probes every backend for the calling operation and returns what each probe established. */
 export async function refreshWindowsBackendEvidence(): Promise<ReadonlyMap<WindowsBackendEvidenceOwner, WindowsBackendEvidence | undefined>> {
-  await Promise.all(WINDOWS_BACKEND_EVIDENCE.map((owner) => owner.refresh()));
-  return new Map(WINDOWS_BACKEND_EVIDENCE.map((owner) => [owner, owner.current()]));
+  const receipts = await Promise.all(WINDOWS_BACKEND_EVIDENCE.map(async (owner) => [owner, await owner.refresh()] as const));
+  return new Map(receipts);
 }

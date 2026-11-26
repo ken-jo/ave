@@ -32,6 +32,7 @@ vi.mock('../../../permissions/mxc-windows.js', async importOriginal => ({
 vi.mock('../../../permissions/mxc-runtime-root.js', () => ({ mxcSandboxHomesParent: () => 'C:/example/ave-runtime/homes' }));
 vi.mock('../../../permissions/sandbox-capability.js', () => ({
   detectMxcShellCapability: () => state.substrate?.shells === 'mxc' ? state.verifiedShell : undefined,
+  getSandboxGeneration: () => "0",
   getSandboxHomesUnavailable: () => false,
   getWindowsExtensionBackendPlan: () => state.plan,
   getWindowsSandboxSubstrate: () => state.substrate,
@@ -204,6 +205,46 @@ describe('Windows local inference release gate', () => {
     expect(current.searchIndexPolicy(undefined)).toBe('inactive');
     expect(() => assertLocalEmbeddingRuntime(true, current)).toThrow(expect.objectContaining({ code: 'local-runtime-unavailable' }));
     expect(settledWindowsBackgroundAdmission.areSwitchesAvailable()).toBe(false);
+  });
+
+  it.each([false, true])('keeps each probe receipt when a fast backend changes next to a shared slow backend (first clean: %s)', async firstClean => {
+    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    const slow = deferred<object>();
+    const rejected = { ...NO_ACCOUNT, warnings: ['inventory incomplete'] };
+    state.accountInventory.mockResolvedValueOnce(firstClean ? NO_ACCOUNT : rejected)
+      .mockResolvedValueOnce(firstClean ? rejected : NO_ACCOUNT);
+    state.containerInventory.mockReturnValue(slow.promise);
+
+    const first = refreshWindowsBackgroundAdmission();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const second = refreshWindowsBackgroundAdmission();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    slow.resolve(NO_CONTAINER);
+    const [earlier, later] = await Promise.all([first, second]);
+    expect(state.accountInventory).toHaveBeenCalledTimes(2);
+    expect(state.containerInventory).toHaveBeenCalledOnce();
+    expect.soft(earlier.areSwitchesAvailable()).toBe(false);
+    expect.soft(earlier.searchIndexPolicy(true)).toBe('inactive');
+    expect.soft(() => assertLocalEmbeddingRuntime(true, earlier)).toThrow(expect.objectContaining({ code: 'local-runtime-unavailable' }));
+    expect(later.areSwitchesAvailable()).toBe(!firstClean);
+  });
+
+  it('revokes a settled admission as soon as its replacement begins', async () => {
+    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    const earlier = await refreshWindowsBackgroundAdmission();
+    expect(earlier.areSwitchesAvailable()).toBe(true);
+    const slow = deferred<object>();
+    state.containerInventory.mockReturnValue(slow.promise);
+    const replacement = refreshWindowsBackgroundAdmission();
+    try {
+      expect.soft(earlier.areSwitchesAvailable()).toBe(false);
+      expect.soft(earlier.searchIndexPolicy(false)).toBe('inactive');
+      expect.soft(() => assertLocalEmbeddingRuntime(true, earlier)).toThrow(expect.objectContaining({ code: 'local-runtime-unavailable' }));
+    } finally {
+      slow.resolve(NO_CONTAINER);
+      await replacement;
+    }
+    expect((await replacement).areSwitchesAvailable()).toBe(true);
   });
 
   it('shares one probe between concurrent operations and admits nothing while it is pending or after a loss signal voids it', async () => {

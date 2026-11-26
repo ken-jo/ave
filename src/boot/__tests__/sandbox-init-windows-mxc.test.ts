@@ -399,6 +399,50 @@ it.each([
   }
 });
 
+it.each([false, true])("does no SQLite work for a superseded refresh (first inventory clean: %s)", async firstClean => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const seed = new SessionRepository({ aveDir: dir });
+  await seed.saveSession(sessionId, [{ role: "user", content: "indexed before overlap" }]);
+  seed.closeSearchIndex();
+  const repository = new SessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => false) });
+  try {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(NO_ACCOUNT_BACKEND);
+    h.detectMxc.mockResolvedValue(NO_CONTAINER);
+    await initSandboxGate(harness.context(false, false));
+    h.checkDeps.mockClear();
+    const rejected = { ...NO_ACCOUNT_BACKEND, warnings: ["inventory incomplete"] };
+    h.checkDeps.mockResolvedValueOnce(firstClean ? NO_ACCOUNT_BACKEND : rejected)
+      .mockResolvedValueOnce(firstClean ? rejected : NO_ACCOUNT_BACKEND);
+    const slow = deferred<object>();
+    h.detectMxc.mockClear().mockReturnValue(slow.promise);
+    const methods = ["open", "writeRebuiltSessions", "upsertSession", "deleteSession", "discard"] as const;
+    const sqlite = methods.map(method => vi.spyOn(SessionSearchIndex.prototype, method));
+    try {
+      const search = repository.searchSessionsWithCurrentPolicy("indexed before overlap");
+      await repository.saveSession(sessionId, [{ role: "user", content: "saved during overlap" }]);
+      const second = refreshWindowsBackgroundAdmission();
+      await afterQueuedCallbacks();
+      slow.resolve(NO_CONTAINER);
+      expect((await second).areSwitchesAvailable()).toBe(!firstClean);
+      expect(await search).toEqual([]);
+      await repository.searchIndexIdle();
+      expect(h.detectMxc).toHaveBeenCalledOnce();
+      for (const call of sqlite) expect.soft(call).not.toHaveBeenCalled();
+    } finally {
+      slow.resolve(NO_CONTAINER);
+      await repository.searchIndexIdle();
+      for (const call of sqlite) call.mockRestore();
+    }
+  } finally {
+    repository.closeSearchIndex();
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 it.each(["failed", "refused"] as const)("keeps progress and other reads responsive while a native answer is delayed, and indexes nothing once it has %s", async (outcome) => {
   const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
   const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
