@@ -22,7 +22,7 @@ it.runIf(process.platform === "win32").each(["Bash command fields", "PowerShell 
       : findPowerShellAstPathViolation({
         errors: [], unsupported: [], redirections: [],
         commands: ["./first.txt", "./second.txt"].map(path => ({
-          name: "Get-Content", text: "Get-Content " + path, arguments: [literal("Get-Content"), literal(path)],
+          name: "Get-Content", text: `Get-Content ${path}`, arguments: [literal("Get-Content"), literal(path)],
         })),
       }, root, root, [], true);
     expect(violation).toBeNull();

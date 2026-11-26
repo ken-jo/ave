@@ -204,7 +204,8 @@ describe("native Windows file permission targets", () => {
     const readRuntimePath = vi.fn(() => String.raw`Z:\Public\Unrelated.txt`);
     const matchingTargets = subject.targets?.map((target, index) => {
       const filePath = `${PROJECT}\\src\\public-${index}.txt`;
-      const resolved = targets.get(subject.paths[index]!)!;
+      const resolved = targets.get(subject.paths[index] ?? "");
+      if (resolved === undefined) throw new Error("Target fixture is missing");
       entry(filePath, false, resolved);
       return Object.defineProperty({ filePath, canonicalPath: target.canonicalPath }, "runtimePath", { get: readRuntimePath });
     });
@@ -233,8 +234,9 @@ describe("native Windows file permission targets", () => {
     await run(new ApplyPatchTool(), { patch });
 
     expect([...observations.keys()]).toEqual([first, second]);
-    expect(queries[observations.get(first)! - 1]).toBe("D:");
-    expect(observations.get(second)).toBe(observations.get(first));
+    const firstObservation = observations.get(first) ?? 0;
+    expect(queries[firstObservation - 1]).toBe("D:");
+    expect(observations.get(second)).toBe(firstObservation);
     expect(scopeQueries).toEqual([[], []]);
   });
 

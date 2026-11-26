@@ -2209,10 +2209,13 @@ async function runToolInvocationAttempt(
           // this gate after host consent or parses inside the selected container.
           if (isPowerShellStartupPinned() && hostShellExecutionPlan?.substrate !== "mxc") {
             const commands = extractShellCommands(finalInput);
-            shellPathViolation = await findPowerShellCommandPathViolation(
-              commands.length === 1 ? commands[0]! : commands, resolvedCwd, executionCwd,
-              invocationRuntimeAllowedDirectories, blockReadsOutsideWorkingDirectories,
-            );
+            const [first] = commands;
+            if (first !== undefined) {
+              shellPathViolation = await findPowerShellCommandPathViolation(
+                commands.length === 1 ? first : commands, resolvedCwd, executionCwd,
+                invocationRuntimeAllowedDirectories, blockReadsOutsideWorkingDirectories,
+              );
+            }
           }
         } else {
           // A command typed into a terminal runs in the directory that

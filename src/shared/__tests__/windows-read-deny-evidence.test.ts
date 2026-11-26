@@ -163,7 +163,7 @@ describe("Windows read deny evidence admission", () => {
     const first = join(tmpdir(), "ordinary-local-target");
     const firstDrive = first.slice(0, 2).toUpperCase();
     const laterDrive = firstDrive === "Q:" ? "R:" : "Q:";
-    const later = laterDrive + "/later-target";
+    const later = `${laterDrive}/later-target`;
     const failure = new Error("Drive query failed");
     const query = vi.fn((drive: string) => {
       if (drive === laterDrive) throw failure;

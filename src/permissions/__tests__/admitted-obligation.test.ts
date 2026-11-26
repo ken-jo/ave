@@ -122,9 +122,10 @@ describe.runIf(process.platform === "win32")("admitObligations", () => {
     expect(set.admitted[0]?.target).toBe(join(root, "secrets"));
   });
 
-  it("reports only a drive query with no answer as helper-unavailable", () => {
-    setWindowsDriveQueryForTest(() => { throw windowsPathKindHelperUnavailable("the Windows folder classifier did not answer"); });
-    expect(admitObligations({ purpose: "sandbox-config", principal: "srt-sandbox", rows: [deny(String.raw`Q:\alice`)] }).unresolved[0]?.reason).toBe("helper-unavailable");
+  it("propagates a failed drive query out of the judgment", () => {
+    const failure = windowsPathKindHelperUnavailable("the Windows folder classifier did not answer");
+    setWindowsDriveQueryForTest(() => { throw failure; });
+    expect(() => admitObligations({ purpose: "sandbox-config", principal: "srt-sandbox", rows: [deny(String.raw`Q:\alice`)] })).toThrow(failure);
     setWindowsDriveQueryForTest(() => { throw new TypeError("drive query contract"); });
     expect(() => admitObligations({ purpose: "sandbox-config", principal: "srt-sandbox", rows: [deny(String.raw`Q:\alice`)] })).toThrow("drive query contract");
   });
