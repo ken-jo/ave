@@ -366,6 +366,57 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     });
   });
 
+  describe("single Windows grant expansion", () => {
+    let profile: string;
+    let match: string;
+
+    beforeEach(() => {
+      profile = join(scratch(), "alice", "a$$b");
+      match = join(profile, "ab.stamp-fixture");
+      mkdirSync(profile, { recursive: true });
+      writeFileSync(match, "");
+      vi.stubEnv("USERPROFILE", profile);
+      vi.stubEnv("HOME", profile);
+    });
+
+    it.each(homeRefs)("pins and enumerates %s from one expansion", async homeRef => {
+      const spelling = await import("../sandbox-path-spelling.js");
+      const facts = await import("../../shared/windows-path-facts.js");
+      const { buildSandboxConfig } = await import("../asrt-sandbox.js");
+      const expand = vi.spyOn(spelling, "expandWindowsEnvRefs");
+      const pin = vi.spyOn(facts, "pinWindowsPaths");
+      const enumerate = vi.mocked(expandWindowsFsPaths).mockClear();
+      const tail = "\\[ab]*?.stamp-fixture";
+      const request = homeRef + tail;
+
+      const config = buildSandboxConfig({ allowWrite: [request] });
+
+      expect(pin).toHaveBeenNthCalledWith(1, [profile]);
+      expect(enumerate).toHaveBeenCalledWith([profile + tail], { mode: "deny" });
+      expect(runtimeAllowWrite(config.filesystem)).toContain(match);
+      expect(expand.mock.calls.filter(([path]) => path === request)).toHaveLength(1);
+    });
+
+    it.each(homeRefs)("checks the original %s base after enumeration", async homeRef => {
+      const { buildSandboxConfig } = await import("../asrt-sandbox.js");
+      const request = homeRef + "\\*.stamp-fixture";
+      const machineRoot = join(profile, "machine-root");
+      const alternate = join(scratch(), "bob");
+      vi.stubEnv("ProgramData", machineRoot);
+      expansion.after = () => {
+        expansion.after = undefined;
+        vi.stubEnv("USERPROFILE", alternate);
+        vi.stubEnv("HOME", alternate);
+      };
+      try {
+        expect(() => buildSandboxConfig({ allowWrite: [request] }))
+          .toThrow(`Windows write grant ${request} contains machine root ${machineRoot}`);
+      } finally {
+        expansion.after = undefined;
+      }
+    });
+  });
+
   describe("residual Windows home reference", () => {
     let profile: string;
 
@@ -388,15 +439,15 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       expect(enumerate).not.toHaveBeenCalled();
     });
 
-    it.each(homeRefs)("refuses %s at the write breadth check", async homeRef => {
+    it.each(homeRefs)("refuses %s at write admission before pinning", async homeRef => {
       const stampTargets = await import("../windows-stamp-targets.js");
       const { buildSandboxConfig } = await import("../asrt-sandbox.js");
-      // Isolate the requested breadth check from grant enumeration.
-      vi.spyOn(stampTargets, "pinWindowsFilesystemConfig").mockReturnValue({});
+      const pin = vi.spyOn(stampTargets, "pinWindowsGrantRequests");
       vi.stubEnv("ProgramData", join(profile, "machine-root"));
 
       expect(() => buildSandboxConfig({ allowWrite: [`${homeRef}*`] }))
         .toThrow(/percent sign after expansion/);
+      expect(pin).not.toHaveBeenCalled();
     });
   });
 

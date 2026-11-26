@@ -104,20 +104,32 @@ function windowsStampPrefix(grant: ExpandedWindowsGrant): string {
 
 export function pinWindowsFilesystemConfig<T extends Partial<FilesystemConfig> | undefined>(filesystem: T): T {
   if (process.platform !== "win32" || filesystem === undefined) return filesystem;
-  const prefixes: string[] = [];
+  return { ...filesystem, ...pinWindowsGrantRequests(expandWindowsGrantRequests(filesystem)) };
+}
+
+export interface WindowsGrantRequests {
+  readonly allowRead: readonly ExpandedWindowsGrant[];
+  readonly allowWrite: readonly ExpandedWindowsGrant[];
+}
+
+export function expandWindowsGrantRequests(filesystem: Partial<FilesystemConfig>): WindowsGrantRequests {
   // Deny rows are conservative match expressions, not targets receiving allow ACEs.
-  const grants = [filesystem.allowRead, filesystem.allowWrite].map(entries => (entries ?? []).map(entry => {
-    const expanded = expandWindowsGrantPath(entry);
-    prefixes.push(windowsStampPrefix(expanded));
-    return expanded.entry;
-  }));
+  return {
+    allowRead: (filesystem.allowRead ?? []).map(expandWindowsGrantPath),
+    allowWrite: (filesystem.allowWrite ?? []).map(expandWindowsGrantPath),
+  };
+}
+
+export function pinWindowsGrantRequests(requests: WindowsGrantRequests): Pick<FilesystemConfig, "allowRead" | "allowWrite"> {
+  const grants = [requests.allowRead, requests.allowWrite];
+  const prefixes = grants.flatMap(entries => entries.map(windowsStampPrefix));
   if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets(prefixes);
   const prefixPins = pinWindowsGrantTargets(prefixes, { allowMissing: true, validatePath: assertPlainWindowsStampPath });
   const prefixPaths = prefixPins.map(pin => stripExtendedPathPrefix(pin.canonical!));
   if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets(prefixPaths);
   const prefixLiterals = guardedStampLiterals(prefixPaths, prefixPins);
   // Retain match spellings during expansion so every possible grant identity is checked.
-  const lists = grants.map(entries => entries.flatMap(entry => expandWindowsFsPaths([entry], { mode: "deny" }))
+  const lists = grants.map(entries => entries.flatMap(({ entry }) => expandWindowsFsPaths([entry], { mode: "deny" }))
       .map(path => path.replace(/\//g, "\\")));
   for (const entry of prefixLiterals) if (typeof entry !== "string") void entry.path;
   const snapshots = pinWindowsGrantTargets(lists.flat(), { allowMissing: true, validatePath: assertPlainWindowsStampPath });
@@ -134,7 +146,6 @@ export function pinWindowsFilesystemConfig<T extends Partial<FilesystemConfig> |
       return entries;
     });
   return {
-    ...filesystem,
     allowRead: pin(lists[0]!),
     allowWrite: pin(lists[1]!),
   };
