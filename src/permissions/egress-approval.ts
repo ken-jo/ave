@@ -11,7 +11,6 @@ import { isIP } from "node:net";
 import { canonicalRuleSpecifier } from "./rules/rule-specifier.js";
 import {
   admitApprovalAnswer,
-  isHostApprovalRejectedDecision,
   isHostApprovalTimeoutDecision,
   type ApprovalGate,
 } from "./approval-gate.js";
@@ -158,8 +157,9 @@ export function createApprovalGateEgressRequester(
       ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
       ...(request.abortSignal === undefined ? {} : { abortSignal: request.abortSignal }),
     }, card));
+    let answer;
     try {
-      admitApprovalAnswer(decision, { requestId, toolName, toolUseId: undefined });
+      answer = admitApprovalAnswer(decision, { requestId, toolName, toolUseId: undefined });
     } catch (error) {
       return { allow: false, reason: errorMessage(error), recheckRefusal: { kind: "recheck-failed" } };
     }
@@ -183,16 +183,8 @@ export function createApprovalGateEgressRequester(
       }
       return { allow: true, scope: decision.egressScope, ...(forced ? { oneConnection: true as const } : {}) };
     }
-    const timedOut = Boolean(isHostApprovalTimeoutDecision(decision));
-    const rejected = Boolean(isHostApprovalRejectedDecision(decision));
-    return {
-      allow: false,
-      reason: timedOut
-        ? EGRESS_APPROVAL_DENY_REASONS.timeout
-        : rejected
-          ? EGRESS_APPROVAL_DENY_REASONS.rejected
-          : EGRESS_APPROVAL_DENY_REASONS.denied,
-      ...(!timedOut && !rejected && decision.choice.startsWith("deny") ? { humanDenied: true as const } : {}),
-    };
+    if (isHostApprovalTimeoutDecision(decision)) return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.timeout };
+    if (answer?.decision === "deny") return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied, humanDenied: true };
+    return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected };
   };
 }

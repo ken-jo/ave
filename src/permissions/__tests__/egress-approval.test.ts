@@ -405,8 +405,8 @@ describe("shell egress uses the common decision pipeline", () => {
     permissionManager.setMode("allow");
     const check = vi.spyOn(permissionManager, "checkDetailed");
     const review = vi.spyOn(permissionManager, "dispatchReviewer");
-    const gate = { requestAndWait: vi.fn(async () => ({ requestId: "terminal", choice: "deny-once" as const })) };
-    await expect(createRequester(gate, permissionManager)(terminalRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied, humanDenied: true });
+    const gate = { requestAndWait: vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "deny-once" as const })) };
+    await expect(createRequester(gate, permissionManager)(terminalRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
     expect(check).not.toHaveBeenCalled();
     expect(review).not.toHaveBeenCalled();
     expect(gate.requestAndWait).toHaveBeenCalledOnce();
@@ -425,13 +425,13 @@ describe("shell egress human fallback termination", () => {
     expect(gate.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ ownerUnattended: true }));
   });
 
-  it("reports a deny-always answer as the user's deny although its saved rule moves the policy epoch", async () => {
+  it("reports a recordless shell deny as a host refusal when the policy epoch changes", async () => {
     const before = permissionManager.getPolicyEpoch();
     const gate = { requestAndWait: vi.fn(async (request: ApprovalRequestInput) => {
       permissionManager.setRules([{ pattern: "Network(github.com:443)", action: "deny" }]);
       return { requestId: request.id, choice: "deny-once" as const };
     }) };
-    await expect(createRequester(gate, permissionManager)(egressRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied, humanDenied: true });
+    await expect(createRequester(gate, permissionManager)(egressRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
     expect(permissionManager.getPolicyEpoch()).not.toBe(before);
   });
 

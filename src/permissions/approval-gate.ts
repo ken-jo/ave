@@ -517,8 +517,8 @@ export interface ExpectedApprovalAnswer {
 
 /** Admit the decision a card's ask returned, before anything judges, saves or acts on it. An answer the gate recorded must be
  * the answer to this request, for this action and this call, in the direction the decision states. A deny without a record is
- * the host's own refusal and passes; an allow without one breaks the gate's contract. */
-export function admitApprovalAnswer(decision: ApprovalDecision, expected: ExpectedApprovalAnswer): void {
+ * the host's own refusal and passes without a receipt; an allow without one breaks the gate's contract. */
+export function admitApprovalAnswer(decision: ApprovalDecision, expected: ExpectedApprovalAnswer): AnsweredRecord | undefined {
   const handle = answeredDecisionHandles.get(decision);
   if (handle === undefined) {
     if (decision.choice.startsWith("allow")) throw new ApprovalReceiptError("approval: an answered decision carries no record of who answered");
@@ -531,6 +531,7 @@ export function admitApprovalAnswer(decision: ApprovalDecision, expected: Expect
   if (record.requestId !== expected.requestId || decision.requestId !== expected.requestId || record.choice !== decision.choice) {
     throw new ApprovalReceiptError("Approval answer does not match the pending request");
   }
+  return record;
 }
 
 /** The gate's handle for a decision a caller is treating as answered. A missing handle breaks the gate's contract. */
