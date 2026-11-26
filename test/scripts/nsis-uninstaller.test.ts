@@ -72,6 +72,15 @@ describe("machine uninstaller removal", () => {
     expect(gate).toMatch(/updater uninstall preserves activation/);
   });
 
+  it("records per-profile registration as a release limit of the pinned runtime", () => {
+    const checklist = readRepoFile("docs/references/production-release-checklist.md");
+    const gate = checklist.split("### All-profile toast cleanup\n")[1]?.split("\n##")[0];
+    expect(gate).toContain("Release limit — per-profile toast registration");
+    expect(gate).toMatch(/v45\.3\.4.*windows_toast_activator\.cc:310–321/);
+    expect(gate).toMatch(/`EnsureShortcut\(\);` and `EnsureCLSIDRegistry\(\);` under\s+`if \(!is_packaged\)`/);
+    expect(gate).toMatch(/condition uses\s+OS package identity/);
+  });
+
   it("keeps notification cleanup behind the update guards and in the invoking profile", () => {
     const uninstall = hook.split("!macro customUnInstall\n")[1].split("!macroend")[0];
     const updaterGuards = [

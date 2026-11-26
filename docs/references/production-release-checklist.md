@@ -193,6 +193,14 @@ distribution requirements are decided.
 
 ### All-profile toast cleanup
 
+**Release limit — per-profile toast registration.** With runtime v45.3.4,
+the NSIS build runs `EnsureShortcut();` and `EnsureCLSIDRegistry();` under
+`if (!is_packaged)` whenever the activator is registered. That condition uses
+OS package identity. The runtime uses the current user's Programs folder and
+HKCU for these calls. The AUMID and CLSID setters select identifiers only.
+Machine entries alone would leave the runtime-created copies in each profile.
+[v45.3.4 `shell/browser/notifications/win/windows_toast_activator.cc:310–321`](https://github.com/electron/electron/blob/v45.3.4/shell/browser/notifications/win/windows_toast_activator.cc#L310-L321)
+
 Genuine uninstall verifies owned toast artifacts only for the invoking user.
 Other signed-in and signed-out profiles can retain both the per-user Start Menu
 notification shortcut and the HKCU toast activator CLSID after a per-machine
