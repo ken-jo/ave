@@ -19,21 +19,26 @@ export function expandWindowsGrantPath(entry: FilesystemPathEntry): ExpandedWind
   const tilde = original === "~" || /^~[\\/]/.test(original);
   let prefixEnd = tilde ? 1 : 0;
   let shift = tilde ? home.length - 1 : 0;
-  let hasGlobInExpansion = tilde && containsGlobChars(home);
+  let globExpansionVariable = tilde && containsGlobChars(home) ? "USERPROFILE" : undefined;
   const envExpanded = expandWindowsEnvRefs(original, {
     home,
     onReference(replacement, offset, length) {
       prefixEnd = offset + length;
       shift += replacement.length - length;
-      hasGlobInExpansion ||= containsGlobChars(replacement);
+      if (globExpansionVariable === undefined && containsGlobChars(replacement)) {
+        globExpansionVariable = original.slice(offset + 1, prefixEnd - 1).toUpperCase();
+      }
     },
   });
   const expanded = tilde ? home + envExpanded.slice(1) : envExpanded;
   if (expanded.includes("%")) throw new Error("Windows filesystem grant is not a plain drive path: percent sign after expansion");
   const isPattern = typeof entry === "string" && containsGlobCharsWin(original);
   // The grant walk has no escape for a literal prefix inside a pattern.
-  if (hasGlobInExpansion || (isPattern && containsGlobChars(original.slice(0, prefixEnd)))) {
-    throw new Error(`filesystem-expansion-glob: expanded path cannot be represented literally: ${JSON.stringify(original)}`);
+  if (globExpansionVariable !== undefined) {
+    throw new Error(`filesystem-expansion-glob: ${globExpansionVariable} value contains glob characters. Use the explicit absolute path without a wildcard.`);
+  }
+  if (isPattern && containsGlobChars(original.slice(0, prefixEnd))) {
+    throw new Error("filesystem-expansion-glob: Glob characters appear before a profile reference in the grant. Put the reference before any glob characters.");
   }
   const path = expanded.replace(/\//g, "\\").replace(/^[a-z]:/, drive => drive.toUpperCase());
   return {

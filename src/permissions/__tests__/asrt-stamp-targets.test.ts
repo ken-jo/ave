@@ -312,14 +312,19 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     vi.stubEnv("USERPROFILE", profile);
     vi.stubEnv("HOME", profile);
     for (const path of ["~/leaf", "%USERPROFILE%\\leaf", "%USERPROFILE%\\*.txt"]) {
-      expect(() => pinWindowsFilesystemConfig({ [list]: [path] })).toThrow(/filesystem-expansion-glob/);
+      expect(() => pinWindowsFilesystemConfig({ [list]: [path] })).toThrow(
+        /^filesystem-expansion-glob: USERPROFILE value contains glob characters\. Use the explicit absolute path without a wildcard\.$/,
+      );
     }
   });
 
   const homeRefs = ["%USERPROFILE%", "%HOMEDRIVE%%HOMEPATH%"];
 
   describe.each(["[home]", "a*b", "a?b"])("Windows profile glob characters in %s", component => {
-    it.each(homeRefs)("refuses %s before pinning or enumeration", async homeRef => {
+    it.each([
+      ["%USERPROFILE%", "USERPROFILE"],
+      ["%HOMEDRIVE%%HOMEPATH%", "HOMEPATH"],
+    ])("refuses %s before pinning or enumeration", async (homeRef, variable) => {
       const profile = join(scratch(), "alice", component);
       vi.stubEnv("USERPROFILE", profile);
       vi.stubEnv("HOME", profile);
@@ -329,10 +334,33 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       const enumerate = vi.mocked(expandWindowsFsPaths).mockClear();
 
       expect(() => buildSandboxConfig({ allowWrite: [`${homeRef}\\*`] }))
-        .toThrow(/filesystem-expansion-glob/);
+        .toThrow(new Error(`filesystem-expansion-glob: ${variable} value contains glob characters. Use the explicit absolute path without a wildcard.`));
       expect(pin).not.toHaveBeenCalled();
       expect(enumerate).not.toHaveBeenCalled();
     });
+  });
+
+  it("admits the explicit absolute path when a profile reference introduces brackets", async () => {
+    const profile = join(scratch(), "alice", "[home]");
+    mkdirSync(profile, { recursive: true });
+    const fixture = join(profile, "open.stamp-fixture");
+    writeFileSync(fixture, "");
+    vi.stubEnv("USERPROFILE", profile);
+    const { buildSandboxConfig } = await import("../asrt-sandbox.js");
+
+    expect(() => buildSandboxConfig({ allowWrite: ["%USERPROFILE%\\open.stamp-fixture"] })).toThrow(
+      /^filesystem-expansion-glob: USERPROFILE value contains glob characters\. Use the explicit absolute path without a wildcard\.$/,
+    );
+    expect(runtimeAllowWrite(buildSandboxConfig({ allowWrite: [fixture] }).filesystem)).toContain(fixture);
+  });
+
+  it("explains glob syntax before a Windows profile reference", async () => {
+    vi.stubEnv("USERPROFILE", join(scratch(), "alice"));
+    const { buildSandboxConfig } = await import("../asrt-sandbox.js");
+
+    expect(() => buildSandboxConfig({ allowWrite: ["*\\%USERPROFILE%\\leaf"] })).toThrow(
+      /^filesystem-expansion-glob: Glob characters appear before a profile reference in the grant\. Put the reference before any glob characters\.$/,
+    );
   });
 
   describe.each(["a$&b", "$1$$data"])("literal Windows home component %s", component => {
