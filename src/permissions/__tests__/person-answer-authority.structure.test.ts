@@ -30,7 +30,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 function nameOf(node: ts.Node): string | undefined {
-  if (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) return node.name?.getText();
+  if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isMethodDeclaration(node)) return node.name?.getText();
   if (ts.isVariableDeclaration(node) && node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) return node.name.getText();
   if (ts.isPropertyAssignment(node) && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) return node.name.getText();
   return undefined;
@@ -55,6 +55,13 @@ function nodesMentioning(needle: string): Found[] {
     visit(source, "<module>");
   }
   return found;
+}
+
+function gateReceivesRequest(request: ts.CallExpression, gate?: ts.Expression): boolean {
+  const call = request.parent;
+  return ts.isCallExpression(call) && call.arguments[0] === request &&
+    ts.isPropertyAccessExpression(call.expression) && call.expression.name.getText() === "requestAndWait" &&
+    (gate === undefined || call.expression.expression.getText() === gate.getText());
 }
 
 const policy = { getPolicyEpoch: () => "1:0:0", getPolicyContextEpoch: () => "1" } as unknown as PermissionManager;
@@ -252,7 +259,15 @@ describe("authority from a person's answer", () => {
     const verdicts = calls("personAnswerStands").filter(({ node }) => node.arguments.length === 2);
     expect(saves.map(({ where }) => where).sort()).toEqual(cards.map(({ where }) => where).sort());
     expect(asks.map(({ where }) => where).sort()).toEqual(cards.map(({ where }) => where).sort());
-    expect(cards.map(({ where }) => where)).toContain("permissions/egress-approval.ts#createApprovalGateEgressRequester");
+    expect(cards.map(({ where }) => where).sort()).toEqual([
+      "hooks/hook-command-policy.ts#createHookCommandAuthorizer",
+      "permissions/effect-enforcement.ts#gateMutatingEffect",
+      "permissions/egress-approval.ts#createApprovalGateEgressRequester",
+      "tools/invocation-authorization.ts#authorizeToolInvocation",
+      "tools/invocation-execution.ts#requestLateApproval",
+      "tools/invocation-runner.ts#requestOutOfAllowedDirectoryAccess",
+      "tools/pipeline/user-owned-surface.ts#resolveUserOwnedSurfaceApproval",
+    ]);
     // Only a card open captures a question to judge an answer. The terminal write fence seals and compares an already settled question.
     expect(sites("permissionQuestionOf")).toEqual([
       "permissions/host-terminal-write-authority.ts#issueHostTerminalWriteAuthority",
@@ -271,7 +286,8 @@ describe("authority from a person's answer", () => {
           ts.isBinaryExpression(assignment) && assignment.right.getText() === node.getText()))?.node;
       const cardName = card && (ts.isVariableDeclaration(card) ? card.name.getText() : ts.isBinaryExpression(card) ? card.left.getText() : undefined);
       expect(cardName, where).toBeDefined();
-      expect(asks.some(({ where: scope, node: call }) => scope === where && call.arguments[1]?.getText() === cardName), where).toBe(true);
+      const ask = asks.find(({ where: scope, node: call }) => scope === where && call.arguments[1]?.getText() === cardName);
+      expect(ask !== undefined && gateReceivesRequest(ask.node), where).toBe(true);
       const binding = node.arguments[4]?.getText();
       // Shared use lists still have to declare the sink at their definition.
       const uses = binding?.match(/\buses: (\w+) \}$/)?.[1];
@@ -288,5 +304,16 @@ describe("authority from a person's answer", () => {
     const spends = calls("spendStandingAnswer")
       .filter(({ node }) => node.arguments[1]?.getText() === '"rule-save"').map(({ where }) => where);
     expect(spends).toEqual(["permissions/approval-gate.ts#commitStagedAllowSaves"]);
+  });
+
+  it("passes transformed requests to the receiving gate only through the named adapter", () => {
+    const forwards = nodesMentioning("forwardPendingAnswerRequest")
+      .flatMap(({ node, where }) => ts.isCallExpression(node) && node.expression.getText() === "forwardPendingAnswerRequest"
+        ? [{ node, where }] : []);
+    expect(forwards.map(({ where }) => where)).toEqual(["engine/subagent-runner.ts#wrappedRequestAndWait"]);
+    for (const { node, where } of forwards) {
+      expect(node.arguments.map((arg) => arg.getText()), where).toEqual(["req", "wrapper", "forwarded", "base"]);
+      expect(gateReceivesRequest(node, node.arguments[3]), where).toBe(true);
+    }
   });
 });
