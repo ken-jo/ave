@@ -90,6 +90,21 @@ afterEach(() => {
 });
 
 describe("stage workspace binding", () => {
+  it.skipIf(process.platform === "win32")("propagates ENOENT when a stage disappears during the component walk", () => {
+    const nativeRealpath = realpathSync.native;
+    const realpath = vi.spyOn(realpathSync, "native").mockImplementation((...args) => {
+      const result = nativeRealpath(...args);
+      if (args[0] === sibling) renameSync(sibling, join(runRoot, "moved"));
+      return result;
+    });
+    try {
+      expect(() => bindStageWorkspace(OTHER, sibling)).toThrow(expect.objectContaining({ code: "ENOENT", path: sibling }));
+      expect(boundStageWorkspace(OTHER)).toBeUndefined();
+    } finally {
+      realpath.mockRestore();
+    }
+  });
+
   it.skipIf(process.platform === "win32")("resolves the stage-workspaces home when the matcher is created", () => {
     const next = join(home, "relocated-home");
     const match = createStageWorkspacesMatcher();

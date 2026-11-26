@@ -1,3 +1,4 @@
+import { lstatSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { admitLocalRoute, localFs, matcherMemo, withLocalityDecision } from "../shared/local-path-io.js";
@@ -38,7 +39,7 @@ export function bindStageWorkspace(sessionId: string, workspaceRoot: string): vo
     let cursor = home;
     for (const segment of ["", ...segments]) {
       cursor = join(cursor, segment);
-      const stat = localFs.lstat(admitLocalRoute(cursor).verdict);
+      const stat = process.platform === "win32" ? localFs.lstat(admitLocalRoute(cursor).verdict) : lstatSync(cursor);
       if (!stat?.isDirectory() || stat.isSymbolicLink()) throw refused;
     }
     bindings.set(sessionId, physical);
