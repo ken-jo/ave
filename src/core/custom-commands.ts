@@ -23,10 +23,11 @@ function commandDirectories(projectRoot: string | undefined): Array<{ scope: Cus
   ];
 }
 
-async function readConfined(dir: string, name: string): Promise<string | null> {
+async function readConfined(dir: string, name: string, workspace?: string): Promise<string | null> {
   let canonicalDir: string;
   let canonicalFile: string;
   try {
+    if (workspace !== undefined && !isHostWorkspaceConsumable(workspace)) return null;
     canonicalDir = await realpath(dir);
     canonicalFile = await realpath(join(dir, `${name}.md`));
   } catch {
@@ -35,9 +36,11 @@ async function readConfined(dir: string, name: string): Promise<string | null> {
   if (!canonicalFile.startsWith(`${canonicalDir}${sep}`)) return null;
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
+    if (workspace !== undefined && !isHostWorkspaceConsumable(workspace)) return null;
     handle = await open(canonicalFile, "r");
     const info = await handle.stat();
     if (!info.isFile() || info.size > CUSTOM_COMMAND_MAX_BYTES) return null;
+    if (workspace !== undefined && !isHostWorkspaceConsumable(workspace)) return null;
     return (await handle.readFile("utf8")).replace(/\r\n/g, "\n");
   } catch {
     return null;
@@ -47,8 +50,8 @@ async function readConfined(dir: string, name: string): Promise<string | null> {
 }
 
 /** A user command is one item of the home content trust manifest: one pending review reads as absent. */
-async function readCommand(scope: CustomCommandScope, dir: string, name: string): Promise<string | null> {
-  const raw = await readConfined(dir, name);
+async function readCommand(scope: CustomCommandScope, dir: string, name: string, workspace?: string): Promise<string | null> {
+  const raw = await readConfined(dir, name, workspace);
   if (raw === null || scope !== "user") return raw;
   let entry: ReturnType<typeof readAveHomeEntrySync>;
   try { entry = readAveHomeEntrySync(join(dir, `${name}.md`)); }
@@ -85,20 +88,24 @@ async function commandNames(dir: string): Promise<string[]> {
 }
 
 export async function listCustomCommands(projectRoot: string | undefined): Promise<CustomCommandEntry[]> {
-  const seen = new Set<string>();
-  const entries: CustomCommandEntry[] = [];
+  const entries: Record<CustomCommandScope, CustomCommandEntry[]> = { project: [], user: [] };
   for (const { scope, dir } of commandDirectories(projectRoot)) {
+    const workspace = scope === "project" ? projectRoot : undefined;
     for (const name of (await commandNames(dir)).sort()) {
-      if (seen.has(name)) continue;
-      const raw = await readCommand(scope, dir, name);
+      const raw = await readCommand(scope, dir, name, workspace);
+      if (workspace !== undefined && !isHostWorkspaceConsumable(workspace)) {
+        entries.project.length = 0;
+        break;
+      }
       const definition = raw === null ? null : parseDefinition(name, scope, raw);
       if (!definition) continue;
-      seen.add(name);
       const { body: _body, ...entry } = definition;
-      entries.push(entry);
+      entries[scope].push(entry);
     }
   }
-  return entries;
+  if (projectRoot === undefined || entries.project.length === 0 || !isHostWorkspaceConsumable(projectRoot)) return entries.user;
+  const projectNames = new Set(entries.project.map(entry => entry.name));
+  return [...entries.project, ...entries.user.filter(entry => !projectNames.has(entry.name))];
 }
 
 export async function loadCustomCommand(
@@ -107,7 +114,9 @@ export async function loadCustomCommand(
 ): Promise<CustomCommandDefinition | null> {
   if (!COMMAND_NAME.test(name)) return null;
   for (const { scope, dir } of commandDirectories(projectRoot)) {
-    const raw = await readCommand(scope, dir, name);
+    const workspace = scope === "project" ? projectRoot : undefined;
+    const raw = await readCommand(scope, dir, name, workspace);
+    if (workspace !== undefined && !isHostWorkspaceConsumable(workspace)) continue;
     const definition = raw === null ? null : parseDefinition(name, scope, raw);
     if (definition) return definition;
   }

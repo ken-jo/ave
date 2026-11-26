@@ -699,13 +699,14 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
           bytes += paths.reduce((sum, path) => sum + (file.out[path]?.size ?? 0), 0);
         }
         if (files > limits.files || bytes > limits.bytes) return "seed-too-large";
-        for (const copied of await copySeedFiles(source, target, paths, expect)) seeded[copied.path] = copied.sha256;
+        for (const copied of await copySeedFiles(source, target, paths, expect, input.from === "project")) seeded[copied.path] = copied.sha256;
       }
     } catch {
       return "seed-unreadable";
     } finally {
       await plain?.done();
     }
+    if (root !== undefined && inputs.some(input => input.from === "project") && !isHostWorkspaceConsumable(root)) return "seed-unreadable";
     const entry = file.stages[stage.id];
     if (entry) Object.assign(entry, { ready: true, seeded, outputs: stage.outputs ?? ["**"] });
     writeRunFile(at, file);

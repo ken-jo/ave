@@ -1,3 +1,4 @@
+import { isHostWorkspaceConsumable } from "../shared/host-workspace-gate.js";
 import { discoverHookTrustFiles, HOOKS_CONFIG_FILENAME } from "./hook-config-trust.js";
 import { readLockfile } from "./hook-discovery.js";
 import { disableHook } from "./hook-discovery.js";
@@ -13,6 +14,7 @@ export function createHookTrustValidator(options: {
       if (options.projectRoot && !lockfile?.trustedProjects?.includes(options.projectRoot)) return false;
       if (!lockfile?.hooks.some((entry) => entry.sourceId === options.sourceId
         && entry.fileName === options.fileName && entry.sha256 === options.expectedSha256)) return false;
+      if (options.projectRoot && !isHostWorkspaceConsumable(options.projectRoot)) return false;
       const discovered = discoverHookTrustFiles(options.hooksDir);
       const current = discovered.hooks.find((hook) => hook.fileName === options.fileName);
       if (!current) return false;

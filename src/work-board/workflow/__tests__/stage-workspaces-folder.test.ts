@@ -16,11 +16,15 @@ import { copySeedFiles, isInside, listSeedFiles } from "../workspace-seed.js";
 import { removeLink, removeTree, setPath, stageOf, writeUnder as write } from "./stage-fixtures.js";
 
 /** Files a listing is told of beside the ones on disk: a name the host's file system cannot hold. */
-const listing = vi.hoisted(() => ({ also: undefined as { path: string; size: number }[] | undefined }));
+const listing = vi.hoisted(() => ({
+  also: undefined as { path: string; size: number }[] | undefined,
+  onSelected: undefined as (() => void) | undefined,
+}));
 vi.mock("../workspace-seed.js", async (original) => {
   const real = await original<typeof import("../workspace-seed.js")>();
   const listSeedFiles: typeof real.listSeedFiles = async (...args) => {
     const listed = await real.listSeedFiles(...args);
+    if (listed.ok) listing.onSelected?.();
     return listed.ok && listing.also !== undefined ? { ...listed, files: [...listed.files, ...listing.also] } : listed;
   };
   return { ...real, listSeedFiles };
@@ -117,6 +121,21 @@ describe("folder stage workspaces", () => {
       gate.mockRestore();
     }
     expect(read(await stageRoot(handle, "s2", { inputFiles: [fromProject("src/a.ts")] }), "src/a.ts")).toBe("a\n");
+  });
+
+  it("refuses a project seed when its workspace gate closes after source selection", async () => {
+    const handle = await start(project);
+    let consumable = true;
+    listing.onSelected = () => { consumable = false; };
+    const gate = vi.spyOn(hostWorkspaceGate, "isHostWorkspaceConsumable").mockImplementation(() => consumable);
+    try {
+      expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("src/a.ts")] }), 1)).toEqual({ ok: false, code: "seed-unreadable" });
+      expect(consumable).toBe(false);
+      expect(existsSync(join(handle.runRoot, "s1", "src", "a.ts"))).toBe(false);
+    } finally {
+      gate.mockRestore();
+      listing.onSelected = undefined;
+    }
   });
 
   it("the layout carries no raw path, run id or title, and no stage is named like a host folder", async () => {

@@ -136,6 +136,34 @@ describe("source-bound hook review", () => {
     expect((await manager.runPreToolUse(payload, { cwd: project })).results).toHaveLength(1);
   });
 
+  it("refuses a discovered project hook when the workspace gate closes during approval", async () => {
+    const layout = hookDirLayout(root);
+    const project = join(root, "project");
+    writeExecutableHook(join(project, ".ave", "hooks"), "pre-project.sh");
+    let consumable = true;
+    const authorizeCommand = vi.fn(async () => {
+      await Promise.resolve();
+      consumable = false;
+      return { decision: "allow" as const, reason: "approved" };
+    });
+    const { manager } = await wireHookSystem({ ...layout, policy: openPolicy(), authorizeCommand });
+    const row = listRuntimeHookTrustState(manager, project).active.find((entry) => entry.hookSource === "project");
+    if (!row) throw new Error("Project hook row missing");
+    const request = { sourceId: row.sourceId ?? "project", fileName: row.fileName, expectedSha256: row.sha256 };
+    expect((await reviewRuntimeHookTrust(manager, { ...request, action: "trust-project" }, project)).ok).toBe(true);
+    expect((await reviewRuntimeHookTrust(manager, { ...request, action: "accept" }, project)).ok).toBe(true);
+
+    const gate = vi.spyOn(hostWorkspaceGate, "isHostWorkspaceConsumable").mockImplementation(() => consumable);
+    try {
+      const result = await manager.runPreToolUse({ toolName: "read_file", source: "builtin", category: "read", input: {},
+        sessionId: "project-approval", trustOrigin: "user-keyboard" }, { cwd: project });
+      expect(authorizeCommand).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ decision: "deny", reason: expect.stringContaining("Hook definition changed") });
+    } finally {
+      gate.mockRestore();
+    }
+  });
+
   it("requires project trust before definition enrollment and scopes dispatch to its root", async () => {
     const layout = hookDirLayout(root);
     const project = join(root, "project");
