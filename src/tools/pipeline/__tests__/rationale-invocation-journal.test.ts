@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import {
   existsSync,
   mkdirSync,
@@ -202,7 +203,7 @@ function authorized(
       approvalReasonPrefix: null,
     },
     permission: {
-      decision: "ask",
+      decision: "ask", provenance: RULE_PROVENANCE,
       reason: "Automatic review requires human approval.",
       reasonCode: "reviewer-human-required",
       reviewer: {

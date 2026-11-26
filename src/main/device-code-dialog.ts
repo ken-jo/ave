@@ -1,3 +1,4 @@
+import { approvalPresentationDenial, presentRequiredApproval } from "../permissions/approval-presentation.js";
 import { randomBytes } from "node:crypto";
 import { BrowserWindow, clipboard, session, shell, type BaseWindow } from "electron";
 import type { DeviceCodePresentation, DeviceCodePrompt } from "../auth/oauth-device-code.js";
@@ -75,10 +76,13 @@ footer { border-top: 1px solid #dbe3ef; padding-top: 18px; display: flex; justif
 export function createDeviceCodePresentation(parentWindow: () => BaseWindow | null): DeviceCodePresentation {
   return {
     available: () => {
+      if (approvalPresentationDenial()) return false;
       const parent = parentWindow();
       return parent !== null && !parent.isDestroyed();
     },
     async show(prompt, controller) {
+      const unattended = approvalPresentationDenial();
+      if (unattended) throw new Error(unattended);
       const parent = parentWindow();
       if (!parent || parent.isDestroyed()) {
         throw new Error("Device sign-in needs a person. Authenticate in the desktop app before running unattended; do not retry here.");
@@ -101,13 +105,13 @@ export function createDeviceCodePresentation(parentWindow: () => BaseWindow | nu
       isolatedSession.setPermissionCheckHandler(() => false);
       isolatedSession.setDevicePermissionHandler(() => false);
       isolatedSession.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*", "file://*/*"] }, (_details, callback) => callback({ cancel: true }));
-      const window = new BrowserWindow({
+      const window = presentRequiredApproval(() => new BrowserWindow({
         parent, modal: !isBackgroundE2eRuntime(), show: false, width: 600, height: 470,
         minWidth: 460, minHeight: 430, resizable: true, minimizable: false, maximizable: false,
         title: t("deviceCode.title"), autoHideMenuBar: true,
         webPreferences: { session: isolatedSession, sandbox: true, contextIsolation: true,
           nodeIntegration: false, webviewTag: false, navigateOnDragDrop: false, devTools: false },
-      });
+      }));
       window.setMenu(null);
       markAsAuthOwned(window.webContents);
       let finished = false;

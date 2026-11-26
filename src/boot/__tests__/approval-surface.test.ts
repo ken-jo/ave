@@ -8,6 +8,7 @@ import { ApprovalGate, isHostApprovalRejectedDecision, isHostApprovalTimeoutDeci
 import { approvalSurfaceResolver } from "../approval-surface.js";
 import { makeTestPolicy } from "../../permissions/__tests__/test-helpers.js";
 import { createExtensionStartAsker } from "../../permissions/extension-start-asker.js";
+import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 
 function surfaceFixture() {
   const state = { destroyed: false };
@@ -113,6 +114,33 @@ describe("registered approval surface resolution", () => {
         requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac,
       }, owner.contents);
       await expect(pending).resolves.toMatchObject({ choice: "allow-once" });
+    } finally {
+      gate.disposeAll();
+      updateApprovalSurface({ kind: "release", sessionId });
+    }
+  });
+
+  it("denies a parked project card when its presentation reaches an unattended stage", async () => {
+    vi.useFakeTimers();
+    const owner = surfaceFixture();
+    const window = { webContents: owner.contents, isDestroyed: () => owner.state.destroyed } as MainWindow;
+    const gate = new ApprovalGate(approvalSurfaceResolver(undefined, () => [window]), makeTestPolicy());
+    const sessionId = "pending-project-unattended-presentation";
+    const projectRoot = getDefaultWorkspaceRoot();
+    updateApprovalSurface({ kind: "attach-project", sessionId, project: { itemId: 1, projectRoot } });
+    try {
+      const pending = gate.requestAndWait({ ...request("parked-project-unattended"), sessionId });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(gate.pendingCount).toBe(1);
+      expect(setWorkBoardProjectScope(owner.contents, projectRoot)).toBe(true);
+      turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, () => {
+        gate.reconcileWorkBoardProjectApprovals();
+      });
+
+      expect(owner.contents.send).not.toHaveBeenCalled();
+      expect(gate.listPendingRendererRequests(owner.contents)).toEqual([]);
+      expect(gate.pendingCount).toBe(0);
+      await expect(pending).resolves.toMatchObject({ choice: "deny-once", reasonCode: "unattended-approval-denied" });
     } finally {
       gate.disposeAll();
       updateApprovalSurface({ kind: "release", sessionId });

@@ -1,7 +1,7 @@
 import { ipcRenderer } from "electron";
 import { WORK_APPROVALS, WORK_BOARD } from "../contract/app-contract.js";
 import type { OpenJoinIpcResult } from "../shared/work-board-types.js";
-import type { ScheduleAttachmentInput, ScheduleAttachment, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../shared/workflow-template-types.js";
+import type { ScheduleAttachmentRequest, ScheduleAttachment, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../shared/workflow-template-types.js";
 import { invokeWorkBoardDecision } from "./work-board-decision-intent.js";
 
 export const workBoardApiSurface = {
@@ -13,7 +13,7 @@ export const workBoardApiSurface = {
   draftWorkflowTemplate: async (id: string | null, input: WorkflowTemplateDraftInput) => ipcRenderer.invoke(WORK_BOARD.templateDraft, id, input) as Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>,
   confirmWorkflowTemplate: async (id: string, input: WorkflowTemplateConfirmInput) => invokeWorkBoardDecision(WORK_BOARD.templateConfirm, id, input) as Promise<WorkflowTemplateIpcResult<TemplateVersion>>,
   detachWorkflowTemplateSchedule: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateDetachSchedule, id) as Promise<WorkflowTemplateIpcResult<boolean>>,
-  attachWorkflowTemplateSchedule: async (input: ScheduleAttachmentInput) => ipcRenderer.invoke(WORK_BOARD.templateAttachSchedule, input) as Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>,
+  attachWorkflowTemplateSchedule: async (input: ScheduleAttachmentRequest) => ipcRenderer.invoke(WORK_BOARD.templateAttachSchedule, input) as Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>,
   archiveWorkflowTemplate: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateArchive, id) as Promise<WorkflowTemplateIpcResult<null>>,
   onWorkflowTemplatesChanged: (handler: () => void) => {
     const listener = () => handler();

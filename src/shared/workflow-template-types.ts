@@ -89,6 +89,11 @@ interface WorkflowTemplateDraft extends WorkflowTemplateDraftInput {
   updatedAt: string;
 }
 export interface ScheduleAttachmentInput extends TemplateVersionPin { scheduleId: string }
+/** The pin and scope shown on the local card, plus a new schedule or the routine to reattach. */
+export type ScheduleAttachmentRequest = TemplateVersionPin & { expectedScope: TemplateScope } & (
+  | { scheduleId: string }
+  | { schedule: import("./routines-types.js").RoutineSchedule }
+);
 export interface ScheduleAttachment extends ScheduleAttachmentInput {
   id: string;
   /** Approved project-registry root, canonicalized at authorization; compared exactly. */
@@ -108,7 +113,7 @@ export interface WorkflowTemplateConfirmInput { expectedGraphHash: string; expec
 export type WorkflowTemplateErrorCode =
   | "invalid-input" | "template-not-found" | "unknown-version" | "graph-hash-mismatch"
   | "confirmed-version-immutable" | "stale-draft" | "no-draft" | "template-archived"
-  | "bad-stage-id" | "too-many-entries" | "envelope-refused"
+  | "bad-stage-id" | "too-many-entries" | "envelope-refused" | "not-current-version" | "routine-not-found"
   | "scope-changed" | "project-mismatch" | "scope-not-authorised" | "output-not-declared"
   | "invalid-template-file" | "invalid-template-run" | "schedule-requires-read-only" | "gate-check-unsupported";
 export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; refusals?: EnvelopeRefusal[]; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "storage-error" };

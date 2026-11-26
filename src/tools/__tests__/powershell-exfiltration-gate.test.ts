@@ -31,6 +31,7 @@ import { ToolRegistry } from "../registry.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 let dir: string;
 const HOST_PLATFORM = process.platform;
@@ -64,7 +65,7 @@ async function run(toolName: "bash" | "powershell", command: string, savedGrant?
   if (savedGrant) await pm.addAlwaysAllowedPersist(savedGrant, "write");
   const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "ran", isError: false });
   registry.register(tool);
-  const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
+  const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
   const executor = new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never);
   const [result] = await runWithToolExecutionCwd(dir, () => executor.executeAll(
     [{ id: `floor-${toolName}`, name: toolName, input: { command } }],

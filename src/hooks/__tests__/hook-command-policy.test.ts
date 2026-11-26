@@ -8,6 +8,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, unlinkSync } from "
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -113,7 +114,7 @@ function policy(choice: "allow-once" | "deny-once" = "deny-once") {
   const root = mkdtempSync(join(tmpdir(), "ave-hook-policy-"));
   roots.push(root);
   const permissionManager = new PermissionManager(join(root, "permissions.json"));
-  const requestAndWait = vi.fn(async (_request: ApprovalRequestInput) => ({ requestId: "hook", choice }));
+  const requestAndWait = answeringRequestAndWait<ApprovalRequestInput>(() => ({ requestId: "hook", choice }));
   return { root, permissionManager, requestAndWait,
     authorizeCommand: createHookCommandAuthorizer({ permissionManager, approvalGate: { requestAndWait } }) };
 }
@@ -173,10 +174,10 @@ describe("hook command permission admission", () => {
   it("respects a deny rule added while approval was pending", async () => {
     const p = policy("allow-once");
     p.permissionManager.setMode("strict");
-    p.requestAndWait.mockImplementationOnce(async () => {
+    p.requestAndWait.mockImplementationOnce(answeringRequestAndWait(() => {
       p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "deny" }]);
       return { requestId: "hook", choice: "allow-once" };
-    });
+    }));
     expect(await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }))
       .toMatchObject({ decision: "deny", rawStdout: "", reason: expect.stringContaining("hook command denied") });
   });

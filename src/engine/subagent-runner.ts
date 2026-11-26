@@ -21,6 +21,7 @@ import {
   GUIDE_MAX_CHARS,
 } from "./turn/guidance-limits.js";
 import { createReadToolResultChunkTool } from "../tools/tool-result-chunk.js";
+import { isUnattendedReadTool } from "../tools/base.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { type MemoryManager } from "../memory/memory-manager.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -2327,6 +2328,7 @@ export class SubAgentRunner {
     profileModel: string | undefined;
     /** The parent behind this run, when it has one that could answer for it. `null` leaves the child's approvals on the path they took before tier 2 existed: straight to the user. */
     approvalProvenance: SubAgentApprovalProvenance | null;
+    unattendedStage?: boolean;
   }): {
     childDeps: ConversationLoopDeps;
     grantedScope: PersistedSubAgentToolScope;
@@ -2334,8 +2336,8 @@ export class SubAgentRunner {
     // Build the sub-agent's tool surface. The blocklist (agent_spawn) is stripped on every branch, including `parent-all`, which starts from the full registry and
     // intersects with it. `agent_send` is dropped here and re-registered below, because it is the parent channel rather than a source tool: see SubAgentToolScope.
     const scope = args.toolScope;
-    const exposeAgentSend = args.includeAgentSend === true
-      || (scope.kind === "exactly" && scope.names.includes("agent_send"));
+    const exposeAgentSend = !args.unattendedStage && (args.includeAgentSend === true
+      || (scope.kind === "exactly" && scope.names.includes("agent_send")));
     const allowlist = scope.kind === "parent-all"
       ? null
       : scope.kind === "deny-all"
@@ -2348,9 +2350,15 @@ export class SubAgentRunner {
           .map((tool) => tool.name)
           .filter((name) =>
             !SUB_AGENT_TOOL_BLOCKLIST.has(name) && name !== "agent_send");
-    const scopedRegistry = this.deps.toolRegistry.createScopedView(baseToolNames);
+    const scopedRegistry = this.deps.toolRegistry.createScopedView(args.unattendedStage
+      ? baseToolNames.filter(name => {
+        const tool = this.deps.toolRegistry.findByName(name);
+        return tool !== undefined && isUnattendedReadTool(tool);
+      })
+      : baseToolNames);
     const recoveryTool = createReadToolResultChunkTool();
-    if (scopedRegistry.listAll().length > 0 && !scopedRegistry.findByName(recoveryTool.name)) scopedRegistry.register(recoveryTool);
+    if (scopedRegistry.size > 0 && !scopedRegistry.findByName(recoveryTool.name)
+      && (!args.unattendedStage || isUnattendedReadTool(recoveryTool))) scopedRegistry.register(recoveryTool);
     if (exposeAgentSend) {
       const agentSend = this.deps.toolRegistry.findByName("agent_send");
       if (agentSend) scopedRegistry.register({ ...agentSend, modelVisible: true });
@@ -2368,7 +2376,7 @@ export class SubAgentRunner {
       : undefined;
 
     // Wrap the parent ApprovalGate so approval requests from this sub-agent's tool calls show "[Sub-Agent: <title>]" in their reason text.
-    const wrappedApprovalGate = this.deps.parentDeps.approvalGate
+    const wrappedApprovalGate = !args.unattendedStage && this.deps.parentDeps.approvalGate
       ? makeSubAgentApprovalAdapter(
           this.deps.parentDeps.approvalGate,
           args.title,
@@ -2404,6 +2412,7 @@ export class SubAgentRunner {
       // the main `~/.ave/sessions/` list; the child's saveSession/loadSession (via `self.deps.memoryManager` in run-turn) now target the subagent namespace under the regex-valid childSessionId set by the caller.
       memoryManager: this.deps.subAgentMemoryManager,
       approvalGate: wrappedApprovalGate,
+      ...(args.unattendedStage ? { headless: true, approvalSurface: "unavailable" as const } : {}),
       // Sub-agent runs are fire-and-forget; no post-turn hook chain to keep the parent session unaffected.
       postTurnHookChain: undefined,
       // The child's sessions live in the sub-agent namespace; the parent's predicate scans the window's main loops and must not judge them.
@@ -2614,6 +2623,7 @@ export class SubAgentRunner {
         ...inherited,
         allowExternalHooks: inherited?.allowExternalHooks ?? true,
         remoteControllerAuthority: undefined,
+        ...(input.unattendedStage ? { unattendedStage: true as const, headless: true, approvalSurface: "unavailable" as const, withholdSessionAuthority: true, allowExternalHooks: false } : {}),
       }), () => this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier));
     } finally {
       checkpointChild.release?.();
@@ -2685,6 +2695,7 @@ export class SubAgentRunner {
           title: input.title,
           profileModel: input.profileModel,
           includeAgentSend: true,
+          unattendedStage: input.unattendedStage !== undefined,
           approvalProvenance: buildSubAgentApprovalProvenance({
             childSessionId,
             originSessionId: input.originSessionId,

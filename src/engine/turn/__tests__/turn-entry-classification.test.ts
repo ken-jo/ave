@@ -191,7 +191,7 @@ const CLASSIFIED: Record<string, Classified> = {
     classification: "computed: the plugin HostApi proxy's Reflect.get; plugins reach no turn entry through it",
   },
   "boot/steps/plugin-tool-executor.ts": {
-    sites: { userKeyboardLiteral: 3 },
+    sites: { userKeyboardLiteral: 1 },
     classification: "the trust origin of forced explicit approval cards a person answers; not a turn origin",
   },
   "engine/a2a-agent-message-bus.ts": {
@@ -265,6 +265,10 @@ const CLASSIFIED: Record<string, Classified> = {
   "marketplace/log.ts": {
     sites: { computedCall: 2 },
     classification: "computed: a logger method chosen by level; no turn entry",
+  },
+  "permissions/approval-gate.ts": {
+    sites: { userKeyboardLiteral: 1 },
+    classification: "the trust origin the gate records on a decision the desk window answered; not a turn origin",
   },
   "permissions/manifest-integrity.ts": {
     sites: { computedCall: 2 },

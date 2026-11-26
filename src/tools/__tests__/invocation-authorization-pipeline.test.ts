@@ -1,14 +1,15 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import type { ApprovalDecision } from "../../permissions/approval-gate.js";
 import type { Tool } from "../base.js";
 import { authorizeToolInvocation, type AuthorizationStageContext } from "../invocation-authorization.js";
 import type { InvocationRunnerServices } from "../invocation-services.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 let directory: string;
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "ave-authorization-pipeline-")); });
@@ -26,7 +27,7 @@ function fixture(options: {
 } = {}) {
   const manager = new PermissionManager(join(directory, "permissions.json"));
   manager.setMode(options.mode ?? "allow");
-  const requestAndWait = vi.fn(async (request: { id: string }): Promise<ApprovalDecision> => ({ requestId: request.id, choice: "deny-once" }));
+  const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" }));
   const memorySkip = vi.fn(async () => null);
   const allowsPolicyTransition = vi.fn(() => false);
   const tool: Tool = {
@@ -54,7 +55,7 @@ function fixture(options: {
     meta: { groupId: "pipeline", toolUseId: "inspect", displayOrder: 0 }, approvalPurpose: undefined, auditInput: {}, abortSignal: undefined,
     rationaleResumeContext: undefined, rationaleBatchContext: undefined,
     targetFilePath: undefined, canonicalTargets: [], approvalCacheKey: undefined,
-    executionCwd: directory, auditCurrentToolCall: vi.fn(), auditCurrentPermissionAsk: vi.fn(),
+    executionCwd: directory, auditCurrentToolCall: vi.fn(), auditCancelledToolCall: vi.fn(), auditCurrentPermissionAsk: vi.fn(),
     withHostShellExecutionPlan: (result) => result,
     abortDeps: vi.fn(), returnRationaleResumeBlock: vi.fn(), sessionId: "pipeline", startTime: Date.now(),
     permissionResult: undefined, resolvedPluginOperation: undefined, pluginOperationPrincipal: undefined, linkedTargets: [],
@@ -112,7 +113,7 @@ describe("invocation permission pipeline orchestration", () => {
     context.finalInput = Object.freeze({ path: join(directory, "resource.txt"), content: "unchanged input" });
     requestAndWait.mockImplementation(async (request) => {
       manager.setRules([{ pattern: context.toolUse.name, action: "deny" }]);
-      return { requestId: request.id, choice: "allow-once" };
+      return answeredApprovalDecision({ requestId: request.id, choice: "allow-once" });
     });
     const result = await authorizeToolInvocation(context);
     expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("Permission policy changed") });
@@ -124,7 +125,7 @@ describe("invocation permission pipeline orchestration", () => {
 
   it("carries an exact directory authorization without a second policy check or card", async () => {
     const { context, manager, requestAndWait, memorySkip } = fixture({ category: "write", mode: "strict" });
-    const permission = { decision: "allow" as const, reason: "user approved the exact outside write", };
+    const permission = { decision: "allow" as const, reason: "user approved the exact outside write", provenance: RULE_PROVENANCE };
     context.directoryAuthorization = { permission, humanApproved: true };
     const check = vi.spyOn(manager, "checkDetailed");
     const result = await authorizeToolInvocation(context);
@@ -137,7 +138,7 @@ describe("invocation permission pipeline orchestration", () => {
 
   it("refuses to use directory authorization for a sealed rationale resume", async () => {
     const { context, requestAndWait } = fixture({ category: "write", mode: "strict" });
-    context.directoryAuthorization = { permission: { decision: "allow", reason: "approved exact write", }, humanApproved: true };
+    context.directoryAuthorization = { permission: { decision: "allow", provenance: RULE_PROVENANCE, reason: "approved exact write", }, humanApproved: true };
     context.rationaleResumeContext = {} as NonNullable<typeof context.rationaleResumeContext>;
     const blocked = { tool_use_id: "inspect", content: "resume blocked", is_error: true, durationMs: 0 };
     const refuseResume = vi.fn(async () => blocked);

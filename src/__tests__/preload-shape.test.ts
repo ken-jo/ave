@@ -119,11 +119,15 @@ describe("preload contextBridge world shape lock", () => {
     expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input);
     mockUserActivation.isActive = false; await api.confirmWorkflowTemplate("t", input);
     expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input);
-    const attachment = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily" };
+    const attachment = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily", expectedScope: { kind: "all" as const } };
     mockUserActivation.isActive = true; await api.attachWorkflowTemplateSchedule(attachment);
     expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment);
     mockUserActivation.isActive = false; await api.attachWorkflowTemplateSchedule(attachment);
     expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment);
+    const { scheduleId: _, ...pin } = attachment;
+    const newSchedule = { ...pin, schedule: { at: "2030-01-01T12:00:00Z" } };
+    await api.attachWorkflowTemplateSchedule(newSchedule);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, newSchedule);
     mockUserActivation.isActive = true; await api.detachWorkflowTemplateSchedule("attachment");
     expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateDetachSchedule, "attachment");
     mockUserActivation.isActive = false; await api.detachWorkflowTemplateSchedule("attachment");

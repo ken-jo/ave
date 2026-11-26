@@ -1,4 +1,5 @@
 // Verify token-bucket refill on the executor's own limiter and through public execution.
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ToolExecutor } from "../executor.js";
@@ -71,7 +72,7 @@ describe("rate limiting observable through ToolExecutor.executeAll", () => {
       execute: async () => ({ output: await executeSpy(), isError: false }),
     }));
     const permMgr = new PermissionManager("/tmp/nonexistent-rate-limit.json");
-    permMgr.checkDetailed = () => ({ decision: "allow", reason: "test allow", });
+    permMgr.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "test allow", });
     const executor = new ToolExecutor(
       registry,
       undefined,

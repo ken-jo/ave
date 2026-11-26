@@ -4,7 +4,7 @@ import { isReadOnlyCommand } from "./reviewer/host-risk-inspector.js";
 import { wrapperCommand } from "./rules/shell-prefix-policy.js";
 import { verifiedShellParsed } from "./verified-shell-command.js";
 import { currentHostTerminalTurn } from "../tools/host-terminal-turn.js";
-import { sessionAuthorityWithheld } from "../shared/turn-extension-policy.js";
+import { sessionAuthorityWithheld, turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 import type { HostTerminalCommandScope } from "../tools/terminal-run.js";
 import { isIssuedUserOwnedBrowserScope, type UserOwnedBrowserScope } from "./user-owned-browser-scope.js";
 import { UserOwnedSurfaceStore } from "./user-owned-surface-store.js";
@@ -13,6 +13,8 @@ import { UserOwnedSurfaceReviewError, type UserOwnedSurfaceReviewInput } from ".
 import { runWithCeiling } from "../tools/executor-ceiling.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { isRemoteControllerBoundToSession, isUntaintedToolTrustOrigin } from "../shared/chat-origin.js";
+import type { AnsweredProvenance, DecisionProvenance } from "./approval-gate.js";
+import { HOST_PROVENANCE, RULE_PROVENANCE } from "./decision-provenance.js";
 import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion } from "../shared/shell-rule-version.js";
 
 
@@ -217,6 +219,10 @@ export interface PermissionCheckResult {
     reason: string;
     source: string;
   }>;
+  // Who made this decision; audit rows record it. A step that changes the decision sets it again.
+  provenance: DecisionProvenance;
+  // The answered allow a host refusal overrode; the deny row keeps its answerer beside the host's own origin.
+  answer?: AnsweredProvenance;
 }
 
 export interface PermissionCheckContext {
@@ -1595,6 +1601,13 @@ export class PermissionManager {
   }
 
   private pipelineResult(evidence: PermissionDecisionRequest, context?: HostTerminalPermissionContext): PermissionCheckResult {
+    const unattended = turnExtensionPolicyContext.getStore()?.unattendedStage === true;
+    if (unattended) {
+      // The interim read tier uses Default and has no ambient grants. Keep the existing admission and floor order.
+      const { deny, ask } = evidence.rules ?? {};
+      evidence = { ...evidence, mode: "strict", headless: true, rules: { deny, ask } };
+      if (context) context = { ...context, headless: true, approvalSurface: "unavailable" };
+    }
     const hostTerminalContext = context?.agentBrowser || context?.hostTerminalTurn || context?.userOwnedBrowser || context?.remoteControllerAuthority ? Object.freeze({
       agentBrowser: context.agentBrowser,
       ...(context.hostTerminalTurn ? { hostTerminalTurn: Object.freeze({ ...context.hostTerminalTurn }) } : {}), userOwnedBrowser: context.userOwnedBrowser,
@@ -1632,6 +1645,8 @@ export class PermissionManager {
     });
     const decision = decidePermission(request);
     const result: PermissionCheckResult = {
+      // Nobody able to answer is the host's refusal, not a policy that forbids the action.
+      provenance: decision.reasonCode === "no-approver" ? HOST_PROVENANCE : RULE_PROVENANCE,
       decision: decision.outcome === "sandbox-auto" ? "allow" : decision.outcome === "ask-forced" ? "ask" : decision.outcome,
       reason: decision.reason,
       reasonCode: decision.reasonCode,

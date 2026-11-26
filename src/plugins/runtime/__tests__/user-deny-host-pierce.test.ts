@@ -15,7 +15,7 @@ import { nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch
 import { mxcStagingParentFor } from "../../../__tests__/support/mxc-staging-parent.js";
 import { consumePluginChildInput } from "../../../__tests__/support/plugin-child-input.js";
 import { servePluginChild } from "../../isolation/plugin-child-main.js";
-import { createOutOfProcessPluginFactory } from "../../isolation/out-of-process-plugin.js";
+import { createOutOfProcessPluginFactory, type ChosenSandboxGrant } from "../../isolation/out-of-process-plugin.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../../../permissions/asrt-sandbox.js";
 import type { MxcConfinedChildSpec } from "../../../permissions/confined-child.js";
 import type { PluginRuntime } from "../../runtime.js";
@@ -104,7 +104,7 @@ const admission = { refused: false };
 function routeNative(runtime: PluginRuntime): void {
   const routing = runtime as unknown as {
     importPluginFactoryForLifecycle(...args: unknown[]): Promise<{ createPlugin: unknown; arm: string }>;
-    registerSandboxEnvelope(pluginId: string, paths: readonly string[], pluginRoot: string, pluginDataDir: string): never;
+    registerSandboxEnvelope(pluginId: string, grants: readonly ChosenSandboxGrant[], pluginRoot: string, pluginDataDir: string): never;
   };
   const original = routing.importPluginFactoryForLifecycle.bind(routing);
   vi.spyOn(routing, "importPluginFactoryForLifecycle").mockImplementation(async (...args: unknown[]) => {
@@ -113,7 +113,7 @@ function routeNative(runtime: PluginRuntime): void {
     const createPlugin = createOutOfProcessPluginFactory({
       manifest,
       launch: { kind: "entry", entryPath: source.resolvedEntryPath },
-      registerSandboxEnvelope: (paths, pluginRoot, pluginDataDir) => routing.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
+      registerSandboxEnvelope: (grants, pluginRoot, pluginDataDir) => routing.registerSandboxEnvelope(manifest.id, grants, pluginRoot, pluginDataDir),
       // The production launch's ownership: the envelope's writes beside the synthetic staging root.
       prepareMxcChild: async (intent) => {
         if (admission.refused) throw new Error("native child admission refused");

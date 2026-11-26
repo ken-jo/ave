@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 // Round budgets stop incomplete work; frozen tool scope and depth guards constrain child authority.
@@ -15,6 +16,10 @@ import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { createReadToolResultChunkTool } from "../../tools/tool-result-chunk.js";
+import { ReadFileTool } from "../../tools/file-tools.js";
+import { sessionAuthorityWithheld } from "../../shared/turn-extension-policy.js";
+import { BROWSER_TOOL } from "../../shared/browser-tools.js";
+import { workBoardOriginSessionId } from "../../shared/work-board-types.js";
 import { makeSubagentLoopDeps as buildLoopDeps, patchLoopProvider } from "./support/subagent-loop-fixtures.js";
 import {
   SubAgentRunner,
@@ -67,6 +72,7 @@ import { authorizationRequiredStateForOutput } from "../../shared/authorization-
 import { SkillOverlay } from "../../main/skill-overlay.js";
 import { checkpointFileMutation, restoreCodeCheckpoint, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import type { LoadedSkill } from "../../main/skill-store.js";
+import { t } from "../../i18n/index.js";
 
 const SUBSCRIPTION_SELECTION = { kind: "subscription", provider: "codex" } as const;
 
@@ -304,6 +310,89 @@ describe("SubAgentRunner checkpoint child lifetime", () => {
 });
 
 describe("SubAgentRunner — authorization terminal propagation", () => {
+  it.each([
+    { name: "web_search", flags: { arbitraryEgress: true }, input: { query: "fixture" } },
+    { name: "mcp_resource_read", flags: { requiresMcpScope: true }, input: { serverId: "fixture", uri: "fixture://entry" } },
+    { name: "agent_send", flags: {}, input: { message: "fixture" } },
+    ...Object.values(BROWSER_TOOL).map(name => ({ name, flags: {}, input: {} })),
+  ])("a scheduled stage refuses an unadvertised $name call by name", async ({ name, flags, input }) => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-unattended-scope-"));
+    const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+    const registry = new ToolRegistry();
+    registry.register(new ReadFileTool());
+    const execute = vi.fn(async () => ({ output: "unexpected execution", isError: false }));
+    registry.register(createDynamicTool({
+      name, ...flags, description: "Instrumented effect", source: "builtin",
+      category: name === "agent_send" ? "meta" : "read",
+      ...(name === "agent_send" ? { decisionOverride: "always-allow-with-audit" as const } : {}),
+      jsonSchema: { type: "object" }, execute,
+    }));
+    const provider = new ScriptedProvider([
+      [{ type: "tool_call", id: "outside-scope", name, input }, { type: "message_complete", stopReason: "tool_use" }],
+      ...endTurnScript("Finished"),
+    ]);
+    const runner = new SubAgentRunner({
+      parentDeps: buildLoopDeps(registry, { permissionManager }), toolRegistry: registry, subAgentMemoryManager: fakeSubAgentMemoryManager(),
+    });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
+    try {
+      await runner.spawn({
+        title: "Scheduled report", instructions: "Read report input", toolScope: exactToolScope(["read_file", name]),
+        projectRoot: dir, originSessionId: workBoardOriginSessionId(97), unattendedStage: { runKey: "report-run", stageId: "read" },
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(provider.observedToolNames[0]).toEqual(["read_file", "read_tool_result_chunk"]);
+      expect(provider.observedMessages[1]).toContainEqual(expect.objectContaining({
+        role: "tool_result", toolUseId: "outside-scope", content: t("be_executor.toolNotFound", { name }), isError: true,
+      }));
+    } finally {
+      hasProviderSpy.mockRestore();
+      refreshProviderSpy.mockRestore();
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it("a scheduled stage denies a secret read without a card when its work item has an open local surface", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-unattended-stage-"));
+    const contents = makeMockWebContents();
+    const gate = new ApprovalGate(contents as never);
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    manager.setMode("allow");
+    const check = vi.spyOn(manager, "checkDetailed");
+    const registry = new ToolRegistry();
+    registry.register(new ReadFileTool());
+    const provider = new ScriptedProvider([
+      [{ type: "tool_call", id: "stage-read", name: "read_file", input: { path: ".env" } }, { type: "message_complete", stopReason: "tool_use" }],
+      ...endTurnScript("Finished"),
+    ]);
+    const runner = new SubAgentRunner({
+      parentDeps: buildLoopDeps(registry, { approvalGate: gate, permissionManager: manager }),
+      toolRegistry: registry, subAgentMemoryManager: fakeSubAgentMemoryManager(),
+    });
+    const origin = workBoardOriginSessionId(97);
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
+    try {
+      await writeFile(join(dir, ".env"), "FIXTURE_VALUE=fixture-private-value");
+      updateApprovalSurface({ kind: "attach", sessionId: origin, surface: contents as never });
+      const result = await runner.spawn({
+        title: "Scheduled report", instructions: "Read report input", toolScope: exactToolScope(["read_file"]),
+        projectRoot: dir, originSessionId: origin, unattendedStage: { runKey: "report-run", stageId: "read" },
+      });
+      expect(check.mock.results.map(call => call.value)).toContainEqual(expect.objectContaining({
+        decision: "deny", pipelineRequest: expect.objectContaining({ mode: "strict", headless: true }),
+      }));
+      expect(sessionAuthorityWithheld(result.childSessionId)).toBe(true);
+      expect(gate.pendingCount).toBe(0);
+      expect(contents.send).not.toHaveBeenCalledWith(IPC_APPROVAL_REQUEST, expect.anything());
+      expect(JSON.stringify(result.entries)).not.toContain("fixture-private-value");
+    } finally {
+      updateApprovalSurface({ kind: "release", sessionId: origin });
+      hasProviderSpy.mockRestore();
+      refreshProviderSpy.mockRestore();
+      await cleanupTmpDir(dir);
+    }
+  });
+
   it("lifts a live child authorization terminal into the spawn result", async () => {
     const toolRegistry = new ToolRegistry();
     const execute = vi.fn(async () => ({ output: "unexpected execution", isError: false }));
@@ -320,7 +409,7 @@ describe("SubAgentRunner — authorization terminal propagation", () => {
       join(permissionDirectory, "permissions.json"),
     );
     permissionManager.checkDetailed = () => ({
-      decision: "ask",
+      decision: "ask", provenance: RULE_PROVENANCE,
       reason: "fixture requires local authorization",
       forceModal: true,
     });

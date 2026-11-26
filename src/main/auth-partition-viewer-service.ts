@@ -1,3 +1,4 @@
+import { approvalPresentationDenial, presentRequiredApproval } from "../permissions/approval-presentation.js";
 import { isBackgroundE2eRuntime, showWindowForRuntime } from "./e2e-window-presentation.js";
 // Reuses the calling plugin’s auth partition without exposing cookies or a host bridge. Enforce manifest domains on navigation and redirects; deny
 // popups and downloads from the credential-bearing session.
@@ -156,6 +157,8 @@ function ensurePartitionSessionGuards(
 export async function openAuthPartitionViewer(
   opts: OpenAuthPartitionViewerOptions,
 ): Promise<void> {
+  const unattended = approvalPresentationDenial();
+  if (unattended) throw new Error(unattended);
   if (!urlMatchesAllowList(opts.url, opts.allowedHosts)) {
     throw new Error(
       `openAuthPartitionViewer: url host is not in the allow-list (got ${safeUrlForLog(opts.url)})`,
@@ -181,7 +184,7 @@ export async function openAuthPartitionViewer(
     throw new Error(`openAuthPartitionViewer: invalid url`);
   }
 
-  const win = new BrowserWindow({
+  const win = presentRequiredApproval(() => new BrowserWindow({
     show: !isBackgroundE2eRuntime(),
     parent: opts.parent ?? undefined,
     width: 1024,
@@ -197,7 +200,7 @@ export async function openAuthPartitionViewer(
       webSecurity: true,
       // Explicit empty preload — no host bridge inside the viewer.
     },
-  });
+  }));
   win.setMenu(null);
   trackViewer(partition, win);
 

@@ -1,10 +1,11 @@
 /** Routes elicitation through host approval; unsupported sampling and roots requests throw. */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import {
   createElicitationResolverFactory,
   type ElicitationApprovalGate,
 } from "../mcp-elicitation-resolver.js";
-import type { ApprovalChoice, ApprovalDecision } from "../../permissions/approval-gate.js";
+import type { ApprovalChoice, ApprovalDecision, ApprovalRequestInput } from "../../permissions/approval-gate.js";
 
 function gateReturning(
   choice: ApprovalChoice,
@@ -15,9 +16,9 @@ function gateReturning(
 } {
   const calls: Array<Record<string, unknown>> = [];
   const gate: ElicitationApprovalGate = {
-    requestAndWait: vi.fn(async (req) => {
+    requestAndWait: answeringRequestAndWait((req: ApprovalRequestInput) => {
       calls.push(req as unknown as Record<string, unknown>);
-      return { requestId: (req as { id: string }).id, choice, ...extras };
+      return { choice, ...extras };
     }),
   };
   return { gate, calls };

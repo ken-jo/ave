@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { BrowserWindow, WebContents } from "electron";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import type { MainWindow } from "../../main-window-host.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserWorkspaceServiceDeps } from "../browser-workspace.js";
@@ -173,11 +174,16 @@ describe("browser workspace desktop composition", () => {
     expect(await native.deps!.promptPermission(request)).toBe(true);
     expect(native.showMessageBox.mock.calls[0]![0]).toBe(window);
     expect(native.showMessageBox.mock.calls[0]![1]).toMatchObject({ defaultId: 0, cancelId: 0, noLink: true });
-    let finish!: (result: { response: number }) => void;
-    native.showMessageBox.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const started = deferred<void>();
+    const answer = deferred<{ response: number }>();
+    native.showMessageBox.mockImplementationOnce(() => {
+      started.resolve();
+      return answer.promise;
+    });
     const pending = native.deps!.promptPermission(request);
+    await started.promise;
     window.visible = false;
-    finish({ response: 1 });
+    answer.resolve({ response: 1 });
     expect(await pending).toBe(false);
     expect(await native.deps!.promptPermission(request)).toBe(false);
   });
@@ -285,4 +291,16 @@ describe("native popup desktop controls", () => {
     await vi.advanceTimersByTimeAsync(750);
     await expect(selected).resolves.toEqual({ ok: false, error: "native-operation-failed" });
   });
+});
+
+it("refuses an unattended browser popup permission before showing the native dialog", async () => {
+  const { turnExtensionPolicyContext } = await import("../../../shared/turn-extension-policy.js");
+  owner();
+  getBrowserWorkspaceService();
+  const request = { windowId: 1, guestId: 7, origin: "https://site.example", permissions: ["camera" as const] };
+  const deps = native.deps;
+  if (!deps) throw new Error("Browser workspace was not initialized");
+  await expect(turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, () =>
+    deps.promptPermission(request))).resolves.toBe(false);
+  expect(native.showMessageBox).not.toHaveBeenCalled();
 });

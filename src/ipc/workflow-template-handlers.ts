@@ -6,9 +6,11 @@ import type { IpcDeps } from "./types.js";
 import { WORK_BOARD } from "../shared/ipc-channels.js";
 import { securitySettingsGestures } from "./security-settings-gesture.js";
 import { isWorkflowTemplateProposalId } from "../shared/workflow-template-types.js";
-import { hasTemplateKeys, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
+import { attachmentScopeMatches, hasTemplateKeys, isGraphHash, isTemplateId, isTemplateScope, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { resolveAuthorizedWorkspaceProject } from "../main/project-root-authorization.js";
-import type { ScheduleAttachmentInput, TemplateScope, WorkflowTemplateConfirmInput, WorkflowTemplateIpcResult } from "../shared/workflow-template-types.js";
+import { isRoutineScheduleShape } from "../routines/schedule-advance.js";
+import type { RoutineSchedule } from "../shared/routines-types.js";
+import type { TemplateScope, WorkflowTemplateConfirmInput, WorkflowTemplateIpcResult } from "../shared/workflow-template-types.js";
 
 export function registerWorkflowTemplateHandlers(
   deps: IpcDeps,
@@ -43,7 +45,7 @@ export function registerWorkflowTemplateHandlers(
       if (!validateHostRendererSender(event)) { auditUnauthorized(deps.auditLogger, channel, event); return { ...UNAUTHORIZED_FRAME, ok: false }; }
       if (!store) return { ok: false, error: "no-store" };
       try { return { ok: true, value: await action(store, event, ...args) }; }
-      catch (error) { return { ok: false, ...(error instanceof WorkflowTemplateError && error.refusals ? { refusals: error.refusals } : {}), error: error instanceof WorkflowTemplateError || error instanceof TemplateGestureError || error instanceof TemplateFrameError ? error.code : "storage-error" }; }
+      catch (error) { return { ok: false, ...(error instanceof WorkflowTemplateError && error.refusals ? { refusals: error.refusals } : {}), error: error instanceof WorkflowTemplateError || error instanceof TemplateGestureError || error instanceof TemplateFrameError || error instanceof TemplateStoreUnavailableError ? error.code : "storage-error" }; }
     });
   };
   handle(WORK_BOARD.templateList, async (store, _event, ...args) => {
@@ -72,18 +74,48 @@ export function registerWorkflowTemplateHandlers(
     }
   };
   handle(WORK_BOARD.templateAttachSchedule, async (store, event, raw, ...args) => {
-    requireTemplate(args.length === 0 && hasTemplateKeys(raw, ["templateId", "version", "graphHash", "scheduleId"]) && isTemplateId(raw.templateId) && isTemplateVersion(raw.version) && isGraphHash(raw.graphHash) && isTemplateId(raw.scheduleId));
+    requireTemplate(args.length === 0 && hasTemplateKeys(raw, ["templateId", "version", "graphHash", "expectedScope", "scheduleId", "schedule"])
+      && isTemplateId(raw.templateId) && isTemplateVersion(raw.version) && isGraphHash(raw.graphHash) && isTemplateScope(raw.expectedScope));
+    const { templateId, version, graphHash, expectedScope, scheduleId, schedule } = raw;
+    requireTemplate(scheduleId === undefined ? isAttachmentSchedule(schedule) : isTemplateId(scheduleId) && schedule === undefined);
     requireOwnerFrame(event, WORK_BOARD.templateAttachSchedule);
     if (!securitySettingsGestures.consume(event.sender, { channel: WORK_BOARD.templateAttachSchedule, payload: raw })) throw new TemplateGestureError();
-    const record = await store.get(raw.templateId);
+    const routines = deps.routinesStore;
+    if (!routines) throw new TemplateStoreUnavailableError();
+    const record = await store.get(templateId);
+    requireTemplate(record.template.currentVersion === version, "not-current-version");
     let approvedScope = record.template.scope;
     if (approvedScope.kind === "project") {
       const resolved = resolveAuthorizedWorkspaceProject(approvedScope.projectRoot);
       requireTemplate(resolved.authorized && resolved.project, "scope-not-authorised");
       approvedScope = { kind: "project", projectRoot: resolved.project.projectRoot };
     }
+    requireTemplate(attachmentScopeMatches({ approvedScope: expectedScope }, { scope: approvedScope }).ok, "scope-changed");
     const proof = mintHostDecisionProof("local-desktop");
-    const result = await store.attachSchedule(raw as unknown as ScheduleAttachmentInput, proof, approvedScope);
+    const created = scheduleId === undefined ? await routines.add({
+      trigger: "schedule", execution: "template-run", schedule: schedule as RoutineSchedule,
+      title: record.template.name, ...(approvedScope.kind === "project" ? { projectRoot: approvedScope.projectRoot } : {}),
+      createdBy: "user",
+    }, proof) : undefined;
+    const id = created?.id ?? scheduleId;
+    requireTemplate(typeof id === "string");
+    const result = await routines.withTemplateSchedule(id, async (remove) => {
+      requireTemplate(routines.list().some(routine => routine.id === id && routine.execution === "template-run"), "routine-not-found");
+      try {
+        return await routines.writeTemplateAttachment(id, approvedScope, () =>
+          store.attachSchedule({ templateId, version, graphHash, scheduleId: id }, proof, approvedScope, { requireCurrent: true }));
+      } catch (error) {
+        if (created) {
+          try { await remove(); }
+          catch {
+            deps.auditLogger.log({ timestamp: proof.decidedAt, sessionId: `work-board:${templateId}`, type: "approval", output: JSON.stringify({
+              event: "template_schedule_cleanup_failed", scheduleId: id, auditId: proof.auditId,
+            }) });
+          }
+        }
+        throw error;
+      }
+    });
     deps.auditLogger.log({ timestamp: result.at, sessionId: `work-board:${result.templateId}`, type: "approval", output: JSON.stringify({ event: "template_schedule_attached", ...result, auditId: proof.auditId }) });
     return result;
   });
@@ -93,9 +125,14 @@ export function registerWorkflowTemplateHandlers(
     if (!securitySettingsGestures.consume(event.sender, { channel: WORK_BOARD.templateDetachSchedule, payload: id })) throw new TemplateGestureError();
     const attachment = await store.getAttachment(id); requireTemplate(attachment, "template-not-found");
     const proof = mintHostDecisionProof("local-desktop");
-    const detached = await store.detachSchedule(id, proof);
-    if (detached) deps.auditLogger.log({ timestamp: proof.decidedAt, sessionId: `work-board:${attachment.templateId}`, type: "approval", output: JSON.stringify({ event: "template_schedule_detached", attachmentId: id, ...proof }) });
-    return detached;
+    const routines = deps.routinesStore;
+    if (!routines) throw new TemplateStoreUnavailableError();
+    return routines.withTemplateSchedule(attachment.scheduleId, async (remove) => {
+      if (!await store.detachSchedule(id, proof)) return false;
+      deps.auditLogger.log({ timestamp: proof.decidedAt, sessionId: `work-board:${attachment.templateId}`, type: "approval", output: JSON.stringify({ event: "template_schedule_detached", attachmentId: id, ...proof }) });
+      await remove();
+      return true;
+    });
   });
   handle(WORK_BOARD.templateConfirm, async (store, event, id, raw, intent, ...args) => {
     requireTemplate(args.length === 0 && isTemplateId(id) && hasTemplateKeys(raw, ["expectedGraphHash", "expectedDraftRevision"]) && isGraphHash(raw.expectedGraphHash) && isTemplateId(raw.expectedDraftRevision));
@@ -115,3 +152,13 @@ export function registerWorkflowTemplateHandlers(
 }
 class TemplateGestureError extends Error { readonly code = "user-gesture-required"; }
 class TemplateFrameError extends Error { readonly code = "unauthorized-frame"; }
+class TemplateStoreUnavailableError extends Error { readonly code = "no-store"; }
+
+function isAttachmentSchedule(value: unknown): value is RoutineSchedule {
+  if (!isRoutineScheduleShape(value)) return false;
+  const { at, repeat } = value;
+  if (!hasTemplateKeys(value, ["at", "repeat"])) return false;
+  if (!repeat) return at !== undefined;
+  if (repeat.kind === "cron") return hasTemplateKeys(repeat, ["kind", "expression"]);
+  return at !== undefined && hasTemplateKeys(repeat, repeat.kind === "interval" ? ["kind", "intervalMs"] : ["kind"]);
+}

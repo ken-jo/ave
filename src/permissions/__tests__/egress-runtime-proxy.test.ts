@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import net, { type AddressInfo, type Socket } from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { configureHostResources } from "../../main/host-resources.js";
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
@@ -9,7 +10,7 @@ import * as aveHome from "../../shared/ave-home.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { SandboxManager, type SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
-import type { ApprovalDecision, ApprovalRequestInput } from "../approval-gate.js";
+import type { ApprovalRequestInput } from "../approval-gate.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../asrt-sandbox.js";
 import { openHostEgressListener } from "../egress-host-listener.js";
 import { openInvocationProxyListener } from "../egress-invocation-listener.js";
@@ -93,8 +94,7 @@ async function startRuntime(answerScope: () => EgressGrantScope = () => "session
   const upstream = await localUpstream();
   const observed: ObservedAsk[] = [];
   // This controlled gate exercises production request conversion and grant storage. It does not stand in for a person's installed-app approval.
-  const requestAndWait = vi.fn(async (request: ApprovalRequestInput): Promise<ApprovalDecision> => ({
-    requestId: request.id,
+  const requestAndWait = answeringRequestAndWait<ApprovalRequestInput>(() => ({
     choice: "allow-once",
     egressScope: answerScope(),
   }));
