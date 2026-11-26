@@ -13,8 +13,6 @@ import type { LLMVendor } from "../../../shared/llm-vendor-defaults.js";
 import { debugLog } from "../../../lib/debug-stream.js";
 import { detectFromStream } from "../../../lib/stream-markers.js";
 import { formatDuration, KOREAN_DURATION_UNITS } from "../../../lib/turn-summary-format.js";
-import { knownModelPricing, resolveModelPricing } from "../../../shared/model-pricing.js";
-import { usePricingOverrides } from "../hooks/use-pricing-overrides.js";
 import { highlightText } from "../utils/html-preview.js";
 import { trustOriginLabel } from "../utils/trust-origin-label.js";
 import { classifyTurnEntries, isTurnStartEntry } from "../utils/classify-turn-entries.js";
@@ -161,7 +159,6 @@ export function TranscriptRenderer({
   const { t } = useTranslation();
   const terminalObservation = useTerminalObservation(currentSessionId, observeTerminal, entries.length);
   const openNativeContextMenu = useNativeContextMenu();
-  const pricingOverrides = usePricingOverrides();
 
   // Cluster fields with explicit inert defaults. These defaults ARE the no-regression contract: forgetting one produces
   // wrong runtime output (footers / actions silently vanish) with no type error.
@@ -767,9 +764,6 @@ export function TranscriptRenderer({
       const summary = summaryByTurnStart?.get(turnStartIdx);
       const summaryVendor = summary?.vendorProvider;
       const hasSubscriptionUsage = (summary?.subscriptionUsage?.length ?? 0) > 0;
-      const summaryPricing = !hasSubscriptionUsage && summary?.vendorProvider && summary.vendorModel
-        ? knownModelPricing(resolveModelPricing(summary.vendorProvider, summary.vendorModel, pricingOverrides))?.rates
-        : undefined;
       // Mutating actions are gated on BOTH (a) not being in a read-only
       // view-mode slice AND (b) the callback being present. Main passes all
       // callbacks + a nullable viewMode → identical to pre-extraction;
@@ -794,7 +788,6 @@ export function TranscriptRenderer({
           <TurnActionBar
             timestamp={entry.kind === "assistant" ? entry.createdAt : undefined}
             turnSummary={showTokenCostBadge || hasSubscriptionUsage ? summary : undefined}
-            pricing={summaryPricing}
             vendor={hasSubscriptionUsage ? undefined : summaryVendor ?? activeVendor}
             isStarred={!!isEntryStarred(idx)}
             copyText={detectFromStream(entry.text || "").cleanedText || undefined}
@@ -847,7 +840,6 @@ export function TranscriptRenderer({
     workGroupsForceOpen,
     processingDisplayLevel,
     entries,
-    pricingOverrides,
     terminalObservation,
   ]);
 

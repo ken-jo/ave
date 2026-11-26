@@ -14,6 +14,7 @@ import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { createWindowsProtectedWriteTargets } from "../../__tests__/support/windows-protected-write-fixture.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { pinWindowsPaths, windowsObjectKey } from "../../shared/windows-path-facts.js";
 import * as evidence from "../../shared/windows-read-deny-evidence.js";
 import * as srtWinIntegrity from "../srt-win-integrity.js";
 import * as denyAcl from "../windows-deny-acl.js";
@@ -143,9 +144,16 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
       provisioned: true, credPresent: true, sid: "S-1-5-21-1001",
     } as ReturnType<typeof runtime.getWindowsSandboxUserStatus>);
     vi.spyOn(runtime, "grantWindowsAcl").mockImplementation(() => {});
-    vi.spyOn(runtime, "revokeWindowsAcl").mockImplementation(({ holderPid }) =>
-      vi.mocked(runtime.grantWindowsAcl).mock.calls.filter(([call]) => call.holderPid === holderPid)
-        .flatMap(([call]) => (call.read ?? []).map(path => ({ path, status: "revoked" as const }))));
+    vi.spyOn(runtime, "revokeWindowsAcl").mockImplementation(({ holderPid }) => {
+      const paths = [...new Set(vi.mocked(runtime.grantWindowsAcl).mock.calls.filter(([call]) => call.holderPid === holderPid)
+        .flatMap(([call]) => call.read ?? []))];
+      const rows = paths.length === 0 ? [] : pinWindowsPaths(paths);
+      return paths.map((path, index) => {
+        const row = rows[index];
+        if (row === undefined) throw new Error("Missing release fixture identity");
+        return { path, status: "revoked", objectIdentity: windowsObjectKey(row) };
+      });
+    });
     vi.spyOn(runtime, "stampWindowsAcl").mockImplementation(() => {});
     vi.mocked(windowsHelpers.stampWindowsAclAsync).mockReset().mockResolvedValue(undefined);
     vi.spyOn(runtime, "restoreWindowsAcl").mockReturnValue([]);

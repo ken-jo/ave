@@ -1,3 +1,5 @@
+import { getLocale, setLocale } from "../../i18n/index.js";
+import { RetiredModelError } from "../llm/retired-model-error.js";
 import { strict as assert } from "node:assert";
 import { systemSubagentRouteIdentity } from "../../shared/system-subagent-model.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -32,6 +34,27 @@ beforeEach(() => {
 });
 
 describe("manualCompact — /compact deadlock guidance (M3 scenarios)", () => {
+  it.each([
+    ["en", "summary-old is retired"],
+    ["ko", "summary-old 모델은 더 이상 제공되지 않습니다"],
+  ] as const)("names the retired summary model in %s", async (locale, notice) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    try {
+      const loop = new ConversationLoop(makeDeps({ memoryManager: makeMemoryManager([
+        { role: "user", content: "question" }, { role: "assistant", content: "answer" },
+      ]) }));
+      await loop.resetAndResume("abe633f3-a47a-4758-874e-abe9160daf36");
+      loop.provider = { vendor: "claude", async *streamTurn() { yield { type: "message_complete", stopReason: "end_turn" }; } };
+      vi.mocked(compactWithBoundary).mockRejectedValueOnce(new RetiredModelError("summary-old"));
+      const result = await loop.manualCompact();
+      expect(result).toMatchObject({ compacted: false, removedMessageCount: 0 });
+      expect(result.summary).toContain(notice);
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
   it("derives the separate summarizer input ceiling from its own endpoint capacity", async () => {
     const history: GenericMessage[] = [{ role: "user", content: "question" }, { role: "assistant", content: "answer" }];
     const llm = structuredClone(DEFAULT_SETTINGS.llm);

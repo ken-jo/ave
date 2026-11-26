@@ -1261,10 +1261,11 @@ listing on its native host no longer names it (never for local, self-hosted, gat
 custom-`baseUrl` or Azure routes; a failed or partial listing proves nothing). Only an
 id the active catalog knows exactly under the vendor's mapped provider can be judged;
 a fine-tune, an account-scoped deployment or a model newer than the snapshot never is. A saved
-selection at one sets the `llm.retiredProvider` marker at settings load
-(`{ vendor, model, reason: "unlisted" }` beside the removed-vendor string), which
-withholds API-key chat and credentials until the user picks — the same flow as a removed
-vendor. **Deprecated:** the active catalog marks it `deprecated` where the route
+selection sets the `llm.retiredProvider` marker when a listing proves it retired,
+including mid-session. The marker withholds API-key chat and credentials until the
+selection or listing resolves the retirement. Every model transport rereads its route's
+retirement evidence at the wire, immediately before each network attempt, so a transport's
+own retry cannot reach a model proven retired. **Deprecated:** the active catalog marks it `deprecated` where the route
 establishes its identity; no marker, chat and credentials keep working, and the window
 shows a non-blocking notice. The listing outranks the catalog. Both tiers are hidden from
 every picker; the host keeps no retired-name list. See [retired models](../design/model-capability-catalog.md#61-retired-models-slice-7-follow-up-owner-direction-2026-10-13).
@@ -1996,6 +1997,10 @@ Preparation, readback and cleanup share one cancellation signal and capture
 deadline. Cleanup attempts to restore the original scroll position and clear any
 temporary viewport override even on cancellation; a still-pending cleanup retains
 guest capture ownership until it settles.
+Each tiled capture composes its tiles in its own supervised child process
+(`browser-capture-stitch-child.js`). A capture that ends with tile work still
+outstanding ends that process, and the guest accepts another screenshot only
+after every outstanding job has settled or the process exit is confirmed.
 Selection verifies the final native value and rejects unsupported controls.
 Native single-select uses a fixed function in an isolated action world on one
 host-resolved main-document object, with only the requested option value as data.
@@ -3979,8 +3984,12 @@ with its own owner rule:
   their counts per step, without paths. A mismatched object's ACE is left as
   it was, so a deny there stays fail-closed, and the next boot's ACL recovery
   handles leftovers.
-  A plugin or worker grant release is judged by the same status sets and exit
-  code. An unconfirmed one seals the session against further confinement until
+  Plugin and worker grant release and rollback require a successful native exit
+  and a cleanup result for every admitted volume serial and file ID. The
+  revoker uses the holder's ledger and locates moved grants by file ID. It
+  reports the identity only after verifying it on the ACL handle, including
+  after relocation. Missing, contradictory, or unverified results seal
+  the session against further confinement until
   the quit reset (in practice, until restart); confined children already
   running are not stopped.
   At the first helper preparation, the Windows sweep also reclaims partial copies

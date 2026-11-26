@@ -15,6 +15,8 @@ import { createLogger } from "../../../lib/logger.js";
 import { sleep } from "../../../shared/abortable-deadline.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { estimateRequestInputProjection } from "../../request-input-projection.js";
+import { noRetirementEvidence } from "../model-wire-gate.js";
+import { RetiredModelError } from "../retired-model-error.js";
 
 const log = createLogger("fallback-chain");
 
@@ -115,10 +117,13 @@ async function* attemptStreamWithRetries(
   label: string,
   identity: { provider: LLMVendor; model: string },
   callbacks?: FallbackCallbacks,
+  getRetiredModelId?: () => string | undefined,
 ): AsyncIterable<StreamEvent> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_PROVIDER; attempt += 1) {
     throwIfAborted(params.abortSignal);
+    const retiredModelId = getRetiredModelId?.();
+    if (retiredModelId !== undefined) throw lastErr ?? new RetiredModelError(retiredModelId);
     const attemptStartedAt = Date.now();
     callbacks?.onStatus?.({
       phase: "attempt",
@@ -133,10 +138,12 @@ async function* attemptStreamWithRetries(
       return;
     } catch (err) {
       throwIfAborted(params.abortSignal);
-      if (isNonRetryable(err)) throw err;
+      // The wire refused a retired model: another attempt on this route can only be refused again.
+      if (err instanceof RetiredModelError || isNonRetryable(err)) throw err;
       lastErr = err;
       await waitForAttemptWindow(attemptStartedAt, err, params.abortSignal);
-      if (attempt >= MAX_ATTEMPTS_PER_PROVIDER) break;
+      // Check before announcing a retry or handing off to the next route.
+      if (getRetiredModelId?.() !== undefined || attempt >= MAX_ATTEMPTS_PER_PROVIDER) break;
       // Audit retries so slow or unstable gateways remain diagnosable.
       log.warn(`retry: ${label} attempt=${attempt + 1}/${MAX_ATTEMPTS_PER_PROVIDER} reason=${errorMessage(err)}`);
       callbacks?.onStatus?.({
@@ -180,6 +187,13 @@ function waitForAttemptWindow(
 // Reuse the injected secret lookup only when constructing a needed fallback.
 export type ApiKeyGetter = (vendor: LLMVendor) => string | Promise<string>;
 export type ProviderFactory = (config: ProviderConfig) => LLMProvider;
+interface RouteRetirementCheck {
+  primaryBaseUrl?: string;
+  primaryPresetId?: string;
+  /** The saved route's blocking marker: it ends the whole walk with the retired reason. */
+  getBlockedModelId?: () => string | undefined;
+  getRetiredModelId: (route: Pick<FallbackChainEntry, "provider" | "model" | "baseUrl"> & { presetId?: string }) => string | undefined;
+}
 
 export class FallbackProvider implements LLMProvider {
   readonly vendor: LLMVendor;
@@ -190,6 +204,7 @@ export class FallbackProvider implements LLMProvider {
     private readonly chain: FallbackChainEntry[],
     private readonly getApiKey: ApiKeyGetter,
     private readonly factory?: ProviderFactory,
+    private readonly retirement?: RouteRetirementCheck,
   ) {
     this.vendor = primary.vendor;
     this.subscriptionRuntime = primary.subscriptionRuntime;
@@ -234,6 +249,7 @@ export class FallbackProvider implements LLMProvider {
       this.getApiKey,
       this.factory,
       callbacks,
+      this.retirement,
     );
   }
 
@@ -249,17 +265,16 @@ export async function* streamWithFallback(
   getApiKey: ApiKeyGetter,
   _createProvider: ProviderFactory = defaultCreateProvider,
   callbacks?: FallbackCallbacks,
+  retirement?: RouteRetirementCheck,
 ): AsyncIterable<StreamEvent> {
   // Construct fallback providers lazily after the primary attempt.
-  const totalAttempts = 1 + chain.length;
-
-  const getAttempt = async (i: number): Promise<{
+  const getAttempt = (entry: FallbackChainEntry | undefined, apiKey: string): {
     provider: LLMProvider;
     label: string;
     identity: { provider: LLMVendor; model: string };
     attemptParams: StreamTurnParams;
-  }> => {
-    if (i === 0) {
+  } => {
+    if (!entry) {
       return {
         provider: primary,
         label: `${primary.vendor}/${params.model}`,
@@ -267,8 +282,6 @@ export async function* streamWithFallback(
         attemptParams: params,
       };
     }
-    const entry = chain[i - 1]!;
-    const apiKey = await getApiKey(entry.provider);
     // Primary route limits and capabilities cannot be carried into fallback models.
     const {
       outputCeiling: _primaryCeiling,
@@ -286,6 +299,9 @@ export async function* streamWithFallback(
         ...(entry.wire ? { wire: entry.wire } : {}),
         ...(entry.vertexProject ? { vertexProject: entry.vertexProject } : {}),
         ...(entry.vertexLocation ? { vertexLocation: entry.vertexLocation } : {}),
+        getRetiredModelId: retirement
+          ? (model) => retirement.getBlockedModelId?.() ?? retirement.getRetiredModelId({ ...entry, model })
+          : noRetirementEvidence,
       }),
       label: `${entry.provider}/${entry.model}`,
       identity: { provider: entry.provider, model: entry.model },
@@ -297,28 +313,61 @@ export async function* streamWithFallback(
     };
   };
 
-  let lastErr: unknown;
-  for (let i = 0; i < totalAttempts; i++) {
-    const { provider, label, identity, attemptParams } = await getAttempt(i);
+  let previousFailure: { label: string; error: unknown } | undefined;
+  const primaryRoute = {
+    provider: primary.vendor,
+    model: params.model,
+    baseUrl: retirement?.primaryBaseUrl,
+    presetId: retirement?.primaryPresetId,
+  };
+  const assertSavedRouteAvailable = () => {
+    const model = retirement?.getBlockedModelId?.();
+    if (model !== undefined) throw new RetiredModelError(model);
+  };
+  for (const entry of [undefined, ...chain]) {
+    throwIfAborted(params.abortSignal);
+    assertSavedRouteAvailable();
+    const getRetiredModelId = retirement
+      ? () => retirement.getBlockedModelId?.() ?? retirement.getRetiredModelId(entry ?? primaryRoute)
+      : undefined;
+    const retiredModelId = getRetiredModelId?.();
+    if (retiredModelId !== undefined) {
+      if (!entry) {
+        previousFailure = {
+          label: `${primary.vendor}/${params.model}`,
+          error: new RetiredModelError(retiredModelId),
+        };
+      }
+      continue;
+    }
+    const apiKey = entry ? await getApiKey(entry.provider) : "";
+    throwIfAborted(params.abortSignal);
+    // Credential lookup can yield while a newer listing is published.
+    assertSavedRouteAvailable();
+    if (entry && getRetiredModelId?.() !== undefined) continue;
+    const { provider, label, identity, attemptParams } = getAttempt(entry, apiKey);
+    if (previousFailure) {
+      const from = previousFailure.label;
+      const reason = errorMessage(previousFailure.error);
+      log.warn(`fallback: ${from}→${label} reason=${reason}`);
+      callbacks?.onFallback?.(from, label);
+      callbacks?.onStatus?.({ phase: "fallback", from, to: label, reason });
+    }
     try {
-      throwIfAborted(params.abortSignal);
-      yield* attemptStreamWithRetries(provider, attemptParams, label, identity, callbacks);
+      yield* attemptStreamWithRetries(provider, attemptParams, label, identity, callbacks, getRetiredModelId);
       return;
     } catch (err) {
       throwIfAborted(params.abortSignal);
+      assertSavedRouteAvailable();
+      // A fallback refused at the wire is skipped like one found retired before selection.
+      if (entry && err instanceof RetiredModelError) continue;
       if (isNonRetryable(err)) throw err;
-      lastErr = err;
-      if (i + 1 >= totalAttempts) break;
-      const nextEntry = chain[i];
-      const nextLabel = nextEntry ? `${nextEntry.provider}/${nextEntry.model}` : "??";
-      const reason = errorMessage(err);
-      const msg = `fallback: ${label}→${nextLabel} reason=${reason}`;
-      log.warn(`${msg}`);
-      callbacks?.onFallback?.(label, nextLabel);
-      callbacks?.onStatus?.({ phase: "fallback", from: label, to: nextLabel, reason });
+      const retiredModelId = entry ? undefined : getRetiredModelId?.();
+      previousFailure = { label, error: retiredModelId === undefined ? err : new RetiredModelError(retiredModelId) };
     }
   }
   // Subscription retries never construct API-key fallbacks; retain the structured event on exhaustion.
+  const lastErr = previousFailure?.error;
   if (primary.subscriptionRuntime && lastErr instanceof RetryableStreamEventError) {
     yield lastErr.event;
     return;

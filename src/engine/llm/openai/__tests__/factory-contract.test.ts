@@ -3,6 +3,7 @@ import type { StreamEvent, StreamTurnParams, ToolSchema } from "../../types.js";
 import { collectAsyncIterable } from "../../../../__tests__/test-helpers.js";
 import { prepareMarkedToolResultsForWire } from "../../../wire-serialize.js";
 import { estimateTokens } from "../../../../shared/token-estimate.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 
 const tools: ToolSchema[] = [{
   name: "read_file",
@@ -65,7 +66,7 @@ describe("provider factory request ownership", () => {
     });
     const { createProvider } = await import("../../provider-factory.js");
     const fetch = vi.fn();
-    const provider = createProvider({ vendor: "openai", apiKey: "fixture-key", baseUrl: "https://api.example.test/v1", fetch });
+    const provider = createProvider({ getRetiredModelId: noRetirementEvidence, vendor: "openai", apiKey: "fixture-key", baseUrl: "https://api.example.test/v1", fetch });
     expect(loaded).not.toHaveBeenCalled();
     const input = request();
     const original = structuredClone(input);

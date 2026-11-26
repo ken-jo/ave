@@ -1,17 +1,131 @@
-/** User corrections are whole prices; otherwise prefer endpoint reports where public identity is unproven, then catalog rates. Unknown and catalog-listed zero never imply free usage. */
+/** User corrections are whole prices. A route that does not establish the catalog model needs its own endpoint report; a recorded request URL decides the route. */
 import type { TokenRateTier, TokenRates, UsageForCost } from "./pricing-data.js";
 import { isPricingOverrideRate, type PricingOverride } from "./pricing-overrides.js";
 import { activeModelCatalog } from "./model-catalog/active.js";
 import { allowsImplicitModelLimits, resolveCatalogKey } from "./model-catalog/resolve.js";
+import { vendorHasCatalogProvider } from "./model-catalog/vendor-models.js";
 import type { CatalogModelCost } from "./model-catalog/types.js";
 import type { LlmModelListPricing } from "./llm-model-list.js";
+import { isLLMVendor, isOpenAICompatiblePresetVendor, OPENAI_COMPATIBLE_VENDOR_PRESETS, type LLMVendor } from "./llm-vendor-defaults.js";
 
 export type ModelPricingSource = "user" | "endpoint-report" | "model-catalog";
+export type UnknownModelPricingReason = "endpoint-price-unavailable" | "legacy-route-unrecorded";
+
+/**
+ * What a request's transport established about where it was served. Decided at dispatch
+ * and carried on the request's usage; it holds no request path, so a credential in a
+ * configured path cannot leave the transport through it.
+ */
+export type ServedRouteEvidence =
+  /**
+   * The response came from the vendor's own API base; `base` is that canonical address.
+   * `configuredBaseId` is present when an endpoint was configured and the response came
+   * from under it.
+   */
+  | { readonly kind: "vendor-native"; readonly base: string; readonly configuredBaseId?: string }
+  /** The response came from under the provider's configured endpoint, named only by a process-keyed id of that setting. */
+  | { readonly kind: "configured-endpoint"; readonly origin: string; readonly configuredBaseId: string }
+  /** Neither could be established: a redirect out of the configured endpoint, or an address nothing configured. */
+  | { readonly kind: "unknown"; readonly origin?: string };
+
+/** The served route as pricing judges it; `base` values come from settings or the canonical table. */
+export type ServedPricingRoute =
+  /** `base` is the endpoint whose model list may price it; absent when another endpoint's setting served. */
+  | { readonly kind: "vendor-native"; readonly base?: string }
+  /** Served by the configured endpoint the route's model list is keyed on. */
+  | { readonly kind: "report-endpoint"; readonly base: string }
+  | { readonly kind: "unknown" };
 
 export interface ModelPricingRoute {
-  /** Implicit catalog pricing requires established route identity. */
+  /** The configured endpoint; absent on a vendor's default route. Projects the route before any request is sent. */
   readonly baseUrl?: string;
   readonly reported?: LlmModelListPricing;
+  /** The address the model list holding `reported` was read from (the cache row's `endpoint`). */
+  readonly reportedAt?: string;
+  /** Dispatch evidence. When present it decides the route and `baseUrl` is not consulted. */
+  readonly served?: ServedPricingRoute;
+}
+
+function parsedUrl(value: string): URL | undefined {
+  try {
+    return new URL(value.trim());
+  } catch {
+    return undefined;
+  }
+}
+
+/** Same origin and the base's path as a whole-segment prefix; the base's query is not part of it. */
+export function urlIsUnderBase(url: string, base: string): boolean {
+  const target = parsedUrl(url);
+  const root = parsedUrl(base);
+  if (target === undefined || root === undefined || target.origin !== root.origin) return false;
+  const prefix = root.pathname.replace(/\/+$/u, "");
+  return target.pathname === prefix || target.pathname.startsWith(`${prefix}/`);
+}
+
+/**
+ * The address discovery reads a base's model list from, as it writes it to the cache row:
+ * `<base>/models`, without a trailing slash, query or fragment. Discovery refuses a base
+ * that embeds credentials, so such a base has no list.
+ */
+function modelListAddress(base: string): string | undefined {
+  const url = parsedUrl(`${base.trim().replace(/\/+$/u, "")}/`);
+  if (url === undefined || (url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) return undefined;
+  const pathname = url.pathname.replace(/\/+$/u, "");
+  url.pathname = pathname.endsWith("/models") ? pathname : `${pathname}/models`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+/** Whether `listedAt` is the model list of `base` itself: the same address, not one beneath it. */
+export function isModelListOfBase(listedAt: string, base: string): boolean {
+  const listed = parsedUrl(listedAt);
+  return listed !== undefined && listed.toString() === modelListAddress(base);
+}
+
+/** The default API base of each first-party SDK; regional hosts serve the same path. */
+const DEFAULT_NATIVE_API_BASES: Partial<Record<LLMVendor, string>> = {
+  openai: "https://api.openai.com/v1",
+  claude: "https://api.anthropic.com/v1",
+  gemini: "https://generativelanguage.googleapis.com/v1beta",
+};
+
+/** Hosts the Vertex SDK builds for a location: global, `<region>-`, and the `eu`/`us` multi-region hosts. */
+const VERTEX_API_HOST = /^(?:[a-z0-9-]+-)?aiplatform\.googleapis\.com$|^aiplatform\.(?:eu|us)\.rep\.googleapis\.com$/u;
+const VERTEX_API_PATH = /^\/v1(?:beta1)?\/(?:projects\/[^/]+\/locations\/[^/]+\/)?publishers\/google(?:\/|$)/u;
+
+/**
+ * The vendor's canonical API base an address is served under, or `undefined`. A vendor's
+ * published price holds only there: the same host can serve other products on other paths.
+ */
+export function vendorNativeBase(vendor: string, address: string): string | undefined {
+  const url = parsedUrl(address);
+  if (url === undefined || !isLLMVendor(vendor)) return undefined;
+  if (isOpenAICompatiblePresetVendor(vendor)) {
+    const preset = parsedUrl(OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].baseUrl);
+    if (preset === undefined) return undefined;
+    const base = `${preset.origin}${preset.pathname.replace(/\/+$/u, "")}`;
+    return urlIsUnderBase(url.href, base) ? base : undefined;
+  }
+  if (url.protocol !== "https:" || url.port !== "") return undefined;
+  if (vendor === "vertex-ai") {
+    const version = VERTEX_API_HOST.test(url.hostname) ? VERTEX_API_PATH.exec(url.pathname) : null;
+    return version ? `${url.origin}/${url.pathname.split("/")[1]}` : undefined;
+  }
+  const standard = DEFAULT_NATIVE_API_BASES[vendor];
+  // The host rule is the shared one; the path is what narrows a host to the vendor's API.
+  if (standard === undefined || !allowsImplicitModelLimits(vendor, url.origin)) return undefined;
+  const base = `${url.origin}${new URL(standard).pathname}`;
+  return urlIsUnderBase(url.href, base) ? base : undefined;
+}
+
+/** The address a route with no configured endpoint lists its models from. */
+export function vendorDefaultApiBase(vendor: string): string | undefined {
+  if (!isLLMVendor(vendor)) return undefined;
+  return isOpenAICompatiblePresetVendor(vendor)
+    ? OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].baseUrl
+    : DEFAULT_NATIVE_API_BASES[vendor];
 }
 
 /** Read persisted legacy price provenance unchanged; new resolution never emits that source. */
@@ -26,11 +140,14 @@ export type ResolvedModelPricing<Source extends RecordedModelPricingSource = Mod
     }
   | {
       readonly source: "unknown";
+      readonly reason?: UnknownModelPricingReason;
       /** The catalog entry that lists the model at zero, when one does: listed, not free. */
       readonly catalogListsZero?: string;
     };
 
 export type RecordedModelPricing = ResolvedModelPricing<RecordedModelPricingSource>;
+
+export const LEGACY_ROUTE_UNRECORDED = { source: "unknown", reason: "legacy-route-unrecorded" } as const;
 
 export type KnownModelPricing = Extract<RecordedModelPricing, { rates: TokenRates }>;
 
@@ -40,6 +157,18 @@ export interface ModelUsageSegment<Vendor extends string = string> {
   tokenUsage: UsageForCost;
   /** Absent only for records predating captured request prices. */
   pricing?: RecordedModelPricing;
+}
+
+/** Older segments can use the primary snapshot when both recorded route labels match. */
+export function recordedUsageSegmentPricing(
+  segment: Pick<ModelUsageSegment, "vendorProvider" | "vendorModel" | "pricing">,
+  primary: { vendorProvider?: string; vendorModel?: string; pricing?: RecordedModelPricing },
+): RecordedModelPricing | undefined {
+  if (segment.pricing !== undefined) return parseResolvedModelPricing(segment.pricing);
+  if (primary.vendorProvider === segment.vendorProvider && primary.vendorModel === segment.vendorModel) {
+    return primary.pricing;
+  }
+  return undefined;
 }
 
 const OPTIONAL_TOKEN_RATE_FIELDS = ["cacheReadPer1M", "cacheWritePer1M", "reasoningPer1M"] as const;
@@ -54,13 +183,14 @@ function recordedSurchargeTier(raw: Record<string, unknown>, rates: TokenRates):
   if (threshold === undefined) return undefined;
   if (!isPricingOverrideRate(threshold) || !isPricingOverrideRate(inputMultiplier) || !isPricingOverrideRate(outputMultiplier)) return null;
   if (rates.reasoningPer1M !== undefined && outputMultiplier !== 1) return null;
-  return {
+  const tier = {
     afterInputTokens: threshold,
     inputPer1M: rates.inputPer1M * inputMultiplier,
     outputPer1M: rates.outputPer1M * outputMultiplier,
     cacheReadPer1M: (rates.cacheReadPer1M ?? rates.inputPer1M) * inputMultiplier,
     cacheWritePer1M: (rates.cacheWritePer1M ?? rates.inputPer1M) * inputMultiplier,
   };
+  return OPTIONAL_TIER_RATE_FIELDS.every((key) => isPricingOverrideRate(tier[key])) ? tier : null;
 }
 
 /** Validate every numeric field before copying IPC or persisted price snapshots. */
@@ -70,6 +200,8 @@ export function parseResolvedModelPricing(value: unknown): RecordedModelPricing 
   if (obj.source === "unknown") {
     return {
       source: "unknown",
+      ...(obj.reason === "endpoint-price-unavailable" || obj.reason === "legacy-route-unrecorded"
+        ? { reason: obj.reason } : {}),
       ...(typeof obj.catalogListsZero === "string" ? { catalogListsZero: obj.catalogListsZero } : {}),
     };
   }
@@ -137,18 +269,39 @@ export function resolveModelPricing(
       },
     };
   }
+  const served = route?.served;
+  const routeEstablishesModel = served !== undefined
+    ? served.kind === "vendor-native"
+    : allowsImplicitModelLimits(vendor, route?.baseUrl);
+  const needsEndpointPrice = !routeEstablishesModel
+    || (route !== undefined && (!isLLMVendor(vendor) || !vendorHasCatalogProvider(vendor)));
+  // A report prices only the endpoint that listed it: its list must have been read at the
+  // model-list address of the base that served, or before dispatch of the base the route
+  // projects. A list from beneath that base (another tenant's path) is not that base's
+  // list. A list filed under one endpoint but read from another is kept for everything
+  // else and is simply not price evidence.
+  const reportBase = served === undefined
+    ? route?.baseUrl?.trim() || vendorDefaultApiBase(vendor)
+    : served.kind === "unknown" ? undefined : served.base;
+  const reportApplies = route?.reportedAt !== undefined && reportBase !== undefined && isModelListOfBase(route.reportedAt, reportBase);
+  const reportedRates = route?.reported !== undefined && reportApplies
+    ? endpointTokenRates(route.reported)
+    : undefined;
+  if (needsEndpointPrice) {
+    return reportedRates !== undefined
+      ? { source: "endpoint-report", rates: reportedRates }
+      : { source: "unknown", reason: "endpoint-price-unavailable" };
+  }
   const hit = resolveCatalogKey(activeModelCatalog(), vendor, model);
   const catalogEntry = hit ? `${hit.provider}/${hit.id}` : undefined;
   const catalogRates = hit?.model.cost ? catalogTokenRates(hit.model.cost, hit.provider) : undefined;
   const catalogPrices = catalogEntry !== undefined && catalogRates !== undefined && listsAPrice(catalogRates);
-  const reportedRates = route?.reported ? endpointTokenRates(route.reported) : undefined;
-  // Use endpoint prices when catalog identity or catalog rates are absent.
-  if (reportedRates !== undefined && (!catalogPrices || !allowsImplicitModelLimits(vendor, route?.baseUrl))) {
-    return { source: "endpoint-report", rates: reportedRates };
-  }
   if (catalogPrices) {
     return { source: "model-catalog", rates: catalogRates, catalogEntry };
   }
+  if (reportedRates !== undefined) return { source: "endpoint-report", rates: reportedRates };
+  // A report exists but belongs to another address: say so, as for any route without its own price.
+  if (route?.reported !== undefined && !reportApplies) return { source: "unknown", reason: "endpoint-price-unavailable" };
   return catalogEntry !== undefined && catalogRates !== undefined
     ? { source: "unknown", catalogListsZero: catalogEntry }
     : { source: "unknown" };
@@ -204,10 +357,9 @@ function endpointTokenRates(pricing: LlmModelListPricing): TokenRates | undefine
 /** Convert per-token decimal strings to per-million rates. */
 function perMillion(value: string | undefined): number | undefined {
   if (value === undefined || !/^\d+(?:\.\d+)?(?:[eE][-+]?\d+)?$/u.test(value.trim())) return undefined;
-  const perToken = Number(value.trim());
-  if (!Number.isFinite(perToken) || perToken < 0) return undefined;
-  // Strip the binary-float noise of the scaling ("0.0000004" × 1e6).
-  return Number((perToken * 1_000_000).toPrecision(12));
+  // Strip binary-float noise and validate after both scaling and rounding.
+  const rate = Number((Number(value.trim()) * 1_000_000).toPrecision(12));
+  return isPricingOverrideRate(rate) ? rate : undefined;
 }
 
 /** Catalog-listed zero rates remain source data, not a displayed free price. */

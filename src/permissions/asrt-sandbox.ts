@@ -16,8 +16,8 @@ import { createHmac, randomBytes } from "node:crypto";
 import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { normalizePathForSandbox } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { containsGlobChars, containsGlobCharsWin, expandWindowsEnvRefs, globPatternBaseDir, isUncPath, stripExtendedPathPrefix, toForwardSlashes } from "./sandbox-path-spelling.js";
-import { existingWindowsGrants, pinWindowsFilesystemConfig, windowsPinnedPaths, windowsRuntimeGrants } from "./windows-stamp-targets.js";
-import { assertWindowsGrantGrammar, pinWindowsGrantTargets } from "./windows-grant-targets.js";
+import { existingWindowsGrants, expandWindowsGrantRequests, pinWindowsFilesystemConfig, pinWindowsGrantRequests, windowsPinnedPaths, windowsRuntimeGrants, type WindowsGrantRequests } from "./windows-stamp-targets.js";
+import { assertWindowsGrantGrammar, expandWindowsGrantPath, windowsGrantBase, type ExpandedWindowsGrant } from "./windows-grant-targets.js";
 import { admittedWindowsEntry, assertWindowsAclPolicyBudget, expandWindowsAclDenyLists, expandWindowsFsPaths, isAdmittedWindowsEntry, setWindowsAclRecoveryListener, WindowsSandboxError, type WindowsAclRecoveryReport, type WindowsAdmission } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { readAsrtSignalReleaseClaim } from "./asrt-signal-ownership.js";
 import { getSrtWinArchitecture, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
@@ -28,7 +28,7 @@ import { createRequire } from "node:module";
 import { type AveHomeBoundarySnapshot, currentAveHomeBoundarySnapshot, inAveHomeBoundarySnapshot } from "./ave-home-boundary-snapshot.js";
 import { EOL, homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
-import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, windowsPathKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
+import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, isAveHomePrivacyApprovable, AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE } from "../shared/ave-home.js";
 import {
@@ -743,7 +743,10 @@ export function pluginGrantPathsBeyondOwnRoots(pluginId: string, paths: readonly
     || (roots.some((root) => within(path, root)) && !own.some((ownRoot) => within(path, ownRoot))));
 }
 
-const admittedWindowsPolicies = new WeakMap<object, Partial<FilesystemConfig>>();
+const admittedWindowsPolicies = new WeakMap<object, {
+  readonly pinned: Partial<FilesystemConfig>;
+  readonly requested: WindowsGrantRequests;
+}>();
 const composedShellReadDenies = new WeakMap<readonly string[], {
   readonly user: readonly string[];
 }>();
@@ -776,15 +779,16 @@ function assertWindowsPolicyBudget(filesystem: WindowsDenyLists, configured = fa
 // Denies retain their own conservative projection; uncertainty must keep a deny, never admit a grant.
 function admitFilesystemPolicy<T extends Pick<TrustedSandboxSettings, "allowRead" | "allowWrite" | "denyRead" | "denyWrite">>(filesystem: T): T {
   if (process.platform === "win32") {
-    const pinned = pinWindowsFilesystemConfig<Partial<FilesystemConfig>>({
+    const requested = expandWindowsGrantRequests({
       allowRead: [...(filesystem.allowRead ?? [])], allowWrite: [...(filesystem.allowWrite ?? [])],
     });
+    const pinned = pinWindowsGrantRequests(requested);
     for (const entry of [...(pinned.allowRead ?? []), ...(pinned.allowWrite ?? [])]) {
       if (typeof entry !== "string") void entry.path;
     }
     // Preserve requested breadth as well as the resolved target after pinning.
     try {
-      assertWindowsMachineRootWriteGrants(filesystem.allowWrite ?? []);
+      assertWindowsMachineRootWriteGrants(requested.allowWrite);
     } catch (cause) {
       throw new Error(`Windows filesystem grant reparse target refused: ${errorMessage(cause)}`, { cause });
     }
@@ -798,7 +802,7 @@ function admitFilesystemPolicy<T extends Pick<TrustedSandboxSettings, "allowRead
     } catch (cause) {
       throw new Error(`Windows filesystem grant reparse target refused: ${errorMessage(cause)}`, { cause });
     }
-    admittedWindowsPolicies.set(admitted, pinned);
+    admittedWindowsPolicies.set(admitted, { pinned, requested });
     return admitted;
   }
   const normalize = (path: string): string => {
@@ -822,8 +826,6 @@ function admitFilesystemPolicy<T extends Pick<TrustedSandboxSettings, "allowRead
     ...(filesystem.denyWrite !== undefined ? { denyWrite: filesystem.denyWrite.map(entry => typeof entry === "string"
       ? normalize(entry) : { ...entry, path: normalizePathForSandbox(entry.path, { literal: true }) }) } : {}),
   };
-  // Refuse requested roots before discovery can narrow them away.
-  assertWindowsMachineRootWriteGrants(admitted.allowWrite ?? []);
   return admitted;
 }
 
@@ -837,7 +839,7 @@ function finishFilesystemPolicy(
   assertSandboxWritePolicySize(filesystem.denyWrite ?? [], undefined, compactSandboxWriteDenies(configuredDenies));
   if (process.platform !== "win32") return filesystem;
   assertWindowsPolicyBudget(filesystem, hasOverrides);
-  const pinned = admittedWindowsPolicies.get(admitted);
+  const pinned = admittedWindowsPolicies.get(admitted)?.pinned;
   if (pinned === undefined) throw new Error("Filesystem policy was not admitted");
   const retain = (entries: readonly FilesystemPathEntry[], source: readonly FilesystemPathEntry[]) => {
     const grants = new Map(source.map(entry => [typeof entry === "string" ? entry : entry.path, entry] as const));
@@ -918,7 +920,7 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     denyRead: [...(filesystem.denyRead ?? [])],
     denyWrite: [...(filesystem.denyWrite ?? []), ...(_baseTrustedSettings?.denyWrite ?? [])],
   });
-  const pinned = admittedWindowsPolicies.get(admitted);
+  const pinned = admittedWindowsPolicies.get(admitted)?.pinned;
   if (pinned === undefined) throw new Error("Container filesystem admission has no pinned identity");
   if ([pinned.allowRead, pinned.allowWrite].some(entries => entries !== undefined && existingWindowsGrants(entries).length !== entries.length)) {
     throw new Error("Container filesystem grant target is missing");
@@ -1063,15 +1065,20 @@ export function buildPerCommandSandboxCustomConfig(
     // A per-command deny REPLACES the shared one, so the trusted custom denies are restated here once for every wrap rather than by each composer.
     let hiddenSeccompHelper: string | undefined;
     // What the wrap may be granted on Windows: per-exec grants are refused there (see above), so the session's and the live worker grants.
+    const requestedWindows = admittedWindowsPolicies.get(grants)?.requested;
+    const requestedWriteSpellings = new Set(requestedWindows?.allowWrite.map(grant => grant.original));
+    const additionalSessionWrites = requestedWindows === undefined ? [] : (_baseTrustedSettings?.allowWrite ?? [])
+      .filter(path => !requestedWriteSpellings.has(path))
+      .map(path => expandWindowsGrantPath(path).entry);
     const windowsWriteGrants: FilesystemPathEntry[] = [
       ...(process.platform === "win32" ? (loadedSandboxManagerForRelease?.getConfig() ?? containerOnlyConfig)?.filesystem.allowWrite ?? [] : []),
-      ...(_baseTrustedSettings?.allowWrite ?? []),
-      ...(filesystem.allowWrite ?? []),
+      ...additionalSessionWrites,
+      ...(requestedWindows?.allowWrite.map(grant => grant.entry) ?? []),
       ...grants.allowWrite,
       ...(liveGrants.allowWrite ?? []),
     ];
     const windowsGrants: FilesystemPathEntry[] = [
-      ...(filesystem.allowRead ?? _baseTrustedSettings?.allowRead ?? []),
+      ...(requestedWindows?.allowRead.map(grant => grant.entry) ?? []),
       ...(grants.allowRead ?? []),
       ...(liveGrants.allowRead ?? []),
       ...windowsWriteGrants,
@@ -1111,7 +1118,7 @@ export function buildPerCommandSandboxCustomConfig(
     const sensitiveDenyWrite = getDefaultSensitiveWriteDenyEntries(_baseTrustedSettings?.userDataDir);
     const sensitiveWritePaths = spelledPathEntries(sensitiveDenyWrite, "denyWrite");
     const mandatory = buildMandatorySandboxWritePolicy(
-      admittedWindowsPolicies.get(grants)?.allowWrite ?? grants.allowWrite,
+      admittedWindowsPolicies.get(grants)?.pinned.allowWrite ?? grants.allowWrite,
       _baseTrustedSettings?.userDataDir,
       sensitiveWritePaths,
       sensitiveWritePaths.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)),
@@ -2011,17 +2018,17 @@ function windowsMachineRoots(): string[] {
   ].filter((path): path is string => Boolean(path));
 }
 
-function assertWindowsMachineRootWriteGrants(grants: readonly string[]): void {
+function assertWindowsMachineRootWriteGrants(grants: readonly (string | ExpandedWindowsGrant)[]): void {
   if (process.platform !== "win32") return;
+  const machineRoots = windowsMachineRoots();
   for (const grant of grants) {
     // Preserve requested pattern breadth as well as pinned literal identity. A `**` tail also matches its base.
-    const normalized = normalizePathForSandbox(grant);
-    const pattern = containsGlobCharsWin(normalized);
-    const base = pattern ? globPatternBaseDir(toForwardSlashes(normalized)).replace(/^([A-Za-z]:)?$/, "$1/").replace(/\//g, "\\") : grant;
-    for (const root of windowsMachineRoots()) {
+    const base = typeof grant === "string" ? grant : windowsGrantBase(grant);
+    const patternTail = typeof grant === "string" ? undefined : grant.patternTail;
+    for (const root of machineRoots) {
       if (!isGrantPathWithin(base, root)) continue;
-      if (!pattern || !isGrantPathWithin(root, base) || normalized.includes("**")) {
-        throw new Error(`Windows write grant ${grant} contains machine root ${root}`);
+      if (patternTail === undefined || !isGrantPathWithin(root, base) || patternTail.includes("**")) {
+        throw new Error(`Windows write grant ${typeof grant === "string" ? grant : grant.original} contains machine root ${root}`);
       }
     }
   }
@@ -2572,7 +2579,6 @@ export function buildSandboxConfig(
   liveGrants: WindowsLiveGrantSnapshot = {},
 ): SandboxRuntimeConfig {
   assertWindowsPolicyBudget(trustedSettings, true);
-  const requestedSettings = trustedSettings;
   trustedSettings = admitFilesystemPolicy(trustedSettings);
   const srtWinPath = process.platform === "win32" && trustedSettings.windows?.externalConfinement !== true
     ? getVerifiedSrtWinExePath() : undefined;
@@ -2624,7 +2630,8 @@ export function buildSandboxConfig(
   const writeFloor = buildSensitiveWriteFloor(trustedSettings.userDataDir, trustedSettings.resolveWindowsDocumentsPath);
   const sensitiveWritePaths = spelledPathEntries(writeFloor.entries, "denyWrite");
   if (!writeFloor.bounded && liveGrants.allowWrite?.length) throw new Error(WINDOWS_PROFILE_WRITE_FLOOR_ERROR);
-  const requestedWrite = admittedWindowsPolicies.get(trustedSettings)?.allowWrite ?? trustedSettings.allowWrite ?? [];
+  const windowsAdmission = admittedWindowsPolicies.get(trustedSettings);
+  const requestedWrite = windowsAdmission?.pinned.allowWrite ?? trustedSettings.allowWrite ?? [];
   // One floor function for every write root: shared allowWrite and live worker-grant roots get the same rows.
   const writeRootFloor = (roots: readonly FilesystemPathEntry[]) => buildMandatorySandboxWritePolicy(
     roots,
@@ -2657,9 +2664,10 @@ export function buildSandboxConfig(
   if (srtWinPath !== undefined) assertPrivateHelperGrants(allowRead ?? [], allowWrite);
   // Deny coverage retains requested envelopes and admitted roots, with write coverage separate from read coverage.
   const windowsWriteGrants: FilesystemPathEntry[] = [...allowWrite, ...(trustedSettings.allowWrite ?? []),
-    ...(requestedSettings.allowWrite ?? []),
+    ...(windowsAdmission?.requested.allowWrite.map(grant => grant.entry) ?? []),
     ...(liveGrants.allowWrite ?? [])];
-  const windowsGrants: FilesystemPathEntry[] = [...windowsWriteGrants, ...(requestedSettings.allowRead ?? []), ...(trustedSettings.allowRead ?? []), ...(allowRead ?? []), ...(liveGrants.allowRead ?? [])];
+  const windowsGrants: FilesystemPathEntry[] = [...windowsWriteGrants, ...(windowsAdmission?.requested.allowRead.map(grant => grant.entry) ?? []),
+    ...(trustedSettings.allowRead ?? []), ...(allowRead ?? []), ...(liveGrants.allowRead ?? [])];
   // The session's policy as rows; the package config below is one projection of them.
   const lists = toSrtConfig(buildPolicyModel({
     floors: [...denyReadUnion, ...denyWriteUnion.map(srtWriteFloorRow)],
@@ -3784,7 +3792,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   const baseTrustedSettings = _baseTrustedSettings;
   const admitted = timeStep("preflightMs", () => admitFilesystemPolicy({ allowRead: [...(opts.allowRead ?? [])], allowWrite: [...(opts.allowWrite ?? [])] }));
   if (AVE_HOME_ISOLATION_GUARD_ACTIVE) timeStep("preflightMs", () => checkSandboxStampTargets([...admitted.allowRead, ...admitted.allowWrite]));
-  const pinned = admittedWindowsPolicies.get(admitted)!;
+  const pinned = admittedWindowsPolicies.get(admitted)!.pinned;
   if ([pinned.allowRead, pinned.allowWrite].some(entries =>
     entries !== undefined && timeStep("preflightMs", () => existingWindowsGrants(entries)).length !== entries.length)) {
     throw new Error("Windows filesystem grant identity is unproven: requested target is missing");
@@ -3812,20 +3820,20 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     );
   }
 
-  const requestedWrite = windowsPinnedPaths(timeStep("preflightMs", () => existingWindowsGrants(pinned.allowWrite ?? [])));
-  const requestedRead = [
-    ...windowsPinnedPaths(timeStep("preflightMs", () => existingWindowsGrants(pinned.allowRead ?? []))),
-    ...requestedWrite,
-  ];
-
-  for (const path of requestedRead) assertWindowsGrantGrammar(path);
-  const pins = timeStep("pinsMs", () => pinWindowsGrantTargets(requestedRead, { validatePath: assertWindowsGrantGrammar }));
-  const identities = new Map(pins.map(pin => [windowsObjectKey(pin), pin]));
-  const requests = pins.map(pin => ({ path: stripExtendedPathPrefix(pin.canonical!), identity: windowsObjectKey(pin) }));
+  // Keep the identity that passed admission through the native grant and rollback.
+  const writeGrants = windowsRuntimeGrants(pinned.allowWrite ?? []);
+  const readGrants = [...windowsRuntimeGrants(pinned.allowRead ?? []), ...writeGrants];
+  const requests = timeStep("pinsMs", () => readGrants.map(entry => {
+    const path = entry.path;
+    assertWindowsGrantGrammar(path);
+    return { path, identity: windowsObjectKey({
+      volumeSerial: entry.admitted.volumeSerial ?? null, fileId: entry.admitted.fileId ?? null,
+    }) };
+  }));
+  const writeRequests = requests.slice(requests.length - writeGrants.length);
   const allowRead = requests.map(request => request.path);
-  const writeStart = requestedRead.length - requestedWrite.length;
-  const allowWrite = requests.slice(writeStart).map(request => request.path);
-  const writePins = pins.slice(writeStart);
+  const allowWrite = writeRequests.map(request => request.path);
+  const writeIdentities = new Set(writeRequests.map(request => request.identity));
   timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome, issuedHome));
   timeStep("preflightMs", () => checkWindowsSandboxStampTargets(pinned));
 
@@ -3854,7 +3862,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
         const path = typeof entry === "string" ? entry : entry.path;
         const overlaps = allowWrite.some(grant => lexicalWindowsOverlap(grant, path)) || requiredRows.has(windowsReadDenyKey(path))
           || (admitted?.volumeSerial !== undefined && admitted.fileId !== undefined
-            && writePins.some(pin => pin.volumeSerial === admitted.volumeSerial && pin.fileId === admitted.fileId));
+            && writeIdentities.has(windowsObjectKey({ volumeSerial: admitted.volumeSerial, fileId: admitted.fileId })));
         if (!overlaps) continue;
         if (admitted === undefined && containsGlobCharsWin(path)) throw new Error("Windows filesystem write grant overlaps a deny glob");
         const key = windowsDenyOperandKey(path);
@@ -3927,14 +3935,15 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   const releaseClaim = (): void => { if (protectedRows !== undefined) releaseWatchClaim(protectedRows.claim); };
   // Resolved after every refusal above, so a refused turn starts no holder.
   let holderPid: number;
-  try { holderPid = timeStep("preflightMs", () => typeof requestedHolderPid === "number" ? requestedHolderPid : requestedHolderPid()); }
-  catch (error) {
+  try {
+    holderPid = timeStep("preflightMs", () => typeof requestedHolderPid === "number" ? requestedHolderPid : requestedHolderPid());
+    if (requests.length > 0) timeStep("assertMs", () => assertWindowsGrantPins(requests));
+  } catch (error) {
     releaseClaim();
     throw error;
   }
-  if (allowRead.length > 0 || allowWrite.length > 0) {
+  if (requests.length > 0) {
     try {
-      timeStep("assertMs", () => assertWindowsGrantPins(requests, identities));
       // srt-win writes the DACL by name: a swap between the pre-pin and native write
       // cannot be excluded. Only the post-pin and revoke detect that remaining window.
       // A swap restored before the post-pin is undetected; a crash before it skips
@@ -3952,7 +3961,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
         write: allowWrite,
         srtWin,
       }));
-      timeStep("assertMs", () => assertWindowsGrantPins(requests, identities));
+      timeStep("assertMs", () => assertWindowsGrantPins(requests));
     } catch (err) {
       let outcome: ReturnType<typeof revokeWindowsAcl> = undefined;
       let cleanupError: unknown;
@@ -4141,50 +4150,32 @@ interface WindowsGrantTarget {
   readonly identity: string;
 }
 
-// Match the runtime's "ACL release outcome" patch; its status sets are not exported.
-const WINDOWS_GRANT_RELEASED_STATUSES = new Set(["revoked", "stillHeld", "downgraded", "relocated", "noRow", "restored", "alreadyOriginal"]);
-const WINDOWS_GRANT_STALE_STATUSES = new Set(["mismatch", "missing"]);
+const WINDOWS_GRANT_RELEASED_STATUSES = new Set(["revoked", "stillHeld", "downgraded", "relocated"]);
 
 function hasWindowsGrantCleanup(requests: readonly WindowsGrantTarget[], outcome: unknown, exitedOk: boolean): boolean {
-  if (!exitedOk || !Array.isArray(outcome) || outcome.some(row => row === null || typeof row !== "object"
-    || typeof row.path !== "string" || (!WINDOWS_GRANT_RELEASED_STATUSES.has(row.status) && !WINDOWS_GRANT_STALE_STATUSES.has(row.status)))) return false;
-  const staleCounts = new Map<string, number>();
+  if (!exitedOk || !Array.isArray(outcome)) return false;
+  const expected = new Set(requests.map(request => request.identity));
+  const verified = new Set<string>();
+  const ledgerPaths = new Set<string>();
   for (const row of outcome) {
-    if (WINDOWS_GRANT_STALE_STATUSES.has(row.status)) staleCounts.set(row.status, (staleCounts.get(row.status) ?? 0) + 1);
+    if (row === null || typeof row !== "object" || typeof row.path !== "string" || row.path.length === 0
+      || ledgerPaths.has(row.path) || !WINDOWS_GRANT_RELEASED_STATUSES.has(row.status)
+      || !expected.has(row.objectIdentity)) return false;
+    ledgerPaths.add(row.path);
+    verified.add(row.objectIdentity);
   }
-  if (staleCounts.size > 0) log.warn("Windows grant release dropped stale rows (%s); recovery cannot revisit dropped rows",
-    [...staleCounts].map(([status, count]) => `${status} x${count}`).join(", "));
-  // A clean empty ledger means the holder was already removed or pruned. Dropped release paths require a non-zero exit.
-  if (outcome.length === 0) return true;
-  const objects = new Map<string, string[]>();
-  for (const request of requests) objects.set(request.identity, [...(objects.get(request.identity) ?? []), request.path]);
-  const spellings = [...objects.values()];
-  const spelling = (path: string): string => win32.normalize(stripExtendedPathPrefix(path)).replace(/[\\/]+$/, "");
-  const used = new Set<number>();
-  return spellings.every(paths => {
-    let index = outcome.findIndex((row, offset) => !used.has(offset) && paths.some(path => spelling(row.path) === spelling(path)));
-    if (index < 0) {
-      index = outcome.findIndex((row, offset) => !used.has(offset)
-        && paths.some(path => windowsPathKey(row.path) === windowsPathKey(path))
-        // Fold only unambiguous ledger spellings, never distinct case-only objects.
-        && spellings.filter(other => other.some(path => windowsPathKey(row.path) === windowsPathKey(path))).length === 1);
-    }
-    if (index < 0) return false;
-    used.add(index);
-    return true;
-  });
+  return verified.size === expected.size;
 }
 
-function assertWindowsGrantPins(requests: readonly WindowsGrantTarget[], identities: ReadonlyMap<string, WindowsPathFacts>): void {
+function assertWindowsGrantPins(requests: readonly WindowsGrantTarget[]): void {
   const paths = requests.map(request => request.path);
   let rows: readonly WindowsPathFacts[];
   try { rows = pinWindowsPaths(paths); }
   catch (cause) { throw new Error(`Windows filesystem grant identity check failed: ${paths.join(", ")}`, { cause }); }
   for (const [index, path] of paths.entries()) {
     const row = rows[index]!;
-    const expected = identities.get(requests[index]!.identity)!;
     if (admitWindowsReparse(row, "grant") !== true || row.exists !== true
-      || row.volumeSerial !== expected.volumeSerial || row.fileId !== expected.fileId) {
+      || row.volumeSerial === null || row.fileId === null || windowsObjectKey(row) !== requests[index]!.identity) {
       throw new Error(`Windows filesystem grant target identity changed: ${path}`);
     }
   }

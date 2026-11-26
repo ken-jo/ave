@@ -10,6 +10,11 @@ import { attachmentScopeMatches, isTemplateScope, hasTemplateKeys, canonicalTemp
 import { assertHostDecisionProof, type HostDecisionProof } from "./workflow-template-decision.js";
 import { isWorkflowTemplateProposalId, type ScheduleAttachment, type ScheduleAttachmentInput, type TemplateScope, type TemplateConfirmationOrigin, type TemplateVersion, type TemplateVersionPin, type WorkflowTemplate, type WorkflowTemplateConfirmInput, type WorkflowTemplateDraftInput, type WorkflowTemplateProposal, type WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
 
+interface ScheduleRunAuthority {
+  record: WorkflowTemplateRecord | null;
+  attachment: ScheduleAttachment | null;
+}
+
 interface TemplatesFile { version: 1; templates: WorkflowTemplateRecord[] }
 const log = createLogger("workflow-templates");
 const MAX_PENDING_PROPOSALS = 16;
@@ -41,7 +46,6 @@ function validateFile(raw: unknown): TemplatesFile {
       const version = record.versions.find((v: TemplateVersion) => v.version === attachment.version);
       requireTemplate(version, "unknown-version");
       requireTemplate(version.graphHash === attachment.graphHash, "graph-hash-mismatch");
-      requireTemplate(isAllReadOnlyVersion(canonicalTemplateGraph(version)), "schedule-requires-read-only");
       if (attachment.detachedAt === undefined) schedules.add(attachment.scheduleId);
       attachmentIds.add(attachment.id);
     }
@@ -88,6 +92,16 @@ export class WorkflowTemplateStore {
     return structuredClone((await this.readFile()).templates.filter(r => !r.template.archivedAt).map(r => r.template));
   }
   async get(id: string): Promise<WorkflowTemplateRecord> { return structuredClone(this.find(await this.readFile(), id)); }
+  /** Read the template, its versions and the referenced attachment together after preceding writes. */
+  async readScheduleRunAuthority(templateId: string, attachmentId: string): Promise<ScheduleRunAuthority> {
+    requireTemplate(isTemplateId(templateId) && isTemplateId(attachmentId));
+    return withInProcessFileQueue(this.filePath, async () => {
+      const { templates } = await this.readFile();
+      const record = templates.find(entry => entry.template.id === templateId) ?? null;
+      const attachment = templates.flatMap(entry => entry.scheduleAttachments ?? []).find(entry => entry.id === attachmentId) ?? null;
+      return { record, attachment };
+    });
+  }
   async getTemplate(id: string): Promise<WorkflowTemplate | null> {
     requireTemplate(isTemplateId(id));
     return structuredClone((await this.readFile()).templates.find(record => record.template.id === id)?.template ?? null);
@@ -183,13 +197,14 @@ export class WorkflowTemplateStore {
       return structuredClone(confirmed);
     });
   }
-  async attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof, approvedScope: TemplateScope): Promise<ScheduleAttachment> {
+  async attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof, approvedScope: TemplateScope, options?: { requireCurrent: true }): Promise<ScheduleAttachment> {
     requireTemplate(hasTemplateKeys(input, ["scheduleId", "templateId", "version", "graphHash"]) && isTemplateId(input.scheduleId) && isTemplateId(input.templateId) && isTemplateVersion(input.version) && isGraphHash(input.graphHash));
     assertHostDecisionProof(proof);
     requireTemplate(isTemplateScope(approvedScope));
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await this.readFile(); const record = this.find(file, input.templateId);
       requireTemplate(!record.template.archivedAt, "template-archived");
+      if (options?.requireCurrent) requireTemplate(record.template.currentVersion === input.version, "not-current-version");
       const version = record.versions.find(v => v.version === input.version);
       requireTemplate(version, "unknown-version");
       requireTemplate(version.graphHash === input.graphHash, "graph-hash-mismatch");
@@ -212,6 +227,15 @@ export class WorkflowTemplateStore {
   async listByRoutine(scheduleId: string): Promise<ScheduleAttachment[]> {
     requireTemplate(isTemplateId(scheduleId));
     return structuredClone((await this.readFile()).templates.flatMap(r => r.scheduleAttachments ?? []).filter(a => a.scheduleId === scheduleId));
+  }
+  async listActiveScheduleAttachments(scheduleIds: ReadonlySet<string>): Promise<Map<string, { attachment: ScheduleAttachment; template: WorkflowTemplate }>> {
+    const bySchedule = new Map<string, { attachment: ScheduleAttachment; template: WorkflowTemplate }>();
+    for (const { template, scheduleAttachments } of (await this.readFile()).templates) {
+      for (const attachment of scheduleAttachments ?? []) {
+        if (attachment.detachedAt === undefined && scheduleIds.has(attachment.scheduleId)) bySchedule.set(attachment.scheduleId, { attachment, template });
+      }
+    }
+    return bySchedule;
   }
   async detachSchedule(id: string, proof: HostDecisionProof): Promise<boolean> {
     requireTemplate(isTemplateId(id)); assertHostDecisionProof(proof);

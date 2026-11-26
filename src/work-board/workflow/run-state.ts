@@ -4,6 +4,7 @@ import type { DeleteIntent, HeldEvent, HeldIdentity, RunEnd, RunRemovalCause } f
 import type { WorkItemResolved, WorkItemUpdateResult } from "../../shared/work-board-types.js";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
 import type { StageJoin, TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkItemStageRun } from "../../shared/workflow-template-types.js";
+import { issueJoinConflict } from "./stage-machine.js";
 import { WorkflowTemplateError } from "../template-graph.js";
 
 /** Everything a template run is decided from. It lives in the covered run file, keyed by `runId`; a board row names a run only by that id
@@ -172,7 +173,7 @@ export async function reconcileRunRecord(run: RunRecord, now: string, folderExis
   const stageJoins = joins.map((join): StageJoin => {
     if (join.status !== "integrating" || join.stageIds.every(id => stageRuns.some(stage => stage.stageId === id && stage.status === "passed"))) return join;
     changed = true;
-    return { ...join, status: "conflict", conflict: { conflictHash: resultHashOf(`${run.runId}:${join.joinId}:interrupted`), reason: "interrupted", files: [] } };
+    return issueJoinConflict(join, { conflictHash: resultHashOf(`${run.runId}:${join.joinId}:interrupted`), reason: "interrupted", files: [] });
   });
   return changed ? { ...run, stageRuns, stageJoins } : null;
 }

@@ -82,6 +82,38 @@ it("keeps a lookalike external result out of the confirmation surface", () => {
   expect(screen.queryByRole("button", { name: t("workflowTemplates.review") })).toBeNull();
 });
 
+it("edits a host proposal as a new draft and confirms only the edited hash", async () => {
+  const editedHash = "c".repeat(64);
+  const draftWorkflowTemplate = vi.fn(async (_id, input) => ({
+    ok: true,
+    value: { template: { id: "edited", currentVersion: 0 }, versions: [], draft: { ...input, graphHash: editedHash, revision: "new-draft" } },
+  }));
+  const confirmWorkflowTemplate = vi.fn(async () => ({ ok: true }));
+  vi.stubGlobal("aveApi", {
+    getWorkflowTemplateProposal: async () => ({ ok: true, value: proposal }),
+    listAgentProfiles: async () => ({ agents: [] }),
+    draftWorkflowTemplate,
+    confirmWorkflowTemplate,
+  });
+  showToolResult(tool);
+  fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.review") }));
+  const dialog = within(await screen.findByRole("dialog", { name: proposal.draft.name }));
+  fireEvent.click(dialog.getByRole("button", { name: t("workflowTemplates.editProposal") }));
+  const goal = dialog.getByLabelText(t("workflowTemplates.goal"));
+  fireEvent.change(goal, { target: { value: "Read this week's source notes" } });
+  fireEvent.click(dialog.getByRole("button", { name: t("workflowTemplates.reviewVersion") }));
+  expect(await dialog.findByText(editedHash)).toBeVisible();
+  expect(draftWorkflowTemplate).toHaveBeenCalledExactlyOnceWith(null, expect.objectContaining({
+    stages: [expect.objectContaining({ goal: "Read this week's source notes" })],
+  }));
+  expect(confirmWorkflowTemplate).not.toHaveBeenCalled();
+  fireEvent.click(dialog.getByRole("button", { name: t("workflowTemplates.confirmVersion", { version: 1 }) }));
+  expect(await screen.findByText(t("workflowTemplates.saved"))).toBeVisible();
+  expect(confirmWorkflowTemplate).toHaveBeenCalledExactlyOnceWith("edited", {
+    expectedGraphHash: editedHash, expectedDraftRevision: "new-draft",
+  });
+});
+
 it("shows stage capabilities as visible text in the confirmation dialog", async () => {
   const dialog = await reviewStage({
     ...proposal.draft.stages[0],

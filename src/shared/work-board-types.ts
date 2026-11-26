@@ -1,3 +1,5 @@
+import type { PendingWorkflowDecision, WorkflowRunPinView, WorkflowRunView, WorkflowStageActivityUpdate } from "./workflow-run-view.js";
+import type { TemplateVersionPin } from "./workflow-template-types.js";
 import type { EnvelopeToolRef, WorkItemStageRun } from "./workflow-template-types.js";
 
 /** Keep board contracts renderer-safe. Overdue is derived on read for incomplete items past due, never persisted. */
@@ -116,6 +118,12 @@ export type WorkPlanDecideIpcResult =
   | { ok: false; reason: WorkPlanDecideRefusal | "user-gesture-required" | "invalid-input" };
 
 export interface WorkItemResolved extends WorkItem {
+  /** Renderer projections from the host-owned run record, never persisted on the row. */
+  runPin?: TemplateVersionPin;
+  workflowRunPins?: WorkflowRunPinView[];
+  pendingWorkflowDecisions?: PendingWorkflowDecision[];
+  workflowRun?: WorkflowRunView;
+  delegatedSessions?: { parentSessionId: string; childSessionId: string; title: string }[];
   /** The run this row names cannot be used: its stored entry is unreadable or belongs to another row, or the run file awaits review.
    * `template-run-not-found`: the row says the run is in flight and the run file holds no record of it; the row is shown as error until
    * the user clears it. Never persisted. */
@@ -399,6 +407,9 @@ export interface WorkBoardRunEvent {
   /** Template runs: the stage (and its attempt) the event is about. */
   stageId?: string;
   attempt?: number;
+  /** Snapshot and stage-session activity projections. Neither instructs or authorizes the engine. */
+  workflowRun?: WorkflowRunView;
+  stageActivity?: WorkflowStageActivityUpdate;
   /** How the stage's pass condition was judged, when reported by the scheduler. */
   judgedBy?: NonNullable<WorkItemStageRun["gate"]>["judgedBy"];
   /** Template runs: the run-authority code that refused the start or ended the run, with the tool it names when it names one. */
@@ -410,7 +421,13 @@ export interface WorkBoardRunEvent {
 /** IPC forwards the engine event unchanged; this renderer-safe alias must remain the same wire shape. */
 export type RunProgressEventPayload = WorkBoardRunEvent;
 
-/** IPC forwards the engine result unchanged; not_found means an unknown item ID. */
+export interface WorkBoardRunFailure {
+  itemId: number;
+  reason: string;
+  at: string;
+}
+
+/** A terminal run result. Evidence is delivered to the window bound to the item's project. */
 export interface WorkItemRunResult {
   /** awaiting_approval: planning finished and the plan waits for the user's decision; the run resumes through decide-plan. */
   status: "completed" | "awaiting_approval" | "denied" | "not_found" | "error" | "already_running" | "cancelled";
@@ -437,6 +454,7 @@ export interface TemplateRunRequest {
 export interface StageRetryInput {
   runId: string;
   stageId: string;
+  attempt: number;
 }
 
 export interface StageGateDecideInput {
@@ -460,11 +478,13 @@ export type StageGateDecideIpcResult =
   | { ok: false; reason: StageGateRefusal | "user-gesture-required" | "invalid-input" | StageStoreRefusal };
 
 /** The user's decision on a join that could not be collected, bound to the conflict they saw. */
-export interface StageJoinDecideInput { runId: string; joinId: string; conflictHash: string; decision: "retry_merge" | "reject" }
+export interface StageJoinDecideInput { runId: string; joinId: string; conflictHash: string; generation: number; decision: "retry_merge" | "reject" }
 /** run_end_unconfirmed: the run's end is not yet written to the run file. runs_not_adopted: the runs a restart left are not taken over
  * yet. Both are shown by their reasonCodes text. */
 type StageRunRefusal = "not_found" | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "not_pending" | "version_missing" | "graph_mismatch";
 export type StageJoinDecideResult = { ok: true } | { ok: false; reason: StageRunRefusal | "conflict_mismatch" };
+export type OpenJoinResult = StageJoinDecideResult | { ok: false; reason: "join-folder-unavailable" };
+export type OpenJoinIpcResult = OpenJoinResult | { ok: false; reason: "user-gesture-required" | "invalid-input" | StageStoreRefusal };
 export type StageJoinDecideIpcResult = StageJoinDecideResult | { ok: false; reason: "user-gesture-required" | "invalid-input" | StageStoreRefusal };
 /** Retry of a failed stage, or continuing a run that has only ready stages after a restart. not_idle: a child of the run is still live. */
 export type StageRetryResult = { ok: true } | { ok: false; reason: StageRunRefusal | "attempts_exhausted" | "not_idle" };

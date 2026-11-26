@@ -25,9 +25,9 @@ vi.mock("../mxc-runtime-root.js", async original => {
 });
 vi.mock("../windows-stamp-targets.js", async original => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
-  return { ...actual, pinWindowsFilesystemConfig: (...args: Parameters<typeof actual.pinWindowsFilesystemConfig>) => {
+  return { ...actual, pinWindowsGrantRequests: (...args: Parameters<typeof actual.pinWindowsGrantRequests>) => {
     phase.before?.();
-    const pinned = actual.pinWindowsFilesystemConfig(...args);
+    const pinned = actual.pinWindowsGrantRequests(...args);
     phase.after?.();
     return pinned;
   } };
@@ -84,6 +84,7 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
         };
         await expect(sandbox.grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowWrite: [target] }))
           .rejects.toThrow(/reparse|identity changed/);
+        expect(phase[timing]).toBeUndefined();
         expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
         expect(update).not.toHaveBeenCalled();
       });
@@ -117,7 +118,9 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
     const pinned = pinWindowsFilesystemConfig({ [list]: [join(alias, "leaf")] });
     expect(pinned[list]).toEqual([{ path: identity.canonical, literal: true }]);
     const { sandbox, runtime } = await setup();
-    vi.mocked(runtime.revokeWindowsAcl).mockReturnValue([{ path: identity.canonical, status: "revoked" }]);
+    vi.mocked(runtime.revokeWindowsAcl).mockReturnValue([{
+      path: identity.canonical, status: "revoked", objectIdentity: identity.objectIdentity,
+    }]);
     const grant = await sandbox.grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, [list]: [join(alias, "leaf")] });
     try {
       expect(runtime.grantWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({

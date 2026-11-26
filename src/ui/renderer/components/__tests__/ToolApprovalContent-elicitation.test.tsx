@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
+import "../../../../__tests__/vitest-approval-presentation.js";
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, screen } from "@testing-library/react";
 import { answeringRequestAndWait } from "../../../../__tests__/support/answering-approval-gate.js";

@@ -1,3 +1,4 @@
+import { workBoardProjectAllows } from "../work-board-project-scope.js";
 // Work approvals ("확인 필요"): a read-only projection over the stores that own each work-level decision. The change broadcast is wired at boot
 // (boot/steps/work-approvals-wiring.ts). Every action (accept or dismiss a proposal,
 // open or acknowledge a routine) stays on that source's own channel; this domain only lists and signals.
@@ -6,7 +7,7 @@ import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } fro
 import type { IpcDeps } from "../types.js";
 import { WORK_APPROVALS } from "../../shared/ipc-channels.js";
 import { hasOnlyKeys } from "../../shared/is-record.js";
-import { maskSensitiveData } from "../../shared/dlp.js";
+import { maskWorkflowText } from "../../work-board/workflow/run-read-projection.js";
 import { listAuthorizedWorkspaceProjects, resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 import { isDecidablePlan, isReplanningPlan } from "../../main/work-board-store.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
@@ -15,6 +16,8 @@ import type { WorkItem, WorkItemResolved, WorkProposal } from "../../shared/work
 import type {
   RoutineAttentionApprovalView,
   WorkApprovalListResult,
+  WorkApprovalNavigationView,
+  WorkflowApprovalView,
   WorkApprovalProject,
   WorkApprovalView,
   WorkPlanApprovalView,
@@ -41,7 +44,7 @@ function parseListRequest(raw: unknown): ListRequest {
 
 // Titles and summaries are model- or plugin-written text; mask secrets and PII before they reach a renderer, as tool results are.
 function masked(text: string): string {
-  return maskSensitiveData(text).masked;
+  return maskWorkflowText(text);
 }
 
 function proposalView(proposal: WorkProposal): WorkProposalApprovalView {
@@ -102,8 +105,9 @@ function planView(item: WorkItemResolved, projects: readonly WorkApprovalProject
   };
 }
 
-function isCounted(view: WorkApprovalView): boolean {
-  return view.kind !== "plan" || view.phase === "pending";
+function toNavigation(view: Exclude<WorkApprovalView, WorkApprovalNavigationView>): WorkApprovalNavigationView {
+  const { key, scope, title, kind } = view;
+  return { kind: "navigation", targetKind: kind, key, scope, title, phase: kind === "plan" ? view.phase : "pending" };
 }
 
 function routineTitle(routine: RoutineRecord): string {
@@ -150,7 +154,7 @@ function invalidRoutineView(invalid: InvalidRoutine): RoutineAttentionApprovalVi
 }
 
 export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
-  const { workBoardStore, routinesStore, auditLogger } = deps;
+  const { workBoardStore, workBoardEngine, routinesStore, auditLogger } = deps;
 
   ipcMain.handle(WORK_APPROVALS.list, async (e, raw?: unknown): Promise<WorkApprovalListResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(e)) {
@@ -182,16 +186,39 @@ export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
       ...routinesStore.listInvalid().map(invalidRoutineView),
     ];
 
-    const board = await workBoardStore.list();
-    if (board.status !== "ok") return { ok: false, error: "work-approvals-source-unavailable", source: "plan" };
-    const planViews = board.items.map((item) => planView(item, projects)).filter((view): view is WorkPlanApprovalView => view !== null);
+    const board = await workBoardStore.readApprovalItems();
+    if (board === undefined) return { ok: false, error: "work-approvals-source-unavailable", source: "plan" };
+    const scopedRows = board.filter(item => {
+      const scope = planScope(item, projects);
+      return scope !== null && (homeRoot === null || scope.type !== "project" || projectRootEquals(scope.projectRoot, homeRoot));
+    });
+    const canReadRun = (item: WorkItem) => homeRoot !== null && e.senderFrame === e.sender?.mainFrame && workBoardProjectAllows(e.sender, item.projectRoot);
+    const workflowRows = scopedRows.filter(item => item.templateId !== undefined);
+    if (workflowRows.some(item => item.runId !== undefined) && !workBoardEngine) {
+      return { ok: false, error: "work-approvals-source-unavailable", source: "stage-gate" };
+    }
+    const workflowItems = workBoardEngine && workflowRows.length ? await workBoardEngine.readTemplateRuns(workflowRows) : [];
+    const planViews = scopedRows.flatMap(item => {
+      const view = planView(item, projects);
+      return view ? [canReadRun(item) ? view : toNavigation(view)] : [];
+    });
+    const workflowViews = workflowItems.flatMap((item): WorkApprovalView[] => {
+      const scope = planScope(item, projects);
+      if (scope === null) return [];
+      return (item.pendingWorkflowDecisions ?? []).map(decision => {
+        const view: WorkflowApprovalView = {
+          ...decision, scope, itemId: item.id, title: masked(item.title),
+          key: decision.kind === "stage-gate"
+            ? `stage:${item.id}:${decision.binding.runId}:${decision.binding.stageId}:${decision.binding.attempt}`
+            : `join:${item.id}:${decision.binding.runId}:${decision.binding.joinId}:${decision.binding.generation}`,
+        };
+        return canReadRun(item) ? view : toNavigation(view);
+      });
+    });
 
-    // Proposals (unscoped), routines (global) and plans with no project belong to every project's list; a project's plans only to its own.
-    const everything: WorkApprovalView[] = [...planViews, ...proposalViews, ...routineViews];
-    const items = homeRoot === null
-      ? everything
-      : everything.filter((view) => view.scope.type !== "project" || projectRootEquals(view.scope.projectRoot, homeRoot));
-    const total = everything.filter(isCounted).length;
+    const sharedViews = [...proposalViews, ...routineViews];
+    const items: WorkApprovalView[] = [...planViews, ...workflowViews, ...(homeRoot === null ? sharedViews.map(toNavigation) : sharedViews)];
+    const total = items.filter(item => !("phase" in item) || item.phase === "pending").length;
     return { ok: true, items, total, projects };
   });
 }

@@ -10,6 +10,6 @@
     "url": "https://api.github.com/repos/anthropics/sandbox-runtime/tarball/626a59671ee2be556d70a290a8036224be996193",
     "sha256": "e6661095aa66a8947215a9d341e610f5155f65e3ade79e166a56a8e78a430767"
   },
-  "nativePatchSha256": "7b9dd94640760174325652f0e14cbcea436002cf28f1b4c6095c4d4a278315cc",
+  "nativePatchSha256": "52f8f441bef56e59c0749bb773e930738e8d3f2ab01ec623816830fa67162cf1",
   "rustToolchain": "1.98.1"
 }

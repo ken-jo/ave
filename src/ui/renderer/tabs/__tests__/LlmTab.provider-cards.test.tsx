@@ -6,7 +6,7 @@ import { assert, beforeEach, describe, expect, it, vi, type Mock } from "vitest"
 import { installMockAveApi, makeMockAveNamespace, mockJudgeGet, type MockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { deferred } from "../../../../../test/renderer/helpers.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
-import { llmModelListCacheKey, type LlmModelListCache, type LlmModelListResult } from "../../../../shared/llm-model-list.js";
+import { llmModelListCacheKey, type LlmModelListCache, type LlmModelListRequest, type LlmModelListResult } from "../../../../shared/llm-model-list.js";
 import {
   marketplaceProviderPresetSecretKey,
   type MarketplaceInstalledProviderPreset,
@@ -233,20 +233,14 @@ function profileSettings(profile: Profile) {
   };
 }
 
-/**
- * An api whose settings store answers a write with the profile under test.
- *
- * The shared mock keeps its own default profile, so a row persisting the
- * catalogue it just fetched would broadcast a settings object holding none of
- * this test's providers — and cards would vanish, or lose the endpoint they
- * are configured for, mid-test and for a reason no user ever meets.
- */
+/** Settings writes and host model discovery publish the profile in use. */
 function profileApi(profile: Profile, rest: MockApi = {}) {
   let settings: { llm: Record<string, unknown>; marketplace: Record<string, unknown> } = profileSettings(profile);
   const listeners = new Set<(next: unknown) => void>();
   const publish = () => {
     for (const listener of listeners) listener(settings);
   };
+  const fetchListing = rest.listLlmModels;
   const api = makeApi({
     getSettings: vi.fn(async () => settings),
     updateSettings: vi.fn(async (patch: { llm?: Record<string, unknown> }) => {
@@ -270,6 +264,20 @@ function profileApi(profile: Profile, rest: MockApi = {}) {
       return () => listeners.delete(listener);
     }),
     ...rest,
+    ...(fetchListing ? { listLlmModels: vi.fn(async (request: LlmModelListRequest) => {
+      const result: LlmModelListResult = await fetchListing(request);
+      if (result.ok && !result.cacheSaveFailed && result.models.length > 0) {
+        const { ok: _ok, cacheSaveFailed: _cacheSaveFailed, ...listing } = result;
+        const { vendor, baseUrl, credentialScope } = request;
+        const key = llmModelListCacheKey(vendor, baseUrl, credentialScope);
+        settings = { ...settings, llm: { ...settings.llm, modelListCache: {
+          ...settings.llm.modelListCache as LlmModelListCache,
+          [key]: { ...listing, baseUrl, credentialScope },
+        } } };
+        publish();
+      }
+      return result;
+    }) } : {}),
   });
   return {
     api,
@@ -1114,7 +1122,8 @@ describe("LlmTab provider cards", () => {
     });
     await renderTab(api, { vendor: "openai-compatible", baseUrl: CUSTOM_ENDPOINT, model });
     expect(await chooserModelIds()).toContain(model);
-    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled());
+    await settleModelListRequests();
+    expect(api.updateSettings).not.toHaveBeenCalled();
     expect(Boolean(within(chooserOption(model)).queryByTestId(`llm-tab:model-vision:${model}`))).toBe(vision);
   });
 
@@ -1130,15 +1139,42 @@ describe("LlmTab provider cards", () => {
       },
     }, {
       hasApiKey: storedKeysFor("openai"),
-      listLlmModels: vi.fn().mockResolvedValue(listedModels("openai", "https://provider.invalid/v1/models", [model], { modelEntries: [{ id: model, inputModalities: ["text", "image"] }], fetchedAt: new Date(1).toISOString() }) satisfies LlmModelListResult),
-      updateSettings: saveState === "pending"
-        ? vi.fn(() => new Promise(() => {}))
-        : vi.fn().mockResolvedValue({ ok: false, error: "settings-update-failed" }),
+      listLlmModels: saveState === "pending"
+        ? vi.fn(() => new Promise<LlmModelListResult>(() => {}))
+        : vi.fn().mockResolvedValue(listedModels("openai", "https://provider.invalid/v1/models", [model], { cacheSaveFailed: true, modelEntries: [{ id: model, inputModalities: ["text", "image"] }], fetchedAt: new Date(1).toISOString() })),
     });
     await renderTab(api, { vendor: "openai", model });
     expect(await chooserModelIds()).toContain(model);
-    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled());
+    await waitFor(() => expect(api.listLlmModels).toHaveBeenCalled());
     expect(within(chooserOption(model)).queryByTestId(`llm-tab:model-vision:${model}`)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["en", "Failed to save settings"],
+    ["ko", "설정 저장 실패"],
+  ] as const)("shows the model list cache save failure in %s", async (locale, message) => {
+    const { getLocale, setLocale } = await import("../../../../i18n/runtime.js");
+    const { loadLocaleMessages } = await import("../../../../i18n/messages/index.js");
+    const previousLocale = getLocale();
+    await loadLocaleMessages(locale);
+    setLocale(locale);
+    try {
+      const model = "gpt-4o";
+      const { api } = profileApi({ vendors: { openai: { model } } }, {
+        hasApiKey: storedKeysFor("openai"),
+        listLlmModels: vi.fn().mockResolvedValue(listedModels(
+          "openai", "https://different.example/v1/models", [model], { cacheSaveFailed: true },
+        )),
+      });
+      await renderTab(api, { vendor: "openai", model });
+      await waitFor(() => {
+        const status = screen.getByTestId("llm-tab:connection-subline:openai");
+        expect(status).toHaveAttribute("data-provider-sync-status", "error");
+        expect(status).toHaveTextContent(message);
+      });
+    } finally {
+      setLocale(previousLocale);
+    }
   });
 
   it("does not apply the generic route's named no-tools entry to a preset", async () => {
@@ -1325,15 +1361,16 @@ describe("LlmTab provider cards", () => {
       vendors: { openai: { model } },
     }, {
       hasApiKey: storedKeysFor("openai"),
-      listLlmModels: vi.fn().mockResolvedValue(listedModels("openai", "https://provider.invalid/v1/models", [model], { modelEntries: [{ id: model, contextLength: 777_000, supportedParameters: ["tools"] }] }) satisfies LlmModelListResult),
-      updateSettings: saveState === "pending"
-        ? vi.fn(() => new Promise(() => {}))
-        : vi.fn().mockResolvedValue({ ok: false, error: "settings-update-failed" }),
+      listLlmModels: saveState === "pending"
+        ? vi.fn(() => new Promise<LlmModelListResult>(() => {}))
+        : vi.fn().mockResolvedValue(listedModels("openai", "https://provider.invalid/v1/models", [model], { cacheSaveFailed: true, modelEntries: [{ id: model, contextLength: 777_000, supportedParameters: ["tools"] }] })),
     });
     await renderTab(api, { vendor: "openai", model });
     expect(await chooserModelIds()).toContain(model);
-    await waitFor(() => expect(within(chooserOption(model)).getByTestId(`llm-tab:model-facts:${model}`)).toHaveTextContent("777k"));
-    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled());
+    await waitFor(() => expect(api.listLlmModels).toHaveBeenCalled());
+    if (saveState === "failed") {
+      await waitFor(() => expect(within(chooserOption(model)).getByTestId(`llm-tab:model-facts:${model}`)).toHaveTextContent("777k"));
+    }
     expect(within(chooserOption(model)).getByTestId(`llm-tab:model-no-tools:${model}`)).toHaveTextContent("도구 미지원");
   });
 

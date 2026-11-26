@@ -9,7 +9,7 @@ import { WIN32_POWERSHELL_STARTUP_ARGS } from "../shared/powershell-startup-poli
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../shared/windows-command-line.js";
 import { sessionStorePath } from "../shared/session-store-path.js";
 import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
-import { expandWindowsEnvRefs, stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { expandWindowsEnvRefs, stripExtendedPathPrefix } from "./sandbox-path-spelling.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { openMxcPolicyPipe } from "./mxc-policy-pipe.js";
 import { isPolicyFloorRow, userDenyCoversPierce, type PolicyModel, type PolicyRow } from "./policy-model.js";
@@ -20,7 +20,7 @@ import {
 
 import { errorMessage } from "../shared/error-message.js";
 import { compileGlobMatcher, globToRegExp } from "../lib/glob-matcher.js";
-import { isPlainWindowsPathComponent } from "./windows-stamp-targets.js";
+import { isPlainWindowsPathComponent } from "../shared/windows-path-spelling.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
 import MXC_PINS from "./mxc-launcher-pins.json" with { type: "json" };
 

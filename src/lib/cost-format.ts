@@ -1,3 +1,5 @@
+import { t } from "../i18n/runtime.js";
+
 /** Clamp invalid or nonpositive counts to zero and round sub-thousand fractions. */
 export function formatTokens(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return "0";
@@ -12,9 +14,10 @@ export function formatTokensExact(n: number | null | undefined): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(n);
 }
 
-/** Widen precision below a cent and group USD thousands in en-US; clamp invalid or nonpositive amounts to zero. */
+/** Widen precision below a cent and group USD thousands in en-US. */
 export function formatCost(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return "$0";
+  if (!Number.isFinite(n)) return t("be_costEstimator.costUnknown");
+  if (n <= 0) return "$0";
   if (n < 0.001) return `$${n.toFixed(5)}`;
   if (n < 0.01) return `$${n.toFixed(4)}`;
   if (n < 1) return `$${n.toFixed(3)}`;

@@ -10,6 +10,7 @@ import {
   enforceChatGptPlanRequestBody,
   type ChatGptPlanResponseFailure,
 } from "../responses-fetch.js";
+import { noRetirementEvidence } from "../../../engine/llm/model-wire-gate.js";
 
 const BASE_BODY = { model: "gpt-6.1-sol", input: [{ role: "user", content: "hi" }], stream: true };
 
@@ -133,7 +134,7 @@ describe("plan-usage responses fetch", () => {
       CHATGPT_PLAN_SDK_CREDENTIAL_PLACEHOLDER,
       CHATGPT_PLAN_API_BASE_URL,
       planFetch,
-      { openaiWire: "responses" },
+      { openaiWire: "responses", getRetiredModelId: noRetirementEvidence },
     );
     const events: StreamEvent[] = [];
     for await (const event of provider.streamTurn({
@@ -163,7 +164,7 @@ describe("plan-usage responses fetch", () => {
       fetch: (async () => { sent += 1; return sse([]); }) as typeof fetch,
       accessToken: async () => "t",
     });
-    const unpinned = new VercelUnifiedProvider("openai", CHATGPT_PLAN_SDK_CREDENTIAL_PLACEHOLDER, CHATGPT_PLAN_API_BASE_URL, planFetch);
+    const unpinned = new VercelUnifiedProvider("openai", CHATGPT_PLAN_SDK_CREDENTIAL_PLACEHOLDER, CHATGPT_PLAN_API_BASE_URL, planFetch, { getRetiredModelId: noRetirementEvidence });
     const events: StreamEvent[] = [];
     // A plan catalog may list a slug the bundled model catalog does not know; only the pin keeps it on Responses.
     for await (const event of unpinned.streamTurn({
