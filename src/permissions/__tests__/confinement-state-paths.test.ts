@@ -198,4 +198,31 @@ describe.runIf(process.platform === "win32")("write admission resolves the decla
         .toThrow(expect.objectContaining({ path: grant, reason: "container-runtime" }));
     }
   });
+
+  it("waives only the runtime root enclosing the own HOME or staging root: other state declared inside either is still refused", () => {
+    const root = String(mxcConfinementStatePaths()[0]);
+    const own = join(root, "homes", "ave-sandbox-home-own");
+    const ledger = join(own, "AppData", "Local", "sandbox-runtime");
+    const staging = join(root, "staging", "0".repeat(32));
+    mkdirSync(ledger, { recursive: true });
+    mkdirSync(join(own, "work"));
+    mkdirSync(join(staging, "home"), { recursive: true });
+    const refused = (grants: string[], state: ReturnType<typeof declaredConfinementStatePaths>, reason: string, stagingRoot?: string, home?: string) => {
+      for (const grant of grants) {
+        expect(() => assertWriteGrantsOutsideConfinementState([grant], state, stagingRoot, home), grant)
+          .toThrow(expect.objectContaining({ path: grant, reason }));
+      }
+    };
+    const nested = declaredConfinementStatePaths([ledger], [root]);
+    expect(() => assertWriteGrantsOutsideConfinementState([join(own, "work")], nested, undefined, own)).not.toThrow();
+    // Contains, equals and lies inside the nested declaration.
+    refused([own, join(own, "AppData"), ledger, join(ledger, "x")], nested, "helper-ledger", undefined, own);
+    // Declared through an alias outside the HOME that resolves into it.
+    const alias = join(base, "alias");
+    symlinkSync(join(own, "AppData", "Local"), alias, "junction");
+    refused([own, join(own, "AppData")], declaredConfinementStatePaths([join(alias, "sandbox-runtime")], [root]), "helper-ledger", undefined, own);
+    // A runtime declaration inside the HOME encloses nothing of it.
+    refused([own, join(own, "work")], declaredConfinementStatePaths([], [root, join(own, "work")]), "container-runtime", undefined, own);
+    refused([staging], declaredConfinementStatePaths([join(staging, "home")], [root]), "helper-ledger", staging);
+  });
 });

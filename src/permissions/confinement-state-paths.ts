@@ -51,25 +51,34 @@ function strictlyResolved(path: string): string | undefined {
   return real.slice(3).split("\\").some((component) => /[. ]$|:/u.test(component)) ? undefined : real;
 }
 
-/** Each declared state path as spelled and as resolved; undefined when the declaration is missing or any path is unproven. */
-function resolvedStatePaths(statePaths: readonly ConfinementStatePath[] | undefined): ConfinementStatePath[] | undefined {
+interface ResolvedStatePath extends ConfinementStatePath {
+  readonly real: string;
+}
+
+/** Each declared state path with the identity it resolves to; undefined when the declaration is missing or any path is unproven. */
+function resolvedStatePaths(statePaths: readonly ConfinementStatePath[] | undefined): ResolvedStatePath[] | undefined {
   if (statePaths === undefined) return undefined;
-  const resolved: ConfinementStatePath[] = [];
+  const resolved: ResolvedStatePath[] = [];
   for (const state of statePaths) {
     const real = strictlyResolved(state.path);
     if (real === undefined) return undefined;
-    resolved.push(state, { ...state, path: real });
+    resolved.push({ ...state, real });
   }
   return resolved;
 }
+
+// Only a container runtime declaration strictly enclosing `inner` is waived for it.
+const enclosingRuntime = (state: ResolvedStatePath, inner: string): boolean => state.stateClass === "container-runtime"
+  && isWindowsPathAtOrUnder(inner, state.real) && !isWindowsPathAtOrUnder(state.real, inner);
 
 /**
  * The shared step every grant route runs: no write grant may equal, sit inside or contain a path a backend declares as
  * its own state. Each grant is compared as spelled and as the identity it resolves to, which an alias or a link on its
  * path would otherwise hide. A declaration that is missing or does not resolve refuses every write; a grant that does
  * not resolve is refused. `stagingRoot` is the one host-minted holder root inside a backend's state the route grants
- * itself; only a grant resolving to exactly it is passed. `ownHome` is the invocation's own sandbox HOME, which the
- * caller has verified as issued and in place; a grant resolving at or under it is passed.
+ * itself; `ownHome` is the invocation's own sandbox HOME, which the caller has verified as issued and in place. A grant
+ * resolving to exactly the staging root, or at or under the HOME, is passed by the container runtime declaration that
+ * encloses that root or HOME only; every other declaration, including one inside either, still refuses it.
  */
 export function assertWriteGrantsOutsideConfinementState(
   write: readonly string[],
@@ -87,10 +96,12 @@ export function assertWriteGrantsOutsideConfinementState(
   for (const grant of write) {
     const real = strictlyResolved(grant);
     if (real === undefined) throw new ConfinementStateWriteGrantError(grant, "grant-unresolved");
-    if (staging !== undefined && isWindowsPathAtOrUnder(real, staging) && isWindowsPathAtOrUnder(staging, real)) continue;
-    if (home !== undefined && isWindowsPathAtOrUnder(real, home)) continue;
-    const hit = states.find(state => [grant, real].some(spelling =>
-      isWindowsPathAtOrUnder(spelling, state.path) || isWindowsPathAtOrUnder(state.path, spelling)));
+    const atStaging = staging !== undefined && isWindowsPathAtOrUnder(real, staging) && isWindowsPathAtOrUnder(staging, real);
+    const inHome = home !== undefined && isWindowsPathAtOrUnder(real, home);
+    const hit = states.find(state => !(atStaging && enclosingRuntime(state, staging))
+      && !(inHome && enclosingRuntime(state, home))
+      && [grant, real].some(spelling => [state.path, state.real].some(declared =>
+        isWindowsPathAtOrUnder(spelling, declared) || isWindowsPathAtOrUnder(declared, spelling))));
     if (hit !== undefined) throw new ConfinementStateWriteGrantError(grant, hit.stateClass);
   }
 }
