@@ -18,6 +18,7 @@ const SANDBOX_ROOT_NAME = vi.hoisted(() => `ave-sandbox-init-windows-mxc-sandbox
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
   checkDeps: vi.fn(),
+  offlineConfinement: vi.fn(),
   detectMxc: vi.fn(),
   startProbe: vi.fn(),
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -65,7 +66,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
   const roots = join(tmpdir(), SANDBOX_ROOT_NAME);
   return {
     appOwnedSandboxTempRoot: () => join(roots, "tmp"),
-    isOfflineProcessConfinementActive: () => false,
+    isOfflineProcessConfinementActive: h.offlineConfinement,
     appOwnedSandboxHomeRoot: () => join(roots, "home"),
     sandboxTempPrincipalDirsInUse: () => new Set<string>(),
     ensureSandboxPrivateRoot: (root: string) => {
@@ -141,6 +142,7 @@ beforeEach(() => {
   __resetSandboxHomesUnavailableForTest();
   h.initialize.mockReset();
   h.initialize.mockResolvedValue(undefined);
+  h.offlineConfinement.mockReset().mockReturnValue(false);
   h.checkDeps.mockReset();
   h.detectMxc.mockReset();
   h.startProbe.mockReset();
@@ -192,12 +194,18 @@ it.each([
   await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ extensions: "none" }));
 });
 
+const ACCOUNT_DEPS_READY = { errors: [], warnings: [] };
+
 it.each([
-  { label: "available", mxc: MXC_OLD, deps: { errors: [], warnings: [] } },
-  { label: "inconclusive", mxc: MXC_OLD, deps: SRT_WIN_MISSING, inactive: true },
+  { label: "operational account runtime", mxc: MXC_OLD, deps: ACCOUNT_DEPS_READY, accountStarted: true },
+  { label: "verified container shell", mxc: MXC_OK, deps: SRT_WIN_MISSING, containerStarted: true },
+  { label: "inconclusive container with dependencies only", mxc: MXC_OLD, deps: ACCOUNT_DEPS_READY, inactive: true },
+  { label: "inconclusive container without dependencies", mxc: MXC_OLD, deps: SRT_WIN_MISSING, inactive: true },
+  { label: "degraded after account initialization fails", mxc: MXC_OLD, deps: ACCOUNT_DEPS_READY, initFailure: "startup", inactive: true },
+  { label: "degraded after deferred account isolation fails", mxc: MXC_OLD, deps: ACCOUNT_DEPS_READY, initFailure: "background", inactive: true },
   { label: "still checking", mxc: MXC_OK, deps: NO_ACCOUNT_BACKEND, inactive: true },
   { label: "confirmed absent", mxc: NO_CONTAINER, deps: NO_ACCOUNT_BACKEND, absent: true },
-])("defers boot and reconciliation indexing with stored false until the backend is $label", async ({ mxc, deps, absent, inactive }) => {
+])("defers boot and reconciliation indexing with stored false until the backend is $label", async ({ mxc, deps, absent, inactive, accountStarted, containerStarted, initFailure }) => {
   const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
   const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
   const mainDir = join(dir, "main");
@@ -214,7 +222,12 @@ it.each([
     await isolatedSeed.saveSessionMetadata(sessionId, { sessionKind: "main", projectRoot: root, title: "Session" });
     const main = new SessionRepository({ aveDir: mainDir, getSearchIndexPolicy });
     const isolated = new SessionRepository({ aveDir: isolatedDir, getSearchIndexPolicy });
+    const originalMainIndex = readFileSync(mainIndex);
+    const originalIsolatedIndex = readFileSync(isolatedIndex);
     const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    const rebuildIndex = vi.spyOn(SessionSearchIndex.prototype, "writeRebuiltSessions");
+    const updateIndex = vi.spyOn(SessionSearchIndex.prototype, "upsertSession");
+    const discardIndex = vi.spyOn(SessionSearchIndex.prototype, "discard");
     try {
       markSandboxGatePendingAtBoot();
       await main.verifyOrRebuildSearchIndex();
@@ -226,11 +239,38 @@ it.each([
       setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
       h.checkDeps.mockResolvedValue(deps);
       h.detectMxc.mockResolvedValue(mxc);
-      await initSandboxGate(harness.context(false, false));
+      if (initFailure === "startup") h.initialize.mockRejectedValueOnce(new Error("account isolation startup failed"));
+      if (initFailure === "background") {
+        h.initialize.mockResolvedValueOnce({
+          windowsIsolation: Promise.resolve({ status: "failed", error: new Error("account isolation setup failed") }),
+          isCurrent: () => true,
+        });
+      }
+      if (accountStarted) {
+        h.initialize.mockImplementationOnce(async () => { h.offlineConfinement.mockReturnValue(true); });
+      }
+      await initSandboxGate(harness.context(Boolean(accountStarted || containerStarted || initFailure), false));
+      if (containerStarted) await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.shells).toBe("mxc"));
+      if (initFailure) {
+        expect(h.initialize).toHaveBeenCalledOnce();
+        expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-windows-init-failed" });
+        expect(getWindowsSandboxSubstrate()).toMatchObject({
+          srtWinReady: true, shells: initFailure === "startup" ? "none" : "approved-host", extensions: "none",
+        });
+      }
       await main.verifyOrRebuildSearchIndex();
       await isolated.verifyOrRebuildSearchIndex();
       expect(existsSync(mainIndex)).toBe(!absent);
       expect(existsSync(isolatedIndex)).toBe(!absent);
+      if (inactive) {
+        await main.saveSession(sessionId, [{ role: "user", content: "deferred indexing update" }]);
+        expect.soft(getSearchIndexPolicy()).toBe("inactive");
+        expect.soft(readFileSync(mainIndex).equals(originalMainIndex)).toBe(true);
+        expect.soft(readFileSync(isolatedIndex).equals(originalIsolatedIndex)).toBe(true);
+        expect.soft(rebuildIndex).not.toHaveBeenCalled();
+        expect.soft(updateIndex).not.toHaveBeenCalled();
+        expect.soft(discardIndex).not.toHaveBeenCalled();
+      }
       if (absent || inactive) {
         expect.soft(main.searchSessions("boot evidence")).toHaveLength(0);
         expect.soft(isolated.searchSessions("detachment evidence")).toHaveLength(0);
@@ -243,6 +283,9 @@ it.each([
       expect(isolated.loadSessionMetadata(sessionId)?.projectRoot).toBeUndefined();
     } finally {
       openIndex.mockRestore();
+      rebuildIndex.mockRestore();
+      updateIndex.mockRestore();
+      discardIndex.mockRestore();
       main.closeSearchIndex();
       isolated.closeSearchIndex();
     }
@@ -285,8 +328,9 @@ it.each([undefined, false])("retains indexes and recovers skipped writes across 
     }
 
     markSandboxGatePendingAtBoot();
-    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
-    await initSandboxGate(harness.context(false, false));
+    h.checkDeps.mockResolvedValue(ACCOUNT_DEPS_READY);
+    h.initialize.mockImplementationOnce(async () => { h.offlineConfinement.mockReturnValue(true); });
+    await initSandboxGate(harness.context(true, false));
     const restarted = new SessionRepository({ aveDir: dir, getSearchIndexPolicy });
     const restartedEmpty = new SessionRepository({ aveDir: emptyDir, getSearchIndexPolicy });
     await restarted.verifyOrRebuildSearchIndex();

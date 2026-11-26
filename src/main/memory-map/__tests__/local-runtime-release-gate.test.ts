@@ -8,7 +8,7 @@ import { assertLocalEmbeddingRuntime, isLocalInferenceSwitchAvailable } from '..
 const state = vi.hoisted(() => ({
   confined: false, homeVerified: true,
   plan: undefined as Pick<SandboxWindowsExtensionPlan, 'selectedBackend' | 'readiness' | 'reason'> | undefined,
-  substrate: undefined as Pick<SandboxWindowsSubstrateInfo, 'mxc' | 'srtWinReady' | 'accountBackendAbsent'> | undefined,
+  substrate: undefined as Pick<SandboxWindowsSubstrateInfo, 'mxc' | 'srtWinReady' | 'accountBackendAbsent' | 'shells'> | undefined,
 }));
 vi.mock('../../../permissions/asrt-sandbox.js', () => ({ isOfflineProcessConfinementActive: () => state.confined }));
 vi.mock('../../../permissions/sandbox-capability.js', () => ({
@@ -34,7 +34,7 @@ beforeEach(() => {
   state.homeVerified = true;
   state.plan = { selectedBackend: 'none', readiness: 'unavailable', reason: 'container-unavailable' };
   state.substrate = { mxc: { state: 'unavailable', reason: 'container-unavailable', containerBackendAbsent: true },
-    srtWinReady: false, accountBackendAbsent: true };
+    srtWinReady: false, accountBackendAbsent: true, shells: 'none' };
 });
 afterEach(() => {
   unregister?.();
@@ -84,7 +84,9 @@ describe('Windows local inference release gate', () => {
     expect(sessionSearchIndexPolicy(true)).toBe('enabled-with-recovery');
     expect(sessionSearchIndexPolicy(false)).toBe('paused');
     expect(assertLocalEmbeddingRuntime()).toBe('unconfined');
-    state.substrate = { mxc: { state: 'available' }, srtWinReady: false };
+    state.substrate = { mxc: { state: 'available' }, srtWinReady: false, shells: 'none' };
+    expect.soft(sessionSearchIndexPolicy(false)).toBe('inactive');
+    state.substrate = { ...state.substrate, shells: 'mxc' };
     expect(sessionSearchIndexPolicy(false)).toBe('enabled-with-recovery');
     setProcessPlatform('linux');
     expect(sessionSearchIndexPolicy(false)).toBe('enabled');
@@ -103,9 +105,9 @@ describe('Windows local inference release gate', () => {
     ['pending plan', () => { state.plan = { selectedBackend: 'none', readiness: 'checking', reason: 'checking' }; }],
     ['rejected plan', () => { state.plan = { selectedBackend: 'none', readiness: 'rejected', reason: 'request-rejected' }; }],
     ['readiness deadline', () => { state.plan = { selectedBackend: 'none', readiness: 'unavailable', reason: 'readiness-deadline' }; }],
-    ['unproved runtime root', () => { state.substrate = { mxc: { state: 'unavailable', reason: 'runtime-root-unproved' }, srtWinReady: false }; }],
-    ['installed account backend', () => { state.substrate = { mxc: { state: 'unavailable', reason: 'container-unavailable' }, srtWinReady: true }; }],
-    ['inconclusive container probe', () => { state.substrate = { mxc: { state: 'unavailable', reason: 'probe-failed' }, srtWinReady: false }; }],
+    ['unproved runtime root', () => { state.substrate = { mxc: { state: 'unavailable', reason: 'runtime-root-unproved' }, srtWinReady: false, shells: 'none' }; }],
+    ['installed account backend', () => { state.substrate = { mxc: { state: 'unavailable', reason: 'container-unavailable' }, srtWinReady: true, shells: 'none' }; }],
+    ['inconclusive container probe', () => { state.substrate = { mxc: { state: 'unavailable', reason: 'probe-failed' }, srtWinReady: false, shells: 'none' }; }],
   ] as const)('refuses the host route with %s', (_name, configure) => {
     unregister = registerMxcReleaseGateEvidence(EVIDENCE);
     configure();

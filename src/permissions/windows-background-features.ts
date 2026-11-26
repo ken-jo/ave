@@ -25,7 +25,7 @@ export function sessionSearchIndexPolicy(preference: boolean | undefined): Sessi
   if (isSandboxGateUndecidedAtBoot() || !isAveHomePrivacyVerifiedAtBoot()) return "inactive";
   if (areWindowsBackgroundSwitchesAvailable()) return preference === false ? "paused" : "enabled-with-recovery";
   const substrate = getWindowsSandboxSubstrate();
-  const backendAvailable = substrate?.mxc.state === "available"
-    || (substrate?.srtWinReady === true && substrate.accountBackendAbsent !== true);
-  return backendAvailable ? "enabled-with-recovery" : "inactive";
+  const confinementOperational = isOfflineProcessConfinementActive()
+    || (substrate?.shells === "mxc" && substrate.mxc.state === "available");
+  return confinementOperational ? "enabled-with-recovery" : "inactive";
 }
