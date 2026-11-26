@@ -12,6 +12,7 @@ export const NATIVE_TIER_TESTS = [
   "src/permissions/__tests__/asrt-stamp-targets.test.ts",
   "src/permissions/__tests__/asrt-windows-grant-paths.test.ts",
   "src/permissions/__tests__/asrt-windows-initialization.test.ts",
+  "src/permissions/__tests__/container-route-unswitched.test.ts",
   "src/permissions/__tests__/mxc-runtime-root-floor.test.ts",
   "src/permissions/__tests__/mxc-runtime-root.test.ts",
   "src/permissions/__tests__/srt-win-integrity.test.ts",

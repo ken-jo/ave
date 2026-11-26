@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeImageRuntimePackage } from "../../src/__tests__/support/image-runtime-package.js";
 import { writeCanvasRuntimePackage, writePageRuntimeResources } from "../../src/__tests__/support/page-runtime-package.js";
 import { writeMxcRuntimePackage } from "../../src/__tests__/support/mxc-runtime-package.js";
 import { upstreamSrtWinReceiptFixtures } from "../../src/__tests__/support/srt-win-build-receipts.js";
+import PINS from "../../src/permissions/mxc-launcher-pins.json" with { type: "json" };
 
 const SRT_WIN_BUILD_RECEIPTS = upstreamSrtWinReceiptFixtures();
 const require = createRequire(import.meta.url);
@@ -21,8 +22,36 @@ const { readUpstreamSrtWinInput } = require("../../scripts/lib/srt-win-integrity
 const packageHook = require("../../scripts/electron-after-pack.cjs") as (
   context: Awaited<ReturnType<typeof createPackage>>["context"],
 ) => Promise<void>;
+
+function posixLauncher(platform: "darwin" | "linux", appOutDir: string) {
+  const target = platform === "darwin" ? "darwin-arm64" : "linux-x64";
+  const { launcher } = PINS.targets[target];
+  const resources = platform === "darwin" ? join(appOutDir, "Client.app", "Contents", "Resources") : join(appOutDir, "resources");
+  return {
+    installed: join("node_modules", PINS.package, launcher.member),
+    packaged: join(resources, "mxc", basename(dirname(launcher.member)), basename(launcher.member)),
+  };
+}
+
 async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["context"]): Promise<void> {
-  if (context.electronPlatformName !== "win32") return packageHook(context);
+  if (context.electronPlatformName !== "win32") {
+    if (process.platform !== "win32") return packageHook(context);
+    // Simulated POSIX packages on Windows need their POSIX file mode represented in the fixture.
+    const { packaged } = posixLauncher(context.electronPlatformName, context.appOutDir);
+    const fs = require("node:fs") as typeof import("node:fs");
+    const lstat = fs.lstatSync;
+    fs.lstatSync = ((file: Parameters<typeof lstat>[0], options: Parameters<typeof lstat>[1]) => {
+      const entry = lstat(file, options);
+      if (file === packaged && typeof entry?.mode === "number") entry.mode |= 0o111;
+      return entry;
+    }) as typeof lstat;
+    syncBuiltinESMExports();
+    try { return await packageHook(context); }
+    finally {
+      fs.lstatSync = lstat;
+      syncBuiltinESMExports();
+    }
+  }
   // The real hook and all verifiers run against this owned unit payload. Only
   // the fixture's architecture-dependent pins are substituted, never checks.
   const script = `
@@ -82,7 +111,9 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
     ? join(contents, "Frameworks", "Electron Framework.framework", "Versions", "A", "Libraries")
     : root;
   const modules = join(resources, "app.asar.unpacked", "node_modules");
-  const embeddingRuntime = join(modules, "onnxruntime-node", "bin", "napi-v6", platform, "x64");
+  const arch = platform === "darwin" ? "arm64" : "x64";
+  const target = `${platform}-${arch}`;
+  const embeddingRuntime = join(modules, "onnxruntime-node", "bin", "napi-v6", platform, arch);
   const runtimeLibraries = platform === "win32" ? ["onnxruntime.dll", "DirectML.dll", "dxcompiler.dll"]
     : [platform === "darwin" ? "libonnxruntime.1.dylib" : "libonnxruntime.so.1"];
   for (const file of ["onnxruntime_binding.node", ...runtimeLibraries]) putFile(join(embeddingRuntime, file));
@@ -95,8 +126,8 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
   }
   const uv = Buffer.from("executable");
   const uvName = platform === "win32" ? "uv.exe" : "uv";
-  putFile(join(resources, "uv", `${platform}-x64`, `${uvName}.gz`), gzipSync(uv));
-  putFile(join(resources, "uv", `${platform}-x64`, "uv.meta.json"), JSON.stringify({
+  putFile(join(resources, "uv", target, `${uvName}.gz`), gzipSync(uv));
+  putFile(join(resources, "uv", target, "uv.meta.json"), JSON.stringify({
     binarySha256: createHash("sha256").update(uv).digest("hex"),
   }));
   putFile(join(resources, "licenses", "uv", "LICENSE-MIT"));
@@ -115,14 +146,14 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
   for (const file of platform === "win32"
     ? ["pty.node", "conpty.node", "conpty_console_list.node", "winpty.dll", "winpty-agent.exe"]
     : platform === "darwin" ? ["pty.node", "spawn-helper"] : ["pty.node"]) {
-    putFile(join(modules, "node-pty", "prebuilds", `${platform}-x64`, file));
+    putFile(join(modules, "node-pty", "prebuilds", target, file));
   }
-  putFile(join(modules, "better-sqlite3", "prebuilds", `${platform}-x64.node`));
-  writeImageRuntimePackage(modules, platform);
-  writeCanvasRuntimePackage(modules, platform);
+  putFile(join(modules, "better-sqlite3", "prebuilds", `${target}.node`));
+  writeImageRuntimePackage(modules, platform, arch);
+  writeCanvasRuntimePackage(modules, platform, arch);
   writePageRuntimeResources(resources);
-  const ripgrep = join(modules, "@vscode", `ripgrep-${platform}-x64`);
-  putFile(join(ripgrep, "package.json"), JSON.stringify({ name: `@vscode/ripgrep-${platform}-x64` }));
+  const ripgrep = join(modules, "@vscode", `ripgrep-${target}`);
+  putFile(join(ripgrep, "package.json"), JSON.stringify({ name: `@vscode/ripgrep-${target}` }));
   putFile(join(ripgrep, "bin", platform === "win32" ? "rg.exe" : "rg"));
   chmodSync(join(ripgrep, "bin", platform === "win32" ? "rg.exe" : "rg"), 0o755);
   for (const notice of ["README.txt", "COPYING", "LICENSE-MIT", "UNLICENSE", "PCRE2-LICENCE.txt", "VSCODE-RIPGREP-LICENSE"]) {
@@ -130,6 +161,12 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
   }
   for (const file of RUNTIME_FILES[platform]) putFile(join(libraryDirectory, file), file);
   if (platform === "win32") writeMxcRuntimePackage(resources, join(root, "Client.exe"));
+  else {
+    const { installed, packaged } = posixLauncher(platform, root);
+    mkdirSync(dirname(packaged), { recursive: true });
+    copyFileSync(installed, packaged);
+    chmodSync(packaged, 0o755);
+  }
   return {
     libraryDirectory,
     resources,
@@ -138,7 +175,7 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
     context: {
       appOutDir: root,
       electronPlatformName: platform,
-      arch: 1,
+      arch: arch === "arm64" ? 3 : 1,
       packager: { appInfo: { productFilename: "Client" } },
     },
   };

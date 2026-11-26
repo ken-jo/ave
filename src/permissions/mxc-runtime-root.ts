@@ -571,20 +571,19 @@ function rootOfThisTestRun(host: MxcRuntimeHost): string | undefined {
 }
 
 /**
- * The Windows runtime root every container start requires: the one sandbox start-up proved private (under the test
- * runner, the one the run's set-up proved), still the same directory. It creates and proves nothing: a root that was
- * refused, never established, removed or replaced refuses the start.
+ * The private runtime root established at sandbox start-up, still the same directory. Windows tests may use the
+ * root proved by the test runner. A root that was refused, never established, removed or replaced refuses the start.
  */
 export function requireMxcContainerStartRoot(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
-  if (host.platform !== "win32") refuse("Container starts require the Windows container runtime root");
-  return rootOfThisTestRun(host) ?? requireMxcRuntimeRoot(host);
+  if (host.platform === "win32") return rootOfThisTestRun(host) ?? requireMxcRuntimeRoot(host);
+  return requireMxcRuntimeRoot(host);
 }
 
 /**
  * Sandbox start-up only: establish the runtime root by its proof and create `<runtime root>\homes`, beside `staging`,
  * where Windows sandbox HOMEs and their owner markers go. It inherits the root's access, so only this account reaches
  * it; a confined process is granted its own HOME inside it and nothing else, and the markers sit where no confined
- * process is granted.
+ * process is granted. POSIX container HOMEs live inside the individual run's staging directory.
  */
 export function establishMxcSandboxHomesParent(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
   if (host.platform !== "win32") refuse("Sandbox HOMEs live under the container runtime root on Windows only");
@@ -598,7 +597,7 @@ export function establishMxcSandboxHomesParent(host: MxcRuntimeHost = currentMxc
 /**
  * The sandbox HOME parent start-up established (under the test runner, the one the run's set-up created), still the
  * same directory. It creates and proves nothing: without a root and HOME parent from start-up every HOME is refused,
- * and nothing falls back to the host temp directory.
+ * and nothing falls back to the host temp directory. POSIX container HOMEs live inside the run's staging directory.
  */
 export function mxcSandboxHomesParent(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
   if (host.platform !== "win32") refuse("Sandbox HOMEs live under the container runtime root on Windows only");

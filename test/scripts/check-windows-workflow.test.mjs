@@ -321,7 +321,7 @@ const EXEMPTIONS = [
   "bun run check:plugin-host-protocol-schema",
   "node scripts/check-srt-win-integrity.cjs --upstream --inputs",
   "node scripts/check-srt-win-integrity.cjs",
-  "node scripts/fetch-mxc.mjs --arch x64",
+  "node scripts/fetch-mxc.mjs --target win32-x64",
   "& './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' install",
   "& './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' user status",
   "ConvertFrom-Json",

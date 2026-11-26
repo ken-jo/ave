@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, it, expect } from 'vitest';
+import { copyMxcLauncherPackageInputs } from '../../src/__tests__/support/mxc-runtime-package.js';
 const require = createRequire(import.meta.url);
 const { assertMemoryRuntimeFiles, assertMemoryNotices } = require('../../scripts/lib/memory-runtime-files.cjs');
 describe('memory runtime packaging', () => {
@@ -25,6 +26,7 @@ describe('memory runtime packaging', () => {
       const directory = (platform: string, arch: string) => resolve(root, 'node_modules', 'onnxruntime-node', 'bin', 'napi-v6', platform, arch);
       const architectures = [[1, 'x64'], [3, 'arm64']] as const;
       for (const [arch, name] of architectures) {
+        copyMxcLauncherPackageInputs(root, `linux-${name}`);
         await beforePack({ packager, electronPlatformName: 'linux', arch });
         const matcher = getNodeModuleFileMatcher(root, root, (value: string) => value.replace(/\$\{arch\}/g, name), config.linux, packager);
         const filter = matcher.createFilter();

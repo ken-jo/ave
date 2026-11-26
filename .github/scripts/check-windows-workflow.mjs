@@ -102,7 +102,7 @@ const UNCONTAINED_COMMANDS = new Map([
   ["bun run check:plugin-host-protocol-schema", "regenerates and compares a schema"],
   ["node scripts/check-srt-win-integrity.cjs --upstream --inputs", "hashes the sandbox helper sources"],
   ["node scripts/check-srt-win-integrity.cjs", "hashes the sandbox helper"],
-  ["node scripts/fetch-mxc.mjs --arch x64", "fetches pinned native payloads"],
+  ["node scripts/fetch-mxc.mjs --target win32-x64", "fetches pinned native payloads"],
   ["& './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' install", "provisions the sandbox account"],
   ["& './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' user status", "reads the sandbox account"],
   ["ConvertFrom-Json", "parses in process"],
