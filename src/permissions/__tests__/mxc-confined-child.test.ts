@@ -24,14 +24,24 @@ const state = vi.hoisted(() => ({
   // Stands for the issued-HOME identity check (its own suite runs it on real directories): the launch's HOME itself.
   issuedHome: vi.fn((cwd: string, home: string | undefined): boolean => cwd === home),
   homeInPlace: vi.fn((_home: string | undefined): void => undefined),
+  // One observation of the issuance a start holds: by default still live, resolving to its own name.
+  liveHome: vi.fn((issued: { readonly home: string } | undefined): string | undefined => issued?.home),
+  // Each backend's declared state: by default the runtime root alone.
+  declared: vi.fn((): { path: string; stateClass: "helper-ledger" | "container-runtime" }[] =>
+    [{ path: "C:\\ave-cache\\mxc-runtime", stateClass: "container-runtime" }]),
 }));
 vi.mock("../mxc-runtime-root.js", async (original) => ({
   ...await original<typeof import("../mxc-runtime-root.js")>(), requireMxcContainerStartRoot: () => state.startRoot(),
+}));
+vi.mock("../confinement-state-paths.js", async (original) => ({
+  ...await original<typeof import("../confinement-state-paths.js")>(), declaredConfinementStatePaths: () => state.declared(),
 }));
 vi.mock("../sandbox-home-registry.js", async (original) => ({
   ...await original<typeof import("../sandbox-home-registry.js")>(),
   isIssuedContainerHome: (cwd: string, home: string | undefined) => state.issuedHome(cwd, home),
   assertIssuedContainerHomeInPlace: (home: string | undefined) => state.homeInPlace(home),
+  issuedContainerHome: (home: string | undefined) => home === undefined ? undefined : { home },
+  liveIssuedContainerHome: (issued: { readonly home: string } | undefined) => state.liveHome(issued),
 }));
 vi.mock("../asrt-sandbox.js", () => ({
   assertExtensionStartAllowed: () => state.allowed(), admitMxcExtensionFilesystem: (...args: unknown[]) => state.admit(...args),
@@ -503,6 +513,65 @@ describe("the container runtime root", () => {
     expect(state.admit).not.toHaveBeenCalled();
     expect(state.spawn).not.toHaveBeenCalled();
     expect(liveEgressInvocationCount()).toBe(before);
+  });
+});
+
+describe("the HOME a confined child writes", () => {
+  const RUNTIME_ROOT = String.raw`C:\ave-cache\mxc-runtime`;
+  const STAGING = String.raw`C:\ave-cache\mxc-runtime\staging\0123456789abcdef0123456789abcdef`;
+  const HOME = `${STAGING}\\home`;
+  const WORK = String.raw`D:\work`;
+  const staged = (): MxcConfinedChildSpec => ({ ...spec(), cwd: WORK, home: HOME, temp: `${STAGING}\\temp`,
+    allowWrite: [WORK, STAGING], stagingRoot: STAGING,
+    filesystemOwnership: { readRoots: [], writeRoots: [WORK, STAGING], hostStorageRoots: [] } });
+  const withLedger = (ledger: string) => [{ path: RUNTIME_ROOT, stateClass: "container-runtime" as const },
+    { path: ledger, stateClass: "helper-ledger" as const }];
+  afterEach(() => {
+    state.declared.mockReset();
+    state.declared.mockReturnValue([{ path: RUNTIME_ROOT, stateClass: "container-runtime" }]);
+    state.liveHome.mockReset();
+    state.liveHome.mockImplementation((issued) => issued?.home);
+  });
+
+  it("admits its issued HOME beneath its own staging root, waiving only the runtime root around it", async () => {
+    admitWrites(WORK, STAGING);
+    const result = await spawnMxcConfinedChild(staged());
+    expect(state.spawn).toHaveBeenCalledOnce();
+    await result.release();
+  });
+
+  it.each([
+    ["holds", `${HOME}\\AppData\\Local\\sandbox-runtime`],
+    ["is", HOME],
+    ["lies inside", STAGING],
+  ])("refuses a HOME that %s other declared state, before admission, egress or the native spawn", async (_case, ledger) => {
+    state.declared.mockReturnValue(withLedger(ledger));
+    const before = liveEgressInvocationCount();
+    await expect(spawnMxcConfinedChild(staged())).rejects.toMatchObject({ code: "confinement-state-write-grant", path: HOME, reason: "helper-ledger" });
+    expect(state.admit).not.toHaveBeenCalled();
+    expect(state.spawn).not.toHaveBeenCalled();
+    expect(liveEgressInvocationCount()).toBe(before);
+  });
+
+  it("checks the HOME again before the native spawn", async () => {
+    admitWrites(WORK, STAGING);
+    state.lease.mockImplementationOnce(async () => {
+      state.declared.mockReturnValue(withLedger(`${HOME}\\AppData`));
+      return { url: "http://127.0.0.1:43210", port: 43210, close: state.close };
+    });
+    const native = vi.fn();
+    state.spawn.mockImplementationOnce(async (_request, options) => { options.beforeSpawn(); native(); });
+    await expect(spawnMxcConfinedChild(staged())).rejects.toMatchObject({ code: "confinement-state-write-grant", path: HOME, reason: "helper-ledger" });
+    expect(native).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["no longer the issuance this start holds", () => { state.liveHome.mockReturnValue(undefined); }, {}],
+    ["outside its own staging root", () => undefined, { stagingRoot: `${RUNTIME_ROOT}\\staging\\fedcba9876543210fedcba9876543210` }],
+  ])("refuses a HOME inside the runtime root that is %s", async (_case, arrange, override) => {
+    arrange();
+    await expect(spawnMxcConfinedChild({ ...staged(), ...override })).rejects.toThrow(/HOME inside the sandbox runtime root is not the one issued/u);
+    expect(state.spawn).not.toHaveBeenCalled();
   });
 });
 

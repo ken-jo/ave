@@ -51,7 +51,8 @@ import type { PluginWorkerControl } from "../plugins/public-contract.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
-import { assertIssuedContainerHomeInPlace, isIssuedContainerHome } from "./sandbox-home-registry.js";
+import { assertIssuedContainerHomeInPlace, isIssuedContainerHome, issuedContainerHome, liveIssuedContainerHome } from "./sandbox-home-registry.js";
+import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "./confinement-state-paths.js";
 import { assertMxcHolderPrivateDirectories, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { isSandboxWrapperEnvKey } from "../tools/safe-env.js";
 import {
@@ -328,6 +329,19 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       writeRoots: Object.freeze([...spec.filesystemOwnership.writeRoots]), hostStorageRoots: Object.freeze([...spec.filesystemOwnership.hostStorageRoots]) }),
   });
   assertIssuedContainerHomeInPlace(spec.home);
+  // The child writes its HOME: inside the runtime root only as the issuance this start holds, beneath its own staging
+  // root when it has one, which waives only the runtime declaration; every other declared state refuses it.
+  const issuedHome = issuedContainerHome(spec.home);
+  const assertHomeOutsideState = (): void => {
+    const live = liveIssuedContainerHome(issuedHome);
+    const staged = live !== undefined && (spec.stagingRoot === undefined
+      || (isWindowsPathAtOrUnder(spec.home, spec.stagingRoot) && !isWindowsPathAtOrUnder(spec.stagingRoot, spec.home)));
+    if (!staged && pathForms(spec.home).some((form) => isWindowsPathAtOrUnder(form, runtimeRoot))) {
+      throw new MxcProcessContractError("Container HOME inside the sandbox runtime root is not the one issued to this start");
+    }
+    assertWriteGrantsOutsideConfinementState([spec.home], declaredConfinementStatePaths(), undefined, staged ? live : undefined);
+  };
+  assertHomeOutsideState();
   // No working directory inside the runtime root except the launch's own issued HOME itself, by identity.
   if (pathForms(spec.cwd).some((form) => isWindowsPathAtOrUnder(form, runtimeRoot)) && !isIssuedContainerHome(spec.cwd, spec.home)) {
     throw new MxcProcessContractError("Container working directory is inside the sandbox runtime root");
@@ -429,6 +443,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
           assertManagedChildProcessAdmissionOpen(spec.label);
           if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before native creation");
           assertNesting();
+          assertHomeOutsideState();
           consumeMxcExtensionAdmission(admission, { ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
         },
       });
