@@ -1,7 +1,8 @@
 import { mkdtempSync, realpathSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
+import { beforeAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { partialWindowsAsrt } from "../../__tests__/support/host-shell-sandbox-fixtures.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
@@ -83,6 +84,8 @@ async function withAuthority(source: Source, test: (refusal: () => string | unde
     await test(authority.refusal, () => { backend = "different host plan"; });
   });
 }
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe.each(SOURCES)("terminal authority from %s", (source) => {
   it("stands across conversation and run allow changes", () => withAuthority(source, (refusal) => {

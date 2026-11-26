@@ -4,7 +4,8 @@ import { PermissionTestResources } from "../../permissions/__tests__/test-resour
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { listApprovals, __resetSessionStoreForTest } from "../../permissions/user-approval-store.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,6 +40,9 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   await cleanupTmpDir(directory);
 });
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("host shell invocation authorization", () => {
   it.each(["remove allow", "add deny"])("requires normal authorization again after %s invalidates a decision", async (change) => {

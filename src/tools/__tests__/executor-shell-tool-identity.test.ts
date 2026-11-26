@@ -1,7 +1,8 @@
 // Name-based structural analysis covers plugin and external shell-shaped tools; canonical identity only seals builtin plans.
 // Sandbox wrapping is builtin-only, while path containment covers every command-bearing input.
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -74,6 +75,9 @@ async function runProbe(toolName: string, command = STRUCTURAL_DENIED_COMMAND) {
     await cleanup();
   }
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("POSIX structural analysis coverage is NAME-shaped, not instance-shaped", () => {
   it("isolates structure from the earlier path gate without dropping either rule", () => {

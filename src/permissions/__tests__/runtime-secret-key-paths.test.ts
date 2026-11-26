@@ -4,7 +4,7 @@ import { join, resolve, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { writeDenyPaths } from "../../__tests__/support/filesystem-policy-paths.js";
+import { entryPaths, writeDenyPaths } from "../../__tests__/support/filesystem-policy-paths.js";
 import { ReadFileTool } from "../../tools/file-tools.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
 import { validateShellCommandPathPolicy } from "../../tools/shell-path-policy.js";
@@ -71,9 +71,9 @@ describe("native host external key path protection", () => {
     });
     expect(config.filesystem.allowRead?.map(entry => typeof entry === "string" ? entry : entry.path)).toContain(root);
     expect(config.filesystem.allowWrite.map(entry => typeof entry === "string" ? entry : entry.path)).toContain(root);
-    expect(config.filesystem.denyRead).toContain(keyPath);
+    expect(entryPaths(config.filesystem.denyRead)).toContain(keyPath);
     expect(writeDenyPaths(config)).toContain(keyPath);
-    expect(config.filesystem.denyRead).not.toContain(join(root, "notes.txt"));
+    expect(entryPaths(config.filesystem.denyRead)).not.toContain(join(root, "notes.txt"));
     expect(writeDenyPaths(config)).not.toContain(join(root, "notes.txt"));
     expect(getDefaultSensitiveReadDenyPaths()).toContain(keyPath);
     expect(getDefaultSensitiveWriteDenyPaths()).toContain(keyPath);
@@ -91,7 +91,7 @@ describe("native host external key path protection", () => {
     // Windows directory rows keep their separator for srt-win.
     const directoryRow = directory + (process.platform === "win32" ? sep : "");
     expect(writeDenyPaths(config)).toContain(directoryRow);
-    expect(config.filesystem.denyRead).toContain(directoryRow);
+    expect(entryPaths(config.filesystem.denyRead)).toContain(directoryRow);
   });
 
   it("protects canonical aliases and retains the original target after an ancestor link changes", () => {

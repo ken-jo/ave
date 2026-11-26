@@ -6,6 +6,7 @@ import { normalizeCaseForComparison, stripExtendedPathPrefix } from "./sandbox-p
 import { settingsFilePath } from "../data/settings-store.js";
 import { AVE_HOME_CONFIGURATION_DIRECTORY, aveHome } from "../shared/ave-home.js";
 import { inspectPhysicalFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { routeLocality, withLocalityDecision } from "../shared/local-path-io.js";
 import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
 import { permissionSettingsPath } from "./permission-settings-store.js";
 import { egressGrantFilePath } from "./egress-grants.js";
@@ -503,7 +504,9 @@ function addInheritedGitConfigHookPaths(workingDirectories: readonly string[], p
     addProtectedRoutingPins(userConfigDirectory, routingPins, paths);
   }
   const configs = new Set([
-    ...(process.env.GIT_CONFIG_NOSYSTEM === "1" ? [] : [process.env.GIT_CONFIG_SYSTEM ?? "/etc/gitconfig"]),
+    // Git for Windows reads its system file below its own install (a machine root), never `etc` on the current drive.
+    ...(process.env.GIT_CONFIG_NOSYSTEM === "1" || (process.platform === "win32" && process.env.GIT_CONFIG_SYSTEM === undefined)
+      ? [] : [process.env.GIT_CONFIG_SYSTEM ?? "/etc/gitconfig"]),
     ...(process.platform === "darwin" && process.env.GIT_CONFIG_SYSTEM === undefined ? ["/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig"] : []),
     ...(process.env.GIT_CONFIG_GLOBAL ? [process.env.GIT_CONFIG_GLOBAL] : home ? [join(home, ".gitconfig"), join(userConfigDirectory!, "config")] : []),
   ]);
@@ -879,6 +882,7 @@ function addGitControlPaths(
   return addGitDirectoryControls(commonDir, paths, routingPins, budget, discovery);
 }
 
+// Every entry is proven local before it is resolved or listed; an entry no local route proves revokes the write root.
 function addNestedGitControlPaths(
   root: string,
   paths: Set<string>,
@@ -886,18 +890,34 @@ function addNestedGitControlPaths(
   budget: GitDiscoveryBudget,
   discovery?: GitControlDiscovery,
 ): boolean {
-  if (budget.entries <= 0) return false;
+  return withLocalityDecision(() => addNestedGitControlPathsInDecision(root, paths, routingPins, budget, discovery));
+}
+
+function provenLocal(path: string): boolean {
+  return routeLocality(path) === "local";
+}
+
+function addNestedGitControlPathsInDecision(
+  root: string,
+  paths: Set<string>,
+  routingPins: Set<string>,
+  budget: GitDiscoveryBudget,
+  discovery?: GitControlDiscovery,
+): boolean {
+  if (budget.entries <= 0 || !provenLocal(root)) return false;
   let canonicalRoot: string;
   try { canonicalRoot = realpathSync.native(root); }
   catch (error) { return isMissingPath(error); }
   if (!isPhysicalPathWithin(root, canonicalRoot) || !isPhysicalPathWithin(canonicalRoot, root)) return false;
-  const queue = [{ path: root, depth: 0 }, ...(discovery?.previous ? [...discovery.previous.directoryTargets.keys()]
+  const queue: { path: string; depth: number; listed?: boolean }[] = [{ path: root, depth: 0 }, ...(discovery?.previous ? [...discovery.previous.directoryTargets.keys()]
     .filter(path => isPhysicalPathWithin(root, path))
     .map(path => ({ path, depth: discovery.previous!.directoryDepths?.get(path) ?? SANDBOX_GIT_SCAN_DEPTH })) : [])];
   const visited = new Set<string>();
   for (let index = 0; index < queue.length; index += 1) {
     const current = queue[index]!;
     if (discovery?.isPathExcluded?.(current.path)) continue;
+    // A plain directory listed under a proven one is proven by its parent; a link, a root or a frozen route walks again.
+    if (!current.listed && !provenLocal(current.path)) return false;
     discovery?.directoryDepths.set(current.path, current.depth);
     const routeIdentity = discovery ? gitEntryIdentity(current.path) : undefined;
     if (discovery?.previous && routeIdentity?.kind === "link"
@@ -922,6 +942,7 @@ function addNestedGitControlPaths(
         discovery.replacedMarkers.add(current.path);
       }
       if (!isPhysicalPathWithin(canonicalRoot, frozenTarget) || discovery.isPathExcluded?.(frozenTarget)) continue;
+      if (!provenLocal(frozenTarget)) return false;
       if (!sameGitEntry(discovery.previous.directories.get(frozenTarget), gitEntryIdentity(frozenTarget))
         || realpathSync.native(frozenTarget) !== frozenTarget) {
         throw new Error("Sandbox Git directory route target identity changed during invocation");
@@ -976,7 +997,7 @@ function addNestedGitControlPaths(
           try { const stat = lstatSync(child); descend = stat.isDirectory() || stat.isSymbolicLink(); }
           catch (error) { if (!isMissingPath(error)) return false; }
         }
-        if (descend) queue.push({ path: child, depth: current.depth + 1 });
+        if (descend) queue.push({ path: child, depth: current.depth + 1, listed: entry.isDirectory() && !entry.isSymbolicLink() });
       }
     } catch (error) { if (!isMissingPath(error)) return false; }
     finally { directory.closeSync(); }

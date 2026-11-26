@@ -2,7 +2,8 @@ import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
@@ -32,6 +33,9 @@ async function invoke(command: string, decision: "allow" | "deny" = "allow") {
     return { result: results[0]!, execute };
   } finally { await cleanupTmpDir(root); }
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("executor program operand gates", () => {
   const sql = `SELECT 1 AS "${"x".repeat(300)}";`;

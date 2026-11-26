@@ -959,6 +959,7 @@ export class GlobFilesTool extends FileTool<typeof GlobFilesInputSchema> {
     "Find files by glob pattern under the workspace. Searches paths, not file contents.";
   readonly inputSchema = GlobFilesInputSchema;
   override readonly category: ToolCategory = "read";
+  readonly pathFieldDefaults = { path: "." };
 
   override isReadOnly(): boolean {
     return true;
@@ -1011,6 +1012,7 @@ export class GrepFilesTool extends FileTool<typeof GrepFilesInputSchema> {
   readonly description = GREP_FILES_DESCRIPTION;
   readonly inputSchema = GrepFilesInputSchema;
   override readonly category: ToolCategory = "read";
+  readonly pathFieldDefaults = { path: "." };
 
   override isReadOnly(): boolean {
     return true;

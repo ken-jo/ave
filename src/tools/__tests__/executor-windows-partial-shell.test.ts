@@ -8,20 +8,25 @@ import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 
-const childProcessMock = vi.hoisted(() => ({ execFileSync: vi.fn() }));
+const childProcessMock = vi.hoisted(() => ({
+  execFileSync: vi.fn(),
+  actualExecFileSync: undefined as unknown as typeof import("node:child_process").execFileSync,
+}));
 
 // The executor prepares the bash invocation before routing, which probes a Bash for the simulated platform. A darwin or linux probe cannot find /bin/bash on a Windows host, and
 // the resolver caches that failure for every later case, so answer both probes here: these cases test routing and approval, not host shell discovery. No shell child is started.
-vi.mock("node:child_process", async (importOriginal) => ({
-  ...await importOriginal<typeof import("node:child_process")>(),
-  execFileSync: childProcessMock.execFileSync,
-}));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  childProcessMock.actualExecFileSync = actual.execFileSync;
+  return { ...actual, execFileSync: childProcessMock.execFileSync };
+});
 
 import { createDynamicTool, type Tool } from "../base.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
@@ -164,12 +169,17 @@ function recordingAuditLogger(): {
   return { auditLogger, telemetryEntries, permissionEntries };
 }
 
+// Windows host shell cwds are pinned through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
+
 describe("ToolExecutor — Windows partial shell Plan B", () => {
   beforeEach(() => {
     testRoot = realpathSync(mkdtempSync(join(tmpdir(), "partial-shell-policy-")));
     __resetShellResolverCache();
-    childProcessMock.execFileSync.mockImplementation((_file, args: readonly string[]) =>
-      args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
+    // The shipped path-kind helper that pins Windows cwds still runs.
+    childProcessMock.execFileSync.mockImplementation((file: string, args: readonly string[], options?: object) =>
+      /[\\/]ave-path-kind\.exe$/i.test(file) ? childProcessMock.actualExecFileSync(file, args, options)
+        : args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
   });
 
   afterEach(() => {

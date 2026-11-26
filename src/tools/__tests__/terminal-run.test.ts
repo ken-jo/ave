@@ -3,10 +3,12 @@ import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { runWithEffectGateContext } from "../../permissions/effect-enforcement.js";
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
 /** terminal_run: type one approved command into the invoking conversation's isolated terminal. */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pinWindowsPaths } from "../../shared/windows-path-facts.js";
 import type { HostTerminalControlState } from "../../shared/terminal-session.js";
 import type { HostTerminalDisclosure } from "../../main/terminal/host-terminal-control.js";
 import {
@@ -36,6 +38,9 @@ import { terminalCommandTextProblem } from "../../shared/terminal-command-text.j
 import { getLocale, setLocale } from "../../i18n/runtime.js";
 import { loadLocaleMessages } from "../../i18n/messages/index.js";
 import { t } from "../../i18n/index.js";
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("terminal executable registries", () => {
   it.each(TERMINAL_REGISTRY_COMMANDS)("refuses mutation: %s", (command) => {
@@ -783,8 +788,12 @@ describe("terminal_run into a pane chat's own host terminal", () => {
   let identity: { dev: bigint; ino: bigint };
   beforeEach(() => {
     hostDir = realpathSync(mkdtempSync(join(tmpdir(), "ave-terminal-run-host-")));
+    // Windows identifies the directory by its pinned volume serial and file ID.
+    const pinned = process.platform === "win32" ? pinWindowsPaths([hostDir])[0] : undefined;
     const stat = statSync(hostDir, { bigint: true });
-    identity = { dev: stat.dev, ino: stat.ino };
+    identity = pinned?.volumeSerial && pinned.fileId
+      ? { dev: BigInt(pinned.volumeSerial), ino: BigInt(pinned.fileId) }
+      : { dev: stat.dev, ino: stat.ino };
   });
   afterEach(() => {
     __resetTerminalBlocksForTest();

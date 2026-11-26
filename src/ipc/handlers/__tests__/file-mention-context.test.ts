@@ -1,7 +1,7 @@
 import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, realpath, rm, writeFile, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ConversationLoop } from "../../../engine/conversation-loop.js";
 import { makeConversationLoopDeps } from "../../../engine/__tests__/conversation-loop-test-helpers.js";
@@ -18,6 +18,7 @@ import type { UserContentPart } from "../../../engine/llm/types.js";
 import { MAX_LOCAL_USER_CONTENT_TEXT_CHARS } from "../../../main/subscription-attachment-input.js";
 import { expandFileMentionContext } from "../file-mention-context.js";
 import { composeOutgoing } from "../../../ui/renderer/utils/compose.js";
+import { configureHostResources } from "../../../main/host-resources.js";
 
 let root: string;
 let loop: ConversationLoop;
@@ -42,6 +43,7 @@ function contextOf(input: string) {
   return JSON.parse(json) as { note: string; references: Array<{ path: string; before: string; after: string; truncated: boolean }> };
 }
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "ave-file-reference-")));
   vi.stubEnv("AVE_HOME", join(root, "state"));

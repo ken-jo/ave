@@ -1,6 +1,6 @@
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import "../../__tests__/support/trusted-powershell.js";
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import {
   PermissionManager,
   requiredTier,
@@ -18,7 +18,8 @@ import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js"
 import { updatePermissionsFile } from "../permissions-store.js";
 import { mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 // Mock permissions-store We mock the store module so tests don't touch the real filesystem.
@@ -53,6 +54,9 @@ vi.mock("../permissions-store.js", () => ({
     return next;
   }),
 }));
+
+// Windows lookups go through native admission, which needs the source host resources.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("host shell rule policy epochs", () => {
   // No sandbox on this host, so only an exact allow rule can issue the proof.

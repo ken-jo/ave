@@ -2,10 +2,11 @@ import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-g
 /** terminal_run into a pane chat's own host terminal uses its native session surface choice through the real ToolExecutor and PermissionManager.
  * The physical directory, current user turn and final route remain independently enforced.
  * Lease regressions use the production PTY protocol against an in-memory editor. */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import {
   __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, markMcpServerWrapped, setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
@@ -319,6 +320,9 @@ async function run(command: string, options: {
 }
 
 const hostRule = (command: string): string => formatRuleSpecifier({ kind: "bash", wildcard: false, tokens: command.split(" ") });
+
+// Windows host shell cwds are pinned through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("terminal_run host permission", () => {
   it("never treats the parent process environment as the user's terminal environment", async () => {

@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
+import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { promises as dns } from "node:dns";
 import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
@@ -28,6 +29,8 @@ function item(version: string, generationId: string, digest: string, files: Inst
       hooks: [{ event: "pre", command: ["node", "${PLUGIN_ROOT}/server/hook.cjs"], timeoutMs: 1500, digest }],
     } } };
 }
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("installed hook activation", () => {
   it("runs an approved HTTP contribution through the host policy and retains its activation lease", async () => {

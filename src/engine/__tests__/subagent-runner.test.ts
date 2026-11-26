@@ -2,13 +2,14 @@ import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 // Round budgets stop incomplete work; frozen tool scope and depth guards constrain child authority.
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { beforeAll, describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync, existsSync, readdirSync } from "node:fs";
 import { readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { AsyncResource } from "node:async_hooks";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ConversationLoop } from "../conversation-loop.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
@@ -114,6 +115,7 @@ function makeRunner(toolRegistry: ToolRegistry) {
   });
 }
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 describe("SubAgentRunner approval-owner setup", () => {
   it("releases the temporary child registration when initialization fails", async () => {
     let temporarySessionId: string | undefined;

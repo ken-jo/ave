@@ -4,7 +4,8 @@ import { _resetAveHomePrivacyForTest, aveHome, setAveHomeConfigurationRefusedAtB
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Admission denials and forced approvals must precede tool execution.
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { beforeAll, afterEach, describe, it, expect, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
 import childProcess, { ChildProcess } from "node:child_process";
@@ -152,6 +153,9 @@ function denyingApprovalGate() {
   });
   return { wc, gate };
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("ToolExecutor — A2A parent delivery capability provenance", () => {
   it.each([

@@ -1,4 +1,4 @@
-import type { ShellExecutionFacts } from "../../shared/shell-execution.js";
+import type { ShellExecutionFacts, ShellExecutionInspector } from "../../shared/shell-execution.js";
 import type { PreparedShellAnalysis } from "../../shared/shell-analysis.js";
 import type { LiteralBodyBudget } from "../../shared/shell-literal-bodies.js";
 import type { ShellCommandInput } from "./shell-prefix-policy.js";
@@ -12,8 +12,8 @@ export function inspectShellCommand(input: ShellCommandInput, cwd?: string, cont
   return inspectPosixShellCommand(input, cwd, context, budget, inspectPowerShellCommand);
 }
 
-export function inspectShellPermissionPaths(command: string, cwd: string, facts?: ShellExecutionFacts, prepared?: PreparedShellAnalysis) {
-  return inspectPosixShellPermissionPaths(command, cwd, facts, prepared, undefined, inspectPowerShellPermissionPaths);
+export function inspectShellPermissionPaths(command: string, cwd: string, facts?: ShellExecutionFacts, prepared?: PreparedShellAnalysis, observeDirectory?: ShellExecutionInspector["observeDirectory"]) {
+  return inspectPosixShellPermissionPaths(command, cwd, facts, prepared, undefined, inspectPowerShellPermissionPaths, undefined, observeDirectory);
 }
 export function shellExfiltrationSignal(input: ShellCommandInput | readonly (string | undefined)[], cwd?: string, context?: ShellFloorContext): string | null { return Array.isArray(input) ? inspectLiteralShellArgv(input, cwd, context).exfiltration : inspectShellCommand(input as ShellCommandInput, cwd, context).exfiltration; }
 export function shellSensitivePathSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectShellCommand(input, cwd).sensitive; }

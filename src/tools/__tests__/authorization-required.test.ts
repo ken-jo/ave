@@ -1,5 +1,6 @@
 import { setReviewerForTest, wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,6 +87,9 @@ afterEach(async () => {
   vi.restoreAllMocks();
   for (const path of temporaryDirectories.splice(0)) await cleanupTmpDir(path);
 });
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("ToolExecutor authorization-required control", () => {
   it("terminates an ordinary ask when the host has no approval surface", async () => {

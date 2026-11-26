@@ -1,7 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { mkdtempSync, mkdirSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import AdmZip from "adm-zip";
@@ -84,6 +85,7 @@ async function readDocument(frame: string, path: unknown, sheetIndex: unknown = 
   return readFromSender(documentEvent(frame, senderId, routingId), path, sheetIndex);
 }
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 beforeAll(async () => {
   childRuntime.mainDir = await buildPreviewDocumentRuntime();
   root = mkdtempSync(join(tmpdir(), "ave-preview-doc-"));

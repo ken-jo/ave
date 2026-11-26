@@ -48,6 +48,18 @@ vi.mock("../../permissions/sandbox-capability.js", async (original) => ({
   getWindowsExtensionBackendPlan: () => state.plan,
 }));
 vi.mock("../../permissions/workspace-authorized-roots.js", () => ({ listAuthorizedWorkspaceRoots: () => state.workspaces }));
+vi.mock("../../permissions/admitted-obligation.js", async original => ({
+  ...await original<typeof import("../../permissions/admitted-obligation.js")>(),
+  admitWindowsLookupPaths: (paths: readonly string[]) => new Map(paths.flatMap(path => {
+    const normalized = winPath.normalize(path);
+    const fold = (value: string) => winPath.normalize(value).toLowerCase();
+    const link = [...state.links].find(([key]) => fold(normalized) === fold(key) || fold(normalized).startsWith(`${fold(key)}\\`));
+    const target = link ? link[1] + normalized.slice(link[0].length) : normalized;
+    const kind = [...state.files].some(file => fold(file) === fold(target)) ? "file" :
+      [...state.dirs].some(directory => fold(directory) === fold(target)) ? "dir" : "missing";
+    return [[path, { target, kind }]];
+  })),
+}));
 vi.mock("../../shared/ave-home.js", async (original) => ({
   ...await original<typeof import("../../shared/ave-home.js")>(),
   aveHome: () => "C:\\ave",
@@ -223,7 +235,7 @@ function input(overrides: Partial<Parameters<typeof spawnMxcBundledHolder>[0]> =
     label: "mcp:fs",
     command: "node",
     args: ["C:\\ave\\plugins\\fs\\gen\\server.js"],
-    baseEnv: { PATH: "relative\\bin;C:\\Program Files\\nodejs", SystemRoot: "C:\\Windows" },
+    baseEnv: { PATH: "C:\\Program Files\\nodejs", SystemRoot: "C:\\Windows" },
     holderEnv: { API_TOKEN: "t" },
     allowRead: ["C:\\ave\\plugins\\fs\\gen"],
     allowWrite: ["C:\\ave\\mcp\\fs\\sandbox"],
@@ -383,6 +395,16 @@ describe("executable rule", () => {
     state.live = ["C:\\Program Files\\nodejs"];
     await expect(spawnMxcBundledHolder(input())).rejects.toBeInstanceOf(MxcExecutableNotAdmissibleError);
   });
+
+  it.each(["relative\\bin", "\\nodejs", "C:\\Program Files\\other\\..\\nodejs"])(
+    "refuses the entire executable search when PATH starts with %s",
+    async (entry) => {
+      await expect(spawnMxcBundledHolder(input({
+        baseEnv: { PATH: `${entry};C:\\Program Files\\nodejs`, SystemRoot: "C:\\Windows" },
+      }))).rejects.toBeInstanceOf(MxcExecutableNotAdmissibleError);
+      expect(state.spawn).not.toHaveBeenCalled();
+    },
+  );
 
   it("refuses a workspace executable reached through a junction", async () => {
     state.links.set("C:\\linked", "D:\\work");

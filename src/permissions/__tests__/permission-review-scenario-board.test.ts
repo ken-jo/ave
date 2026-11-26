@@ -1,6 +1,6 @@
 import { setReviewerForTest, wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 // Keep the permission scenario board tied to executable policy (docs/design/permission-review-scenario-board-v2.html).
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -22,6 +22,7 @@ import type { PluginManifest } from "../../plugins/types.js";
 import type { PluginRuntime } from "../../plugins/runtime.js";
 import { PermissionTestResources } from "./test-resources.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import { configureHostResources } from "../../main/host-resources.js";
 
 const BOARD_PATH = resolve(process.cwd(), "docs/design/permission-review-scenario-board-v2.html");
 const resources = new PermissionTestResources();
@@ -128,6 +129,8 @@ async function runProbe(args: {
 }
 
 describe("permission-review-scenario-board-v2.html contract", () => {
+  // Windows host shell cwds are pinned through the shipped path-kind helper; boot configures its resources first.
+  beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
   it("contains exactly S1-S16 as the PR scenario set", () => {
     const html = readFileSync(BOARD_PATH, "utf8");
     const ids = Array.from(html.matchAll(/<span class="tag [^"]+">S(\d+)<\/span>/g))

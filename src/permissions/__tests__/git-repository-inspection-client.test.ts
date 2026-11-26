@@ -1,9 +1,11 @@
 import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { Worker } from "node:worker_threads";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildMainBoundaryBundle, repositoryRoot } from "../../plugins/isolation/__tests__/child-entry-bundle.js";
+import { configureHostResources, type HostResources } from "../../main/host-resources.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { inspectGitRepository } from "../rules/git-repository-inputs.js";
 
@@ -13,12 +15,8 @@ vi.mock("../../main/main-paths.js", () => ({ get mainDir() { return paths.mainDi
 type Client = typeof import("../rules/git-repository-inspection-client.js");
 const WORKER_SOURCE = "src/permissions/rules/git-repository-inspection-worker-main.ts";
 const ORDINARY_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tbare = false\n";
-/**
- * Repository evidence is produced only on POSIX hosts. On win32 the inspection needs the
- * host's native path-pinning helper, which neither this suite nor the worker thread has, so
- * both sides refuse; the verified path never reaches it there, because no verified Git is registered.
- */
-const EVIDENCE_HOST = process.platform !== "win32";
+/** On win32 both sides pin paths through the native helper found in these resources. */
+const HOST_RESOURCES: HostResources = { resourcePath: resolve("resources"), isPackaged: false };
 let builtWorkerDir: string;
 let root: string;
 let cwd: string;
@@ -26,6 +24,7 @@ let client: Client;
 
 /** The shipped worker entry, bundled through the main-process build boundary. */
 beforeAll(async () => {
+  configureHostResources(HOST_RESOURCES);
   mkdirSync(join(repositoryRoot(), ".cache"), { recursive: true });
   builtWorkerDir = mkdtempSync(join(repositoryRoot(), ".cache", "git-inspection-worker-"));
   await buildMainBoundaryBundle({
@@ -81,6 +80,7 @@ beforeEach(async () => {
   cwd = repository(join(root, "workspace"));
   paths.mainDir = builtWorkerDir;
   vi.resetModules();
+  (await import("../../main/host-resources.js")).configureHostResources(HOST_RESOURCES);
   client = await import("../rules/git-repository-inspection-client.js");
 });
 afterEach(() => {
@@ -109,18 +109,12 @@ describe("repository inspection worker", () => {
 
   it.each(PARITY_CASES)("returns the in-process inspection result: %s", async (name, arrange) => {
     arrange();
-    const admitted = EVIDENCE_HOST && EVIDENCE_CASES.has(name);
+    const admitted = EVIDENCE_CASES.has(name);
     const { actual, expected } = await inspectInStableWindow(cwd, admitted);
     // Admitted repositories must yield evidence on both sides, so two refusals cannot pass as parity.
     if (admitted) {
       expect(expected).not.toBeNull();
       expect(actual).not.toBeNull();
-    }
-    if (!EVIDENCE_HOST) {
-      // Both sides refuse, and the refusal comes from the inspection itself, not from the transport.
-      expect(expected).toBeNull();
-      expect(actual).toBeNull();
-      expect(client.lastGitRepositoryInspectionRefusal()).toBeUndefined();
     }
     expect(actual).toEqual(expected);
   });
@@ -144,12 +138,6 @@ describe("repository inspection worker", () => {
     const workspaces = Array.from({ length: 6 }, (_, index) => repository(join(root, `workspace-${index}`)));
     for (const [index, workspace] of workspaces.entries()) writeFileSync(join(workspace, ".git", "refs", "heads", `only-${index}`), `${"c".repeat(40)}\n`);
     let results: Awaited<ReturnType<Client["inspectGitRepositoryAsync"]>>[] = [];
-    if (!EVIDENCE_HOST) {
-      results = await Promise.all(workspaces.map((workspace) => client.inspectGitRepositoryAsync(workspace)));
-      expect(results).toEqual(workspaces.map(() => null));
-      expect(client.lastGitRepositoryInspectionRefusal()).toBeUndefined();
-      return;
-    }
     for (let attempt = 0; attempt < 25 && !(results.length > 0 && results.every((result) => result !== null)); attempt += 1) {
       if (attempt > 0) await new Promise((settle) => setTimeout(settle, 20));
       results = await Promise.all(workspaces.map((workspace) => client.inspectGitRepositoryAsync(workspace)));
@@ -161,7 +149,7 @@ describe("repository inspection worker", () => {
 
   it("yields the main thread while the worker inspects", async () => {
     // The worker blocks its own thread for 200 ms, as a slow inspection would. A fast real
-    // inspection (win32 refuses at once) can answer before an immediate runs, so timing a
+    // inspection can answer before an immediate runs, so timing a
     // real reply would race; a blocked worker proves the main thread keeps turning.
     paths.mainDir = standInWorker(
       "const until = Date.now() + 200; while (Date.now() < until) {} parentPort.postMessage({ id: request.id, result: null });");
@@ -209,6 +197,19 @@ describe("repository inspection worker", () => {
     paths.mainDir = builtWorkerDir;
     const { actual, expected } = await inspectInStableWindow(cwd);
     expect(actual).toEqual(expected);
+  });
+
+  it("refuses to load a worker started without the host resources", async () => {
+    const worker = new Worker(join(builtWorkerDir, "git-repository-inspection-worker.js"));
+    try {
+      const failure = await new Promise<unknown>((settle) => {
+        worker.once("error", settle);
+        worker.once("online", () => worker.postMessage({ id: 0, cwd }));
+        worker.once("message", (reply) => settle(reply));
+      });
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe("host-resources-unavailable");
+    } finally { await worker.terminate(); }
   });
 
   it("refuses a missing worker entry and does not start another worker for it", async () => {

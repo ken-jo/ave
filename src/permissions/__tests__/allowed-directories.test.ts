@@ -311,6 +311,15 @@ describe("sanitizeAllowedDirectories", () => {
     expect(sanitizeAllowedDirectories(undefined)).toEqual([]);
   });
 
+  // Authority is granted to a spelling: a loopback share keeps its own key and lends none to the drive path it names.
+  it.runIf(process.platform === "win32")("keys a loopback share directory by its own spelling", () => {
+    const project = pathResolve(tmpdir(), "ave-loopback-key", "proj");
+    const [key] = sanitizeAllowedDirectories([`\\\\localhost\\${project[0]}$\\${project.slice(3)}`]);
+    expect(key).toBe(`//localhost/${project[0]}$/${project.slice(3).replaceAll("\\", "/")}`.toLowerCase());
+    expect(isPathAllowed(`${key}/notes.txt`, { directories: [key ?? ""] })).toBe(true);
+    expect(sanitizeAllowedDirectories([project])).not.toContain(key);
+  });
+
   it("returns empty for empty array", () => {
     expect(sanitizeAllowedDirectories([])).toEqual([]);
   });

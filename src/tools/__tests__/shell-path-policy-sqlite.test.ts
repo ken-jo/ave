@@ -1,13 +1,17 @@
 import { mkdtempSync, mkdirSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { isReadOnlyCommand } from "../../permissions/reviewer/host-risk-inspector.js";
 import { findShellPathPolicyViolation } from "../shell-path-policy.js";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
 import { classifySqliteArgumentSlots } from "../shell-sqlite-arguments.js";
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("database CLI argument roles", () => {
   let root: string, cwd: string, outside: string;

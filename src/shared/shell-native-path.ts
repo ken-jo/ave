@@ -1,14 +1,14 @@
 import { isAbsolute, normalize, parse, resolve, sep, win32 } from "node:path";
-import { existsSync } from "node:fs";
+import { localDriveExists } from "./local-path-io.js";
+import { normalizeWindowsPathSpelling as normalizeWindowsPath, windowsVolumeRoot } from "./windows-path-spelling.js";
 
-/** Classify native network/device identities without opening their namespace. */
-export function isWindowsNetworkOrDevicePath(path: string, platform: NodeJS.Platform = process.platform): boolean {
-  if (platform !== "win32") return false;
-  // Exactly two leading separators and a non-separator select a UNC host or
-  // device namespace, including incomplete host/share names. A single separator
-  // is drive-root-relative. The extended absolute drive form alone is local;
-  // other extended/device names (including drive-relative ones) stay opaque.
-  return /^[\\/]{2}[^\\/]/u.test(path) && !/^[\\/]{2}\?[\\/][A-Za-z]:[\\/]/u.test(path);
+export { isAmbiguousNativeSpelling, isWindowsNetworkOrDevicePath, localDriveAlias } from "./windows-path-spelling.js";
+
+/** The spelling without alternate-stream suffixes (`name:stream:$TYPE`) after its root; a stream is data of the same file. */
+export function withoutStreamSuffixes(path: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== "win32") return path;
+  const root = /^(?:[\\/]{2}[.?][\\/]unc[\\/][^\\/]*[\\/][^\\/]*|[\\/]{2}[.?][\\/][^\\/]*|[\\/]{2}[^\\/]*[\\/][^\\/]*|[a-z]:)?/iu.exec(path)?.[0] ?? "";
+  return root + path.slice(root.length).replace(/:[^\\/]*/gu, "");
 }
 
 export type ShellPathDialect = "native" | "powershell" | "bash";
@@ -38,21 +38,6 @@ function windowsFloorPaths(path: string): string[] {
   return [value.startsWith("/") ? value : "/" + value];
 }
 
-function normalizeWindowsPath(path: string): string {
-  const device = /^[\\/]{1,2}\?[\\/](.*)$/.exec(path)?.[1];
-  if (device === undefined) return win32.normalize(path);
-  if (/^UNC[\\/]/i.test(device)) return "\\\\?\\UNC\\" + win32.normalize("\\\\" + device.slice(4)).slice(2);
-  return "\\\\?\\" + win32.normalize(device);
-}
-
-function windowsVolumeRoot(path: string): string {
-  const device = /^[\\/]{1,2}\?[\\/](.*)$/.exec(path)?.[1];
-  if (device !== undefined && /^UNC[\\/]/i.test(device)) {
-    return "\\\\?\\UNC\\" + win32.parse("\\\\" + device.slice(4)).root.slice(2);
-  }
-  return win32.parse(path).root;
-}
-
 // Filesystem syntax is defined positively: no `:`, a drive-absolute path, or UNC. Every other colon form (provider
 // drives, `Provider::`, module-qualified providers, drive-relative `C:x`, a drive path with a stream suffix) gets no
 // filesystem authority.
@@ -73,12 +58,13 @@ export function modelShellPath(path: string, model: ShellPathModel): NativeShell
   const native = path.replace(/^\\\?\\(?=[A-Za-z]:[\\/])/, "\\\\?\\");
   const root = win32.parse(native).root;
   let absolute: string | undefined;
-  if (/^[A-Za-z]:[\\/]/.test(native) || root.length > 1 && /^[\\/]{2}/.test(native)) absolute = native;
+  // The NT prefix is passed through by the Win32 path rules, not read against the current drive; it stays as spelled.
+  if (/^[A-Za-z]:[\\/]/.test(native) || root.length > 1 && /^[\\/]{2}/.test(native) || /^[\\/]\?\?[\\/]/u.test(native)) absolute = native;
   else if (/^[A-Za-z]:/.test(native)) absolute = undefined;
   else if (root.length === 1) {
     if (model.dialect === "bash") {
       const drive = /^\/([A-Za-z])(?:\/(.*))?$/.exec(native);
-      if (drive && existsSync(`${drive[1]}:/`)) absolute = `${drive[1]}:/${drive[2] ?? ""}`;
+      if (drive && localDriveExists(`${drive[1]}:`)) absolute = `${drive[1]}:/${drive[2] ?? ""}`;
       // A leading backslash is drive-root-relative; a leading slash remains in the unresolved shell root namespace.
       else if (!drive && /^\\/.test(native)) absolute = win32.parse(win32.resolve("/")).root + native.slice(1);
     } else if (model.location !== undefined) {

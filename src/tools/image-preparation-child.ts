@@ -9,6 +9,7 @@ import { normalizeImage } from "./image-preparation-core.js";
 import { errorMessage } from "../shared/error-message.js";
 import { readImageInput } from "./image-preparation-input.js";
 import { ensureFileAccess } from "./file-access-policy.js";
+import { adoptHostResources } from "../main/host-resources.js";
 
 async function readBoundedStdin(expectedBytes: number): Promise<Buffer> {
   // Allocate bounded input once; chunk collection plus concatenation would double peak source memory.
@@ -28,29 +29,44 @@ async function readBoundedStdin(expectedBytes: number): Promise<Buffer> {
   return input;
 }
 
-try {
-  const raw: unknown = JSON.parse(process.argv[2] ?? "{}");
-  const bytesRequest = ImagePreparationBytesRequestSchema.safeParse(raw);
-  if (bytesRequest.success) {
-    const bytes = await readBoundedStdin(bytesRequest.data.inputBytes);
-    process.stdout.write(JSON.stringify({
-      ok: true,
-      image: await normalizeImage(bytes, bytesRequest.data.options),
-    }));
-  } else {
-    const request = ImagePreparationRequestSchema.parse(raw);
-    if (!isAbsolute(request.path) || !isAbsolute(request.scope.cwd)) throw new Error("invalid-image-path: Image source and read scope must be absolute.");
-    // Recheck file policy just before open; parent approval must never broaden the admitted read scope.
-    const denied = ensureFileAccess(request.path, { ...request.scope, metadata: {} }, "read");
-    if (denied) throw new Error(denied.output);
-    // The bytes reach the model, so they are read from the real path judged here, which must still name the file read.
-    const judged = await realpath(request.path);
-    const judgedDenied = ensureFileAccess(judged, { ...request.scope, metadata: {} }, "read");
-    if (judgedDenied) throw new Error(judgedDenied.output);
-    const bytes = await readImageInput(judged, new AbortController().signal);
-    process.stdout.write(JSON.stringify({ ok: true, image: await normalizeImage(bytes, request.options) }));
+// Native admission finds its helper through the host resources, so a decoder started without them reads nothing.
+function adoptParentHostResources(): boolean {
+  try {
+    adoptHostResources(JSON.parse(process.argv[3] ?? "null"));
+    return true;
+  } catch {
+    return false;
   }
-} catch (error) {
-  process.stdout.write(JSON.stringify({ ok: false, error: `invalid-image: ${errorMessage(error).slice(0, 2048)}` }));
+}
+
+if (!adoptParentHostResources()) {
+  process.stdout.write(JSON.stringify({ ok: false, error: "image-processing-unavailable: host-resources-unavailable: The decoder was started without the host resources." }));
   process.exitCode = 1;
+} else {
+  try {
+    const raw: unknown = JSON.parse(process.argv[2] ?? "{}");
+    const bytesRequest = ImagePreparationBytesRequestSchema.safeParse(raw);
+    if (bytesRequest.success) {
+      const bytes = await readBoundedStdin(bytesRequest.data.inputBytes);
+      process.stdout.write(JSON.stringify({
+        ok: true,
+        image: await normalizeImage(bytes, bytesRequest.data.options),
+      }));
+    } else {
+      const request = ImagePreparationRequestSchema.parse(raw);
+      if (!isAbsolute(request.path) || !isAbsolute(request.scope.cwd)) throw new Error("invalid-image-path: Image source and read scope must be absolute.");
+      // Recheck file policy just before open; parent approval must never broaden the admitted read scope.
+      const denied = ensureFileAccess(request.path, { ...request.scope, metadata: {} }, "read");
+      if (denied) throw new Error(denied.output);
+      // The bytes reach the model, so they are read from the real path judged here, which must still name the file read.
+      const judged = await realpath(request.path);
+      const judgedDenied = ensureFileAccess(judged, { ...request.scope, metadata: {} }, "read");
+      if (judgedDenied) throw new Error(judgedDenied.output);
+      const bytes = await readImageInput(judged, new AbortController().signal);
+      process.stdout.write(JSON.stringify({ ok: true, image: await normalizeImage(bytes, request.options) }));
+    }
+  } catch (error) {
+    process.stdout.write(JSON.stringify({ ok: false, error: `invalid-image: ${errorMessage(error).slice(0, 2048)}` }));
+    process.exitCode = 1;
+  }
 }

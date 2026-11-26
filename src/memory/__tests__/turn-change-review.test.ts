@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile, unlink, link, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { tmpdir } from "node:os";
 import * as checkpoints from "../code-checkpoints.js";
 import type { TurnChangeReview, TurnReviewResult } from "../../shared/turn-change-review.js";
@@ -34,6 +35,8 @@ beforeEach(async () => {
   vi.stubEnv("AVE_HOME", join(root, "state"));
 });
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("readonly latest turn change review", () => {
   it("returns relative exact-byte hunks and deterministic IDs without changing checkpoint storage or files", async () => {
@@ -83,6 +86,8 @@ describe("readonly latest turn change review", () => {
     });
     await writeFile(path, "external\nextra\nmore\n");
     vi.resetModules();
+    // A restarted app composes its host before it reads checkpoints.
+    (await import("../../main/host-resources.js")).configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const restarted = await import("../code-checkpoints.js");
     expect(available(await restarted.getTurnChangeReview(sessionId, "latest", context, { currentDetails: true })).files[0])
       .toMatchObject({ added: 1, removed: 1, countsKnown: true, referenceable: false });

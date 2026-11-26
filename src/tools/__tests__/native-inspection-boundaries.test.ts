@@ -1,4 +1,5 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +30,9 @@ function fixture() {
   writeFileSync(path, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
   return { root, path: realpathSync.native(path) };
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 it("retains the resolved native spelling for external-open inspection", async () => {
   const { path } = fixture();

@@ -1,5 +1,7 @@
-import { lstatSync, readlinkSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, sep, win32 } from "node:path";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
+import {
+  admitLocalRoute, admitRouteAncestor, type LocalFilesystemFacts, localFs, MAX_FILESYSTEM_SYMLINK_HOPS, withLocalityDecision,
+} from "./local-path-io.js";
 import { isWindowsNetworkOrDevicePath, modelShellPath, type ShellPathModel } from "./shell-native-path.js";
 
 function rejectNetworkOrDevicePath(path: string, platform: NodeJS.Platform = process.platform): void {
@@ -8,112 +10,37 @@ function rejectNetworkOrDevicePath(path: string, platform: NodeJS.Platform = pro
   }
 }
 
-const MAX_FILESYSTEM_SYMLINK_HOPS = 64;
-
-function tryRealpathNative(path: string): string | undefined {
-  try { return realpathSync.native(path); } catch { return undefined; }
-}
-
-interface LocalFilesystemFacts {
-  knownPath: (path: string) => { canonical: string; missing: boolean } | undefined;
-  onLocalPath: (path: string, canonical: string, missing: boolean) => void;
-}
-
 /** Check each link from a local volume root before any syscall can follow it. */
 export function verifyLocalFilesystemChain(path: string, platform: NodeJS.Platform = process.platform, maxSymlinkHops = MAX_FILESYSTEM_SYMLINK_HOPS, facts?: LocalFilesystemFacts): void {
   if (platform !== "win32") return;
-  try { walkLocalWindowsFilesystemChain(path, maxSymlinkHops, facts); }
-  catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENETWORKSHAREPATH") throw error;
-    // Leave I/O failures to the caller's existing resolution behavior.
-  }
+  withLocalityDecision(() => admitLocalRoute(path, { platform, maxSymlinkHops, facts }));
 }
 
 /** Resolve a protected local path through links, even if a target has yet to be created. */
 export function projectLocalWindowsFilesystemPath(path: string, maxSymlinkHops = MAX_FILESYSTEM_SYMLINK_HOPS): string {
-  const projected = walkLocalWindowsFilesystemChain(path, maxSymlinkHops, undefined, true);
+  const projected = withLocalityDecision(() => admitLocalRoute(path, { platform: "win32", maxSymlinkHops, projectMissing: true }).physical);
   if (projected === undefined) throw new Error("Could not project the local filesystem path");
   return projected;
 }
 
-function walkLocalWindowsFilesystemChain(path: string, maxSymlinkHops: number, facts: LocalFilesystemFacts | undefined, projectMissing = false): string | undefined {
-  const platform = "win32";
-  let hops = 0;
-  const walk = (absolute: string): string | undefined => {
-    rejectNetworkOrDevicePath(absolute, platform);
-    // Normalize the accepted device spelling before deriving or slicing its root.
-    const normalized = (sep === "\\" ? modelShellPath(absolute, { dialect: "native" }).normalizedPath : win32.normalize(absolute))
-      .replace(/^\\\\\?\\(?=[A-Za-z]:[\\/])/, "");
-    const root = sep === "\\" ? modelShellPath(normalized, { dialect: "native" }).volumeRoot : win32.parse(normalized).root;
-    rejectNetworkOrDevicePath(root, platform);
-    const components = normalized.slice(root.length).split(/[\\/]+/u).filter(Boolean);
-    const complete = facts?.knownPath(normalized);
-    if (complete !== undefined) return complete.missing ? undefined : complete.canonical;
-    let lexicalParent = root;
-    let remaining = 0;
-    let known = facts?.knownPath(root);
-    while (known !== undefined && !known.missing && remaining < components.length) {
-      const prefix = win32.join(lexicalParent, components[remaining]!);
-      const next = facts?.knownPath(prefix);
-      if (next === undefined) break;
-      lexicalParent = prefix;
-      known = next;
-      remaining++;
-    }
-    if (known?.missing) return undefined;
-    let physicalParent = known?.canonical ?? realpathSync.native(root);
-    facts?.onLocalPath(lexicalParent, physicalParent, false);
-    const pending = components.slice(remaining);
-    for (const [index, component] of pending.entries()) {
-      if (component === ".") continue;
-      if (component === "..") { physicalParent = win32.dirname(physicalParent); continue; }
-      const candidate = win32.join(physicalParent, component);
-      lexicalParent = win32.join(lexicalParent, component);
-      const entry = lstatSync(candidate, { throwIfNoEntry: false });
-      if (entry === undefined) {
-        facts?.onLocalPath(lexicalParent, candidate, true);
-        return projectMissing ? win32.join(candidate, ...pending.slice(index + 1)) : undefined;
-      }
-      if (entry.isSymbolicLink()) {
-        const target = readlinkSync(candidate);
-        rejectNetworkOrDevicePath(target, platform);
-        const effectiveTarget = win32.resolve(physicalParent, target);
-        rejectNetworkOrDevicePath(effectiveTarget, platform);
-        if (++hops > maxSymlinkHops) throw new Error("Filesystem path exceeds the component limit");
-        // A local spelling can itself contain links. Inspect that entire chain
-        // before realpath is allowed to follow this entry.
-        const resolvedTarget = walk(effectiveTarget);
-        if (resolvedTarget === undefined) return undefined;
-        physicalParent = projectMissing ? resolvedTarget : realpathSync.native(candidate);
-      } else {
-        // The physical parent and this non-link entry establish the next parent. Facts consumers match on the
-        // canonical spelling, so expand 8.3 aliases and casing; other callers keep the input spelling.
-        physicalParent = projectMissing ? realpathSync.native(candidate) : facts ? (tryRealpathNative(candidate) ?? candidate) : candidate;
-        if (projectMissing) rejectNetworkOrDevicePath(physicalParent, platform);
-      }
-      facts?.onLocalPath(lexicalParent, physicalParent, false);
-    }
-    return physicalParent;
-  };
-  return walk(path);
-}
-
 // Follow existing links before collapsing operand components: path.resolve changes link/.. targets. Refuse ambiguous link-parent semantics on Windows; new suffixes inherit the observed existing parent identity.
 export function resolveShellFilesystemPath(path: string, cwd: string, model: Omit<ShellPathModel, "location"> = { dialect: "native" }): string {
-  rejectNetworkOrDevicePath(path);
-  if (sep === "\\") {
-    const absolute = anchorFilesystemPath(path, cwd, model);
-    rejectNetworkOrDevicePath(absolute);
-    const { normalizedPath, volumeRoot: root } = modelShellPath(absolute, { dialect: "native" });
-    const lexical = resolveExistingShellPath(normalizedPath);
-    // Children can collapse parents before following links or follow each prefix first. Neither reading alone establishes the operand's identity.
-    const physical = resolveExistingShellPath(physicalParentPath(absolute, root));
-    if (lexical !== physical) {
-      throw Object.assign(new Error("Shell path has ambiguous directory-link parents"), { code: "EAMBIGUOUSLINKPARENT" });
+  return withLocalityDecision(() => {
+    rejectNetworkOrDevicePath(path);
+    if (sep === "\\") {
+      const absolute = anchorFilesystemPath(path, cwd, model);
+      rejectNetworkOrDevicePath(absolute);
+      const { normalizedPath, volumeRoot: root } = modelShellPath(absolute, { dialect: "native" });
+      const lexical = resolveExistingShellPath(normalizedPath);
+      // Children can collapse parents before following links or follow each prefix first. Neither reading alone establishes the operand's identity.
+      const physical = resolveExistingShellPath(physicalParentPath(absolute, root));
+      if (lexical !== physical) {
+        throw Object.assign(new Error("Shell path has ambiguous directory-link parents"), { code: "EAMBIGUOUSLINKPARENT" });
+      }
+      return physical;
     }
-    return physical;
-  }
-  return resolveExistingShellPath(path, cwd);
+    return resolveExistingShellPath(path, cwd);
+  });
 }
 
 function physicalParentPath(absolute: string, root: string): string {
@@ -128,7 +55,7 @@ function physicalParentPath(absolute: string, root: string): string {
 /** Win32 APIs fold ".." lexically; this reading follows each existing link before its "..". */
 export function physicalParentReading(absolute: string): string {
   rejectNetworkOrDevicePath(absolute);
-  return physicalParentPath(absolute, modelShellPath(absolute, { dialect: "native" }).volumeRoot);
+  return withLocalityDecision(() => physicalParentPath(absolute, modelShellPath(absolute, { dialect: "native" }).volumeRoot));
 }
 
 function resolveExistingShellPath(path: string, cwd = ""): string {
@@ -141,7 +68,7 @@ export function resolvePhysicalFilesystemPath(
   cwd: string,
   maxMissingAncestors: number,
 ): string {
-  return resolveFilesystemPath(path, cwd, maxMissingAncestors).path;
+  return withLocalityDecision(() => resolveFilesystemPath(path, cwd, maxMissingAncestors).path);
 }
 
 export interface PhysicalFilesystemPathResolution {
@@ -157,10 +84,10 @@ export function inspectPhysicalFilesystemPath(
   cwd: string,
   maxMissingAncestors: number,
 ): PhysicalFilesystemPathResolution {
-  return {
+  return withLocalityDecision(() => ({
     ...resolveFilesystemPath(path, cwd, maxMissingAncestors),
     routingSymlinkPaths: inspectRoutingSymlinks(path, cwd, maxMissingAncestors),
-  };
+  }));
 }
 
 type BasicPhysicalFilesystemPathResolution = Omit<PhysicalFilesystemPathResolution, "routingSymlinkPaths">;
@@ -184,12 +111,12 @@ function resolveFilesystemPath(path: string, cwd: string, maxMissingAncestors: n
   rejectNetworkOrDevicePath(anchored);
   const absolute = sep === "\\"
     ? modelShellPath(anchored, { dialect: "native" }).normalizedPath : anchored;
-  verifyLocalFilesystemChain(absolute);
+  const route = admitLocalRoute(absolute);
   const suffix: string[] = [];
   let cursor = absolute;
   for (;;) {
     try {
-      const physicalAncestor = realpathSync.native(cursor);
+      const physicalAncestor = localFs.realpathNative(admitRouteAncestor(route, cursor));
       const unresolvedParentTraversal = suffix.includes("..");
       return {
         path: join(physicalAncestor, ...suffix),
@@ -205,7 +132,7 @@ function resolveFilesystemPath(path: string, cwd: string, maxMissingAncestors: n
         throw new Error("Filesystem path exceeds the missing ancestor limit");
       }
       // A dangling link is an existing entry, not a new regular destination.
-      const entry = lstatSync(cursor, { throwIfNoEntry: false });
+      const entry = localFs.lstat(admitRouteAncestor(route, cursor));
       if (entry?.isSymbolicLink()) throw error;
       const parent = dirname(cursor);
       if (parent === cursor) throw error;
@@ -221,13 +148,13 @@ function inspectRoutingSymlinks(path: string, cwd: string, maxComponents: number
   if (absolute) path = anchorFilesystemPath(path, cwd);
   const root = absolute ? modelShellPath(path, { dialect: "native", location: cwd }).volumeRoot : cwd;
   rejectNetworkOrDevicePath(root);
-  verifyLocalFilesystemChain(absolute ? path : anchorFilesystemPath(path, cwd));
+  const route = admitLocalRoute(absolute ? path : anchorFilesystemPath(path, cwd));
   const remainder = absolute ? path.slice(root.length) : path;
   const components = remainder.split(sep === "\\" ? /[\\/]+/u : /\/+/u).filter(Boolean);
   if (components.length > maxComponents) {
     throw new Error("Filesystem path exceeds the component limit");
   }
-  let physicalParent = realpathSync.native(root);
+  let physicalParent = localFs.realpathNative(admitRouteAncestor(route, root));
   const routingSymlinkPaths: string[] = [];
   for (const component of components) {
     if (component === ".") continue;
@@ -238,19 +165,12 @@ function inspectRoutingSymlinks(path: string, cwd: string, maxComponents: number
       continue;
     }
     const candidate = join(physicalParent, component);
-    const entry = lstatSync(candidate, { throwIfNoEntry: false });
+    // The physical parent is a lookup's answer: walk the candidate, and so any link target it names, before opening it.
+    const step = admitLocalRoute(candidate);
+    const entry = localFs.lstat(step.verdict);
     if (entry === undefined) break;
-    if (entry.isSymbolicLink()) {
-      if (process.platform === "win32") {
-        const target = readlinkSync(candidate);
-        rejectNetworkOrDevicePath(target);
-        const effectiveTarget = win32.resolve(physicalParent, target);
-        rejectNetworkOrDevicePath(effectiveTarget);
-        verifyLocalFilesystemChain(effectiveTarget);
-      }
-      routingSymlinkPaths.push(candidate);
-    }
-    physicalParent = realpathSync.native(candidate);
+    if (entry.isSymbolicLink()) routingSymlinkPaths.push(candidate);
+    physicalParent = localFs.realpathNative(step.verdict);
   }
   return routingSymlinkPaths;
 }

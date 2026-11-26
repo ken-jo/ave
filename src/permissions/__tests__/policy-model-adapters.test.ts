@@ -1,9 +1,10 @@
 // One policy model, two adapters. Every row of the table states a launch as policy rows and pins what each adapter makes of it:
 // the sandbox runtime package lists and the ranked container grants. The expected values are literals, so a change in either
 // adapter's output fails here.
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { setLocale } from "../../i18n/index.js";
 import { synthesizeMxcAncestorQueries } from "../mxc-filesystem-policy.js";
-import { rankMxcFilesystem, type MxcFilesystemGrants } from "../mxc-windows.js";
+import { rankMxcRowsBySpelling, type MxcFilesystemGrants } from "../mxc-windows.js";
 import {
   buildPolicyModel, policyFloorRow, policyGrantRow,
   type PolicyFloorRow, type PolicyGrantRow, type PolicyModel, type PolicyModelInput,
@@ -162,16 +163,33 @@ const TABLE: readonly AdapterRow[] = [
     srt: undefined,
     mxc: { readwrite: [], readonly: [HOME, `${HOME}\\.ave\\sessions`], denied: [`${HOME}\\.ave\\keys`] },
   },
+  {
+    // A user's deny drops a grant beneath it; a pierce elsewhere still lifts its own floor row.
+    name: "user deny",
+    model: model({
+      floors: [floor(`${HOME}\\.ave\\sessions`, "denied", "secrets"), floor(`${HOME}\\private`, "denied", "user-deny")],
+      launchGrants: [
+        grant(HOME, "ro", "launch-grant"),
+        grant(`${HOME}\\private\\notes`, "ro", "launch-grant"),
+        grant(`${HOME}\\.ave\\sessions`, "ro", "launch-grant"),
+        grant(`${HOME}\\.ave\\sessions`, "ro", "floor-pierce"),
+      ],
+    }),
+    exists: everything,
+    srt: undefined,
+    mxc: { readwrite: [], readonly: [HOME, `${HOME}\\.ave\\sessions`], denied: [`${HOME}\\private`] },
+  },
 ];
 
 describe("policy model adapters", () => {
+  beforeEach(() => setLocale("en"));
   it.each(TABLE)("projects $name onto the sandbox runtime package lists", (row) => {
     if (row.srt === undefined) expect(() => toSrtConfig(row.model)).toThrow(/cannot carry a floor pierce/);
     else expect(toSrtConfig(row.model)).toEqual(row.srt);
   });
 
   it.each(TABLE)("ranks $name into container grants", (row) => {
-    expect(rankMxcFilesystem(row.model, row.exists)).toEqual(row.mxc);
+    expect(rankMxcRowsBySpelling(row.model, row.exists)).toEqual(row.mxc);
   });
 
   it("leaves the volume-root refusal to the container request builder", () => {
@@ -192,6 +210,17 @@ describe("policy model adapters", () => {
     expect(Object.isFrozen(built.rows) && built.rows.every((row) => Object.isFrozen(row))).toBe(true);
   });
 
+  it("refuses a pierce at or beneath a user's deny, naming the rule", () => {
+    // Literal, pattern and relative (unanchored) rules alike.
+    for (const rule of [`${HOME}\\.ave`, `${HOME}\\.ave\\sessions`, `${HOME}\\.ave\\sess*`, `${HOME}\\.ave\\sessions\\**`, "sessions", "**\\.ave"]) {
+      const pierced = model({
+        floors: [floor(`${HOME}\\.ave\\sessions`, "denied", "secrets"), floor(rule, "denied", "user-deny")],
+        launchGrants: [grant(`${HOME}\\.ave\\sessions`, "ro", "launch-grant"), grant(`${HOME}\\.ave\\sessions`, "ro", "floor-pierce")],
+      });
+      expect(() => rankMxcRowsBySpelling(pierced, everything)).toThrow(`Your read deny ${rule} covers ${HOME}\\.ave\\sessions`);
+    }
+  });
+
   it("accepts a floor pierce from an extension manifest and from a launch", () => {
     expect(model({ extensionManifests: [grant(WORK, "ro", "floor-pierce")], launchGrants: [grant(HOME, "ro", "floor-pierce")] }).rows)
       .toHaveLength(2);
@@ -209,6 +238,7 @@ describe("policy model adapters", () => {
   it.each<[string, Partial<PolicyModelInput>]>([
     ["a floor row that gives access", { floors: [{ ...floor(WORK, "denied", "secrets"), access: "rw" } as unknown as PolicyFloorRow] }],
     ["a readable secrets row", { floors: [floor(WORK, "ro", "secrets")] }],
+    ["a readable user deny", { floors: [floor(WORK, "ro", "user-deny")] }],
     ["a denied protected name", { floors: [floor(WORK, "denied", "protected-name")] }],
     ["a grant reason among the floors", { floors: [grant(WORK, "ro", "user-grant") as unknown as PolicyFloorRow] }],
     ["a grant under the wrong input", { extensionManifests: [grant(WORK, "rw", "user-grant")] }],

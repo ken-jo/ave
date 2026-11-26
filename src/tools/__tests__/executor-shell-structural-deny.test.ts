@@ -1,7 +1,8 @@
 // Structural-ordering tests provide trusted startup and an independent native AST.
 // Actual executable admission and unavailable-install refusal have separate coverage.
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
-import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
@@ -71,6 +72,9 @@ function askingExecutor(toolName: string) {
   );
   return { executor, wc, dialect, requestAndWait };
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("ToolExecutor shell admission and normal opaque-command approval", () => {
   it("refuses a structurally blocked bash command before any approval modal is shown", async () => {

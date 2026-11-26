@@ -1,10 +1,11 @@
 import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join, resolve } from "node:path";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { configureHostResources } from "../host-resources.js";
 import type { DocumentObservationEvent, DocumentObservationEngine } from "../../shared/agent-observation.js";
 import type { PreviewTableDocument } from "../../shared/preview-document.js";
 import { observeAgentDocumentMutation, runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../tools/agent-observation-context.js";
@@ -21,6 +22,8 @@ vi.mock("../../permissions/permission-settings-store.js", () => ({ readPermissio
   return { permissions: { additionalDirectories: [state.root] } };
 } }));
 import { DocumentObservationRuntime } from "../document-observation.js";
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 function table(value: string): PreviewTableDocument {
   return { format: "csv", needsRecalculation: false, sheetNames: ["Sheet1"], totalSheets: 1, sheetsTruncated: false,
@@ -145,8 +148,9 @@ describe("document observation desktop ownership", () => {
 
   it("holds an agent table open until the initial grid is acknowledged as rendered", async () => {
     let settled = false;
-    const ready = runtime.waitForRendered(identity, path, Date.now() + 1_000).then((value) => { settled = true; return value; });
     const binding = runtime.registerView(event, "session-one", path, Buffer.from("old"), table("old"))!;
+    // The deadline starts after registration, whose Windows path admission can take over a second under load.
+    const ready = runtime.waitForRendered(identity, path, Date.now() + 1_000).then((value) => { settled = true; return value; });
     await Promise.resolve();
     expect(settled).toBe(false);
     expect(runtime.acknowledge(event, { action: "rendered", ...binding })).toEqual({ ok: true });

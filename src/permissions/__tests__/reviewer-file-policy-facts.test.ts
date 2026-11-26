@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import { ApplyPatchTool, MultiEditTool, EditFileTool, WriteFileTool, ReadFileTool } from "../../tools/file-tools.js";
 import { extractTargetFilePaths } from "../../tools/pipeline/path-extraction.js";
 import type { Tool } from "../../tools/base.js";
@@ -66,6 +67,8 @@ function providerReturning(level: "low" | "high") {
 }
 
 describe("reviewer host file-policy facts", () => {
+  // Windows file targets are admitted through the shipped path-kind helper; boot configures its resources first.
+  beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
   it("gives create, overwrite, edit and patch the same real project boundary and rule floor", async () => {
     const path = "project/src/note.txt";
     const operations = [

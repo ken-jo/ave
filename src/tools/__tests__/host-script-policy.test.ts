@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
+import { windowsPathKindHelperIn } from "../../main/windows-path-kind-launcher.js";
 import { hostScriptInvocationReadPaths, hostScriptRuntimePaths, isVerifiedHostScript } from "../../main/host-script-runtime.js";
 import { isSensitivePath } from "../../permissions/sensitive-paths.js";
 import { getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
@@ -26,6 +27,11 @@ beforeEach(() => {
   writeFileSync(script, "console.log('ready');\n");
   writeFileSync(join(resources, "skill-scripts", "manifest.json"), JSON.stringify({ version: 1,
     scripts: { "command.cjs": createHash("sha256").update(readFileSync(script)).digest("hex") } }));
+  // Windows path admission runs the shipped path-kind helper from the configured resources.
+  if (process.platform === "win32") {
+    mkdirSync(dirname(windowsPathKindHelperIn(resources)), { recursive: true });
+    copyFileSync(windowsPathKindHelperIn(join(process.cwd(), "resources")), windowsPathKindHelperIn(resources));
+  }
   configureHostResources({ resourcePath: resources, isPackaged: true });
 });
 afterEach(() => { rmSync(root, { recursive: true, force: true }); });

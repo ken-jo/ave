@@ -2,10 +2,11 @@ vi.mock("../../shared/windows-path-facts.js", async original => (await import(".
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { PermissionManager, type PermissionRule } from "../permission-manager.js";
 import { editDepthCandidates, evaluateScopedRules, type ScopedRuleSubject } from "../rules/scoped-rule-matcher.js";
 import { canonicalRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "../rules/rule-specifier.js";
@@ -54,6 +55,9 @@ const PROTECTED_FILE_CALLS = [
   { name: "copy_path", input: { sourcePath: "src/secret/keep.txt", destinationPath: "src/copied.txt" } },
   { name: "extract_archive", input: { archivePath: "src/public.txt", destinationPath: "src/secret/extracted" } },
 ] as const;
+
+// Windows lookups go through native admission, which needs the source host resources.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("scoped permission rules", () => {
   it("builds an Edit subject for every registered canonical write with paths", () => {

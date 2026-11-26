@@ -4,11 +4,14 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 
 import { EventEmitter } from "node:events";
 import { Duplex, PassThrough } from "node:stream";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 
 const childProcessMock = vi.hoisted(() => ({
   spawn: vi.fn(),
   execFileSync: vi.fn(),
+  actualExecFileSync: undefined as unknown as typeof import("node:child_process").execFileSync,
 }));
 
 vi.mock("../../shared/powershell-executable.js", () => ({
@@ -19,6 +22,7 @@ vi.mock("../../shared/powershell-executable.js", () => ({
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
+  childProcessMock.actualExecFileSync = actual.execFileSync;
   return {
     ...actual,
     spawn: childProcessMock.spawn,
@@ -136,6 +140,9 @@ const SHELLS = [
   },
 ] as const;
 
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
+
 describe("builtin shell - Windows partial Plan-B native execution", () => {
   beforeEach(() => {
     vi.stubEnv("SystemRoot", "C:\\Windows");
@@ -143,7 +150,10 @@ describe("builtin shell - Windows partial Plan-B native execution", () => {
     childProcessMock.spawn.mockReset();
     childProcessMock.execFileSync.mockReset();
     // Mock the Windows shell capability probe too so no real host child starts.
-    childProcessMock.execFileSync.mockImplementation((_file, args) => args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
+    // The shipped path-kind helper that pins Windows paths still runs.
+    childProcessMock.execFileSync.mockImplementation((file: string, args: readonly string[], options?: object) =>
+      /[\\/]ave-path-kind\.exe$/i.test(file) ? childProcessMock.actualExecFileSync(file, args, options)
+        : args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
     childProcessMock.spawn.mockImplementation(
       (
         _command: string,
@@ -256,7 +266,10 @@ describe.each(["darwin", "linux", "win32"] as const)(
       __resetShellResolverCache();
       childProcessMock.spawn.mockReset();
       childProcessMock.execFileSync.mockReset();
-      childProcessMock.execFileSync.mockImplementation((_file, args) => args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
+      // The shipped path-kind helper that pins Windows paths still runs.
+    childProcessMock.execFileSync.mockImplementation((file: string, args: readonly string[], options?: object) =>
+      /[\\/]ave-path-kind\.exe$/i.test(file) ? childProcessMock.actualExecFileSync(file, args, options)
+        : args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
       childProcessMock.spawn.mockImplementation(
         (
           _command: string,

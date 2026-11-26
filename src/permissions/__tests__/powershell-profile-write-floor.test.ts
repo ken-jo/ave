@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
+import { entryPaths } from "../../__tests__/support/filesystem-policy-paths.js";
 import { admitMxcExtensionFilesystem, buildSandboxConfig, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
-import { rankMxcFilesystem } from "../mxc-windows.js";
+import { rankMxcRowsBySpelling } from "../mxc-windows.js";
 import { rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 import { resetWatchedRows, watchedProtectedRows } from "../windows-watched-rows.js";
 
@@ -12,7 +13,6 @@ const ENGINES = ["WindowsPowerShell", "PowerShell"];
 const profilesIn = (documents: string): string[] => ENGINES.flatMap(engine => [
   join(documents, engine, "profile.ps1"), join(documents, engine, "Microsoft.PowerShell_profile.ps1"),
 ]);
-const literalDeny = (path: string) => ({ path, literal: true });
 
 vi.mock("node:os", async importOriginal => ({
   ...await importOriginal<typeof import("node:os")>(),
@@ -56,16 +56,16 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
     expect(grants).toEqual({ readwrite: [documents], readonly: present, denied: missing });
 
     const config = buildSandboxConfig({ allowWrite: [documents], resolveWindowsDocumentsPath, windows: { externalConfinement: true } });
-    expect(config.filesystem.denyWrite).toEqual(expect.arrayContaining(present.map(literalDeny)));
-    for (const path of missing) expect(config.filesystem.denyWrite).not.toContainEqual(literalDeny(path));
+    expect(entryPaths(config.filesystem.denyWrite)).toEqual(expect.arrayContaining(present));
+    for (const path of missing) expect(entryPaths(config.filesystem.denyWrite)).not.toContain(path);
     expect(watchedProtectedRows()).toEqual(expect.arrayContaining(missing));
     for (const path of missing) expect(existsSync(path)).toBe(false);
-    for (const path of adjacent) expect(config.filesystem.denyWrite).not.toContainEqual(literalDeny(path));
+    for (const path of adjacent) expect(entryPaths(config.filesystem.denyWrite)).not.toContain(path);
 
     const extension = admitMxcExtensionFilesystem({ allowWrite: [documents], allowRead: [], denyWrite }, {
       readRoots: [], writeRoots: [documents], hostStorageRoots: [],
     });
-    expect(rankMxcFilesystem(extension.model, existsSync)).toMatchObject({
+    expect(rankMxcRowsBySpelling(extension.model, existsSync)).toMatchObject({
       readwrite: [documents], readonly: expect.arrayContaining(present), denied: expect.arrayContaining(missing),
     });
   });
@@ -83,6 +83,12 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
       expect(rankMxcLists({ allowWrite: [path], allowRead: [], denyWrite, denyRead: [], protectedFloor: [] }, existsSync))
         .toEqual({ readwrite: [path], readonly: [], denied: profiles });
     }
+    expect(() => buildSandboxConfig({
+      allowWrite: [root], resolveWindowsDocumentsPath: () => alias, windows: { externalConfinement: true },
+    })).toThrow(expect.objectContaining({
+      code: "sandbox-obligation-unenforceable",
+      rows: expect.arrayContaining([{ row: profilesIn(alias)[0], reason: "link-spelling" }]),
+    }));
   });
 
   it("protects a missing engine directory under a case-changed grant", () => {
@@ -94,37 +100,27 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
       readRoots: [], writeRoots: [defaultDocuments], hostStorageRoots: [],
     });
 
-    const grants = rankMxcFilesystem(extension.model, existsSync);
+    const grants = rankMxcRowsBySpelling(extension.model, existsSync);
     expect(grants.denied).toEqual(expect.arrayContaining(ENGINES.map(engine => join(defaultDocuments, engine))));
     expect(grants.readwrite).toContain(adjacent);
   });
 
-  it("watches the absent physical target of an engine junction", () => {
+  it("refuses confinement when a profile deny crosses a dangling engine junction", () => {
     const linkedDocuments = join(root, "linked-documents");
     const targetParent = join(root, "writable-targets");
     const target = join(targetParent, "future-engine");
-    const unrelated = join(targetParent, "work");
     mkdirSync(linkedDocuments);
-    mkdirSync(unrelated, { recursive: true });
+    mkdirSync(targetParent);
     const engine = join(linkedDocuments, "PowerShell");
     symlinkSync(target, engine, "junction");
 
-    const { filesystem } = buildSandboxConfig({
+    expect(() => buildSandboxConfig({
       allowWrite: [targetParent, linkedDocuments], resolveWindowsDocumentsPath: () => linkedDocuments,
       windows: { externalConfinement: true },
-    });
-    const paths = (entries: typeof filesystem.denyWrite) => entries.map(entry => typeof entry === "string" ? entry : entry.path);
-    const denyWrite = paths(filesystem.denyWrite);
-    const rows = [join(engine, "profile.ps1"), join(target, "profile.ps1"), join(target, "Microsoft.PowerShell_profile.ps1")];
-    for (const row of rows) expect(denyWrite).not.toContain(row);
-    expect(watchedProtectedRows()).toEqual(expect.arrayContaining(rows));
-    expect(existsSync(target)).toBe(false);
-    const grants = rankMxcLists({
-      allowWrite: paths(filesystem.allowWrite), allowRead: [], denyWrite: [...denyWrite, ...watchedProtectedRows()], denyRead: [], protectedFloor: [],
-    }, existsSync);
-    expect(grants.denied).toContain(target);
-    expect(grants.readwrite).toContain(targetParent);
-    expect(grants.denied.some(path => unrelated.startsWith(`${path}\\`))).toBe(false);
+    })).toThrow(expect.objectContaining({
+      code: "sandbox-obligation-unenforceable",
+      rows: expect.arrayContaining([{ row: join(engine, "profile.ps1"), reason: "link-spelling" }]),
+    }));
   });
 
   it("watches the profiles of a configured Documents directory before it exists", () => {
@@ -140,7 +136,7 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
 
     expect(config.filesystem.allowWrite).toContainEqual(expect.objectContaining({ path: parent, literal: true }));
     const rows = [...profilesIn(missingDocuments), ...profilesIn(defaultDocuments)];
-    for (const row of rows) expect(config.filesystem.denyWrite).not.toContainEqual(literalDeny(row));
+    for (const row of rows) expect(entryPaths(config.filesystem.denyWrite)).not.toContain(row);
     expect(watchedProtectedRows()).toEqual(expect.arrayContaining(rows));
     expect(existsSync(missingDocuments)).toBe(false);
   });
@@ -157,7 +153,7 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
     });
 
     expect(config.filesystem.allowWrite).toEqual([]);
-    for (const row of profilesIn(defaultDocuments)) expect(config.filesystem.denyWrite).not.toContainEqual(literalDeny(row));
+    for (const row of profilesIn(defaultDocuments)) expect(entryPaths(config.filesystem.denyWrite)).not.toContain(row);
     for (const engine of ENGINES) expect(existsSync(join(defaultDocuments, engine))).toBe(false);
   });
 
