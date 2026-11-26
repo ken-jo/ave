@@ -407,6 +407,57 @@ describe('local model lifecycle', () => {
 });
 
 describe('model effects after fetch', () => {
+  it('keeps the failure of a replaced download out of shared progress', async () => {
+    const f = await fixture();
+    const fetching = deferred<void>();
+    const response = deferred<Response>();
+    const onProgress = vi.fn();
+    const manager = new LocalModelManager({
+      namespace: {
+        dir: f.root, readJson: async (_, fallback) => fallback, writeJson: async () => {},
+        childDir: async name => { const path = join(f.root, name); await mkdir(path, { recursive: true }); return path; },
+        createFile: name => open(join(f.root, name), 'wx'),
+      },
+      files: f.files, readPath: f.saved, savePath: f.setSaved, onProgress,
+      downloadFile: async () => { fetching.resolve(); return response.promise; },
+    });
+    try {
+      const first = manager.download();
+      await fetching.promise;
+      const replacement = manager.download();
+      response.resolve(new Response('model'));
+      expect(await first).toMatchObject({ status: 'failed', error: 'model-cancelled' });
+      await replacement;
+      expect(onProgress.mock.calls.map(([status]) => status.error)).not.toContain('model-cancelled');
+    } finally { await f.close(); }
+  });
+
+  it('refuses a status result when the selected path changes during verification', async () => {
+    const f = await fixture();
+    try {
+      const selected = join(f.root, 'selected');
+      await mkdir(selected);
+      await writeFile(join(selected, 'weights.bin'), 'model');
+      f.setSaved(selected);
+      const checking = deferred<void>();
+      const proceed = deferred<void>();
+      const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      await vi.mocked(realpath).withImplementation(async (path, options) => {
+        if (path === selected) {
+          checking.resolve();
+          await proceed.promise;
+        }
+        return actual.realpath(path, options);
+      }, async () => {
+        const status = f.manager.status();
+        await checking.promise;
+        f.setSaved(join(f.root, 'replacement'));
+        proceed.resolve();
+        await expect(status).rejects.toMatchObject({ code: 'model-cancelled' });
+      });
+    } finally { await f.close(); }
+  });
+
   it.each(['loss', 'disable', 'cancel'] as const)('stops effects when %s occurs during the first file fetch', async event => {
     const root = await mkdtemp(join(tmpdir(), 'ave-model-'));
     roots.push(root);

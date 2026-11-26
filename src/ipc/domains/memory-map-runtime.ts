@@ -5,7 +5,7 @@ import { permissionSettingsPath } from '../../permissions/permission-settings-st
 import { CHANNELS } from '../../contract/app-contract.js';
 import { validateHostRendererSender } from '../gated.js';
 import type { IpcDeps } from '../types.js';
-import type { MemoryMapScope, MemoryEmbeddingSettings } from '../../shared/memory-map.js';
+import type { MemoryMapScope, MemoryEmbeddingSettings, MemoryModelStatus } from '../../shared/memory-map.js';
 import type { z } from 'zod';
 import type { MemoryEmbeddingSettingsSchema, MemoryRetrievalSchema } from '../../shared/memory-map-validation.js';
 import { assertLocalEmbeddingRuntime, bindLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from '../../main/memory-map/local-runtime.js';
@@ -76,7 +76,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   let modelGeneration = 0;
   let settingsGeneration = 0;
   let settingsWrite: Promise<unknown> = Promise.resolve();
-  let buildEvent: IpcMainInvokeEvent | undefined; let modelEvent: IpcMainInvokeEvent | undefined;
+  let buildEvent: IpcMainInvokeEvent | undefined;
   const model = new LocalModelManager({
     refreshAdmission: refreshLocalAdmission,
     readPath: () => deps.settingsService.get('memoryEmbedding')?.localModelPath,
@@ -90,7 +90,6 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
         throw new MemoryMapHostError('local-runtime-unavailable');
       }
     },
-    onProgress: status => { if (modelEvent && validateHostRendererSender(modelEvent)) sendToWebContents(modelEvent.sender, CHANNELS.memoryMap.modelProgress, status); },
   });
   const watchAuthority = (cancel: () => void) => {
     const stopNotes = deps.memoryManager.watchMemoryNotes(cancel);
@@ -133,13 +132,18 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   const assertCurrentModelRequest = (generation: number) => {
     if (generation !== modelGeneration) throw new MemoryModelError('model-cancelled');
   };
-  const startModelOperation = async (generation: number, event: IpcMainInvokeEvent, start: () => unknown) => {
+  const startModelOperation = async (
+    generation: number,
+    event: IpcMainInvokeEvent,
+    start: (onProgress: (status: MemoryModelStatus) => void) => Promise<MemoryModelStatus>,
+  ) => {
     const admission = await refreshLocalInferenceAdmission();
     assertCurrentModelRequest(generation);
     localRuntime(admission);
     cancelBuild();
-    modelEvent = event;
-    return start();
+    return start(status => {
+      if (validateHostRendererSender(event)) sendToWebContents(event.sender, CHANNELS.memoryMap.modelProgress, status);
+    });
   };
   let sourceIndex: { scopeId: string; filenames: Map<string, string> } | undefined;
   const catalog = (scope?: MemoryMapScope): ReadMemoryMapCatalog => {
@@ -191,7 +195,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
       const assertStillValid = await refreshLocalAdmission();
       return model.status(assertStillValid);
     },
-    modelDownload: event => startModelOperation(++modelGeneration, event, () => model.download()),
+    modelDownload: event => startModelOperation(++modelGeneration, event, onProgress => model.download(onProgress)),
     modelCancel: () => { cancelModel(); return null; },
     modelUseExisting: async event => {
       const generation = ++modelGeneration;
@@ -201,7 +205,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
       const selection = await dialog.showOpenDialog({ properties: ['openDirectory'] });
       const folder = selection.filePaths[0];
       if (selection.canceled || !folder) return null;
-      return startModelOperation(generation, event, () => model.adoptExistingFolder(folder));
+      return startModelOperation(generation, event, onProgress => model.adoptExistingFolder(folder, onProgress));
     },
     settingsGet: settings,
     settingsSet: async input => {
