@@ -127,12 +127,12 @@ describe("model transport structure", () => {
           "const wireFetch = this.wireFetch(modelId);",
           "const wireFetch = this.customFetch ?? globalThis.fetch;",
         ),
-      })).not.toEqual([]);
+      })).toEqual(expect.arrayContaining([`${ADAPTER}: createAnthropic(…) is not given the gated wire fetch`]));
     });
 
     it("rejects a gate whose predicate was emptied", () => {
       expect(mutate({
-        [ADAPTER]: (source) => replaceOnce(source, "() => this.extras.getRetiredModelId?.(modelId)", "() => undefined"),
+        [ADAPTER]: (source) => replaceOnce(source, "() => this.extras.getRetiredModelId(modelId)", "() => undefined"),
       })).toEqual([expect.stringContaining("wireFetch must be exactly")]);
     });
 
@@ -144,6 +144,68 @@ describe("model transport structure", () => {
           "getRetiredModelId: () => undefined, unused: (model: string) => routeRetirement.getRetiredModelId({",
         ),
       })).toEqual([`${CHAT_ROUTE}: supplies a getRetiredModelId that answers nothing; name noRetirementEvidence`]);
+    });
+
+    it.each([
+      ["src/engine/llm/marketplace-provider-fetch.ts", "declareDeferredSend(guardedFetch, (wrapSend) =>", "void ((wrapSend: (send: typeof fetch) => typeof fetch) =>"],
+      ["src/main/chatgpt-plan/responses-fetch.ts", "declareDeferredSend(planFetch, (wrapSend) =>", "void ((wrapSend: (send: typeof fetch) => typeof fetch) =>"],
+    ])("rejects %s with its deferred-send declaration deleted", (file, declaration, replacement) => {
+      expect(mutate({ [file]: (source) => replaceOnce(source, declaration, replacement) }))
+        .toEqual([`${file}: a fetch that waits before its send is not declared with declareDeferredSend`]);
+    });
+
+    it("rejects a chain fetch that starts to wait before its send without declaring it", () => {
+      const file = "src/main/safe-llm-fetch.ts";
+      expect(mutate({
+        [file]: (source) => replaceOnce(source, "    const normalizedInput =", "    await Promise.resolve();\n    const normalizedInput ="),
+      })).toEqual([`${file}: a fetch that waits before its send is not declared with declareDeferredSend`]);
+    });
+
+    it("rejects a new waiting wrapper placed around a route's fetch", () => {
+      expect(mutate({
+        [CHAT_ROUTE]: (source) => replaceOnce(
+          source,
+          "...(providerFetch ? { fetch: providerFetch } : {}),",
+          "fetch: async (input, init) => { await Promise.resolve(); return (providerFetch ?? fetch)(input, init); },",
+        ),
+      })).toEqual([`${CHAT_ROUTE}: a provider config carries a fetch that no reviewed constructor built`]);
+    });
+
+    it("rejects a new file whose provider config carries its own waiting fetch", () => {
+      const file = "src/main/side-route.ts";
+      expect(mutate({
+        [file]: [
+          'import { createProvider } from "../engine/llm/provider-factory.js";',
+          "export const sideRoute = (probe: (model: string) => string | undefined, send: typeof fetch) => createProvider({",
+          '  vendor: "openai", apiKey: "k", getRetiredModelId: probe,',
+          "  fetch: async (input, init) => { await Promise.resolve(); return send(input, init); },",
+          "});",
+        ].join("\n"),
+      })).toEqual([`${file}: a provider config carries a fetch that no reviewed constructor built`]);
+    });
+
+    it("rejects the SDK gateway in the adapter", () => {
+      expect(mutate({
+        [ADAPTER]: (source) => replaceOnce(source, "  streamText,\n  jsonSchema,", "  streamText,\n  gateway,\n  jsonSchema,"),
+      })).toEqual([`${ADAPTER}: imports gateway, which sends on its own transport`]);
+    });
+
+    it.each([
+      ["a string the SDK would route itself", 'model: "openai/gpt-5",'],
+      ["an identifier that is not the resolved model", "model: params.model as never,"],
+    ])("rejects a dispatch given %s", (_case, property) => {
+      expect(mutate({
+        [ADAPTER]: (source) => replaceOnce(source, "streamText({\n          model,", `streamText({\n          ${property}`),
+      })).toEqual([`${ADAPTER}: streamText(…) must take its model from this.resolveModel(…)`]);
+    });
+
+    it("rejects a gate asked about a different model than the factory is given", () => {
+      expect(mutate({
+        [ADAPTER]: (source) => replaceOnce(source, "return vertex(modelId);", 'return vertex("another-model");'),
+      })).toEqual([`${ADAPTER}: resolveModel selects a model other than the one its gate checks`]);
+      expect(mutate({
+        [ADAPTER]: (source) => replaceOnce(source, "const wireFetch = this.wireFetch(modelId);", 'const wireFetch = this.wireFetch("another-model");'),
+      })).toEqual([`${ADAPTER}: resolveModel must gate on its own model id parameter`]);
     });
 
     it("rejects the adapter constructed outside the factory", () => {

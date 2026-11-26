@@ -297,8 +297,8 @@ export interface VercelProviderExtras {
    */
   openaiWire?: "responses";
   wire?: CustomProviderWire;
-  /** The route's live retirement evidence. `createProvider` requires it; only a directly constructed test wire omits it. */
-  getRetiredModelId?: RetiredModelProbe;
+  /** The route's live retirement evidence, reread on every wire attempt. There is no default: a wire without it is refused. */
+  getRetiredModelId: RetiredModelProbe;
 }
 
 export class VercelUnifiedProvider implements LLMProvider {
@@ -313,11 +313,15 @@ export class VercelUnifiedProvider implements LLMProvider {
   constructor(
     vendor: VercelVendor,
     apiKey: string,
-    baseUrl?: string,
-    customFetch?: typeof fetch,
-    extras: VercelProviderExtras = {},
+    baseUrl: string | undefined,
+    customFetch: typeof fetch | undefined,
+    extras: VercelProviderExtras,
     providerMetadata?: MarketplaceInstalledProviderPreset,
   ) {
+    // The type requires it; an untyped caller must not get a wire that never checks retirement.
+    if (typeof extras?.getRetiredModelId !== "function") {
+      throw new Error("VercelUnifiedProvider requires getRetiredModelId");
+    }
     this.vendor = vendor;
     this.vendorSlot = vendor;
     this.apiKey = apiKey;
@@ -731,7 +735,7 @@ export class VercelUnifiedProvider implements LLMProvider {
 
   /** The only fetch an SDK model may be built with: every wire attempt rechecks this route's retirement evidence. */
   private wireFetch(modelId: string): typeof fetch {
-    return gateModelFetch(this.customFetch, () => this.extras.getRetiredModelId?.(modelId));
+    return gateModelFetch(this.customFetch, () => this.extras.getRetiredModelId(modelId));
   }
 
   embeddingModel(modelId: string) {

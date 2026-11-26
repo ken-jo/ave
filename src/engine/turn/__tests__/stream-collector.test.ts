@@ -6,6 +6,7 @@ import { VercelUnifiedProvider } from "../../llm/vercel/adapter.js";
 import { RetiredModelError } from "../../llm/retired-model-error.js";
 import { classifyProviderError } from "../../llm/error-classifier.js";
 import { getLocale, setLocale } from "../../../i18n/index.js";
+import { noRetirementEvidence } from "../../llm/model-wire-gate.js";
 
 const initialLocale = getLocale();
 afterEach(() => setLocale(initialLocale));
@@ -59,7 +60,7 @@ describe("image capability refusal", () => {
     setLocale(locale);
     const fetchResponse = vi.fn<typeof fetch>();
     const result = await collectRoundStream({
-      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse),
+      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse, { getRetiredModelId: noRetirementEvidence }),
       model: "gpt-4", systemPrompt: "Describe the image.", toolSchemas: [], llmSettings: LLM_SETTINGS,
       messages: [
         { role: "assistant", content: "", toolCalls: [{ id: "image-call", name: "view_image", input: {} }] },

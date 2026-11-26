@@ -659,7 +659,12 @@ A native subscription session sends from its own runtime process; the runtime se
 revalidates the selected model against the live catalog when the session opens.
 A structural test (`model-transport-structure.test.ts`) fails when a model SDK is
 imported outside the gated transport, an SDK factory is called without the gated
-fetch, or the evidence is replaced by a function that answers nothing.
+fetch, or the evidence is replaced by a function that answers nothing. It also fails
+when a fetch in the chain waits before sending without declaring it, a provider
+config carries a fetch no reviewed constructor built, the adapter takes the SDK
+gateway or a model that `resolveModel` did not build, or the gate is asked about a
+different model id than the factory is given. The adapter refuses to be constructed
+without evidence, and the permission classifier does not retry the refusal.
 
 If a refreshed catalog deprecates a shipped default, the next launch hides it from
 the choices and shows the non-blocking warning if it is still the saved selection.

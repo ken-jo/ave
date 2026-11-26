@@ -9,6 +9,7 @@ import {
 import { claudeRequestShape } from "../../../../shared/model-host-policy.js";
 import { catalogModelFor } from "../../../../shared/context-budget.js";
 import { extractSignatureSafely } from "../signature-shim.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 
 describe("Claude helpers — budget → thinking effort mapping", () => {
 
@@ -395,7 +396,7 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("claude", "test-key");
+    const provider = new VercelUnifiedProvider("claude", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     await collect(
       provider.streamTurn({
@@ -451,7 +452,7 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("claude", "test-key");
+    const provider = new VercelUnifiedProvider("claude", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     await collect(
       provider.streamTurn({
@@ -491,7 +492,7 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("claude", "test-key");
+    const provider = new VercelUnifiedProvider("claude", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     await collect(
       provider.streamTurn({
@@ -534,7 +535,7 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("claude", "test-key");
+    const provider = new VercelUnifiedProvider("claude", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     await collect(
       provider.streamTurn({

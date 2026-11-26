@@ -201,6 +201,16 @@ describe("model transports send through the retirement gate", () => {
     }
   });
 
+  it("refuses to build a wire that has no retirement evidence", async () => {
+    const { VercelUnifiedProvider } = await import("../vercel/adapter.js");
+    type Extras = ConstructorParameters<typeof VercelUnifiedProvider>[4];
+
+    expect(() => new VercelUnifiedProvider("openai", "fixture-key", undefined, undefined, {} as Extras))
+      .toThrow("VercelUnifiedProvider requires getRetiredModelId");
+    expect(() => new VercelUnifiedProvider("openai", "fixture-key", undefined, undefined, undefined as unknown as Extras))
+      .toThrow("VercelUnifiedProvider requires getRetiredModelId");
+  });
+
   it("gates an embedding transport the same way", async () => {
     const wireFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ embedding: [0.1] }] }));
     const model = await createEmbeddingModel({

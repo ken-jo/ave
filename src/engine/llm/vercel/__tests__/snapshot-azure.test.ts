@@ -36,7 +36,7 @@ describe("VercelUnifiedProvider azure-foundry", () => {
     const provider = new VercelUnifiedProvider(
       "azure-foundry",
       "azure-key",
-      endpoint,
+      endpoint, undefined, { getRetiredModelId: noRetirementEvidence },
     );
 
     const events = await collect(
@@ -94,7 +94,7 @@ describe("VercelUnifiedProvider azure-foundry", () => {
     const provider = new VercelUnifiedProvider(
       "azure-foundry",
       "azure-key",
-      "https://myresource.openai.azure.com/openai/v1/",
+      "https://myresource.openai.azure.com/openai/v1/", undefined, { getRetiredModelId: noRetirementEvidence },
     );
 
     const events = await collect(
@@ -173,7 +173,7 @@ describe("VercelUnifiedProvider azure-foundry", () => {
     const provider = new VercelUnifiedProvider(
       "azure-foundry",
       "azure-key",
-      "https://myresource.openai.azure.com/openai/v1/",
+      "https://myresource.openai.azure.com/openai/v1/", undefined, { getRetiredModelId: noRetirementEvidence },
     );
 
     const events = await collect(
@@ -317,7 +317,7 @@ describe("VercelUnifiedProvider azure-foundry", () => {
     });
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("azure-foundry", "k");
+    const provider = new VercelUnifiedProvider("azure-foundry", "k", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     const events = await collect(
       provider.streamTurn({

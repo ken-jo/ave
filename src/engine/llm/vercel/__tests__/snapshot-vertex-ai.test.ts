@@ -35,7 +35,7 @@ describe("VercelUnifiedProvider vertex-ai", () => {
       "",
       undefined,
       undefined,
-      { vertexProject: "my-proj" },
+      { vertexProject: "my-proj", getRetiredModelId: noRetirementEvidence },
     );
 
     const events = await collect(
@@ -88,7 +88,7 @@ describe("VercelUnifiedProvider vertex-ai", () => {
       "",
       undefined,
       undefined,
-      { vertexProject: "p1", vertexLocation: "europe-west4" },
+      { vertexProject: "p1", vertexLocation: "europe-west4", getRetiredModelId: noRetirementEvidence },
     );
 
     await collect(
@@ -133,7 +133,7 @@ describe("VercelUnifiedProvider vertex-ai", () => {
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("vertex-ai", "");
+    const provider = new VercelUnifiedProvider("vertex-ai", "", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     const events = await collect(
       provider.streamTurn({
@@ -148,6 +148,47 @@ describe("VercelUnifiedProvider vertex-ai", () => {
     if (prev.GCLOUD_PROJECT !== undefined) process.env.GCLOUD_PROJECT = prev.GCLOUD_PROJECT;
     vi.doUnmock("ai");
     vi.doUnmock("@ai-sdk/google-vertex");
+  });
+
+  it("hands the Vertex factory a fetch that refuses a retired model without sending", async () => {
+    vi.resetModules();
+    vi.doMock("ai", async () => {
+      const actual = await vi.importActual<typeof import("ai")>("ai");
+      return { ...actual, streamText: vi.fn(() => ({ stream: (async function* () {  })() })) };
+    });
+    const createVertex = vi.fn((_options: { fetch?: typeof fetch }) => vi.fn());
+    vi.doMock("@ai-sdk/google-vertex", () => ({ createVertex }));
+    try {
+      const { VercelUnifiedProvider } = await import("../adapter.js");
+      const { RetiredModelError } = await import("../../retired-model-error.js");
+      const send = vi.fn<typeof fetch>(async () => new Response("ok"));
+      const probed: string[] = [];
+      let retired: string | undefined = "gemini-2.5-flash";
+      const provider = new VercelUnifiedProvider("vertex-ai", "", undefined, send, {
+        vertexProject: "fixture-project",
+        getRetiredModelId: (model) => {
+          probed.push(model);
+          return retired;
+        },
+      });
+      await collect(provider.streamTurn({ model: "gemini-2.5-flash", systemPrompt: "sys", messages: [{ role: "user", content: "hi" }] }));
+      const wireFetch = createVertex.mock.calls[0]?.[0].fetch;
+      if (!wireFetch) throw new Error("the Vertex factory was given no fetch");
+
+      const refusal = await wireFetch("https://us-central1-aiplatform.googleapis.com/v1/fixture").catch((error: unknown) => error);
+
+      expect(refusal).toBeInstanceOf(RetiredModelError);
+      expect(refusal).toMatchObject({ model: "gemini-2.5-flash" });
+      expect(probed).toEqual(["gemini-2.5-flash"]);
+      expect(send).not.toHaveBeenCalled();
+      // Control: the same fetch sends through the configured transport while the route is available.
+      retired = undefined;
+      await wireFetch("https://us-central1-aiplatform.googleapis.com/v1/fixture");
+      expect(send).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("ai");
+      vi.doUnmock("@ai-sdk/google-vertex");
+    }
   });
 
   it("is vercel-routed via factory", async () => {
