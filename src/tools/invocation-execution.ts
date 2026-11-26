@@ -1,15 +1,18 @@
+import { appendToolInvocationAudit, trackDetachedToolInvocation } from "./invocation-ledger.js";
+import { isHostExitAbort } from "../shared/host-exit-abort.js";
+import type { ToolAuditTerminationReason } from "../audit/audit-logger.js";
 import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, bindPendingAnswerRequest, openPendingAnswerCard, pendingQuestionStillAsked, personAnswerStands, saveStandingAnswerRule, standingAnswerFor, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
 import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
-import { approvalReasonFields, approvalRequestTarget, isHostApprovalRejectedDecision } from "../permissions/approval-gate.js";
+import { answeredApprovalProvenance, answeredRecordForAction, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalRejectedDecision, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision } from "../permissions/approval-gate.js";
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import { createPluginReadjudicationBasis } from "../permissions/plugin-readjudication-evidence.js";
-import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostShutdownDenial, isSettledRefusal, refusal } from "./pipeline/approval-outcome.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import { disposableContainerCapability, resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
@@ -186,12 +189,13 @@ export interface ExecutionStageContext {
     input: Record<string, unknown>,
     blockedPermission?: PermissionCheckResult,
     hookChain?: import("../audit/audit-schema.js").HookResult[],
-    suppressPermissionDeniedLifecycle?: boolean,
   ) => Promise<ToolResult>;
   startTime: number;
   callbacks: ToolExecutorCallbacks | undefined;
   meta: ToolCallMeta;
   auditCurrentToolCall: AuditToolCall;
+  /** Writes the attempt's row as a cancellation: a stop no permission decided. */
+  auditCancelledToolCall: AuditToolCall;
   currentAuditMetadata: (
     input?: Record<string, unknown>,
   ) => ToolExecutionAuditMetadata;
@@ -269,6 +273,7 @@ export async function executeAuthorizedToolInvocation(
     callbacks,
     meta,
     auditCurrentToolCall,
+    auditCancelledToolCall,
     currentAuditMetadata,
     withHostShellExecutionPlan,
     humanApproved: initialHumanApproved,
@@ -312,7 +317,13 @@ export async function executeAuthorizedToolInvocation(
     pluginAuthLifecycle,
   } = context;
   let sandboxBlock: SandboxBlock | undefined;
-  let permissionResult = context.permissionResult;
+  // Execution without an authorization result is a broken contract, never an allow; the admission writes the host's row.
+  if (context.permissionResult === undefined) throw new Error("Handler admission is missing its authorization result");
+  let permissionResult: PermissionCheckResult = context.permissionResult;
+  // An answer admits only the action it settled; a substituted one stops here, before any effect.
+  if (permissionResult.provenance.kind === "answered") {
+    answeredRecordForAction(permissionResult.provenance, permissionResult.decision === "deny" ? "deny" : "allow", toolUse.name, toolUse.id);
+  }
   const cardAction = toolUseAction(toolUse.id);
   let humanApproved = standingAnswerFor(initialHumanApproved, cardAction);
   if (!("humanApproved" in context) || initialHumanApproved !== undefined && humanApproved === undefined) {
@@ -449,7 +460,9 @@ export async function executeAuthorizedToolInvocation(
         executionCwd,
         startTime,
         auditWriter: services.auditWriter,
+        abortSignal,
         audit: currentAuditMetadata(),
+        terminal: services.invocationTerminal,
       }));
     }
     const msg = errorMessage(error);
@@ -458,8 +471,6 @@ export async function executeAuthorizedToolInvocation(
         `governed operation admission failed: ${msg}`,
         finalInput,
         permissionResult,
-        undefined,
-        true,
       );
     }
     const durationMs = Date.now() - startTime;
@@ -481,16 +492,13 @@ export async function executeAuthorizedToolInvocation(
       msg,
       true,
       startTime,
-      { decision: "deny", reason: msg, },
+      refusal(msg, RULE_PROVENANCE),
       rateResult.remaining,
       invocationPermissionContext,
       invocationCategory,
       executionCwd,
       undefined,
       "error",
-      undefined,
-      undefined,
-      true,
     );
     return withHostShellExecutionPlan({
       tool_use_id: toolUse.id,
@@ -512,12 +520,7 @@ export async function executeAuthorizedToolInvocation(
   let outputArtifact: ToolOutputArtifactInfo | undefined;
   let ownedOutputCapture: ToolOutputCapture | undefined;
   let outputArtifactDelivered = false;
-  let terminationReason:
-    | "ok"
-    | "ceiling"
-    | "user-abort"
-    | "error"
-    | "indeterminate" = "ok";
+  let terminationReason: ToolAuditTerminationReason = "ok";
   let consumedPluginOperationGrantId: string | undefined;
   let deferredOperationSettlement: Promise<unknown> | undefined;
   let indeterminateAuditPersisted = false;
@@ -627,7 +630,8 @@ export async function executeAuthorizedToolInvocation(
           tool: toolUse.name,
           source,
           category: invocationCategory,
-          trustOrigin: invocationPermissionContext.trustOrigin,
+          // A plugin operation grant is policy the principal holds; no person answered here.
+          trustOrigin: provenanceTrustOrigin(RULE_PROVENANCE, consumed.ok ? "allow" : "deny", invocationPermissionContext.trustOrigin),
           pluginOperation: {
             pluginId: pluginOperationPrincipal.ownerPluginId,
             operation: resolvedPluginOperation.operation,
@@ -636,12 +640,12 @@ export async function executeAuthorizedToolInvocation(
           },
         } as const;
         if (consumed.ok) {
-          await services.auditLogger.appendPermissionAuditEntry({
+          await appendToolInvocationAudit(services.auditLogger, {
             ...commonGrantAudit,
             decision: "allow",
             });
         } else {
-          await services.auditLogger.appendPermissionAuditEntry({
+          await appendToolInvocationAudit(services.auditLogger, {
             ...commonGrantAudit,
             decision: "deny",
             denyReasons: [{
@@ -659,10 +663,7 @@ export async function executeAuthorizedToolInvocation(
           : consumed.reason;
         const msg = `Plugin operation denied: ${reason}`;
         const durationMs = Date.now() - startTime;
-        const denied: PermissionCheckResult = {
-          decision: "deny",
-          reason,
-          };
+        const denied = refusal(reason, grantAuditError === undefined ? RULE_PROVENANCE : HOST_PROVENANCE);
         callbacks?.onToolEnd?.(
           toolUse.name,
           msg,
@@ -737,13 +738,7 @@ export async function executeAuthorizedToolInvocation(
       msg,
       true,
       startTime,
-      permissionResult
-        ? {
-            ...permissionResult,
-            decision: "deny",
-            reason: msg,
-            }
-        : { decision: "deny", reason: msg, },
+      refusal(msg, RULE_PROVENANCE),
       rateResult.remaining,
       invocationPermissionContext,
       invocationCategory,
@@ -810,7 +805,7 @@ export async function executeAuthorizedToolInvocation(
             id: randomUUID(), category: "tool", toolName: tool.name, source: "builtin", toolCategory: "network", args: { url },
             reason: rules.decision === "ask" ? "A destination rule requires approval for this navigation." : "This navigation carries an exfiltration signal and requires human consent.", createdAt: Date.now(), sessionId, abortSignal: siteSignal,
             remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority, forceExplicit: true,
-            durableApprovalRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"],
+            durableApprovalRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"], invocationToolUseId: toolUse.id,
           });
           if (actionDecision.choice !== "allow-once" || isHostApprovalRejectedDecision(actionDecision)) throw new Error("Browser navigation denied");
           siteSignal.throwIfAborted();
@@ -824,7 +819,7 @@ export async function executeAuthorizedToolInvocation(
         const siteOpened = destinationEpochs;
         const siteDecision = await gate.requestAndWait({
           id: randomUUID(), category: "tool", toolName: tool.name, source: "builtin", toolCategory: "network",
-          browserSite: origin, toolUseId: toolUse.id, args: { url }, reason: "Opening this site requires session consent.", createdAt: Date.now(),
+          browserSite: origin, toolUseId: toolUse.id, invocationToolUseId: toolUse.id, args: { url }, reason: "Opening this site requires session consent.", createdAt: Date.now(),
           sessionId, abortSignal: siteSignal, remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority,
           forceExplicit: true, durableApprovalRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"],
         });
@@ -975,14 +970,13 @@ export async function executeAuthorizedToolInvocation(
       try {
         services.auditLogger.assertPermissionAuditWritable();
       } catch (error) {
-        permissionResult = {
-          decision: "deny", reason: "permission audit chain unavailable before execution", };
+        permissionResult = refusal("permission audit chain unavailable before execution", HOST_PROVENANCE);
         throw new Error(t("be_executor.auditChainBlock", { name: toolUse.name, error: errorMessage(error) }));
       }
     }
     if (humanApproved && services.permissionManager &&
         approvedPolicyEpoch !== services.permissionManager.getPolicyEpoch()) {
-      permissionResult = { ...permissionResult, decision: "deny", reason: "Permission policy changed before execution.", };
+      permissionResult = refusal("Permission policy changed before execution.", RULE_PROVENANCE);
       throw new Error(permissionResult.reason);
     }
     const recheckTarget = permissionRecheckResult ?? permissionResult;
@@ -1077,14 +1071,14 @@ export async function executeAuthorizedToolInvocation(
       if (!(error instanceof HookInputMutationRequest)) throw error;
       const reason = "Hook input mutation is not allowed after handler entry";
       latePermissionHookChain = hookChainFromDispatch("perm", { decision: "deny", reason, results: [...error.hooks] });
-      permissionResult = { ...permissionResult, decision: "deny", reason };
+      permissionResult = refusal(reason, RULE_PROVENANCE);
       throw new Error(reason);
     }
     signal.throwIfAborted();
     latePermissionHookChain = hookChainFromDispatch("perm", permHook);
     assertLateApprovalPolicyCurrent();
     if (permHook.decision === "deny") {
-      permissionResult = { ...permissionResult, decision: "deny", reason: permHook.reason };
+      permissionResult = refusal(permHook.reason, RULE_PROVENANCE);
       throw new Error(t("be_executor.hookPermissionBlock", { reason: permHook.reason }));
     }
     await services.auditWriter.auditPermissionAsk(
@@ -1161,7 +1155,9 @@ export async function executeAuthorizedToolInvocation(
     };
   };
 
+  let lateApprovalDecision: ApprovalDecision | undefined;
   const requestLateApproval = async (request: ApprovalRequestInput): Promise<void> => {
+    lateApprovalDecision = undefined;
     abortSignal?.throwIfAborted();
     if (permissionResult?.decision !== "ask" || !(permissionResult.pipelineRequest?.automationPause ||
         permissionResult.forceModal && permissionResult.pipelineRequest?.floor)) {
@@ -1172,8 +1168,8 @@ export async function executeAuthorizedToolInvocation(
       permissionResult = services.permissionManager.recheckPermission(permissionResult);
       if (permissionResult.decision !== "ask") throw new Error(permissionResult.reason);
     }
-    // Use the reason and surface facts from the current decision.
-    const liveRequest: ApprovalRequestInput = { ...request,
+    // The surface facts, the code of the decision that asked included, are the recheck's own: a card that is no longer a surface card carries none.
+    const liveRequest: ApprovalRequestInput = { ...request, invocationToolUseId: toolUse.id,
       userOwnedSurface: undefined, userOwnedSurfaceReviewFallback: undefined, reasonCode: undefined,
       ...browserApprovalCardFacts(tool, approvalMemory),
       reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${permissionResult.reason}` : permissionResult.reason,
@@ -1194,10 +1190,17 @@ export async function executeAuthorizedToolInvocation(
     const policyChanged = "Permission policy changed before execution.";
     const manager = services.permissionManager;
     const card = manager ? openPendingAnswerCard(manager, permissionResult,
-      () => context.checkCurrentPermission?.() ?? { decision: "deny", reason: policyChanged }, "stale-reasked",
+      () => context.checkCurrentPermission?.() ?? refusal(policyChanged, RULE_PROVENANCE), "stale-reasked",
       { gate: services.approvalGate!, requestId: liveRequest.id, action: cardAction, uses: ["rule-save", ...answerUses] }) : undefined;
     let decision = await services.approvalGate!.requestAndWait(bindPendingAnswerRequest(liveRequest, card));
-    abortSignal?.throwIfAborted();
+    lateApprovalDecision = decision;
+    if (abortSupersedesApprovalDecision(abortSignal, decision)) abortSignal?.throwIfAborted();
+    // A settled refusal is terminal before the refreshed policy is consulted.
+    if (isSettledRefusal(decision)) {
+      const failure = approvalFailureOutcome(decision, toolUse.name);
+      permissionResult = failure?.permission ?? refusal(request.reason, answeredApprovalProvenance(decision));
+      throw new Error(failure?.content ?? request.reason);
+    }
     let currentEpoch = manager?.getPolicyEpoch();
     let cardAnswer: StandingAnswer | undefined;
     if (manager && card) {
@@ -1218,7 +1221,7 @@ export async function executeAuthorizedToolInvocation(
       if (save?.saved) currentEpoch = manager.getPolicyEpoch();
       const refusal = invalidationReason ?? save?.refusal;
       if (refusal !== undefined) {
-        permissionResult = { ...permissionResult, decision: "deny", reason: refusal };
+        permissionResult = { ...permissionResult, decision: "deny", reason: refusal, provenance: RULE_PROVENANCE };
         throw new Error(refusal);
       }
     }
@@ -1226,10 +1229,12 @@ export async function executeAuthorizedToolInvocation(
       manager: services.permissionManager, gate: services.approvalGate!, permission: permissionResult, decision,
       answer: cardAnswer, action: cardAction, uses: answerUses, request: liveRequest, sessionId,
       review: async permission => await dispatchReviewerForInteractiveAuto(services.permissionManager, toolUse.name, source, invocationCategory, tool.pathFields ?? [], finalInput, invocationAllowedScope.directories, sensitivePathPattern ? [sensitivePathPattern] : [], invocationPermissionContext, evaluationContext, { ...(ownerPluginSandboxRoot ? { ownerPluginSandboxRoot } : {}) }, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, undefined, sessionId, permission) ?? permission,
-    }) : { permission: permissionResult, decision, answer: undefined };
+    }) : { permission: permissionResult, decision, answer: undefined, provenance: undefined };
     permissionResult = surfaceResolution.permission;
     decision = surfaceResolution.decision;
-    const failure = approvalFailureOutcome(decision, toolUse.name, permissionResult);
+    lateApprovalDecision = decision;
+    if (abortSupersedesApprovalDecision(abortSignal, decision)) abortSignal?.throwIfAborted();
+    const failure = approvalFailureOutcome(decision, toolUse.name);
     if (failure) {
       permissionResult = failure.permission;
       throw new Error(failure.content);
@@ -1239,10 +1244,12 @@ export async function executeAuthorizedToolInvocation(
     const approved = manager ? humanApproved !== undefined : decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision);
     // The person's Deny stands whatever the policy now says of the call: an allow the re-check found never overrides it.
     if (!approved && (permissionResult.decision !== "allow" || decision.choice.startsWith("deny"))) {
-      permissionResult = { ...permissionResult, decision: "deny", reason: request.reason };
-      throw new Error(request.reason);
+      permissionResult = refusal(permissionResult.decision === "deny" ? permissionResult.reason : request.reason, surfaceResolution.provenance ?? answeredApprovalProvenance(decision));
+      throw new Error(permissionResult.reason);
     }
-    if (approved) permissionResult = { ...permissionResult, decision: "allow", reason: `user approved approval request (${decision.choice})` };
+    if (approved) {
+      permissionResult = answeredPermission({ ...permissionResult, decision: "allow", reason: `user approved approval request (${decision.choice})` }, decision);
+    }
     approvedPolicyEpoch = currentEpoch;
     issueTerminalWriteAuthority();
     if (hostShellExecutionPlan && hostShellExecutionPermitBinding && requiresShellPermit()) {
@@ -1338,9 +1345,13 @@ export async function executeAuthorizedToolInvocation(
       try {
         await requestLateApproval(attempt.error.request);
       } catch (error) {
+        const userAbort = abortSupersedesApprovalDecision(abortSignal, lateApprovalDecision);
+        // A late approval that failed without a refusal of its own ends as the host's.
+        if (!userAbort && permissionResult?.decision !== "deny") permissionResult = refusal(errorMessage(error), HOST_PROVENANCE);
         return {
           ok: false,
-          reason: abortSignal?.aborted ? "user-abort" : "error",
+          // A late deny the person answered ends as their denial, not as the seal's.
+          reason: userAbort ? "user-abort" : "error",
           error: error instanceof Error ? error : new Error(String(error)),
         };
       }
@@ -1379,13 +1390,15 @@ export async function executeAuthorizedToolInvocation(
   ) {
     deferredOperationSettlement = outcome.settlement;
     terminationReason = "indeterminate";
-    await services.auditLogger.appendPermissionAuditEntry({
+    // The ceiling and the quit seal are the host's stops; the invocation's principal decided nothing here.
+    const hostStopped = !outcome.ok && outcome.reason === "ceiling" || isHostExitAbort(abortSignal?.reason);
+    await appendToolInvocationAudit(services.auditLogger, {
       ts: new Date().toISOString(),
       auditId: randomUUID(),
       tool: toolUse.name,
       source,
       category: invocationCategory,
-      trustOrigin: invocationPermissionContext.trustOrigin,
+      trustOrigin: hostStopped ? "unknown" : invocationPermissionContext.trustOrigin,
       decision: "deny",
       denyReasons: [{
         reason: "authorized governed operation remains unsettled after interruption",
@@ -1447,7 +1460,11 @@ export async function executeAuthorizedToolInvocation(
     ) {
       interruptionReason = outcome.reason;
     }
-    if (!outcome.settlement || cancellationSettlement) {
+    const hostShutdown = outcome.reason === "user-abort" && isHostExitAbort(abortSignal?.reason);
+    if (hostShutdown && terminationReason !== "indeterminate") {
+      terminationReason = "host-shutdown";
+    } else if (terminationReason !== "indeterminate") {
+      // The plain record names the interruption even while an ordinary handler is still settling.
       terminationReason = outcome.reason;
     }
     // Ceiling expiry is a RETRYABLE tool error, never a throw that ends the
@@ -1587,24 +1604,33 @@ export async function executeAuthorizedToolInvocation(
       const pluginId = pluginOperationPrincipal.ownerPluginId;
       const operation = resolvedPluginOperation.operation;
       const grantId = consumedPluginOperationGrantId;
-      void deferredOperationSettlement
-        .then(async () => {
+      const settlement = deferredOperationSettlement.then(undefined, (error: unknown) => {
+        log.error(
+          "late plugin operation settlement tracking failed; domain remains poisoned for %s: %s",
+          toolUse.name,
+          errorMessage(error),
+        );
+        throw error;
+      });
+      const pluginOperationRow = (outcome: "settled" | "indeterminate") => ({
+        ts: new Date().toISOString(),
+        auditId: randomUUID(),
+        tool: toolUse.name,
+        source,
+        category: invocationCategory,
+        trustOrigin: provenanceTrustOrigin(RULE_PROVENANCE, "allow", invocationPermissionContext.trustOrigin),
+        pluginOperation: {
+          pluginId,
+          operation,
+          outcome,
+          ...(grantId ? { grantId } : {}),
+        },
+      });
+      trackDetachedToolInvocation(
+        settlement,
+        async () => {
           try {
-            await services.auditLogger.appendPermissionAuditEntry({
-              ts: new Date().toISOString(),
-              auditId: randomUUID(),
-              tool: toolUse.name,
-              source,
-              category: invocationCategory,
-              trustOrigin: invocationPermissionContext.trustOrigin,
-              decision: "allow",
-              pluginOperation: {
-                pluginId,
-                operation,
-                outcome: "settled",
-                ...(grantId ? { grantId } : {}),
-              },
-            });
+            await appendToolInvocationAudit(services.auditLogger, { ...pluginOperationRow("settled"), decision: "allow" });
             lease.release();
           } catch (error) {
             log.error(
@@ -1612,14 +1638,18 @@ export async function executeAuthorizedToolInvocation(
               toolUse.name,
               errorMessage(error),
             );
+            throw error;
           }
-        }, (error) => {
-          log.error(
-            "late plugin operation settlement tracking failed; domain remains poisoned for %s: %s",
-            toolUse.name,
-            errorMessage(error),
-          );
-        });
+        },
+        // The worker is stopped with its plugin; its settlement is no longer recorded.
+        () => appendToolInvocationAudit(services.auditLogger, {
+          ...pluginOperationRow("indeterminate"),
+          decision: "deny",
+          denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-execution" }],
+          // The seal stopped the worker; the invocation's principal decided nothing here.
+          trustOrigin: "unknown",
+        }),
+      );
     } else if (operationExecutionLease && deferredOperationSettlement) {
       void deferredOperationSettlement.catch((error) => {
         log.error(
@@ -1648,7 +1678,8 @@ export async function executeAuthorizedToolInvocation(
       if (!rationaleResumeContext?.started) {
         callbacks?.onToolEnd?.(toolUse.name, displayContent, true, meta, undefined, durationMs);
       }
-      await auditCurrentToolCall(
+      // An abort mid-execution is a cancellation: a user abort keeps the call's allow, the quit writes the host's deny.
+      await auditCancelledToolCall(
         sessionId,
         toolUse.name,
         source,
@@ -1657,7 +1688,7 @@ export async function executeAuthorizedToolInvocation(
         displayContent,
         true,
         startTime,
-        permissionResult,
+        isHostExitAbort(abortSignal?.reason) ? hostShutdownDenial() : permissionResult,
         rateResult.remaining,
         invocationPermissionContext,
         invocationCategory,
@@ -1731,6 +1762,7 @@ export async function executeAuthorizedToolInvocation(
           errorMessage: content,
           durationMs: Date.now() - startTime,
         },
+        abortSignal,
       );
       if (failureHooks.result?.decision === "deny" && failureHooks.result.results.length > 0) {
         content = `${content}\n\n[Script Hook Feedback]\n${failureHooks.result.reason}`;
@@ -1819,11 +1851,7 @@ export async function executeAuthorizedToolInvocation(
     latePermissionHookChain,
   );
   const auditedPermissionResult = authorizationRequired || effectNoApprover
-    ? {
-        ...(permissionResult ?? { }),
-        decision: "deny" as const,
-        reason: effectNoApprover ? NO_APPROVER_MESSAGE : "authorization required but approval surface unavailable",
-      }
+    ? refusal(effectNoApprover ? NO_APPROVER_MESSAGE : "authorization required but approval surface unavailable", HOST_PROVENANCE)
     : permissionResult;
   await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, auditContent, isError, startTime, auditedPermissionResult, rateResult.remaining, invocationPermissionContext, invocationCategory, executionCwd, targetFilePath, terminationReason, successHookChain);
   if (rationaleResumeContext?.started) {

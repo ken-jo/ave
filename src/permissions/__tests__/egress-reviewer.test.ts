@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { PermissionManager, type ReviewerDispatchResult } from "../permission-manager.js";
 import { randomUUID } from "node:crypto";
@@ -52,7 +53,7 @@ describe("sandbox domain review", () => {
 
   it("keeps an attended ordinary request on its approval dock", async () => {
     const manager = reviewer("allow", "default");
-    const requestAndWait = vi.fn(async (card: ApprovalRequestInput) => ({ requestId: card.id, choice: "allow-once" as const, egressScope: "always" as const }));
+    const requestAndWait = answeringRequestAndWait<ApprovalRequestInput>(() => ({ choice: "allow-once", egressScope: "always" }));
     await expect(createApprovalGateEgressRequester({ requestAndWait }, manager)(request))
       .resolves.toEqual({ allow: true, scope: "always" });
     expect(manager.dispatchReviewer).not.toHaveBeenCalled();

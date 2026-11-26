@@ -186,10 +186,10 @@ function holdGrantAudit(lifetime: "always" | "degraded-to-turn") {
   return { arrived, release, entries };
 }
 
-function expectRemoteDenial(entries: ReturnType<typeof holdGrantAudit>["entries"], reason: string) {
+function expectRemoteDenial(entries: ReturnType<typeof holdGrantAudit>["entries"], reason: string, trustOrigin: "tailnet-surface" | "user-keyboard" = "tailnet-surface") {
   const denials = entries.mock.calls.map(([entry]) => entry).filter(entry => entry.decision === "deny");
   expect(denials).toEqual([expect.objectContaining({
-    decision: "deny", trustOrigin: "tailnet-surface", tool: "write_file",
+    decision: "deny", trustOrigin, tool: "write_file",
     denyReasons: [expect.objectContaining({ reason })],
   })]);
 }
@@ -260,7 +260,7 @@ describe("workspace-root lifecycle authority", () => {
     expect((await call.result)[0].is_error).toBe(true);
     expect(persistedRoots()).toEqual([]);
     expect(call.execute).not.toHaveBeenCalled();
-    expectRemoteDenial(entries, "This write requires approval.");
+    expectRemoteDenial(entries, "This write requires approval.", "user-keyboard");
   });
 
   it.each(["desk first", "stop first"] as const)("records the terminal directory denial with %s", async order => {
@@ -294,7 +294,8 @@ describe("workspace-root lifecycle authority", () => {
     expect((await call.result)[0].is_error).toBe(true);
     expect(persistedRoots()).toEqual([]);
     expect(call.execute).not.toHaveBeenCalled();
-    expectRemoteDenial(entries, order === "desk first" ? "This write requires approval." : "user aborted turn");
+    if (order === "desk first") expectRemoteDenial(entries, "This write requires approval.", "user-keyboard");
+    else expectRemoteDenial(entries, "user aborted turn");
   });
 
   it("records one cancellation when Stop and owner-window close precede the card", async () => {

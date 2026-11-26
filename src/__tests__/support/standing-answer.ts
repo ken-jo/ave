@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import type { ApprovalDecision } from "../../permissions/approval-gate.js";
 import { openPendingAnswerCard, personAnswerStands, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../../permissions/pending-answer-policy.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
@@ -10,7 +11,7 @@ const CALL_USES: readonly StandingAnswerUse[] = ["shell-permit", "shell-policy",
 /** The owner's standing answer for `decision`, obtained as the pipeline obtains one: a card is opened for the action on `opened`
  * and the answer is judged against the same question. Undefined when the answer does not stand. */
 export function judgedAnswer(action: string, decision: ApprovalDecision,
-  opened: PermissionCheckResult = { decision: "ask", reason: "fixture" }, uses: readonly StandingAnswerUse[] = CALL_USES): StandingAnswer | undefined {
+  opened: PermissionCheckResult = { decision: "ask", reason: "fixture", provenance: RULE_PROVENANCE }, uses: readonly StandingAnswerUse[] = CALL_USES): StandingAnswer | undefined {
   const card = openPendingAnswerCard(unchangedPolicy, opened, () => opened, "stale-refused", { gate: {}, requestId: decision.requestId, action, uses });
   personAnswerStands(card, decision);
   return card.verdict?.kind === "stands" ? card.verdict.proof : undefined;

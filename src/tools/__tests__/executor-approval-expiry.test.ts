@@ -13,6 +13,7 @@ import {
   type ApprovalRequest,
 } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { HostExitAbortError } from "../../shared/host-exit-abort.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -122,6 +123,8 @@ describe("tool approval expiration attribution", () => {
     expect(denied).toMatchObject({
       decision: "deny",
       denyReasons: [{ source: "approval-gate", reason: "approval request expired" }],
+      // No one answered: the host ended the approval.
+      trustOrigin: "unknown",
     });
     expect(run.logger.mock.calls.some(([entry]) => entry.output?.includes("[approval:timeout]"))).toBe(true);
     expect(run.logger.mock.calls.some(([entry]) => entry.toolCalls?.some((call) =>
@@ -143,6 +146,7 @@ describe("tool approval expiration attribution", () => {
     expect(run.execute).not.toHaveBeenCalled();
     expect(permissions().find((entry) => entry.decision === "deny")).toMatchObject({
       denyReasons: [{ source: "approval-gate", reason: "approval rejected by host" }],
+      trustOrigin: "unknown",
     });
   });
 
@@ -158,6 +162,38 @@ describe("tool approval expiration attribution", () => {
     expect(run.execute).not.toHaveBeenCalled();
     if (kind === "tool") expect(result.content).toContain("user denied execution");
     expect(JSON.stringify(permissions())).not.toContain("approval request expired");
+    expect(permissions().find((entry) => entry.decision === "deny")).toMatchObject({ trustOrigin: "user-keyboard" });
+  });
+
+  it.each(["tool", "directory"] as const)("keeps an answered %s denial as the user's when the quit lands before the executor resumes", async (kind) => {
+    const quit = new AbortController();
+    const run = start(kind, quit.signal);
+    const request = await run.sent;
+    // The person's answer settles the gate; the quit lands before the awaiting executor runs again.
+    expect(gate?.resolve(request.id, {
+      requestId: request.id, choice: "deny-once", nonce: request.nonce, hmac: request.hmac,
+    })?.choice).toBe("deny-once");
+    quit.abort(new HostExitAbortError());
+    const [result] = await run.result;
+    expect(result.is_error).toBe(true);
+    expect(run.execute).not.toHaveBeenCalled();
+    const denied = permissions().filter((entry) => entry.decision === "deny");
+    expect(denied).toEqual([expect.objectContaining({ trustOrigin: "user-keyboard" })]);
+    expect(JSON.stringify(denied)).not.toContain("host-shutdown");
+  });
+
+  it.each(["tool", "directory"] as const)("records a parked %s approval the quit cancels as the host's", async (kind) => {
+    const quit = new AbortController();
+    const run = start(kind, quit.signal);
+    await run.sent;
+    quit.abort(new HostExitAbortError());
+    const [result] = await run.result;
+    expect(result.is_error).toBe(true);
+    expect(run.execute).not.toHaveBeenCalled();
+    expect(permissions().filter((entry) => entry.decision === "deny")).toEqual([expect.objectContaining({
+      denyReasons: [expect.objectContaining({ reason: "host-shutdown" })],
+      trustOrigin: "unknown",
+    })]);
   });
 
   it("executes once after a real allow-once decision", async () => {

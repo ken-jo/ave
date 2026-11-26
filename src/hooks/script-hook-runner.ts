@@ -240,7 +240,7 @@ export async function runOneHookScript(
         timedOut: false, cancelled: abortSignal?.aborted === true, timeoutMs, hookId: runnable.id,
         hookType: runnable.hookType, durationMs: Date.now() - start });
     } catch {
-      return deny("HTTP hook request failed");
+      return deny(abortSignal?.aborted ? "Hook execution cancelled" : "HTTP hook request failed");
     }
   }
 
@@ -532,10 +532,18 @@ export async function runOneHookScript(
     const outputDrained: Promise<void> = windowsSpawn === undefined
       ? Promise.resolve()
       : new Promise<void>((resolveDrained) => {
-        const done = (): void => resolveDrained();
-        windowsSpawn!.stdout.once("end", done);
-        windowsSpawn!.stdout.once("close", done);
-        setTimeout(done, 1_000).unref();
+        const stdout = windowsSpawn!.stdout;
+        const done = (): void => {
+          clearTimeout(drainTimer);
+          stdout.removeListener("end", done);
+          stdout.removeListener("close", done);
+          abortSignal?.removeEventListener("abort", done);
+          resolveDrained();
+        };
+        stdout.once("end", done);
+        stdout.once("close", done);
+        const drainTimer = setTimeout(done, 1_000).unref();
+        abortSignal?.addEventListener("abort", done, { once: true });
       });
 
     const stdoutChunks: Buffer[] = [];

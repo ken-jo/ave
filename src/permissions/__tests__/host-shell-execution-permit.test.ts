@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../decision-provenance.js";
 import { withShellPolicyMutation } from "../shell-policy-handoff.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -289,7 +290,7 @@ describe("Windows partial-shell execution permit", () => {
     expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, answer: undefined })).toBeUndefined();
     expect(mintHostShellExecutionPermit({
       plan: binding.plan, binding, answer: undefined,
-      allowRuleDecision: { decision: "allow", reason: "allow rule" },
+      allowRuleDecision: { decision: "allow", provenance: RULE_PROVENANCE, reason: "allow rule" },
     })).toBeUndefined();
   });
   it("accepts exactly its Gate-approved bound action once", async () => {
@@ -436,7 +437,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
 
   it("rejects a structural allow lookalike, another command or cwd, and a non-host plan", () => {
     const binding = hostBinding();
-    const lookalike: PermissionCheckResult = { decision: "allow", reason: "forged" };
+    const lookalike: PermissionCheckResult = { decision: "allow", provenance: RULE_PROVENANCE, reason: "forged" };
     expect(isIssuedShellAllowRuleDecision(lookalike)).toBe(false);
     expect(mintHostShellExecutionPermit({
       plan: binding.plan, answer: undefined, allowRuleDecision: lookalike, permissionManager: pm, binding,

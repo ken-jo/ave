@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
 import { openPendingAnswerCard, type PendingAnswerCard, personAnswerStands, saveStandingAnswerRule } from "../../../permissions/pending-answer-policy.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
@@ -988,7 +989,7 @@ describe("live native approval ownership", () => {
     if (outcome === "destination refused") {
       check.mockImplementationOnce((...args) => {
         const current = currentCheck(...args);
-        return { ...current, permission: { decision: "deny", reason: "Destination refused." } };
+        return { ...current, permission: { decision: "deny", reason: "Destination refused.", provenance: RULE_PROVENANCE } };
       });
     }
     const answer = allowOnceCardAnswer(card);
@@ -1009,7 +1010,7 @@ describe("live native approval ownership", () => {
     vi.stubEnv("AVE_HOME", f.root);
     const childGate = makeSubAgentApprovalAdapter(f.gate, "child task", null);
     const id = randomUUID();
-    const asked: PermissionCheckResult = { decision: "ask", reason: "manual review" };
+    const asked: PermissionCheckResult = { decision: "ask", reason: "manual review", provenance: RULE_PROVENANCE };
     let current = asked;
     const opened = openPendingAnswerCard(f.manager, asked, () => current, "stale-refused", {
       gate: childGate, requestId: id, action: "tool-use:child", uses: ["rule-save"],
@@ -1025,7 +1026,7 @@ describe("live native approval ownership", () => {
     expect.soft(await approvals.listApprovals()).toEqual([]);
 
     if (outcome === "stale") current = { ...asked, forceModal: true };
-    if (outcome === "denied") current = { decision: "deny", reason: "The current policy denies this action." };
+    if (outcome === "denied") current = { decision: "deny", reason: "The current policy denies this action.", provenance: RULE_PROVENANCE };
     invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), {
       ...allowOnceCardAnswer(card), choice: outcome === "declined" ? "deny-once" : "allow-always",
     });
@@ -1041,7 +1042,7 @@ describe("live native approval ownership", () => {
   it("leaves a later request unaffected when a card was opened but never asked", async () => {
     const f = await subject("default");
     const id = randomUUID();
-    const asked = { decision: "ask" as const, reason: "manual review" };
+    const asked = { decision: "ask" as const, reason: "manual review", provenance: RULE_PROVENANCE };
     openPendingAnswerCard(f.manager, asked, () => asked, "stale-refused", {
       gate: f.gate, requestId: id, action: "tool-use:abandoned", uses: ["rule-save"],
     });
@@ -1055,7 +1056,7 @@ describe("live native approval ownership", () => {
   it("holds only one save on a card", async () => {
     const f = await subject("default");
     const id = randomUUID();
-    const asked = { decision: "ask" as const, reason: "manual review" };
+    const asked = { decision: "ask" as const, reason: "manual review", provenance: RULE_PROVENANCE };
     const opened = openPendingAnswerCard(f.manager, asked, () => asked, "stale-refused", {
       gate: f.gate, requestId: id, action: "tool-use:save", uses: ["rule-save"],
     });
@@ -1083,7 +1084,7 @@ describe("live native approval ownership", () => {
     const f = await subject("default");
     vi.stubEnv("AVE_HOME", f.root);
     const id = randomUUID();
-    const asked = { decision: "ask" as const, reason: "manual review" };
+    const asked = { decision: "ask" as const, reason: "manual review", provenance: RULE_PROVENANCE };
     const opened = openPendingAnswerCard(f.manager, asked, () => asked, "stale-refused", { gate: f.gate, requestId: id, action: "tool-use:held", uses: ["shell-permit"] });
     const savingCard = openPendingAnswerCard(f.manager, asked, () => asked, "stale-refused", { gate: f.gate, requestId: id, action: "tool-use:held", uses: ["rule-save"] });
     const { request, result } = f.queueCard({ id, toolName: "bash", toolCategory: "shell", args: { command: "printf ready" } }, savingCard);

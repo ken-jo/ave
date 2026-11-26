@@ -14,6 +14,7 @@ import { parseHookConfig } from "../../hooks/hook-config.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import type { ApprovalGate } from "../../permissions/approval-gate.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const COMMAND = resolve(__dirname, "../../../test/fixtures/hooks/contract-command.cjs");
 const roots: string[] = [];
@@ -32,14 +33,14 @@ function setup(event: string, errored = false, denied = false, targetAsks = fals
   const permissions = new PermissionManager(join(root, "permissions.json"));
   permissions.setRules([...(targetAsks ? [] : [{ pattern: "contract_probe", action: denied ? "deny" as const : "allow" as const }]), { pattern: "Bash(node *)", action: "allow" }]);
   const manager = new ScriptHookManager();
-  const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "allow-once" as const }));
+  const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" as const }));
   const authorizeCommand = vi.fn(createHookCommandAuthorizer({ permissionManager: permissions,
     approvalGate: { requestAndWait } }));
   manager.setCommandAuthorizer(authorizeCommand);
   const parsed = parseHookConfig({ hooks: { [event]: [{ hooks: [{ type: "command", command: ["node", COMMAND, hookAction] }] }] } });
   bindHookConfigPaths(parsed.entries, dirname(COMMAND));
   manager.setTrustedRegistry([], parsed.entries);
-  const targetRequestAndWait = vi.fn(async () => ({ requestId: "target", choice: "deny-once" as const }));
+  const targetRequestAndWait = answeringRequestAndWait(() => ({ requestId: "target", choice: "deny-once" as const }));
   const gate = { requestAndWait: targetRequestAndWait } as unknown as ApprovalGate;
   const executor = new ToolExecutor(registry, undefined, permissions, undefined, gate, manager);
   return { execute, authorizeCommand, requestAndWait, targetRequestAndWait, run: () => executor.executeAll([{ id: "contract-tool", name: "contract_probe", input: {} }],

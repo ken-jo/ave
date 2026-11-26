@@ -1,6 +1,7 @@
 // Actual effects retain descriptor scope, common policy ordering and effect-before-execution enforcement.
 import { registerRunSession, __resetRunGrantsForTest } from "../run-grants.js";
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { randomUUID } from "node:crypto";
 import { AsyncResource } from "node:async_hooks";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
@@ -53,13 +54,11 @@ function makeGate(choice: ApprovalChoice | ApprovalChoice[]): {
   const requests: Array<ApprovalRequestInput> = [];
   const answers = Array.isArray(choice) ? [...choice] : null;
   const gate = {
-    requestAndWait: async (
-      req: ApprovalRequestInput,
-    ): Promise<ApprovalDecision> => {
+    requestAndWait: answeringRequestAndWait((req: ApprovalRequestInput) => {
       requests.push(req);
       const next = answers ? (answers.shift() ?? "deny-once") : (choice as ApprovalChoice);
-      return { requestId: req.id, choice: next };
-    },
+      return { choice: next };
+    }),
   } as unknown as ApprovalGate;
   return { gate, requests };
 }
@@ -433,10 +432,10 @@ describe("foreground write permission at the actual effect", () => {
     const log: string[] = [];
     let approve!: (decision: ApprovalDecision) => void;
     const gate = {
-      requestAndWait: (request: ApprovalRequestInput) =>
-        new Promise<ApprovalDecision>((resolve) => {
-          approve = resolve;
-        }).then((decision) => ({ ...decision, requestId: request.id })),
+      requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => {
+        const decision = await new Promise<ApprovalDecision>((resolve) => { approve = resolve; });
+        return { ...decision, requestId: request.id };
+      }),
     } as unknown as ApprovalGate;
     let active = true;
     const api = enforceMutatingEffects(
@@ -1441,7 +1440,7 @@ describe("exact effect authority and sealed execution", () => {
 
   it("mutating caller arguments during the card cannot change the executed worker", async () => {
     let answer!: (decision: ApprovalDecision) => void;
-    const gate = { requestAndWait: vi.fn((request: ApprovalRequest) => new Promise<ApprovalDecision>((resolve) => {
+    const gate = { requestAndWait: answeringRequestAndWait((request: ApprovalRequest) => new Promise<ApprovalDecision>((resolve) => {
       answer = (decision) => resolve({ ...decision, requestId: request.id });
     })) } as unknown as ApprovalGate;
     const executed: unknown[] = [];
@@ -1460,7 +1459,7 @@ describe("exact effect authority and sealed execution", () => {
   // standing; any other policy change refuses it.
   it.each(["sibling run rule", "other policy change"] as const)("an effect card answered across a policy change: %s", async (change) => {
     let answer!: (decision: ApprovalDecision) => void;
-    const gate = { requestAndWait: vi.fn((request: ApprovalRequest) => new Promise<ApprovalDecision>((resolve) => {
+    const gate = { requestAndWait: answeringRequestAndWait((request: ApprovalRequest) => new Promise<ApprovalDecision>((resolve) => {
       answer = (decision) => resolve({ ...decision, requestId: request.id });
     })) } as unknown as ApprovalGate;
     const executed: unknown[] = [];
@@ -1586,7 +1585,7 @@ describe("materialized data and admission evidence", () => {
 
   it("a JSON serializer cannot change the bytes while the card waits", async () => {
     let answer!: (decision: ApprovalDecision) => void;
-    const gate = { requestAndWait: vi.fn((request: ApprovalRequest) => new Promise<ApprovalDecision>((resolve) => {
+    const gate = { requestAndWait: answeringRequestAndWait((request: ApprovalRequest) => new Promise<ApprovalDecision>((resolve) => {
       answer = (decision) => resolve({ ...decision, requestId: request.id });
     })) } as unknown as ApprovalGate;
     const written: string[] = [];

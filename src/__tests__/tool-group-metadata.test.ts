@@ -24,7 +24,8 @@ vi.mock("../audit/audit-logger.js", () => ({
   }),
 }));
 
-vi.mock("../audit/dlp-filter.js", () => ({
+vi.mock(import("../audit/dlp-filter.js"), async (importOriginal) => ({
+  ...await importOriginal(),
   maskSensitiveData: vi.fn((input: string) => ({ masked: input, detections: [] })),
   isPiiRedactionEnabled: vi.fn(() => false),
 }));

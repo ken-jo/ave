@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
 import type { ConversationLoop as LoopContext } from "../../conversation-loop.js";
 import { gateCrossAgentInterceptedMetaTools } from "../query-loop.js";
 import type { ToolUseBlock } from "../../../tools/executor.js";
@@ -41,10 +42,7 @@ describe("intercepted meta gate — direct user", () => {
 describe("intercepted meta gate — sub-agent ask", () => {
   it("hands the turn's abort signal to the approval gate", async () => {
     const turn = new AbortController();
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "allow-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
     const self = gateSelf(requestAndWait, turn);
     const toolUses: ToolUseBlock[] = [
       { id: "plugin-expand", name: "request_plugin", input: { pluginId: "helper" } },

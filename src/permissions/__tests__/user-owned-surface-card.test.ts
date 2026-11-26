@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { t } from "../../i18n/runtime.js";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { ApprovalGate, type ApprovalDecision, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
+import { RULE_PROVENANCE } from "../decision-provenance.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
 import type { UserOwnedSurface, UserOwnedSurfaceChoice } from "../../shared/permissions-events.js";
@@ -174,7 +175,7 @@ describe("authenticated user-owned surface choices", () => {
       const home = resources.makeTmpDir("ave-surface-fallback-");
       const manager = new PermissionManager(join(home, "permissions.json"));
       manager.setMode("default");
-      const permission: PermissionCheckResult = { decision: "ask", reason: "Approval required" };
+      const permission: PermissionCheckResult = { decision: "ask", reason: "Approval required", provenance: RULE_PROVENANCE };
       const recheck = vi.spyOn(manager, "recheckPermission").mockReturnValue(permission);
       const resolved = resolveUserOwnedSurfaceApproval({
         manager, gate: f.gate, permission, decision, answer: standingAnswer("tool-use:surface", decision), action: "tool-use:surface", uses: [], request: f.request,
@@ -187,7 +188,7 @@ describe("authenticated user-owned surface choices", () => {
       if (change === "mode change") manager.setMode("strict");
       if (change === "memory rule" || change === "forced ask") manager.addSessionRule("another-session", "Bash(printf ready)");
       if (change === "forced ask") recheck.mockReturnValue({ ...permission, forceModal: true });
-      if (change === "fresh deny") recheck.mockReturnValue({ decision: "deny", reason: "Current deny" });
+      if (change === "fresh deny") recheck.mockReturnValue({ decision: "deny", reason: "Current deny", provenance: RULE_PROVENANCE });
       f.gate.resolveFromDesktopRenderer(fallback.id, {
         requestId: fallback.id, choice: "allow-once", nonce: fallback.nonce, hmac: fallback.hmac,
       }, f.contents as never);
@@ -196,7 +197,11 @@ describe("authenticated user-owned surface choices", () => {
         expect(standingAnswerFor((await resolved).answer, "tool-use:surface")).toBeDefined();
         expect(recheck).toHaveBeenLastCalledWith(permission, { acrossMemoryRuleChanges: true });
       } else {
-        await expect(resolved).rejects.toThrow(change === "fresh deny" ? "Current deny" : change === "forced ask" ? t("be_executor.answerQuestionChanged") : "Permission policy changed");
+        expect(await resolved).toMatchObject({
+          answer: undefined,
+          permission: { decision: "deny", provenance: RULE_PROVENANCE,
+            reason: change === "fresh deny" ? "Current deny" : change === "forced ask" ? t("be_executor.answerQuestionChanged") : "Permission policy changed while approval was pending." },
+        });
       }
     },
   );

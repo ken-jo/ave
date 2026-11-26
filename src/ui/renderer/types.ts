@@ -1,4 +1,5 @@
 import type { MemoryMapApi } from '../../shared/memory-map.js';
+import type { PermissionAuditIntegrity } from "../../audit/audit-schema.js";
 import type { ScheduleAttachment, ScheduleAttachmentInput, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../../shared/workflow-template-types.js";
 import type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 export type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
@@ -1587,17 +1588,17 @@ export type AvePermissionApi = {
   ) => Promise<import("../../shared/permission-judge-settings.js").PermissionJudgeWriteResult>;
   /** Permission policy — `/permission audit show` — recent permission audit entries. */
   auditShow: (last: number) => Promise<
-    | {
+    | (PermissionAuditIntegrity & {
         ok: true;
         entries: PermissionAuditEntrySummary[];
         total: number;
         summary: { files: number; bytes: number };
-      }
+      })
     | { ok: false; error: string }
   >;
   /** Permission policy — `/permission audit verify` — HMAC chain integrity check. */
   auditVerify: () => Promise<
-    | {
+    | (PermissionAuditIntegrity & {
         ok: true;
         intact: boolean;
         totalFiles: number;
@@ -1611,21 +1612,20 @@ export type AvePermissionApi = {
           reason?: string;
           sealMatch: boolean | null;
         }>;
-      }
+      })
     | { ok: false; error: string }
   >;
 };
 
 /**
  * Permission policy — minimal audit entry shape surfaced to the renderer's
- * `AuditPanel`. The full discriminated union (with `decision` field
- * + per-decision payload) is sent verbatim — this type is just a
- * structural tag the panel uses to gate the expand/filter UI.
+ * `AuditPanel`. Deny entries include their resolved terminal kind.
  */
 export interface PermissionAuditEntrySummary {
   ts: string;
   auditId: string;
   decision: string;
+  terminalKind?: import("../../audit/audit-schema.js").AuditDenyKind;
   trustOrigin: string;
   prevHash: string;
   /** Anything else from the discriminated union — opaque to the renderer. */

@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../decision-provenance.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { PERMISSION_REVIEWER_FRAMEWORK, USER_OWNED_SURFACE_REVIEW_PROMPT } from "../../shared/permission-reviewer-framework.js";
@@ -84,7 +85,7 @@ function controlFixture(finalInput: Record<string, unknown> = { command: "Remove
       approvalReasonPrefix: null,
     },
     permission: {
-      decision: "ask",
+      decision: "ask", provenance: RULE_PROVENANCE,
       reason: "Automatic review requires human approval.",
       reasonCode: "reviewer-human-required",
       reviewer: {

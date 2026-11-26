@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -83,7 +84,7 @@ async function startInvocation(options: {
   registry.register(tool);
   const permissions = new PermissionManager(join(directory, "permissions.json"));
   vi.spyOn(permissions, "checkDetailed").mockReturnValue({
-    decision: "allow",
+    decision: "allow", provenance: RULE_PROVENANCE,
     reason: "test invocation admitted",
     });
   const auditLogger = new AuditLogger(join(directory, "audit"));
@@ -327,6 +328,17 @@ describe.each(INTERRUPTIONS)("builtin cancellation settlement after %s", (reason
     await vi.advanceTimersByTimeAsync(0);
     expect(invocation.onToolEnd).toHaveBeenCalledOnce();
     expect(result.content).not.toContain("late output");
+  });
+});
+
+describe.each(INTERRUPTIONS)("an ordinary handler still settling after %s", (reason) => {
+  it("names the interruption in the plain record, never ok", async () => {
+    const invocation = await startInvocation({ marked: false });
+    await invocation.interrupt(reason);
+    const [result] = await invocation.execution;
+    invocation.task.resolve({ output: "late success", isError: false });
+    expect(result.is_error).toBe(true);
+    expect(invocation.terminalAudits()[0].toolCalls?.[0]).toMatchObject({ terminationReason: reason, isError: true });
   });
 });
 

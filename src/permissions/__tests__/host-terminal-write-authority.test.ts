@@ -11,6 +11,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { noteToolResultsReturnedToModel, runWithHostTerminalTurn } from "../../tools/host-terminal-turn.js";
 import type { HostTerminalCommandScope } from "../../tools/terminal-run.js";
+import { RULE_PROVENANCE } from "../decision-provenance.js";
 import { HOST_TERMINAL_PERMISSION_CHANGED, issueHostTerminalWriteAuthority } from "../host-terminal-write-authority.js";
 import { PermissionManager } from "../permission-manager.js";
 import { __resetRunGrantsForTest, registerRunSession } from "../run-grants.js";
@@ -66,7 +67,7 @@ async function withAuthority(source: Source, test: (refusal: () => string | unde
         hostShellExecutionPlan: plan, ruleSubject: { kind: "shell", dialect: "bash", command: COMMAND, cwd: directory },
         projectRulesCwd: directory, shellExecution: { runsSandboxed: false },
       })
-    : { decision: "deny" as const, reason: "Permission rules changed before typing." };
+    : { decision: "deny" as const, reason: "Permission rules changed before typing.", provenance: RULE_PROVENANCE };
   await runWithHostTerminalTurn({ sessionId: scope.sessionId, turnId: scope.turnId }, async () => {
     const fresh = check();
     const settled = reviewed ? manager.resolveReviewedPermission(fresh, {
@@ -142,10 +143,10 @@ const eligible = { floorSessionEligible: true as const };
 const behind = (reason: string) => ({ competingFloor: { code: "protected-path" as const, reason } });
 it("issues a person's terminal write authority only for an unspent standing answer to the same action", () => {
   const manager = { getPolicyEpoch: () => "1:0:0", getPolicyContextEpoch: () => "1" } as unknown as PermissionManager;
-  const asked: ReturnType<PermissionManager["checkDetailed"]> = { decision: "ask", reason: "Write to the terminal." };
+  const asked: ReturnType<PermissionManager["checkDetailed"]> = { decision: "ask", reason: "Write to the terminal.", provenance: RULE_PROVENANCE };
   const issue = (answer: unknown, action = ACTION) => issueHostTerminalWriteAuthority({
     manager, answer: answer as never, action, reviewed: false, decidedBackend: "host", backendIdentity: () => "host", check: () => asked,
-    settled: { decision: "allow", reason: "user approved approval request (allow-once)" },
+    settled: { decision: "allow", reason: "user approved approval request (allow-once)", provenance: RULE_PROVENANCE },
   });
   const answer = standingAnswer(ACTION, undefined, asked);
   expect(() => issue(answer, "tool-use:other")).toThrow(HOST_TERMINAL_PERMISSION_CHANGED);
@@ -165,7 +166,7 @@ it.each([
   const epochs = { getPolicyEpoch: () => "1:0:0", getPolicyContextEpoch: () => "1" } as unknown as PermissionManager;
   const request = { tool: { name: "terminal_run", source: "builtin" as const, kind: "shell" as const }, mode: "default" as const, headless: false,
     floor: { code: "sandbox-unavailable" as const, reason: "No sandbox." } };
-  let now: ReturnType<PermissionManager["checkDetailed"]> = { decision: "ask", reason: "No sandbox.", reasonCode: "sandbox-unavailable", forceModal: true,
+  let now: ReturnType<PermissionManager["checkDetailed"]> = { decision: "ask", reason: "No sandbox.", provenance: RULE_PROVENANCE, reasonCode: "sandbox-unavailable", forceModal: true,
     pipelineRequest: { ...request, ...opened } };
   const authority = issueHostTerminalWriteAuthority({
     manager: epochs, answer: standingAnswer(ACTION, undefined, now), action: ACTION, reviewed: false, decidedBackend: "host", backendIdentity: () => "host", check: () => now,

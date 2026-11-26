@@ -3686,6 +3686,97 @@ Security-sensitive areas are intentionally centralized:
 Changes spanning these areas merit proportionate cross-cutting review. That
 review is advisory, never a merge gate.
 
+### Invocation terminal rows and denials
+
+Each tool invocation ends with one terminal allow or deny row in the permission
+audit. Only the invocation ledger (`src/tools/invocation-ledger.ts`) commits
+that row. Whoever ends the call writes it through the ledger's row writer: the
+rule, the unknown-tool check, a human answer, a hook input mutation, the host
+on an integrity failure, cancellation, or the shutdown deadline. Records beside
+the outcome, such as asks, plugin operation rows, mode changes, and directory
+grants, use their own writers, and those writers refuse a terminal row. They
+also refuse any deny that is not a plugin operation record. The one exception
+has its own writer: the quit's refusal of a permission mode change, which
+belongs to no invocation.
+
+Every deny row has a terminal kind, `denied` or `cancelled`. The writer that
+builds the row sets the kind, and the row type will not accept a deny without
+one. A permission denial is `denied`. Its sources are a rule, the unknown-tool
+check, a human refusal, a hook input mutation, a host policy check, and the
+host on an invocation or integrity failure. A cancellation is a stop that no
+permission decided, and it is `cancelled`. Its sources are a user abort, the
+host shutdown seal, the shutdown deadline drain, an abort during execution,
+plugin generation admission ended by runtime shutdown, a stopped rationale
+card, and a stop or quit that ends an open approval card. A bound human refusal
+keeps its `denied` kind when an abort follows the gate's acceptance, including
+before the runner resumes and when the host writes the row.
+
+At commit time the ledger checks the effective invocation abort signal, which
+includes admission, inherited turn, and coordinator approval signals. When it
+has fired, a `denied` row becomes `cancelled` unless a person settled it or the
+host is writing a replacement integrity refusal. The abort's reason
+(`user aborted turn` or `host-shutdown`) comes first and the writer's reason
+follows. The rule covers a hook cancelled by Stop, an escaped `AbortError` that
+reaches admission settlement, and a shell preparation that throws after abort.
+
+If the invocation or rationale writer throws or rejects before enqueue, the
+host clears any selected answer and attempts one replacement integrity denial.
+The scope includes a missing or invalid deny kind and any other failure before
+the writer claims the row. That replacement remains `denied` after abort and
+fires `PermissionDenied` for a non-governed call. The attempt ends failed.
+If the host's own writer fails before enqueue, the ledger records an audit
+failure. An append failure after enqueue marks the attempt failed without a
+replacement row.
+
+The terminal writer queues general tool-call telemetry before enforcing chain
+readiness. A record made while the required chain is unavailable carries
+`permissionAuditChainUnavailable`. The invocation and its host replacement
+share one general write attempt, and a failed general write is an audit failure.
+
+The ledger persists the kind on every terminal deny row as `terminalKind`.
+`terminalDenyKindOf` (`src/audit/audit-schema.ts`) reads it and falls back to
+the first reason for older rows that omit the field. An invalid explicit kind
+is an audit integrity error and its row contributes no entries to the audit
+view or verification counts. Chain and seal checks still use the raw lines.
+
+The ledger fires one `PermissionDenied` lifecycle event for each `denied` row
+it commits, including a human denial the rationale gate settled before Stop.
+A `cancelled` row fires none. Governed tools
+fire none either: a tool with an operation policy, or a call under a plugin
+authorization lifecycle, still gets its deny row but no event. This one rule
+lives in the ledger's row writer and uses the persisted kind and invocation state.
+No call site emits `PermissionDenied` itself, and a source guard test enforces
+this. The guard also flags any lifecycle dispatch whose event is not a literal.
+The audit writer fires the event only for a denial that the ledger created, and
+the type system enforces that rule.
+
+### Permission audit during shutdown
+
+Desktop and headless shutdown share the same service teardown. The early
+running-turn interruption waits up to three seconds for turn journals to
+settle. Shutdown routines run before service teardown can seal tool admission.
+
+Service teardown aborts the main, side chat, and pane turns and shuts down the
+rationale service. It then seals the invocation ledger and signals every
+running turn again without waiting for turn journals. The seal aborts active
+tool calls, plugin operation grant requests, and permission mode changes.
+Late admissions have an already-aborted signal. The approval gate records
+`host-shutdown` for cancelled requests, then service teardown disposes
+question requests, stops MCP policy refresh, and disconnects MCP.
+
+The invocation ledger joins terminal audit appends, including the late
+settlement record of an interrupted governed operation. Then the audit logger
+closes and drains its accepted writes. A cancelled tool approval records a
+deny row with the same tool-use ID as its ask. Lifecycle HTTP hooks and script
+hooks observe the invocation signal. Broker calls cancel through their request
+connection.
+
+The existing hard shutdown deadline also bounds the join. Join or append
+failure marks cleanup as failed. Failed and timed-out cleanup force-kills
+managed children and starts a best-effort audit logger close before exit.
+That path still seals admission first and starts queued tools, so their
+host-shutdown rows are written before the close.
+
 ### Query credential masking
 
 Both scrubbers in `src/shared/dlp.ts` mask credential query values, signed-URL

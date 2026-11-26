@@ -60,7 +60,7 @@ describe("explicit host shell authorization", () => {
       const answer = judgedAnswer(toolUseAction(binding.toolUseId), decision);
       expect(answer).toBeUndefined();
       expect(mintHostShellExecutionPermit({ plan, binding, answer })).toBeUndefined();
-      const outcome = approvalFailureOutcome(decision, "bash", { decision: "ask", reason: "host consent" });
+      const outcome = approvalFailureOutcome(decision, "bash");
       expect(outcome?.content).toContain("sensitive-data masking");
       expect(outcome?.content).not.toContain("live-abcdefgh");
       expect(outcome?.permission.reason).toBe("approval rejected by host");

@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import { authorizeToolInvocation, type AuthorizationStageContext } from "../../tools/invocation-authorization.js";
 import { executeAuthorizedToolInvocation, type ExecutionStageContext } from "../../tools/invocation-execution.js";
 import type { ApprovalDecision } from "../approval-gate.js";
+import { RULE_PROVENANCE } from "../decision-provenance.js";
 import { mintHostShellExecutionPermit, recordHostShellPolicyAuthorization, type HostShellExecutionPermitBinding } from "../host-shell-execution-permit.js";
 import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { HOST_TERMINAL_PERMISSION_CHANGED, issueHostTerminalWriteAuthority } from "../host-terminal-write-authority.js";
@@ -68,7 +69,7 @@ function gateReceivesRequest(request: ts.CallExpression, gate?: ts.Expression): 
 }
 
 const policy = { getPolicyEpoch: () => "1:0:0", getPolicyContextEpoch: () => "1" } as unknown as PermissionManager;
-const asked: PermissionCheckResult = { decision: "ask", reason: "Run it on the host." };
+const asked: PermissionCheckResult = { decision: "ask", reason: "Run it on the host.", provenance: RULE_PROVENANCE };
 const ACTION = toolUseAction("probe");
 const decisionFor = (requestId: string): ApprovalDecision => ({ requestId, choice: "allow-once" });
 const openCard = (requestId: string, action = ACTION) => openPendingAnswerCard(policy, asked, () => asked, "stale-refused",
@@ -190,14 +191,14 @@ describe("authority from a person's answer", () => {
     const directory: NonNullable<AuthorizationStageContext["directoryAuthorization"]> = { permission: asked, humanApproved: true };
     const toolUse = { id: "probe", name: "probe", input: {} };
     const missing = "Handler admission is missing human approval provenance";
-    await expect(executeAuthorizedToolInvocation({ toolUse, ...flagged } as never)).rejects.toThrow(missing);
-    await expect(executeAuthorizedToolInvocation({ toolUse } as never)).rejects.toThrow(missing);
+    await expect(executeAuthorizedToolInvocation({ toolUse, permissionResult: asked, ...flagged } as never)).rejects.toThrow(missing);
+    await expect(executeAuthorizedToolInvocation({ toolUse, permissionResult: asked } as never)).rejects.toThrow(missing);
     await expect(authorizeToolInvocation({ toolUse, directoryAuthorization: directory } as never)).rejects.toThrow("Directory authorization carries no standing answer for this action");
     // A standing answer to another call is no provenance for this one.
     const card = openCard("other", toolUseAction("other"));
     personAnswerStands(card, decisionFor("other"));
     expect(proofOf(card)).toBeDefined();
-    await expect(executeAuthorizedToolInvocation({ toolUse, humanApproved: proofOf(card) } as never)).rejects.toThrow(missing);
+    await expect(executeAuthorizedToolInvocation({ toolUse, permissionResult: asked, humanApproved: proofOf(card) } as never)).rejects.toThrow(missing);
   });
 
   // The owner reads an answer's choice. A host rejection (abort, failed integrity, a choice the card did not offer) is always
@@ -269,7 +270,7 @@ describe("authority from a person's answer", () => {
       "tools/invocation-authorization.ts#authorizeToolInvocation",
       "tools/invocation-execution.ts#requestLateApproval",
       "tools/invocation-runner.ts#requestOutOfAllowedDirectoryAccess",
-      "tools/pipeline/user-owned-surface.ts#resolveUserOwnedSurfaceApproval",
+      "tools/pipeline/user-owned-surface.ts#resolveSurface",
     ]);
     // Only a card open captures a question to judge an answer. The terminal write fence seals and compares an already settled question.
     expect(sites("permissionQuestionOf")).toEqual([

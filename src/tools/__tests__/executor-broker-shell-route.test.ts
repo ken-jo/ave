@@ -14,6 +14,7 @@ import {
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { BashTool } from "../shell-tools.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const localSpawn = vi.hoisted(() => vi.fn(() => {
   throw new Error("local spawn forbidden in broker route test");
@@ -293,7 +294,7 @@ describe("ordinary broker shell consent", () => {
     const manager = new PermissionManager(join(root, "permissions.json"));
     manager.setMode(mode);
     const registry = new ToolRegistry(); registry.register(new BashTool());
-    const requestAndWait = vi.fn(async (_request: unknown) => ({ choice: "deny-once" }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" }));
     const review = vi.spyOn(manager, "dispatchReviewer");
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never);
     const [result] = await executor.executeAll([
@@ -325,7 +326,7 @@ describe("ordinary broker shell consent", () => {
     const check = vi.spyOn(manager, "checkDetailed");
     const dispatch = vi.spyOn(manager, "dispatchReviewer");
     const registry = new ToolRegistry(); registry.register(new BashTool());
-    const requestAndWait = vi.fn(async (_request: unknown) => ({ choice: "deny-once" }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never);
     broker.execute.mockResolvedValue(successfulBrokerResponse(output));
     try {
@@ -377,7 +378,7 @@ describe("mandatory broker shell floors", () => {
     const store = vi.spyOn(cache, "store");
     setReviewerForTest(manager, { classifier: { classify }, cache });
     const registry = new ToolRegistry(); registry.register(new BashTool());
-    const requestAndWait = vi.fn(async (_request: unknown) => ({ choice: "deny-once" }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never);
     try {
       for (let index = 0; index < 2; index += 1) {
@@ -401,7 +402,7 @@ describe("mandatory broker shell floors", () => {
     const manager = new PermissionManager(join(root, "permissions.json"));
     manager.setMode("default");
     const registry = new ToolRegistry(); registry.register(new BashTool());
-    const requestAndWait = vi.fn(async (request: { id: string }) => { broker.active = false; return { requestId: request.id, choice: "allow-once" }; });
+    const requestAndWait = answeringRequestAndWait(async (_request: unknown) => { broker.active = false; return { choice: "allow-once" }; });
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never);
     const [result] = await executor.executeAll([{ id: "guest-inactive", name: "bash", input: { command: "rm -rf ./build" } }], {
       sessionId: "guest-inactive", executionCwd: root,

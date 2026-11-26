@@ -1,3 +1,4 @@
+import { raceWithAbort } from "../shared/abortable-deadline.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import { attachSandboxBlock, sandboxBlockForResult, issueFilesystemSandboxBlock } from "../shared/sandbox-block.js";
 import { captureToolApprovalWait } from "./executor-ceiling.js";
@@ -2252,7 +2253,8 @@ async function runBrokeredBash(
     sandbox: { mode: "disposable", detail: "disposable-container" }, outputAvailability: "on-completion" });
   let completed = false;
   try {
-  await refreshShellRemoteAuthority();
+  await raceWithAbort(refreshShellRemoteAuthority(), ctx.abortSignal);
+  ctx.abortSignal?.throwIfAborted();
   assertShellRemoteAuthority();
   const result = await authority.runtime.executeBrokeredWorkloadRequest(
     authority.capability,

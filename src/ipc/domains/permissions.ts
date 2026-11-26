@@ -1120,9 +1120,9 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         "../../permissions/permission-audit-runner.js"
       );
       const dir = auditLogger.getAuditDir();
-      const entries = readRecentAuditEntries(dir, last);
+      const { entries, ...integrity } = readRecentAuditEntries(dir, last);
       const summary = summarizeAuditDir(dir);
-      return { ok: true, entries, total: entries.length, summary };
+      return { ok: true, entries, total: entries.length, summary, ...integrity };
     },
   );
 
@@ -1149,6 +1149,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       intact: result.intact,
       totalFiles: result.totalFiles,
       totalEntries: result.totalEntries,
+      ...(result.invalidTerminalKinds === undefined ? {} : { invalidTerminalKinds: result.invalidTerminalKinds }),
       firstBrokenFile: result.firstBrokenFile,
       perDay: result.perDay.map((d) => ({
         file: d.file,
