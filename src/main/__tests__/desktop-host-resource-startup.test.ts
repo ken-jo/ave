@@ -16,7 +16,8 @@ const io = vi.hoisted(() => ({
 vi.unmock("../../shared/windows-drive-locality.js");
 vi.mock("node:path", async (importOriginal) => {
   const { simulatedDrivePath } = await import("../../__tests__/support/simulated-win32-drive.js");
-  return simulatedDrivePath(await importOriginal());
+  const actual = await importOriginal<typeof import("node:path")>();
+  return { ...simulatedDrivePath(actual), sep: actual.win32.sep };
 });
 vi.mock("../../permissions/generated/srt-win-build-receipts.js", () => ({ default: {} }));
 vi.mock("node:fs", async (importOriginal) => ({
