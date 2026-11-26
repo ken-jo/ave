@@ -44,16 +44,13 @@ const SESSION_ID = "spawn-budget-session";
 const resources = new PermissionTestResources();
 const cleanup: Array<() => Promise<void>> = [];
 
-// LEAD target: at most 4 helper launches per phase (card, approved) for Bash and PowerShell.
 const HOST_SHELL_ADMISSION_TARGET = 4;
-// Binding per-phase ceiling: 2 once Windows lookups admit the shell's paths, below the target.
-const HOST_SHELL_ADMISSION_MEASURED = 2;
-// Per-verb detail of the current measurement; lower it when launches are removed.
-const HOST_SHELL_ADMISSION_LAUNCHES = {
-  bash: { card: { "--pin": 2 }, approved: { "--pin": 2 } },
-  powershell: { card: { "--pin": 1 }, approved: { "--pin": 2 } },
+const CARD_DECISIONS = ["card binding", "permission evaluation", "pre-card cwd revalidation"] as const;
+const APPROVED_DECISIONS = ["pending-answer permission recheck", "permit mint", "permit consumption"] as const;
+const HOST_SHELL_ADMISSION_DECISIONS = {
+  bash: { card: ["Bash path policy", ...CARD_DECISIONS], approved: APPROVED_DECISIONS },
+  powershell: { card: CARD_DECISIONS, approved: APPROVED_DECISIONS },
 } as const;
-
 
 afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
@@ -122,7 +119,7 @@ describe.skipIf(!helperPresent)("host shell admission native helper launch budge
     expect(takeWindowsHelperLaunches()).toEqual({ "--pin": 1 });
   });
 
-  it.each(["bash", "powershell"] as const)("admits an approved host %s git status within its launch budget", async (toolName) => {
+  it.each(["bash", "powershell"] as const)("uses one native helper launch per named decision for approved host %s git status", async (toolName) => {
     const f = await subject();
     vi.stubEnv("AVE_HOME", f.root);
     const project = resources.makeTmpDir("ave-spawn-budget-project-");
@@ -165,10 +162,12 @@ describe.skipIf(!helperPresent)("host shell admission native helper launch budge
     expect(result.is_error, JSON.stringify(result)).toBeUndefined();
     expect(result.content).toBe("admitted");
     expect(execute).toHaveBeenCalledOnce();
-    expect(HOST_SHELL_ADMISSION_MEASURED).toBeLessThanOrEqual(HOST_SHELL_ADMISSION_TARGET);
-    expect(totalLaunches(beforeCard), JSON.stringify(beforeCard)).toBeLessThanOrEqual(HOST_SHELL_ADMISSION_MEASURED);
-    expect(totalLaunches(afterApproval), JSON.stringify(afterApproval)).toBeLessThanOrEqual(HOST_SHELL_ADMISSION_MEASURED);
-    expect({ card: beforeCard, approved: afterApproval }, JSON.stringify({ card: beforeCard, approved: afterApproval }))
-      .toEqual(HOST_SHELL_ADMISSION_LAUNCHES[toolName]);
+    const launches = { card: beforeCard, approved: afterApproval };
+    for (const phase of ["card", "approved"] as const) {
+      const decisions = HOST_SHELL_ADMISSION_DECISIONS[toolName][phase];
+      const reason = `${phase}: one helper launch per decision (${decisions.join(", ")})`;
+      expect(totalLaunches(launches[phase]), reason).toBeLessThanOrEqual(HOST_SHELL_ADMISSION_TARGET);
+      expect(launches[phase], reason).toEqual({ "--pin": decisions.length });
+    }
   });
 });

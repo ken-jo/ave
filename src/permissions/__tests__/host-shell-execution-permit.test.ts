@@ -86,15 +86,10 @@ let approvalSequence = 0;
 /** The owner's standing answer for the card `decision` answered, or none when it does not stand. */
 const answerTo = (decision: ApprovalDecision, binding: HostShellExecutionPermitBinding) => judgedAnswer(toolUseAction(binding.toolUseId), decision);
 
-async function issueHostApprovedDecision(
-  binding: HostShellExecutionPermitBinding,
-): Promise<ApprovalDecision> {
-  const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
-  const gate = new ApprovalGate(wc as never);
+function requestHostApproval(gate: ApprovalGate, directory: ReturnType<typeof createShellApprovalDirectory>) {
+  const { binding } = directory;
   const id = `partial-shell-permit-${++approvalSequence}`;
-  const directory = createShellApprovalDirectory(binding);
-  try {
-  const pending = gate.requestAndWait({
+  return { id, pending: gate.requestAndWait({
     id,
     category: "tool",
     toolName: binding.toolName,
@@ -114,19 +109,28 @@ async function issueHostApprovedDecision(
     forceExplicit: true,
     hostShellExecutionPermitBinding: binding,
     processCwd: { directory },
-  });
-  const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest | undefined;
-  if (!request?.nonce || !request.hmac) {
-    throw new Error("ApprovalGate did not publish an HMAC-sealed request");
-  }
-  gate.resolveFromDesktopRenderer(id, {
-    requestId: id,
-    choice: "allow-once",
-    nonce: request.nonce,
-    hmac: request.hmac,
-  }, wc as never);
-  return await pending;
+  }) };
+}
+
+async function issueHostApprovedDecision(binding: HostShellExecutionPermitBinding): Promise<ApprovalDecision> {
+  const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+  const gate = new ApprovalGate(wc as never);
+  const directory = createShellApprovalDirectory(binding);
+  try {
+    const { id, pending } = requestHostApproval(gate, directory);
+    const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest | undefined;
+    if (!request?.nonce || !request.hmac) {
+      throw new Error("ApprovalGate did not publish an HMAC-sealed request");
+    }
+    gate.resolveFromDesktopRenderer(id, {
+      requestId: id,
+      choice: "allow-once",
+      nonce: request.nonce,
+      hmac: request.hmac,
+    }, wc as never);
+    return await pending;
   } finally {
+    gate.disposeAll();
     directory.dispose();
   }
 }
@@ -151,6 +155,92 @@ function permitInput(
     allowedDirectories: binding.allowedDirectories,
   };
 }
+
+describe("host shell working directory freshness", () => {
+  let workspace: string;
+  let cwd: string;
+  let original: string;
+
+  beforeEach(() => {
+    workspace = mkdtempSync(join(tmpdir(), "ave-permit-cwd-"));
+    cwd = join(workspace, "current");
+    original = join(workspace, "original");
+    mkdirSync(cwd);
+  });
+
+  afterEach(async () => {
+    await cleanupTmpDir(workspace);
+  });
+
+  function replaceDirectory() {
+    renameSync(cwd, original);
+    mkdirSync(cwd);
+  }
+
+  function bindCard() {
+    const binding = buildHostShellExecutionPermitBinding({
+      plan: windowsPlan(),
+      toolName: "bash",
+      toolUseId: "cwd-freshness",
+      rawInput: { command: "echo one-shot" },
+      executionCwd: cwd,
+      extraAllowedDirectories: [],
+    });
+    if (!binding?.cwdIdentity) throw new Error("Shell fixture has no working directory identity");
+    return binding;
+  }
+
+  async function expectCardRefused(binding: HostShellExecutionPermitBinding) {
+    const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+    const gate = new ApprovalGate(wc as never);
+    const directory = createShellApprovalDirectory(binding);
+    try {
+      const { pending } = requestHostApproval(gate, directory);
+      expect(wc.send).not.toHaveBeenCalled();
+      await expect(pending).resolves.toMatchObject({
+        choice: "deny-once",
+        rememberPattern: "Shell working directory changed before the card opened",
+      });
+    } finally {
+      gate.disposeAll();
+      directory.dispose();
+    }
+  }
+
+  it("reads a fresh identity for card binding after an earlier observation", async () => {
+    const previous = bindCard();
+    replaceDirectory();
+    const binding = bindCard();
+    expect(binding.cwdIdentity?.realpath).toBe(previous.cwdIdentity?.realpath);
+    expect(binding.cwdIdentity).not.toEqual(previous.cwdIdentity);
+
+    renameSync(cwd, join(workspace, "replacement"));
+    renameSync(original, cwd);
+    await expectCardRefused(binding);
+  });
+
+  it("refuses a replaced directory during pre-card cwd revalidation", async () => {
+    const binding = bindCard();
+    replaceDirectory();
+    await expectCardRefused(binding);
+  });
+
+  it("refuses a directory replaced after the card answer during permit mint", async () => {
+    const binding = bindCard();
+    const answer = answerTo(await issueHostApprovedDecision(binding), binding);
+    replaceDirectory();
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, answer })).toBeUndefined();
+  });
+
+  it("refuses a directory replaced after minting during permit consumption", async () => {
+    const binding = bindCard();
+    const answer = answerTo(await issueHostApprovedDecision(binding), binding);
+    const permit = mintHostShellExecutionPermit({ plan: binding.plan, binding, answer });
+    expect(permit).toBeDefined();
+    replaceDirectory();
+    expect(consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))).toBeUndefined();
+  });
+});
 
 describe("Windows partial-shell execution permit", () => {
   afterEach(() => __resetWindowsSandboxSubstrateForTest());
