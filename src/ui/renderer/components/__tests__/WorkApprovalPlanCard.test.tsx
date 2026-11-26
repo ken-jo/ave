@@ -449,3 +449,15 @@ it("restores focus to the approval heading after a plan decision removes its car
   await waitFor(() => expect(approve).not.toBeInTheDocument());
   expect(screen.getByRole("heading", { name: t("workApprovals.title") })).toHaveFocus();
 });
+
+it("navigates from an all-projects summary without exposing plan controls", async () => {
+  const { key, scope, title } = plan();
+  const { api } = stubApi(okList([{ kind: "navigation", targetKind: "plan", key, scope, title, phase: "pending" }]));
+  const onOpenApproval = vi.fn();
+  renderStack(api, { showAllProjects: true, onOpenApproval });
+  const open = await screen.findByRole("button", { name: t("workApprovals.openApproval") });
+  expect(screen.queryByText("Retry failed payment webhooks.")).toBeNull();
+  fireEvent.click(open);
+  expect(onOpenApproval).toHaveBeenCalledExactlyOnceWith(key, CHECKOUT.projectRoot);
+  expect(api.decideWorkPlan).not.toHaveBeenCalled();
+});

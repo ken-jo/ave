@@ -164,7 +164,7 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
     setBusy(true);
     setError(undefined);
     try {
-      const result = await onRetry(item.id, { runId, stageId: update.stageId });
+      const result = await onRetry(item.id, { runId, stageId: update.stageId, attempt: update.attempt });
       if (result.ok) setRetried(`${runId}:${update.stageId}:${update.attempt}`);
       else {
         const key = "reason" in result ? `reasonCodes.${result.reason.replaceAll("_", "-")}` : "";
@@ -251,7 +251,7 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
                   }} stageName={stageName} />
                   {selectedSnapshot.status === "failed" && canStop && item.runId && (
                     <Button type="button" size="sm" variant="outline" disabled={busy || run?.stopping || retried === `${item.runId}:${selectedSnapshot.stageId}:${selectedSnapshot.attempt}`}
-                      {...workBoardDecisionProps(WORK_BOARD.retryStage, item.id, { runId: item.runId, stageId: selectedSnapshot.stageId })}
+                      {...workBoardDecisionProps(WORK_BOARD.retryStage, item.id, { runId: item.runId, stageId: selectedSnapshot.stageId, attempt: selectedSnapshot.attempt })}
                       onClick={() => void handleRetry({ stageId: selectedSnapshot.stageId, attempt: selectedSnapshot.attempt, phase: "stage_failed", at: selectedSnapshot.endedAt ?? "" })}>
                       {t("workflowTemplates.retryStage")}
                     </Button>
@@ -274,7 +274,7 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
                   {update.phase === "stage_failed" && canStop && item.runId && startedAt && update.at >= startedAt && (
                     <Button type="button" size="sm" variant="outline"
                       disabled={busy || run?.stopping || retried === `${item.runId}:${update.stageId}:${update.attempt}`}
-                      {...workBoardDecisionProps(WORK_BOARD.retryStage, item.id, { runId: item.runId, stageId: update.stageId })}
+                      {...workBoardDecisionProps(WORK_BOARD.retryStage, item.id, { runId: item.runId, stageId: update.stageId, attempt: update.attempt })}
                       onClick={() => void handleRetry(update)}>{t("workflowTemplates.retryStage")}</Button>
                   )}
                 </li>

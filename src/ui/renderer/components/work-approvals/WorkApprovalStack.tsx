@@ -48,10 +48,12 @@ export function approvalAge(arrivedAt: string | null, now: number): string | nul
 /** Arrival order, oldest first; an item without a time sorts last, then by key so the order is stable. */
 export function sortByArrival(items: readonly WorkApprovalView[]): WorkApprovalView[] {
   return [...items].sort((a, b) => {
-    if (a.arrivedAt === b.arrivedAt) return a.key.localeCompare(b.key);
-    if (a.arrivedAt === null) return 1;
-    if (b.arrivedAt === null) return -1;
-    return a.arrivedAt.localeCompare(b.arrivedAt) || a.key.localeCompare(b.key);
+    const first = "arrivedAt" in a ? a.arrivedAt : null;
+    const second = "arrivedAt" in b ? b.arrivedAt : null;
+    if (first === second) return a.key.localeCompare(b.key);
+    if (first === null) return 1;
+    if (second === null) return -1;
+    return first.localeCompare(second) || a.key.localeCompare(b.key);
   });
 }
 
@@ -63,15 +65,27 @@ export function isShared(item: WorkApprovalView): boolean {
 
 /** A plan sent back for changes waits for the agent, not the user: it is listed but never counted. */
 export function isCounted(item: WorkApprovalView): boolean {
-  return item.kind !== "plan" || item.phase === "pending";
+  return !("phase" in item) || item.phase === "pending";
+}
+
+function targetKind(item: WorkApprovalView) {
+  return item.kind === "navigation" ? item.targetKind : item.kind;
 }
 
 export function kindLabel(item: WorkApprovalView): string {
-  if (item.kind === "plan") return t("workApprovals.kindPlan");
-  if (item.kind === "proposal") return t("workApprovals.kindProposal");
-  if (item.kind === "stage-gate") return t("workflowTemplates.stageGate");
-  if (item.kind === "join-conflict") return t("workflowTemplates.joinConflict");
-  return item.failure ? t("workApprovals.kindRoutineFailed") : t("workApprovals.kindRoutineAttention");
+  const kind = targetKind(item);
+  if (kind === "plan") return t("workApprovals.kindPlan");
+  if (kind === "proposal") return t("workApprovals.kindProposal");
+  if (kind === "stage-gate") return t("workflowTemplates.stageGate");
+  if (kind === "join-conflict") return t("workflowTemplates.joinConflict");
+  return item.kind === "routine-attention" && item.failure ? t("workApprovals.kindRoutineFailed") : t("workApprovals.kindRoutineAttention");
+}
+
+export function approvalProjectRoot(item: WorkApprovalView, projects: readonly WorkApprovalProject[]): string | undefined {
+  if (item.scope.type === "project") return item.scope.projectRoot;
+  if (item.kind !== "navigation" || item.scope.type !== "unscoped") return undefined;
+  if (item.targetKind !== "proposal") return projects.find(project => project.isDefault)?.projectRoot;
+  return undefined;
 }
 
 function KindChip({ item }: { item: WorkApprovalView }) {
@@ -408,7 +422,7 @@ interface FocusableProps {
 }
 
 function HeadCard({
-  item, index, count, actions, targetProjectRoot, projectChoices, api, now, onChanged, focusRef, tabIndex, onFocusItem,
+  item, index, count, actions, targetProjectRoot, projectChoices, api, now, onChanged, onOpen, focusRef, tabIndex, onFocusItem,
 }: FocusableProps & {
   index: number;
   count: number;
@@ -418,6 +432,7 @@ function HeadCard({
   api: Pick<AveApi, "decideWorkPlan" | "decideWorkStage" | "decideWorkJoin" | "openWorkBoardJoin">;
   now: number;
   onChanged: () => void;
+  onOpen?: () => void;
 }) {
   return (
     <article
@@ -440,7 +455,9 @@ function HeadCard({
           {t("workApprovals.position", { index: index + 1, total: count })}
         </span>
       </header>
-      {item.kind === "plan" ? (
+      {item.kind === "navigation" ? (
+        <Button type="button" size="sm" className="mt-2" onClick={onOpen}>{t("workApprovals.openApproval")}</Button>
+      ) : item.kind === "plan" ? (
         <div className="mt-2">
           <PlanBody item={item} api={api} now={now} onChanged={onChanged} />
         </div>
@@ -480,7 +497,7 @@ function QueuedRow({
   selectOnly?: boolean;
   onExpand: (key: string) => void;
 }) {
-  const age = approvalAge(item.arrivedAt, now);
+  const age = "arrivedAt" in item ? approvalAge(item.arrivedAt, now) : null;
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key === "Enter" && event.target === event.currentTarget) {
       event.preventDefault();
@@ -561,6 +578,7 @@ export interface WorkApprovalStackProps {
   /** The project whose home shows this stack; accepted proposals join it. Undefined means the default project. */
   project?: ProjectIdentity;
   actions: WorkApprovalActions;
+  onOpenApproval?: (key: string, root: string | undefined) => void;
   /** Navigation target from the title-bar popover: the item to bring to the top and focus, once. */
   focusKey?: string | null;
   onFocusConsumed?: () => void;
@@ -621,7 +639,7 @@ function ReplanningList({ items }: { items: readonly WorkPlanApprovalView[] }) {
 /** The project-home stack: this project's items plus the shared ones, oldest first, the top one as a real card. In all-projects mode the
  * rows are grouped by project and the selected one is the card beside them. */
 export function WorkApprovalStack({
-  api, project, actions, focusKey, onFocusConsumed, showAllProjects = false, showAllRequest, onShowAllConsumed, onCountChange, now = Date.now,
+  api, project, actions, onOpenApproval, focusKey, onFocusConsumed, showAllProjects = false, showAllRequest, onShowAllConsumed, onCountChange, now = Date.now,
 }: WorkApprovalStackProps) {
   const projectRoot = project?.projectRoot;
   const [allProjects, setAllProjects] = useState(showAllProjects);
@@ -649,7 +667,7 @@ export function WorkApprovalStack({
     [sorted],
   );
   const projects = state.status === "ready" ? state.projects : [];
-  const filtered = useMemo(() => (filter === "all" ? decidable : decidable.filter((item) => item.kind === filter)), [filter, decidable]);
+  const filtered = useMemo(() => (filter === "all" ? decidable : decidable.filter((item) => targetKind(item) === filter)), [filter, decidable]);
   const groups = useMemo(() => (allProjects ? groupByProject(filtered, projects) : []), [allProjects, filtered, projects]);
   // All-projects mode reads top to bottom by group, so its first item (the one Esc returns to) is the first row, not the oldest.
   const listed = useMemo(() => (allProjects ? groups.flatMap((group) => group.items) : filtered), [allProjects, filtered, groups]);
@@ -696,6 +714,10 @@ export function WorkApprovalStack({
       handledFocusKey.current = null;
       return;
     }
+    if (allProjects) {
+      setAllProjects(false);
+      return;
+    }
     if (!fresh || handledFocusKey.current === focusKey) return;
     handledFocusKey.current = focusKey;
     const listedNow = decidable.some((item) => item.key === focusKey);
@@ -709,7 +731,7 @@ export function WorkApprovalStack({
       else sectionRef.current?.focus();
     });
     onFocusConsumed?.();
-  }, [decidable, focusKey, focusNode, fresh, onFocusConsumed]);
+  }, [allProjects, decidable, focusKey, focusNode, fresh, onFocusConsumed]);
 
   if (state.status === "loading") {
     return (
@@ -730,7 +752,7 @@ export function WorkApprovalStack({
 
   const projectCount = decidable.filter((item) => !isShared(item)).length;
   const sharedCount = decidable.length - projectCount;
-  const countOf = (kind: WorkApprovalView["kind"]) => decidable.filter((item) => item.kind === kind).length;
+  const countOf = (kind: WorkApprovalView["kind"]) => decidable.filter((item) => targetKind(item) === kind).length;
   const kinds: Array<{ id: KindFilter; label: string }> = [
     { id: "all", label: t("workApprovals.filterAll", { count: decidable.length }) },
     { id: "plan", label: t("workApprovals.filterPlan", { count: countOf("plan") }) },
@@ -761,6 +783,10 @@ export function WorkApprovalStack({
       api={api}
       now={clock}
       onChanged={relist}
+      onOpen={() => {
+        switchMode(false);
+        onOpenApproval?.(head.key, approvalProjectRoot(head, projects));
+      }}
       // In all-projects mode the row is the focus target; the card beside it is reached with Tab.
       focusRef={allProjects ? () => {} : roving.focusRef}
       tabIndex={allProjects ? -1 : roving.tabIndexFor(head.key)}

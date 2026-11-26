@@ -4,13 +4,17 @@ import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } fro
 import { broadcastToAppWindows } from "./window-fanout.js";
 import type { IpcDeps } from "./types.js";
 import { WORK_BOARD } from "../shared/ipc-channels.js";
-import { hasUserKeyboardIntent } from "../shared/chat-origin.js";
+import { securitySettingsGestures } from "./security-settings-gesture.js";
 import { isWorkflowTemplateProposalId } from "../shared/workflow-template-types.js";
 import { hasTemplateKeys, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { resolveAuthorizedWorkspaceProject } from "../main/project-root-authorization.js";
 import type { ScheduleAttachmentInput, TemplateScope, WorkflowTemplateConfirmInput, WorkflowTemplateIpcResult } from "../shared/workflow-template-types.js";
 
-export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
+export function registerWorkflowTemplateHandlers(
+  deps: IpcDeps,
+  isBoardOwnerFrame: (event: IpcMainInvokeEvent) => boolean,
+  spendConfirmation: (event: IpcMainInvokeEvent, channel: typeof WORK_BOARD.templateConfirm, id: unknown, input: unknown, token: unknown) => boolean,
+): void {
   const store = deps.workflowTemplateStore;
   store?.changed.subscribe(() => broadcastToAppWindows(deps, WORK_BOARD.templatesChanged));
   const authorizedScope = (scope: TemplateScope): boolean => {
@@ -61,17 +65,16 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
     if (id !== null) await load(id);
     return store.draft(id as string | null, input);
   });
-  const requireLocalGesture = (event: IpcMainInvokeEvent, intent: unknown, channel: string) => {
-    if (!hasUserKeyboardIntent(intent)) throw new TemplateGestureError();
-    const sender = event.sender;
-    const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
-    if (!sender || sender.isDestroyed() || event.senderFrame !== sender.mainFrame || !windows.some(w => w && !w.isDestroyed() && w.webContents === sender)) {
-      auditUnauthorized(deps.auditLogger, channel, event); throw new TemplateFrameError();
+  const requireOwnerFrame = (event: IpcMainInvokeEvent, channel: string) => {
+    if (!isBoardOwnerFrame(event)) {
+      auditUnauthorized(deps.auditLogger, channel, event);
+      throw new TemplateFrameError();
     }
   };
-  handle(WORK_BOARD.templateAttachSchedule, async (store, event, raw, intent, ...args) => {
+  handle(WORK_BOARD.templateAttachSchedule, async (store, event, raw, ...args) => {
     requireTemplate(args.length === 0 && hasTemplateKeys(raw, ["templateId", "version", "graphHash", "scheduleId"]) && isTemplateId(raw.templateId) && isTemplateVersion(raw.version) && isGraphHash(raw.graphHash) && isTemplateId(raw.scheduleId));
-    requireLocalGesture(event, intent, WORK_BOARD.templateAttachSchedule);
+    requireOwnerFrame(event, WORK_BOARD.templateAttachSchedule);
+    if (!securitySettingsGestures.consume(event.sender, { channel: WORK_BOARD.templateAttachSchedule, payload: raw })) throw new TemplateGestureError();
     const record = await store.get(raw.templateId);
     let approvedScope = record.template.scope;
     if (approvedScope.kind === "project") {
@@ -84,9 +87,10 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
     deps.auditLogger.log({ timestamp: result.at, sessionId: `work-board:${result.templateId}`, type: "approval", output: JSON.stringify({ event: "template_schedule_attached", ...result, auditId: proof.auditId }) });
     return result;
   });
-  handle(WORK_BOARD.templateDetachSchedule, async (store, event, id, intent, ...args) => {
+  handle(WORK_BOARD.templateDetachSchedule, async (store, event, id, ...args) => {
     requireTemplate(args.length === 0 && isTemplateId(id));
-    requireLocalGesture(event, intent, WORK_BOARD.templateDetachSchedule);
+    requireOwnerFrame(event, WORK_BOARD.templateDetachSchedule);
+    if (!securitySettingsGestures.consume(event.sender, { channel: WORK_BOARD.templateDetachSchedule, payload: id })) throw new TemplateGestureError();
     const attachment = await store.getAttachment(id); requireTemplate(attachment, "template-not-found");
     const proof = mintHostDecisionProof("local-desktop");
     const detached = await store.detachSchedule(id, proof);
@@ -95,7 +99,8 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
   });
   handle(WORK_BOARD.templateConfirm, async (store, event, id, raw, intent, ...args) => {
     requireTemplate(args.length === 0 && isTemplateId(id) && hasTemplateKeys(raw, ["expectedGraphHash", "expectedDraftRevision"]) && isGraphHash(raw.expectedGraphHash) && isTemplateId(raw.expectedDraftRevision));
-    requireLocalGesture(event, intent, WORK_BOARD.templateConfirm);
+    requireOwnerFrame(event, WORK_BOARD.templateConfirm);
+    if (!spendConfirmation(event, WORK_BOARD.templateConfirm, id, raw, intent)) throw new TemplateGestureError();
     const proposalId = isWorkflowTemplateProposalId(id) ? id : undefined;
     if (proposalId) loadProposal(proposalId);
     else {

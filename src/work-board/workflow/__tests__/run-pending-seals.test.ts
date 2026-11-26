@@ -120,7 +120,7 @@ it("an integration seals every member first and never collects a failed seal", a
     expect((await h.item(id)).stageJoins).toEqual([]);
     failing = false;
     const runId = (await h.item(id)).runId ?? "";
-    expect(await h.engine.retryStage(id, { runId, stageId: "a" })).toMatchObject({ ok: true });
+    expect(await h.engine.retryStage(id, { runId, stageId: "a", attempt: 1 })).toMatchObject({ ok: true });
     (await h.untilSpawned(3))[2].finish();
     await h.untilStage(id, "a", "awaiting_gate");
     expect((await h.stageRun(id, "a")).attempt).toBe(2);

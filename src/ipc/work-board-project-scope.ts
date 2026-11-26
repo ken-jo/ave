@@ -3,7 +3,7 @@ import { resolveAuthorizedWorkspaceProject } from "../main/project-root-authoriz
 import type { MainWindow } from "../main/main-window-host.js";
 import { WORK_BOARD } from "../shared/ipc-channels.js";
 import { projectRootEquals, type ProjectIdentity } from "../shared/project-identity.js";
-import type { WorkBoardRunEvent } from "../shared/work-board-types.js";
+import type { WorkBoardRunEvent, WorkBoardRunFailure } from "../shared/work-board-types.js";
 import { fanOutToAllWindows, type FanOutOptions } from "./window-fanout.js";
 
 const observed = new WeakSet<WebContents>();
@@ -29,7 +29,6 @@ export function workBoardProjectAllows(contents: WebContents | undefined, root: 
   if (!contents || contents.isDestroyed()) return false;
   const scope = scopes.get(contents);
   if (!scope || scope.frame !== contents.mainFrame) return false;
-  if (!root) return scope.project.isDefault === true;
   const resolved = resolveAuthorizedWorkspaceProject(root);
   return resolved.authorized && projectRootEquals(resolved.project?.projectRoot, scope.project.projectRoot);
 }
@@ -37,6 +36,15 @@ export function workBoardProjectAllows(contents: WebContents | undefined, root: 
 export function deliverWorkBoardProgress(
   windows: Array<MainWindow | null | undefined>, event: WorkBoardRunEvent, projectRoot: string | undefined, options?: FanOutOptions,
 ): void {
-  fanOutToAllWindows(windows.filter(window => window && !window.isDestroyed() && workBoardProjectAllows(window.webContents, projectRoot)),
-    WORK_BOARD.runProgress, event, options);
+  fanOutToAllWindows(projectWindows(windows, projectRoot), WORK_BOARD.runProgress, event, options);
+}
+
+export function deliverWorkBoardFailure(
+  windows: Array<MainWindow | null | undefined>, event: WorkBoardRunFailure, projectRoot: string | undefined,
+): void {
+  fanOutToAllWindows(projectWindows(windows, projectRoot), WORK_BOARD.runFailed, event);
+}
+
+function projectWindows(windows: Array<MainWindow | null | undefined>, projectRoot: string | undefined) {
+  return windows.filter(window => window && !window.isDestroyed() && workBoardProjectAllows(window.webContents, projectRoot));
 }

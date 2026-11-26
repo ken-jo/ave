@@ -16,6 +16,18 @@ export function workBoardTestSender() {
   return sender;
 }
 
+export function pressWorkBoardTestKey(event: { sender: ReturnType<typeof workBoardTestSender> }): void {
+  event.sender.emit("before-input-event", {}, { type: "keyDown", isAutoRepeat: false });
+}
+
+export function invokeWithWorkBoardTestKey(
+  handler: (channel: string) => (...args: unknown[]) => unknown,
+  channel: string, event: { sender: ReturnType<typeof workBoardTestSender> }, ...args: unknown[]
+): unknown {
+  pressWorkBoardTestKey(event);
+  return handler(channel)(event, ...args);
+}
+
 export async function captureWorkBoardTestGesture(
   handler: (channel: string) => (...args: unknown[]) => unknown,
   event: { sender: ReturnType<typeof workBoardTestSender> },

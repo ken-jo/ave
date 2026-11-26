@@ -1,4 +1,4 @@
-import { captureWorkBoardTestGesture, workBoardTestSender } from "../../../__tests__/support/work-board-ipc.js";
+import { captureWorkBoardTestGesture, invokeWithWorkBoardTestKey, workBoardTestSender } from "../../../__tests__/support/work-board-ipc.js";
 import { beforeEach, expect, it, vi } from "vitest";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -27,6 +27,8 @@ vi.mock("../../window-fanout.js", () => ({ broadcastToAppWindows: vi.fn() }));
 import { broadcastToAppWindows } from "../../window-fanout.js";
 const graph = { name: "Template", scope: { kind: "all" }, stages: [{ id: "a", name: "A", goal: "Read", inputs: [], toolScope: "read", allowSubAgents: false, gate: { type: "human" } }], edges: [] };
 const gesture = { inputOrigin: "user-keyboard", userActivation: true };
+const confirm = async (event: ReturnType<typeof setup>["event"], id: string, request: unknown) =>
+  handler(WORK_BOARD.templateConfirm)(event, id, request, await captureWorkBoardTestGesture(handler, event, WORK_BOARD.templateConfirm, id, request));
 function setup(extra: Partial<IpcDeps> = {}) {
   const sender = workBoardTestSender(); const window = { isDestroyed: () => false, webContents: sender };
   const changed = new ChangeSignal(() => {});
@@ -122,11 +124,12 @@ it("saves a new version only through a matching user confirmation", async () => 
     const { proposalId, graphHash } = JSON.parse((await propose(reportWithEnvelope)).output);
     const decision = { expectedGraphHash: graphHash, expectedDraftRevision: proposalId };
     const confirmProposal = handler(WORK_BOARD.templateConfirm);
-    expect(await confirmProposal(event, proposalId, { ...decision, expectedGraphHash: "a".repeat(64) }, gesture))
+    expect(await confirm(event, proposalId, { ...decision, expectedGraphHash: "a".repeat(64) }))
       .toEqual({ ok: false, error: "stale-draft" });
     expect(await store.list()).toEqual([]);
     expect(await confirmProposal(event, proposalId, decision)).toEqual({ ok: false, error: "user-gesture-required" });
-    const results = await Promise.all([confirmProposal(event, proposalId, decision, gesture), confirmProposal(event, proposalId, decision, gesture)]);
+    const token = await captureWorkBoardTestGesture(handler, event, WORK_BOARD.templateConfirm, proposalId, decision);
+    const results = await Promise.all([confirmProposal(event, proposalId, decision, token), confirmProposal(event, proposalId, decision, token)]);
     expect(results.filter(result => (result as { ok: boolean }).ok)).toHaveLength(1);
     const [template] = await store.list();
     expect(template).toMatchObject({ currentVersion: 1, name: reportDraft.name });
@@ -228,9 +231,9 @@ it("evicts the oldest proposal upon exceeding 16 in one session", async () => {
     for (const { proposalId } of retained) {
       expect(await get(event, proposalId)).toMatchObject({ ok: true, value: { id: proposalId } });
     }
-    expect(await handler(WORK_BOARD.templateConfirm)(event, oldest.proposalId, {
+    expect(await confirm(event, oldest.proposalId, {
       expectedGraphHash: oldest.graphHash, expectedDraftRevision: oldest.proposalId,
-    }, gesture)).toEqual({ ok: false, error: "no-draft" });
+    })).toEqual({ ok: false, error: "no-draft" });
     await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
@@ -243,9 +246,9 @@ it("keeps an open proposal confirmable when another session exceeds its cap", as
     for (let index = 0; index < 17; index++) {
       expect((await propose(reportDraft, { sessionId: "another-session" })).isError).toBe(false);
     }
-    expect(await handler(WORK_BOARD.templateConfirm)(event, proposalId, {
+    expect(await confirm(event, proposalId, {
       expectedGraphHash: graphHash, expectedDraftRevision: proposalId,
-    }, gesture)).toMatchObject({ ok: true, value: { version: 1, graphHash } });
+    })).toMatchObject({ ok: true, value: { version: 1, graphHash } });
   });
 });
 
@@ -255,9 +258,9 @@ it("returns no-draft when confirming a proposal cleared by a restart", async () 
     expect(result.isError).toBe(false);
     const { proposalId, graphHash } = JSON.parse(result.output);
     const { event } = setup({ workflowTemplateStore: new WorkflowTemplateStore(path) });
-    expect(await handler(WORK_BOARD.templateConfirm)(event, proposalId, {
+    expect(await confirm(event, proposalId, {
       expectedGraphHash: graphHash, expectedDraftRevision: proposalId,
-    }, gesture)).toEqual({ ok: false, error: "no-draft" });
+    })).toEqual({ ok: false, error: "no-draft" });
     await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
@@ -280,14 +283,15 @@ it("requires a fresh local owner gesture for confirmation", async () => {
   const { event, store } = setup(); const request = { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" };
   expect(await handler(WORK_BOARD.templateConfirm)(event, "t", request)).toEqual({ ok: false, error: "user-gesture-required" });
   expect(await handler(WORK_BOARD.templateConfirm)({ ...event, senderFrame: {} }, "t", request, gesture)).toEqual({ ok: false, error: "unauthorized-frame" });
+  expect(await handler(WORK_BOARD.templateConfirm)(event, "t", request, gesture)).toEqual({ ok: false, error: "user-gesture-required" });
   expect(store.confirmDraft).not.toHaveBeenCalled();
-  expect(await handler(WORK_BOARD.templateConfirm)(event, "t", request, gesture)).toEqual({ ok: true, value: {} });
+  expect(await confirm(event, "t", request)).toEqual({ ok: true, value: {} });
   expect(store.confirmDraft).toHaveBeenCalledWith("t", request, { who: "user", origin: "local-desktop" });
 });
 it("broadcasts changed for successful draft, confirmation and archive writes", async () => {
   const { event } = setup();
   await handler(WORK_BOARD.templateDraft)(event, null, graph);
-  await handler(WORK_BOARD.templateConfirm)(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" }, gesture);
+  await confirm(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" });
   await handler(WORK_BOARD.templateArchive)(event, "t");
   expect(vi.mocked(broadcastToAppWindows).mock.calls.map(c => c[1])).toEqual([WORK_BOARD.templatesChanged, WORK_BOARD.templatesChanged, WORK_BOARD.templatesChanged]);
 });
@@ -313,7 +317,7 @@ it("hides unauthorized project templates and refuses project drafts", async () =
 it("revalidates a draft project before confirmation", async () => {
   const { event, store } = setup();
   store.get.mockResolvedValueOnce({ template: { id: "t", scope: { kind: "all" } }, draft: { scope: { kind: "project", projectRoot: "/private" } } } as never);
-  expect(await handler(WORK_BOARD.templateConfirm)(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" }, gesture)).toEqual({ ok: false, error: "scope-not-authorised" });
+  expect(await confirm(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" })).toEqual({ ok: false, error: "scope-not-authorised" });
   expect(store.confirmDraft).not.toHaveBeenCalled();
 });
 
@@ -321,16 +325,16 @@ it("requires local gesture and owner frame for schedule attachments and rejects 
   const { event, store } = setup(); const request = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily" };
   expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request)).toEqual({ ok: false, error: "user-gesture-required" });
   expect(await handler(WORK_BOARD.templateAttachSchedule)(event, { ...request, origin: "tailnet-surface" }, gesture)).toEqual({ ok: false, error: "invalid-input" });
-  expect(await handler(WORK_BOARD.templateAttachSchedule)({ ...event, senderFrame: {} }, request, gesture)).toEqual({ ok: false, error: "unauthorized-frame" });
+  expect(await handler(WORK_BOARD.templateAttachSchedule)({ ...event, senderFrame: {} }, request)).toEqual({ ok: false, error: "unauthorized-frame" });
   expect(store.attachSchedule).not.toHaveBeenCalled();
-  expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request, gesture)).toEqual({ ok: true, value: {} });
+  expect(await invokeWithWorkBoardTestKey(handler, WORK_BOARD.templateAttachSchedule, event, request)).toEqual({ ok: true, value: {} });
   expect(store.attachSchedule).toHaveBeenCalledWith(request, expect.objectContaining({ origin: "local-desktop", auditId: expect.any(String), decidedAt: expect.any(String) }), { kind: "all" });
 });
 
 it("revalidates attachment project access and does not write on refusal", async () => {
   const { event, store } = setup(); store.get.mockResolvedValueOnce({ template: { id: "t", scope: { kind: "project", projectRoot: "/private" } } } as never);
   const request = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily" };
-  expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request, gesture)).toEqual({ ok: false, error: "scope-not-authorised" }); expect(store.attachSchedule).not.toHaveBeenCalled();
+  expect(await invokeWithWorkBoardTestKey(handler, WORK_BOARD.templateAttachSchedule, event, request)).toEqual({ ok: false, error: "scope-not-authorised" }); expect(store.attachSchedule).not.toHaveBeenCalled();
 });
 
 it("requires detach gesture and refuses renderer-supplied host proofs", async () => {
@@ -339,16 +343,16 @@ it("requires detach gesture and refuses renderer-supplied host proofs", async ()
   expect(await handler(WORK_BOARD.templateAttachSchedule)(event, { ...request, proof: forged }, gesture)).toMatchObject({ ok: false, error: "invalid-input" });
   expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request, gesture, forged)).toMatchObject({ ok: false, error: "invalid-input" });
   expect(await handler(WORK_BOARD.templateDetachSchedule)(event, "attachment")).toMatchObject({ ok: false, error: "user-gesture-required" });
-  expect(await handler(WORK_BOARD.templateDetachSchedule)({ ...event, senderFrame: {} }, "attachment", gesture)).toMatchObject({ ok: false, error: "unauthorized-frame" });
+  expect(await handler(WORK_BOARD.templateDetachSchedule)({ ...event, senderFrame: {} }, "attachment")).toMatchObject({ ok: false, error: "unauthorized-frame" });
   expect(await handler(WORK_BOARD.templateDetachSchedule)(event, { id: "attachment", proof: forged }, gesture)).toMatchObject({ ok: false, error: "invalid-input" });
   expect(store.detachSchedule).not.toHaveBeenCalled();
-  expect(await handler(WORK_BOARD.templateDetachSchedule)(event, "attachment", gesture)).toEqual({ ok: true, value: true });
+  expect(await invokeWithWorkBoardTestKey(handler, WORK_BOARD.templateDetachSchedule, event, "attachment")).toEqual({ ok: true, value: true });
   expect(store.detachSchedule).toHaveBeenCalledWith("attachment", expect.objectContaining({ origin: "local-desktop", auditId: expect.any(String), decidedAt: expect.any(String) }));
 });
 
 it("returns the typed confirmation refusal list over IPC", async () => {
   const { WorkflowTemplateError } = await import("../../../work-board/template-graph.js"); const { store, event } = setup(); store.confirmDraft.mockRejectedValueOnce(new WorkflowTemplateError("envelope-refused", "Stage confirmation refused", ["outputs-need-human-gate"]));
-  expect(await handler(WORK_BOARD.templateConfirm)(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" }, gesture)).toEqual({ ok: false, error: "envelope-refused", refusals: ["outputs-need-human-gate"] });
+  expect(await confirm(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" })).toEqual({ ok: false, error: "envelope-refused", refusals: ["outputs-need-human-gate"] });
 });
 
 it("stores the authorized project root instead of its renderer alias", async () => {
@@ -365,7 +369,9 @@ it("returns typed row refusals over IPC without invoking execution or gates", as
   const engine = { runItem: vi.fn(), decidePlan: vi.fn(), projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {}, cancelRun: vi.fn(() => { throw new WorkflowTemplateError("invalid-template-run"); }) };
   const { event } = setup({ workBoardStore: board, workBoardEngine: engine } as unknown as Partial<IpcDeps>);
   const { resolveAuthorizedWorkspaceProject } = await import("../../../main/project-root-authorization.js");
-  vi.mocked(resolveAuthorizedWorkspaceProject).mockReturnValueOnce({ authorized: true, project: { projectRoot: "/workspace/default", projectName: "default", isDefault: true } });
+  vi.mocked(resolveAuthorizedWorkspaceProject).mockReturnValueOnce({ authorized: true, project: { projectRoot: "/workspace/default", projectName: "default", isDefault: true } })
+    .mockReturnValueOnce({ authorized: true, project: { projectRoot: "/workspace/default", projectName: "default", isDefault: true } })
+    .mockReturnValueOnce({ authorized: true, project: { projectRoot: "/workspace/default", projectName: "default", isDefault: true } });
   expect(await handler(WORK_BOARD.setProjectScope)(event, "/workspace/default")).toBe(true);
   expect(await handler(WORK_BOARD.get)(event, 2)).toMatchObject({ status: "found", item: { templateRunError: "invalid-template-run" } });
   expect(await handler(WORK_BOARD.update)(event, 2, { title: "Changed" })).toMatchObject({ status: "invalid", reason: "invalid-template-run" });
@@ -373,7 +379,7 @@ it("returns typed row refusals over IPC without invoking execution or gates", as
   const plan = { runId: "run", planHash: "a".repeat(64), decision: "approve" };
   expect(await handler(WORK_BOARD.decidePlan)(event, 2, plan, await captureWorkBoardTestGesture(handler, event, WORK_BOARD.decidePlan, 2, plan))).toEqual({ ok: false, reason: "invalid-template-run" });
   expect(engine.runItem).not.toHaveBeenCalled(); expect(engine.decidePlan).not.toHaveBeenCalled();
-  expect(await handler(WORK_BOARD.cancelRun)(event, 2, gesture)).toEqual({ ok: false, error: "invalid-template-run" });
+  expect(await invokeWithWorkBoardTestKey(handler, WORK_BOARD.cancelRun, event, 2)).toEqual({ ok: false, error: "invalid-template-run" });
   // A row whose run file awaits review is refused the same way by run and decide.
   board.get.mockImplementation(async () => ({ status: "found", itemId: 2, item: { id: 2, templateRunError: "template-runs-pending-review" } }));
   expect(await handler(WORK_BOARD.run)(event, 2)).toEqual({ status: "error", reason: "invalid-template-run" });
@@ -386,7 +392,7 @@ it("passes the resolved authorized project snapshot to attachment storage", asyn
   vi.mocked(resolveAuthorizedWorkspaceProject).mockReturnValue({ authorized: true, project: { projectRoot: "/projects/a", projectName: "A", isDefault: false } });
   const { event, store } = setup(); store.get.mockResolvedValueOnce({ template: { id: "t", scope: { kind: "project", projectRoot: "/projects/a/" } } } as never);
   const request = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily" };
-  expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request, gesture)).toMatchObject({ ok: true });
+  expect(await invokeWithWorkBoardTestKey(handler, WORK_BOARD.templateAttachSchedule, event, request)).toMatchObject({ ok: true });
   expect(store.attachSchedule).toHaveBeenCalledWith(request, expect.anything(), { kind: "project", projectRoot: "/projects/a" });
   vi.mocked(resolveAuthorizedWorkspaceProject).mockReturnValue({ authorized: false, project: null });
 });
@@ -396,11 +402,11 @@ it("detaches after project authorization is withdrawn while preserving local dec
   vi.mocked(resolveAuthorizedWorkspaceProject).mockReturnValue({ authorized: false, project: null });
   const { event, store } = setup(); store.get.mockResolvedValue({ template: { id: "t", scope: { kind: "project", projectRoot: "/projects/a" } } } as never);
   expect(await handler(WORK_BOARD.templateDetachSchedule)(event, "attachment")).toEqual({ ok: false, error: "user-gesture-required" });
-  expect(await handler(WORK_BOARD.templateDetachSchedule)({ ...event, senderFrame: {} }, "attachment", gesture)).toEqual({ ok: false, error: "unauthorized-frame" });
+  expect(await handler(WORK_BOARD.templateDetachSchedule)({ ...event, senderFrame: {} }, "attachment")).toEqual({ ok: false, error: "unauthorized-frame" });
   vi.mocked(validateHostRendererSender).mockReturnValueOnce(false);
   expect(await handler(WORK_BOARD.templateDetachSchedule)(event, "attachment", gesture)).toEqual({ ok: false, error: "unauthorized-frame" });
   expect(store.getAttachment).not.toHaveBeenCalled(); expect(store.detachSchedule).not.toHaveBeenCalled();
-  expect(await handler(WORK_BOARD.templateDetachSchedule)(event, "attachment", gesture)).toEqual({ ok: true, value: true });
+  expect(await invokeWithWorkBoardTestKey(handler, WORK_BOARD.templateDetachSchedule, event, "attachment")).toEqual({ ok: true, value: true });
   expect(store.get).not.toHaveBeenCalled();
   expect(store.detachSchedule).toHaveBeenCalledWith("attachment", expect.objectContaining({ origin: "local-desktop" }));
 });

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 /**
  * Host-only channels reject isolated app-resource origins and admit host renderer frames.
  * Each channel is driven from both to ensure a guard that refuses everyone cannot pass.
@@ -522,4 +523,11 @@ describe('memory embedding config ownership', () => {
   it('rejects a model location through the general settings channel', async () => {
     expect(await invoke(CHANNELS.settings.update, registeredHostEvent(), [{ memoryEmbedding: { localModelPath: '/example/model' } }])).toEqual({ ok: false, error: 'invalid-input' });
   });
+});
+
+it("keeps sampled activation and gesture booleans out of work board and workflow handlers", () => {
+  for (const path of ["../domains/work-board.ts", "../domains/work-approvals.ts", "../workflow-template-handlers.ts"]) {
+    const source = readFileSync(new URL(path, import.meta.url), "utf8");
+    expect(source, path).not.toMatch(/\b(?:userActivation|hasUserKeyboardIntent|ipcUserKeyboardIntent|hasActiveUserGesture)\b|\b(?:intent|gesture|userGesture|userIntent)\??:\s*boolean\b/u);
+  }
 });

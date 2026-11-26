@@ -1,4 +1,8 @@
-/** English message catalog, grouped by namespace. */
+/** English message ca    workItemCreatedInProject: "Work item created in {project}",
+    openProjectRunDescription: "Open the project to view the run and respond to its approvals.",
+    openInProject: "Open in {project}",
+    projectUnavailable: "This project is no longer available.",
+talog, grouped by namespace. */
 export const en = {
   "memoryMap.noMemories": "No eligible memories yet. Save a memory, then rebuild the map.",
   "memoryMap.ask": "Ask your memory…",
@@ -97,6 +101,7 @@ export const en = {
   "reasonCodes.scope-changed": "The template scope changed. Attach the schedule again.",
   "reasonCodes.project-mismatch": "The project differs from the approved project.",
   "reasonCodes.scope-not-authorised": "The approved scope is no longer authorised.",
+  "reasonCodes.workflow-start-failed": "The workflow could not start.",
   "reasonCodes.output-not-declared": "This output tool and owner are not declared by the template.",
   "reasonCodes.source-not-authorised": "This run was not started by an approved action.",
   "reasonCodes.pin-mismatch": "The template version differs from the one that was approved.",

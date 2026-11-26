@@ -14,7 +14,7 @@ import { stageDisplayName } from "./workflow-template-graph.js";
 export function workflowDecisionKey(review: PendingWorkflowDecision): string {
   return review.kind === "stage-gate"
     ? `${review.binding.runId}:${review.binding.stageId}:${review.binding.attempt}:${review.binding.resultHash}:${review.binding.outputHash ?? ""}`
-    : `${review.binding.runId}:${review.binding.joinId}:${review.generation}:${review.binding.conflictHash}`;
+    : `${review.binding.runId}:${review.binding.joinId}:${review.binding.generation}:${review.binding.conflictHash}`;
 }
 
 export function WorkflowDecisionCard({ review, itemId, stageName, api, onChanged }: {
@@ -33,7 +33,7 @@ export function WorkflowDecisionCard({ review, itemId, stageName, api, onChanged
   const [error, setError] = useState<string>();
   const disabled = busy || submitted;
   const decisionProps = (decision: WorkPlanDecision | StageJoinDecideInput["decision"]) =>
-    workBoardDecisionProps(review.kind === "stage-gate" ? WORK_BOARD.decideStage : WORK_BOARD.decideJoin, itemId, { ...review.binding, decision });
+    workBoardDecisionProps(review.kind === "stage-gate" ? WORK_BOARD.decideStage : WORK_BOARD.decideJoin, itemId, { ...review.binding, decision, ...(review.kind === "stage-gate" && decision === "request_changes" && { note: note.trim() }) });
 
   async function handleOpenJoin() {
     if (review.kind !== "join-conflict" || disabled) return;

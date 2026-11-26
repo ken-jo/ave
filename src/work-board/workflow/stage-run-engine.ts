@@ -19,7 +19,7 @@ import { projectRootEquals } from "../../shared/project-identity.js";
 import { errorMessage } from "../../shared/error-message.js";
 import {
   MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId,
-  type StageGateDecideInput, type StageGateDecideResult, type StageJoinDecideInput, type StageJoinDecideResult, type OpenJoinResult, type StageRetryResult,
+  type StageRetryInput, type StageGateDecideInput, type StageGateDecideResult, type StageJoinDecideInput, type StageJoinDecideResult, type OpenJoinResult, type StageRetryResult,
   type WorkBoardCancelResult, type WorkBoardRunEvent, type WorkBoardSteerAck, type WorkBoardSteerResult, type WorkItem, type WorkItemResolved,
   type WorkItemRunResult, type WorkItemUpdateResult,
 } from "../../shared/work-board-types.js";
@@ -114,7 +114,7 @@ export interface StageRunEngine {
   decideGate(itemId: number, i: StageGateDecideInput, o: { approvalSurface: WebContents | null }): Promise<StageGateDecideResult>;
   decideJoin(itemId: number, i: StageJoinDecideInput, o: { approvalSurface: WebContents | null }): Promise<StageJoinDecideResult>;
   openJoin(itemId: number, i: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
-  retryStage(itemId: number, i: { runId: string; stageId: string }, o: { approvalSurface: WebContents | null }): Promise<StageRetryResult>;
+  retryStage(itemId: number, i: StageRetryInput, o: { approvalSurface: WebContents | null }): Promise<StageRetryResult>;
   /** Start whatever is ready in a run that has no live child (after a restart). Not a retry: no attempt is used. */
   continueRun(itemId: number, i: { runId: string }, o: { approvalSurface: WebContents | null }): Promise<StageRetryResult>;
   /** Interrupt every live stage child of runs on that project and fail those stages `workspace-revoked`. */
@@ -1339,7 +1339,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const join = (record.stageJoins ?? []).find(candidate => candidate.joinId === i.joinId);
       if (!join) return "not_found";
       if (join.status !== "conflict" || !join.conflict || !decidable(itemId)) return "not_pending";
-      return join.conflict.conflictHash === i.conflictHash ? null : "conflict_mismatch";
+      return join.conflict.conflictHash === i.conflictHash && (join.conflictGeneration ?? 0) === i.generation ? null : "conflict_mismatch";
     });
     return reason === null ? { ok: true } : { ok: false, reason };
   }
@@ -1350,18 +1350,18 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const record = await records.get(itemId, input.runId);
     const join = record?.stageJoins?.find(candidate => candidate.joinId === input.joinId);
     if (!record || record.settled || join?.status !== "conflict" || !join.conflict || unconfirmed.has(input.runId)) return { ok: false, reason: "not_pending" };
-    if (join.conflict.conflictHash !== input.conflictHash) return { ok: false, reason: "conflict_mismatch" };
+    if (join.conflict.conflictHash !== input.conflictHash || (join.conflictGeneration ?? 0) !== input.generation) return { ok: false, reason: "conflict_mismatch" };
     const root = await runProjectOf(record.runStartedBy);
     if (!root || !deps.resolveProjectRoot(root) || record.runWorkspace?.kind !== "git") return { ok: false, reason: "join-folder-unavailable" };
     const ref: RunRef = { itemId, runId: input.runId, runKey: runKeyOf(itemId, input.runId), projectRoot: root };
     return await workspace.openJoinFolder(ref, open) ? { ok: true } : { ok: false, reason: "join-folder-unavailable" };
   }
 
-  async function retryStage(itemId: number, i: { runId: string; stageId: string }, o: { approvalSurface: WebContents | null }): Promise<StageRetryResult> {
+  async function retryStage(itemId: number, i: StageRetryInput, o: { approvalSurface: WebContents | null }): Promise<StageRetryResult> {
     const reason = await decide(itemId, i.runId, o.approvalSurface, { type: "retry_requested", stageId: i.stageId }, (record) => {
       const run = record.stageRuns.find(candidate => candidate.stageId === i.stageId);
       if (!run) return "not_found";
-      if (run.status !== "failed" || !decidable(itemId)) return "not_pending";
+      if (run.attempt !== i.attempt || run.status !== "failed" || !decidable(itemId)) return "not_pending";
       return run.attempt >= MAX_STAGE_ATTEMPTS ? "attempts_exhausted" : null;
     });
     return reason === null ? { ok: true } : { ok: false, reason };

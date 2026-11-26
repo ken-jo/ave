@@ -1028,6 +1028,7 @@ export type AvePreloadApi = {
   >;
   addWorkBoardItem: (
     input: import("../../shared/work-board-types.js").WorkItemCreateInput,
+    launch?: import("../../shared/work-board-types.js").TemplateRunRequest,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkItemCreateResult
     | { ok: false; error: string }
@@ -1091,7 +1092,6 @@ export type AvePreloadApi = {
   runWorkBoardItem: (
     id: number,
     opts?: { agentName?: string; template?: import("../../shared/work-board-types.js").TemplateRunRequest },
-    userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkItemRunResult
     | { ok: false; error: string }

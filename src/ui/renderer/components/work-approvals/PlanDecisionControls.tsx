@@ -246,7 +246,7 @@ export function PlanDecisionControls({ api, itemId, runId, planHash, stale, onDe
         <span className="shrink-0 tabular-nums" data-testid={`${p}-note-count`}>{note.length} / {MAX_PLAN_NOTE_LENGTH}</span>
       </div>
       <div className="flex flex-wrap justify-end gap-1.5">
-        <Button variant="outline" size="sm" disabled={busy} {...workBoardDecisionProps(WORK_BOARD.decidePlan, itemId, { runId, planHash, decision: "reject" })} onClick={() => void decide("reject")} data-testid={`${p}-reject`}>
+        <Button variant="outline" size="sm" disabled={busy} {...workBoardDecisionProps(WORK_BOARD.decidePlan, itemId, { runId, planHash, decision: "reject", ...(note.trim() && { note: note.trim() }) })} onClick={() => void decide("reject")} data-testid={`${p}-reject`}>
           {spinner("reject")}
           {label("reject", t("workBoard.planDecisionReject"))}
         </Button>
@@ -255,7 +255,7 @@ export function PlanDecisionControls({ api, itemId, runId, planHash, stale, onDe
           size="sm"
           disabled={busy}
           autoFocus={stale}
-          {...workBoardDecisionProps(WORK_BOARD.decidePlan, itemId, { runId, planHash, decision: "request_changes" })}
+          {...workBoardDecisionProps(WORK_BOARD.decidePlan, itemId, { runId, planHash, decision: "request_changes", ...(note.trim() && { note: note.trim() }) })}
           onClick={() => void decide("request_changes")}
           data-testid={`${p}-request-changes`}
         >
@@ -270,7 +270,7 @@ export function PlanDecisionControls({ api, itemId, runId, planHash, stale, onDe
           aria-disabled={stale ? true : undefined}
           className={stale ? "opacity-(--opacity-disabled) cursor-not-allowed" : undefined}
           title={stale ? t("workBoard.planDecisionStale") : undefined}
-          {...workBoardDecisionProps(WORK_BOARD.decidePlan, itemId, { runId, planHash, decision: "approve" })}
+          {...workBoardDecisionProps(WORK_BOARD.decidePlan, itemId, { runId, planHash, decision: "approve", ...(note.trim() && { note: note.trim() }) })}
           onClick={() => void decide("approve")}
           data-testid={`${p}-approve`}
         >

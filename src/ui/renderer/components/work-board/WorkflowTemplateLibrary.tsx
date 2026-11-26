@@ -7,7 +7,8 @@ import { Label } from "../../../../components/ui/label.js";
 import { Textarea } from "../../../../components/ui/textarea.js";
 import { formatMediumDateTime } from "../../../../shared/format-time.js";
 import { useTranslation } from "../../../../i18n/react.js";
-import type { UserKeyboardIntentSnapshot } from "../../../../shared/chat-origin.js";
+import { WORK_BOARD } from "../../../../shared/ipc-channels.js";
+import { workBoardDecisionProps } from "../../../../shared/work-board-decision-intent.js";
 import type { ProjectIdentity } from "../../../../shared/project-identity.js";
 import type { WorkItemResolved } from "../../../../shared/work-board-types.js";
 import type { TemplateVersion, WorkflowTemplate, WorkflowTemplateDraftInput, WorkflowTemplateRecord } from "../../../../shared/workflow-template-types.js";
@@ -32,7 +33,7 @@ interface WorkflowTemplateLibraryProps {
   existingItem?: WorkItemResolved;
   onClose: () => void;
   restoreFocus: () => void;
-  onLaunch: (item: WorkItemResolved, version: TemplateVersion, intent: UserKeyboardIntentSnapshot) => void;
+  onLaunch: (item: WorkItemResolved, version: TemplateVersion) => void;
 }
 
 export function WorkflowTemplateLibrary({ api, project, projects, existingItem, onClose, restoreFocus, onLaunch }: WorkflowTemplateLibraryProps) {
@@ -296,16 +297,21 @@ function WorkflowStartForm({ api, template, version, project, projects, existing
   const [error, setError] = useState<string>();
   const eligible = existingItem ? scope.kind === "all" || scope.projectRoot === existingItem.projectRoot : chosen !== undefined;
 
+  const projectRoot = existingItem ? existingItem.projectRoot : chosen?.projectRoot;
+  const launch = { templateId: version.templateId, version: version.version, graphHash: version.graphHash, projectRoot };
+  const createInput = {
+    templateId: template.id, title: title.trim(), ...(detail.trim() && { detail: detail.trim() }),
+    projectRoot: chosen?.projectRoot, projectName: chosen?.projectName,
+  };
+  const launchControl = existingItem
+    ? workBoardDecisionProps(WORK_BOARD.run, existingItem.id, { template: launch })
+    : workBoardDecisionProps(WORK_BOARD.add, createInput, launch);
+
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     if (sendingRef.current || !eligible || !title.trim() || template.archivedAt) return;
-    const intent = api.captureUserKeyboardIntent();
-    if (!intent.token) {
-      setError("reasonCodes.user-gesture-required");
-      return;
-    }
     if (existingItem) {
-      onLaunch(existingItem, version, intent);
+      onLaunch(existingItem, version);
       return;
     }
     if (!chosen) return;
@@ -314,15 +320,12 @@ function WorkflowStartForm({ api, template, version, project, projects, existing
     onBusyChange(true);
     setError(undefined);
     try {
-      const result = await api.addWorkBoardItem({
-        templateId: template.id, title: title.trim(), ...(detail.trim() && { detail: detail.trim() }),
-        projectRoot: chosen.projectRoot, projectName: chosen.projectName,
-      });
+      const result = await api.addWorkBoardItem(createInput, launch);
       if ("status" in result && result.status === "created") {
         if (result.item.projectRoot !== chosen.projectRoot || result.item.templateId !== template.id) {
           setError("workflowTemplates.runFailed");
-        } else onLaunch(result.item, version, intent);
-      } else setError("workBoard.errorAddFailed");
+        } else onLaunch(result.item, version);
+      } else setError("reason" in result && result.reason === "user-gesture-required" ? "reasonCodes.user-gesture-required" : "workBoard.errorAddFailed");
     } catch {
       setError("workflowTemplates.runFailed");
     } finally {
@@ -333,7 +336,7 @@ function WorkflowStartForm({ api, template, version, project, projects, existing
   }
 
   return (
-    <form className="min-w-0 space-y-3" onSubmit={event => void handleSubmit(event)}>
+    <form className="min-w-0 space-y-3" {...launchControl} onSubmit={event => void handleSubmit(event)}>
       <h2 className="break-words text-base font-semibold">{stageDisplayName(template.name)} · {t("workflowTemplates.version", { version: version.version })}</h2>
       <p className="text-sm text-muted-foreground">{t("workflowTemplates.runDescription")}</p>
       <WorkflowStageGraph graph={version} />

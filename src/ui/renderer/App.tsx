@@ -1296,7 +1296,7 @@ export function App() {
     followProject(focusedSessionRoot);
   }, [currentSessionId, focusedSessionRoot, projectSelection.selection === undefined, followProject]);
   surfaceProjectRootRef.current = (activeProject ?? defaultWorkspaceProject)?.projectRoot;
-  const workBoardProjectRoot = projectSelection.selection ? surfaceProjectRootRef.current : undefined;
+  const workBoardProjectRoot = projectSelection.selection?.kind === "root" ? projectSelection.selection.root : undefined;
   useLayoutEffect(() => {
     void api.setWorkBoardProjectScope(workBoardProjectRoot);
   }, [api, workBoardProjectRoot]);
@@ -1616,6 +1616,12 @@ export function App() {
   // opens in its own project's home, so the window switches to that project first; a shared item opens in the project being viewed.
   const [workApprovalFocusKey, setWorkApprovalFocusKey] = useState<string | null>(null);
   const [workApprovalShowAll, setWorkApprovalShowAll] = useState(false);
+  const openBoardProject = useCallback((root: string): boolean => {
+    const project = findWorkspaceProject(workspaceProjectsRef.current, root);
+    if (!project) return false;
+    projectSelectionRef.current.selectRoot(project.projectRoot);
+    return true;
+  }, []);
   const openWorkApprovals = useCallback((target: { key: string; projectRoot: string | undefined } | "all") => {
     handleViewSelectWithDoctor("work-board");
     if (target === "all") {
@@ -1624,12 +1630,10 @@ export function App() {
     }
     // Only a project that is still open is selected; a shared item opens in the project being viewed.
     if (target.projectRoot !== undefined) {
-      const project = findWorkspaceProject(workspaceProjectsRef.current, target.projectRoot);
-      // An explicit row jump leaves the all-projects view on purpose (board 15: "그 프로젝트 홈으로 이동"), unlike followProject.
-      if (project) projectSelectionRef.current.selectRoot(project.projectRoot);
+      if (!openBoardProject(target.projectRoot)) return;
     }
     setWorkApprovalFocusKey(target.key);
-  }, [handleViewSelectWithDoctor]);
+  }, [handleViewSelectWithDoctor, openBoardProject]);
   // "스케줄에서 열기": the routine surface, scrolled to and focusing that routine.
   const [routineFocusId, setRoutineFocusId] = useState<string | null>(null);
   const openRoutine = useCallback((routineId: string) => {
@@ -2205,6 +2209,9 @@ export function App() {
           api={api}
           project={activeProject ?? defaultWorkspaceProject}
           projects={workspaceProjects}
+          allProjects={projectSelection.selection?.kind === "all"}
+          onOpenProject={openBoardProject}
+          onOpenApproval={(key, projectRoot) => openWorkApprovals({ key, projectRoot })}
           focusItemId={workBoardFocusItemId}
           onFocusConsumed={() => setWorkBoardFocusItemId(null)}
           approvalFocusKey={workApprovalFocusKey}

@@ -46,8 +46,7 @@ export function pendingWorkflowDecisions(run: WorkflowRunRecord): PendingWorkflo
     const { conflictHash, reason, files, excerpt } = join.conflict;
     pending.push({
       kind: "join-conflict",
-      binding: { runId: run.runId, joinId: join.joinId, conflictHash },
-      generation: join.conflictGeneration ?? 0,
+      binding: { runId: run.runId, joinId: join.joinId, conflictHash, generation: join.conflictGeneration ?? 0 },
       ...(run.runWorkspace?.kind === "git" && { canOpenFolder: true }),
       evidence: {
         reason, files: files.map(file => ({ path: maskWorkflowText(file.path), stageIds: [...file.stageIds] })),

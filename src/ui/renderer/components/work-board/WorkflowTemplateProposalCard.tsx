@@ -1,3 +1,5 @@
+import { WORK_BOARD } from "../../../../shared/ipc-channels.js";
+import { workBoardDecisionProps } from "../../../../shared/work-board-decision-intent.js";
 import { useRef, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../../components/ui/dialog.js";
@@ -102,7 +104,7 @@ export function WorkflowTemplateProposalCard({ name, result, completed }: {
             <Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={busy}>{t("workBoard.cancelButton")}</Button>
             {!editing && <>
               {proposal && <Button type="button" variant="outline" disabled={busy} onClick={() => setEditing(true)}>{t("workflowTemplates.editProposal")}</Button>}
-              <Button type="button" onClick={() => void handleConfirm()} disabled={!proposal || busy}>
+              <Button type="button" {...(proposal && workBoardDecisionProps(WORK_BOARD.templateConfirm, proposal.id, { expectedGraphHash: proposal.graphHash, expectedDraftRevision: proposal.id }))} onClick={() => void handleConfirm()} disabled={!proposal || busy}>
                 {t("workflowTemplates.confirmSave")}
               </Button>
             </>}

@@ -28,6 +28,7 @@ import {
   Dialog,
   DialogClose,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -48,8 +49,7 @@ import type {
   WorkItemUpdateInput,
 } from "../../../shared/work-board-types.js";
 import type { WorkBoardToolApprovalSurface } from "../../../shared/work-board-types.js";
-import type { ProjectIdentity } from "../../../shared/project-identity.js";
-import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
+import { findWorkspaceProject, projectIdentityFromPayload, projectRootEquals, type ProjectIdentity } from "../../../shared/project-identity.js";
 import type { TemplateVersion } from "../../../shared/workflow-template-types.js";
 import { localDateKey, localDayStart } from "../../../shared/local-date.js";
 import { formatLocalClock } from "../../../shared/format-time.js";
@@ -86,6 +86,9 @@ export interface WorkBoardPanelProps {
   api: AveApi;
   project?: ProjectIdentity;
   projects?: readonly ProjectIdentity[];
+  allProjects?: boolean;
+  onOpenProject?: (root: string) => boolean;
+  onOpenApproval?: (key: string, root: string | undefined) => void;
   /** An item another surface asked the board to open — the sidebar's conversation row. The board opens the item's detail with
    * its latest run transcript expanded, then reports the request consumed. */
   focusItemId?: number | null;
@@ -1702,10 +1705,11 @@ function UnreadableRunCards({ runs, onDiscard }: { runs: readonly WorkItemUnread
 }
 
 export function WorkBoardPanel({
-  api, project, projects, focusItemId, onFocusConsumed, approvalFocusKey, onApprovalFocusConsumed, approvalShowAll, onApprovalShowAllConsumed,
+  api, project, projects, allProjects, onOpenProject, onOpenApproval, focusItemId, onFocusConsumed, approvalFocusKey, onApprovalFocusConsumed, approvalShowAll, onApprovalShowAllConsumed,
   onOpenRoutine, onOpenSchedule, onOpenSession,
 }: WorkBoardPanelProps) {
   const projectRoot = project?.projectRoot;
+  const scopeRoot = allProjects ? undefined : projectRoot;
   const [showSchedule, setShowSchedule] = useState(() => readShowSchedule(projectRoot));
   useEffect(() => { setShowSchedule(readShowSchedule(projectRoot)); }, [projectRoot]);
   // This week (for the finished-runs bundle) through the next five weeks (so a monthly item still has a next run). Recomputed when
@@ -1741,6 +1745,7 @@ export function WorkBoardPanel({
   const [showCreate, setShowCreate] = useState(false);
   const [workflowDialog, setWorkflowDialog] = useState<
     { kind: "library"; item?: WorkItemResolved } | { kind: "run"; item: WorkItemResolved; requestedVersion?: TemplateVersion }
+    | { kind: "launch-notice"; item: WorkItemResolved; version: TemplateVersion; target: ProjectIdentity; opening?: boolean; failed?: boolean }
   >();
   const workflowTrigger = useRef<HTMLElement | null>(null);
   const restoreWorkflowFocus = useRef(false);
@@ -1931,14 +1936,24 @@ export function WorkBoardPanel({
     : undefined;
   const visibleRunItems = useMemo(() => workflowItem && !workflowItemInBoard ? [...items, workflowItem] : items, [items, workflowItem, workflowItemInBoard]);
   const { runState, runItem, steer, stop } = useWorkBoardRun(api, visibleRunItems, refresh);
-  const launchWorkflow = (item: WorkItemResolved, version: TemplateVersion, intent: UserKeyboardIntentSnapshot) => {
-    runItem(item.id, {
+  const launchWorkflow = (item: WorkItemResolved, version: TemplateVersion) => {
+    const existing = workflowDialog?.kind === "library" && workflowDialog.item !== undefined;
+    if (existing) runItem(item.id, {
       templateId: version.templateId, version: version.version, graphHash: version.graphHash,
       ...(item.projectRoot !== undefined && { projectRoot: item.projectRoot }),
-    }, intent);
-    setWorkflowDialog({ kind: "run", item, requestedVersion: version });
+    });
+    const target = findWorkspaceProject(projects ?? [], item.projectRoot) ?? projectIdentityFromPayload(item);
+    if (target && !projectRootEquals(scopeRoot, target.projectRoot)) {
+      setWorkflowDialog({ kind: "launch-notice", item, version, target });
+    } else {
+      setWorkflowDialog({ kind: "run", item, requestedVersion: version });
+    }
     void refresh();
   };
+  useEffect(() => {
+    if (workflowDialog?.kind !== "launch-notice" || !workflowDialog.opening || !projectRootEquals(scopeRoot, workflowDialog.target.projectRoot)) return;
+    setWorkflowDialog({ kind: "run", item: workflowDialog.item, requestedVersion: workflowDialog.version });
+  }, [scopeRoot, workflowDialog]);
   const { byItem: toolApprovals, surface: approvalSurfaceValue } = useBoardApprovals(visibleRunItems, runState);
   const approvalSurface = useToolApprovalSurface(api);
 
@@ -2352,6 +2367,7 @@ export function WorkBoardPanel({
             api={api}
             project={project}
             actions={approvalActions}
+            onOpenApproval={onOpenApproval}
             focusKey={stackHidden ? undefined : approvalFocusKey}
             onFocusConsumed={onApprovalFocusConsumed}
             showAllRequest={stackHidden ? undefined : approvalShowAll}
@@ -2423,6 +2439,21 @@ export function WorkBoardPanel({
       {workflowDialog?.kind === "library" && (
         <WorkflowTemplateLibrary api={api} project={project} projects={projects ?? (project ? [project] : [])}
           existingItem={workflowDialog.item} onClose={closeWorkflowDialog} restoreFocus={focusWorkflowTrigger} onLaunch={launchWorkflow} />
+      )}
+      {workflowDialog?.kind === "launch-notice" && (
+        <Dialog open onOpenChange={open => { if (!open) closeWorkflowDialog(); }}>
+          <DialogContent onCloseAutoFocus={event => { event.preventDefault(); focusWorkflowTrigger(); }}>
+            <DialogTitle>{t("workflowTemplates.workItemCreatedInProject", { project: workflowDialog.target.projectName })}</DialogTitle>
+            <DialogDescription>{t("workflowTemplates.openProjectRunDescription")}</DialogDescription>
+            {workflowDialog.failed && <p role="alert">{t("workflowTemplates.projectUnavailable")}</p>}
+            <DialogFooter>
+              <Button type="button" disabled={workflowDialog.opening} onClick={() => {
+                const opening = onOpenProject?.(workflowDialog.target.projectRoot) === true;
+                setWorkflowDialog({ ...workflowDialog, opening, failed: !opening });
+              }}>{t("workflowTemplates.openInProject", { project: workflowDialog.target.projectName })}</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
       {workflowDialog?.kind === "run" && workflowItem && (
         <WorkflowRunDialog api={api} item={workflowItem} run={runState[workflowItem.id]} requestedVersion={workflowDialog.requestedVersion}

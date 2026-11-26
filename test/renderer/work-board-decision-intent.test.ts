@@ -48,3 +48,23 @@ it("takes a receipt only for the action on the trusted click's button", async ()
     [WORK_BOARD.decideStage, 7, input],
   ]);
 });
+
+it("captures a trusted launch form submission without sampling browser activation", async () => {
+  vi.resetModules();
+  vi.stubGlobal("navigator", { userActivation: { isActive: false } });
+  const listen = vi.spyOn(window, "addEventListener");
+  const { invokeWorkBoardDecision } = await import("../../src/preload/work-board-decision-intent.js");
+  const capture = listen.mock.calls.find(([event]) => event === "submit")?.[1] as EventListener;
+  const form = document.createElement("form");
+  const item = { title: "Report", templateId: "report", projectRoot: "/example" };
+  const launch = { graphHash: "a".repeat(64), templateId: "report", version: 2, projectRoot: "/example" };
+  const binding = workBoardDecisionKey(WORK_BOARD.add, item, launch);
+  form.setAttribute(WORK_BOARD_DECISION_ATTRIBUTE, binding);
+  capture({ isTrusted: true, target: form, eventPhase: Event.BUBBLING_PHASE } as unknown as Event);
+  invoke.mockClear();
+  await invokeWorkBoardDecision(WORK_BOARD.add, item, launch);
+  expect(invoke.mock.calls).toEqual([
+    [WORK_BOARD.captureDecisionIntent, expect.any(String), binding],
+    [WORK_BOARD.add, item, launch, invoke.mock.calls[0][1]],
+  ]);
+});

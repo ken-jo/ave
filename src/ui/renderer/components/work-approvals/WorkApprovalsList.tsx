@@ -6,7 +6,7 @@ import { Badge } from "../../../../components/ui/badge.js";
 import type { AveApi } from "../../types.js";
 import type { WorkApprovalProject, WorkApprovalView } from "../../../../shared/work-approvals-types.js";
 import type { WorkApprovalsState } from "../../hooks/use-work-approvals.js";
-import { approvalAge, isCounted, isShared, kindLabel, projectLabel, proposalSource, sortByArrival } from "./WorkApprovalStack.js";
+import { approvalAge, approvalProjectRoot, isCounted, isShared, kindLabel, projectLabel, proposalSource, sortByArrival } from "./WorkApprovalStack.js";
 
 export interface WorkApprovalsProps {
   api: Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged">;
@@ -19,7 +19,7 @@ export interface WorkApprovalsProps {
   now?: () => number;
 }
 
-function rowSubtitle(item: WorkApprovalView): string {
+function rowSubtitle(item: Exclude<WorkApprovalView, { kind: "navigation" }>): string {
   if (item.kind === "plan") return t("workApprovals.planSource");
   if (item.kind === "proposal") return proposalSource(item);
   if (item.kind === "stage-gate" || item.kind === "join-conflict") return kindLabel(item);
@@ -53,6 +53,7 @@ export function WorkApprovalsList({ state, projectRoot, onOpenItem, onOpenAll, n
     [projectRoot, state],
   );
   const clock = now();
+  const projects = state.status === "ready" ? state.projects : [];
   const total = state.status === "ready" ? state.total : 0;
   return <section data-testid="notification-approvals">
     {state.status === "error" && <p className="px-3 py-2 text-sm text-destructive" data-testid="work-approvals-list-error">{formatIpcError(state.error, undefined)}</p>}
@@ -74,7 +75,7 @@ export function WorkApprovalsList({ state, projectRoot, onOpenItem, onOpenAll, n
                   <li key={item.key}>
                     <button
                       type="button"
-                      onClick={() => onOpenItem(item.key, item.scope.type === "project" ? item.scope.projectRoot : undefined)}
+                      onClick={() => onOpenItem(item.key, approvalProjectRoot(item, projects))}
                       data-testid="work-approvals-popover-row"
                       data-approval-key={item.key}
                       className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
@@ -84,9 +85,9 @@ export function WorkApprovalsList({ state, projectRoot, onOpenItem, onOpenAll, n
                       </Badge>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm">{item.title}</span>
-                        <span className="block truncate text-dense text-muted-foreground">{rowSubtitle(item)}</span>
+                        {item.kind !== "navigation" && <span className="block truncate text-dense text-muted-foreground">{rowSubtitle(item)}</span>}
                       </span>
-                      <span className="shrink-0 text-dense text-muted-foreground">{approvalAge(item.arrivedAt, clock)}</span>
+                      {"arrivedAt" in item && <span className="shrink-0 text-dense text-muted-foreground">{approvalAge(item.arrivedAt, clock)}</span>}
                       <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
                     </button>
                   </li>

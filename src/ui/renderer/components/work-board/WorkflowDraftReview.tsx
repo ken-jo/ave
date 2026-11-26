@@ -1,3 +1,5 @@
+import { WORK_BOARD } from "../../../../shared/ipc-channels.js";
+import { workBoardDecisionProps } from "../../../../shared/work-board-decision-intent.js";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";
@@ -138,7 +140,7 @@ export function WorkflowDraftReview({ api, templateId, initialDraft, projects, o
             <Button type="button" variant="outline" disabled={busy || conflict} onClick={() => { setReview(undefined); setError(undefined); }}>
               {t("workflowTemplates.backToEditing")}
             </Button>
-            <Button type="button" disabled={busy || conflict} onClick={() => void handleConfirm()}>
+            <Button type="button" {...workBoardDecisionProps(WORK_BOARD.templateConfirm, review.template.id, { expectedGraphHash: reviewed.graphHash, expectedDraftRevision: reviewed.revision })} disabled={busy || conflict} onClick={() => void handleConfirm()}>
               {t("workflowTemplates.confirmVersion", { version: review.template.currentVersion + 1 })}
             </Button>
           </div>

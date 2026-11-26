@@ -421,7 +421,13 @@ export interface WorkBoardRunEvent {
 /** IPC forwards the engine event unchanged; this renderer-safe alias must remain the same wire shape. */
 export type RunProgressEventPayload = WorkBoardRunEvent;
 
-/** IPC forwards the engine result unchanged; not_found means an unknown item ID. */
+export interface WorkBoardRunFailure {
+  itemId: number;
+  reason: string;
+  at: string;
+}
+
+/** A terminal run result. Evidence is delivered to the window bound to the item's project. */
 export interface WorkItemRunResult {
   /** awaiting_approval: planning finished and the plan waits for the user's decision; the run resumes through decide-plan. */
   status: "completed" | "awaiting_approval" | "denied" | "not_found" | "error" | "already_running" | "cancelled";
@@ -448,6 +454,7 @@ export interface TemplateRunRequest {
 export interface StageRetryInput {
   runId: string;
   stageId: string;
+  attempt: number;
 }
 
 export interface StageGateDecideInput {
@@ -471,7 +478,7 @@ export type StageGateDecideIpcResult =
   | { ok: false; reason: StageGateRefusal | "user-gesture-required" | "invalid-input" | StageStoreRefusal };
 
 /** The user's decision on a join that could not be collected, bound to the conflict they saw. */
-export interface StageJoinDecideInput { runId: string; joinId: string; conflictHash: string; decision: "retry_merge" | "reject" }
+export interface StageJoinDecideInput { runId: string; joinId: string; conflictHash: string; generation: number; decision: "retry_merge" | "reject" }
 /** run_end_unconfirmed: the run's end is not yet written to the run file. runs_not_adopted: the runs a restart left are not taken over
  * yet. Both are shown by their reasonCodes text. */
 type StageRunRefusal = "not_found" | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "not_pending" | "version_missing" | "graph_mismatch";

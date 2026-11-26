@@ -9,7 +9,7 @@ interface SecuritySettingsOperation {
 }
 
 /** Main's receipt that one native input authorized one operation. */
-interface SecuritySettingsGestureProof {
+export interface SecuritySettingsGestureProof {
   readonly sequence: number;
   readonly receivedAt: number;
   readonly channel: string;
@@ -19,6 +19,7 @@ interface SecuritySettingsGestureProof {
 interface NativeInputReceipt {
   sequence: number;
   receivedAt: number;
+  spent: boolean;
 }
 
 function payloadDigest(payload: unknown): string {
@@ -35,7 +36,7 @@ function createSecuritySettingsGestureTracker() {
   const observed = new WeakSet<WebContents>();
   const latest = new WeakMap<WebContents, NativeInputReceipt>();
   let sequence = 0;
-  const record = (contents: WebContents) => { latest.set(contents, { sequence: ++sequence, receivedAt: now() }); };
+  const record = (contents: WebContents) => { latest.set(contents, { sequence: ++sequence, receivedAt: now(), spent: false }); };
   return {
     observe(contents: WebContents): void {
       if (observed.has(contents)) return;
@@ -53,12 +54,17 @@ function createSecuritySettingsGestureTracker() {
     /** Spend the latest native input on `operation`: a proof once, null for no input, a lapsed input or a spent one. */
     consume(contents: WebContents, operation: SecuritySettingsOperation): SecuritySettingsGestureProof | null {
       const receipt = latest.get(contents);
-      latest.delete(contents);
-      if (!receipt) return null;
+      if (!receipt || receipt.spent) return null;
+      receipt.spent = true;
       const age = now() - receipt.receivedAt;
       if (age < 0 || age > USER_GESTURE_LIFETIME_MS) return null;
       return Object.freeze({ sequence: receipt.sequence, receivedAt: receipt.receivedAt,
         channel: operation.channel, payloadDigest: payloadDigest(operation.payload) });
+    },
+    matches(contents: WebContents, proof: SecuritySettingsGestureProof, operation: SecuritySettingsOperation): boolean {
+      const age = now() - proof.receivedAt;
+      return latest.get(contents)?.sequence === proof.sequence && age >= 0 && age <= USER_GESTURE_LIFETIME_MS
+        && proof.channel === operation.channel && proof.payloadDigest === payloadDigest(operation.payload);
     },
   };
 }

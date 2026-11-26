@@ -1,4 +1,8 @@
-/** Korean message catalog, grouped by namespace. */
+/** Korean message cat    workItemCreatedInProject: "{project}에 작업 항목 생성 완료",
+    openProjectRunDescription: "실행을 확인하고 승인에 응답하려면 해당 프로젝트를 여세요.",
+    openInProject: "{project}에서 열기",
+    projectUnavailable: "이 프로젝트는 더 이상 사용할 수 없습니다.",
+alog, grouped by namespace. */
 import type { MessageCatalogKey } from "./en.js";
 
 export const ko: Record<MessageCatalogKey, string> = {
@@ -99,6 +103,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.scope-changed": "템플릿 범위가 변경되었습니다. 일정을 다시 연결하세요.",
   "reasonCodes.project-mismatch": "승인한 프로젝트와 다른 프로젝트입니다.",
   "reasonCodes.scope-not-authorised": "승인한 범위에 더 이상 접근할 권한이 없습니다.",
+  "reasonCodes.workflow-start-failed": "워크플로를 시작하지 못했습니다.",
   "reasonCodes.output-not-declared": "이 출력 도구와 소유자가 템플릿에 선언되지 않았습니다.",
   "reasonCodes.source-not-authorised": "승인된 동작으로 시작한 실행이 아닙니다.",
   "reasonCodes.pin-mismatch": "승인한 템플릿 버전과 다릅니다.",

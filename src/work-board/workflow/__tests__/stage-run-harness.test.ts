@@ -650,7 +650,7 @@ it("a child wait created after a failed relaunch settles at once", async () => {
     (await h.untilLive(1, id))[0].finish({ ok: false, summary: "failed", error: "failed" });
     expect(await run).toMatchObject({ status: "awaiting_approval" });
     const { runId } = await h.item(id);
-    expect(await h.engine.retryStage(id, { runId: runId ?? "", stageId: "a" })).toEqual({ ok: true });
+    expect(await h.engine.retryStage(id, { runId: runId ?? "", stageId: "a", attempt: 1 })).toEqual({ ok: true });
     await h.drainRunWork();
     expect(await h.stageRun(id, "a")).toMatchObject({ attempt: 2, status: "failed" });
 
@@ -660,7 +660,7 @@ it("a child wait created after a failed relaunch settles at once", async () => {
       status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/stage_failed/) }),
     })));
     // A refused retry or gate decision starts nothing, so the failure still stands.
-    expect(await h.engine.retryStage(id, { runId: "run-other", stageId: "a" })).toMatchObject({ ok: false });
+    expect(await h.engine.retryStage(id, { runId: "run-other", stageId: "a", attempt: 1 })).toMatchObject({ ok: false });
     expect(await h.engine.decideStageGate(id, { runId: "run-other", stageId: "a", attempt: 2, resultHash: "", decision: "approve" })).toMatchObject({ ok: false });
     await expect(Promise.race([h.untilSpawned(2, id), setImmediate("still pending")])).rejects.toThrow(/stage_failed/);
     expect(h.children).toHaveLength(1);
@@ -1095,7 +1095,7 @@ it("an accepted retry puts its item back in flight for aggregate child waits", a
     (await h.untilLive(1, other))[0].finish({ ok: false, summary: "failed", error: "failed" });
     expect(await runs[1]).toMatchObject({ status: "awaiting_approval" });
     const { runId } = await h.item(id);
-    const retry = h.engine.retryStage(id, { runId: runId ?? "", stageId: "a" });
+    const retry = h.engine.retryStage(id, { runId: runId ?? "", stageId: "a", attempt: 1 });
     await relaunching.promise;
     expect(await retry).toEqual({ ok: true });
     const wait = Promise.allSettled([h.untilLive(1)]);
@@ -1136,10 +1136,10 @@ it.each(["accepted", "refused"] as const)("a %s retry sets aside the item's stan
     expect(await runs[0]).toMatchObject({ status: "awaiting_approval" });
     const { runId } = await h.item(id);
     // The first retry's relaunch fails, which leaves a standing failure for the item.
-    expect(await h.engine.retryStage(id, { runId: runId ?? "", stageId: "a" })).toEqual({ ok: true });
+    expect(await h.engine.retryStage(id, { runId: runId ?? "", stageId: "a", attempt: 1 })).toEqual({ ok: true });
     await h.drainRunWork();
     await expect(h.untilLive(1, id)).rejects.toThrow(/stage_failed/);
-    const retry = h.engine.retryStage(id, { runId: outcome === "accepted" ? runId ?? "" : "run-other", stageId: "a" });
+    const retry = h.engine.retryStage(id, { runId: outcome === "accepted" ? runId ?? "" : "run-other", stageId: "a", attempt: 2 });
     const wait = Promise.allSettled([h.untilLive(1, id)]);
     if (outcome === "accepted") expect(await Promise.race([wait, setImmediate("still pending")])).toBe("still pending");
     expect(await retry).toMatchObject({ ok: outcome === "accepted" });
@@ -1240,7 +1240,7 @@ async function failedRelaunch(hold?: Promise<void>, read?: { armed: boolean; hel
   (await h.untilLive(1, id))[0].finish({ ok: false, summary: "failed", error: "failed" });
   expect(await run).toMatchObject({ status: "awaiting_approval" });
   const { runId = "" } = await h.item(id);
-  expect(await h.engine.retryStage(id, { runId, stageId: "a" })).toEqual({ ok: true });
+  expect(await h.engine.retryStage(id, { runId, stageId: "a", attempt: 1 })).toEqual({ ok: true });
   await h.drainRunWork();
   await expect(h.untilLive(1, id)).rejects.toThrow(/stage_failed/);
   return { h, version, id, runId };
@@ -1264,8 +1264,8 @@ it("a refused retry that overlaps an accepted one leaves the accepted retry's st
   const release = deferred<void>();
   const { h, id, runId } = await failedRelaunch(release.promise);
   try {
-    const refused = h.engine.retryStage(id, { runId: "run-other", stageId: "a" });
-    const retried = h.engine.retryStage(id, { runId, stageId: "a" });
+    const refused = h.engine.retryStage(id, { runId: "run-other", stageId: "a", attempt: 1 });
+    const retried = h.engine.retryStage(id, { runId, stageId: "a", attempt: 2 });
     expect(await refused).toMatchObject({ ok: false });
     expect(await retried).toEqual({ ok: true });
     const wait = Promise.allSettled([h.untilLive(1, id)]);
@@ -1305,7 +1305,7 @@ it("refused retries of a failed item leave an aggregate wait on another item's c
     runs.push(h.start(other, h.local(version)));
     await h.untilLive(1, other);
     const wait = Promise.allSettled([h.untilLive(2)]);
-    const refusals = await Promise.all([1, 2].map(() => h.engine.retryStage(id, { runId: "run-other", stageId: "a" })));
+    const refusals = await Promise.all([1, 2].map(() => h.engine.retryStage(id, { runId: "run-other", stageId: "a", attempt: 1 })));
     expect(refusals).toEqual([expect.objectContaining({ ok: false }), expect.objectContaining({ ok: false })]);
     expect(await Promise.race([wait, setImmediate("still pending")])).toBe("still pending");
   } finally {
@@ -1453,7 +1453,7 @@ it("an aggregate wait created while a refused retry runs takes the failure that 
     await expect(h.untilLive(1)).rejects.toThrow(/stage_failed/);
     read.armed = true;
     // A stage the run does not have passes the run read, so the refusal comes after it.
-    const refused = h.engine.retryStage(id, { runId, stageId: "missing" });
+    const refused = h.engine.retryStage(id, { runId, stageId: "missing", attempt: 1 });
     const wait = Promise.allSettled([h.untilLive(1)]);
     await held.promise;
     expect(await Promise.race([wait, refused, setImmediate("still pending")])).toBe("still pending");
@@ -1569,7 +1569,7 @@ it("an accepted join decision puts its item back in flight for aggregate child w
     const wait = Promise.allSettled([h.untilLive(1)]);
     const [join] = parked.stageJoins;
     expect(await h.engine.decideStageJoin(id, {
-      runId: parked.runId ?? "", joinId: join.joinId, conflictHash: join.conflict?.conflictHash ?? "", decision: "retry_merge",
+      runId: parked.runId ?? "", joinId: join.joinId, conflictHash: join.conflict?.conflictHash ?? "", generation: join.conflictGeneration ?? 0, decision: "retry_merge",
     })).toEqual({ ok: true });
     await h.drainRunWork();
     expect(await Promise.race([wait, setImmediate("still pending")])).toEqual([
@@ -1624,7 +1624,7 @@ it.each(["accepted", "refused"] as const)("a late %s call that closes after its 
     const { runId = "" } = await h.item(id);
     armed = true;
     holding = true;
-    const late = h.engine.retryStage(id, { runId: outcome === "accepted" ? runId : "run-other", stageId: "a" });
+    const late = h.engine.retryStage(id, { runId: outcome === "accepted" ? runId : "run-other", stageId: "a", attempt: 1 });
     await held.promise;
     h.makeEngine();
     // The first child was spawned before the replacement and counts; a child the replaced engine spawns later does not.

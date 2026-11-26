@@ -7,7 +7,6 @@ import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
 import type { AgentObservationEvent } from "../shared/agent-observation.js";
 import { WORK_BOARD } from "../shared/ipc-channels.js";
-import { USER_GESTURE_LIFETIME_MS } from "../shared/chat-origin.js";
 import type { AveApi, AvePreviewApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
@@ -801,27 +800,19 @@ describe("preload — plugin webview asset URLs", () => {
     }), "main");
   });
 
-  it("spends a workflow launch gesture once even after board item creation releases activation", async () => {
+  it("forwards workflow starts and confirmations without sampled activation when no action was captured", async () => {
     const api = await loadAveApi();
-    const capture = api.captureUserKeyboardIntent as AveApi["captureUserKeyboardIntent"];
     const run = api.runWorkBoardItem as AveApi["runWorkBoardItem"];
+    const confirm = api.confirmWorkflowTemplate as AveApi["confirmWorkflowTemplate"];
     const options = { template: { templateId: "report", version: 2, graphHash: "a".repeat(64) } };
-    vi.useFakeTimers();
+    const review = { expectedGraphHash: options.template.graphHash, expectedDraftRevision: "draft" };
+    mockUserActivation.isActive = true;
     try {
-      mockUserActivation.isActive = true;
-      const gesture = capture();
-      mockUserActivation.isActive = false;
-      await run(8, options, gesture);
-      expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.run, 8, options, { inputOrigin: "user-keyboard", userActivation: true });
-      mockUserActivation.isActive = true;
-      await run(8, options, gesture);
-      expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.run, 8, options, { inputOrigin: "user-keyboard", userActivation: false });
-      const expired = capture();
-      vi.advanceTimersByTime(USER_GESTURE_LIFETIME_MS);
-      await run(8, options, expired);
-      expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.run, 8, options, { inputOrigin: "user-keyboard", userActivation: false });
+      await run(8, options);
+      expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.run, 8, options);
+      await confirm("report", review);
+      expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "report", review);
     } finally {
-      vi.useRealTimers();
       mockUserActivation.isActive = false;
     }
   });

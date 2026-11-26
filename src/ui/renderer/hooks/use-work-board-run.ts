@@ -379,7 +379,7 @@ export function useWorkBoardRun(
   onPhaseEntered?: () => void,
 ): {
   runState: RunStateMap;
-  runItem: (id: number, template?: TemplateRunRequest, intent?: UserKeyboardIntentSnapshot) => void;
+  runItem: (id: number, template?: TemplateRunRequest) => void;
   /** Send a steer to the item's execute child. A queued steer is recorded as `sent`; a refusal records nothing. */
   steer: (
     id: number,
@@ -582,11 +582,11 @@ export function useWorkBoardRun(
   }, [api, items, update]);
 
   const runItem = useCallback(
-    (id: number, template?: TemplateRunRequest, intent?: UserKeyboardIntentSnapshot) => {
+    (id: number, template?: TemplateRunRequest) => {
       if (typeof api.runWorkBoardItem !== "function") return;
       // Optimistic: show a starting indicator before runStarted lands.
       resetRun(id, { busy: true });
-      const request = template ? api.runWorkBoardItem(id, { template }, intent) : api.runWorkBoardItem(id);
+      const request = template ? api.runWorkBoardItem(id, { template }) : api.runWorkBoardItem(id);
       const templateError = (code?: string) => {
         const key = `reasonCodes.${code}`;
         const translated = t(key);

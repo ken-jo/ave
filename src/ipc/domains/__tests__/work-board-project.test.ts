@@ -88,7 +88,7 @@ afterEach(async () => {
 
 describe("work-board project authorization", () => {
   it("passes the registered board main frame as the owner of runs and briefings", async () => {
-    const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" } };
+    const owner = workBoardTestSender();
     const other = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" } };
     const window = { isDestroyed: () => false, webContents: owner };
     const runItem = vi.fn(async () => ({ status: "completed" }));
@@ -99,6 +99,7 @@ describe("work-board project authorization", () => {
       getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps);
     const event = { sender: owner, senderFrame: owner.mainFrame };
+    await registeredHandler(WORK_BOARD.setProjectScope)(event, workspace);
     await registeredHandler(WORK_BOARD.run)(event, 7, { agentName: "writer", approvalSurface: other });
     await registeredHandler(WORK_BOARD.runBriefing)(event, "daily", workspace);
     expect(runItem).toHaveBeenCalledWith(7, { agentName: "writer", approvalSurface: owner });
@@ -135,16 +136,20 @@ describe("work-board project authorization", () => {
       period: "2026-07-04",
       reason: "no-items",
     }));
+    const owner = workBoardTestSender();
+    const window = { isDestroyed: () => false, webContents: owner };
+    const event = { sender: owner, senderFrame: owner.mainFrame };
     registerWorkBoardHandlers({
       workBoardStore: { list },
       workBoardReport: { generate },
       auditLogger: { log: vi.fn() },
-      getMainWindow: () => null,
-      getAppWindows: () => [],
+      getMainWindow: () => window,
+      getAppWindows: () => [window],
     } as unknown as IpcDeps);
 
-    await registeredHandler(WORK_BOARD.list)({});
-    await registeredHandler(WORK_BOARD.generateReport)({}, "daily", undefined);
+    await registeredHandler(WORK_BOARD.setProjectScope)(event, workspace);
+    await registeredHandler(WORK_BOARD.list)(event);
+    await registeredHandler(WORK_BOARD.generateReport)(event, "daily", undefined);
 
     expect(list).toHaveBeenCalledWith({
       projectRoot: workspace,
@@ -435,7 +440,7 @@ describe("missing run clear", () => {
     writeFileSync(join(root, "workflow-runs.json"), JSON.stringify({ version: 1, rowIdFloor: 2, runs: [] }));
     const store = new WorkBoardStore(path);
     const broadcast = vi.fn();
-    const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" }, send: broadcast };
+    const owner = Object.assign(workBoardTestSender(), { send: broadcast });
     const window = { isDestroyed: () => false, webContents: owner };
     const runItem = vi.fn();
     const clearMissingRun = vi.fn((id: number, input: { revision: string; runId: string }) => store.clearMissingRun(id, input.revision, input.runId));
@@ -444,6 +449,7 @@ describe("missing run clear", () => {
       auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps);
     const event = { sender: owner, senderFrame: owner.mainFrame };
+    await registeredHandler(WORK_BOARD.setProjectScope)(event, workspace);
     const shown = await store.get(1);
     if (shown.status !== "found") throw new Error("Missing item");
     expect(shown.item).toMatchObject({ runStatus: "error", templateRunError: "template-run-not-found" });

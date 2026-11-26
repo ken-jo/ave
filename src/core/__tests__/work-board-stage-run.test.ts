@@ -458,8 +458,9 @@ it("a retry is checked by the run authority before it spawns", () => withHarness
   (await h.untilLive(1))[0].finish({ ok: false, summary: "failed", error: "failed" });
   expect(await run).toMatchObject({ status: "awaiting_approval" });
   const item = await h.untilStage(id, "a", "failed");
+  expect(await h.engine.retryStage(id, { runId: item.runId ?? "", stageId: "a", attempt: 2 })).toEqual({ ok: false, reason: "not_pending" });
   h.unauthorised.add(A);
-  expect(await h.engine.retryStage(id, { runId: item.runId ?? "", stageId: "a" })).toEqual({ ok: true });
+  expect(await h.engine.retryStage(id, { runId: item.runId ?? "", stageId: "a", attempt: 1 })).toEqual({ ok: true });
   expect((await h.until(id, current => current.runStatus !== "executing")).runStatus).toBe("cancelled");
   expect(h.children).toHaveLength(1);
   expect(await h.settleEvent()).toMatchObject({ reasonCode: "scope-not-authorised" });
@@ -474,7 +475,7 @@ it("a retry whose stage folder is no longer the run's own fails the stage there 
   const item = await h.untilStage(id, "a", "failed");
   const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   try {
-    expect(await h.engine.retryStage(id, { runId: item.runId ?? "", stageId: "a" })).toEqual({ ok: true });
+    expect(await h.engine.retryStage(id, { runId: item.runId ?? "", stageId: "a", attempt: 1 })).toEqual({ ok: true });
     const ended = await h.until(id, current => current.stageRuns.some(stage => stage.stageId === "a" && stage.attempt === 2 && stage.status === "failed"));
     expect(ended.stageRuns.find(stage => stage.stageId === "a")).toMatchObject({ attempt: 2, status: "failed", failure: "error" });
     expect(warned.mock.calls.flat().map(String).some(text => text.includes("workspace-missing: workspace-identity-changed"))).toBe(true);

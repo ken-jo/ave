@@ -96,7 +96,7 @@ it("retry prepares a fresh folder", () => withProductionParts(async (h) => {
   first.finish({ ok: false, summary: "failed", error: "failed" });
   const item = await h.untilStage(id, "a", "failed");
   expect(existsSync(join(folderOf(first), "half-done.md"))).toBe(true);
-  expect(await h.engine.retryStage(id, { runId: item.runId ?? "", stageId: "a" })).toEqual({ ok: true });
+  expect(await h.engine.retryStage(id, { runId: item.runId ?? "", stageId: "a", attempt: 1 })).toEqual({ ok: true });
   const [, second] = await h.untilSpawned(2);
   expect((await h.stageRun(id, "a")).attempt).toBe(2);
   expect(folderOf(second)).toBe(folderOf(first));

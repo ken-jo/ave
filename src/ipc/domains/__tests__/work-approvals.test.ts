@@ -1,3 +1,6 @@
+import type { WebContents } from "electron";
+import { workBoardTestSender } from "../../../__tests__/support/work-board-ipc.js";
+import { setWorkBoardProjectScope } from "../../work-board-project-scope.js";
 // The work-approvals projection over real stores in a temp dir: which decisions a project sees, the all-project badge total, clear failures for
 // a missing source, and the change signal from every write path (IPC, briefing, scheduler).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -5,7 +8,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WORK_APPROVALS } from "../../../shared/ipc-channels.js";
-import { hostFrameEvent, untrustedEvent } from "../../../__tests__/test-helpers.js";
+import { HOST_FRAME_URL, untrustedEvent } from "../../../__tests__/test-helpers.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { WorkBoardStore, itemDigestOf, planHashOf } from "../../../main/work-board-store.js";
 import { RoutinesStore } from "../../../main/routines-store.js";
@@ -29,10 +32,10 @@ const DEFAULT_ROOT = "/work/default";
 
 vi.mock("../../../main/project-root-authorization.js", () => ({
   resolveAuthorizedWorkspaceProject: vi.fn((root?: string) => {
-    if (root === undefined || root === PROJECT_A) {
+    if (root === PROJECT_A) {
       return { authorized: true, project: { projectRoot: PROJECT_A, projectName: "project-a" } };
     }
-    if (root === DEFAULT_ROOT) {
+    if (root === undefined || root === DEFAULT_ROOT) {
       return { authorized: true, project: { projectRoot: DEFAULT_ROOT, projectName: "default", isDefault: true } };
     }
     return { authorized: false, project: null };
@@ -97,7 +100,14 @@ async function fileProposal(input: import("../../../shared/work-board-types.js")
   return proposal;
 }
 
-async function list(arg?: unknown, event = hostFrameEvent()): Promise<WorkApprovalListResult> {
+async function list(arg?: unknown, event?: unknown): Promise<WorkApprovalListResult> {
+  if (event === undefined) {
+    const sender = workBoardTestSender();
+    sender.mainFrame.url = HOST_FRAME_URL;
+    const projectRoot = arg && typeof arg === "object" && "projectRoot" in arg ? arg.projectRoot : DEFAULT_ROOT;
+    setWorkBoardProjectScope(sender as unknown as WebContents, projectRoot);
+    event = { sender, senderFrame: sender.mainFrame };
+  }
   const fn = handlers.get(WORK_APPROVALS.list);
   if (!fn) throw new Error("work-approvals list is not registered");
   return (await fn(event, arg)) as WorkApprovalListResult;
@@ -355,7 +365,7 @@ async function pendingPlan(title: string, projectRoot: string | undefined, plan 
 }
 
 function planKeys(items: WorkApprovalView[]): string[] {
-  return items.filter((item) => item.kind === "plan").map((item) => item.title).sort();
+  return items.filter((item) => item.kind === "plan" || (item.kind === "navigation" && item.targetKind === "plan")).map((item) => item.title).sort();
 }
 
 describe("work approvals — plan approvals", () => {
@@ -428,6 +438,7 @@ describe("work approvals — plan approvals", () => {
     if (!result.ok) throw new Error("list failed");
     expect(planKeys(result.items)).toEqual(["plan in A", "plan in default"]);
     expect(result.items).toHaveLength(3);
+    expect(result.items.every(item => item.kind === "navigation")).toBe(true);
     expect(result.total).toBe(3);
     expect(result.projects).toEqual([
       { projectRoot: DEFAULT_ROOT, projectName: "default", isDefault: true },

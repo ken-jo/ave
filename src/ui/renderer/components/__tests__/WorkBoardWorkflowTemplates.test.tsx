@@ -1,3 +1,4 @@
+import { useState } from "react";
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
@@ -36,7 +37,20 @@ const item: WorkItemResolved = {
 
 const project = { projectRoot: "/workspace/report", projectName: "Report workspace" };
 
-function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [template], queue: ApprovalRequest[] = []) {
+function SwitchableBoard({ api, projects, onOpened }: {
+  api: AveApi; projects: readonly typeof project[]; onOpened: (root: string) => void;
+}) {
+  const [current, setCurrent] = useState(project);
+  return <WorkBoardPanel api={api} project={current} projects={projects} onOpenProject={root => {
+    const next = projects.find(entry => entry.projectRoot === root);
+    if (!next) return false;
+    onOpened(root);
+    setCurrent(next);
+    return true;
+  }} />;
+}
+
+function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [template], queue: ApprovalRequest[] = [], projects = [project]) {
   let progress: (event: RunProgressEventPayload) => void = () => {};
   const api = {
     listWorkBoard: vi.fn(async (_filter?: { projectRoot?: string }) => ({ status: "ok", items })),
@@ -51,10 +65,9 @@ function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [
       ok: true, value: { template, versions: [older, version], draft: { ...input, graphHash, revision: "draft-a", updatedAt: at } },
     })),
     confirmWorkflowTemplate: vi.fn(async () => ({ ok: true, value: { ...version, version: 3 } })),
-    addWorkBoardItem: vi.fn(async () => ({ status: "created", itemId: 8, item: { ...item, ...project } })),
+    addWorkBoardItem: vi.fn(async (_input: unknown, _launch?: unknown) => ({ status: "created", itemId: 8, item: { ...item, ...project } })),
     completeWorkBoardItem: vi.fn(async () => ({ status: "completed", itemId: 8, item: { ...item, status: "completed" } })),
     runWorkBoardItem: vi.fn(async () => ({ status: "completed" })),
-    captureUserKeyboardIntent: vi.fn(() => ({ inputOrigin: "user-keyboard", token: "click" })),
     decideWorkStage: vi.fn(async () => ({ ok: true, status: "approved" })),
     decideWorkJoin: vi.fn(async () => ({ ok: true })),
     openWorkBoardJoin: vi.fn(async () => ({ ok: true })),
@@ -64,8 +77,9 @@ function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [
     onWorkBoardRunProgress: (callback: typeof progress) => { progress = callback; return () => {}; },
   };
   const surface = { ...approvalSurfaceStub(), queue };
-  render(withApprovalSurface(<WorkBoardPanel api={api as unknown as AveApi} project={project} />, surface));
-  return { api, surface, emit: (event: RunProgressEventPayload) => act(() => progress(event)) };
+  const openProject = vi.fn();
+  render(withApprovalSurface(<SwitchableBoard api={api as unknown as AveApi} projects={projects} onOpened={openProject} />, surface));
+  return { api, surface, openProject, emit: (event: RunProgressEventPayload) => act(() => progress(event)) };
 }
 
 async function templates() {
@@ -110,18 +124,40 @@ it("browses immutable versions and confirms an edited graph against the saved dr
   expect(api.confirmWorkflowTemplate).toHaveBeenCalledExactlyOnceWith(template.id, { expectedGraphHash: graphHash, expectedDraftRevision: "draft-a" });
 });
 
-it("creates and launches a board item with the displayed template pin and the click's captured intent", async () => {
+it("creates and launches a board item in one request with the displayed template pin", async () => {
   const { api } = mount();
   const library = await templates();
   fireEvent.click(await library.findByRole("button", { name: template.name }));
   fireEvent.click(await library.findByRole("button", { name: t("workflowTemplates.startRun") }));
   fireEvent.change(library.getByLabelText(t("workflowTemplates.workTitle")), { target: { value: "Wednesday report" } });
   fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.createAndRun") }));
-  await vi.waitFor(() => expect(api.runWorkBoardItem).toHaveBeenCalledExactlyOnceWith(8, { template: { ...pin, projectRoot: project.projectRoot } }, { inputOrigin: "user-keyboard", token: "click" }));
-  expect(api.addWorkBoardItem).toHaveBeenCalledExactlyOnceWith({ templateId: template.id, title: "Wednesday report", ...project });
+  await vi.waitFor(() => expect(api.addWorkBoardItem).toHaveBeenCalledExactlyOnceWith(
+    { templateId: template.id, title: "Wednesday report", ...project }, { ...pin, projectRoot: project.projectRoot },
+  ));
+  expect(api.runWorkBoardItem).not.toHaveBeenCalled();
   const run = within(await screen.findByRole("dialog", { name: "Wednesday report" }));
   expect(run.getByText(t("workflowTemplates.requestedVersion", { version: 2 }))).toBeVisible();
   expect(run.getByRole("list", { name: t("workflowTemplates.stageGraph") })).toHaveTextContent("Gather sources");
+});
+
+it("asks to open the target project before attaching a cross-project launch", async () => {
+  const target = { projectRoot: "/workspace/other", projectName: "Other workspace" };
+  const { api, openProject } = mount([], [template], [], [project, target]);
+  api.addWorkBoardItem.mockResolvedValue({ status: "created", itemId: 8, item: { ...item, ...target } });
+  const library = await templates();
+  fireEvent.click(await library.findByRole("button", { name: template.name }));
+  fireEvent.click(await library.findByRole("button", { name: t("workflowTemplates.startRun") }));
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.workTitle")), { target: { value: item.title } });
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.scope")), { target: { value: target.projectRoot } });
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.createAndRun") }));
+  const open = await screen.findByRole("button", { name: t("workflowTemplates.openInProject", { project: target.projectName }) });
+  expect(screen.queryByRole("dialog", { name: item.title })).toBeNull();
+  expect(openProject).not.toHaveBeenCalled();
+  expect(api.getWorkBoardItem).not.toHaveBeenCalled();
+  fireEvent.click(open);
+  expect(openProject).toHaveBeenCalledExactlyOnceWith(target.projectRoot);
+  await screen.findByRole("dialog", { name: item.title });
+  await vi.waitFor(() => expect(api.listWorkBoard).toHaveBeenLastCalledWith(expect.objectContaining({ projectRoot: target.projectRoot })));
 });
 
 it("shows parked work and labels only the model decisions reported by the live host", async () => {
@@ -152,7 +188,7 @@ it("retries only the failed stage observed for the displayed run", async () => {
   emit(failed);
   const retry = screen.getByRole("button", { name: t("workflowTemplates.retryStage") });
   fireEvent.click(retry);
-  expect(api.retryWorkStage).toHaveBeenCalledExactlyOnceWith(item.id, { runId: "run-a", stageId: "summarize" });
+  expect(api.retryWorkStage).toHaveBeenCalledExactlyOnceWith(item.id, { runId: "run-a", stageId: "summarize", attempt: 1 });
   await vi.waitFor(() => expect(retry).toBeDisabled());
   emit({ ...failed, attempt: 2, phase: "executing", runSessionId: "second-attempt" });
   expect(screen.queryByRole("button", { name: t("workflowTemplates.retryStage") })).toBeNull();
@@ -193,11 +229,11 @@ it("shows separate stage approval lanes in the run view and answers through the 
 
 it("reviews the result and conflict shown on the desktop before sending their exact bindings", async () => {
   const stage = { runId: "run-a", stageId: "summarize", attempt: 2, resultHash: "c".repeat(64) };
-  const join = { runId: "run-a", joinId: "step-1", conflictHash: "e".repeat(64) };
+  const join = { runId: "run-a", joinId: "step-1", generation: 1, conflictHash: "e".repeat(64) };
   const row = {
     ...item, runPin: pin, pendingWorkflowDecisions: [
       { kind: "stage-gate", binding: stage, result: "Review this exact result", arrivedAt: at },
-      { kind: "join-conflict", binding: join, generation: 1, canOpenFolder: true, evidence: { reason: "merge-conflict", files: [{ path: "shared.md", stageIds: ["gather", "summarize"] }] }, arrivedAt: null },
+      { kind: "join-conflict", binding: join, canOpenFolder: true, evidence: { reason: "merge-conflict", files: [{ path: "shared.md", stageIds: ["gather", "summarize"] }] }, arrivedAt: null },
     ],
   } as WorkItemResolved;
   const { api } = mount([row]);
@@ -289,15 +325,15 @@ it("moves focus to the run heading when the keyboard decision removes its card",
 });
 
 it("presents enabled controls for a reissued join conflict of the same files", async () => {
-  const first = { runId: "run-a", joinId: "step-1", conflictHash: graphHash };
-  const next = { ...first, conflictHash: "e".repeat(64) };
-  const pending: Extract<import("../../../../shared/workflow-run-view.js").PendingWorkflowDecision, { kind: "join-conflict" }> = { kind: "join-conflict", binding: first, generation: 1, arrivedAt: null,
+  const first = { runId: "run-a", joinId: "step-1", generation: 1, conflictHash: graphHash };
+  const next = { ...first, generation: 2, conflictHash: "e".repeat(64) };
+  const pending: Extract<import("../../../../shared/workflow-run-view.js").PendingWorkflowDecision, { kind: "join-conflict" }> = { kind: "join-conflict", binding: first, arrivedAt: null,
     evidence: { reason: "same-path", files: [{ path: "report.md", stageIds: ["gather", "summarize"] }] } };
   const row: WorkItemResolved = { ...item, runPin: pin, pendingWorkflowDecisions: [pending] };
   const { api } = mount([row]);
   api.decideWorkJoin.mockImplementation(async () => {
     api.getWorkBoardItem.mockResolvedValue({ status: "found", item: { ...row, ...project, pendingWorkflowDecisions: [
-      { ...pending, binding: next, generation: 2 },
+      { ...pending, binding: next },
     ] } });
     return { ok: true };
   });

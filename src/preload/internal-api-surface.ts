@@ -979,9 +979,9 @@ export function buildInternalApiSurface() {
   getWorkflowTemplate: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateGet, id) as Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>,
   getWorkflowTemplateProposal: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateProposalGet, id) as Promise<WorkflowTemplateIpcResult<WorkflowTemplateProposal>>,
   draftWorkflowTemplate: async (id: string | null, input: WorkflowTemplateDraftInput) => ipcRenderer.invoke(WORK_BOARD.templateDraft, id, input) as Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>,
-  confirmWorkflowTemplate: async (id: string, input: WorkflowTemplateConfirmInput) => ipcRenderer.invoke(WORK_BOARD.templateConfirm, id, input, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<TemplateVersion>>,
-  detachWorkflowTemplateSchedule: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateDetachSchedule, id, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<boolean>>,
-  attachWorkflowTemplateSchedule: async (input: ScheduleAttachmentInput) => ipcRenderer.invoke(WORK_BOARD.templateAttachSchedule, input, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>,
+  confirmWorkflowTemplate: async (id: string, input: WorkflowTemplateConfirmInput) => invokeWorkBoardDecision(WORK_BOARD.templateConfirm, id, input) as Promise<WorkflowTemplateIpcResult<TemplateVersion>>,
+  detachWorkflowTemplateSchedule: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateDetachSchedule, id) as Promise<WorkflowTemplateIpcResult<boolean>>,
+  attachWorkflowTemplateSchedule: async (input: ScheduleAttachmentInput) => ipcRenderer.invoke(WORK_BOARD.templateAttachSchedule, input) as Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>,
   archiveWorkflowTemplate: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateArchive, id) as Promise<WorkflowTemplateIpcResult<null>>,
   onWorkflowTemplatesChanged: (handler: () => void) => {
     const listener = () => handler();
@@ -998,8 +998,8 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkItemGetResult
       | { ok: false; error: string }
     >,
-  addWorkBoardItem: async (input: import("../shared/work-board-types.js").WorkItemCreateInput) =>
-    ipcRenderer.invoke(WORK_BOARD.add, input) as Promise<
+  addWorkBoardItem: async (input: import("../shared/work-board-types.js").WorkItemCreateInput, launch?: import("../shared/work-board-types.js").TemplateRunRequest) =>
+    (launch === undefined ? ipcRenderer.invoke(WORK_BOARD.add, input) : invokeWorkBoardDecision(WORK_BOARD.add, input, launch)) as Promise<
       | import("../shared/work-board-types.js").WorkItemCreateResult
       | { ok: false; error: string }
     >,
@@ -1045,12 +1045,9 @@ export function buildInternalApiSurface() {
   },
   // Agent-orchestration run: kick off plan→approve→execute for one item. The promise resolves with the terminal WorkItemRunResult, but live phase updates flow over
   // onWorkBoardRunProgress; coarse started/finished/failed markers (for the per-item running indicator) flow over the on* siblings. `opts.agentName` selects a named agent profile (drives the child model).
-  // A template run also names the tuple (and project) the card showed and carries the click's own activation; other runs send neither.
-  runWorkBoardItem: async (id: number, opts?: { agentName?: string; template?: import("../shared/work-board-types.js").TemplateRunRequest }, userIntent?: UserKeyboardIntentSnapshot) =>
-    (opts?.template ? ipcRenderer.invoke(WORK_BOARD.run, id, opts, userIntent === undefined ? ipcUserKeyboardIntent() : {
-      inputOrigin: "user-keyboard",
-      userActivation: consumeUserKeyboardIntent(userIntent),
-    }) : ipcRenderer.invoke(WORK_BOARD.run, id, opts)) as Promise<
+  // A template run names the tuple and project on the launch form.
+  runWorkBoardItem: async (id: number, opts?: { agentName?: string; template?: import("../shared/work-board-types.js").TemplateRunRequest }) =>
+    (opts?.template ? invokeWorkBoardDecision(WORK_BOARD.run, id, opts) : ipcRenderer.invoke(WORK_BOARD.run, id, opts)) as Promise<
       | import("../shared/work-board-types.js").WorkItemRunResult
       | { ok: false; error: string }
     >,
@@ -1086,13 +1083,11 @@ export function buildInternalApiSurface() {
       | { ok: false; error: string }
     >,
 
-  // Steer the item's running execute child at its next round boundary. The snapshot was minted at the user's gesture and is consumed here
-  // once, so a replayed or scripted call reaches main without userActivation and is refused (no downgrade to another principal).
+  // The preload snapshot is spent locally; Main independently requires native input.
   steerWorkBoardRun: async (itemId: number, text: string, userIntent?: UserKeyboardIntentSnapshot, stageId?: string) =>
-    ipcRenderer.invoke(WORK_BOARD.steerRun, itemId, text, {
-      inputOrigin: "user-keyboard",
-      userActivation: consumeUserKeyboardIntent(userIntent),
-    }, ...(stageId === undefined ? [] : [{ stageId }])) as Promise<
+    (consumeUserKeyboardIntent(userIntent)
+      ? ipcRenderer.invoke(WORK_BOARD.steerRun, itemId, text, undefined, ...(stageId === undefined ? [] : [{ stageId }]))
+      : Promise.resolve({ ok: false, reason: "user-gesture-required" })) as Promise<
       | import("../shared/work-board-types.js").WorkBoardSteerIpcResult
       | { ok: false; error: string }
     >,
@@ -1119,9 +1114,9 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").StageRetryIpcResult
       | { ok: false; error: string }
     >,
-  // Stop the item's running execute child; the click's own activation is the gesture, as for the other required-gesture controls.
+  // Stop the item's running execute child; Main requires native input.
   cancelWorkBoardRun: async (itemId: number) =>
-    ipcRenderer.invoke(WORK_BOARD.cancelRun, itemId, ipcUserKeyboardIntent()) as Promise<
+    ipcRenderer.invoke(WORK_BOARD.cancelRun, itemId) as Promise<
       | import("../shared/work-board-types.js").WorkBoardCancelIpcResult
       | { ok: false; error: string }
     >,

@@ -90,7 +90,7 @@ describe("preload contextBridge world shape lock", () => {
     const runId = "run-a";
     const hash = "e".repeat(64);
     const stage = { runId, stageId: "report", attempt: 2, resultHash: hash, decision: "approve" } as const;
-    const join = { runId, joinId: "step-1", conflictHash: hash, decision: "retry_merge" } as const;
+    const join = { runId, joinId: "step-1", conflictHash: hash, generation: 1, decision: "retry_merge" } as const;
     await api.getWorkBoardItem(8, runId);
     expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.get, 8, runId);
     mockUserActivation.isActive = true;
@@ -109,25 +109,25 @@ describe("preload contextBridge world shape lock", () => {
     expect(mockRemoveListener).toHaveBeenLastCalledWith(WORK_BOARD.runProgress, listener);
   });
 
-  it("bridges template requests, local confirmation intent and change unsubscribe", async () => {
+  it("bridges template requests and change unsubscribe without activation assertions", async () => {
     const api = exposed.get("aveApi") as AveApi;
     await api.listWorkflowTemplates(); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateList);
     await api.getWorkflowTemplate("t"); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateGet, "t");
     await api.getWorkflowTemplateProposal("p"); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateProposalGet, "p");
     const input = { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" };
     mockUserActivation.isActive = true; await api.confirmWorkflowTemplate("t", input);
-    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input, { inputOrigin: "user-keyboard", userActivation: true });
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input);
     mockUserActivation.isActive = false; await api.confirmWorkflowTemplate("t", input);
-    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input, { inputOrigin: "user-keyboard", userActivation: false });
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input);
     const attachment = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily" };
     mockUserActivation.isActive = true; await api.attachWorkflowTemplateSchedule(attachment);
-    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment, { inputOrigin: "user-keyboard", userActivation: true });
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment);
     mockUserActivation.isActive = false; await api.attachWorkflowTemplateSchedule(attachment);
-    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment, { inputOrigin: "user-keyboard", userActivation: false });
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment);
     mockUserActivation.isActive = true; await api.detachWorkflowTemplateSchedule("attachment");
-    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateDetachSchedule, "attachment", { inputOrigin: "user-keyboard", userActivation: true });
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateDetachSchedule, "attachment");
     mockUserActivation.isActive = false; await api.detachWorkflowTemplateSchedule("attachment");
-    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateDetachSchedule, "attachment", { inputOrigin: "user-keyboard", userActivation: false });
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateDetachSchedule, "attachment");
     const handler = vi.fn(); const unsubscribe = api.onWorkflowTemplatesChanged(handler);
     const listener = requiredValue(mockOn.mock.calls.at(-1))[1]; listener(); expect(handler).toHaveBeenCalledOnce();
     unsubscribe(); expect(mockRemoveListener).toHaveBeenLastCalledWith(WORK_BOARD.templatesChanged, listener);

@@ -89,11 +89,22 @@ export type WorkflowApprovalView = PendingWorkflowDecision & {
   itemId: number;
 };
 
-export type WorkApprovalView =
+type WorkApprovalDetail =
   | WorkflowApprovalView
   | WorkPlanApprovalView
   | WorkProposalApprovalView
   | RoutineAttentionApprovalView;
+
+export interface WorkApprovalNavigationView {
+  kind: "navigation";
+  targetKind: WorkApprovalDetail["kind"];
+  key: string;
+  scope: WorkApprovalDetail["scope"];
+  title: string;
+  phase: "pending" | "replanning";
+}
+
+export type WorkApprovalView = WorkApprovalDetail | WorkApprovalNavigationView;
 
 export type WorkApprovalListResult =
   | {
