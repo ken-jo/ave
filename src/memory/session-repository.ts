@@ -1,4 +1,4 @@
-import { closeSync, constants, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { resolveConversationTitle, unwrapStagedText } from "../shared/conversation-title.js";
@@ -14,7 +14,7 @@ import { isSessionTaskItem, type SessionTaskItem } from "../shared/session-tasks
 import { isSessionGoal, type SessionGoal } from "../shared/session-goal.js";
 import { createLogger } from "../lib/logger.js";
 import { aveHome } from "../shared/ave-home.js";
-import { sessionStorePath } from "../shared/session-store-path.js";
+import { openFeatureNamespace } from "../main/storage/feature-namespace.js";
 import { t } from "../i18n/index.js";
 import { projectRootEquals, projectRootKey } from "../shared/project-identity.js";
 import { parseWorkBoardOriginSessionId } from "../shared/work-board-types.js";
@@ -764,6 +764,8 @@ function sessionMetadataInProject(parsed: Record<string, unknown>, projectRoot: 
   return Boolean(storedRoot && projectRootEquals(storedRoot, projectRoot));
 }
 
+const SEARCH_REPAIR_INTENT = ".search-repair.json";
+
 export class SessionRepository {
   private readonly sessionsDir: string;
   private readonly toolOutputArtifacts: ToolOutputArtifactStore;
@@ -771,6 +773,7 @@ export class SessionRepository {
   // Keep one search index per manager namespace, never a global singleton.
   private readonly searchIndex: SessionSearchIndex;
   private readonly getSearchIndexPolicy: () => SessionSearchIndexPolicy;
+  private readonly sessionNamespace: ReturnType<typeof openFeatureNamespace>;
   private searchIndexState: "current" | "stale" | "discarded" = "current";
   private searchIndexChecked = false;
   // Root guards block stale writers until re-add; only newly created sessions may bind again.
@@ -791,7 +794,8 @@ export class SessionRepository {
 
   constructor(options?: { aveDir?: string; getSearchIndexPolicy?: () => SessionSearchIndexPolicy }) {
     this.aveDir = resolve(options?.aveDir ?? aveHome());
-    this.sessionsDir = sessionStorePath(this.aveDir);
+    this.sessionNamespace = openFeatureNamespace("sessions", this.aveDir);
+    this.sessionsDir = this.sessionNamespace.dir;
     this.toolOutputArtifacts = new ToolOutputArtifactStore(this.sessionsDir);
     this.searchIndex = new SessionSearchIndex(this.aveDir);
     this.getSearchIndexPolicy = options?.getSearchIndexPolicy ?? (() => "enabled");
@@ -910,6 +914,7 @@ export class SessionRepository {
     try {
       unchanged = readFileSync(targetPath).equals(Buffer.from(lines, "utf8"));
     } catch { /* Write when the existing transcript cannot be compared. */ }
+    if (!unchanged) this.deferInactiveSearchWrite();
     if (unchanged) {
       try {
         syncExistingFileSync(targetPath);
@@ -958,6 +963,7 @@ export class SessionRepository {
       ) {
         if (rows.length === 0) return "unchanged";
         const prepared = this.prepareSessionMessagesForDisk(sessionId, rows);
+        this.deferInactiveSearchWrite();
         const after = await appendJsonlRecords(targetPath, prepared.messages);
         transcriptWriteStates.set(targetPath, { ids, ...after });
         return "appended";
@@ -1091,25 +1097,51 @@ export class SessionRepository {
     }
   }
 
+  private hasSearchRepairIntent(): boolean {
+    return lstatSync(join(this.sessionsDir, SEARCH_REPAIR_INTENT), { throwIfNoEntry: false }) !== undefined;
+  }
+
+  private recordSearchRepairIntent(): void {
+    this.searchIndexState = "stale";
+    if (!this.hasSearchRepairIntent()) this.sessionNamespace.writeExistingJsonSync(SEARCH_REPAIR_INTENT, true);
+  }
+
+  private clearSearchRepairIntent(): void {
+    try {
+      unlinkSync(join(this.sessionsDir, SEARCH_REPAIR_INTENT));
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+    }
+  }
+
+  private deferInactiveSearchWrite(): void {
+    try {
+      if (this.getSearchIndexPolicy() === "inactive") this.recordSearchRepairIntent();
+    } catch (error) {
+      log.warn({ error }, "could not persist session search repair intent");
+    }
+  }
+
   private pauseSearchIndex(): void {
-    if (this.searchIndexState === "discarded") return;
+    if (this.searchIndexState === "discarded" && !this.hasSearchRepairIntent()) return;
     this.searchIndexState = "stale";
     this.discardSearchIndex();
+    this.clearSearchRepairIntent();
     this.searchIndexState = "discarded";
   }
 
   private canUseSearchIndex(operation: "read" | "write" = "read"): boolean {
     try {
       const policy = this.getSearchIndexPolicy();
-      if (policy === "pending") {
-        if (operation === "write") this.searchIndexState = "stale";
+      if (policy === "inactive") {
+        if (operation === "write") this.recordSearchRepairIntent();
         return false;
       }
       if (policy === "paused") {
         this.pauseSearchIndex();
         return false;
       }
-      if (this.searchIndexState !== "current") this.rebuildSessionSearchRows();
+      if (this.searchIndexState !== "current" || this.hasSearchRepairIntent()) this.rebuildSessionSearchRows();
       if (policy === "enabled-with-recovery" && !this.searchIndexChecked) {
         if (!this.hasPopulatedSearchIndex()) this.rebuildSessionSearchRows();
         this.searchIndexChecked = true;
@@ -1151,6 +1183,7 @@ export class SessionRepository {
       }
 
       this.searchIndex.writeRebuiltSessions(this.sessionSearchInputs());
+      this.clearSearchRepairIntent();
       this.searchIndexState = "current";
       this.searchIndexChecked = true;
     } finally {
@@ -1162,7 +1195,7 @@ export class SessionRepository {
   private repairAllSessionSearchRowsForProjectDetach(): void {
     try {
       const policy = this.getSearchIndexPolicy();
-      if (policy === "pending") this.searchIndexState = "stale";
+      if (policy === "inactive") this.searchIndexState = "stale";
       else if (policy === "paused") this.pauseSearchIndex();
       else this.rebuildSessionSearchRows();
     } catch (cause) {
@@ -1530,6 +1563,7 @@ export class SessionRepository {
         safe = detachProjectBinding(safe);
         this.rememberDetachedWireTerminal(sessionId, safe);
       }
+      this.deferInactiveSearchWrite();
       writeUtf8FileAtomicSync(targetPath, JSON.stringify(safe, null, 2));
       this.notePaneSession(sessionId, safe);
     });
@@ -2015,6 +2049,7 @@ export class SessionRepository {
       return;
     }
     await withFileLock(this.sessionMetadataLockPath(sessionId), async () => {
+      this.deferInactiveSearchWrite();
       this.detachedProjectRootsBySession.delete(sessionId);
       await deleteCodeCheckpoints(sessionId);
       this.detachedWireTerminalTombstones.delete(sessionId);

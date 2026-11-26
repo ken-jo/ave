@@ -99,7 +99,7 @@ function ensureDirSync(dir: string): void {
   }
 }
 
-export type SessionSearchIndexPolicy = "enabled" | "enabled-with-recovery" | "pending" | "paused";
+export type SessionSearchIndexPolicy = "enabled" | "enabled-with-recovery" | "inactive" | "paused";
 
 // Keep each database instance bound to its owning manager's namespace.
 export class SessionSearchIndex {

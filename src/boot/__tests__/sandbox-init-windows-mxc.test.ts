@@ -4,7 +4,7 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 
 /** Check each Windows substrate combination and the boot outcome reported to Settings. */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -193,10 +193,11 @@ it.each([
 });
 
 it.each([
-  { label: "available", mxc: MXC_OK, deps: NO_ACCOUNT_BACKEND },
-  { label: "inconclusive", mxc: MXC_OLD, deps: SRT_WIN_MISSING },
+  { label: "available", mxc: MXC_OLD, deps: { errors: [], warnings: [] } },
+  { label: "inconclusive", mxc: MXC_OLD, deps: SRT_WIN_MISSING, inactive: true },
+  { label: "still checking", mxc: MXC_OK, deps: NO_ACCOUNT_BACKEND, inactive: true },
   { label: "confirmed absent", mxc: NO_CONTAINER, deps: NO_ACCOUNT_BACKEND, absent: true },
-])("defers boot and reconciliation indexing with stored false until the backend is $label", async ({ mxc, deps, absent }) => {
+])("defers boot and reconciliation indexing with stored false until the backend is $label", async ({ mxc, deps, absent, inactive }) => {
   const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
   const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
   const mainDir = join(dir, "main");
@@ -230,7 +231,9 @@ it.each([
       await isolated.verifyOrRebuildSearchIndex();
       expect(existsSync(mainIndex)).toBe(!absent);
       expect(existsSync(isolatedIndex)).toBe(!absent);
-      if (absent) {
+      if (absent || inactive) {
+        expect.soft(main.searchSessions("boot evidence")).toHaveLength(0);
+        expect.soft(isolated.searchSessions("detachment evidence")).toHaveLength(0);
         expect(openIndex).not.toHaveBeenCalled();
       } else {
         expect(main.searchSessions("boot evidence")).toHaveLength(1);
@@ -243,6 +246,54 @@ it.each([
       main.closeSearchIndex();
       isolated.closeSearchIndex();
     }
+  } finally {
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it.each([undefined, false])("retains indexes and recovers skipped writes across boots with preference %s", async (preference) => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const emptyDir = join(dir, "empty");
+  const index = join(dir, "search", "index.db");
+  const emptyIndex = join(emptyDir, "search", "index.db");
+  const getSearchIndexPolicy = () => sessionSearchIndexPolicy(preference);
+  const beforeId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const duringId = "bbbbbbbb-1111-2222-3333-444444444444";
+  try {
+    await new SessionRepository({ aveDir: dir }).saveSession(beforeId, [{ role: "user", content: "retained evidence" }]);
+    const originalIndex = readFileSync(index);
+    const main = new SessionRepository({ aveDir: dir, getSearchIndexPolicy });
+    const empty = new SessionRepository({ aveDir: emptyDir, getSearchIndexPolicy });
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(NO_ACCOUNT_BACKEND);
+    h.detectMxc.mockResolvedValue(MXC_OLD);
+    await initSandboxGate(harness.context(false, false));
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    try {
+      await main.verifyOrRebuildSearchIndex();
+      await empty.verifyOrRebuildSearchIndex();
+      await main.saveSession(duringId, [{ role: "user", content: "new transcript evidence" }]);
+      await empty.saveSession(duringId, [{ role: "user", content: "new transcript evidence" }]);
+      expect.soft(main.searchSessions("retained evidence")).toEqual([]);
+      expect.soft(readFileSync(index).equals(originalIndex)).toBe(true);
+      expect.soft(existsSync(emptyIndex)).toBe(false);
+      expect.soft(openIndex).not.toHaveBeenCalled();
+    } finally {
+      openIndex.mockRestore();
+    }
+
+    markSandboxGatePendingAtBoot();
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+    await initSandboxGate(harness.context(false, false));
+    const restarted = new SessionRepository({ aveDir: dir, getSearchIndexPolicy });
+    const restartedEmpty = new SessionRepository({ aveDir: emptyDir, getSearchIndexPolicy });
+    await restarted.verifyOrRebuildSearchIndex();
+    await restartedEmpty.verifyOrRebuildSearchIndex();
+    expect(restarted.searchSessions("retained evidence")).toHaveLength(1);
+    expect(restarted.searchSessions("new transcript evidence")).toHaveLength(1);
+    expect(restartedEmpty.searchSessions("new transcript evidence")).toHaveLength(1);
   } finally {
     unregister();
     rmSync(dir, { recursive: true, force: true });

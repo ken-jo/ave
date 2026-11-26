@@ -22,6 +22,10 @@ export function areWindowsBackgroundSwitchesAvailable(): boolean {
 
 export function sessionSearchIndexPolicy(preference: boolean | undefined): SessionSearchIndexPolicy {
   if (!isWindowsBackgroundFeatureReleaseEnabled()) return "enabled";
-  if (isSandboxGateUndecidedAtBoot()) return "pending";
-  return preference === false && areWindowsBackgroundSwitchesAvailable() ? "paused" : "enabled-with-recovery";
+  if (isSandboxGateUndecidedAtBoot() || !isAveHomePrivacyVerifiedAtBoot()) return "inactive";
+  if (areWindowsBackgroundSwitchesAvailable()) return preference === false ? "paused" : "enabled-with-recovery";
+  const substrate = getWindowsSandboxSubstrate();
+  const backendAvailable = substrate?.mxc.state === "available"
+    || (substrate?.srtWinReady === true && substrate.accountBackendAbsent !== true);
+  return backendAvailable ? "enabled-with-recovery" : "inactive";
 }

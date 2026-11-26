@@ -1,6 +1,6 @@
 /** Private feature storage; Windows boundary creation belongs to boot. */
 import { randomBytes } from "node:crypto";
-import { constants, promises as fs } from "node:fs";
+import { constants, lstatSync, promises as fs } from "node:fs";
 import { join, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { FileHandle } from "node:fs/promises";
 import { platform } from "node:process";
@@ -14,7 +14,7 @@ import {
   transientFsLockDelayMs,
 } from "../../lib/transient-fs-lock-retry.js";
 import { sleep } from "../../shared/abortable-deadline.js";
-import { committedDirectorySyncError, guardAtomicWrite, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, replaceUtf8FileAtomicSyncIf } from "../../lib/atomic-file.js";
+import { committedDirectorySyncError, guardAtomicWrite, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, replaceUtf8FileAtomicSyncIf, writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
 
 const log = createLogger("feature-namespace");
 
@@ -288,17 +288,26 @@ async function createNamespaceFile(root: string, name: string): Promise<FileHand
 
 /** Open a handle to the `~/.ave/<featureId>/` namespace. Ordinary directories materialize on first write; Windows boundaries must already exist. `featureId` is a single path segment
  * (the domain name or plugin id). The directory path is resolved through {@link aveHome} on every operation (never cached) so a module-level handle still respects a later `AVE_HOME` override; matching the lazy-resolution contract documented on `aveHome`. */
-export function openFeatureNamespace(featureId: string): FeatureNamespaceHandle {
+export function openFeatureNamespace(featureId: string, root?: string): FeatureNamespaceHandle & {
+  writeExistingJsonSync(name: string, value: unknown): void;
+} {
   if (!featureId || featureId.includes("/") || featureId.includes("\\") || featureId.includes("..")) {
     throw new Error(`openFeatureNamespace: invalid featureId "${featureId}"`);
   }
-  const resolveDir = (): string => join(aveHome(), featureId);
+  const resolveDir = (): string => join(root ?? aveHome(), featureId);
   return {
     get dir(): string {
       return resolveDir();
     },
     readJson: <T>(name: string, fallback: T) => readJsonFile(join(resolveDir(), name), fallback),
     writeJson: <T>(name: string, value: T) => writeJsonAtomic(resolveDir(), name, value),
+    writeExistingJsonSync: (name, value) => {
+      const dir = resolveDir();
+      if (!name || name === "." || name === ".." || /[\\/:\0]/.test(name)) throw new Error("Invalid namespace file name");
+      assertProtectedBoundary(dir);
+      if (!lstatSync(dir).isDirectory()) throw new Error("Namespace directory is not a plain directory");
+      writeUtf8FileAtomicSync(join(dir, name), `${JSON.stringify(value)}\n`);
+    },
     childDir: async (name: string, options) => {
       const child = join(resolveDir(), name);
       if (options?.exclusive) await createExclusiveChild(resolveDir(), name);
