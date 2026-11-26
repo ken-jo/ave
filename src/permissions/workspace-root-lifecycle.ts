@@ -1,5 +1,5 @@
 // Keep the workspace-root lock, host-owned lifecycle holder and revocation predicate together so add/remove uses one coordinated sweep.
-import { decisionMemo, withLocalityDecision } from "../shared/local-path-io.js";
+import { decisionMemo, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import type { PermissionDirectoryLifecycle } from "./permission-slash.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { projectRootEquals } from "../shared/project-identity.js";
@@ -49,7 +49,8 @@ function isPathAtOrBelow(root: string, candidate: string): boolean {
     if (!canonicalRoot || !canonicalCandidate) return false;
     return canonicalCandidate === canonicalRoot
       || canonicalCandidate.startsWith(`${canonicalRoot}/`);
-  } catch {
+  } catch (error) {
+    rethrowLocalityFailure(error);
     return projectRootEquals(root, candidate);
   }
 }

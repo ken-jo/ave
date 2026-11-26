@@ -1,11 +1,22 @@
 /**
  * RoutineEngine.runRoutine — unit tests.
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { RoutineEngine } from "../routine-engine.js";
+import { planWorkspaceRootRevocation } from "../../engine/turn/session.js";
 import { bindRemoteControllerToSession, isRemoteControllerAuthorityCurrent } from "../../shared/chat-origin.js";
 import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
+import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
+import { isDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
+import { configureHostResources } from "../../main/host-resources.js";
+
+vi.unmock("../../shared/windows-drive-locality.js");
+
+beforeAll(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+});
 
 function makeLoop(opts: { text?: string; throws?: boolean } = {}) {
   return {
@@ -346,6 +357,50 @@ describe("RoutineEngine workspace lifecycle", () => {
     expect(thrown).toBeInstanceOf(AggregateError);
     expect(thrown).toMatchObject({ code: "ROUTINE_WORKSPACE_ROOT_REVOKE_FAILED" });
     expect((thrown as AggregateError).errors).toHaveLength(1);
+  });
+
+  it.runIf(process.platform === "win32")("changes no routine policy or live scope when project rebound cannot judge a drive", () => {
+    const root = resolve(tmpdir(), "revoked-project");
+    const otherDrive = root.toUpperCase().startsWith("Z:") ? "Y:" : "Z:";
+    const rebound = `${otherDrive}\\fallback`;
+    const updatePrompt = vi.fn();
+    const abort = vi.fn();
+    const owner = {
+      sessionProjectRoot: root,
+      sessionProjectName: "project",
+      sessionProjectIsDefault: false,
+      sessionAdditionalDirectories: [root],
+      turnAdditionalDirectories: [root],
+      revokeProjectWork: abort,
+      deps: {
+        authorizeProject: () => {
+          isDefaultWorkspaceRoot(rebound, root);
+          return { projectRoot: rebound, projectName: "fallback", isDefault: true };
+        },
+        systemPromptBuilder: { setProjectContext: updatePrompt },
+      },
+      planWorkspaceRootRevocation: (path: string) => planWorkspaceRootRevocation(owner as never, path),
+    };
+    const later = vi.fn(() => () => ({ sessionDirectoriesRemoved: 0, turnDirectoriesRemoved: 0, projectRebound: false }));
+    const engine = new RoutineEngine({} as never);
+    const internals = engine as unknown as { activeLoops: Set<unknown>; workspaceRootPolicy: Map<string, unknown> };
+    internals.activeLoops.add(owner);
+    internals.activeLoops.add({ planWorkspaceRootRevocation: later });
+    setWindowsDriveQueryForTest((drive) => {
+      if (drive.toUpperCase() === otherDrive) throw new Error("rebound drive failed");
+      return String.raw`\Device\HarddiskVolume1`;
+    });
+    try {
+      expect(() => engine.revokeWorkspaceRoot(root)).toThrow("rebound drive failed");
+      expect(internals.workspaceRootPolicy.size).toBe(0);
+      expect(owner.sessionAdditionalDirectories).toEqual([root]);
+      expect(owner.turnAdditionalDirectories).toEqual([root]);
+      expect(abort).not.toHaveBeenCalled();
+      expect(updatePrompt).not.toHaveBeenCalled();
+      expect(later).not.toHaveBeenCalled();
+    } finally {
+      setWindowsDriveQueryForTest();
+    }
   });
 });
 

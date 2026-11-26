@@ -29,7 +29,7 @@ function normalizeProjectString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function applyProjectContext(self: ConversationLoop, project?: SessionProjectContext): void {
+function planProjectContext(self: ConversationLoop, project?: SessionProjectContext) {
   let projectRoot = normalizeProjectString(project?.projectRoot);
   let projectName = normalizeProjectString(project?.projectName);
   if (projectRoot && self.deps.authorizeProject) {
@@ -48,10 +48,18 @@ function applyProjectContext(self: ConversationLoop, project?: SessionProjectCon
   const projectIsDefault = projectRoot
     ? project?.isDefault === true || self.deps.isDefaultProjectRoot?.(projectRoot) === true
     : false;
+  return { projectRoot, projectName, projectIsDefault };
+}
+
+function commitProjectContext(
+  self: ConversationLoop,
+  { projectRoot, projectName, projectIsDefault }: ReturnType<typeof planProjectContext>,
+  directories: string[],
+): void {
   self.sessionProjectRoot = projectRoot;
   self.sessionProjectName = projectName;
   self.sessionProjectIsDefault = projectIsDefault;
-  self.sessionAdditionalDirectories = projectRoot ? [projectRoot] : [];
+  self.sessionAdditionalDirectories = directories;
   self.deps.systemPromptBuilder.setProjectContext?.(projectRoot
     ? {
         projectRoot,
@@ -59,6 +67,11 @@ function applyProjectContext(self: ConversationLoop, project?: SessionProjectCon
         ...(projectIsDefault ? { isDefault: true } : {}),
       }
     : null);
+}
+
+function applyProjectContext(self: ConversationLoop, project?: SessionProjectContext): void {
+  const planned = withLocalityDecision(() => planProjectContext(self, project));
+  commitProjectContext(self, planned, planned.projectRoot ? [planned.projectRoot] : []);
 }
 
 function currentProjectContext(self: ConversationLoop): SessionProjectContext {
@@ -130,7 +143,7 @@ export function workspaceRootRemovalAffectsTurn(
   self: ConversationLoop,
   removedRoot: string,
 ): boolean {
-  return self.hasActiveTurn() && workspaceRootRemovalOwnsSession(self, removedRoot);
+  return self.hasActiveTurn() && withLocalityDecision(() => workspaceRootRemovalOwnsSession(self, removedRoot));
 }
 
 function workspaceRootRemovalOwnsSession(self: ConversationLoop, removedRoot: string): boolean {
@@ -182,60 +195,42 @@ export function planWorkspaceRootRevocation(
   const previousProjectRoot = self.sessionProjectRoot;
   const previousProjectName = self.sessionProjectName;
   const previousProjectWasDefault = self.sessionProjectIsDefault;
-  const { ownsSession, retainedSessionDirectories, retainedTurnDirectories, projectNeedsReauthorization } = withLocalityDecision(() => {
+  const plan = withLocalityDecision(() => {
     const isRevoked = createWorkspaceRootRevocationFilter(normalizedRoot, options.preserveRoots);
-    return {
-      ownsSession: workspaceRootRemovalOwnsSession(self, removedRoot),
-      retainedSessionDirectories: previousSessionDirectories.filter(directory => !isRevoked(directory)),
-      retainedTurnDirectories: previousTurnDirectories.filter(directory => !isRevoked(directory)),
-      projectNeedsReauthorization: Boolean(previousProjectRoot && isRevoked(previousProjectRoot)),
-    };
-  });
-  return () => applyWorkspaceRootRevocation(self, {
-    ownsSession, retainedSessionDirectories, retainedTurnDirectories, projectNeedsReauthorization,
-    previousSessionDirectories, previousTurnDirectories, previousProjectRoot, previousProjectName, previousProjectWasDefault,
-  });
-}
-
-function applyWorkspaceRootRevocation(self: ConversationLoop, plan: {
-  ownsSession: boolean;
-  retainedSessionDirectories: string[];
-  retainedTurnDirectories: string[];
-  projectNeedsReauthorization: boolean;
-  previousSessionDirectories: string[];
-  previousTurnDirectories: string[];
-  previousProjectRoot: string | null;
-  previousProjectName: string | null;
-  previousProjectWasDefault: ConversationLoop["sessionProjectIsDefault"];
-}): WorkspaceRootRevocationResult {
-  const {
-    ownsSession, retainedSessionDirectories, retainedTurnDirectories, projectNeedsReauthorization,
-    previousSessionDirectories, previousTurnDirectories, previousProjectRoot, previousProjectName, previousProjectWasDefault,
-  } = plan;
-  if (ownsSession) self.revokeProjectWork();
-
-  self.turnAdditionalDirectories = retainedTurnDirectories;
-  self.sessionAdditionalDirectories = retainedSessionDirectories;
-  if (projectNeedsReauthorization) {
-    applyProjectContext(self, currentProjectContext(self));
-    for (const directory of retainedSessionDirectories) {
-      if (!self.sessionAdditionalDirectories.some((current) => projectRootEquals(current, directory))) {
-        self.sessionAdditionalDirectories.push(directory);
+    const ownsSession = workspaceRootRemovalOwnsSession(self, removedRoot);
+    const retainedSessionDirectories = previousSessionDirectories.filter(directory => !isRevoked(directory));
+    const turnDirectories = previousTurnDirectories.filter(directory => !isRevoked(directory));
+    const project = previousProjectRoot && isRevoked(previousProjectRoot)
+      ? planProjectContext(self, currentProjectContext(self))
+      : undefined;
+    const sessionDirectories = project === undefined ? retainedSessionDirectories : project.projectRoot ? [project.projectRoot] : [];
+    if (project) {
+      for (const directory of retainedSessionDirectories) {
+        if (!sessionDirectories.some((current) => projectRootEquals(current, directory))) sessionDirectories.push(directory);
       }
     }
-  }
-
-  const projectRebound = projectNeedsReauthorization && (
-    !projectRootEquals(previousProjectRoot ?? "", self.sessionProjectRoot ?? "")
-    || previousProjectName !== self.sessionProjectName
-    || previousProjectWasDefault !== self.sessionProjectIsDefault
-  );
-  const sessionDirectoriesRemoved = previousSessionDirectories.length - retainedSessionDirectories.length;
-  const turnDirectoriesRemoved = previousTurnDirectories.length - self.turnAdditionalDirectories.length;
-  if (projectNeedsReauthorization || sessionDirectoriesRemoved > 0 || turnDirectoriesRemoved > 0) {
-    self.deps.broadcastPermissionConfigChanged?.();
-  }
-  return { sessionDirectoriesRemoved, turnDirectoriesRemoved, projectRebound };
+    const projectRebound = project !== undefined && (
+      !projectRootEquals(previousProjectRoot ?? "", project.projectRoot ?? "")
+      || previousProjectName !== project.projectName
+      || previousProjectWasDefault !== project.projectIsDefault
+    );
+    return {
+      ownsSession, project, projectRebound, sessionDirectories, turnDirectories,
+      sessionDirectoriesRemoved: previousSessionDirectories.length - retainedSessionDirectories.length,
+      turnDirectoriesRemoved: previousTurnDirectories.length - turnDirectories.length,
+    };
+  });
+  return () => {
+    const { project, projectRebound, sessionDirectoriesRemoved, turnDirectoriesRemoved } = plan;
+    if (plan.ownsSession) self.revokeProjectWork();
+    self.turnAdditionalDirectories = plan.turnDirectories;
+    if (project) commitProjectContext(self, project, plan.sessionDirectories);
+    else self.sessionAdditionalDirectories = plan.sessionDirectories;
+    if (project || sessionDirectoriesRemoved > 0 || turnDirectoriesRemoved > 0) {
+      self.deps.broadcastPermissionConfigChanged?.();
+    }
+    return { sessionDirectoriesRemoved, turnDirectoriesRemoved, projectRebound };
+  };
 }
 
 export function initializeConversation(
