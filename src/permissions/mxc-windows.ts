@@ -141,12 +141,14 @@ export function parseMxcDryRunOutput(exitCode: number | null, stdout: string, st
   return { ok: false, detail: diagnostic.slice(0, 500) };
 }
 
-/** A failed contained shell can report launcher startup failure after its own process was created. */
-export function reportsMxcShellBackendLoss(code: number | null, diagnostics: string): boolean {
+/** A shell exit can look like a startup failure even when the command ran. */
+export function mayIndicateMxcShellStartupFailure(code: number | null, diagnostics: string): boolean {
   if (code === null || code === 0) return false;
-  if ((code >>> 0) === 0xc0000142) return true;
-  return outputLines("", diagnostics).some((line) =>
-    /^(?:Error: )?(?:BaseContainer job-object setup failed|failed to (?:create|attach) the process security environment)\b/i.test(line));
+  return (code >>> 0) === 0xc0000142 || outputLines("", diagnostics).some(isBaseContainerStartDiagnostic);
+}
+
+function isBaseContainerStartDiagnostic(line: string): boolean {
+  return /^(?:Error: )?(?:BaseContainer job-object setup failed|failed to (?:create|attach) the process security environment)\b/i.test(line);
 }
 
 export interface MxcRunResult {
@@ -185,9 +187,10 @@ export function classifyMxcStartProbe(
 ): { readonly ok: true } | { readonly ok: false; readonly reason: "powershell-start-failed" | "unverified-session"; readonly detail: string } {
   if (code === 0) return { ok: true };
   const text = `${stdout}\n${stderr}`;
-  const detail = (text.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) ?? `exit ${String(code)}`).slice(0, 500);
+  const lines = outputLines(stdout, stderr);
+  const detail = (lines.find(isBaseContainerStartDiagnostic) ?? lines[0] ?? `exit ${String(code)}`).slice(0, 500);
   // 0xC0000142 as the unsigned exit code, or the launcher's own diagnostic.
-  if (code === 0xc0000142 || /STATUS_DLL_INIT_FAILED|0xC0000142/i.test(text)) {
+  if ((code !== null && (code >>> 0) === 0xc0000142) || /STATUS_DLL_INIT_FAILED|0xC0000142/i.test(text)) {
     return { ok: false, reason: "unverified-session", detail };
   }
   return { ok: false, reason: "powershell-start-failed", detail };

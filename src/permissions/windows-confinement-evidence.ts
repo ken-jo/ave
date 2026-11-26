@@ -5,7 +5,7 @@ import {
   getWindowsConfinementRoute,
   isWindowsAccountConfinementOperational,
 } from "./asrt-sandbox.js";
-import { detectHostMxcPrerequisites, getHostWxcExecIdentity, probeHostMxcPowerShellStart, resolveHostWxcExecPath } from "./mxc-windows.js";
+import { detectHostMxcPrerequisites, getHostWxcExecIdentity, mayIndicateMxcShellStartupFailure, probeHostMxcPowerShellStart, resolveHostWxcExecPath } from "./mxc-windows.js";
 import { detectMxcShellCapability, getSandboxGeneration, getWindowsExtensionBackendPlan, getWindowsSandboxSubstrate } from "./sandbox-capability.js";
 
 export type WindowsBackendState = "operational" | "absent" | "unavailable";
@@ -119,6 +119,12 @@ const accountBackend = new WindowsBackendEvidenceOwner({
   isAbsentAtBoot: (substrate) => substrate.accountBackendAbsent === true && !substrate.srtWinReady,
 });
 
+async function probeContainerPowerShellStart() {
+  const launcher = getHostWxcExecIdentity();
+  await resolveHostWxcExecPath(launcher);
+  return await probeHostMxcPowerShellStart(launcher);
+}
+
 const containerBackend = new WindowsBackendEvidenceOwner({
   route: () => {
     const capability = detectMxcShellCapability();
@@ -126,11 +132,7 @@ const containerBackend = new WindowsBackendEvidenceOwner({
     return [getSandboxGeneration(), ...getWindowsConfinementRoute(), getWindowsSandboxSubstrate(), capability, plan,
       capability?.confidence === "verified" || plan?.selectedBackend === "mxc" ? getHostWxcExecIdentity() : undefined];
   },
-  probeRoute: async () => {
-    const launcher = getHostWxcExecIdentity();
-    await resolveHostWxcExecPath(launcher);
-    return (await probeHostMxcPowerShellStart(launcher)).state === "available";
-  },
+  probeRoute: async () => (await probeContainerPowerShellStart()).state === "available",
   probeAbsence: async () => {
     const support = await detectHostMxcPrerequisites();
     return support.state === "unavailable" && support.reason === "container-unavailable"
@@ -160,6 +162,20 @@ export function invalidateWindowsBackendEvidence(backend?: "account" | "containe
     containerBackend.invalidate();
   }
   if (backend !== "container") accountBackend.invalidate();
+}
+
+/** Test the shared backend with a fixed command while preserving existing receipts on a healthy start. */
+export async function recheckWindowsContainerBackendAfterShellFailure(): Promise<void> {
+  try {
+    const route = containerBackend.provider.route();
+    const lossEpoch = containerBackendLossEpoch;
+    const support = await probeContainerPowerShellStart();
+    const confirmedLoss = support.state === "unavailable" && (support.reason === "unverified-session"
+      || (support.reason === "powershell-start-failed" && mayIndicateMxcShellStartupFailure(1, support.detail)));
+    if (confirmedLoss && lossEpoch === containerBackendLossEpoch && sameRoute(route, containerBackend.provider.route())) {
+      invalidateWindowsBackendEvidence("container");
+    }
+  } catch { /* An inconclusive check cannot establish shared backend loss. */ }
 }
 
 /** Probes every backend for the calling operation and returns what each probe established. */

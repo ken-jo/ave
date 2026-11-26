@@ -623,15 +623,28 @@ describe("builtin shell — Windows MXC containers", () => {
   });
 
   it.each([
-    ["base containment failure", "Error: BaseContainer job-object setup failed (5)", true],
-    ["ordinary command failure", "Command failed", false],
-  ] as const)("classifies %s after the launcher starts", async (_name, diagnostics, revokes) => {
+    ["command stderr matches a startup diagnostic", 1, "Error: BaseContainer job-object setup failed (5)", false, true],
+    ["command exit code matches a startup status", 0xc0000142, "Command failed", false, true],
+    ["a separate start proves shared container failure", 1, "Error: BaseContainer job-object setup failed (5)", true, true],
+    ["ordinary command failure", 1, "Command failed", false, false],
+  ] as const)("checks shared container evidence when %s", async (_name, code, diagnostics, revokes, rechecks) => {
     bootMxcShells();
-    const reportLoss = vi.spyOn(backendEvidence, "invalidateWindowsBackendEvidence");
+    vi.spyOn(mxcWindows, "getHostWxcExecIdentity").mockReturnValue("verified-launcher");
+    vi.spyOn(mxcWindows, "resolveHostWxcExecPath").mockResolvedValue(WXC_EXEC);
+    const checkStart = vi.spyOn(mxcWindows, "probeHostMxcPowerShellStart").mockResolvedValue({ state: "available", windowsBuild: null });
+    const owner = backendEvidence.WINDOWS_BACKEND_EVIDENCE.container;
+    const earlier = await owner.refresh();
+    if (earlier === undefined) throw new Error("Container evidence was not issued");
+    expect(earlier.state).toBe("operational");
+    const lossEpoch = backendEvidence.getWindowsContainerBackendLossEpoch();
+    checkStart.mockClear();
+    if (revokes) checkStart.mockResolvedValue({ state: "unavailable", reason: "powershell-start-failed", windowsBuild: null, detail: diagnostics });
     childProcessMock.spawn.mockImplementation((command: string) =>
-      command === WXC_EXEC ? fakeChild("", 1, diagnostics) : fakeChild(PARSED, 0));
+      command === WXC_EXEC ? fakeChild("", code, diagnostics) : fakeChild(PARSED, 0));
     expect((await executePowerShell(context("ps-mxc-exit"))).isError).toBe(true);
-    expect(reportLoss).toHaveBeenCalledTimes(revokes ? 1 : 0);
+    expect.soft(checkStart).toHaveBeenCalledTimes(rechecks ? 1 : 0);
+    expect.soft(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch + (revokes ? 1 : 0));
+    expect(owner.isCurrent(earlier)).toBe(!revokes);
   });
 
   it("keeps a running launcher's abort watch after an error and releases only on close", async () => {
