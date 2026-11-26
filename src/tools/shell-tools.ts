@@ -15,6 +15,7 @@ import { redactHomePathsInText } from "../audit/dlp-filter.js";
 import { scrubDiagnosticSecrets } from "../shared/dlp.js";
 import { hostScriptInvocationReadPaths } from "../main/host-script-runtime.js";
 import { endConversationTerminalSession } from "../main/terminal/pty-manager.js";
+import { raceWithTimeout } from "../shared/abortable-deadline.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 /**
  * Host shell tool family: the `bash` and `powershell` execution tools, the
@@ -726,6 +727,7 @@ export interface BackgroundShellManager {
   /** User lifecycle cancellation does not consume the model's output cursor. */
   stop(sessionId: string, shellId: string): boolean;
   waitForLocalCleanup(sessionId: string): Promise<void>;
+  hasPendingHeldShells(sessionId: string): boolean;
   /** Kill + drop every shell owned by a session (call on session end). */
   disposeSession(sessionId: string): number;
   /** Stop held launchers before shutdown reaches the generic child drain. */
@@ -1235,7 +1237,10 @@ function createManager(): BackgroundShellManager {
       // A descendant may retain the output pipes after its parent exits, so
       // close is too late to own cleanup. End the owned group at root exit.
       child.once("exit", () => {
-        if (held !== undefined) return;
+        if (held !== undefined) {
+          if (entry.pin !== undefined) heldShells.delete(entry);
+          return;
+        }
         if (killProcessGroup) terminate();
         else terminationRequested = true;
       });
@@ -1254,7 +1259,10 @@ function createManager(): BackgroundShellManager {
       if (held !== undefined) {
         heldShells.add(entry);
         void held.verdict.then((pin) => {
-          heldShells.delete(entry);
+          // A stop deadline can end the verdict wait before the launcher reports exit.
+          if (pin.kind !== "unconfirmed" || child.pid === undefined || child.exitCode != null || child.signalCode != null) {
+            heldShells.delete(entry);
+          }
           if (pin.kind === "unconfirmed") reportUnconfirmed(entry);
           settle(child.exitCode, child.signalCode, pin);
         });
@@ -1457,6 +1465,10 @@ function createManager(): BackgroundShellManager {
       while (localCleanup.has(sessionId)) await Promise.all([...localCleanup.get(sessionId)!]);
     },
 
+    hasPendingHeldShells(sessionId): boolean {
+      return [...heldShells].some((entry) => entry.sessionId === sessionId);
+    },
+
     disposeSession(sessionId): number {
       let disposed = 0;
       for (const entry of [...shells.values()]) {
@@ -1602,12 +1614,24 @@ export function controlShellTask(sessionId: string, action: ShellTaskAction, she
  * background shells, forget its saved working directory, and settle any
  * brokered cleanup. The caller decides what an unproven cleanup means.
  */
-export async function endShellSession(sessionId: string): Promise<BrokerSessionCleanupReport | undefined> {
+export async function endShellSession(sessionId: string, options?: { forDeletion: true }): Promise<BrokerSessionCleanupReport | undefined> {
   const terminalCleanup = endConversationTerminalSession(sessionId);
   backgroundShellManager.disposeSession(sessionId);
-  await Promise.all([terminalCleanup, backgroundShellManager.waitForLocalCleanup(sessionId)]);
+  const terminalStopped = options?.forDeletion === true
+    ? raceWithTimeout(terminalCleanup, TOOL_TIMEOUT_POLICY.windowsHoldStopMs, () => new ShellSessionCleanupError("terminal-cleanup-unproven"))
+    : terminalCleanup;
+  await Promise.all([terminalStopped, backgroundShellManager.waitForLocalCleanup(sessionId)]);
+  if (options?.forDeletion === true && backgroundShellManager.hasPendingHeldShells(sessionId)) {
+    throw new ShellSessionCleanupError("shell-cleanup-unproven");
+  }
   clearShellSessionCwd(sessionId);
   return await backgroundShellManager.settleSessionCleanup(sessionId);
+}
+
+export class ShellSessionCleanupError extends Error {
+  constructor(readonly code: "terminal-cleanup-unproven" | "shell-cleanup-unproven") {
+    super(code === "terminal-cleanup-unproven" ? "Conversation terminal exit was not observed" : "Held shell launcher exit was not observed");
+  }
 }
 
 /**

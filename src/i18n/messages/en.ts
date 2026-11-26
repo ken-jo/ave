@@ -5396,6 +5396,8 @@ export const en = {
   "sidebar.shareConversation": "Share…",
   "sidebar.copyConversation": "Copy conversation",
   "sidebar.deleteConversation": "Delete",
+  "sidebar.deleteTerminalCleanupUnproven": "A terminal in this conversation did not stop. Try deleting the conversation again.",
+  "sidebar.deleteShellCleanupUnproven": "A background shell in this conversation did not stop. Try deleting the conversation again.",
   "sidebar.projectMenu": "Project actions",
   "sidebar.projectMenuEdit": "Edit name",
   "sidebar.projectMenuArchive": "Archive project",

@@ -1804,7 +1804,11 @@ export function App() {
       onDelete: async (sessionId) => {
         const result = await api.chatSessionDelete(sessionId);
         if (!result?.ok) {
-          if (!("canceled" in result && result.canceled)) {
+          if (result?.error === "terminal-cleanup-unproven") {
+            statusPushToast({ severity: "error", message: t("sidebar.deleteTerminalCleanupUnproven") });
+          } else if (result?.error === "shell-cleanup-unproven") {
+            statusPushToast({ severity: "error", message: t("sidebar.deleteShellCleanupUnproven") });
+          } else if (!("canceled" in result && result.canceled)) {
             console.warn("[ave] conversation delete failed:", result?.error);
           }
           return;
@@ -1825,7 +1829,7 @@ export function App() {
         await refreshSessions();
       },
     };
-  }, [api, sessions, tileSessions, workingSessions, chatGroupSessions, refreshSessions, handleExport, handleImportAndLoad, setActiveView]);
+  }, [api, sessions, tileSessions, workingSessions, chatGroupSessions, refreshSessions, handleExport, handleImportAndLoad, setActiveView, statusPushToast]);
   // Turns ending off screen mark their rows unread; viewing the conversation clears the mark.
   useTurnAttention({
     tiles: tileSessions,

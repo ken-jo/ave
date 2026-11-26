@@ -10,6 +10,8 @@ import { EventEmitter } from "node:events";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import type { WindowsHoldVerdict } from "../../../shared/windows-path-facts.js";
 import { backgroundShellManager } from "../../../tools/shell-tools.js";
+import * as terminalManager from "../../../main/terminal/pty-manager.js";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("electron", () => ({
@@ -20,22 +22,23 @@ vi.mock("electron", () => ({
 const OPEN = "11111111-1111-4111-8111-111111111111";
 const DELETED = "66666666-6666-4666-8666-666666666666";
 
-describe("ave:chat:sessionDelete and connected schedules", () => {
-  it("reports the delete as done when marking its schedules 대화 없음 fails", async () => {
+describe("ave:chat:sessionDelete", () => {
+  async function setup(loadedSession = OPEN) {
     const { registerChatHandlers } = await import("../chat.js");
     await installNativeChatWindow();
     const deleteSession = vi.fn(async () => undefined);
-    const markOrphaned = vi.fn(async () => { throw new Error("disk full"); });
+    const markOrphaned = vi.fn(async () => undefined);
+    const surface = createConversationSurfaceRuntime();
     registerChatHandlers({
       conversationLoop: {
-        getSessionId: () => OPEN,
+        getSessionId: () => loadedSession,
         getSessionKind: () => "main",
         hasProvider: () => true,
         hasActiveTurn: () => false,
         abortCurrentTurn: vi.fn(),
         getHistory: () => ({ length: 0, getMessages: () => [] }),
       },
-      conversationSurfaceRuntime: createConversationSurfaceRuntime(),
+      conversationSurfaceRuntime: surface,
       settingsService: { get: vi.fn((key?: string) => (key === "llm" ? fakeLlmSettings() : {})), patch: vi.fn(async () => undefined) },
       memoryManager: {
         sessions: {
@@ -49,12 +52,26 @@ describe("ave:chat:sessionDelete and connected schedules", () => {
       auditLogger: { log: vi.fn() },
       getMainWindow: vi.fn(() => null),
     } as unknown as Parameters<typeof registerChatHandlers>[0]);
+    const remove = () => invokeNativeChatHandler<Promise<unknown>>(handlers, CHANNELS.chat.sessionDelete, { sessionId: DELETED });
+    return { deleteSession, markOrphaned, activity: surface.activity, remove };
+  }
+
+  it("reports the delete as done when marking its schedules 대화 없음 fails", async () => {
+    const { deleteSession, markOrphaned, remove } = await setup();
+    markOrphaned.mockRejectedValueOnce(new Error("disk full"));
+    await expect(remove()).resolves.toEqual({ ok: true, wasLoaded: false });
+    expect(deleteSession).toHaveBeenCalledWith(DELETED);
+    expect(markOrphaned).toHaveBeenCalledWith(DELETED);
+  });
+
+  it("stops the held shell and waits for its verdict before deleting the transcript", async () => {
+    const { deleteSession, remove } = await setup();
     const verdict = deferred<WindowsHoldVerdict>();
     const stopping = deferred<void>();
     const stop = vi.fn(() => { stopping.resolve(); return verdict.promise; });
     const child = new EventEmitter() as ChildProcess;
     backgroundShellManager.register({ child, sessionId: DELETED, command: "work", startedAt: "t", held: { stop, verdict: verdict.promise } });
-    const deletion = invokeNativeChatHandler<Promise<unknown>>(handlers, CHANNELS.chat.sessionDelete, { sessionId: DELETED });
+    const deletion = remove();
     try {
       await Promise.race([deletion, stopping.promise]);
       expect(stop).toHaveBeenCalledOnce();
@@ -67,6 +84,54 @@ describe("ave:chat:sessionDelete and connected schedules", () => {
     }
     await expect(deletion).resolves.toEqual({ ok: true, wasLoaded: false });
     expect(deleteSession).toHaveBeenCalledWith(DELETED);
-    expect(markOrphaned).toHaveBeenCalledWith(DELETED);
+  });
+
+  it("releases a loaded conversation mutation when its terminal never reports exit and lets deletion retry", async () => {
+    const { activity, deleteSession, markOrphaned, remove } = await setup(DELETED);
+    const gone = deferred<void>();
+    const ending = vi.spyOn(terminalManager, "endConversationTerminalSession").mockReturnValue(gone.promise);
+    vi.useFakeTimers();
+    const deletion = remove();
+    let result: unknown;
+    void deletion.then((value) => { result = value; });
+    try {
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsHoldStopMs - 1);
+      expect(ending).toHaveBeenCalledWith(DELETED);
+      expect(activity.activeMutation()).not.toBeNull();
+      expect(result).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect.soft(result).toEqual({ ok: false, error: "terminal-cleanup-unproven" });
+      expect(activity.activeMutation()).toBeNull();
+      expect(deleteSession).not.toHaveBeenCalled();
+      expect(markOrphaned).not.toHaveBeenCalled();
+      gone.resolve();
+      await expect(remove()).resolves.toEqual({ ok: true, wasLoaded: true });
+      expect(deleteSession).toHaveBeenCalledOnce();
+    } finally {
+      gone.resolve();
+      await deletion;
+      ending.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the conversation while an unconfirmed held launcher has no exit evidence", async () => {
+    const { activity, deleteSession, remove } = await setup(DELETED);
+    const verdict = deferred<WindowsHoldVerdict>();
+    const stop = vi.fn(() => { verdict.resolve({ kind: "unconfirmed" }); return verdict.promise; });
+    const child = Object.assign(new EventEmitter(), { pid: 123, exitCode: null, signalCode: null }) as unknown as ChildProcess;
+    backgroundShellManager.register({ child, sessionId: DELETED, command: "work", startedAt: "t", held: { stop, verdict: verdict.promise } });
+    try {
+      await expect(remove()).resolves.toEqual({ ok: false, error: "shell-cleanup-unproven" });
+      expect(activity.activeMutation()).toBeNull();
+      await expect(remove()).resolves.toEqual({ ok: false, error: "shell-cleanup-unproven" });
+      expect(deleteSession).not.toHaveBeenCalled();
+      Object.assign(child, { exitCode: 125 });
+      child.emit("exit", 125, null);
+      await expect(remove()).resolves.toEqual({ ok: true, wasLoaded: true });
+    } finally {
+      verdict.resolve({ kind: "unconfirmed" });
+      backgroundShellManager._resetForTest();
+    }
   });
 });
