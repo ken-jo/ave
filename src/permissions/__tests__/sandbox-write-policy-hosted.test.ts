@@ -75,6 +75,9 @@ vi.mock("../windows-stamp-targets.js", async original => {
 vi.mock("node:module", async original =>
   // The drive fixture switches every path call to win32, so a POSIX checkout path would be a rootless native spelling: the package resolves on the drive.
   (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original(), () => driveFixture.enabled));
+// A POSIX host spells the run directory without a drive, so the simulated win32 floor row is put on the simulated drive.
+vi.mock("../mxc-runtime-root.js", async original =>
+  (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedRuntimeRoot(await original(), driveFixture.nativeHost));
 vi.mock("../../shared/windows-configuration-handles.js", async original =>
   (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original(), driveFixture.nativeHost));
 vi.mock("../../shared/windows-path-facts.js", async original => {
