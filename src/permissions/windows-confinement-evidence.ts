@@ -17,8 +17,10 @@ export interface WindowsBackendEvidence {
 export interface WindowsBackendEvidenceProvider {
   /** Identities the evidence is bound to. Evidence gathered for other identities is void. */
   readonly route: () => readonly unknown[];
-  /** Gathers the native facts without blocking the event loop. */
-  readonly probe: () => Promise<WindowsBackendState>;
+  /** Asks, off the event loop, whether the published route still has every guarantee it was published with. */
+  readonly probeRoute: () => Promise<boolean>;
+  /** Asks, off the event loop, whether the backend is still cleanly not installed. */
+  readonly probeAbsence: () => Promise<boolean>;
   /** Whether the boot record publishes this backend as a confinement route. */
   readonly isRoutePublished: (substrate: SandboxWindowsSubstrateInfo) => boolean;
   /** Whether the boot record holds affirmative absence for this backend. */
@@ -49,7 +51,13 @@ export class WindowsBackendEvidenceOwner {
     let state: WindowsBackendState = "unavailable";
     try {
       route = this.provider.route();
-      state = await this.provider.probe();
+      // Only the role the boot record gives a backend is worth a native query.
+      const substrate = getWindowsSandboxSubstrate();
+      if (substrate !== null && this.provider.isRoutePublished(substrate)) {
+        if (await this.provider.probeRoute()) state = "operational";
+      } else if (substrate !== null && this.provider.isAbsentAtBoot(substrate)) {
+        if (await this.provider.probeAbsence()) state = "absent";
+      }
     } catch {
       state = "unavailable";
     }
@@ -84,25 +92,22 @@ export function isWindowsAccountBackendAbsent(dependencies: Awaited<ReturnType<t
 
 const accountBackend = new WindowsBackendEvidenceOwner({
   route: () => [...getWindowsConfinementRoute(), getWindowsSandboxSubstrate()],
-  probe: async () => {
-    if (await isWindowsAccountConfinementOperational()) return "operational";
-    return isWindowsAccountBackendAbsent(await checkAsrtDependencies()) ? "absent" : "unavailable";
-  },
+  probeRoute: () => isWindowsAccountConfinementOperational(),
+  probeAbsence: async () => isWindowsAccountBackendAbsent(await checkAsrtDependencies()),
   isRoutePublished: (substrate) => substrate.srtWinReady && substrate.accountBackendAbsent !== true,
   isAbsentAtBoot: (substrate) => substrate.accountBackendAbsent === true && !substrate.srtWinReady,
 });
 
 const containerBackend = new WindowsBackendEvidenceOwner({
   route: () => [...getWindowsConfinementRoute(), getWindowsSandboxSubstrate(), detectMxcShellCapability()],
-  probe: async () => {
-    const substrate = getWindowsSandboxSubstrate();
-    if (substrate !== null && containerBackend.provider.isRoutePublished(substrate)) {
-      requireHostWxcExecFile();
-      return (await probeHostMxcPowerShellStart()).state === "available" ? "operational" : "unavailable";
-    }
+  probeRoute: async () => {
+    requireHostWxcExecFile();
+    return (await probeHostMxcPowerShellStart()).state === "available";
+  },
+  probeAbsence: async () => {
     const support = await detectHostMxcPrerequisites();
     return support.state === "unavailable" && support.reason === "container-unavailable"
-      && support.containerBackendAbsent === true && support.baseContainerApiPresent === false ? "absent" : "unavailable";
+      && support.containerBackendAbsent === true && support.baseContainerApiPresent === false;
   },
   isRoutePublished: (substrate) => substrate.mxc.state === "available" && substrate.shells === "mxc"
     && detectMxcShellCapability()?.confidence === "verified",
