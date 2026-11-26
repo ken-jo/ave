@@ -126,7 +126,7 @@ describe("A2A production loopback runtime", () => {
   });
 
   it("applies remote receiver approval and audit provenance to actual mutations", async () => {
-    const approveAgentAction = vi.fn(async () => null);
+    const approveAgentAction = vi.fn(async () => ({ approved: false as const, outcome: "denied" as const }));
     const auditLog = vi.fn();
     let captured: A2ARequestHandler | undefined;
     const runtime = await createA2ALoopbackRuntime(makeOptions([

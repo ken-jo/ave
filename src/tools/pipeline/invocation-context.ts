@@ -97,6 +97,7 @@ export interface UserAbortDeps {
   startTime: number;
   auditWriter: AuditWriter;
   abortSignal?: AbortSignal;
+  approvalCancellation?: { content: string; permission: PermissionCheckResult };
   audit?: ToolExecutionAuditMetadata;
   /** The attempt's terminal ledger; its claim refuses a row the host already wrote. */
   terminal: InvocationTerminal;
@@ -118,14 +119,15 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
     startTime,
     auditWriter,
     abortSignal,
+    approvalCancellation,
     audit,
   } = deps;
-  const msg = t("be_executor.toolExecutionCancelled");
-  const durationMs = Date.now() - startTime;
   const hostShutdown = isHostExitAbort(abortSignal?.reason);
-  const abortedPermission: PermissionCheckResult = hostShutdown
-    ? hostShutdownDenial()
-    : userAbortRefusal();
+  const classified = hostShutdown ? undefined : approvalCancellation;
+  const msg = classified?.content ?? t("be_executor.toolExecutionCancelled");
+  const durationMs = Date.now() - startTime;
+  const abortedPermission = hostShutdown ? hostShutdownDenial() : classified?.permission ?? userAbortRefusal();
+  if (classified) meta.cancelled = true;
   emitToolStart(callbacks, toolUse.name, input, meta);
   callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
   // A user abort and the host's quit are cancellations: no permission refused the call.

@@ -23,12 +23,13 @@ describe("the policy of a pending tool answer", () => {
   });
 
   it.each([
-    { card: "destination action", decision: "actionDecision", epochs: "actionOpened" },
-    { card: "site consent", decision: "siteDecision", epochs: "siteOpened" },
-  ])("captures and checks the $card answer through the shared policy", ({ decision, epochs }) => {
+    { card: "destination action", request: "actionRequest", decision: "actionDecision", epochs: "actionOpened" },
+    { card: "site consent", request: "siteRequest", decision: "siteDecision", epochs: "siteOpened" },
+  ])("captures and checks the $card answer through the shared policy", ({ request, decision, epochs }) => {
     const source = readFileSync(new URL("../../tools/invocation-execution.ts", import.meta.url), "utf8");
     const browserCards = source.slice(source.indexOf("authorizeBrowserSite: async"), source.indexOf("authorizeNetworkTarget:"));
-    const issue = browserCards.indexOf(`const ${decision} = await gate.requestAndWait(`);
+    const issue = browserCards.indexOf(`const ${decision} = await gate.requestAndWait(${request})`);
+    const admission = browserCards.indexOf(`admitBrowserApproval(${decision}, ${request})`);
     const capture = browserCards.indexOf(`const ${epochs} = destinationEpochs`);
     const sharedCheck = browserCards.indexOf(`personAnswerStands(manager, ${epochs},`);
     expect(issue).toBeGreaterThan(browserCards.indexOf("const rules = await manager.checkNetworkRules("));
@@ -36,8 +37,11 @@ describe("the policy of a pending tool answer", () => {
     expect(capture).toBeLessThan(issue);
     expect(sharedCheck).toBeGreaterThan(issue);
     expect(browserCards.slice(issue, sharedCheck).match(/gate\.requestAndWait\(/g)).toHaveLength(1);
-    const nextCard = browserCards.indexOf("gate.requestAndWait(", sharedCheck);
-    expect(browserCards.slice(issue, nextCard === -1 ? undefined : nextCard)).toContain(`${decision}.choice`);
+    expect(admission).toBeGreaterThan(issue);
+    expect(admission).toBeLessThan(sharedCheck);
+    const admissionHelper = source.slice(source.indexOf("const admitBrowserApproval"), source.indexOf("const executionContext"));
+    expect(admissionHelper).toContain("admitApprovalAnswer(decision, { requestId: request.id, toolName: request.toolName, toolUseId: request.invocationToolUseId })");
+    expect(admissionHelper.indexOf("decision.choice")).toBeGreaterThan(admissionHelper.indexOf("admitApprovalAnswer("));
     expect(browserCards).toContain("let destinationEpochs = rules.answerEpochs");
     expect(browserCards).not.toMatch(/siteAnswerStands|answerSurvivesRecheck|onlyMemoryRulesChangedSince|getPolicy(?:Context)?Epoch/);
   });

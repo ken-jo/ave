@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ApprovalGate } from "./approval-gate.js";
+import { admitApprovalAnswer, approvalFailureKind, type ApprovalFailureKind, type ApprovalGate, type ApprovalRequestInput } from "./approval-gate.js";
 
 // Host-built description of one non-tool mutation that needs explicit consent.
 export interface AgentActionApprovalRequest {
@@ -22,9 +22,14 @@ export interface AgentActionApprovalDiagnostics {
 
 export type AgentActionApprover = (
   request: AgentActionApprovalRequest,
-) => Promise<AgentActionApprovalReceipt | null>;
+) => Promise<AgentActionApprovalResult>;
+
+export type AgentActionApprovalResult =
+  | AgentActionApprovalReceipt
+  | { readonly approved: false; readonly outcome: ApprovalFailureKind | "concurrent" };
 
 export interface AgentActionApprovalReceipt {
+  readonly approved: true;
   // Host-generated ApprovalGate request/decision correlation identifier.
   decisionId: string;
   decidedAt: string;
@@ -47,14 +52,14 @@ export function buildSingleFlightAgentActionApprover(
       } catch {
         // Diagnostic failures must not change the fail-closed decision.
       }
-      return null;
+      return { approved: false, outcome: "concurrent" };
     }
 
     pending = true;
     try {
       // Keep the legacy option in the builder signature for call-site compatibility, but every agent action is now explicitly one-shot. A disabled, visible Always allow control explains this constraint.
       void options;
-      const decision = await approvalGate.requestAndWait({
+      const card = {
         id: randomUUID(),
         category: "agent-action",
         kind: "agent-action",
@@ -67,19 +72,22 @@ export function buildSingleFlightAgentActionApprover(
         source: "builtin",
         createdAt: Date.now(),
         trustOrigin,
-      });
-      // The request constraint is defense in depth, not the only boundary: injected/test gates and future adapters cannot turn the one-shot grant into a durable receipt by returning another allow kind.
-      const allowed = decision.choice === "allow-once";
-      return allowed
-        ? Object.freeze({ decisionId: decision.requestId, decidedAt: new Date().toISOString() })
-        : null;
+      } satisfies ApprovalRequestInput;
+      const decision = await approvalGate.requestAndWait(card);
+      admitApprovalAnswer(decision, { requestId: card.id, toolName: card.toolName, toolUseId: undefined });
+      const outcome = approvalFailureKind(decision);
+      if (outcome !== undefined) return { approved: false, outcome };
+      // The receipt authorizes this one action.
+      return decision.choice === "allow-once"
+        ? Object.freeze({ approved: true, decisionId: card.id, decidedAt: new Date().toISOString() })
+        : { approved: false, outcome: "rejected" };
     } catch {
       try {
         diagnostics.onError?.(diagnostic);
       } catch {
         // Diagnostic failures must not change the fail-closed decision.
       }
-      return null;
+      return { approved: false, outcome: "rejected" };
     } finally {
       pending = false;
     }

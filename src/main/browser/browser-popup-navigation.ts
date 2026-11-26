@@ -83,7 +83,10 @@ export async function awaitBrowserPopupNavigation(guest: object, leaseId: string
   while (policy.pending.length > 0) {
     const results = await Promise.race([Promise.all(policy.pending.splice(0)), policy.ended]);
     const failed = results.find(result => "error" in result);
-    if (failed) throw new Error(`Browser popup could not open: ${errorMessage(failed.error)}`);
+    if (failed) {
+      const cause = failed.error instanceof Error ? failed.error.cause ?? failed.error : failed.error;
+      throw new Error(`Browser popup could not open: ${errorMessage(failed.error)}`, { cause });
+    }
   }
 }
 

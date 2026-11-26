@@ -124,6 +124,36 @@ function reviewer() {
 }
 
 describe("native invocation permission evidence", () => {
+  it("cancels a host-settled directory card with its scope reason and a live caller", async () => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    manager.setMode("default");
+    const turn = new AbortController();
+    const grant = vi.fn();
+    const execute = vi.spyOn(writeTool, "execute");
+    const cardSeen = vi.fn();
+    const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, card: ApprovalRequest) => {
+      if (channel !== IPC_APPROVAL_REQUEST) return;
+      cardSeen(card.kind);
+      queueMicrotask(() => gate.cancelPendingRequest(card.id, sessionId, "project-scope-changed"));
+    } } as never);
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
+    const path = join(root, "cancelled-folder.txt");
+    const rows = vi.spyOn(audit, "log");
+    const [result] = await subject.executeAll([
+      { id: "cancelled-folder", name: "write_file", input: { path, content: "do not write" } },
+    ], { sessionId, executionCwd: project, abortSignal: turn.signal,
+      permissionContext: { trustOrigin: "user-keyboard", additionalDirectories: [], onTurnDirectoryGrant: grant } });
+    expect(cardSeen).toHaveBeenCalledExactlyOnceWith("out-of-allowed-dir");
+    expect(turn.signal.aborted).toBe(false);
+    expect.soft(result).toMatchObject({ is_error: true, content: expect.stringContaining("project-scope-changed") });
+    const terminal = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map(line => JSON.parse(line)).at(-1);
+    expect.soft(terminal).toMatchObject({ toolUseId: "cancelled-folder", decision: "deny", terminalKind: "cancelled", trustOrigin: "unknown",
+      denyReasons: [expect.objectContaining({ reason: expect.stringContaining("project-scope-changed") })] });
+    expect(rows).toHaveBeenCalledWith(expect.objectContaining({ type: "tool_call", output: expect.stringContaining("project-scope-changed") }));
+    expect(grant).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("offers a session folder grant that covers siblings only in that session", async () => {
     await audit.setupPermissionAuditChain("aa".repeat(32));
     manager.setMode("default");

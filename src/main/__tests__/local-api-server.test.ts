@@ -318,8 +318,8 @@ describe("local-api-server", () => {
     it("shares one single-flight consent coordinator across /v1 and A2A", async () => {
       process.env.AVE_LOCAL_API = "1";
       process.env.AVE_A2A = "1";
-      let releaseGate!: (value: { requestId: string; choice: "allow-once" }) => void;
-      const gateResult = new Promise<{ requestId: string; choice: "allow-once" }>((resolve) => {
+      let releaseGate!: (value: { choice: "allow-once" }) => void;
+      const gateResult = new Promise<{ choice: "allow-once" }>((resolve) => {
         releaseGate = resolve;
       });
       const requestAndWait = answeringRequestAndWait(() => gateResult);
@@ -352,8 +352,8 @@ describe("local-api-server", () => {
 
       expect(localMutation.status).toBe(403);
       expect(requestAndWait).toHaveBeenCalledOnce();
-      releaseGate({ requestId: "shared-consent", choice: "allow-once" });
-      await expect(pendingA2A).resolves.toMatchObject({ decisionId: "shared-consent" });
+      releaseGate({ choice: "allow-once" });
+      await expect(pendingA2A).resolves.toMatchObject({ approved: true, decisionId: requestAndWait.mock.calls[0]?.[0].id });
     });
 
     it("isolates A2A initialization failure while keeping /v1 available", async () => {
@@ -533,7 +533,7 @@ describe("local-api-server", () => {
     });
 
     it("calls requestAndWait with category 'agent-action' + English reason; allow-once -> true", async () => {
-      const requestAndWait = answeringRequestAndWait(() => ({ requestId: "r", choice: "allow-once" }));
+      const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
       const approver = buildExternalMutationApprover(
         { requestAndWait } as unknown as ApprovalGate,
         () => {},
@@ -602,8 +602,8 @@ describe("local-api-server", () => {
     describe("in-flight cap (attention-DoS hardening, fail-closed)", () => {
       it("two concurrent asks → gate's requestAndWait called exactly once; the second resolves false immediately", async () => {
         let releaseGate!: (choice: "allow-once") => void;
-        const gateResult = new Promise<{ requestId: string; choice: "allow-once" }>((resolve) => {
-          releaseGate = (choice) => resolve({ requestId: "r", choice });
+        const gateResult = new Promise<{ choice: "allow-once" }>((resolve) => {
+          releaseGate = (choice) => resolve({ choice });
         });
         const requestAndWait = answeringRequestAndWait(() => gateResult);
         const logs: string[] = [];
@@ -643,7 +643,7 @@ describe("local-api-server", () => {
       });
 
       it("after the first ask resolves allow, a subsequent ask calls the gate again (guard released)", async () => {
-        const requestAndWait = answeringRequestAndWait(() => ({ requestId: "r", choice: "allow-once" }));
+        const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
         const approver = buildExternalMutationApprover(
           { requestAndWait } as unknown as ApprovalGate,
           () => {},
@@ -666,7 +666,7 @@ describe("local-api-server", () => {
       });
 
       it("the guard releases even when the gate throws, so the next ask calls the gate again", async () => {
-        const requestAndWait = answeringRequestAndWait(() => ({ requestId: "r", choice: "allow-once" }))
+        const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }))
           .mockRejectedValueOnce(new Error("gate exploded"));
         const approver = buildExternalMutationApprover(
           { requestAndWait } as unknown as ApprovalGate,

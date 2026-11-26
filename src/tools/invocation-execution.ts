@@ -7,12 +7,12 @@ import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pi
 import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
 import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
-import { admitApprovalAnswer, answeredApprovalProvenance, answeredRecordForAction, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalCancelledDecision, isHostApprovalRejectedDecision, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision } from "../permissions/approval-gate.js";
+import { admitApprovalAnswer, ApprovalReceiptError, answeredApprovalProvenance, answeredRecordForAction, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalCancelledDecision, isHostApprovalRejectedDecision, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision } from "../permissions/approval-gate.js";
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import { createPluginReadjudicationBasis } from "../permissions/plugin-readjudication-evidence.js";
-import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostShutdownDenial, isSettledRefusal, refusal } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, BrowserApprovalError, browserApprovalErrorOf, hostShutdownDenial, isSettledRefusal, refusal } from "./pipeline/approval-outcome.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import { disposableContainerCapability, resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
@@ -778,6 +778,28 @@ export async function executeAuthorizedToolInvocation(
   // Undefined for a builtin, and for a plugin whose data root is not the
   // host's real directory — a replaced root grants nothing.
   const ownerPluginSandboxRoot = tool.pluginId ? resolveOwnerPluginSandboxRoot(tool.pluginId) : undefined;
+  const browserApprovalRejected = () => {
+    const reason = t("be_executor.approvalHostRejectedReason");
+    return new BrowserApprovalError(
+      t("be_executor.approvalRejectedByHost", { name: tool.name, reason }),
+      refusal("approval rejected by host", HOST_PROVENANCE),
+    );
+  };
+  const admitBrowserApproval = (decision: ApprovalDecision, request: ApprovalRequestInput): void => {
+    try {
+      admitApprovalAnswer(decision, { requestId: request.id, toolName: request.toolName, toolUseId: request.invocationToolUseId });
+    } catch (error) {
+      if (error instanceof ApprovalReceiptError) throw browserApprovalRejected();
+      throw error;
+    }
+    const failure = approvalFailureOutcome(decision, tool.name);
+    if (failure !== null) throw new BrowserApprovalError(failure.content, failure.permission, isHostApprovalCancelledDecision(decision));
+    if (decision.choice.startsWith("deny")) {
+      throw new BrowserApprovalError(t("be_executor.approvalDeniedByUser", { name: tool.name }),
+        refusal("user denied approval request", answeredApprovalProvenance(decision)));
+    }
+    if (decision.choice !== "allow-once" || isHostApprovalRejectedDecision(decision)) throw browserApprovalRejected();
+  };
   const executionContext: ToolExecutionContext = {
     cwd: executionCwd,
     ...(isCanonicalBrowserTool(tool) ? {
@@ -786,7 +808,10 @@ export async function executeAuthorizedToolInvocation(
         const manager = services.permissionManager;
         const gate = services.approvalGate;
         const origin = browserOrigin(url);
-        if (!manager || !gate || !sessionId || origin === null || !validateExternalUrl(url).ok || invocationPermissionContext.headless || invocationPermissionContext.approvalSurface === "unavailable") throw new Error(NO_APPROVER_MESSAGE);
+        if (!sessionId || origin === null || !validateExternalUrl(url).ok) throw new Error(NO_APPROVER_MESSAGE);
+        if (!manager || !gate || invocationPermissionContext.headless || invocationPermissionContext.approvalSurface === "unavailable") {
+          throw new BrowserApprovalError(NO_APPROVER_MESSAGE, refusal(NO_APPROVER_MESSAGE, HOST_PROVENANCE));
+        }
         siteSignal.throwIfAborted();
         if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
         const rules = await manager.checkNetworkRules(url, executionCwd, false);
@@ -803,13 +828,14 @@ export async function executeAuthorizedToolInvocation(
         const screened = screenEgressRequest({ url, allowPrivateNetwork: false });
         if (rules.decision === "ask" || (rules.exfiltration || screened.outcome === "screened") && !(humanApproved && url === finalInput.url)) {
           const actionOpened = destinationEpochs;
-          const actionDecision = await gate.requestAndWait({
+          const actionRequest = {
             id: randomUUID(), category: "tool", toolName: tool.name, source: "builtin", toolCategory: "network", args: { url },
             reason: rules.decision === "ask" ? "A destination rule requires approval for this navigation." : "This navigation carries an exfiltration signal and requires human consent.", createdAt: Date.now(), sessionId, abortSignal: siteSignal,
             remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority, forceExplicit: true,
             durableApprovalRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"], invocationToolUseId: toolUse.id,
-          });
-          if (actionDecision.choice !== "allow-once" || isHostApprovalRejectedDecision(actionDecision)) throw new Error("Browser navigation denied");
+          } satisfies ApprovalRequestInput;
+          const actionDecision = await gate.requestAndWait(actionRequest);
+          admitBrowserApproval(actionDecision, actionRequest);
           siteSignal.throwIfAborted();
           if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || !await personAnswerStands(manager, actionOpened, true, recheckDestination)) throw new Error("Browser navigation authority changed");
         }
@@ -819,17 +845,19 @@ export async function executeAuthorizedToolInvocation(
           return;
         }
         const siteOpened = destinationEpochs;
-        const siteDecision = await gate.requestAndWait({
+        const siteRequest = {
           id: randomUUID(), category: "tool", toolName: tool.name, source: "builtin", toolCategory: "network",
           browserSite: origin, toolUseId: toolUse.id, invocationToolUseId: toolUse.id, args: { url }, reason: "Opening this site requires session consent.", createdAt: Date.now(),
           sessionId, abortSignal: siteSignal, remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority,
           forceExplicit: true, durableApprovalRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"],
-        });
+        } satisfies ApprovalRequestInput;
+        const siteDecision = await gate.requestAndWait(siteRequest);
+        admitBrowserApproval(siteDecision, siteRequest);
         siteSignal.throwIfAborted();
         if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
         if (!await personAnswerStands(manager, siteOpened, true, recheckDestination) || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Permission policy changed during site approval");
         const choice = gate.consumeBrowserSiteChoice(siteDecision, sessionId, origin);
-        if (siteDecision.choice !== "allow-once" || choice === undefined || isHostApprovalRejectedDecision(siteDecision)) throw new Error("Browser site opening denied");
+        if (choice === undefined) throw browserApprovalRejected();
         siteSignal.throwIfAborted();
         manager.browserSites.allow(sessionId, url, choice);
       },
@@ -1349,9 +1377,16 @@ export async function executeAuthorizedToolInvocation(
   const executeAdmittedHandler = async (): Promise<ToolCeilingOutcome<Awaited<ReturnType<Tool["execute"]>>>> => {
     while (true) {
       const attempt = await runWithCeiling(attemptHandler, effectiveCeilingMs, abortSignal, toolUse.name);
-      if (attempt.ok || attempt.reason !== "error" || !(attempt.error instanceof HandlerApprovalRequiredError)) {
-        return attempt;
+      if (attempt.ok || attempt.reason !== "error") return attempt;
+      const browserFailure = browserApprovalErrorOf(attempt.error);
+      if (browserFailure) {
+        permissionResult = browserFailure.permission;
+        if (browserFailure.cancelled) {
+          approvalCancellationContent = attempt.error.message;
+          return { ...attempt, reason: "user-abort" };
+        }
       }
+      if (!(attempt.error instanceof HandlerApprovalRequiredError)) return attempt;
       // No execution timer survives a refused admission. User consent uses
       // the same card timeout and caller cancellation as ordinary approval.
       try {

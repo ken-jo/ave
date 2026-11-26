@@ -3,7 +3,8 @@ import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 /** The agent browser tools through the real ToolExecutor, PermissionManager, ApprovalGate and approval store, over the real main-side tab registry with fake guests and fake page actions. Covers
  * who is asked when (agent tab vs user tab, per origin, per action), the TOCTOU re-check, window scope, denied schemes, the untrusted-content fence, and user takeover cancelling a pending action. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { t } from "../../i18n/index.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -166,6 +167,8 @@ describe("browser tools", () => {
     logicalReview?: (input: import("../../permissions/reviewer/user-owned-surface-reviewer.js").UserOwnedSurfaceReviewInput) => Promise<{ consistent: boolean; reason: string }>;
     headless?: boolean;
     onCard?: (card: ApprovalRequest) => void | Promise<void>;
+    leaveCardUnanswered?: boolean;
+    approvalWaitMs?: number;
     denyAction?: boolean;
     beforeActions?: () => void | Promise<void>;
     onPrepare?: (target: BrowserActionTab<FakeGuest>) => void | Promise<void>;
@@ -234,6 +237,7 @@ describe("browser tools", () => {
             });
           }
           await options.onCard?.(request);
+          if (options.leaveCardUnanswered) return;
           gate.resolveFromDesktopRenderer(request.id, {
             requestId: request.id,
             choice: options.denyAction && !request.browserSite || options.denySurface && request.userOwnedSurface || options.denySite && request.browserSite ? "deny-once" : "allow-once",
@@ -245,7 +249,7 @@ describe("browser tools", () => {
         })());
       },
     };
-    const gate = new ApprovalGate(nativeWebContents as never);
+    const gate = new ApprovalGate(nativeWebContents as never, undefined, options.approvalWaitMs);
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
     let seq = 0;
     const run = async (name: string, input: Record<string, unknown>, sessionId: string | undefined = HOST_SESSION) => {
@@ -319,6 +323,45 @@ describe("browser tools", () => {
       expect(continued).toBe(true);
     },
   );
+
+  describe.each(["site consent", "destination action"] as const)("%s card", (kind) => {
+    it.each(["denied", "rejected", "expired", "cancelled"] as const)("preserves the %s outcome in the result and audit", async (outcome) => {
+      await auditLogger.setupPermissionAuditChain("aa".repeat(32));
+      const h = harness({
+        denySite: outcome === "denied", denyAction: outcome === "denied",
+        leaveCardUnanswered: outcome === "expired",
+        approvalWaitMs: outcome === "expired" ? 10 : undefined,
+        onCard: (card) => {
+          if (outcome === "cancelled") expect(h.gate.cancelPendingRequest(card.id, HOST_SESSION, "project-scope-changed")).toBe(true);
+        },
+      });
+      if (outcome === "rejected") vi.spyOn(h.gate, "requestAndWait").mockImplementationOnce(async ({ id }) => ({ requestId: id, choice: "deny-once" }));
+      const tab = await h.agentTab("https://a.example/");
+      const url = "https://restricted.example/";
+      if (kind === "destination action") await h.manager.addRulePersist({ pattern: "WebFetch(domain:restricted.example)", action: "ask" }, { kind: "user" });
+      let navigated = false;
+      h.page.actions.click = async target => {
+        await target.authorizeSite?.(url);
+        navigated = true;
+      };
+      const result = await h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+      const detail = {
+        denied: t("be_executor.approvalDeniedByUser", { name: BROWSER_TOOL.click }),
+        rejected: t("be_executor.approvalHostRejectedReason"),
+        expired: t("be_executor.approvalExpired", { name: BROWSER_TOOL.click }),
+        cancelled: "project-scope-changed",
+      }[outcome];
+      expect.soft(result).toMatchObject({ isError: true, output: expect.stringContaining(detail) });
+      const terminal = readFileSync(auditLogger.getPermissionAuditLogFile(), "utf8").trim().split("\n")
+        .map(line => JSON.parse(line)).at(-1);
+      expect(terminal).toMatchObject({
+        toolUseId: "call-1", decision: "deny", terminalKind: outcome === "cancelled" ? "cancelled" : "denied",
+        trustOrigin: outcome === "denied" ? "user-keyboard" : "unknown",
+      });
+      expect(navigated).toBe(false);
+      expect(h.manager.browserSites.allows(HOST_SESSION, url)).toBe(false);
+    });
+  });
 
   it("asks for a new site once and lets later tools and same-origin navigation run", async () => {
     const h = harness();

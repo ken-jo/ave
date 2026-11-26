@@ -1588,10 +1588,13 @@ async function runToolInvocationAttempt(
       approvalSignal && abortSignal ? AbortSignal.any([approvalSignal, abortSignal]) : approvalSignal ?? abortSignal;
     const directoryGrantGuard = (signal?: AbortSignal) =>
       invocationApprovalPersistenceGuard(invocationPermissionContext.remoteControllerAuthority, sessionId, signal);
-    const cancelDirectoryGrant = async (signal = services.invocationTerminal.bindAbortSignal()): Promise<ToolResult> => {
+    const cancelDirectoryGrant = async (
+      signal = services.invocationTerminal.bindAbortSignal(),
+      approvalCancellation?: NonNullable<ReturnType<typeof getApprovalFailureOutcome>>,
+    ): Promise<ToolResult> => {
       const cancellationSignal = signal.aborted ? signal : services.approvalGate?.shutdownSignal ?? signal;
       return withHostShellExecutionPlan(await returnUserAbort({
-        ...abortDeps(finalInput), abortSignal: cancellationSignal, permissionContext: invocationPermissionContext,
+        ...abortDeps(finalInput), abortSignal: cancellationSignal, permissionContext: invocationPermissionContext, approvalCancellation,
       }));
     };
     const denyDirectoryGrant = async (signal?: AbortSignal, reason = "remote-controller-revoked"): Promise<ToolResult> => {
@@ -1903,7 +1906,8 @@ async function runToolInvocationAttempt(
         }
         const finishDirectoryDenial = async (decision: ApprovalDecision, surfaceRefused = false) => {
           if (isHostApprovalCancelledDecision(decision)) {
-            return { allowed: false as const, approvalDecision: decision, result: await cancelDirectoryGrant() };
+            const classified = directorySignal?.aborted ? undefined : getApprovalFailureOutcome(decision, toolUse.name) ?? undefined;
+            return { allowed: false as const, approvalDecision: decision, result: await cancelDirectoryGrant(directorySignal, classified) };
           }
           const hostFailure = surfaceRefused ? { content: dirLayerResult.reason, permission: dirLayerResult }
             : approvalFailureOutcome(decision, toolUse.name, dirLayerResult);

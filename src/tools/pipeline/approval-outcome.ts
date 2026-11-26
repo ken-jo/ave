@@ -59,6 +59,17 @@ export function abortSupersedesApprovalDecision(
   return decision === undefined || !isAnsweredApprovalDenial(decision);
 }
 
+export class BrowserApprovalError extends Error {
+  constructor(content: string, readonly permission: PermissionCheckResult, readonly cancelled = false) {
+    super(content);
+  }
+}
+
+export function browserApprovalErrorOf(error: unknown): BrowserApprovalError | undefined {
+  if (error instanceof BrowserApprovalError) return error;
+  if (error instanceof Error && error.cause instanceof BrowserApprovalError) return error.cause;
+}
+
 export function approvalCancellationMessage(detail?: string): string {
   const cancellation = t("be_executor.toolExecutionCancelled");
   return detail ? `${cancellation} (${detail})` : cancellation;

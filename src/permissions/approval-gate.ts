@@ -557,13 +557,27 @@ export function provenanceTrustOrigin<Origin extends string>(
   }
 }
 
+export type ApprovalFailureKind = "denied" | "rejected" | "expired" | "unavailable" | "cancelled";
+
+/** Classify a card result after admitting it against its request. */
+export function approvalFailureKind(decision: ApprovalDecision): ApprovalFailureKind | undefined {
+  if (isAnsweredApprovalDenial(decision)) return "denied";
+  if (decision.choice.startsWith("allow")) return undefined;
+  if (isHostApprovalCancelledDecision(decision)) return "cancelled";
+  if (decision.rememberPattern === NO_APPROVER_MESSAGE) return "unavailable";
+  if (isHostApprovalTimeoutDecision(decision)) return "expired";
+  return "rejected";
+}
+
 /** A refused approval stays host-owned unless the gate recorded a person's denial. */
 export function hostApprovalDenialReason(decision: ApprovalDecision): string | undefined {
-  if (isAnsweredApprovalDenial(decision) || decision.choice.startsWith("allow")) return undefined;
-  if (isHostApprovalCancelledDecision(decision)) return "approval request cancelled";
-  if (decision.rememberPattern === NO_APPROVER_MESSAGE) return NO_APPROVER_MESSAGE;
-  if (isHostApprovalTimeoutDecision(decision)) return "approval request expired";
-  return "approval rejected by host";
+  switch (approvalFailureKind(decision)) {
+    case "cancelled": return "approval request cancelled";
+    case "unavailable": return NO_APPROVER_MESSAGE;
+    case "expired": return "approval request expired";
+    case "rejected": return "approval rejected by host";
+    default: return undefined;
+  }
 }
 
 /** A deny a person answered, as the gate recorded it when it accepted the answer. */

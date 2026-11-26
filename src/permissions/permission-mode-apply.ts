@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { t } from "../i18n/index.js";
 import { isExternalOrigin, type ExternalOrigin, type TrustOrigin } from "../contract/trust-origin.js";
-import type { ApprovalGate } from "./approval-gate.js";
+import { admitApprovalAnswer, approvalFailureKind, type ApprovalGate, type ApprovalRequestInput } from "./approval-gate.js";
+import { approvalFailureOutcome } from "../tools/pipeline/approval-outcome.js";
 import type { PermissionManager } from "./permission-manager.js";
 import type { PermissionModeCommand } from "./permission-slash.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
@@ -168,7 +169,7 @@ async function applyPermissionModeChange(
         message: t("be_permissionModeApply.approvalGateUnavailable"),
       };
     }
-    const decision = await deps.approvalGate.requestAndWait({
+    const request = {
       id: randomUUID(),
       category: "tool",
       toolName: "/permission mode",
@@ -179,15 +180,26 @@ async function applyPermissionModeChange(
       createdAt: Date.now(),
       trustOrigin: "user-keyboard",
       abortSignal: signal,
-    });
-    if (signal.aborted) return cancelled;
-    // Any allow approves this switch; the card answers a conversation-scoped remembered allow with allow-session.
-    if (decision.choice !== "allow-once" && decision.choice !== "allow-session" && decision.choice !== "allow-always") {
-      return {
-        ok: false,
-        error: "durable-mode-denied",
-        message: t("be_permissionModeApply.durableModeDenied"),
-      };
+    } satisfies ApprovalRequestInput;
+    const rejected = { ok: false as const, error: "approval-rejected", message: t("be_executor.approvalHostRejectedReason") };
+    try {
+      const decision = await deps.approvalGate.requestAndWait(request);
+      admitApprovalAnswer(decision, { requestId: request.id, toolName: request.toolName, toolUseId: undefined });
+      if (signal.aborted) return cancelled;
+      const failure = approvalFailureKind(decision);
+      if (failure === "denied") {
+        return { ok: false, error: "durable-mode-denied", message: t("be_permissionModeApply.durableModeDenied") };
+      }
+      if (failure === "unavailable") {
+        return { ok: false, error: "approval-gate-unavailable", message: t("be_permissionModeApply.approvalGateUnavailable") };
+      }
+      if (failure !== undefined) {
+        return { ok: false, error: `approval-${failure}`, message: approvalFailureOutcome(decision, request.toolName)?.content ?? rejected.message };
+      }
+      // The card answers a conversation-scoped remembered allow with allow-session.
+      if (decision.choice !== "allow-once" && decision.choice !== "allow-session" && decision.choice !== "allow-always") return rejected;
+    } catch {
+      return signal.aborted ? cancelled : rejected;
     }
   }
 

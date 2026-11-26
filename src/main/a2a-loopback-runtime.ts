@@ -245,12 +245,12 @@ export async function createA2ALoopbackRuntime(
 
   const authorizeOperation: A2AWireAuthorizer = async (descriptor) => {
     if (!options.approveAgentAction) return false;
-    return Boolean(await options.approveAgentAction({
+    return (await options.approveAgentAction({
       toolName: `a2a-${descriptor.operation}`,
       args: { operation: descriptor.operation, handlerId: descriptor.handlerId },
       reason: options.approvalReason ?? "An external A2A client requested a sub-agent operation. Do you want to allow it?",
       trustOrigin: options.wireTrustOrigin ?? "a2a-loopback",
-    }));
+    })).approved;
   };
 
   const handlers = snapshots.map(({ profile, handlerId }) => {
