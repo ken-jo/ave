@@ -13,6 +13,7 @@ const vendor = "node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win";
 const launchers = [windowsJobLauncherPath(), join("resources", "windows-path-kind", process.arch, "ave-path-kind.exe")];
 const helpers = [
   ...launchers,
+  join("resources", "windows-path-kind", process.arch, "ave-path-kind-hold-fixture.exe"),
   ...Object.keys(TARGETS).flatMap(arch => ["upstream-srt-win.exe", "srt-win.exe", "build-receipt.json"]
     .map(file => join(vendor, arch, file))),
   ...["js", "json"].map(extension => `src/permissions/generated/srt-win-build-receipts.${extension}`),

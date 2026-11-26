@@ -84,7 +84,7 @@ const UNCONTAINED_COMMANDS = new Map([
   ...["key", "restore", "seal", "verify-installed", "verify-publication"].map(operation => ["node .github/scripts/windows-preparation-cache.mjs " + operation, "inventories or verifies preparation bytes"]),
   ["node scripts/fetch-uv.mjs", "fetches a pinned tool"],
   ["node .github/scripts/python-archive-cache.mjs", "computes a cache key"],
-  ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind"].map(option => [
+  ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind", " -Helper path-kind -HoldFixture"].map(option => [
     `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1${option}`,
     "builds the containment launcher and its native helpers",
   ]),
@@ -382,7 +382,7 @@ function checkFirstPreparationLaunch(steps) {
 
 // Restored or cached native binaries: the containment launcher (every
 // run-in-job line), its fixtures, the path classifier and the sandbox helper.
-const HELPER_EXECUTABLE_RE = /(?:^|[^\w-])(?:upstream-)?(?:srt-win|ave-job(?:-failure|-query-failure)?|ave-path-kind|ave-path-pin-test)\.exe(?![\w.-])/u;
+const HELPER_EXECUTABLE_RE = /(?:^|[^\w-])(?:upstream-)?(?:srt-win|ave-job(?:-failure|-query-failure)?|ave-path-kind(?:-hold-fixture)?|ave-path-pin-test)\.exe(?![\w.-])/u;
 const SRT_WIN_EXECUTABLE_RE = /(?:^|[^\w-])srt-win\.exe(?![\w.-])/u;
 const EXIT_ON_FAILURE = "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }";
 const SRT_WIN_INTEGRITY = "node scripts/check-srt-win-integrity.cjs";
