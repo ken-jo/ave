@@ -124,7 +124,7 @@ function reviewer() {
 }
 
 describe("native invocation permission evidence", () => {
-  it("cancels a host-settled directory card with its scope reason and a live caller", async () => {
+  it.each(["scope", "scope-before-stop", "stop-before-scope"] as const)("cancels a directory card with the first settlement (%s)", async (order) => {
     await audit.setupPermissionAuditChain("aa".repeat(32));
     manager.setMode("default");
     const turn = new AbortController();
@@ -134,7 +134,12 @@ describe("native invocation permission evidence", () => {
     const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, card: ApprovalRequest) => {
       if (channel !== IPC_APPROVAL_REQUEST) return;
       cardSeen(card.kind);
-      queueMicrotask(() => gate.cancelPendingRequest(card.id, sessionId, "project-scope-changed"));
+      queueMicrotask(() => {
+        const cancelScope = () => gate.cancelPendingRequest(card.id, sessionId, "project-scope-changed");
+        if (order === "stop-before-scope") turn.abort();
+        expect(cancelScope()).toBe(order !== "stop-before-scope");
+        if (order === "scope-before-stop") turn.abort();
+      });
     } } as never);
     const subject = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
     const path = join(root, "cancelled-folder.txt");
@@ -144,12 +149,17 @@ describe("native invocation permission evidence", () => {
     ], { sessionId, executionCwd: project, abortSignal: turn.signal,
       permissionContext: { trustOrigin: "user-keyboard", additionalDirectories: [], onTurnDirectoryGrant: grant } });
     expect(cardSeen).toHaveBeenCalledExactlyOnceWith("out-of-allowed-dir");
-    expect(turn.signal.aborted).toBe(false);
-    expect.soft(result).toMatchObject({ is_error: true, content: expect.stringContaining("project-scope-changed") });
+    expect(turn.signal.aborted).toBe(order !== "scope");
+    const reason = order === "stop-before-scope" ? /user aborted turn/i : /project-scope-changed/;
+    expect.soft(result.is_error).toBe(true);
+    if (order === "stop-before-scope") expect.soft(result.content).not.toContain("project-scope-changed");
+    else expect.soft(result.content).toContain("project-scope-changed");
     const terminal = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map(line => JSON.parse(line)).at(-1);
-    expect.soft(terminal).toMatchObject({ toolUseId: "cancelled-folder", decision: "deny", terminalKind: "cancelled", trustOrigin: "unknown",
-      denyReasons: [expect.objectContaining({ reason: expect.stringContaining("project-scope-changed") })] });
-    expect(rows).toHaveBeenCalledWith(expect.objectContaining({ type: "tool_call", output: expect.stringContaining("project-scope-changed") }));
+    expect.soft(terminal).toMatchObject({ toolUseId: "cancelled-folder", decision: "deny", terminalKind: "cancelled",
+      trustOrigin: order === "stop-before-scope" ? "user-keyboard" : "unknown",
+      denyReasons: [expect.objectContaining({ reason: expect.stringMatching(reason) })] });
+    expect(rows).toHaveBeenCalledWith(expect.objectContaining({ type: "tool_call",
+      toolCalls: [expect.objectContaining({ permissionDecision: "cancelled", permissionReason: expect.stringMatching(reason) })] }));
     expect(grant).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
   });

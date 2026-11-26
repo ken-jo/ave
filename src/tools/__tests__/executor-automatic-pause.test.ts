@@ -302,7 +302,7 @@ describe("executor automated approval pause", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it.each(["caller", "quit", "project-scope-changed"] as const)("cancels a pending late native card without entering the handler (%s)", async (by) => {
+  it.each(["caller", "quit", "project-scope-changed", "scope-before-stop", "stop-before-scope"] as const)("cancels a pending late native card without entering the handler (%s)", async (by) => {
     const f = await subject();
     const controller = new AbortController();
     const execute = vi.fn(async () => "wrote");
@@ -321,12 +321,16 @@ describe("executor automated approval pause", () => {
     release();
     await vi.waitFor(() => expect(cards).toHaveLength(1));
     expect(gate.pendingCount).toBe(1);
-    if (by === "project-scope-changed") {
-      expect(gate.cancelPendingRequest(cards[0].id, SESSION_ID, by)).toBe(true);
+    const cancelScope = () => gate.cancelPendingRequest(cards[0].id, SESSION_ID, "project-scope-changed");
+    const scopeSettles = by === "project-scope-changed" || by === "scope-before-stop";
+    if (scopeSettles) {
+      expect(cancelScope()).toBe(true);
       expect(controller.signal.aborted).toBe(false);
-    } else {
+    }
+    if (by !== "project-scope-changed") {
       controller.abort(by === "quit" ? new HostExitAbortError() : new Error("caller cancelled pending late card"));
     }
+    if (by === "stop-before-scope") expect(cancelScope()).toBe(false);
     let settled = false;
     void pending.then(() => { settled = true; });
     await vi.waitFor(() => expect(settled).toBe(true), { timeout: 1_000 });
@@ -339,12 +343,13 @@ describe("executor automated approval pause", () => {
     const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
     if (by === "quit") {
       expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "cancel-late-card", denyReasons: [{ reason: "host-shutdown" }], trustOrigin: "unknown" });
-    } else if (by === "project-scope-changed") {
-      expect.soft(result.content).toContain(by);
+    } else if (scopeSettles) {
+      const detail = "project-scope-changed";
+      expect.soft(result.content).toContain(detail);
       expect.soft(rows.at(-1)).toMatchObject({ decision: "deny", terminalKind: "cancelled", toolUseId: "cancel-late-card",
-        denyReasons: [expect.objectContaining({ reason: expect.stringContaining(by) })], trustOrigin: "unknown" });
-      expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({ type: "tool_call", output: expect.stringContaining(by),
-        toolCalls: [expect.objectContaining({ permissionDecision: "cancelled", permissionReason: expect.stringContaining(by) })] }));
+        denyReasons: [expect.objectContaining({ reason: expect.stringContaining(detail) })], trustOrigin: "unknown" });
+      expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({ type: "tool_call", output: expect.stringContaining(detail),
+        toolCalls: [expect.objectContaining({ permissionDecision: "cancelled", permissionReason: expect.stringContaining(detail) })] }));
     } else {
       expect(result.content).toBe(t("be_executor.toolExecutionCancelled"));
       expect(rows.at(-1)).toMatchObject({ decision: "deny", terminalKind: "cancelled", toolUseId: "cancel-late-card" });

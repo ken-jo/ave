@@ -1906,7 +1906,7 @@ async function runToolInvocationAttempt(
         }
         const finishDirectoryDenial = async (decision: ApprovalDecision, surfaceRefused = false) => {
           if (isHostApprovalCancelledDecision(decision)) {
-            const classified = directorySignal?.aborted ? undefined : getApprovalFailureOutcome(decision, toolUse.name) ?? undefined;
+            const classified = decision.rememberPattern === undefined ? undefined : getApprovalFailureOutcome(decision, toolUse.name) ?? undefined;
             return { allowed: false as const, approvalDecision: decision, result: await cancelDirectoryGrant(directorySignal, classified) };
           }
           const hostFailure = surfaceRefused ? { content: dirLayerResult.reason, permission: dirLayerResult }

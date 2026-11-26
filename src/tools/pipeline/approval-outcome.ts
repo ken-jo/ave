@@ -50,13 +50,14 @@ export function isSettledRefusal(decision: ApprovalDecision): boolean {
   return !decision.choice.startsWith("allow") || isHostApprovalRejectedDecision(decision);
 }
 
-/** An abort can end an approval wait and still preserve a person's settled denial. */
+/** Keep a person's denial or a distinct host cancellation that already settled the card. */
 export function abortSupersedesApprovalDecision(
   abortSignal: AbortSignal | undefined,
   decision: ApprovalDecision | undefined,
 ): boolean {
   if (abortSignal?.aborted !== true) return false;
-  return decision === undefined || !isAnsweredApprovalDenial(decision);
+  return decision === undefined || (!isAnsweredApprovalDenial(decision)
+    && !(isHostApprovalCancelledDecision(decision) && decision.rememberPattern !== undefined));
 }
 
 export class BrowserApprovalError extends Error {
