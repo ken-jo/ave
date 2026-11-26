@@ -1,5 +1,6 @@
 // Plans describe substrates, not authorization. Bind proof privately to one final action and consume it before plain-host spawn.
 import type { ChildProcess } from "node:child_process";
+import { forceKillManagedChildProcess } from "../main/managed-child-processes.js";
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { captureShellWorkingDirectoryIdentity, holdShellWorkingDirectory, matchesShellWorkingDirectoryIdentity, pinShellWorkingDirectory, sameShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
@@ -28,6 +29,12 @@ import {
 import { withShellPolicyHandoff } from "./shell-policy-handoff.js";
 
 export type HostShellToolName = "bash" | "powershell";
+
+export const HOST_SHELL_DIRECTORY_HOLD_ERROR = "this host shell execution could not keep its working directory and parent folders from being renamed or deleted. Request authorization again.";
+
+export class HostShellDirectoryHoldError extends Error {
+  constructor() { super(HOST_SHELL_DIRECTORY_HOLD_ERROR); }
+}
 
 export const HOST_SHELL_AUTHORIZATION_REVOKED_ERROR = "this host shell execution requires a one-shot host approval permit. The working directory or permission policy changed, or the permit is invalid or revoked. Request authorization again.";
 
@@ -278,28 +285,35 @@ function isHostShellSpawnDirectoryCurrent(record: PermitRecord): boolean {
 }
 
 export interface HostShellSpawnDirectoryHold {
-  /** Keep the hold until this child closes. */
+  /** Throws HostShellDirectoryHoldError once the directory is no longer held. */
+  assertHeld(): void;
+  /** Keep the hold until this child closes; stop the child if the hold is lost first. */
   bind(child: ChildProcess): void;
   /** Release now unless a child was bound. */
   dispose(): void;
 }
 
-const NO_DIRECTORY_HOLD: HostShellSpawnDirectoryHold = Object.freeze({ bind() {}, dispose() {} });
+const NO_DIRECTORY_HOLD: HostShellSpawnDirectoryHold = Object.freeze({ assertHeld() {}, bind() {}, dispose() {} });
 
-/** Windows children open their cwd by path, so the host holds the approved directory chain against rename and delete
- * from before the final check until the child closes. This is not a child-side proof. Other platforms check inside the child. */
-export async function holdHostShellSpawnDirectory(authorization: HostShellSpawnAuthorization | undefined): Promise<HostShellSpawnDirectoryHold | undefined> {
+/** Windows children open their cwd by path, so a permit-bearing Bash or PowerShell launch holds the approved directory chain against rename
+ * and delete from before its final check until the child closes, and refuses the launch when the hold cannot be taken,
+ * no longer matches the approved identity, or is lost first. A lost hold after launch stops the child. Nothing is proven
+ * inside the child, and a held leaf whose contents can be removed can still become a junction in place. */
+export async function holdHostShellSpawnDirectory(authorization: HostShellSpawnAuthorization | undefined): Promise<HostShellSpawnDirectoryHold> {
   if (authorization === undefined || process.platform !== "win32") return NO_DIRECTORY_HOLD;
-  const release = await pinShellWorkingDirectory(authorization.cwdIdentity);
-  if (release === undefined) return undefined;
+  const held = await pinShellWorkingDirectory(authorization.cwdIdentity);
+  if (held === undefined) throw new HostShellDirectoryHoldError();
   let bound = false;
   return {
+    assertHeld() { if (!held.isHeld()) throw new HostShellDirectoryHoldError(); },
     bind(child) {
       bound = true;
-      child.once("close", release);
-      child.once("error", release);
+      child.once("close", held.release);
+      // A started child can report an error and keep running; only a start without a process frees the hold early.
+      child.on("error", () => { if (child.pid === undefined) held.release(); });
+      held.onLost(() => { void forceKillManagedChildProcess(child, "shell-directory-hold-lost"); });
     },
-    dispose() { if (!bound) release(); },
+    dispose() { if (!bound) held.release(); },
   };
 }
 
@@ -317,6 +331,7 @@ export async function withHostShellExecutionHandoff<T>(
       if (record === undefined || hold === undefined ||
         (record.allowRuleAuthorization !== undefined && !isShellAllowRulePolicyCurrent(record.allowRuleAuthorization)) ||
         !isHostShellSpawnDirectoryCurrent(record)) return undefined;
+      hold.assertHeld();
       // This host's persisted policy mutations share this queue. Uncoordinated external edits after this final validation apply from the next command. The synchronous handoff grants the waiting child (or spawns it on platforms without a child guard); it must never await between validation and grant.
       return handoff(hold);
     }, async () => {

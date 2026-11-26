@@ -122,6 +122,7 @@ import {
   resolveHostShellWorkingDirectory,
   withHostShellExecutionHandoff,
   holdHostShellSpawnDirectory,
+  HostShellDirectoryHoldError,
   assertHostShellSpawnDirectory,
   type HostShellSpawnAuthorization,
   type HostShellSpawnDirectoryHold,
@@ -2207,6 +2208,7 @@ async function spawnBackground(command: string, cwd: string, sessionId: string, 
     signal?.throwIfAborted();
     const launched = authorization === undefined || prelude !== undefined ? launch()
       : await withHostShellExecutionHandoff(authorization, (hold) => {
+          signal?.throwIfAborted();
           assertShellRemoteAuthority();
           const started = launch();
           hold.bind(started);
@@ -2580,8 +2582,8 @@ export async function spawnWithSandbox(
   let cwdHold: HostShellSpawnDirectoryHold | undefined;
   try {
   signal?.throwIfAborted();
-  cwdHold = await holdHostShellSpawnDirectory(spawnAuthorization);
-  if (cwdHold === undefined) throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
+  const directoryHold = await holdHostShellSpawnDirectory(spawnAuthorization);
+  cwdHold = directoryHold;
   const { shell, homePath, hostHome: home } = preparedShellCommand(prepared);
   if (!homePath) throw new Error("Sandbox shell preparation has no owned HOME");
   // Compose broad reads while retaining protected paths and private sessions.
@@ -2667,6 +2669,7 @@ export async function spawnWithSandbox(
       assertManagedChildProcessAdmissionOpen("tool:bash:asrt");
       assertSrtWinSpawnIntegrity(cmd);
       assertHostShellSpawnDirectory(spawnAuthorization);
+      directoryHold.assertHeld();
       child = spawn(cmd, args, {
         windowsHide: true,
         detached: process.platform !== "win32",
@@ -2675,7 +2678,7 @@ export async function spawnWithSandbox(
         shell: false,
         env: childEnv,
       });
-      cwdHold?.bind(child);
+      directoryHold.bind(child);
     } catch (err) {
       observation?.finish(null, "failed");
       void (async () => {
@@ -2777,6 +2780,11 @@ export async function spawnWithSandbox(
     });
   });
   } finally { releaseClaim(); cwdHold?.dispose(); }
+}
+
+function directoryHoldRefusal(error: unknown): HostShellDirectoryHoldError {
+  if (error instanceof HostShellDirectoryHoldError) return error;
+  throw error;
 }
 
 async function spawnWithTimeout(
@@ -2940,7 +2948,9 @@ async function spawnWithTimeout(
   if (spawnAuthorization !== undefined && prelude === undefined) {
     // Keep listener registration in the synchronous handoff, without holding
     // the policy queue for the lifetime of the command's result promise.
-    const handoff = await withHostShellExecutionHandoff(spawnAuthorization, (hold) => { launchHold = hold; return { result: launch() }; }, refreshShellRemoteAuthority);
+    const handoff = await withHostShellExecutionHandoff(spawnAuthorization, (hold) => { launchHold = hold; return { result: launch() }; }, refreshShellRemoteAuthority)
+      .catch(directoryHoldRefusal);
+    if (handoff instanceof HostShellDirectoryHoldError) return { output: `spawn failed: ${handoff.message}`, isError: true, metadata: {} };
     return handoff === undefined
       ? { output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true, metadata: {} } : await handoff.result;
   }
@@ -3948,8 +3958,8 @@ async function spawnPowerShellWithSandbox(
 ): Promise<ToolExecutionResult> {
   const waitForClose = verified !== undefined && verifiedShellRequiresResultCheck(verified.handle, verified.identity);
   signal?.throwIfAborted();
-  const cwdHold = await holdHostShellSpawnDirectory(spawnAuthorization);
-  if (cwdHold === undefined) return { output: `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true };
+  const cwdHold = await holdHostShellSpawnDirectory(spawnAuthorization).catch(directoryHoldRefusal);
+  if (cwdHold instanceof HostShellDirectoryHoldError) return { output: `PowerShell spawn failed: ${cwdHold.message}`, isError: true };
   try {
   // Resolve before allocating the temporary profile so a missing PowerShell
   // executable cannot leave an orphaned sandbox HOME behind.
@@ -4056,6 +4066,7 @@ async function spawnPowerShellWithSandbox(
       assertManagedChildProcessAdmissionOpen("tool:powershell:asrt");
       assertSrtWinSpawnIntegrity(cmd);
       assertHostShellSpawnDirectory(spawnAuthorization);
+      cwdHold.assertHeld();
       child = spawn(cmd, args, {
         windowsHide: true,
         detached: process.platform !== "win32",
@@ -4221,7 +4232,6 @@ async function spawnPowerShellInMxc(
     failurePrefix = "";
     lifecycle.defer(() => sandboxHome.cleanup());
     const cwdHold = await holdHostShellSpawnDirectory(spawnAuthorization);
-    if (cwdHold === undefined) throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
     lifecycle.defer(() => cwdHold.dispose());
     const powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome);
     const sandboxWritePaths = [...writePaths, sandboxHome.path];
@@ -4273,6 +4283,7 @@ async function spawnPowerShellInMxc(
     launch.activate();
     try {
       assertHostShellSpawnDirectory(spawnAuthorization);
+      cwdHold.assertHeld();
       child = spawn(cmd, args, {
         // The launcher runs from its own (per-machine, admin-only) directory, so
         // nothing in the workspace sits beside it; the container's working
@@ -4522,7 +4533,9 @@ async function spawnPowerShell(
     });
   });
   if (spawnAuthorization !== undefined && prelude === undefined) {
-    const handoff = await withHostShellExecutionHandoff(spawnAuthorization, (hold) => { launchHold = hold; return { result: launch() }; }, refreshShellRemoteAuthority);
+    const handoff = await withHostShellExecutionHandoff(spawnAuthorization, (hold) => { launchHold = hold; return { result: launch() }; }, refreshShellRemoteAuthority)
+      .catch(directoryHoldRefusal);
+    if (handoff instanceof HostShellDirectoryHoldError) return { output: `PowerShell spawn failed: ${handoff.message}`, isError: true };
     return handoff === undefined
       ? { output: `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true } : handoff.result;
   }

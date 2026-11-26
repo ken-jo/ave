@@ -10,13 +10,23 @@ import { ApprovalGate, type ApprovalDecision, type ApprovalRequest } from "../..
 const spawnBoundary = vi.hoisted(() => ({
   mutate: undefined as (() => void) | undefined,
   cwd: undefined as string | undefined,
+  helperArgs: undefined as string[] | undefined,
+  onHelper: undefined as ((helper: import("node:child_process").ChildProcess) => void) | undefined,
+  commands: [] as string[],
 }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     spawn: vi.fn((...args: Parameters<typeof actual.spawn>) => {
-      if (spawnBoundary.mutate !== undefined && !String(args[0]).endsWith("ave-path-kind.exe")) {
+      if (String(args[0]).endsWith("ave-path-kind.exe")) {
+        if (spawnBoundary.helperArgs !== undefined) args[1] = spawnBoundary.helperArgs;
+        const helper = actual.spawn(...args);
+        spawnBoundary.onHelper?.(helper);
+        return helper;
+      }
+      spawnBoundary.commands.push(String(args[0]));
+      if (spawnBoundary.mutate !== undefined) {
         const mutate = spawnBoundary.mutate;
         spawnBoundary.mutate = undefined;
         spawnBoundary.cwd = String(args[2]?.cwd);
@@ -28,7 +38,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, mintHostShellExecutionPermit } from "../../permissions/host-shell-execution-permit.js";
+import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, HOST_SHELL_DIRECTORY_HOLD_ERROR, mintHostShellExecutionPermit, recordHostShellPolicyAuthorization } from "../../permissions/host-shell-execution-permit.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { BashTool } from "../shell-tools.js";
 import { ToolExecutor } from "../executor.js";
@@ -44,15 +54,22 @@ beforeEach(() => {
   __resetSandboxRequestedAtBootForTest();
   spawnBoundary.mutate = undefined;
   spawnBoundary.cwd = undefined;
+  spawnBoundary.helperArgs = undefined;
+  spawnBoundary.onHelper = undefined;
+  spawnBoundary.commands = [];
 });
 afterEach(async () => {
   spawnBoundary.mutate = undefined;
+  spawnBoundary.helperArgs = undefined;
+  spawnBoundary.onHelper = undefined;
   await cleanupTmpDir(directory);
 });
 
-async function authorizedContext(cwd: string, command = "touch marker", rulePatterns: readonly string[] = ["Bash(touch marker)"]) {
-  const plan = getHostShellExecutionPlan("host");
-  const input = { command, cwd, executionMode: "host" as const, justification: "Run in the approved directory", timeoutSeconds: 10 };
+async function authorizedContext(cwd: string, command = "touch marker", rulePatterns: readonly string[] = ["Bash(touch marker)"], background = false) {
+  const plan = getHostShellExecutionPlan(background ? "default" : "host");
+  const input = background
+    ? { command, cwd, run_in_background: true as const, timeoutSeconds: 10 }
+    : { command, cwd, executionMode: "host" as const, justification: "Run in the approved directory", timeoutSeconds: 10 };
   const manager = new PermissionManager(join(directory, "permissions.json"));
   manager.setRules(rulePatterns.map((pattern) => ({ pattern, action: "allow" as const, shellRuleVersion: SHELL_RULE_CANONICAL_VERSION })));
   const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
@@ -64,7 +81,8 @@ async function authorizedContext(cwd: string, command = "touch marker", rulePatt
     plan, toolName: "bash", toolUseId: "cwd-spawn", rawInput: input, executionCwd: directory, extraAllowedDirectories: [],
   })!;
   let approvalDecision: ApprovalDecision | undefined;
-  if (decision.decision !== "allow") {
+  if (background) recordHostShellPolicyAuthorization(binding);
+  else if (decision.decision !== "allow") {
     const webContents = { isDestroyed: vi.fn(() => false), send: vi.fn() };
     const gate = new ApprovalGate(webContents as never);
     const directory = createShellApprovalDirectory(binding);
@@ -278,5 +296,65 @@ describe("host cwd races after permit consumption", () => {
     expect(result.output).toMatch(/working directory.*changed/i);
     expect(existsSync(join(current, "marker"))).toBe(false);
     expect(existsSync(join(original, "marker"))).toBe(false);
+  });
+});
+
+describe.runIf(process.platform === "win32")("Windows host cwd hold at launch", () => {
+  const helperExitsOnReply = (helper: import("node:child_process").ChildProcess) => {
+    helper.stdout?.once("data", () => queueMicrotask(() => {
+      helper.kill();
+      helper.emit("exit", null, "SIGTERM");
+    }));
+  };
+
+  it("refuses the spawn when the directory cannot be held", async () => {
+    mkdirSync(join(directory, "current"));
+    const { input, context } = await authorizedContext("current");
+    spawnBoundary.helperArgs = ["--hold", "relative"];
+    const result = await new BashTool().execute(input, context);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain(HOST_SHELL_DIRECTORY_HOLD_ERROR);
+    expect(spawnBoundary.commands).toEqual([]);
+    expect(existsSync(join(directory, "current", "marker"))).toBe(false);
+  });
+
+  it("refuses the spawn when the helper exits after its reply and before the handoff", async () => {
+    mkdirSync(join(directory, "current"));
+    const { input, context } = await authorizedContext("current");
+    spawnBoundary.onHelper = helperExitsOnReply;
+    const result = await new BashTool().execute(input, context);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain(HOST_SHELL_DIRECTORY_HOLD_ERROR);
+    expect(spawnBoundary.commands).toEqual([]);
+    expect(existsSync(join(directory, "current", "marker"))).toBe(false);
+  });
+
+  it("stops the command when the helper exits after launch", async () => {
+    mkdirSync(join(directory, "current"));
+    const { input, context } = await authorizedContext("current", "sleep 5 && touch marker", ["Bash(sleep 5)", "Bash(touch marker)"]);
+    let helper: import("node:child_process").ChildProcess | undefined;
+    spawnBoundary.onHelper = (child) => { helper = child; };
+    spawnBoundary.mutate = () => { setTimeout(() => helper?.kill(), 500); };
+    const started = Date.now();
+    const result = await new BashTool().execute(input, context);
+    // The shell is stopped before it reaches the marker; a descendant holding its pipes can delay the result.
+    expect(spawnBoundary.commands[0]).not.toMatch(/taskkill/iu);
+    expect(spawnBoundary.commands.some(command => /taskkill/iu.test(command))).toBe(true);
+    expect(result.isError).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, 6000 - (Date.now() - started))));
+    expect(existsSync(join(directory, "current", "marker"))).toBe(false);
+  }, 15000);
+
+  it("does not start a background job when the call is cancelled during hold acquisition", async () => {
+    setShellSandboxRequestedAtBoot(false);
+    mkdirSync(join(directory, "current"));
+    const { input, context } = await authorizedContext("current", "touch marker", ["Bash(touch marker)"], true);
+    const abort = new AbortController();
+    spawnBoundary.onHelper = () => abort.abort();
+    const outcome = await new BashTool().execute(input, { ...context, abortSignal: abort.signal }).catch((error: unknown) => error);
+    expect(abort.signal.aborted).toBe(true);
+    expect(outcome).not.toMatchObject({ isError: false });
+    expect(spawnBoundary.commands).toEqual([]);
+    expect(existsSync(join(directory, "current", "marker"))).toBe(false);
   });
 });

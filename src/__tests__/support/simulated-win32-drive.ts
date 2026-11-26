@@ -54,7 +54,7 @@ export async function simulatedWindowsPathFacts(actual: typeof PathFacts, native
   };
   return { ...actual,
     holdWindowsDirectory: async path => process.platform !== "win32"
-      ? actual.holdWindowsDirectory(path) : { facts: facts(path), release() {} },
+      ? actual.holdWindowsDirectory(path) : { facts: facts(path), isHeld: () => true, onLost() {}, release() {} },
     pinWindowsPaths: paths => process.platform !== "win32"
       ? actual.pinWindowsPaths(paths) : paths.map(facts),
     readWindowsDacls: (paths, options) => process.platform !== "win32"

@@ -231,11 +231,16 @@ export function pinWindowsPaths(paths: readonly string[]): readonly WindowsPathF
 
 export interface HeldWindowsDirectory {
   readonly facts: WindowsPathFacts;
+  /** False once the helper that owns the handles has exited or failed, or after `release`. */
+  isHeld(): boolean;
+  /** Runs once when the hold is lost before `release`; at once if it is already lost. */
+  onLost(listener: () => void): void;
   /** Idempotent. */
   release(): void;
 }
 
-/** Hold a directory and every ancestor against rename and delete until `release`; undefined when the helper did not hold it. */
+/** Hold a directory and every ancestor against rename and delete until `release`; undefined when the helper did not hold it.
+ * The handles live in the helper, so its exit or failure after the reply loses the hold. */
 export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory | undefined> {
   if (!isAbsolute(path)) return Promise.resolve(undefined);
   let child: ChildProcessByStdio<Writable, Readable, null>;
@@ -244,36 +249,66 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
   } catch {
     return Promise.resolve(undefined);
   }
-  child.stdin.on("error", () => {});
+  let settled = false;
+  let released = false;
+  let lost = false;
+  const lostListeners: (() => void)[] = [];
   const release = (): void => {
+    if (released) return;
+    released = true;
+    lostListeners.length = 0;
     child.stdin.destroy();
     child.kill();
   };
+  const loseHold = (): void => {
+    if (released || lost) return;
+    lost = true;
+    for (const listener of lostListeners.splice(0)) listener();
+  };
+  const held = (facts: WindowsPathFacts): HeldWindowsDirectory => ({
+    facts,
+    isHeld: () => !released && !lost,
+    onLost(listener) {
+      if (released) return;
+      if (lost) listener();
+      else lostListeners.push(listener);
+    },
+    release,
+  });
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
-    let settled = false;
-    const settle = (held: HeldWindowsDirectory | undefined): void => {
+    let received = 0;
+    const settle = (result: HeldWindowsDirectory | undefined): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       child.stdout.destroy();
-      if (held === undefined) release();
-      resolve(held);
+      if (result === undefined) release();
+      resolve(result);
+    };
+    const failed = (): void => {
+      if (settled) loseHold();
+      else settle(undefined);
     };
     const timer = setTimeout(() => settle(undefined), TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs);
-    child.once("error", () => settle(undefined));
-    child.once("exit", () => settle(undefined));
+    child.on("error", failed);
+    child.once("exit", failed);
+    child.stdin.on("error", failed);
+    child.stdout.on("error", () => settle(undefined));
     child.stdout.on("data", (chunk: Buffer) => {
-      chunks.push(chunk);
-      const reply = Buffer.concat(chunks);
-      const end = reply.indexOf(0x0a);
-      if (end < 0) {
-        if (reply.length > MAX_PATH_FACTS_OUTPUT_BYTES) settle(undefined);
+      if (settled) return;
+      const newline = chunk.indexOf(0x0a);
+      const frameBytes = newline < 0 ? chunk.length : newline + 1;
+      if (received + frameBytes > MAX_PATH_FACTS_OUTPUT_BYTES) {
+        settle(undefined);
         return;
       }
+      received += frameBytes;
+      chunks.push(newline < 0 ? chunk : chunk.subarray(0, frameBytes));
+      if (newline < 0) return;
       try {
-        const [facts] = decodeWindowsPathFacts(decodeWindowsNativeReply(reply.subarray(0, end + 1)), 1, "--pin");
-        settle(facts === undefined ? undefined : { facts, release });
+        const [facts] = decodeWindowsPathFacts(decodeWindowsNativeReply(Buffer.concat(chunks, received)), 1, "--pin");
+        settle(facts === undefined ? undefined : held(facts));
       } catch {
         settle(undefined);
       }

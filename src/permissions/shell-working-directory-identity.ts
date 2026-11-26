@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, realpathSync, statSync } from "node:fs";
-import { holdWindowsDirectory } from "../shared/windows-path-facts.js";
+import { holdWindowsDirectory, type HeldWindowsDirectory } from "../shared/windows-path-facts.js";
 
 export interface ShellWorkingDirectoryIdentity {
   readonly realpath: string;
@@ -43,7 +43,7 @@ export function sameShellWorkingDirectoryIdentity(actual: ShellWorkingDirectoryI
 }
 
 /** Windows: hold the approved directory and its ancestors against rename and delete. The child still opens its cwd by path, so this proves nothing inside the child. */
-export async function pinShellWorkingDirectory(identity: ShellWorkingDirectoryIdentity): Promise<(() => void) | undefined> {
+export async function pinShellWorkingDirectory(identity: ShellWorkingDirectoryIdentity): Promise<HeldWindowsDirectory | undefined> {
   const held = await holdWindowsDirectory(identity.realpath);
   if (held === undefined) return undefined;
   const { facts } = held;
@@ -52,7 +52,7 @@ export async function pinShellWorkingDirectory(identity: ShellWorkingDirectoryId
     held.release();
     return undefined;
   }
-  return held.release;
+  return held;
 }
 
 /** Keep the approved directory object alive until the invocation finishes its launch. */

@@ -1,12 +1,25 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { holdHostShellSpawnDirectory, type HostShellSpawnDirectoryHold } from "../host-shell-execution-permit.js";
+import { holdHostShellSpawnDirectory, HostShellDirectoryHoldError, type HostShellSpawnDirectoryHold } from "../host-shell-execution-permit.js";
 import { captureShellWorkingDirectoryIdentity } from "../shell-working-directory-identity.js";
+
+const helpers = vi.hoisted(() => ({ spawned: [] as import("node:child_process").ChildProcess[] }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawn: (...args: Parameters<typeof actual.spawn>) => {
+      const child = actual.spawn(...args);
+      if (String(args[0]).endsWith("ave-path-kind.exe")) helpers.spawned.push(child);
+      return child;
+    },
+  };
+});
 
 withSourceHostResources();
 
@@ -32,6 +45,7 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
     mkdirSync(leaf, { recursive: true });
     mkdirSync(join(root, "sibling"));
     hold = undefined;
+    helpers.spawned = [];
   });
   afterEach(async () => {
     hold?.dispose();
@@ -46,10 +60,17 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
   };
   const holdLeaf = async () => {
     const held = await holdHostShellSpawnDirectory({ cwdIdentity: identityOf(leaf) });
-    if (held === undefined) throw new Error("directory not held");
     hold = held;
     return held;
   };
+  const killHelper = async () => {
+    const [helper] = helpers.spawned;
+    if (helper === undefined) throw new Error("no hold helper");
+    helper.kill();
+    await new Promise(resolve => helper.exitCode !== null || helper.signalCode !== null ? resolve(undefined) : helper.once("exit", resolve));
+  };
+  const longChild = (): ChildProcess => spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { stdio: "ignore", windowsHide: true });
+  const closed = (child: ChildProcess) => new Promise(resolve => child.exitCode !== null || child.signalCode !== null ? resolve(undefined) : child.once("close", resolve));
 
   it("refuses rename and delete of the directory and its ancestors while held, and leaves a sibling alone", async () => {
     await holdLeaf();
@@ -79,6 +100,46 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
     const identity = identityOf(leaf);
     renameSync(leaf, join(parent, "original"));
     mkdirSync(leaf);
-    expect(await holdHostShellSpawnDirectory({ cwdIdentity: identity })).toBeUndefined();
+    await expect(holdHostShellSpawnDirectory({ cwdIdentity: identity })).rejects.toBeInstanceOf(HostShellDirectoryHoldError);
+  });
+
+  it("keeps the hold through an error from a started child until it closes", async () => {
+    const held = await holdLeaf();
+    const child = longChild();
+    held.bind(child);
+    child.emit("error", new Error("termination failed"));
+    // A release would end the helper asynchronously; give it time to show.
+    await new Promise(resolve => setTimeout(resolve, 750));
+    expect(refused(() => renameSync(leaf, join(parent, "moved")))).toMatch(/^(EBUSY|EPERM|EACCES)$/u);
+    child.kill();
+    await closed(child);
+    await vi.waitFor(() => expect(refused(() => renameSync(leaf, join(parent, "moved")))).toBeUndefined());
+  });
+
+  it("frees the hold when the child never started", async () => {
+    const held = await holdLeaf();
+    const child = spawn(join(root, "missing.exe"), [], { stdio: "ignore", windowsHide: true });
+    child.on("error", () => {});
+    held.bind(child);
+    await vi.waitFor(() => expect(refused(() => renameSync(leaf, join(parent, "moved")))).toBeUndefined());
+  });
+
+  it("refuses a launch once the helper has exited after its reply", async () => {
+    const held = await holdLeaf();
+    held.assertHeld();
+    await killHelper();
+    expect(() => held.assertHeld()).toThrow(HostShellDirectoryHoldError);
+    expect(refused(() => renameSync(leaf, join(parent, "moved")))).toBeUndefined();
+  });
+
+  it("stops a bound child when the helper exits", async () => {
+    const held = await holdLeaf();
+    const child = longChild();
+    held.bind(child);
+    const started = Date.now();
+    await killHelper();
+    await closed(child);
+    expect(child.exitCode === 0).toBe(false);
+    expect(Date.now() - started).toBeLessThan(10000);
   });
 });
