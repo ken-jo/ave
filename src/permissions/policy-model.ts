@@ -18,6 +18,8 @@ type PolicyAccess = "rw" | "ro" | "denied";
  * - `read-boundary`: a read deny a composer restates for this launch (sandbox private directories, other extensions' storage, a
  *   caller's own list). A more specific grant is readable beneath it.
  * - `protected-name`: the write floor (control names inside write roots, startup and persistence files, Ave's own control files).
+ * - `required-write-deny`: a write floor row that is never widened to a parent: denied at its exact path, or watched while its
+ *   parent is missing.
  * - `user-deny`: a read deny the user configured. Nothing may be granted at or beneath it, and no `floor-pierce` covers it: a
  *   launch whose pierce lies at or beneath one is refused, naming the rule.
  *
@@ -26,7 +28,7 @@ type PolicyAccess = "rw" | "ro" | "denied";
  * the Windows container adapter treats them differently. There a path on both lists is stated twice, once as `read-boundary` and
  * once as `secrets`, and `read-boundary` means "from the restated list", whatever the path is.
  */
-export type PolicyFloorReason = "secrets" | "ave-home" | "read-boundary" | "protected-name" | "user-deny";
+export type PolicyFloorReason = "secrets" | "ave-home" | "read-boundary" | "protected-name" | "required-write-deny" | "user-deny";
 
 /**
  * Why a grant row exists. A grant row gives access.
@@ -48,6 +50,10 @@ interface PolicyRowPath {
 export interface PolicyFloorRow extends PolicyRowPath {
   readonly access: Extract<PolicyAccess, "ro" | "denied">;
   readonly reason: PolicyFloorReason;
+}
+
+export function requiredWriteDenyRow(path: string): PolicyFloorRow {
+  return { path, literal: true, access: "ro", reason: "required-write-deny" };
 }
 
 export interface PolicyGrantRow extends PolicyRowPath {
@@ -74,7 +80,14 @@ export interface PolicyModelInput {
   readonly launchGrants: readonly PolicyGrantRow[];
 }
 
-const FLOOR_REASONS: ReadonlySet<string> = new Set<PolicyFloorReason>(["secrets", "ave-home", "read-boundary", "protected-name", "user-deny"]);
+const FLOOR_REASONS: ReadonlySet<string> = new Set<PolicyFloorReason>([
+  "secrets",
+  "ave-home",
+  "read-boundary",
+  "protected-name",
+  "required-write-deny",
+  "user-deny",
+]);
 
 export function policyFloorRow(path: string, access: PolicyFloorRow["access"], reason: PolicyFloorReason, literal: boolean): PolicyFloorRow {
   return { path, literal, access, reason };
@@ -124,7 +137,8 @@ function checkFloor(row: PolicyFloorRow): PolicyFloorRow {
   if (!FLOOR_REASONS.has(row.reason)) refuse(row, "not a floor reason");
   if (row.access !== "denied" && row.access !== "ro") refuse(row, "a floor row never gives access");
   // The write floor is the only floor a launch may still read.
-  if ((row.access === "ro") !== (row.reason === "protected-name")) refuse(row, "floor access");
+  if ((row.access === "ro") !== (row.reason === "protected-name" || row.reason === "required-write-deny")) refuse(row, "floor access");
+  if (row.reason === "required-write-deny" && !row.literal) refuse(row, "required write deny must be literal");
   return Object.freeze({ ...row });
 }
 

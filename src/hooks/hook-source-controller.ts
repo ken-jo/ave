@@ -13,6 +13,7 @@ import type { ScriptHookManager } from "./script-hook-manager.js";
 import type { HookRuntimePolicy, HookSourceKind } from "./hook-source-policy.js";
 import { disabledHookOriginalName } from "./hook-disable-state.js";
 import { createHookTrustValidator } from "./hook-trust-validator.js";
+import { isHostWorkspaceConsumable } from "../shared/host-workspace-gate.js";
 
 export interface HookSourceLocation {
   id: string;
@@ -35,9 +36,11 @@ function optionsFor(source: HookSourceLocation, controller: SourceController): H
     ...(source.id === "user" ? {} : { sourceId: source.id }), hookSource: source.kind };
 }
 
+// Every project hook read starts here: a project whose protected names are unresolved after a sandboxed run has no hook source.
 function projectLocation(root: string): HookSourceLocation | undefined {
   let canonical: string;
   try { canonical = realpathSync(root); } catch { return undefined; }
+  if (!isHostWorkspaceConsumable(canonical)) return undefined;
   const hooksDir = join(canonical, ".ave", "hooks");
   return { id: `project:${canonical}`, kind: "project", projectRoot: canonical, hooksDir, disabledDir: join(hooksDir, ".disabled") };
 }
@@ -58,7 +61,9 @@ function userHooksDisabled(source: HookSourceLocation | undefined): boolean {
 }
 
 function trustedSource(source: HookSourceLocation, controller: SourceController): { shHooks: DiscoveredHook[]; configEntries: HookConfigEntry[]; signature: string } {
-  if (source.kind === "project" && !isProjectTrusted(source, controller)) return { shHooks: [], configEntries: [], signature: "untrusted" };
+  if (source.kind === "project" && (!isProjectTrusted(source, controller) || !isHostWorkspaceConsumable(source.projectRoot ?? source.hooksDir))) {
+    return { shHooks: [], configEntries: [], signature: "untrusted" };
+  }
   const discovered = discoverHookTrustFiles(source.hooksDir);
   const diff = diffAgainstLockfile(discovered.hooks, readLockfile(controller.lockfilePath), source.id === "user" ? undefined : source.id);
   for (const entry of diff) {

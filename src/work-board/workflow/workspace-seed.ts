@@ -3,6 +3,7 @@ import { closeSync, writeSync } from "node:fs";
 import { type FileHandle, lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { compileGlobMatcher, containsGlobMetacharacter } from "../../lib/glob-matcher.js";
+import { isHostWorkspaceConsumable } from "../../shared/host-workspace-gate.js";
 import { type OwnedDir, OwnedFsError, openSource, type SourceRoot } from "./owned-fs.js";
 
 export const MAX_SEED_FILES = 5_000;
@@ -164,14 +165,19 @@ export async function hashSeedFile(root: SourceRoot, path: string): Promise<{ sh
  * held folder, and the file is a new one: a file or link already at its name is unlinked, never written through. With `expect`, a copy
  * whose content is not the sha256 given for its path is removed again and the call throws.
  */
-export async function copySeedFiles(source: SourceRoot, target: OwnedDir, paths: readonly string[], expect?: ReadonlyMap<string, string>): Promise<SeedFile[]> {
+export async function copySeedFiles(source: SourceRoot, target: OwnedDir, paths: readonly string[], expect?: ReadonlyMap<string, string>, fromProject = false): Promise<SeedFile[]> {
+  const assertConsumable = (): void => {
+    if (fromProject && !isHostWorkspaceConsumable(source.path)) throw new SeedStop("seed-unreadable");
+  };
   const copied: SeedFile[] = [];
   for (const path of paths) {
     const segments = relativeSegments(path);
     if (segments === null) throw new Error("seed path is not a relative path");
     const leaf = segments.at(-1) as string;
+    assertConsumable();
     const handle = await openSource(source, segments);
     try {
+      assertConsumable();
       const dir = target.ensurePath(segments.slice(0, -1));
       const { fd, id } = dir.createFile(leaf, { replace: true });
       let made: { sha256: string; size: number };
@@ -183,6 +189,7 @@ export async function copySeedFiles(source: SourceRoot, target: OwnedDir, paths:
         await dir.remove(leaf, id);
         throw new OwnedFsError("changed", "the source is not the content that was recorded");
       }
+      assertConsumable();
       copied.push({ path: segments.join("/"), ...made });
     } finally {
       await handle.close();

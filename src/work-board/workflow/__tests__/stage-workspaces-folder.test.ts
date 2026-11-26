@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } from "../../../shared/ave-home.js";
+import * as hostWorkspaceGate from "../../../shared/host-workspace-gate.js";
 import type { StageInputDecl } from "../../../shared/workflow-template-types.js";
 import { type NameReader, plainFolderIgnore, projectFoldsCase } from "../folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
@@ -15,11 +16,15 @@ import { copySeedFiles, isInside, listSeedFiles } from "../workspace-seed.js";
 import { removeLink, removeTree, setPath, stageOf, writeUnder as write } from "./stage-fixtures.js";
 
 /** Files a listing is told of beside the ones on disk: a name the host's file system cannot hold. */
-const listing = vi.hoisted(() => ({ also: undefined as { path: string; size: number }[] | undefined }));
+const listing = vi.hoisted(() => ({
+  also: undefined as { path: string; size: number }[] | undefined,
+  onSelected: undefined as (() => void) | undefined,
+}));
 vi.mock("../workspace-seed.js", async (original) => {
   const real = await original<typeof import("../workspace-seed.js")>();
   const listSeedFiles: typeof real.listSeedFiles = async (...args) => {
     const listed = await real.listSeedFiles(...args);
+    if (listed.ok) listing.onSelected?.();
     return listed.ok && listing.also !== undefined ? { ...listed, files: [...listed.files, ...listing.also] } : listed;
   };
   return { ...real, listSeedFiles };
@@ -107,6 +112,32 @@ afterEach(async () => {
 });
 
 describe("folder stage workspaces", () => {
+  it("copies nothing from a project while its workspace gate refuses", async () => {
+    const handle = await start(project);
+    const gate = vi.spyOn(hostWorkspaceGate, "isHostWorkspaceConsumable").mockReturnValue(false);
+    try {
+      expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("src/a.ts")] }), 1)).toEqual({ ok: false, code: "seed-unreadable" });
+    } finally {
+      gate.mockRestore();
+    }
+    expect(read(await stageRoot(handle, "s2", { inputFiles: [fromProject("src/a.ts")] }), "src/a.ts")).toBe("a\n");
+  });
+
+  it("refuses a project seed when its workspace gate closes after source selection", async () => {
+    const handle = await start(project);
+    let consumable = true;
+    listing.onSelected = () => { consumable = false; };
+    const gate = vi.spyOn(hostWorkspaceGate, "isHostWorkspaceConsumable").mockImplementation(() => consumable);
+    try {
+      expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("src/a.ts")] }), 1)).toEqual({ ok: false, code: "seed-unreadable" });
+      expect(consumable).toBe(false);
+      expect(existsSync(join(handle.runRoot, "s1", "src", "a.ts"))).toBe(false);
+    } finally {
+      gate.mockRestore();
+      listing.onSelected = undefined;
+    }
+  });
+
   it("the layout carries no raw path, run id or title, and no stage is named like a host folder", async () => {
     // Both ends as they really are on disk: the home may be reached through a link.
     const under = (path: string): string[] => relative(realpathSync.native(aveHome()), realpathSync.native(path)).split(sep);

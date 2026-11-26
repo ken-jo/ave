@@ -269,7 +269,11 @@ export function createSandboxProcessHome(
     env = Object.freeze(sandboxProcessProfileEnvironment(homePath, platform));
     createProfileDirectories(env);
     mkdirSync(join(homePath, "document-observation"), { mode: 0o700 });
-    if (platform === "win32") recordIssuedContainerHome(homePath, dirname(parentRoot));
+    if (platform === "win32") {
+      // The private profile supplies an existing parent for exact container denies on its two control names.
+      mkdirSync(join(homePath, ".ave"), { mode: 0o700 });
+      recordIssuedContainerHome(homePath, dirname(parentRoot));
+    }
     registerAgentObservationHome(homePath);
   } catch (err) {
     forgetIssuedContainerHome(homePath);
