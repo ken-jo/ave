@@ -18,18 +18,25 @@ export function presentApproval<T>(present: () => T): T | undefined {
 export const IPC_APPROVAL_REQUEST = CHANNELS.approval.request;
 const IPC_ASK_USER_QUESTION_REQUEST = CHANNELS.askUserQuestion.request;
 
+export class UnattendedApprovalPresentationError extends Error {
+  constructor(readonly reasonCode: NonNullable<ReturnType<typeof unattendedApprovalDenial>>) {
+    super(reasonCode);
+    this.name = "UnattendedApprovalPresentationError";
+  }
+}
+
 export function presentRequiredApproval<T>(present: () => T): T {
   const denial = unattendedApprovalDenial();
-  if (denial) throw new Error(denial);
+  if (denial) throw new UnattendedApprovalPresentationError(denial);
   return present();
 }
 
 export function presentApprovalCard(target: WebContents, card: ApprovalRequest): void {
-  presentApproval(() => target.send(IPC_APPROVAL_REQUEST, card));
+  presentRequiredApproval(() => target.send(IPC_APPROVAL_REQUEST, card));
 }
 
 export function presentQuestionCard(target: WebContents, card: AskUserQuestionRequest): void {
-  presentApproval(() => target.send(IPC_ASK_USER_QUESTION_REQUEST, card));
+  presentRequiredApproval(() => target.send(IPC_ASK_USER_QUESTION_REQUEST, card));
 }
 
 export function presentRemoteApprovalCard(

@@ -6,6 +6,7 @@ import { FIXTURE_START_IDENTITY as ID } from "../../__tests__/support/approved-e
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
 import { extensionStartApprovalRows, type ExtensionStartChoice } from "../../shared/permissions-events.js";
+import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import { ApprovalGate, isHostApprovalRejectedDecision, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
 import { createExtensionStartAsker } from "../extension-start-asker.js";
 import {
@@ -186,6 +187,31 @@ describe("the shared extension-start card", () => {
     expect(isHostApprovalRejectedDecision(decision)).toBe(true);
     await settling;
     expect(spawned).toEqual([]);
+  });
+
+  it("denies a pending extension start when an unattended row answer triggers re-presentation", async () => {
+    const { wc, gate, audit } = makeGate();
+    const answer = gate.requestAndWait({
+      id: "start-refresh", category: "tool", kind: "extension-start", toolName: "extension_start", reason: "Start helpers?",
+      createdAt: Date.now(), sessionId: SESSION.sessionId,
+      args: { isolation: "none", starts: ["first", "second"].map(id => ({ id, label: id, kind: "plugin-child", cause: "no-backend" })) },
+      allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false, forceExplicit: true,
+    });
+    try {
+      const card = await cardSent(wc);
+      expect(gate.pendingCount).toBe(1);
+      const decision = turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, () => gate.resolve(card.id, {
+        requestId: card.id, choice: "allow-once", extensionStartRow: "first", nonce: card.nonce, hmac: card.hmac,
+      }, "platform-bridge"));
+      expect(gate.pendingCount).toBe(0);
+      expect(decision).toMatchObject({ choice: "deny-once", reasonCode: "unattended-approval-denied" });
+      expect(await answer).toBe(decision);
+      expect(isHostApprovalRejectedDecision(decision)).toBe(true);
+      expect(sentApprovalCards(wc)).toHaveLength(1);
+      expect(audit()).toEqual(expect.arrayContaining([expect.stringContaining("[approval:unattended-approval-denied]")]));
+    } finally {
+      gate.disposeAll();
+    }
   });
 
   it("lets one allow answer a card that lists one start, as before", async () => {

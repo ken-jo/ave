@@ -855,6 +855,11 @@ export const CHANNELS = {
   },
 } as const;
 
+export const APPROVAL_SETTLED_CHANNEL = CHANNELS.approval.settled;
+export const ASK_USER_QUESTION_PENDING_CHANNEL = CHANNELS.askUserQuestion.pending;
+export const ASK_USER_QUESTION_RESPOND_CHANNEL = CHANNELS.askUserQuestion.respond;
+export const ASK_USER_QUESTION_TIMEOUT_CHANNEL = CHANNELS.askUserQuestion.timeout;
+
 // ─── Versioned public contract ──────────────────────────────────────────────
 
 /**

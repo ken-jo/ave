@@ -1,4 +1,4 @@
-import { approvalPresentationDenial, presentApproval, presentApprovalCard } from "./approval-presentation.js";
+import { approvalPresentationDenial, presentApproval, presentApprovalCard, UnattendedApprovalPresentationError } from "./approval-presentation.js";
 import { browserOrigin } from "../shared/browser-tools.js";
 import { extensionStartApprovalRows, isBrowserSiteChoice, isExtensionStartChoices, type BrowserSiteChoice, type ExtensionStartChoice } from "../shared/permissions-events.js";
 import { aveHome, isAveHomeConfigurationRefused } from "../shared/ave-home.js";
@@ -6,7 +6,7 @@ import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { WebContents } from "electron";
 import { approvalSurfaceRegistry } from "./approval-surface-registry.js";
-import { CHANNELS } from "../contract/app-contract.js";
+import { APPROVAL_SETTLED_CHANNEL } from "../contract/app-contract.js";
 import { t } from "../i18n/index.js";
 import { approvalActionSummary } from "../shared/approval-action-summary.js";
 import { resolveConversationTitle } from "../shared/conversation-title.js";
@@ -386,10 +386,9 @@ export interface ApprovalDecision {
   hmac?: string;
 }
 
-// The wire names are owned by CHANNELS.approval; these names keep the gate's send sites and its tests readable.
 export { IPC_APPROVAL_REQUEST } from "./approval-presentation.js";
 // main→renderer: one parked request is no longer answerable. A renderer takes its card down when the turn that asked ends, and that covers the case where the surface holding the turn is still on screen. It is not the only way a request ends: the host retires a parked ask when the tile that asked closes, when a navigation lets go of the tile, on timeout, on abort, on shutdown. In those the surface that would have dropped the card has already unmounted, and without this announcement the card outlives its request — answerable on screen, answering nothing.
-export const IPC_APPROVAL_SETTLED = CHANNELS.approval.settled;
+export const IPC_APPROVAL_SETTLED = APPROVAL_SETTLED_CHANNEL;
 
 // Host-only timeout provenance; renderer objects can never enter this set.
 const hostTimeoutDecisions = new WeakSet<ApprovalDecision>();
@@ -1104,6 +1103,21 @@ export class ApprovalGate {
     }
   }
 
+  private denyUnattendedApproval(
+    requestId: string,
+    fields: ApprovalAuditFields & { sessionId?: string | undefined },
+    reasonCode: NonNullable<ApprovalDecision["reasonCode"]>,
+    executionPlan?: HostShellExecutionPlanAuditProjection,
+  ): ApprovalDecision {
+    this.auditLogger?.log({
+      timestamp: new Date().toISOString(),
+      sessionId: fields.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+      type: "approval",
+      output: `[approval:${reasonCode}] ${requestId} ${formatApprovalAuditFields(fields, executionPlan)} → deny-once`,
+    });
+    return markHostApprovalRejectedDecision({ requestId, choice: "deny-once", reasonCode, rememberPattern: t("reasonCodes.unattended-approval-denied") });
+  }
+
   // Send an approval request to the renderer and wait for the response. ConversationLoop.executeOne awaits this and blocks the turn. The requireExplicit field controls renderer dismiss behavior.
   async requestAndWait(req: ApprovalRequestInput): Promise<ApprovalDecision> {
     const auditFieldsFor = (fields: ApprovalAuditFields, executionPlan?: HostShellExecutionPlanAuditProjection): string =>
@@ -1128,17 +1142,7 @@ export class ApprovalGate {
     assertEgressHostRequestShape(req);
     assertExtensionStartRequestShape(req);
     const unattended = approvalPresentationDenial();
-    if (unattended) {
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: req.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:${unattended}] ${req.id} ${auditFieldsFor(req)} → deny-once`,
-      });
-      return markHostApprovalRejectedDecision({
-        requestId: req.id, choice: "deny-once", reasonCode: unattended, rememberPattern: t("reasonCodes.unattended-approval-denied"),
-      });
-    }
+    if (unattended) return this.denyUnattendedApproval(req.id, req, unattended);
     if (req.browserSite !== undefined && (browserOrigin(req.browserSite) !== req.browserSite || !req.sessionId || req.source !== "builtin" || req.forceExplicit !== true || req.durableApprovalRecordAllowed !== false || req.evaluationContext?.headless === true)) {
       return rejectBeforeAnswer();
     }
@@ -1709,7 +1713,21 @@ export class ApprovalGate {
       // Keep what the renderer is about to receive, so a renderer that loads after this send can be handed the same card (see listPendingRendererRequests).
       const parked = this.pending.get(fullReq.id);
       if (parked !== undefined) parked.rendererRequest = maskedSignedReq;
-      // on send failure (webContents destruction race), clear pending and deny once.
+      const denySendFailure = (error: unknown, surfaceUnavailable: boolean): void => {
+        if (this.pending.get(fullReq.id) !== parked || !this.pending.delete(fullReq.id)) return;
+        clearTimeout(timer);
+        if (error instanceof UnattendedApprovalPresentationError) {
+          settle(this.denyUnattendedApproval(fullReq.id, { ...fullReq, remoteControllerOrigin }, error.reasonCode, executionPlanAudit));
+          return;
+        }
+        this.auditLogger?.log({
+          timestamp: new Date().toISOString(),
+          sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+          type: "approval",
+          output: `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} error=${errorMessage(error)} → deny-once`,
+        });
+        settle(rejectBeforeAnswer(surfaceUnavailable ? NO_APPROVER_MESSAGE : undefined, fullReq, executionPlanAudit));
+      };
       let surfaceUnavailable = false;
       try {
         // Resolve the live owner again before sending; a conversation may have moved.
@@ -1720,24 +1738,16 @@ export class ApprovalGate {
         }
         if (this.lifetime.signal.aborted || !this.pending.has(fullReq.id)) return;
         if (fullReq.sessionId === undefined && fullReq.egressHost?.terminalTabId === undefined && parked) {
-          const denyUnavailable = (): void => {
-            if (this.pending.get(fullReq.id) !== parked) return;
-            clearTimeout(parked.timer);
-            this.pending.delete(fullReq.id);
-            this.auditLogger?.log({ timestamp: new Date().toISOString(), sessionId: UNATTRIBUTED_APPROVAL_SESSION_ID,
-              type: "approval", output: `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} no successor approval surface → deny-once` });
-            settle(rejectBeforeAnswer(NO_APPROVER_MESSAGE, fullReq, executionPlanAudit));
-          };
           const handoff = (previous: WebContents): void => {
             if (this.pending.get(fullReq.id) !== parked || parked.unattributedOwner !== previous) return;
             try {
               const next = this.liveSurfaceFor(undefined);
-              if (!next || next === previous) { denyUnavailable(); return; }
+              if (!next || next === previous) throw new Error("no successor approval surface");
               bindOwner(next);
               this.announceSettledToRenderer(fullReq.id, [previous]);
               sentTo = next;
               presentApprovalCard(next, maskedSignedReq);
-            } catch { denyUnavailable(); }
+            } catch (error) { denySendFailure(error, true); }
           };
           const bindOwner = (owner: WebContents): void => {
             detachOwnerDestroyed?.();
@@ -1753,16 +1763,7 @@ export class ApprovalGate {
         sentTo = surface;
         presentApprovalCard(surface, maskedSignedReq);
       } catch (sendErr) {
-        if (!this.pending.delete(fullReq.id)) return;
-        clearTimeout(timer);
-        // phase: send-failed
-        this.auditLogger?.log({
-          timestamp: new Date().toISOString(),
-          sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} error=${errorMessage(sendErr)} → deny-once`,
-        });
-        settle(rejectBeforeAnswer(surfaceUnavailable ? NO_APPROVER_MESSAGE : undefined, fullReq, executionPlanAudit));
+        denySendFailure(sendErr, surfaceUnavailable);
       }
     });
     // The wait wrapper can throw before running the callback (a budget that cannot pause), so the catch sits outside it.
@@ -1866,13 +1867,20 @@ export class ApprovalGate {
 
   // Send the desk its extension-start card again with the rows another surface answered. Same id, same signed contents: the
   // window that holds the card replaces it in place. A window that loads later gets this copy too (`listPendingRendererRequests`).
-  private showExtensionStartRowsAnswered(entry: PendingEntry, answered: ReadonlyMap<string, ExtensionStartChoice>): void {
+  private showExtensionStartRowsAnswered(requestId: string, entry: PendingEntry, answered: ReadonlyMap<string, ExtensionStartChoice>): ApprovalDecision | undefined {
     if (entry.rendererRequest === undefined) return;
     entry.rendererRequest = { ...entry.rendererRequest, extensionStartAnswered: Object.fromEntries(answered) };
     try {
       const surface = this.liveSurfaceFor(entry.sessionId);
       if (surface && !surface.isDestroyed()) presentApprovalCard(surface, entry.rendererRequest);
-    } catch {
+    } catch (error) {
+      if (error instanceof UnattendedApprovalPresentationError && this.pending.get(requestId) === entry) {
+        clearTimeout(entry.timer);
+        this.pending.delete(requestId);
+        const decision = this.denyUnattendedApproval(requestId, entry, error.reasonCode, entry.executionPlan);
+        entry.resolve(decision);
+        return decision;
+      }
       // The window went away: the host still holds the answers, and the next window is handed the card with them.
     }
   }
@@ -2031,8 +2039,7 @@ export class ApprovalGate {
       });
       // Still waiting on other rows: this row is answered, the card is not. The desk card is sent again so it shows the row answered.
       if (answered.size < offered.length) {
-        this.showExtensionStartRowsAnswered(entry, answered);
-        return { requestId, choice: decision.choice };
+        return this.showExtensionStartRowsAnswered(requestId, entry, answered) ?? { requestId, choice: decision.choice };
       }
       // Every row has its answer: the card settles with them, through the same checks as an answer for the whole card.
       entry.extensionStartRowAnswers = undefined;

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { approvalSurfaceResolver } from "../../boot/approval-surface.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, IPC_APPROVAL_SETTLED, isHostApprovalRejectedDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
+import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import { getMainWindow, getMainWindows, markMainWindowFocused, registerMainWindow, resetMainWindowsForTests, unregisterMainWindow } from "../app-state.js";
 
 vi.mock("../terminal/pty-manager.js", () => ({ terminalOwnerWindowId: () => null }));
@@ -79,6 +80,18 @@ describe("main-window lifecycle for unattributed approvals", () => {
     expect(h.second.cards()).toHaveLength(1);
     expect(h.answer(h.second.contents)?.choice).toBe("allow-once");
     await h.pending;
+  });
+
+  it("denies a pending approval when an unattended handoff cannot present the card", async () => {
+    const h = fixture();
+    expect(h.first.cards()).toHaveLength(1);
+    markMainWindowFocused(h.second.window);
+    turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, () => unregisterMainWindow(h.first.window));
+    expect(h.gate.pendingCount).toBe(0);
+    const result = await h.pending;
+    expect(result).toMatchObject({ choice: "deny-once", reasonCode: "unattended-approval-denied" });
+    expect(isHostApprovalRejectedDecision(result)).toBe(true);
+    expect(h.second.cards()).toEqual([]);
   });
 
   it("hands off a destroyed recipient even before an explicit unregister callback", async () => {

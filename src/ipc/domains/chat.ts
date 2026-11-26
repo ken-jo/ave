@@ -30,7 +30,7 @@ import { isValidSessionId } from "../../shared/session-id.js";
 import type { SessionListQuery } from "../../shared/session-lookup.js";
 import { MAX_SESSION_FILE_BYTES } from "../../memory/session-repository.js";
 import { sessionMemoryProject } from "../../memory/memory-consolidation-service.js";
-import { CHANNELS } from "../../contract/app-contract.js";
+import { ASK_USER_QUESTION_PENDING_CHANNEL, ASK_USER_QUESTION_RESPOND_CHANNEL, CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { sendToWebContents } from "../safe-send.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
@@ -2124,17 +2124,17 @@ export function registerChatHandlers(deps: IpcDeps): void {
   );
 
   // Reload pending questions only into the window holding their session.
-  ipcMain.handle(CHANNELS.askUserQuestion.pending, (e) => {
+  ipcMain.handle(ASK_USER_QUESTION_PENDING_CHANNEL, (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.askUserQuestion.pending, e);
+      auditUnauthorized(auditLogger, ASK_USER_QUESTION_PENDING_CHANNEL, e);
       return UNAUTHORIZED_FRAME;
     }
     return askUserQuestionGate ? askUserQuestionGate.listPending(e.sender) : [];
   });
 
-  ipcMain.handle(CHANNELS.askUserQuestion.respond, (e, response: unknown) => {
+  ipcMain.handle(ASK_USER_QUESTION_RESPOND_CHANNEL, (e, response: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.askUserQuestion.respond, e);
+      auditUnauthorized(auditLogger, ASK_USER_QUESTION_RESPOND_CHANNEL, e);
       return UNAUTHORIZED_FRAME;
     }
     if (!askUserQuestionGate) {
