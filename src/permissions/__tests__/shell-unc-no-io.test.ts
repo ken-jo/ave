@@ -13,6 +13,7 @@ import { captureReplayRootDigest } from "../reviewer/replay-root-binding.js";
 import { projectRootFor, projectRulesLocation } from "../rules/project-rule-files.js";
 import { getVendoredApplySeccompPath } from "../asrt-sandbox.js";
 import { inspectPowerShellPermissionPaths } from "../rules/powershell-exfiltration.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 const probes = vi.hoisted(() => ({
   calls: [] as { operation: string; path: string; unc: boolean; stack: string }[],
@@ -52,11 +53,16 @@ vi.mock("node:fs", async importOriginal => {
     if (unc) throw Object.assign(new Error("Network path intercepted by probe"), { code: "ENOENT" });
     return original(...args);
   });
+  // existsSync answers false for any failure, never throwing; the probe still records the attempt.
+  const exists = wrap("existsSync", actual.existsSync);
+  const existsSync = vi.fn((...args: Parameters<typeof actual.existsSync>) => {
+    try { return exists(...args); } catch { return false; }
+  });
   return { ...actual,
     realpathSync: Object.assign(wrap("realpathSync", actual.realpathSync), { native: wrap("realpathSync.native", actual.realpathSync.native) }),
     lstatSync: wrap("lstatSync", actual.lstatSync), statSync: wrap("statSync", actual.statSync),
     readlinkSync: wrap("readlinkSync", actual.readlinkSync),
-    existsSync: wrap("existsSync", actual.existsSync), accessSync: wrap("accessSync", actual.accessSync),
+    existsSync, accessSync: wrap("accessSync", actual.accessSync),
     readdirSync: wrap("readdirSync", actual.readdirSync), openSync: wrap("openSync", actual.openSync),
   };
 });
@@ -182,6 +188,20 @@ describe("network operands before approval", () => {
         }
       }
     } finally { probes.links.clear(); }
+  });
+
+  // macOS and Linux read a link to a doubled-separator target as a local relative name; existence lookups there answer, never throw.
+  it.each([String.raw`\\e\s`, "//e/s", String.raw`\\?\UNC\e\s`])("canonicalizes a path through a link to %s on a POSIX host", target => {
+    const link = join(directory, "project", "link");
+    probes.links.set(link.replaceAll("\\", "/").toLowerCase(), target);
+    const platform = process.platform;
+    setProcessPlatform("linux");
+    try {
+      expect(() => createPathCanonicalizer()(join(link, "y"))).not.toThrow();
+    } finally {
+      setProcessPlatform(platform);
+      probes.links.clear();
+    }
   });
 
   it("keeps a non-network PowerShell resolver failure on a floor", () => {
