@@ -57,6 +57,8 @@ import { useTempDirs as trackTempDirs } from "../../__tests__/test-helpers.js";
 import { useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { permissionsFilePath } from "../permissions-store.js";
+import { sandboxQuarantineRoot } from "../sandbox-quarantine.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../sandbox-capability.js";
 import * as facts from "../../shared/windows-path-facts.js";
 import * as denyAcl from "../windows-deny-acl.js";
@@ -267,14 +269,28 @@ describe("background session isolation", () => {
   });
 
   it.each(WIN32_WRAPPERS)("keeps the next %s wrap admissible after mandatory rows exceed the budget", async (_name, wrap) => {
+    const quarantineDirectory = sandboxQuarantineRoot();
+    const permissionsFile = permissionsFilePath();
+    if (ORIGINAL_PLATFORM === "win32") {
+      mkdirSync(quarantineDirectory, { recursive: true });
+      present([permissionsFile]);
+    }
     await initializeAsrtSandbox({ allowWrite: grantedFixture() });
     const oversized = denyRows("oversized", 1024);
     present(oversized);
     await expect(wrapWriteDenies(wrap, oversized))
       .rejects.toThrow(t("sandboxPolicy.configuredDeniesTooLarge"));
     expect(manager.wrapWithSandboxArgv).not.toHaveBeenCalled();
-    await expect(wrapWriteDenies(wrap, denyRows("ordinary", 1))).resolves.toMatchObject({ argv: ["confined"] });
+    const wrapped = await wrapWriteDenies(wrap, denyRows("ordinary", 1));
+    expect(wrapped.argv).toEqual(["confined"]);
     expect(manager.wrapWithSandboxArgv).toHaveBeenCalledOnce();
+    const denyWrite = wrapped.filesystemPolicy?.denyWrite
+      ?.map(entry => windowsDenyOperandKey((typeof entry === "string" ? entry : entry.path).replace(/\\$/u, "")));
+    expect(denyWrite).toContain(windowsDenyOperandKey(win32.join(fixtureRoot, ".npmrc")));
+    if (ORIGINAL_PLATFORM === "win32") {
+      expect(denyWrite, "quarantine directory deny").toContain(windowsDenyOperandKey(quarantineDirectory));
+      expect(denyWrite, "permissions file deny").toContain(windowsDenyOperandKey(permissionsFile));
+    }
   });
 
   it.each(WIN32_WRAPPERS)("keeps the next %s wrap admissible after the runtime rejects its expanded policy", async (_name, wrap) => {
