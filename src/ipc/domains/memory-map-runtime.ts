@@ -8,7 +8,7 @@ import type { IpcDeps } from '../types.js';
 import type { MemoryMapScope, MemoryEmbeddingSettings } from '../../shared/memory-map.js';
 import type { z } from 'zod';
 import type { MemoryEmbeddingSettingsSchema, MemoryRetrievalSchema } from '../../shared/memory-map-validation.js';
-import { assertLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from '../../main/memory-map/local-runtime.js';
+import { assertLocalEmbeddingRuntime, bindLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from '../../main/memory-map/local-runtime.js';
 import type { WindowsBackgroundAdmission } from '../../permissions/windows-background-features.js';
 import { runMemoryWorker } from '../../main/memory-map/worker-client.js';
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager.js';
@@ -68,16 +68,17 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   const localInferencePreference = () => pendingInferenceDisables === 0 && storedLocalInferencePreference();
   const localRuntime = (admission: WindowsBackgroundAdmission) => assertLocalEmbeddingRuntime(localInferencePreference(), admission);
   const refreshLocalPreparation = () => refreshLocalInferenceAdmission("switches");
+  const refreshLocalAdmission = async () => {
+    const admission = await refreshLocalPreparation();
+    return bindLocalEmbeddingRuntime(() => localRuntime(admission)).assertStillValid;
+  };
   let buildGeneration = 0;
   let modelGeneration = 0;
   let settingsGeneration = 0;
   let settingsWrite: Promise<unknown> = Promise.resolve();
   let buildEvent: IpcMainInvokeEvent | undefined; let modelEvent: IpcMainInvokeEvent | undefined;
   const model = new LocalModelManager({
-    refreshAdmission: async () => {
-      const admission = await refreshLocalPreparation();
-      return () => { localRuntime(admission); };
-    },
+    refreshAdmission: refreshLocalAdmission,
     readPath: () => deps.settingsService.get('memoryEmbedding')?.localModelPath,
     savePath: path => deps.settingsService.set('memoryEmbedding', { ...deps.settingsService.get('memoryEmbedding'), localModelPath: path }),
     onProgress: status => { if (modelEvent && validateHostRendererSender(modelEvent)) sendToWebContents(modelEvent.sender, CHANNELS.memoryMap.modelProgress, status); },
@@ -101,13 +102,17 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   const host = new MemoryMapHost({
     provider,
     watchAuthority,
+    refreshLocalAdmission,
     runWorker: (folder, task, signal, onProgress) => runMemoryWorker(folder, task, signal, onProgress, localInferencePreference),
     validatedModelPath: async (signal) => {
       const admission = await refreshLocalPreparation();
       signal.throwIfAborted();
-      localRuntime(admission);
+      const { assertStillValid } = bindLocalEmbeddingRuntime(() => localRuntime(admission));
       if (!deps.settingsService.get('memoryEmbedding')?.localModelPath) throw new MemoryMapHostError('model-unconfigured');
-      return model.validatedPath();
+      const folder = await model.validatedPath();
+      signal.throwIfAborted();
+      assertStillValid();
+      return folder;
     },
     onProgress: progress => {
       if (buildEvent && validateHostRendererSender(buildEvent)) sendToWebContents(buildEvent.sender, CHANNELS.memoryMap.progress, progress);
@@ -173,8 +178,8 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     facets: async scope => { await host.get(catalog(scope)); return memoryFacets(catalog(scope)().records); },
     retrieve: request => host.retrieve(catalog(request.scope), request),
     modelStatus: async () => {
-      localRuntime(await refreshLocalPreparation());
-      return model.status();
+      const assertStillValid = await refreshLocalAdmission();
+      return model.status(assertStillValid);
     },
     modelDownload: event => startModelOperation(++modelGeneration, event, () => model.download()),
     modelCancel: () => { cancelModel(); return null; },

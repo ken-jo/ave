@@ -107,16 +107,22 @@ export class LocalModelManager {
     if (!(await this.isManagedPath(folder)) || this.options.readPath() !== path) throw new MemoryModelError('model-integrity-failed');
     return folder;
   }
-  async status(): Promise<MemoryModelStatus> {
+  async status(assertStillValid?: () => void): Promise<MemoryModelStatus> {
+    assertStillValid?.();
     if (this.state.status === 'downloading' || this.state.status === 'failed') return { ...this.state };
     const path = this.options.readPath();
     if (!path) return { ...this.state };
+    let status: MemoryModelStatus['status'];
+    let error: MemoryModelStatus['error'];
     try {
       const folder = await verifyModelFolder(path, this.files);
-      const status = await this.isManagedPath(folder) ? 'ready' : 'legacy-location';
-      return this.publish({ ...this.state, status, error: undefined });
+      status = await this.isManagedPath(folder) ? 'ready' : 'legacy-location';
+    } catch {
+      status = 'failed';
+      error = 'model-integrity-failed';
     }
-    catch { return this.publish({ ...this.state, status: 'failed', error: 'model-integrity-failed' }); }
+    assertStillValid?.();
+    return this.publish({ ...this.state, status, error });
   }
   private run(action: (signal: AbortSignal, assertStillValid: () => void) => Promise<void>, sourceFolder?: string): Promise<MemoryModelStatus> {
     this.cancel();

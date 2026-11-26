@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryMapHost } from '../host.js';
+import { MemoryMapHostError } from '../errors.js';
 import { buildGraph, catalogRevision, LOCAL_NAMESPACE, vectorKey } from '../graph.js';
 import { checkedInferenceFrameBytes, INFERENCE_FILES, MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
 import { LocalModelManager } from '../model-manager.js';
@@ -21,6 +22,7 @@ vi.mock(import('../inference-request.js'), async importOriginal => {
   };
 });
 
+const allowLocal = async () => () => {};
 const roots: string[] = [];
 afterEach(async () => {
   inferenceBudget.bytes = undefined;
@@ -45,6 +47,49 @@ async function fixture() {
   return { root, namespace, catalog, runWorker };
 }
 describe('memory graph publication', () => {
+  it.each([
+    ['before projection', 'local-runtime-unavailable'],
+    ['before publication', 'local-runtime-unavailable'],
+    ['before projection', 'local-inference-disabled'],
+    ['before publication', 'local-inference-disabled'],
+  ] as const)('refuses a cached build %s on %s', async (boundary, code) => {
+    const f = await fixture();
+    let allowed = true;
+    const refreshLocalAdmission = async () => () => {
+      if (!allowed) throw new MemoryMapHostError(code);
+    };
+    const runWorker = vi.fn(f.runWorker);
+    const host = new MemoryMapHost({
+      namespace: f.namespace, validatedModelPath: async () => 'model', refreshLocalAdmission,
+      runWorker: async <T>(...args: Parameters<MemoryWorkerRunner>) => await runWorker(...args) as T,
+    });
+    await host.build(() => f.catalog);
+    const path = join(f.root, 'snapshot.json');
+    const previous = await readFile(path);
+    runWorker.mockClear();
+    if (boundary === 'before projection') {
+      const readJson = f.namespace.readJson;
+      f.namespace.readJson = async (...args) => {
+        const saved = await readJson(...args);
+        allowed = false;
+        return saved;
+      };
+    } else {
+      const childDir = f.namespace.childDir;
+      f.namespace.childDir = async name => {
+        const path = await childDir(name);
+        allowed = false;
+        return path;
+      };
+    }
+
+    const outcome = await host.build(() => f.catalog).catch((error: unknown) => error);
+    expect.soft(outcome).toMatchObject({ code });
+    expect.soft(runWorker.mock.calls.map(([, task]) => task.kind))
+      .toEqual(boundary === 'before projection' ? [] : ['project']);
+    expect(await readFile(path)).toEqual(previous);
+  });
+
   it.each(['succeeds', 'fails'] as const)('keeps a replaced model slot until the pending build %s', async outcome => {
     const f = await fixture();
     const parent = join(f.root, 'multilingual-e5-small');
@@ -74,7 +119,7 @@ describe('memory graph publication', () => {
       }
       return f.runWorker<T>(...args);
     };
-    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: () => model.validatedPath(), runWorker });
+    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: () => model.validatedPath(), runWorker });
     const build = host.build(() => f.catalog);
     try {
       expect(await Promise.race([start, build])).toBe(await realpath(previousFolder));
@@ -114,7 +159,7 @@ describe('memory graph publication', () => {
         return vectors[embedded++];
       }) as T;
     };
-    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker,
+    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker,
       onProgress: event => { if (event.phase === 'embedding') progress.push(event); },
     });
 
@@ -157,7 +202,7 @@ describe('memory graph publication', () => {
       }
       return f.runWorker<T>(...args);
     };
-    const host = new InspectableMemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker });
+    const host = new InspectableMemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker });
     await host.build(() => f.catalog);
     const path = join(f.root, 'snapshot.json');
     const previousBytes = await readFile(path);
@@ -185,7 +230,7 @@ describe('memory graph publication', () => {
   it('refuses a single note that cannot fit in an inference frame', async () => {
     const f = await fixture();
     f.catalog.records[0].text = '\0'.repeat(Math.ceil(MAX_INFERENCE_TASK_BYTES / 6));
-    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model',
+    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model',
       runWorker: async () => { throw new Error('Unexpected inference request'); },
     });
     await expect(host.build(() => f.catalog)).rejects.toMatchObject({ code: 'catalog-too-large' });
@@ -224,7 +269,7 @@ describe('memory graph publication', () => {
       inferenceTasks.push(task);
       return [vector] as T;
     };
-    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker });
+    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker });
     const result = await host.build(() => f.catalog);
     expect(result.coverage.embedded).toBe(4_001);
     expect(inferenceTasks).toEqual([{ kind: 'embed-batch', jobId: expect.any(String), texts: [`${uncached.title}\n${uncached.text}`] }]);
@@ -233,10 +278,10 @@ describe('memory graph publication', () => {
   });
 
   it('atomically publishes vectors and coordinates, and invalidates changed or deleted sources', async () => {
-    const f = await fixture(); const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
+    const f = await fixture(); const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker: f.runWorker });
     const result = await host.build(() => f.catalog);
     expect(await host.get(() => f.catalog)).toEqual(result);
-    const restarted = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
+    const restarted = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker: f.runWorker });
     expect(await restarted.get(() => f.catalog)).toEqual(result);
     expect(await readFile(join(f.root, 'snapshot.json'), 'utf8')).not.toContain('Private body');
     f.catalog.records = [];
@@ -244,11 +289,11 @@ describe('memory graph publication', () => {
     expect(JSON.parse(await readFile(join(f.root, 'snapshot.json'), 'utf8')).cache).toEqual({});
   });
   it('refuses persisted identities outside the current authorized catalog', async () => {
-    const f = await fixture(); const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
+    const f = await fixture(); const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker: f.runWorker });
     const snapshot = await host.build(() => f.catalog);
     snapshot.points[0].memoryId = 'outside';
     await f.namespace.writeJson('snapshot.json', { snapshot, cache: {} });
-    const restarted = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
+    const restarted = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker: f.runWorker });
     await expect(restarted.get(() => f.catalog)).rejects.toThrow('identity is invalid');
   });
   it('drops a stale question when a newer query completes first', async () => {
@@ -259,7 +304,7 @@ describe('memory graph publication', () => {
       if (task.text === 'first') { started(); await wait; }
       return [1, ...Array<number>(383).fill(0)] as T;
     };
-    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: runner });
+    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker: runner });
     const snapshot = await host.build(() => f.catalog);
     const old = host.retrieve(() => f.catalog, { question: 'first', filters: {}, queryId: 'first', snapshotId: snapshot.snapshotId }); await start;
     const answer = await host.retrieve(() => f.catalog, { question: 'second', filters: {}, queryId: 'second', snapshotId: snapshot.snapshotId });
@@ -269,7 +314,7 @@ describe('memory graph publication', () => {
     const f = await fixture(); let release!: () => void; const wait = new Promise<void>(resolve => { release = resolve; });
     let started!: () => void; const start = new Promise<void>(resolve => { started = resolve; });
     const runner: MemoryWorkerRunner = async <T>(folder: string, task: Parameters<MemoryWorkerRunner>[1], signal: AbortSignal) => { started(); await wait; return f.runWorker<T>(folder, task, signal); };
-    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: runner });
+    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker: runner });
     const build = host.build(() => f.catalog); await start;
     await host.get(() => ({ ...f.catalog, authorizationScopeId: 'other' })); release();
     await expect(build).rejects.toThrow('request-stale');

@@ -18,7 +18,7 @@ import { mainDir } from '../main-paths.js';
 import { spawnManaged } from '../managed-child-processes.js';
 import { MemoryMapHostError } from './errors.js';
 import { checkedInferenceFrameBytes, INFERENCE_FILES, INFERENCE_PREFIX_BYTES } from './inference-request.js';
-import { assertLocalEmbeddingRuntime, refreshLocalInferenceAdmission, type LocalInferenceRoute } from './local-runtime.js';
+import { assertLocalEmbeddingRuntime, bindLocalEmbeddingRuntime, refreshLocalInferenceAdmission, type LocalInferenceRoute } from './local-runtime.js';
 import type { ModelFile } from './model-manifest.js';
 import type { MemoryInferenceTask } from './worker-client.js';
 
@@ -90,14 +90,18 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
   input: Readable; output: Writable; stop: () => void | Promise<void>;
 }> {
   signal.throwIfAborted();
-  const route = readRoute();
+  const { route, assertStillValid: assertRoute } = bindLocalEmbeddingRuntime(readRoute);
+  const assertStillValid = () => {
+    signal.throwIfAborted();
+    assertRoute();
+  };
   const windows = process.platform === 'win32';
   const entry = join(mainDir, 'memory-map-child.js');
   const baseEnv = buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: '1', ...TELEMETRY_OPT_OUT });
   if (route === 'mxc') {
     const cwd = win32SystemBinary('');
     const runtimeReadRoots = [dirname(process.execPath), cwd];
-    signal.throwIfAborted();
+    assertStillValid();
     const holder = await spawnMxcBundledHolder({
       label: INFERENCE_CHILD_LABEL,
       command: process.execPath,
@@ -111,6 +115,7 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
       egressOwner: INFERENCE_EGRESS_OWNER,
       workerTransport: 'stdio-control-v1',
       signal,
+      assertStillValid,
     });
     holder.process.stderr.resume();
     return { input: holder.process.stdout, output: holder.process.stdin, stop: holder.release };
@@ -126,10 +131,8 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
   let child: ChildProcess | undefined;
   try {
     const extraEnv = { ...home?.env, ...TELEMETRY_OPT_OUT };
-    signal.throwIfAborted();
+    assertStillValid();
     if (route === 'unconfined') {
-      if (readRoute() !== 'unconfined') throw new MemoryMapHostError('local-runtime-unavailable');
-      signal.throwIfAborted();
       child = spawnManaged(process.execPath, [entry], {
         cwd, env: { ...baseEnv, ...extraEnv }, stdio: ['pipe', 'pipe', 'pipe'],
       }, { label: INFERENCE_CHILD_LABEL });
@@ -152,6 +155,7 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
         baseEnv,
         extraEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
+        assertStillValid,
         onWrapped: () => { wrapped = true; },
       }));
     }

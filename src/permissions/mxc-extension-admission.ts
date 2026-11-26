@@ -29,6 +29,9 @@ interface AdmissionRecord extends Omit<AdmissionIdentity, "request"> {
 const admissions = new WeakMap<MxcExtensionAdmission, AdmissionRecord>();
 
 let releaseGateEvidence: MxcExtensionReleaseGateEvidence | undefined;
+let releaseGateGeneration = 0;
+
+export function getMxcReleaseGateGeneration(): number { return releaseGateGeneration; }
 
 /** The install-wide record (contract fields 8-13) the native release gate gathered once for this packaged build. It is an
  * install property: a start checks it and never gathers it. Nothing registers it until that gate has produced it, and
@@ -37,8 +40,11 @@ export function registerMxcReleaseGateEvidence(evidence: MxcExtensionReleaseGate
   if (releaseGateEvidence !== undefined) throw new MxcProcessContractError("Release-gate evidence is already registered");
   const record = Object.freeze({ ...evidence });
   releaseGateEvidence = record;
+  releaseGateGeneration += 1;
   return () => {
-    if (releaseGateEvidence === record) releaseGateEvidence = undefined;
+    if (releaseGateEvidence !== record) return;
+    releaseGateEvidence = undefined;
+    releaseGateGeneration += 1;
   };
 }
 

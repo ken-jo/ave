@@ -36,8 +36,16 @@ vi.mock('../../../permissions/sandbox-process-home.js', () => ({
   createSandboxProcessHome: createHome,
   isSandboxHomeUnavailable: (error: unknown) => (error as { code?: unknown } | undefined)?.code === 'sandbox-home-unavailable',
 }));
-vi.mock('../../../permissions/asrt-sandbox.js', () => ({ cleanupAsrtSandboxAfterCommand: vi.fn() }));
-vi.mock('../local-runtime.js', () => ({ assertLocalEmbeddingRuntime: route, refreshLocalInferenceAdmission: refreshAdmission }));
+vi.mock('../../../permissions/asrt-sandbox.js', () => ({
+  cleanupAsrtSandboxAfterCommand: vi.fn(),
+  getWindowsConfinementRoute: () => [],
+  getWindowsAccountConfinementHelperIdentity: () => 'helper',
+}));
+vi.mock('../local-runtime.js', async importOriginal => ({
+  ...await importOriginal<typeof import('../local-runtime.js')>(),
+  assertLocalEmbeddingRuntime: route,
+  refreshLocalInferenceAdmission: refreshAdmission,
+}));
 vi.mock('../model-manifest.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../model-manifest.js')>();
   return { ...actual, MODEL_FILES: actual.MODEL_FILES.map(file => ({
@@ -317,4 +325,30 @@ it('checks live preference again after preparing the host child', async () => {
     .rejects.toMatchObject({ code: 'local-inference-disabled' });
   expect(spawnHost).not.toHaveBeenCalled();
   expect(cleanup).toHaveBeenCalledOnce();
+});
+
+it.each(['cancel', 'route change'] as const)('refuses native creation after a delayed offline wrap on %s', async change => {
+  const controller = new AbortController();
+  const entered = deferred<void>();
+  const resume = deferred<void>();
+  const nativeCreate = vi.fn(() => { throw new Error('Unexpected native creation'); });
+  const reason = new Error('Inference cancelled during wrapping');
+  spawn.mockImplementation(async spec => {
+    spec.onWrapped?.();
+    entered.resolve();
+    await resume.promise;
+    spec.assertStillValid?.();
+    nativeCreate();
+  });
+  const run = runInferenceChild(folder, TASK, controller.signal).catch((error: unknown) => error);
+  await entered.promise;
+  if (change === 'cancel') controller.abort(reason);
+  else route.mockReturnValue('unconfined');
+  resume.resolve();
+
+  const outcome = await run;
+  expect.soft(nativeCreate).not.toHaveBeenCalled();
+  expect(spawnHost).not.toHaveBeenCalled();
+  if (change === 'cancel') expect(outcome).toBe(reason);
+  else expect(outcome).toMatchObject({ code: 'local-runtime-unavailable' });
 });

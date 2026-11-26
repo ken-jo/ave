@@ -24,9 +24,10 @@ vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, handler: never
 vi.mock('../../main/memory-map/host.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/host.js')>(), MemoryMapHost: class { constructor(options: { validatedModelPath: (signal: AbortSignal) => Promise<string>; runWorker: MemoryWorkerRunner }) { state.readModelPath = options.validatedModelPath; state.startWorker = options.runWorker; } get = state.get; build = state.build; cancel = state.cancel; invalidate = state.invalidate; retrieve = state.retrieve; } }));
 vi.mock('../../main/memory-map/model-manager.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/model-manager.js')>(), LocalModelManager: class { validatedPath = state.validatedPath; status = state.status; download = state.download; cancel = state.modelCancel; adoptExistingFolder = state.adoptExistingFolder; } }));
 vi.mock('../../main/memory-map/worker-client.js', () => ({ runMemoryWorker: state.runWorker }));
-vi.mock('../../main/memory-map/local-runtime.js', async () => {
+vi.mock('../../main/memory-map/local-runtime.js', async importOriginal => {
   const { MemoryMapHostError } = await import('../../main/memory-map/errors.js');
   return {
+    ...await importOriginal<typeof import('../../main/memory-map/local-runtime.js')>(),
     refreshLocalInferenceAdmission: state.refreshAdmission,
     assertLocalEmbeddingRuntime: (enabled: boolean, admission?: { areSwitchesAvailable: () => boolean }) => {
       if (state.localConfined) return 'offline-sandbox';

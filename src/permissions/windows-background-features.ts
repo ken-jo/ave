@@ -1,7 +1,7 @@
 import type { SessionSearchIndexPolicy, SessionSearchIndexPolicySource } from "../memory/session-search-index.js";
 import { isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
 import { isWindowsBackgroundConfinementRuntimeActive } from "./asrt-sandbox.js";
-import { hasMxcReleaseGateEvidence } from "./mxc-extension-admission.js";
+import { getMxcReleaseGateGeneration, hasMxcReleaseGateEvidence } from "./mxc-extension-admission.js";
 import { mxcSandboxHomesParent } from "./mxc-runtime-root.js";
 import {
   getSandboxHomesUnavailable,
@@ -26,6 +26,11 @@ export interface WindowsBackgroundAdmission {
   readonly areSwitchesAvailable: () => boolean;
   readonly searchIndexPolicy: (preference: boolean | undefined) => SessionSearchIndexPolicy;
 }
+
+const INACTIVE_ADMISSION: WindowsBackgroundAdmission = {
+  areSwitchesAvailable: () => false,
+  searchIndexPolicy: () => "inactive",
+};
 
 function hasWindowsBackgroundHealth(): boolean {
   if (!isAveHomePrivacyVerifiedAtBoot() || getSandboxHomesUnavailable()) return false;
@@ -52,7 +57,6 @@ function admissionOver(stateOf: (owner: WindowsBackendEvidenceOwner) => WindowsB
     areSwitchesAvailable: () => isWindowsBackgroundFeatureReleaseEnabled() && !isSandboxGateUndecidedAtBoot() && !isWindowsBackgroundConfinementRuntimeActive()
       && hasDefinitiveBackendAbsence() && hasWindowsBackgroundHealth(),
     searchIndexPolicy: (preference) => {
-      if (!isWindowsBackgroundFeatureReleaseEnabled()) return "enabled";
       if (isSandboxGateUndecidedAtBoot()) return "inactive";
       const substrate = getWindowsSandboxSubstrate();
       const confinementOperational = substrate !== null && isWindowsBackgroundConfinementRuntimeActive() && WINDOWS_BACKEND_EVIDENCE
@@ -65,24 +69,26 @@ function admissionOver(stateOf: (owner: WindowsBackendEvidenceOwner) => WindowsB
 }
 
 /**
- * The last settled evidence, read without probing. It answers status and deferral questions only:
- * database work, the switches and unconfined inference take an admission from `refreshWindowsBackgroundAdmission`.
- */
-export const settledWindowsBackgroundAdmission: WindowsBackgroundAdmission = admissionOver((owner) => owner.current()?.state);
-
-/**
  * Probes every backend for the calling operation, off the event loop. The returned admission holds only while each
  * owner still carries the evidence this refresh produced, so the caller decides synchronously, with no await before the
  * action. A caller that asks about the switches alone gets its refusal without a probe once any backend is on record.
  */
 export async function refreshWindowsBackgroundAdmission(scope: "all" | "switches" = "all"): Promise<WindowsBackgroundAdmission> {
-  if (!isWindowsBackgroundFeatureReleaseEnabled() || isSandboxGateUndecidedAtBoot()) return settledWindowsBackgroundAdmission;
+  const releaseGeneration = getMxcReleaseGateGeneration();
+  const releaseIsCurrent = () => releaseGeneration === getMxcReleaseGateGeneration();
+  if (!isWindowsBackgroundFeatureReleaseEnabled()) {
+    return {
+      areSwitchesAvailable: INACTIVE_ADMISSION.areSwitchesAvailable,
+      searchIndexPolicy: () => releaseIsCurrent() ? "enabled" : "inactive",
+    };
+  }
+  if (isSandboxGateUndecidedAtBoot()) return INACTIVE_ADMISSION;
   const substrate = getWindowsSandboxSubstrate();
   if (scope === "switches" && !(substrate !== null && WINDOWS_BACKEND_EVIDENCE.every((owner) => owner.provider.isAbsentAtBoot(substrate)))) {
-    return admissionOver(() => undefined);
+    return INACTIVE_ADMISSION;
   }
   const refreshed = await refreshWindowsBackendEvidence();
-  const receiptsAreCurrent = () => WINDOWS_BACKEND_EVIDENCE.every((owner) => {
+  const receiptsAreCurrent = () => releaseIsCurrent() && WINDOWS_BACKEND_EVIDENCE.every((owner) => {
     const receipt = refreshed.get(owner);
     return receipt !== undefined && owner.isCurrent(receipt);
   });
@@ -93,10 +99,9 @@ export async function refreshWindowsBackgroundAdmission(scope: "all" | "switches
   };
 }
 
-/** The session stores' policy: the settled read for repair deferral, a refreshed admission for each database operation. */
-export function sessionSearchIndexPolicySource(getPreference: () => boolean | undefined): Required<SessionSearchIndexPolicySource> {
+/** The session stores take a refreshed admission for each claimed batch of database work. */
+export function sessionSearchIndexPolicySource(getPreference: () => boolean | undefined): Required<Pick<SessionSearchIndexPolicySource, "refreshSearchIndexPolicy">> {
   return {
-    getSearchIndexPolicy: () => settledWindowsBackgroundAdmission.searchIndexPolicy(getPreference()),
     refreshSearchIndexPolicy: async () => {
       const admission = await refreshWindowsBackgroundAdmission();
       return () => admission.searchIndexPolicy(getPreference());

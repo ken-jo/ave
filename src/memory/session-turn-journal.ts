@@ -114,7 +114,7 @@ export function rowIdsOf(messages: readonly unknown[]): string[] | null {
   return ids;
 }
 
-export function isIdPrefix(prefix: readonly string[], ids: readonly string[]): boolean {
+function isIdPrefix(prefix: readonly string[], ids: readonly string[]): boolean {
   if (prefix.length > ids.length) return false;
   for (let i = 0; i < prefix.length; i += 1) {
     if (prefix[i] !== ids[i]) return false;

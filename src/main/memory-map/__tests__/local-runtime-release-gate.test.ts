@@ -1,10 +1,13 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useTempDirs } from '../../../__tests__/test-helpers.js';
 import { SessionRepository } from '../../../memory/session-repository.js';
 import { deferred } from '../../../__tests__/support/deferred.js';
 import { setProcessPlatform } from '../../../__tests__/support/process-platform.js';
+import { createTmpDirTracker } from '../../../__tests__/support/tmp-dir-teardown.js';
 import { registerMxcReleaseGateEvidence } from '../../../permissions/mxc-extension-admission.js';
-import { refreshWindowsBackgroundAdmission, sessionSearchIndexPolicySource, settledWindowsBackgroundAdmission } from '../../../permissions/windows-background-features.js';
+import { refreshWindowsBackgroundAdmission, sessionSearchIndexPolicySource } from '../../../permissions/windows-background-features.js';
 import { invalidateWindowsBackendEvidence } from '../../../permissions/windows-confinement-evidence.js';
 import type { SandboxWindowsExtensionPlan, SandboxWindowsSubstrateInfo } from '../../../shared/sandbox-capability-info.js';
 import { assertLocalEmbeddingRuntime } from '../local-runtime.js';
@@ -48,6 +51,7 @@ vi.mock('../../../shared/ave-home.js', async importOriginal => ({
 }));
 
 const HOST_PLATFORM = process.platform;
+const indexDirs = createTmpDirTracker();
 const EVIDENCE = {
   ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
   forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
@@ -73,10 +77,11 @@ beforeEach(() => {
   state.substrate = { mxc: { state: 'unavailable', reason: 'container-unavailable', containerBackendAbsent: true },
     srtWinReady: false, accountBackendAbsent: true, shells: 'none' };
 });
-afterEach(() => {
+afterEach(async () => {
   unregister?.();
   unregister = undefined;
   setProcessPlatform(HOST_PLATFORM);
+  await indexDirs.cleanup();
 });
 
 describe('Windows local inference release gate', () => {
@@ -209,7 +214,23 @@ describe('Windows local inference release gate', () => {
     expect(current.areSwitchesAvailable()).toBe(false);
     expect(current.searchIndexPolicy(undefined)).toBe('inactive');
     expect(() => assertLocalEmbeddingRuntime(true, current)).toThrow(expect.objectContaining({ code: 'local-runtime-unavailable' }));
-    expect(settledWindowsBackgroundAdmission.areSwitchesAvailable()).toBe(false);
+  });
+
+  it('never upgrades a pre-release admission or revives one after release evidence replacement', async () => {
+    const early = await refreshWindowsBackgroundAdmission();
+    expect(early.searchIndexPolicy(true)).toBe('enabled');
+    const remove = registerMxcReleaseGateEvidence(EVIDENCE);
+    const released = await refreshWindowsBackgroundAdmission();
+    expect(released.areSwitchesAvailable()).toBe(true);
+    expect.soft(early.areSwitchesAvailable()).toBe(false);
+    expect.soft(early.searchIndexPolicy(true)).toBe('inactive');
+
+    remove();
+    expect.soft(released.searchIndexPolicy(true)).toBe('inactive');
+    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    expect.soft(released.areSwitchesAvailable()).toBe(false);
+    expect.soft(released.searchIndexPolicy(true)).toBe('inactive');
+    expect((await refreshWindowsBackgroundAdmission()).areSwitchesAvailable()).toBe(true);
   });
 
   it.each([false, true])('keeps each probe receipt when a fast backend changes next to a shared slow backend (first clean: %s)', async firstClean => {
@@ -261,7 +282,6 @@ describe('Windows local inference release gate', () => {
     const second = refreshWindowsBackgroundAdmission();
     await new Promise<void>(resolve => setImmediate(resolve));
     expect(state.containerStart).toHaveBeenCalledOnce();
-    expect(settledWindowsBackgroundAdmission.searchIndexPolicy(undefined)).toBe('inactive');
     invalidateWindowsBackendEvidence();
     start.resolve({ state: 'available', windowsBuild: null });
     expect((await first).searchIndexPolicy(undefined)).toBe('inactive');
@@ -270,12 +290,11 @@ describe('Windows local inference release gate', () => {
   });
 });
 
-const makeIndexDir = useTempDirs('ave-index-batch-');
 it('a late search cannot reuse an earlier batch account receipt', async () => {
   unregister = registerMxcReleaseGateEvidence(EVIDENCE);
   const container = deferred<object>();
   state.containerInventory.mockReturnValue(container.promise);
-  const aveDir = makeIndexDir();
+  const aveDir = indexDirs.track(mkdtempSync(join(tmpdir(), 'ave-index-batch-')));
   const initial = new SessionRepository({ aveDir });
   const sessionId = 'aaaaaaaa-1111-2222-3333-444444444444';
   await initial.saveSession(sessionId, [{ role: 'user', content: 'indexed result' }]);

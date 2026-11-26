@@ -4351,11 +4351,12 @@ async function spawnPowerShellInMxc(
       closed = checkedShellClose(spawned, waitForClose);
       trackManagedChildProcess(spawned, { killProcessGroup: false, label: MXC_SHELL_LABEL });
       launch.bindChild(spawned);
-      collector = createOutputCollector(spawned, { captureFactory: outputCaptureFactory, progress, observation });
-      spawned.stdout.on("data", parserResponse === undefined ? collector.collect : parserResponse.collect);
+      const outputCollector = createOutputCollector(spawned, { captureFactory: outputCaptureFactory, progress, observation });
+      collector = outputCollector;
+      spawned.stdout.on("data", parserResponse === undefined ? outputCollector.collect : parserResponse.collect);
       spawned.stderr.on("data", (chunk: Buffer) => {
         if (launcherDiagnostics.length < 4096) launcherDiagnostics += chunk.toString().slice(0, 4096 - launcherDiagnostics.length);
-        if (parserResponse === undefined) collector.collectStderr(chunk);
+        if (parserResponse === undefined) outputCollector.collectStderr(chunk);
       });
       // Timeout and cancellation revoke the invocation before the kill starts.
       lifetime = watchShellLifetime(spawned, timeoutSeconds, signal, () => lifecycle.revoke());
