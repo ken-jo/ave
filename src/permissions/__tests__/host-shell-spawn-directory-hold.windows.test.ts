@@ -365,7 +365,7 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
     const HELLO = 0x32485641;
     const RECHECK = 0x51485641;
 
-    it("admits only the process at the launcher's end of the channel, whatever process id it names", async () => {
+    it("closes the relay on a decoy PID and leaves the decoy running", async () => {
       const held = await holdLeaf();
       const decoy = spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { stdio: "ignore", windowsHide: true });
       try {
