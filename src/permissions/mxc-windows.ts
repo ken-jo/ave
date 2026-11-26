@@ -1168,7 +1168,7 @@ export async function resolveHostWxcExecPath(expectedIdentity?: string): Promise
 type HostProbe = (deps: DetectMxcSupportDeps) => Promise<MxcSupport>;
 
 // Run one detection step against this host's shipped binary, in a fresh probe directory.
-async function withHostMxcDeps(step: HostProbe, expectedLauncherIdentity?: string): Promise<MxcSupport> {
+async function withHostMxcDeps(step: HostProbe, expectedLauncherIdentity: string | undefined, assertRoot?: () => void): Promise<MxcSupport> {
   const [{ execFile }, { existsSync }, { mkdtemp, rm }, os, path] = await Promise.all([
     import("node:child_process"),
     import("node:fs"),
@@ -1178,8 +1178,15 @@ async function withHostMxcDeps(step: HostProbe, expectedLauncherIdentity?: strin
   ]);
   // The probe containers write only into a fresh directory of their own.
   const probeDirectory = process.platform === "win32" ? await mkdtemp(path.join(os.tmpdir(), "ave-mxc-probe-")) : os.tmpdir();
+  const assertLaunch = () => {
+    assertRoot?.();
+    if (expectedLauncherIdentity === undefined || getHostWxcExecIdentity() !== expectedLauncherIdentity) {
+      throw new Error("Contained shell launcher changed before spawn");
+    }
+  };
+  let result: MxcSupport;
   try {
-    return await step({
+    result = await step({
       platform: process.platform,
       arch: process.arch,
       resourcePath: getHostResources().resourcePath,
@@ -1190,9 +1197,7 @@ async function withHostMxcDeps(step: HostProbe, expectedLauncherIdentity?: strin
       systemRoot: process.platform === "win32" ? windowsSystemRoot() : "",
       run: (file, args, timeoutMs) =>
         new Promise((resolve, reject) => {
-          if (expectedLauncherIdentity !== undefined && getHostWxcExecIdentity() !== expectedLauncherIdentity) {
-            throw new Error("Contained shell launcher changed before spawn");
-          }
+          assertLaunch();
           execFile(file, [...args], { cwd: path.dirname(file), timeout: timeoutMs, windowsHide: true, maxBuffer: MXC_MAX_LAUNCHER_OUTPUT_BYTES }, (error, stdout, stderr) => {
             const code = error === null ? 0 : typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : null;
             if (error !== null && code === null) {
@@ -1206,11 +1211,17 @@ async function withHostMxcDeps(step: HostProbe, expectedLauncherIdentity?: strin
   } finally {
     if (probeDirectory !== os.tmpdir()) await rm(probeDirectory, { recursive: true, force: true });
   }
+  if (expectedLauncherIdentity !== undefined) assertLaunch();
+  return result;
 }
 
 // detectMxcPrerequisites against this host's shipped binary (boot path).
-export async function detectHostMxcPrerequisites(): Promise<MxcSupport> {
-  return await withHostMxcDeps(detectMxcPrerequisites);
+export async function detectHostMxcPrerequisites(expectedLauncherIdentity?: string): Promise<MxcSupport> {
+  let identity = expectedLauncherIdentity;
+  if (identity === undefined && process.platform === "win32") {
+    try { identity = getHostWxcExecIdentity(); } catch { /* Without a pin the launcher cannot run. */ }
+  }
+  return await withHostMxcDeps(detectMxcPrerequisites, identity);
 }
 
 // probeMxcPowerShellStart against this host's shipped binary (after boot).
@@ -1218,10 +1229,14 @@ export async function probeHostMxcPowerShellStart(expectedLauncherIdentity?: str
   // The probe starts a container too: a runtime root that was not proved private refuses it, under its own reason.
   const { MxcRuntimeRootError, requireMxcContainerStartRoot } = await import("./mxc-runtime-root.js");
   try {
-    requireMxcContainerStartRoot();
+    const root = requireMxcContainerStartRoot();
+    const launcherIdentity = expectedLauncherIdentity ?? getHostWxcExecIdentity();
+    await resolveHostWxcExecPath(launcherIdentity);
+    return await withHostMxcDeps(probeMxcPowerShellStart, launcherIdentity, () => {
+      if (requireMxcContainerStartRoot() !== root) throw new MxcRuntimeRootError("Container runtime root changed before the start probe");
+    });
   } catch (error) {
     if (!(error instanceof MxcRuntimeRootError)) throw error;
     return { state: "unavailable", reason: "runtime-root-unproved", windowsBuild: null, detail: `runtime root proof failed: ${error.message}` };
   }
-  return await withHostMxcDeps(probeMxcPowerShellStart, expectedLauncherIdentity);
 }

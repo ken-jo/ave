@@ -5,7 +5,8 @@ import { permissionSettingsPath } from '../../permissions/permission-settings-st
 import { CHANNELS } from '../../contract/app-contract.js';
 import { validateHostRendererSender } from '../gated.js';
 import type { IpcDeps } from '../types.js';
-import type { MemoryMapScope, MemoryEmbeddingSettings, MemoryModelStatus } from '../../shared/memory-map.js';
+import type { MemoryMapScope, MemoryEmbeddingSettings } from '../../shared/memory-map.js';
+import type { MemoryModelStatus } from '../../shared/memory-model.js';
 import type { z } from 'zod';
 import type { MemoryEmbeddingSettingsSchema, MemoryRetrievalSchema } from '../../shared/memory-map-validation.js';
 import { assertLocalEmbeddingRuntime, bindLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from '../../main/memory-map/local-runtime.js';

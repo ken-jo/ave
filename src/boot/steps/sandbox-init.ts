@@ -186,18 +186,19 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
         // The probe only settles the shell route; skip it when no shell will take that route.
         if (windowsMxc?.state !== "checking" || failed || started === "none" || !windowsInputs.shellRequested) return;
         const recordedMxc = getWindowsSandboxSubstrate()?.mxc;
-        shellStartProbe ??= settleWindowsMxcStartProbe();
+        shellStartProbe ??= settleWindowsMxcStartProbe(windowsInputs.launcherIdentity);
         void shellStartProbe.then((mxc) => {
           if (getWindowsSandboxSubstrate()?.mxc !== recordedMxc) return;
-          windowsMxc = mxc;
-          const settled = at(mxc);
+          windowsMxc = mxc.state === "available" && !windowsInputs.isLauncherCurrent()
+            ? { state: "unavailable", reason: "launcher-mismatch" } : mxc;
+          const settled = at(windowsMxc);
           setWindowsSandboxSubstrate(settled, settled.mxc.state === "available" && settled.shells !== "none" ? mxcShellCapability() : undefined);
           if (started === "proxy-only") {
             setActiveSandboxCapability(windowsProxyOnlyCapability(settled));
           }
           log.info(
             "boot: Windows sandbox settled — MXC %s, shells: %s, shell egress identity: %s",
-            mxc.state === "unavailable" ? `unavailable (${mxc.reason})` : mxc.state,
+            windowsMxc.state === "unavailable" ? `unavailable (${windowsMxc.reason})` : windowsMxc.state,
             settled.shells,
             settled.shellEgressIdentity,
           );
@@ -685,9 +686,15 @@ async function detectWindowsBootInputs(
   shellRequested: boolean,
   workerRequested: boolean,
   dependencies: Awaited<ReturnType<typeof checkSandboxDependencies>>,
-): Promise<WindowsSandboxPlanInputs> {
-  const { detectHostMxcPrerequisites } = await import("../../permissions/mxc-windows.js");
-  const mxc = await detectHostMxcPrerequisites().catch((error: unknown): MxcSupport => ({
+): Promise<WindowsSandboxPlanInputs & { launcherIdentity: string | undefined; isLauncherCurrent: () => boolean }> {
+  const { detectHostMxcPrerequisites, getHostWxcExecIdentity } = await import("../../permissions/mxc-windows.js");
+  let launcherIdentity: string | undefined;
+  try { launcherIdentity = getHostWxcExecIdentity(); } catch { /* Prerequisites determine the refusal. */ }
+  const isLauncherCurrent = () => {
+    try { return launcherIdentity !== undefined && getHostWxcExecIdentity() === launcherIdentity; }
+    catch { return false; }
+  };
+  const mxc = await detectHostMxcPrerequisites(launcherIdentity).catch((error: unknown): MxcSupport => ({
     state: "unavailable", reason: "probe-failed", windowsBuild: null, detail: errorMessage(error),
   }));
   const accountProbeSucceeded = dependencies.errors.length === 0 && dependencies.dependencyFailure === undefined;
@@ -697,8 +704,10 @@ async function detectWindowsBootInputs(
   return {
     shellRequested,
     workerRequested,
+    launcherIdentity,
+    isLauncherCurrent,
     mxc: runtimeRootUnproved ? { state: "unavailable", reason: "runtime-root-unproved" }
-      : mxc.state === "available" ? { state: "checking" } : { state: "unavailable", reason: mxc.reason,
+      : mxc.state === "available" ? (isLauncherCurrent() ? { state: "checking" } : { state: "unavailable", reason: "launcher-mismatch" }) : { state: "unavailable", reason: mxc.reason,
         ...(mxc.containerBackendAbsent === true && mxc.baseContainerApiPresent === false
           ? { containerBackendAbsent: true } : {}) },
     // Pinned until this installation carries a release-gate record (contract fields 8-13, gathered on the packaged build).
@@ -711,11 +720,12 @@ async function detectWindowsBootInputs(
 }
 
 /** Probe a real shell start after boot. */
-async function settleWindowsMxcStartProbe(): Promise<WindowsSandboxPlanInputs["mxc"]> {
+async function settleWindowsMxcStartProbe(launcherIdentity: string | undefined): Promise<WindowsSandboxPlanInputs["mxc"]> {
+  if (launcherIdentity === undefined) return { state: "unavailable", reason: "launcher-mismatch" };
   const { probeHostMxcPowerShellStart } = await import("../../permissions/mxc-windows.js");
   const started = Date.now();
   try {
-    const mxc = await probeHostMxcPowerShellStart();
+    const mxc = await probeHostMxcPowerShellStart(launcherIdentity);
     log.info("boot: MXC PowerShell start probe finished in %d ms (%s)", Date.now() - started, mxc.state);
     if (mxc.state === "available") return { state: "available" };
     logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);

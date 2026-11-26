@@ -189,6 +189,21 @@ afterEach(async () => {
 });
 
 describe("background session isolation", () => {
+  it("refuses the account helper at the WFP spawn after the verification wait", async () => {
+    await initializeAsrtSandbox({});
+    const verify = vi.spyOn(srtIntegrity, "prepareSrtWinExecutable");
+    const effect = vi.fn();
+    nativeWorker.verifyWindowsWfpEgress.mockImplementationOnce(async (...args: unknown[]) => {
+      const { srtWin } = args[0] as { srtWin: { exe: string } };
+      await Promise.resolve();
+      verify.mockImplementation(() => { throw new Error("replaced helper"); });
+      effect(srtWin.exe);
+      return { target: "127.0.0.1:9", stderr: "" };
+    });
+    await expect(isWindowsAccountConfinementOperational()).resolves.toBe(false);
+    expect(effect).not.toHaveBeenCalled();
+  });
+
   it("requires current account provisioning, credentials, identity and egress enforcement even while the runtime stays active", async () => {
     await initializeAsrtSandbox({});
     nativeWorker.getWindowsSandboxUserStatus.mockClear();

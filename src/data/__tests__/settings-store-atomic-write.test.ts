@@ -319,7 +319,7 @@ describe("settings persistence", () => {
       consent: { version: 2, providerId: "example", modelId: "example-model", endpointId: "example", timestamp: "2026-01-01T00:00:00.000Z" },
     }, { ...{ field }, canCommit: () => current }).catch((error: unknown) => error);
     current = false;
-    expect.soft(service.get("memoryEmbedding").source).toBe("local");
+    expect.soft(service.get("memoryEmbedding")?.source).toBe("local");
     release();
     await first;
     expect(await next).toBeInstanceOf(SettingsWriteRefusedError);

@@ -899,7 +899,7 @@ it.each([
     expect.soft(Object.hasOwn(generalSettings.features ?? {}, "sessionIndexingWithoutContainment")).toBe(Boolean(available));
     expect.soft(Object.hasOwn(embeddingSettings, "localInferenceWithoutSandbox")).toBe(Boolean(available));
     if (available) expect(assertLocalEmbeddingRuntime(undefined, await refreshWindowsBackgroundAdmission())).toBe("unconfined");
-    else await expect((async () => memoryMap.build(undefined, {} as Parameters<typeof memoryMap.build>[1]))())
+    else await expect((async () => memoryMap.build(undefined, {} as Parameters<typeof memoryMap.build>[1], () => {}))())
       .rejects.toMatchObject({ code: "local-runtime-unavailable" });
     expect(resolveScope).not.toHaveBeenCalled();
   } finally {
@@ -908,6 +908,19 @@ it.each([
 });
 
 describe("initSandboxGate — Windows MXC substrate", () => {
+  it("withholds boot shell evidence when the measured launcher changes before publication", async () => {
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    const result = deferred<typeof MXC_OK>();
+    h.startProbe.mockReturnValue(result.promise);
+    await initSandboxGate(harness.context(true, false));
+    await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
+    h.requireLauncher.mockReturnValue("replacement launcher");
+    result.resolve(MXC_OK);
+    await afterQueuedCallbacks();
+    expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "approved-host", mxc: { state: "unavailable" } });
+  });
+
   it("starts the real container probe at boot with nothing saved and carries shells in containers once it passes", async () => {
     h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
     h.detectMxc.mockResolvedValue(MXC_OK);

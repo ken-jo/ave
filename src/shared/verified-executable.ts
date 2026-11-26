@@ -233,7 +233,7 @@ function verifyWindowsInstallation(candidate: string, roots: readonly string[]):
     if (executableIdentity === undefined) return null;
     return Object.freeze({ executable: candidate, assertStillValid: () => {
       const current = pinWindowsPaths([candidate])[0];
-      if (!current || current.exists !== true || current.directory || admitWindowsReparse(current) !== true
+      if (current?.exists !== true || current.directory || admitWindowsReparse(current) !== true
         || windowsObjectKey(current) !== executableIdentity) throw new Error("Verified executable changed before spawn");
     } });
   } catch { return null; }

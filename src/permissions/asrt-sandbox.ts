@@ -1402,10 +1402,17 @@ export async function isWindowsAccountConfinementOperational(): Promise<boolean>
   if (process.platform !== "win32" || session === undefined || runtime === undefined || !isOfflineProcessConfinementActive()) return false;
   try {
     assertWindowsDenyProtection();
-    const srtWin = runtime.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
+    const identity = getWindowsAccountConfinementHelperIdentity();
+    if (identity === undefined) return false;
+    const resolved = runtime.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
+    const assertHelper = () => {
+      assertWindowsSession(session);
+      if (getWindowsAccountConfinementHelperIdentity() !== identity) throw new Error("Windows sandbox helper changed before spawn");
+    };
+    const srtWin = Object.freeze({ ...resolved, get exe() { assertHelper(); return resolved.exe; } });
     requireWindowsSandboxUserSid(await runtime.getWindowsSandboxUserStatusAsync({ srtWin }));
     await runtime.verifyWindowsWfpEgress({ proxyPortRange: [...getWindowsProxyPortRange()], srtWin });
-    assertWindowsSession(session);
+    assertHelper();
     return isOfflineProcessConfinementActive();
   } catch {
     return false;
