@@ -248,6 +248,21 @@ describe("prepareMxcShellLaunch", () => {
     expect(final[0]?.[1]).toBe(final[1]?.[1]);
   });
 
+  it("refuses a working directory the runtime root came to cover during the launch's waits", async () => {
+    h.openRelay.mockImplementationOnce(async (_token: string, admission?: { adopt(close: () => Promise<void>): void }) => {
+      admission?.adopt(h.closeRelay);
+      h.privateRoots.mockReturnValue([WS]);
+      return { port: 9, proxyAuthorization: "Basic eA==", registerPort: h.registerPort, recordRefusal: h.recordRefusal, close: h.closeRelay };
+    });
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      await expect(prepareMxcShellLaunch(INPUT, lifecycle)).rejects.toThrow(/inside the sandbox runtime root/);
+    } finally {
+      h.privateRoots.mockReturnValue([]);
+      await lifecycle.dispose();
+    }
+  });
+
   it("leaves what it allocated to its owner when the system root is missing", async () => {
     const roots = ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"];
     const previous = roots.map(key => process.env[key]);

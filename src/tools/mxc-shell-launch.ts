@@ -185,6 +185,9 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   // Again on what the request grants, after the waits above: no pin holds a shell root, so this is the last check, one judgment.
   withLocalityDecision(() => {
     assertIssuedContainerHomeInPlace(input.sandboxHome);
+    if (protectedReadDenyMatcher(appOwnedSandboxPrivateRoots())(input.cwd) !== undefined && !isIssuedContainerHome(input.cwd, input.sandboxHome)) {
+      throw new Error("Container shell working directory is inside the sandbox runtime root");
+    }
     assertWriteGrantsOutsideConfinementState(grants.readwrite, declaredConfinementStatePaths(), undefined, ownHome());
   });
   const systemRoot = windowsSystemRoot();
