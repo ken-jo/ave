@@ -184,6 +184,20 @@ afterEach(async () => {
 });
 
 describe("native confined holder admission", () => {
+  it("withdraws the pending receiver gate when the install evidence changes", async () => {
+    const revoke = vi.fn();
+    state.spawn.mockImplementationOnce(async (request, options) => {
+      const unwatch = options.watchRelease?.(revoke);
+      try {
+        options.beforeSpawn();
+        unregisterReleaseGate?.();
+        return { startEvidence: started(request), dispose: vi.fn().mockResolvedValue(undefined) };
+      } finally { unwatch?.(); }
+    });
+    await expect(spawnMxcConfinedChild(spec())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+    expect(revoke).toHaveBeenCalledOnce();
+  });
+
   it("carries a reviewed plugin hostDirectory certs read through the admitted rank", async () => {
     const home = "C:\\ave";
     const homeSpy = vi.spyOn(aveHome, "aveHome").mockReturnValue(home);

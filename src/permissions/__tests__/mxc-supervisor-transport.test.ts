@@ -13,6 +13,10 @@ import { MxcIntegrityError } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "../mxc-extension-errors.js";
 import type { MxcSupervisorRuntime } from "../mxc-supervisor-bootstrap.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createMxcReleaseGate } from "../mxc-release-gate.js";
 
 vi.mock("../../main/host-resources.js", () => ({ getHostResources: () => ({ resourcePath: "unit-resources", isPackaged: false }) }));
 vi.mock("../../main/managed-child-processes.js", () => ({ spawnManaged: vi.fn() }));
@@ -46,8 +50,9 @@ function transportFixture(request = createMxcExtensionRequest(), holdStartWrite?
     void service.then(() => child.emit("close", 0, null), () => child.emit("close", 1, null));
     return child;
   });
-  const launch = (signal?: AbortSignal, onLifecycle?: (event: MxcProcessLifecycleEvent) => void, beforeSpawn?: () => void, onOwned?: (owned: OwnedMxcExtensionProcess) => void) => _spawnMxcExtensionProcessForTest(request, "unit-modules", "unit-entry", spawnSupervisor, signal, onLifecycle, beforeSpawn, onOwned);
-  return { fixture, probe, spawn, bootstrap, runtime, launch, fatal, get child() { return child; }, get liveness() { return liveness; }, get service() { return service; } };
+  const launch = (signal?: AbortSignal, onLifecycle?: (event: MxcProcessLifecycleEvent) => void, beforeSpawn?: () => void, onOwned?: (owned: OwnedMxcExtensionProcess) => void,
+    preparation?: Parameters<typeof _spawnMxcExtensionProcessForTest>[8]) => _spawnMxcExtensionProcessForTest(request, "unit-modules", "unit-entry", spawnSupervisor, signal, onLifecycle, beforeSpawn, onOwned, preparation);
+  return { fixture, probe, spawn, bootstrap, runtime, launch, spawnSupervisor, fatal, get child() { return child; }, get liveness() { return liveness; }, get service() { return service; } };
 }
 
 async function collect(stream: PassThrough): Promise<Buffer> {
@@ -57,8 +62,44 @@ async function collect(stream: PassThrough): Promise<Buffer> {
 }
 
 describe("supervisor transport and lifecycle with an injected SDK (unit only)", () => {
+  it("refuses an expired preparation before starting a supervisor", async () => {
+    const f = transportFixture();
+    const child = await f.launch(undefined, undefined, undefined, undefined, {
+      beforeSupervisor: () => { throw new MxcProcessContractError("Holder withdrew admission"); },
+    }).catch(() => undefined);
+    await child?.dispose();
+    expect(f.spawnSupervisor).not.toHaveBeenCalled();
+  });
+
+  it.each(["revoked authorization", "replaced filesystem identity", "current authorization"])("checks %s at the SDK call after authenticated delivery", async (change) => {
+    const root = mkdtempSync(join(tmpdir(), "mxc-release-"));
+    try {
+      const granted = join(root, "grant");
+      writeFileSync(granted, "granted");
+      const release = createMxcReleaseGate(root, [granted]);
+      const f = transportFixture();
+      const child = await f.launch(undefined, event => {
+        if (event.type !== "creating") return;
+        const controls = f.child.stdin as PassThrough;
+        vi.spyOn(controls, "_write").mockImplementationOnce((bytes, _encoding, callback) => {
+          controls.push(bytes);
+          if (change === "revoked authorization") release.revoke();
+          if (change === "replaced filesystem identity") {
+            renameSync(granted, join(root, "retired-grant"));
+            writeFileSync(granted, "granted");
+          }
+          callback();
+        });
+      }, undefined, undefined, { release }).catch(() => undefined);
+      await child?.dispose();
+      expect(f.spawn).toHaveBeenCalledTimes(change === "current authorization" ? 1 : 0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("requires the supported platform and a packaged installation on the public path", async () => {
-    await expect(spawnMxcExtensionProcess(createMxcExtensionRequest(), { beforeSpawn: () => {} })).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+    await expect(spawnMxcExtensionProcess(createMxcExtensionRequest(), {
+      beforeSpawn: () => {}, beforeSupervisor: () => {}, paths: [], watchRelease: () => () => {},
+    })).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
     await expect(spawnMxcExtensionProcessForDiagnostics(createMxcExtensionRequest())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
   });
 

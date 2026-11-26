@@ -30,8 +30,14 @@ const admissions = new WeakMap<MxcExtensionAdmission, AdmissionRecord>();
 
 let releaseGateEvidence: MxcExtensionReleaseGateEvidence | undefined;
 let releaseGateGeneration = 0;
+const releaseGateListeners = new Set<() => void>();
 
 export function getMxcReleaseGateGeneration(): number { return releaseGateGeneration; }
+
+export function onMxcReleaseGateChanged(listener: () => void): () => void {
+  releaseGateListeners.add(listener);
+  return () => { releaseGateListeners.delete(listener); };
+}
 
 /** The install-wide record (contract fields 8-13) the native release gate gathered once for this packaged build. It is an
  * install property: a start checks it and never gathers it. Nothing registers it until that gate has produced it, and
@@ -41,10 +47,12 @@ export function registerMxcReleaseGateEvidence(evidence: MxcExtensionReleaseGate
   const record = Object.freeze({ ...evidence });
   releaseGateEvidence = record;
   releaseGateGeneration += 1;
+  for (const listener of releaseGateListeners) listener();
   return () => {
     if (releaseGateEvidence !== record) return;
     releaseGateEvidence = undefined;
     releaseGateGeneration += 1;
+    for (const listener of releaseGateListeners) listener();
   };
 }
 
@@ -82,17 +90,22 @@ function hasCurrentBackendEvidence(record: AdmissionRecord): boolean {
 }
 
 /** Spend immediately at the native spawn boundary; a mismatch or a second use burns the receipt rather than enabling retries. */
-export function consumeMxcExtensionAdmission(admission: MxcExtensionAdmission, identity: AdmissionIdentity): void {
+export function assertMxcExtensionAdmission(admission: MxcExtensionAdmission, identity: AdmissionIdentity, spent = false): void {
   const record = admissions.get(admission);
-  if (!record || record.spent || !hasCurrentBackendEvidence(record) || record.holder !== identity.holder || record.executableIdentity !== identity.executableIdentity
+  if (!record || record.spent !== spent || !hasCurrentBackendEvidence(record) || record.holder !== identity.holder || record.executableIdentity !== identity.executableIdentity
       || record.bootPlan !== identity.bootPlan || record.bootPlanDigest !== canonicalStringify(identity.bootPlan)
       || identity.bootPlan.selectedBackend !== "mxc" || identity.bootPlan.readiness !== "ready"
       || record.requestDigest !== mxcRequestDigest(identity.request)) {
-    admissions.delete(admission);
     throw new MxcProcessContractError("Native admission evidence does not match this holder request");
   }
   assertMxcExtensionRequest(identity.request);
-  record.spent = true;
+}
+
+export function consumeMxcExtensionAdmission(admission: MxcExtensionAdmission, identity: AdmissionIdentity): void {
+  try { assertMxcExtensionAdmission(admission, identity); }
+  catch (error) { admissions.delete(admission); throw error; }
+  const record = admissions.get(admission);
+  if (record) record.spent = true;
 }
 
 /** Per-start admission (contract fields 1-5). `start` is this holder's own start and resolves with what its ready frame

@@ -22,7 +22,8 @@ export function mxcRequestDigest(request: ContainerRequest): string {
 }
 
 type StreamFrame = { type: "stdin" | "stdout" | "stderr"; data: string };
-type ControlFrame = { type: "stdin-end" | "stop" | "creating" | "spawning" | "spawn-authorized" };
+type ControlFrame = { type: "stdin-end" | "stop" | "creating" | "spawning" };
+type ReleaseFrame = { type: "spawn-authorized"; releasePath?: string; releaseDigest?: string };
 type StoppedFrame = { type: "stopped"; spawnPendingAtCancellation: boolean };
 type NativeCreatedFrame = { type: "native-created"; id: number; processHandle: string };
 type NativeObservedFrame = { type: "native-observed"; id: number };
@@ -31,7 +32,7 @@ type ReadyFrame = { type: "ready"; id: number; nodeVersion: string; nativeModule
   requestDigest: string; startEvidence: MxcExtensionStartEvidence };
 type ExitFrame = { type: "exit"; exitCode: number; timedOut: boolean };
 type FailureFrame = { type: "error"; code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost"; message: string; backendLoss?: "extension" | "common" };
-export type MxcStreamFrame = (StreamFrame | ControlFrame | StoppedFrame | NativeCreatedFrame | NativeObservedFrame | StartFrame | ReadyFrame | ExitFrame | FailureFrame) & {
+export type MxcStreamFrame = (StreamFrame | ControlFrame | ReleaseFrame | StoppedFrame | NativeCreatedFrame | NativeObservedFrame | StartFrame | ReadyFrame | ExitFrame | FailureFrame) & {
   version: 1;
   generation: string;
   sequence: number;
@@ -50,7 +51,14 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
         || Buffer.byteLength(frame.data, "base64") > MXC_STREAM_CHUNK_BYTES) fail();
       fields = ["data"];
       break;
-    case "stdin-end": case "stop": case "creating": case "spawning": case "spawn-authorized": fields = []; break;
+    case "stdin-end": case "stop": case "creating": case "spawning": fields = []; break;
+    case "spawn-authorized":
+      if (frame.releasePath !== undefined || frame.releaseDigest !== undefined) {
+        if (typeof frame.releasePath !== "string" || frame.releasePath.length > 32768 || frame.releasePath.includes("\0")
+          || typeof frame.releaseDigest !== "string" || !/^[a-f0-9]{64}$/u.test(frame.releaseDigest)) fail();
+      }
+      fields = ["releasePath", "releaseDigest"];
+      break;
     case "native-created":
       if (typeof frame.processHandle !== "string" || !/^[1-9][0-9]{0,19}$/.test(frame.processHandle)
         || BigInt(frame.processHandle) >= 18446744073709551615n) fail();

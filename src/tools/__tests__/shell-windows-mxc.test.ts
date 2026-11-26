@@ -278,7 +278,8 @@ describe("builtin shell — Windows MXC containers", () => {
   beforeEach(() => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     vi.stubEnv("SystemRoot", "C:\\Windows");
-    installationMock.resolve.mockReturnValue({ executable: String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, kind: "windows-powershell" });
+    installationMock.resolve.mockReturnValue({ executable: String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+      kind: "windows-powershell", assertStillValid: () => {} });
     __resetShellResolverCache();
     childProcessMock.execFileSync.mockImplementation((_file, args: readonly string[]) =>
       args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
@@ -640,9 +641,9 @@ describe("builtin shell — Windows MXC containers", () => {
   it.each([
     ["command stderr matches a startup diagnostic", 1, "Error: BaseContainer job-object setup failed (5)", false, true],
     ["command exit code matches a startup status", 0xc0000142, "Command failed", false, true],
-    ["a separate start proves shared container failure", 1, "Error: BaseContainer job-object setup failed (5)", true, true],
+    ["a separate start proves shell container failure", 1, "Error: BaseContainer job-object setup failed (5)", true, true],
     ["ordinary command failure", 1, "Command failed", false, false],
-  ] as const)("checks shared container evidence when %s", async (_name, code, diagnostics, revokes, rechecks) => {
+  ] as const)("checks shell container evidence when %s", async (_name, code, diagnostics, revokes, rechecks) => {
     bootMxcShells();
     passConfirmationInterval();
     vi.spyOn(mxcWindows, "getHostWxcExecIdentity").mockReturnValue("verified-launcher");
@@ -659,7 +660,7 @@ describe("builtin shell — Windows MXC containers", () => {
       command === WXC_EXEC ? fakeChild("", code, diagnostics) : fakeChild(PARSED, 0));
     expect((await executePowerShell(context("ps-mxc-exit"))).isError).toBe(true);
     expect.soft(checkStart).toHaveBeenCalledTimes(rechecks ? 1 : 0);
-    expect.soft(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch + (revokes ? 1 : 0));
+    expect.soft(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch);
     expect(owner.isCurrent(earlier)).toBe(!revokes);
   });
 
@@ -678,7 +679,7 @@ describe("builtin shell — Windows MXC containers", () => {
     checkStart.mockClear();
     return { checkStart, owner, receipt, lossEpoch: backendEvidence.getWindowsContainerBackendLossEpoch() };
   }
-  it.each([false, true])("preserves or revokes both receipts according to independent shared loss (confirmed=%s)", async (confirmed) => {
+  it.each([false, true])("preserves the extension receipt when a shell failure is confirmed=%s", async (confirmed) => {
     const { checkStart, owner, receipt, lossEpoch } = await issuedContainerEvidence();
     const unregister = registerMxcReleaseGateEvidence({
       ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
@@ -700,11 +701,9 @@ describe("builtin shell — Windows MXC containers", () => {
       expect((await executePowerShell(context("ps-mxc-classified-start-failure"))).isError).toBe(true);
       if (confirmed) await vi.waitFor(() => expect(checkStart).toHaveBeenCalledOnce());
       else expect(checkStart).not.toHaveBeenCalled();
-      expect.soft(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch + (confirmed ? 1 : 0));
+      expect.soft(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch);
       expect.soft(owner.isCurrent(receipt)).toBe(!confirmed);
-      const consume = () => consumeMxcExtensionAdmission(holder, issued);
-      if (confirmed) expect(consume).toThrow(/does not match/);
-      else expect(consume).not.toThrow();
+      expect(() => consumeMxcExtensionAdmission(holder, issued)).not.toThrow();
     } finally { unregister(); }
   });
 
@@ -769,7 +768,7 @@ describe("builtin shell — Windows MXC containers", () => {
     checkStart.mockResolvedValue(START_FAILED);
     expect((await executePowerShell(context("ps-mxc-after-interval"))).isError).toBe(true);
     expect(checkStart).toHaveBeenCalledTimes(2);
-    expect(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch + 1);
+    expect(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch);
     expect(owner.isCurrent(receipt)).toBe(false);
   });
 

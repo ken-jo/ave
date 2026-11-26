@@ -39,7 +39,7 @@ export class WindowsBackendEvidenceOwner {
   private settled: (WindowsBackendEvidence & { readonly route: readonly unknown[] }) | undefined;
   private pending: { route: readonly unknown[]; receipt: Promise<WindowsBackendEvidence | undefined> } | undefined;
 
-  constructor(readonly provider: WindowsBackendEvidenceProvider) {}
+  constructor(readonly provider: WindowsBackendEvidenceProvider, private readonly onSuperseded?: () => void) {}
 
   /** One probe at a time: callers arriving during a probe share its result. */
   refresh(): Promise<WindowsBackendEvidence | undefined> {
@@ -57,6 +57,7 @@ export class WindowsBackendEvidenceOwner {
       if (this.pending?.receipt === receipt) this.pending = undefined;
     });
     this.pending = { route, receipt };
+    this.onSuperseded?.();
     return receipt;
   }
 
@@ -90,6 +91,7 @@ export class WindowsBackendEvidenceOwner {
     this.epoch += 1;
     this.settled = undefined;
     this.pending = undefined;
+    this.onSuperseded?.();
   }
 
   /** The evidence generation and route a failure observer starts measuring against. */
@@ -145,6 +147,14 @@ async function probeContainerPowerShellStart() {
   return await probeHostMxcPowerShellStart(launcher);
 }
 
+const containerEvidenceListeners = new Set<() => void>();
+const containerEvidenceChanged = () => { for (const listener of containerEvidenceListeners) listener(); };
+
+export function onWindowsContainerEvidenceChanged(listener: () => void): () => void {
+  containerEvidenceListeners.add(listener);
+  return () => { containerEvidenceListeners.delete(listener); };
+}
+
 const containerBackend = new WindowsBackendEvidenceOwner({
   route: () => {
     const capability = detectMxcShellCapability();
@@ -165,7 +175,7 @@ const containerBackend = new WindowsBackendEvidenceOwner({
   },
   isAbsentAtBoot: (substrate) => substrate.mxc.state === "unavailable" && substrate.mxc.reason === "container-unavailable"
     && substrate.mxc.containerBackendAbsent === true,
-});
+}, containerEvidenceChanged);
 
 /** Every backend that can confine background work on Windows. Removing a backend removes its entry. */
 export const WINDOWS_BACKEND_EVIDENCE = { account: accountBackend, container: containerBackend } as const;
@@ -219,7 +229,10 @@ export function reportWindowsBackendLoss(observation: WindowsBackendObservation)
   const extensionLost = observed.scope !== "shell" && containerBackendLossEpoch === observed.extensionEpoch
     && sameRoute(observed.extensionRoute, extensionRoute());
   if (shellLost) containerBackend.invalidate();
-  if (extensionLost) containerBackendLossEpoch += 1;
+  if (extensionLost) {
+    containerBackendLossEpoch += 1;
+    containerEvidenceChanged();
+  }
   return shellLost || extensionLost;
 }
 

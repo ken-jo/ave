@@ -7,6 +7,8 @@ import { MxcIntegrityError } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcBaseContainmentUnavailableError, MxcCapabilityUnavailableError, MxcProcessContractError, MxcProcessCleanupError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
 import type { MxcSupervisorRuntime } from "./mxc-supervisor-bootstrap.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
+import { assertMxcReleaseGate, type MxcReleaseProof } from "./mxc-release-gate.js";
+import { commitUnderAdmission } from "../shared/admission-commit.js";
 
 function classifyBackendFailure(error: unknown): unknown {
   return error instanceof Error && "code" in error && error.code === "backend_unavailable"
@@ -16,10 +18,10 @@ function classifyBackendFailure(error: unknown): unknown {
 
 /** One container incarnation per supervisor. All dependencies are host-owned. */
 export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness: Readable,
-  bootstrap: () => Promise<MxcSupervisorRuntime>, onFatal: () => void): Promise<void> {
+  bootstrap: () => Promise<MxcSupervisorRuntime>, onFatal: () => void, requireRelease = false): Promise<void> {
   let owned: MxcNativeProcess | undefined;
   let processPin: ReturnType<MxcSupervisorRuntime["pinProcess"]> | undefined;
-  let admissionAuthorization: { resolve(authorized: boolean): void } | undefined;
+  let admissionAuthorization: { resolve(authorized: boolean | MxcReleaseProof): void } | undefined;
   let nativeObservation: { id: number; resolve(): void } | undefined;
   let ownerLost = false;
   let starting: Promise<{ exitCode: number; timedOut: boolean } | null> | undefined;
@@ -93,19 +95,26 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
             }
             runtime.auditModules();
             if (stopping) return null;
-            const authorized = new Promise<boolean>((resolve) => { admissionAuthorization = { resolve }; });
+            const authorized = new Promise<boolean | MxcReleaseProof>((resolve) => { admissionAuthorization = { resolve }; });
             await channel.send({ type: "creating" });
             // No native creation until the owner revalidates admitted roots after
             // bootstrap/probing and acknowledges over the authenticated channel.
-            if (!await authorized) return null;
+            const release = await authorized;
+            if (!release) return null;
             if (stopping) return null;
-            creationStarted = true;
             // The SDK still opens string paths: authorization cannot make its
             // later native file opens atomic with the owner's identity check.
             // A single argument is deliberate: telemetry options are never passed.
-            spawnPending = true;
             const requestDigest = mxcRequestDigest(frame.request);
-            const nativePending = runtime.sdk.spawn(frame.request).catch((error: unknown) => { throw classifyBackendFailure(error); }).finally(() => { spawnPending = false; });
+            let nativePending!: ReturnType<MxcSupervisorRuntime["sdk"]["spawn"]>;
+            commitUnderAdmission(() => {
+              if (release !== true) assertMxcReleaseGate(release);
+              else if (requireRelease) throw new MxcProcessContractError("Missing extension authorization at native creation");
+            }, () => {
+              creationStarted = true;
+              spawnPending = true;
+              nativePending = runtime.sdk.spawn(frame.request).catch((error: unknown) => { throw classifyBackendFailure(error); }).finally(() => { spawnPending = false; });
+            });
             // Keep adopting a late handle even if the notification channel fails.
             // The failure requests teardown while the native promise remains owned.
             const spawning = Promise.resolve().then(() => channel.send({ type: "spawning" }));
@@ -166,7 +175,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
           if (stopping) break;
           if (!admissionAuthorization) throw new MxcProcessContractError("Unexpected spawn authorization");
           const authorization = admissionAuthorization; admissionAuthorization = undefined;
-          authorization.resolve(true);
+          authorization.resolve(frame.releasePath && frame.releaseDigest ? { path: frame.releasePath, digest: frame.releaseDigest } : true);
           break;
         }
         case "stdin":

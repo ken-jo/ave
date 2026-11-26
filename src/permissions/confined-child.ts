@@ -34,6 +34,7 @@ import {
   getSandboxGeneration,
   getWindowsExtensionBackendPlan,
   isIssuedHostShellExecutionPlan,
+  onSandboxStatusChanged,
 } from "./sandbox-capability.js";
 import type { HostShellExecutionPlan } from "./host-shell-execution-plan.js";
 import { openMxcEgressLease } from "./egress-host-listener.js";
@@ -47,11 +48,12 @@ import {
   MxcProcessContractError,
   WorkerTransportUnsupportedError,
 } from "./mxc-extension-errors.js";
-import { admitMxcExtensionStart, assertMxcReleaseGateEvidence, createMxcExtensionAdmission, consumeMxcExtensionAdmission } from "./mxc-extension-admission.js";
+import { admitMxcExtensionStart, assertMxcExtensionAdmission, assertMxcReleaseGateEvidence, createMxcExtensionAdmission, consumeMxcExtensionAdmission, onMxcReleaseGateChanged } from "./mxc-extension-admission.js";
+import { onWindowsContainerEvidenceChanged } from "./windows-confinement-evidence.js";
 import type { ExtensionStartPresentation } from "./extension-start-consent.js";
 import type { PluginWorkerControl } from "../plugins/public-contract.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
-import { registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
+import { onMxcHolderLifetimeAdmissionSealed, registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
 import { assertIssuedContainerHomeInPlace, isIssuedContainerHome } from "./sandbox-home-registry.js";
 import { assertMxcHolderPrivateDirectories, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
@@ -418,6 +420,13 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     // A separate snapshot, so the callback cannot mutate the production request.
     spec.assertRequest?.(structuredClone(request));
     const admission = createMxcExtensionAdmission(admissionInput);
+    const currentIdentity = () => ({ ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
+    const assertPreparation = () => {
+      assertHolder();
+      assertManagedChildProcessAdmissionOpen(spec.label);
+      assertNesting();
+    };
+    let spent = false;
     let child!: OwnedMxcExtensionProcess;
     // Readiness is this holder's own start: admitted only once its ready frame carries the start evidence for this request.
     // A refusal here can follow native creation; the catch below disposes it through the lifetime owner.
@@ -425,15 +434,26 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       child = await spawnMxcExtensionProcess(request, {
         signal: startSignal,
         onOwned: (owned) => { native = owned; },
+        paths: [...footprintPaths.keys(), ...[...footprintPaths.values()].map(path => path.target)],
+        beforeSupervisor: () => {
+          assertPreparation();
+          assertMxcExtensionAdmission(admission, currentIdentity());
+        },
         beforeSpawn: () => {
-          assertParent();
-          if (signal.aborted) throw new MxcProcessContractError("Extension start was cancelled");
-          spec.assertStillValid?.();
-          admitted.assertStillValid();
-          assertManagedChildProcessAdmissionOpen(spec.label);
-          if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before native creation");
-          assertNesting();
-          consumeMxcExtensionAdmission(admission, { ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
+          assertPreparation();
+          consumeMxcExtensionAdmission(admission, currentIdentity());
+          spent = true;
+        },
+        watchRelease: revoke => {
+          const check = () => {
+            try {
+              assertPreparation();
+              assertMxcExtensionAdmission(admission, currentIdentity(), spent);
+            } catch { revoke(); }
+          };
+          const unsubscribe = [onMxcReleaseGateChanged(check), onWindowsContainerEvidenceChanged(check), onSandboxStatusChanged(check),
+            onMxcHolderLifetimeAdmissionSealed(revoke)];
+          return () => { for (const stop of unsubscribe) stop(); };
         },
       });
       return child.startEvidence;

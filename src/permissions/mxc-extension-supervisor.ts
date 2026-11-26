@@ -30,7 +30,7 @@ async function run(): Promise<void> {
   const channel = new MxcExtensionChannel(process.stdin, process.stdout, generation, key, "supervisor");
   // stdout is exclusively the authenticated protocol. Diagnostics never become frames.
   process.stdout.on("error", () => process.exit(1));
-  await serveMxcSupervisor(channel, liveness, () => bootstrapMxcSupervisor(nodeModules), () => process.exit(1));
+  await serveMxcSupervisor(channel, liveness, () => bootstrapMxcSupervisor(nodeModules), () => process.exit(1), true);
 }
 
 void run().then(() => process.exit(0), () => {
