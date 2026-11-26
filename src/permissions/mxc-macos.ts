@@ -4,6 +4,8 @@ import { existsSync, lstatSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { dirname, isAbsolute, join } from "node:path";
+import { createLogger } from "../lib/logger.js";
+import { raceWithTimeout } from "../shared/abortable-deadline.js";
 import type { SandboxMacContainerShellSupport, SandboxMacContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
@@ -107,6 +109,8 @@ export function detectHostMxcMacShellSupport(resourcePath: string, signal?: Abor
 }
 
 const CANARY_CONTROL = "container-shell-control\n";
+const CANARY_HOST_TIMEOUT_MS = TOOL_TIMEOUT_POLICY.mxcMacShellProbeMs + TOOL_TIMEOUT_POLICY.mxcMacShellProbeGraceMs;
+const log = createLogger("mxc-macos");
 
 interface SeatbeltCanaryEvidence {
   readonly status: number | null;
@@ -144,8 +148,7 @@ Promise<Pick<SeatbeltCanaryEvidence, "status" | "timedOut" | "stdout"> & { stder
       cwd: dirname(launcher),
       env: buildSafeChildEnv(),
       encoding: "utf8",
-      timeout: TOOL_TIMEOUT_POLICY.mxcMacShellProbeMs + TOOL_TIMEOUT_POLICY.mxcMacShellProbeGraceMs,
-      signal,
+      ...(flags.length > 0 ? { timeout: CANARY_HOST_TIMEOUT_MS, signal } : {}),
     }, (error, stdout, stderr) => {
       if (signal?.aborted || (error && typeof error.code !== "number" && !error.killed)) {
         reject(error);
@@ -162,9 +165,15 @@ Promise<Pick<SeatbeltCanaryEvidence, "status" | "timedOut" | "stdout"> & { stder
 
 async function runSeatbeltCanary(launcher: string, root: string, signal?: AbortSignal): Promise<CanaryVerdict> {
   let scratch: string | undefined;
+  let running: ReturnType<typeof runCanaryRequest> | undefined;
   let otherPortConnected = false;
   const proxy = createServer(socket => socket.destroy());
   const other = createServer(socket => { otherPortConnected = true; socket.destroy(); });
+  const teardown = async () => {
+    proxy.close();
+    other.close();
+    if (scratch !== undefined) await rm(scratch, { recursive: true });
+  };
   try {
     scratch = await mkdtemp(join(root, "shell-probe-"));
     const fixture = join(scratch, "fixture");
@@ -238,7 +247,11 @@ async function runSeatbeltCanary(launcher: string, root: string, signal?: AbortS
       ...request, process: { ...request.process, commandLine },
       seatbelt: { ...request.seatbelt, profileOverride },
     }));
-    const start = await runCanaryRequest(launcher, config, [], signal);
+    signal?.throwIfAborted();
+    // The launcher's own deadline reaps the contained child. Signalling the launcher alone can orphan it.
+    running = runCanaryRequest(launcher, config, []).finally(() => { running = undefined; });
+    const start = await raceWithTimeout(running, CANARY_HOST_TIMEOUT_MS, () => new Error("Container canary exit unconfirmed"));
+    signal?.throwIfAborted();
     return seatbeltCanaryPassed({
       ...start,
       control: existsSync(control) ? await readFile(control, "utf8") : null,
@@ -247,9 +260,14 @@ async function runSeatbeltCanary(launcher: string, root: string, signal?: AbortS
       protectedParentInPlace: existsSync(protectedChild) && !existsSync(renamed),
     }) ? "available" : "shell-start-failed";
   } finally {
-    proxy.close();
-    other.close();
-    if (scratch !== undefined) await rm(scratch, { recursive: true });
+    if (running === undefined) {
+      await teardown();
+    } else {
+      // The watchdog bounds boot's wait. Keep the fixture live until the launcher actually finishes.
+      proxy.unref();
+      other.unref();
+      void running.then(teardown, teardown).catch(error => log.warn({ err: error }, "Container canary cleanup failed"));
+    }
   }
 }
 

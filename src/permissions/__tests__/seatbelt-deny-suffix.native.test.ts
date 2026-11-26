@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { launcherPathFor } from "../mxc-launcher.js";
 import { _runSeatbeltCanaryForTest, parseSeatbeltProfile } from "../mxc-macos.js";
@@ -139,5 +139,33 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
     if (launcher === undefined) throw new Error("macOS launcher path is missing");
     await expect(_runSeatbeltCanaryForTest(launcher, root)).resolves.toBe("available");
     expect(readdirSync(root)).toEqual(["work"]);
+  });
+
+  it("waits for the canary child to exit before tearing down on abort", async () => {
+    const launcher = launcherPathFor(resolve("resources"), "darwin", "arm64");
+    if (launcher === undefined) throw new Error("macOS launcher path is missing");
+    const wrapper = join(work, "abort-probe");
+    writeFileSync(wrapper, `#!/bin/sh
+if [ "$1" = "--config" ]; then
+  /usr/bin/perl -MJSON::PP -0777 -i -pe 'my $request=decode_json($_); $request->{process}{commandLine}=q{echo $$ > child.pid; /bin/sleep 1; exit 0}; $_=encode_json($request)' "$2" || exit 1
+fi
+exec "${launcher}" "$@"
+`, { mode: 0o700 });
+
+    const controller = new AbortController();
+    const reason = new Error("Canary cancelled");
+    const outcome = _runSeatbeltCanaryForTest(wrapper, root, controller.signal).catch((error: unknown) => error);
+    const childPid = await vi.waitFor(() => {
+      const staging = readdirSync(root).find(name => name.startsWith("shell-probe-"));
+      if (staging === undefined) throw new Error("Canary staging has not started");
+      const pid = Number(readFileSync(join(root, staging, "fixture", "project", "child.pid"), "utf8"));
+      expect(pid).toBeGreaterThan(1);
+      return pid;
+    }, { interval: 10, timeout: 3_000 });
+    controller.abort(reason);
+    const result = await outcome;
+    expect(() => process.kill(childPid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+    expect(readdirSync(root)).toEqual(["work"]);
+    expect(result).toBe(reason);
   });
 });
