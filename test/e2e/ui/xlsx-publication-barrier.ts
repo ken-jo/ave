@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const PUBLICATION_BARRIER_PRELUDE = String.raw`"use strict";
@@ -49,7 +49,7 @@ export function renderWorkbookCommand(platform: NodeJS.Platform, argv: readonly 
 
 /**
  * Copy the checkout's build into a disposable root that only one application instance runs, then install the
- * publication prelude there. The checkout's build is only read. Leftover roots live under the ignored test output.
+ * publication prelude there. The checkout's build is only read. Leftover roots stay in the checkout's ignored cache.
  */
 export function prepareWorkbookPublicationBuild(checkout: string, workspace: string, io: FixtureBuildIo = fileSystemIo) {
   const sharedScripts = join(checkout, "dist", "skill-scripts");
@@ -62,7 +62,7 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
   const script = Buffer.concat([Buffer.from(PUBLICATION_BARRIER_PRELUDE), producer]);
   const preparedManifest = Buffer.from(`${JSON.stringify({ ...manifest,
     scripts: { ...manifest.scripts, [name]: digest(script) } }, null, 2)}\n`);
-  const outputs = join(checkout, "test-results");
+  const outputs = join(checkout, ".cache");
   mkdirSync(outputs, { recursive: true });
   const root = realpathSync.native(mkdtempSync(join(outputs, "xlsx-publication-build-")));
   const scriptsDirectory = join(root, "dist", "skill-scripts");
@@ -70,6 +70,7 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
   try {
     io.copy(join(checkout, "dist", "src"), join(root, "dist", "src"));
     io.copy(join(checkout, "resources"), join(root, "resources"));
+    if (existsSync(join(checkout, "build"))) io.copy(join(checkout, "build"), join(root, "build"));
     mkdirSync(scriptsDirectory);
     for (const entry of Object.keys(manifest.scripts)) {
       if (entry !== name) io.copy(join(sharedScripts, entry), join(scriptsDirectory, entry));

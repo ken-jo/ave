@@ -39,6 +39,8 @@ beforeAll(async () => {
   writeFileSync(join(checkout, "dist", "src", "main", "main.js"), "export {};\n");
   writeFileSync(join(checkout, "dist", "src", "preload.cjs"), "\"use strict\";\n");
   mkdirSync(scripts, { recursive: true });
+  mkdirSync(join(checkout, "build"));
+  writeFileSync(join(checkout, "build", "icon.png"), "icon");
   mkdirSync(join(checkout, "resources"));
   stageWindowsPathKindHelper(join(checkout, "resources"));
   sharedScript = join(scripts, "edit-xlsx.cjs");
@@ -60,7 +62,7 @@ function expectSharedBuildUsable(): void {
 }
 
 function leftoverBuilds(): string[] {
-  const outputs = join(checkout, "test-results");
+  const outputs = join(checkout, ".cache");
   return existsSync(outputs) ? readdirSync(outputs) : [];
 }
 
@@ -92,6 +94,7 @@ describe("workbook publication build", () => {
       expect(readFileSync(fixture.scriptPath).subarray(-producerBytes.length)).toEqual(producerBytes);
       const { projectRoot } = resolveRuntimePathsFromModuleUrl(pathToFileURL(fixture.mainEntry).href);
       expect(projectRoot).toBe(fixture.root);
+      expect(readFileSync(join(projectRoot, "build", "icon.png"), "utf8")).toBe("icon");
       configureHostResources({ resourcePath: join(projectRoot, "resources"), isPackaged: false });
       expect(hostScriptRuntimePaths()?.bundledScriptsDirectory).toBe(dirname(fixture.scriptPath));
       const argv = fixture.argv(process.execPath, workbookPath, requestPath);
