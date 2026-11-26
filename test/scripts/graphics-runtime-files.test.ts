@@ -78,7 +78,9 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
       verifier.assertSrtWinVendor = (vendor, arches) => verify(vendor, arches, JSON.parse(process.env.AVE_TEST_SRT_RECEIPTS));
       // The before-pack record of the fixture's helper, as the packager process holds it for after-pack.
       const arch = { 1: 'x64', 3: 'arm64' }[context.arch];
-      const build = { binarySha256: process.argv[6], imageSha256: process.argv[6] };
+      const helper = process.argv[6];
+      const helperSha256 = createHash('sha256').update(helper).digest('hex');
+      const build = { binarySha256: helperSha256, imageSha256: helperSha256 };
       const bundleDir = join(context.appOutDir, 'staging', 'dist', 'main');
       const bundle = process.argv[8];
       mkdirSync(bundleDir, { recursive: true });
@@ -100,7 +102,7 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
         const source = join(context.appOutDir, 'staging', expand(mapping.from));
         const target = join(context.appOutDir, 'resources', expand(mapping.to));
         mkdirSync(dirname(source), { recursive: true });
-        writeFileSync(source, copy.substitute ? 'substituted helper' : readFileSync(target));
+        writeFileSync(source, copy.substitute ? 'substituted helper' : helper);
         const packager = Object.assign(Object.create(WinPackager.prototype), {
           platformSpecificBuildOptions: options,
           signIf(file) { writeFileSync(file + '.signed', 'signer invoked'); writeFileSync(file, 'signed'); },
@@ -109,6 +111,10 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
           ? new FileMatcher(source, target, value => value)
           : new FileMatcher(dirname(source), dirname(target), value => value, ['ave-path-kind.exe']);
         await copyFiles([matcher], packager.createTransformerForExtraFiles(context));
+      } else {
+        const target = join(context.appOutDir, 'resources', 'windows-path-kind', arch, 'ave-path-kind.exe');
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, helper);
       }
       await require(process.argv[3])(context);
       console.log(JSON.stringify({ passed: true }));
@@ -120,17 +126,12 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, JSON.stringify(context),
     join(context.appOutDir, "resources", "fixture-sdk-pins.json"), require.resolve("../../scripts/electron-after-pack.cjs"),
     require.resolve("../../scripts/lib/srt-win-integrity.cjs"),
-    pathToFileURL(require.resolve("../../scripts/lib/windows-path-kind-package.mjs")).href, pathKindHelper(context), JSON.stringify(copy ?? null), PATH_KIND_BUNDLE], {
+    pathToFileURL(require.resolve("../../scripts/lib/windows-path-kind-package.mjs")).href, PATH_KIND_HELPER, JSON.stringify(copy ?? null), PATH_KIND_BUNDLE], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", AVE_TEST_SRT_RECEIPTS: JSON.stringify(SRT_WIN_BUILD_RECEIPTS) }, encoding: "utf8",
   });
   if (result.error) throw result.error;
   const observation = JSON.parse(result.stdout);
   if (result.status !== 0) throw Object.assign(new Error(observation.message), { name: observation.name });
-}
-function pathKindHelper(context: Awaited<ReturnType<typeof createPackage>>["context"]): string {
-  const helper = join(context.appOutDir, "resources", "windows-path-kind", context.arch === 3 ? "arm64" : "x64", "ave-path-kind.exe");
-  putFile(helper, PATH_KIND_HELPER);
-  return PATH_KIND_SHA256;
 }
 const { assertGraphicsRuntimeFiles } = require("../../scripts/lib/graphics-runtime-files.cjs") as {
   assertGraphicsRuntimeFiles(directory: string, platform: string): void;
