@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { isContainerHolderRouteEnabled, isContainerShellRouteEnabled } from "../../shared/container-platform.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../asrt-sandbox.js";
 import { openEgressRelay } from "../egress-relay/relay.js";
@@ -25,8 +26,10 @@ describe.runIf(platform === "darwin" || platform === "linux")("existing POSIX co
       platform, kind: "asrt", confidence: "verified", reason: "Active sandbox",
       confines: { filesystem: true, process: true, network: true },
     });
+    expect(isContainerShellRouteEnabled(platform)).toBe(false);
+    expect(isContainerHolderRouteEnabled(platform)).toBe(false);
     expect(detectMxcShellCapability()).toBeUndefined();
-    expect(getHostShellExecutionPlan().substrate).toBe("asrt");
+    expect(getHostShellExecutionPlan().identity).toBe(`host-shell-execution-plan/v4:${platform}:asrt`);
   });
 
   it("keeps the container relay unstarted after sandbox initialization", async () => {
@@ -60,7 +63,10 @@ describe("container route call sites", () => {
   });
 
   it("limits the route selector to relay startup and holder selection", () => {
-    expect(callers(/\bisContainerRouteEnabled\s*\(/u, "src/shared/container-platform.ts"))
+    const definition = "src/shared/container-platform.ts";
+    expect(callers(/\bisContainerRouteEnabled\b/u, definition)).toEqual([]);
+    expect(callers(/\bisContainerShellRouteEnabled\s*\(/u, definition)).toEqual(["src/permissions/asrt-sandbox.ts"]);
+    expect(callers(/\bisContainerHolderRouteEnabled\s*\(/u, definition))
       .toEqual(["src/permissions/asrt-sandbox.ts", "src/sandbox/wrap-bundled-command.ts"]);
   });
 });
