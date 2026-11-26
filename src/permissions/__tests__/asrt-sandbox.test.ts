@@ -54,12 +54,26 @@ vi.mock("../windows-stamp-targets.js", async original => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
   const { normalizePathForSandbox } = await import("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js");
   const nativeWindows = process.platform === "win32";
-  return { ...actual, pinWindowsFilesystemConfig: (filesystem: Parameters<typeof actual.pinWindowsFilesystemConfig>[0]) => {
-    if (nativeWindows || process.platform !== "win32" || filesystem === undefined) return actual.pinWindowsFilesystemConfig(filesystem);
-    return { ...filesystem, ...Object.fromEntries((["allowRead", "allowWrite"] as const)
-      .filter(field => filesystem[field] !== undefined).map(field => [field, filesystem[field]!.map(entry =>
-        normalizePathForSandbox(typeof entry === "string" ? entry : entry.path))])) };
-  } };
+  const simulatingWindows = () => !nativeWindows && process.platform === "win32";
+  const projectGrant = (entry: FilesystemPathEntry): string => {
+    const path = typeof entry === "string" ? entry : entry.path;
+    // Grant expansion rewrites POSIX fixture separators before reaching admission.
+    const hostPath = path.startsWith("\\") && !path.startsWith("\\\\") ? resolve(path.replaceAll("\\", "/")) : path;
+    return normalizePathForSandbox(hostPath, { literal: typeof entry !== "string" });
+  };
+  return {
+    ...actual,
+    pinWindowsFilesystemConfig: (filesystem: Parameters<typeof actual.pinWindowsFilesystemConfig>[0]) => {
+      if (!simulatingWindows() || filesystem === undefined) return actual.pinWindowsFilesystemConfig(filesystem);
+      return { ...filesystem, ...Object.fromEntries((["allowRead", "allowWrite"] as const)
+        .filter(field => filesystem[field] !== undefined).map(field => [field, filesystem[field]!.map(projectGrant)])) };
+    },
+    pinWindowsGrantRequests: (requests: Parameters<typeof actual.pinWindowsGrantRequests>[0]) =>
+      simulatingWindows() ? {
+        allowRead: requests.allowRead.map(({ entry }) => projectGrant(entry)),
+        allowWrite: requests.allowWrite.map(({ entry }) => projectGrant(entry)),
+      } : actual.pinWindowsGrantRequests(requests),
+  };
 });
 
 beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
@@ -89,16 +103,15 @@ vi.mock("node:fs", async (importOriginal) => {
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
+  const nativeWindows = original.type() === "Windows_NT";
+  const fixtureProfile = () => nativeWindows || process.platform === "win32" ? process.env.AVE_ASRT_TEST_HOME : undefined;
   return {
     ...original,
-    homedir: () => {
-      const isolated = process.env.AVE_ASRT_TEST_HOME;
-      return process.platform === "win32" && isolated ? isolated : original.homedir();
-    },
+    homedir: () => fixtureProfile() || original.homedir(),
     userInfo: () => {
       const info = original.userInfo();
-      const isolated = process.env.AVE_ASRT_TEST_HOME;
-      return process.platform === "win32" && isolated ? { ...info, homedir: isolated } : info;
+      const isolated = fixtureProfile();
+      return isolated ? { ...info, homedir: isolated } : info;
     },
   };
 });
@@ -1873,6 +1886,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   it.runIf(ORIGINAL_PLATFORM_FOR_DENY_TEST === "win32").each([
     ["equal paths", "C:\\Users\\tester", "C:\\Users\\tester\\work\\", "C:\\Users\\tester\\work", true],
     ["ancestor denies", "C:\\Users\\tester", "C:\\Users\\tester\\.config\\project", "C:\\Users\\tester\\.config", true],
+    ["drive-less grants", "C:\\Users\\tester", "\\Users\\tester\\work", "C:\\Users\\tester\\work\\locked", /requires a literal local absolute path/],
     ["extended-length grants", "C:\\Users\\tester", "\\\\?\\C:\\Users\\tester\\work", "C:\\Users\\tester\\work\\locked", /requires a literal local absolute path/],
     ["extended-length denies", "C:\\Users\\tester", "C:\\Users\\tester\\work", "\\\\?\\C:\\Users\\tester\\work\\locked", true],
     ["case folding", "C:\\Users\\tester", "c:\\users\\TESTER\\WORK", "C:\\Users\\tester\\work\\locked", true],

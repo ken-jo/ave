@@ -1,4 +1,5 @@
 /** Render with only required props to verify optional interaction clusters have safe defaults. */
+import { t as translate } from "../../../i18n/runtime.js";
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
 import { withTz, userEntry } from "../../../__tests__/test-helpers.js";
@@ -316,6 +317,108 @@ describe("TranscriptRenderer — minimal (required-only) contract", () => {
       />,
     );
     expect(getByTestId("work-group").textContent).toContain("x");
+  });
+
+  it("shows the missing-route reason for a label-only transcript summary", () => {
+    const summary = completedTurnSummary();
+    const current = summary.get(0);
+    if (!current) throw new Error("test turn summary missing");
+    current.vendorProvider = "openai";
+    current.vendorModel = "gpt-5.4";
+
+    const { getByTestId } = renderCore(
+      <TranscriptRenderer
+        entries={[userEntry("q"), assistant("a")]}
+        streaming={false}
+        currentSessionId="s1"
+        turnSummaryByTurnStart={summary}
+      />,
+    );
+
+    const badge = getByTestId("token-cost-badge");
+    expect(badge).toHaveAttribute("aria-disabled", "true");
+    expect(badge).toHaveAttribute("aria-description", "이 요청에 사용된 경로가 기록되지 않았습니다.");
+    expect(badge).not.toHaveTextContent("$");
+  });
+
+  it.each([
+    { vendor: "openai", cacheRead: 0, shown: "$0.0020" },
+    // 1,000 fresh at $2 plus 500 cached at $1 per million, for both ways vendors count cache.
+    { vendor: "openai", cacheRead: 500, shown: "$0.0025" },
+    { vendor: "claude", cacheRead: 500, shown: "$0.0025" },
+  ] as const)("prices a historical $vendor turn recorded without request segments from its own price snapshot (cache $cacheRead)", ({ vendor, cacheRead, shown }) => {
+    const turn = (pricing: unknown) => historyToEntries([
+      serializeHistoryMessage({ role: "user", content: "q" }, 0),
+      serializeHistoryMessage({
+        role: "assistant", content: "a",
+        meta: { turnSummary: {
+          endedByEndTurn: true, turnDurationMs: 100, toolCount: 0, cumulativeToolMs: 0,
+          tokensIn: 1_000, freshInputTokens: 1_000, tokensOut: 0,
+          ...(cacheRead > 0 ? { cacheReadTokens: cacheRead } : {}),
+          vendorProvider: vendor, vendorModel: "fixture-model",
+          ...(pricing === undefined ? {} : { modelSettings: {
+            modelCatalogSha256: "fixture",
+            contextWindow: { tokens: 128_000, source: "fallback" },
+            output: { requested: 32_000, requestedSource: "host-default", effective: 32_000, effectiveSource: "host-default" },
+            pricing,
+          } }),
+        } as never },
+      }, 1),
+    ]);
+    const badgeFor = (entries: ReturnType<typeof historyToEntries>) => {
+      const summary = entries.find((entry) => entry.kind === "turn_summary");
+      if (!summary) throw new Error("Historical turn summary missing");
+      const view = renderCore(
+        <TranscriptRenderer entries={entries} streaming={false} currentSessionId="s1"
+          turnSummaryByTurnStart={new Map([[0, summary]])} />,
+      );
+      return { badge: view.getByTestId("token-cost-badge"), unmount: view.unmount };
+    };
+    const priced = badgeFor(turn({ source: "user", rates: { inputPer1M: 2, outputPer1M: 0, cacheReadPer1M: 1 } }));
+    expect(priced.badge).toHaveAttribute("aria-disabled", "false");
+    fireEvent.click(priced.badge);
+    expect(priced.badge).toHaveTextContent(shown);
+    priced.unmount();
+    // A label with no recorded price stays unknown, and a recorded unknown keeps its reason.
+    const labelOnly = badgeFor(turn(undefined));
+    expect(labelOnly.badge).toHaveAttribute("aria-disabled", "true");
+    labelOnly.unmount();
+    const unknown = badgeFor(turn({ source: "unknown", reason: "endpoint-price-unavailable" }));
+    expect(unknown.badge).toHaveAttribute("aria-disabled", "true");
+    expect(unknown.badge).toHaveAttribute("aria-description", translate("pricing.endpointPriceUnavailable"));
+  });
+
+  it("reuses the recorded primary price for a matching historical segment", () => {
+    const entries = historyToEntries([
+      serializeHistoryMessage({ role: "user", content: "q" }, 0),
+      serializeHistoryMessage({
+        role: "assistant", content: "a",
+        meta: { turnSummary: {
+          endedByEndTurn: true, turnDurationMs: 100, toolCount: 0, cumulativeToolMs: 0,
+          tokensIn: 1_000, freshInputTokens: 1_000, tokensOut: 0,
+          vendorProvider: "openai", vendorModel: "gpt-5.4",
+          modelSettings: {
+            modelCatalogSha256: "fixture",
+            contextWindow: { tokens: 128_000, source: "fallback" },
+            output: { requested: 32_000, requestedSource: "host-default", effective: 32_000, effectiveSource: "host-default" },
+            pricing: { source: "user", rates: { inputPer1M: 2, outputPer1M: 0 } },
+          },
+          usageByModel: [{
+            vendorProvider: "openai", vendorModel: "gpt-5.4", tokenUsage: { inputTokens: 1_000, outputTokens: 0 },
+          }],
+        } },
+      }, 1),
+    ]);
+    const summary = entries.find((entry) => entry.kind === "turn_summary");
+    if (!summary) throw new Error("Historical turn summary missing");
+    const { getByTestId } = renderCore(
+      <TranscriptRenderer entries={entries} streaming={false} currentSessionId="s1"
+        turnSummaryByTurnStart={new Map([[0, summary]])} />,
+    );
+    const badge = getByTestId("token-cost-badge");
+    expect(badge).toHaveAttribute("aria-disabled", "false");
+    fireEvent.click(badge);
+    expect(badge).toHaveTextContent("$0.0020");
   });
 
   it("hides token and cost estimates when the active runtime has no verified usage contract", () => {

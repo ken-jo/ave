@@ -101,6 +101,7 @@ export async function readJsonFileOrEmpty<T>(
   filePath: string,
   empty: () => T,
   hydrate: (parsed: unknown) => T,
+  options?: { quarantineCorrupt?: boolean },
 ): Promise<T> {
   // One verified buffer: a covered input pending review in the home content trust manifest reads as empty and is left in place
   // (never quarantined), and a later write over it is refused.
@@ -111,7 +112,7 @@ export async function readJsonFileOrEmpty<T>(
   try {
     parsed = JSON.parse(raw);
   } catch {
-    await quarantineCorruptJson(filePath);
+    if (options?.quarantineCorrupt !== false) await quarantineCorruptJson(filePath);
     return empty();
   }
   return hydrate(parsed);

@@ -1,6 +1,6 @@
 import type { WebContents } from "electron";
 import { describe, expect, it } from "vitest";
-import { ApprovalSurfaceRegistry, approvalSurfaceRegistry, updateApprovalSurface } from "../approval-surface-registry.js";
+import { ApprovalSurfaceRegistry, approvalSurfaceRegistry, updateApprovalSurface, workBoardApprovalProjectOf } from "../approval-surface-registry.js";
 
 function surface() {
   return { isDestroyed: () => false } as WebContents;
@@ -89,6 +89,33 @@ describe("approval surface registrations", () => {
     expect(() => updateApprovalSurface({ kind: "attach", sessionId: "", surface: null })).toThrow("empty identity");
     expect(() => updateApprovalSurface({ kind: "release-owner", surface: undefined as never })).toThrow("invalid owner registration");
     expect(() => updateApprovalSurface({ kind: "release-owner", surface: null as never })).toThrow("invalid owner release");
+  });
+
+  it("keeps the registered project fields when the input changes", () => {
+    const sessionId = "project-snapshot-input";
+    const project = { itemId: 1, projectRoot: "registered-project" };
+    updateApprovalSurface({ kind: "attach-project", sessionId, project });
+    try {
+      project.itemId = 2;
+      project.projectRoot = "updated-project";
+      expect(workBoardApprovalProjectOf(sessionId)).toEqual({ itemId: 1, projectRoot: "registered-project" });
+    } finally {
+      updateApprovalSurface({ kind: "release", sessionId });
+    }
+  });
+
+  it("returns a project snapshot that rejects assignment", () => {
+    const sessionId = "project-snapshot-lookup";
+    updateApprovalSurface({ kind: "attach-project", sessionId, project: { itemId: 1, projectRoot: "registered-project" } });
+    try {
+      const registered = workBoardApprovalProjectOf(sessionId);
+      expect(registered).toBeDefined();
+      expect(() => { (registered as { projectRoot: string }).projectRoot = "updated-project"; }).toThrow(TypeError);
+      expect(Object.isFrozen(registered)).toBe(true);
+      expect(workBoardApprovalProjectOf(sessionId)?.projectRoot).toBe("registered-project");
+    } finally {
+      updateApprovalSurface({ kind: "release", sessionId });
+    }
   });
 
   it("has no owner until a host explicitly registers one", () => {

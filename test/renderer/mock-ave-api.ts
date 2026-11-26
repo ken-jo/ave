@@ -850,6 +850,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
 
     // Work Board API; board panel subscribes to onWorkBoardItemChanged at mount, so the smoke test mock must define these even when the suite
     // doesn't exercise the board. CRUD mocks return the store's discriminated `status` envelopes; events are no-op subscribe handles by default.
+    setWorkBoardProjectScope: vi.fn(async () => true),
+    openWorkBoardJoin: vi.fn(async () => ({ ok: false as const, reason: "not_found" as const })),
     listWorkBoard: vi.fn(async () => ({ status: "ok", items: [] })),
     getWorkBoardItem: vi.fn(async (id: number) => ({ status: "not_found", itemId: id })),
     addWorkBoardItem: vi.fn(async () => ({ status: "invalid", reason: "mock" })),

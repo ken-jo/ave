@@ -67,10 +67,8 @@ vi.mock("node:fs", async original => {
 
 vi.mock("../windows-stamp-targets.js", async original => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
-  const targets = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(actual);
   // The drive fixture answers every pin through its native drive, so the shipped pinner admits each grant as Windows does.
-  return { ...targets, pinWindowsFilesystemConfig: <T extends Partial<import("@anthropic-ai/sandbox-runtime").FilesystemConfig> | undefined>(config: T): T =>
-    driveFixture.enabled ? actual.pinWindowsFilesystemConfig(config) : targets.pinWindowsFilesystemConfig(config) };
+  return (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(actual, () => driveFixture.enabled);
 });
 // The isolation guard resolves with the host's own path and fs, where a drive spelling is a relative name under the checkout. On a
 // POSIX host it checks the backing file each drive spelling names, as a Windows host checks the drive path itself.

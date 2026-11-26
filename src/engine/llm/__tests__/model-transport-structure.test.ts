@@ -30,6 +30,7 @@ function readProductionSources(): Map<string, string> {
 
 const production = readProductionSources();
 const ADAPTER = "src/engine/llm/vercel/adapter.ts";
+const OBSERVER = "src/engine/llm/vercel/observe-served-request.ts";
 const CHAT_ROUTE = "src/engine/turn/provider.ts";
 
 function mutate(changes: Record<string, string | ((source: string) => string)>): string[] {
@@ -47,6 +48,17 @@ function mutate(changes: Record<string, string | ((source: string) => string)>):
 function replaceOnce(source: string, search: string, replacement: string): string {
   expect(source.split(search)).toHaveLength(2);
   return source.replace(search, replacement);
+}
+
+function withGeminiFetch(source: string, declarations: string, fetchExpression: string): string {
+  const branch = 'if (slot === "gemini") {\n';
+  const factory = "      const google = createGoogleGenerativeAI({";
+  const afterFetch = "\n      });\n      return google(modelId);";
+  return replaceOnce(
+    replaceOnce(source, branch + factory, branch + declarations + factory),
+    `fetch: observedFetch,${afterFetch}`,
+    `fetch: ${fetchExpression},${afterFetch}`,
+  );
 }
 
 describe("model transport structure", () => {
@@ -128,6 +140,160 @@ describe("model transport structure", () => {
           "const wireFetch = this.customFetch ?? globalThis.fetch;",
         ),
       })).toEqual(expect.arrayContaining([`${ADAPTER}: createAnthropic(…) is not given the gated wire fetch`]));
+    });
+
+    it("rejects outer options whose fetch is replaced before the factory call", () => {
+      const original = [
+        '    if (slot === "gemini") {',
+        "      const google = createGoogleGenerativeAI({",
+        "        apiKey: this.apiKey,",
+        "        baseURL: this.baseUrl || undefined,",
+        "        fetch: observedFetch,",
+        "      });",
+        "      return google(modelId);",
+        "    }",
+      ].join("\n");
+      const replacement = [
+        "    const options = { apiKey: this.apiKey, fetch: observedFetch };",
+        '    if (slot === "gemini") {',
+        "      const buildGoogleModel = () => {",
+        "        ({ fetch: options.fetch } = { fetch: this.customFetch ?? globalThis.fetch });",
+        "        const google = createGoogleGenerativeAI(options);",
+        "        return google(modelId);",
+        "      };",
+        "      return buildGoogleModel();",
+        "    }",
+      ].join("\n");
+      expect(mutate({
+        [ADAPTER]: (source) => replaceOnce(source, original, replacement),
+      })).toEqual([`${ADAPTER}: createGoogleGenerativeAI(…) must take inline options without spreads or computed properties`]);
+    });
+
+    it.each([
+      "...{ baseURL: this.baseUrl },",
+      '["fetch"]: this.customFetch,',
+    ])("rejects the extra factory option %s", (property) => {
+      expect(mutate({
+        [ADAPTER]: (source) => replaceOnce(
+          source,
+          "      });\n      return google(modelId);",
+          `        ${property}\n      });\n      return google(modelId);`,
+        ),
+      })).toEqual([`${ADAPTER}: createGoogleGenerativeAI(…) must take inline options without spreads or computed properties`]);
+    });
+
+    it("rejects an ungated fetch alias even when a sibling branch reuses the name for a gated fetch", () => {
+      const openAiBranch = 'if (slot === "openai") {\n';
+      expect(mutate({
+        [ADAPTER]: (source) => replaceOnce(
+          replaceOnce(
+            withGeminiFetch(
+              source,
+              "      const branchFetch = this.customFetch ?? globalThis.fetch;\n"
+                + "      const branchObservedFetch = observeServedRequest(branchFetch, onServedRequest);\n",
+              "branchObservedFetch",
+            ),
+            `${openAiBranch}      const openai = createOpenAI({`,
+            `${openAiBranch}      const branchFetch = wireFetch;\n`
+              + "      const branchObservedFetch = observeServedRequest(branchFetch, onServedRequest);\n"
+              + "      const openai = createOpenAI({",
+          ),
+          "fetch: observedFetch,\n      });\n      // Responses API",
+          "fetch: branchObservedFetch,\n      });\n      // Responses API",
+        ),
+      })).toEqual([`${ADAPTER}: createGoogleGenerativeAI(…) is not given the gated wire fetch`]);
+    });
+
+    it("rejects a branch-local function that shadows the imported observer", () => {
+      expect(mutate({
+        [ADAPTER]: (source) => withGeminiFetch(
+          source,
+          "      const ungatedFetch = this.customFetch ?? globalThis.fetch;\n"
+            + "      function observeServedRequest(_fetch: typeof fetch) { return ungatedFetch; }\n"
+            + "      const branchObservedFetch = observeServedRequest(wireFetch);\n",
+          "branchObservedFetch",
+        ),
+      })).toEqual([`${ADAPTER}: createGoogleGenerativeAI(…) is not given the gated wire fetch`]);
+    });
+
+    it("rejects an alias read before its declaration", () => {
+      expect(mutate({
+        [ADAPTER]: (source) => withGeminiFetch(
+          source,
+          "      const branchFetch = laterFetch;\n      const laterFetch = wireFetch;\n",
+          "branchFetch",
+        ),
+      })).toEqual([`${ADAPTER}: createGoogleGenerativeAI(…) is not given the gated wire fetch`]);
+    });
+
+    it("accepts the reviewed observer under a renamed import", () => {
+      expect(mutate({
+        [ADAPTER]: (source) => replaceOnce(
+          replaceOnce(source, "import { observeServedRequest }", "import { observeServedRequest as observe }"),
+          "observeServedRequest(wireFetch, onServedRequest)",
+          "observe(wireFetch, onServedRequest)",
+        ),
+      })).toEqual([]);
+    });
+
+    it("rejects the observer binding from a different module", () => {
+      expect(mutate({
+        [ADAPTER]: (source) => replaceOnce(source, 'from "./observe-served-request.js";', 'from "./other-observer.js";'),
+        "src/engine/llm/vercel/other-observer.ts": "export function observeServedRequest() { return globalThis.fetch; }",
+      })).toContain(`${ADAPTER}: createGoogleGenerativeAI(…) is not given the gated wire fetch`);
+    });
+
+    it.each([
+      ["await fetch(input, init)", "fetch"],
+      ["await globalThis.fetch(input, init)", "globalThis"],
+    ])("rejects an observer whose send expression is %s", (send, identifier) => {
+      expect(mutate({
+        [OBSERVER]: (source) => replaceOnce(source, "await fetchImpl(input, init)", send),
+      })).toEqual(expect.arrayContaining([
+        `${OBSERVER}: cannot reference ${identifier} at runtime`,
+        `${OBSERVER}: observeServedRequest must send through its first parameter and use only observation calls`,
+      ]));
+    });
+
+    it("rejects an ambient send alongside the delegated send", () => {
+      expect(mutate({
+        [OBSERVER]: (source) => replaceOnce(
+          source,
+          "    const response = await fetchImpl(input, init);",
+          "    await globalThis.fetch(input, init);\n    const response = await fetchImpl(input, init);",
+        ),
+      })).toContain(`${OBSERVER}: cannot reference globalThis at runtime`);
+    });
+
+    it("rejects an ambient send hidden in the request-address helper before the delegated send", () => {
+      expect(mutate({
+        [OBSERVER]: (source) => replaceOnce(
+          replaceOnce(source, "  try {", "  void fetch(input);\n  try {"),
+          "    const response = await fetchImpl(input, init);\n"
+            + "    onServedRequest(response.url || (response.redirected ? undefined : requestAddress(input)));",
+          "    const address = requestAddress(input);\n"
+            + "    const response = await fetchImpl(input, init);\n"
+            + "    onServedRequest(response.url || (response.redirected ? undefined : address));",
+        ),
+      })).toContain(`${OBSERVER}: cannot reference fetch at runtime`);
+    });
+
+    it.each(["http", "node:https", "node:net", "undici"])("rejects an observer import of %s", (module) => {
+      expect(mutate({
+        [OBSERVER]: (source) => `import "${module}";\n${source}`,
+      })).toEqual([`${OBSERVER}: cannot import or re-export modules`]);
+    });
+
+    it("rejects an observer that references another ambient transport", () => {
+      expect(mutate({
+        [OBSERVER]: (source) => replaceOnce(source, "  try {", "  void XMLHttpRequest;\n  try {"),
+      })).toEqual([`${OBSERVER}: cannot reference XMLHttpRequest at runtime`]);
+    });
+
+    it("rejects unrelated calls in an observer helper", () => {
+      expect(mutate({
+        [OBSERVER]: (source) => replaceOnce(source, "  try {", "  console.log(input);\n  try {"),
+      })).toEqual([`${OBSERVER}: observeServedRequest must send through its first parameter and use only observation calls`]);
     });
 
     it("rejects a gate whose predicate was emptied", () => {

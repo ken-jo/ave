@@ -12,10 +12,9 @@ import {
   type SubscriptionUsageTelemetry,
 } from "../shared/subscription-runtime.js";
 import { isLLMVendor, type LLMVendor } from "./llm/types.js";
-import { computeCost, knownModelPricing, normalizeAiSdkUsageForCost, resolveModelPricing } from "./llm/pricing.js";
-import { activeModelCatalog } from "../shared/model-catalog/active.js";
-import { pricingOverridesSignature, type PricingOverride } from "../shared/pricing-overrides.js";
-import { parseResolvedModelPricing, type RecordedModelPricing } from "../shared/model-pricing.js";
+import { normalizeAiSdkUsageForCost } from "./llm/pricing.js";
+import { LEGACY_ROUTE_UNRECORDED, parseResolvedModelPricing, recordedUsageSegmentPricing, type RecordedModelPricing, type UnknownModelPricingReason } from "../shared/model-pricing.js";
+import { averageDailyCost, computeCost } from "../shared/pricing-data.js";
 import type { RunModelSettings } from "../shared/run-model-settings.js";
 
 export interface AuditTurnEntry {
@@ -37,8 +36,11 @@ export interface UsageTotals {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   totalTokens: number;
+  /** Subtotal of priced requests. Unknown requests contribute no amount. */
   cost: number;
   unknownCostTurns?: number;
+  endpointPriceUnavailableTurns?: number;
+  legacyRouteUnrecordedTurns?: number;
 }
 
 export interface UsagePerVendor extends UsageTotals {
@@ -89,13 +91,18 @@ interface SubscriptionUsageSummary {
 }
 
 export interface UsageSummary {
+  /** At least one audit file could not be read completely or the snapshot was unstable. */
+  auditIncomplete?: true;
   today: UsageTotals;
   thisWeek: UsageTotals;
   thisMonth: UsageTotals;
   perVendor: UsagePerVendor[];
   perModel: UsagePerVendor[];
   trend: UsageTrendPoint[];
+  /** Ranked by priced spend, with totals drawn only from priced requests. */
   topConversations: UsageConversation[];
+  /** Activity with or without a recorded price, ranked by total tokens. */
+  topConversationsByTokens: UsageConversation[];
   subscription: SubscriptionUsageSummary;
   generatedAt: string;
 }
@@ -164,16 +171,14 @@ function parseUsageSegments(entry: AuditTurnEntry): UsageSegment[] {
   const recordedRoute = parseRoute(entry.route);
   const recordedPricing = parseResolvedModelPricing(entry.modelSettings?.pricing);
   if (entry.usageByModel?.length) {
+    const primary = { vendorProvider: recordedRoute.vendor, vendorModel: recordedRoute.model, pricing: recordedPricing };
     return entry.usageByModel.map((segment) => {
       const model = segment.vendorModel || "unknown";
       // Renamed or retired vendor IDs retain their usage as visible, unpriced segments.
+      const pricing = recordedUsageSegmentPricing({ ...segment, vendorModel: model }, primary);
       return isLLMVendor(segment.vendorProvider)
-        ? {
-            vendor: segment.vendorProvider, model, tokenUsage: segment.tokenUsage,
-            pricing: parseResolvedModelPricing(segment.pricing)
-              ?? (recordedRoute.vendor === segment.vendorProvider && recordedRoute.model === model ? recordedPricing : undefined),
-          }
-        : { vendor: "unknown" as const, model: `${segment.vendorProvider}/${model}`, tokenUsage: segment.tokenUsage };
+        ? { vendor: segment.vendorProvider, model, tokenUsage: segment.tokenUsage, pricing }
+        : { vendor: "unknown" as const, model: `${segment.vendorProvider}/${model}`, tokenUsage: segment.tokenUsage, pricing };
     });
   }
   if (!entry.tokenUsage) return [];
@@ -193,8 +198,8 @@ function addTo(
   cacheRead: number,
   cacheWrite: number,
   vendor: UsageVendor,
-  cost: number,
-  costKnown: boolean,
+  cost: number | undefined,
+  unknownPricingReason: UnknownModelPricingReason | undefined,
 ): void {
   target.inputTokens += input;
   target.outputTokens += output;
@@ -206,8 +211,14 @@ function addTo(
     vendor === "claude"
       ? input + output + cacheRead + cacheWrite
       : input + output;
-  target.cost += cost;
-  if (!costKnown) target.unknownCostTurns = (target.unknownCostTurns ?? 0) + 1;
+  const subtotal = cost === undefined ? undefined : target.cost + cost;
+  if (subtotal !== undefined && Number.isFinite(subtotal)) target.cost = subtotal;
+  else target.unknownCostTurns = (target.unknownCostTurns ?? 0) + 1;
+  if (unknownPricingReason === "endpoint-price-unavailable") {
+    target.endpointPriceUnavailableTurns = (target.endpointPriceUnavailableTurns ?? 0) + 1;
+  } else if (unknownPricingReason === "legacy-route-unrecorded") {
+    target.legacyRouteUnrecordedTurns = (target.legacyRouteUnrecordedTurns ?? 0) + 1;
+  }
 }
 
 function addSubscriptionTo(
@@ -345,6 +356,7 @@ async function readUsageAuditEntriesWithStatus(
           const entry = JSON.parse(line) as AuditTurnEntry;
           if (entry.type === "turn" && matchesEntry(entry)) rows.push(entry);
         } catch {
+          complete = false;
         }
       }
       entries.push(...rows);
@@ -400,7 +412,6 @@ export async function readAuditEntries(
 export function computeUsageSummary(
   entries: AuditTurnEntry[],
   now: Date = new Date(),
-  pricingOverrides: readonly PricingOverride[] = [],
 ): UsageSummary {
   const todayKey = localDateKey(now);
   const weekKey = localMondayWeekStartKey(now);
@@ -414,6 +425,7 @@ export function computeUsageSummary(
   const perModelMap = new Map<string, UsagePerVendor>();
   const trendMap = new Map<string, UsageTrendPoint>();
   const convMap = new Map<string, UsageConversation>();
+  const pricedConvMap = new Map<string, UsageConversation>();
 
   const subscription = {
     today: emptySubscriptionTotals(),
@@ -472,6 +484,7 @@ export function computeUsageSummary(
     }
     c.turns += 1;
 
+    let countedPricedTurn = false;
     for (const segment of segments) {
       const { vendor, model, tokenUsage } = segment;
       const {
@@ -480,17 +493,13 @@ export function computeUsageSummary(
         cacheReadTokens = 0,
         cacheWriteTokens = 0,
       } = tokenUsage;
-      const pricing = vendor !== "unknown"
-        ? knownModelPricing(segment.pricing ?? resolveModelPricing(vendor, model, pricingOverrides))
-        : undefined;
-      const costKnown = !!pricing;
-      const cost = pricing && vendor !== "unknown"
-        ? computeCost(tokenUsage, pricing.rates, vendor)
-        : 0;
+      const pricing = segment.pricing ?? LEGACY_ROUTE_UNRECORDED;
+      const unknownPricingReason = pricing.source === "unknown" ? pricing.reason : undefined;
+      const cost = pricing.source !== "unknown" ? computeCost(tokenUsage, pricing.rates, vendor) : undefined;
 
-      if (dKey === todayKey) addTo(today, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, costKnown);
-      if (dKey >= weekKey) addTo(thisWeek, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, costKnown);
-      if (dKey >= monthKey) addTo(thisMonth, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, costKnown);
+      if (dKey === todayKey) addTo(today, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, unknownPricingReason);
+      if (dKey >= weekKey) addTo(thisWeek, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, unknownPricingReason);
+      if (dKey >= monthKey) addTo(thisMonth, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, unknownPricingReason);
 
       const vKey = vendor;
       let v = perVendorMap.get(vKey);
@@ -498,7 +507,7 @@ export function computeUsageSummary(
         v = { vendor, model: "*", ...emptyTotals() };
         perVendorMap.set(vKey, v);
       }
-      addTo(v, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, costKnown);
+      addTo(v, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, unknownPricingReason);
 
       const mKey = `${vendor}/${model}`;
       let m = perModelMap.get(mKey);
@@ -506,21 +515,34 @@ export function computeUsageSummary(
         m = { vendor, model, ...emptyTotals() };
         perModelMap.set(mKey, m);
       }
-      addTo(m, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, costKnown);
+      addTo(m, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, unknownPricingReason);
 
       let t = trendMap.get(dKey);
       if (!t) {
         t = { date: dKey, ...emptyTotals() };
         trendMap.set(dKey, t);
       }
-      addTo(t, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, costKnown);
-      addTo(c, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, costKnown);
+      addTo(t, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, unknownPricingReason);
+      addTo(c, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, unknownPricingReason);
+      if (cost !== undefined && Number.isFinite(cost)) {
+        let priced = pricedConvMap.get(e.sessionId);
+        if (!priced) {
+          priced = { sessionId: e.sessionId, turns: 0, firstInput: e.input, ...emptyTotals() };
+          pricedConvMap.set(e.sessionId, priced);
+        }
+        if (!countedPricedTurn) priced.turns += 1;
+        countedPricedTurn = true;
+        addTo(priced, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, undefined);
+      }
     }
   }
 
   const trend = Array.from(trendMap.values()).sort((a, b) => a.date.localeCompare(b.date));
-  const topConversations = Array.from(convMap.values())
-    .sort((a, b) => b.cost - a.cost || b.totalTokens - a.totalTokens)
+  const topConversations = Array.from(pricedConvMap.values())
+    .sort((a, b) => b.cost - a.cost || b.totalTokens - a.totalTokens || a.sessionId.localeCompare(b.sessionId))
+    .slice(0, 5);
+  const topConversationsByTokens = Array.from(convMap.values())
+    .sort((a, b) => b.totalTokens - a.totalTokens || a.sessionId.localeCompare(b.sessionId))
     .slice(0, 5);
 
   subscription.perRuntime = Array.from(subscriptionPerRuntimeMap.values())
@@ -542,6 +564,7 @@ export function computeUsageSummary(
     perModel: Array.from(perModelMap.values()).sort((a, b) => b.cost - a.cost),
     trend,
     topConversations,
+    topConversationsByTokens,
     subscription,
     generatedAt: now.toISOString(),
   };
@@ -644,7 +667,6 @@ function createUsageSummaryCacheKey(params: {
   auditDir: string;
   query: UsageSummaryCacheQuery;
   now: Date;
-  pricingOverrides: readonly PricingOverride[];
   manifest: readonly UsageAuditFileManifest[];
 }): string {
   return JSON.stringify({
@@ -652,9 +674,6 @@ function createUsageSummaryCacheKey(params: {
     auditDir: params.auditDir,
     query: params.query,
     localDate: localDateKey(params.now),
-    pricingOverride: pricingOverridesSignature(params.pricingOverrides),
-    // Catalog revisions can change prices even when audit rows and corrections stay unchanged.
-    modelCatalog: activeModelCatalog().sha256,
     manifest: params.manifest,
   });
 }
@@ -680,7 +699,6 @@ interface CachedUsageSummaryRequest {
   now: Date;
   matchesFile: (file: UsageAuditFile) => boolean;
   matchesEntry: (entry: AuditTurnEntry) => boolean;
-  pricingOverrides: readonly PricingOverride[];
 }
 
 async function loadUsageSummaryFromSnapshot(
@@ -701,9 +719,13 @@ async function loadUsageSummaryFromSnapshot(
     && after.complete
     && manifestsMatch(before.manifest, after.manifest)
   );
+  const complete = manifestStable && read.complete;
   return {
-    summary: computeUsageSummary(read.entries, request.now, request.pricingOverrides),
-    cacheable: manifestStable && read.complete,
+    summary: {
+      ...computeUsageSummary(read.entries, request.now),
+      ...(!complete ? { auditIncomplete: true as const } : {}),
+    },
+    cacheable: complete,
     // Leave stable corrupt files uncached without immediately repeating the same failing read.
     retryable: !manifestStable,
   };
@@ -735,7 +757,6 @@ async function getCachedUsageSummary(
           auditDir: request.auditDir,
           query: request.query,
           now: request.now,
-          pricingOverrides: request.pricingOverrides,
           manifest: before.manifest,
         });
         const cached = usageSummaryCache.get(key, request.now);
@@ -784,7 +805,6 @@ export interface UsageRangeOptions {
 export async function getUsageRange(
   opts: UsageRangeOptions,
   now: Date = new Date(),
-  pricingOverrides: readonly PricingOverride[] = [],
 ): Promise<UsageSummary> {
   const auditDir = join(aveHome(), "audit");
   const fileDateFrom = shiftLocalDateKey(opts.dateFrom, -1);
@@ -807,21 +827,19 @@ export async function getUsageRange(
       const date = localDateKey(timestamp);
       return date >= opts.dateFrom && date <= opts.dateTo;
     },
-    pricingOverrides,
   });
 }
 
-export function computeMonthlyProjection(trend: UsageTrendPoint[]): number {
-  if (trend.length === 0) return 0;
-  const totalCost = trend.reduce((s, p) => s + p.cost, 0);
-  const avgPerDay = totalCost / trend.length;
-  return avgPerDay * 30;
+export function computeMonthlyProjection(trend: UsageTrendPoint[]): number | undefined {
+  const dailyAverage = averageDailyCost(trend);
+  if (dailyAverage === undefined) return undefined;
+  const projection = dailyAverage * 30;
+  return Number.isFinite(projection) ? projection : undefined;
 }
 
 export async function getUsageSummary(
   days: number = 60,
   now: Date = new Date(),
-  pricingOverrides: readonly PricingOverride[] = [],
 ): Promise<UsageSummary> {
   const auditDir = join(aveHome(), "audit");
   const cutoffDateKey = shiftLocalDateKey(localDateKey(now), -days);
@@ -836,6 +854,5 @@ export async function getUsageSummary(
       const timestamp = new Date(entry.timestamp);
       return !Number.isNaN(timestamp.getTime()) && localDateKey(timestamp) >= cutoffDateKey;
     },
-    pricingOverrides,
   });
 }

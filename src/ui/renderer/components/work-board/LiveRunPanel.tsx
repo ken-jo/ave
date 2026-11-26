@@ -17,7 +17,6 @@ import { Button } from "../../../../components/ui/button.js";
 import type { ApprovalRequest } from "../../types.js";
 import type { WorkBoardCancelIpcResult, WorkBoardSteerIpcResult, WorkItemResolved } from "../../../../shared/work-board-types.js";
 import type { WorkBoardToolApprovalSurface } from "../../../../shared/work-board-types.js";
-import type { UserKeyboardIntentSnapshot } from "../../../../shared/chat-origin.js";
 import { PARENT_DIRECTIVE_MAX_CHARS } from "../../../../shared/parent-directive-limits.js";
 import { errorMessage } from "../../../../shared/error-message.js";
 import {
@@ -55,7 +54,7 @@ export interface LiveRunPanelProps {
   approvalSurface: WorkBoardToolApprovalSurface;
   /** Draws `entry`'s head tool approval with the window's approval card (chat mode only). */
   renderApproval: (entry: LiveRunEntry) => ReactNode;
-  onSteer: (id: number, text: string, userIntent: UserKeyboardIntentSnapshot) => Promise<SteerReply>;
+  onSteer: (id: number, text: string) => Promise<SteerReply>;
   onStop: (id: number) => Promise<StopReply>;
   onRerun: (id: number) => void;
   /** Open the item's detail on its latest run record. */
@@ -63,7 +62,6 @@ export interface LiveRunPanelProps {
   /** Append `text` to the item's description; resolves false when the update was refused. */
   onAppendToDetail: (id: number, text: string) => Promise<boolean>;
   /** The keyboard intent of the gesture now being handled. */
-  captureIntent: () => UserKeyboardIntentSnapshot;
 }
 
 function localClock(iso: string | undefined): string {
@@ -592,7 +590,7 @@ type ComposerStatus =
 
 /** The "실행 중 지시" composer and the stop control. Collapsed to one line until focused; Enter sends, Shift+Enter breaks a line, Esc
  * collapses an empty composer. A refused steer keeps its text and offers to add it to the task description instead. */
-function SteerComposer({ entry, onSteer, onStop, onAppendToDetail, captureIntent }: Pick<LiveRunPanelProps, "onSteer" | "onStop" | "onAppendToDetail" | "captureIntent"> & { entry: LiveRunEntry }) {
+function SteerComposer({ entry, onSteer, onStop, onAppendToDetail }: Pick<LiveRunPanelProps, "onSteer" | "onStop" | "onAppendToDetail"> & { entry: LiveRunEntry }) {
   const { item, run } = entry;
   const [text, setText] = useState("");
   const [focused, setFocused] = useState(false);
@@ -610,11 +608,11 @@ function SteerComposer({ entry, onSteer, onStop, onAppendToDetail, captureIntent
   const tooLong = text.length > PARENT_DIRECTIVE_MAX_CHARS;
   const rejected = status.kind === "rejected";
 
-  const send = (userIntent: UserKeyboardIntentSnapshot) => {
+  const send = () => {
     const body = text;
     if (!canSteer || body.trim() === "" || tooLong || status.kind === "sending") return;
     setStatus({ kind: "sending" });
-    void onSteer(itemId, body, userIntent).then((reply) => {
+    void onSteer(itemId, body).then((reply) => {
       if (reply.ok) {
         setText("");
         setStatus({ kind: "sent", redactedCount: reply.redactedCount ?? 0 });
@@ -658,7 +656,7 @@ function SteerComposer({ entry, onSteer, onStop, onAppendToDetail, captureIntent
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      if (!rejected) send(captureIntent());
+      if (!rejected) send();
       return;
     }
     if (event.key === "Escape" && text === "") {
@@ -728,7 +726,7 @@ function SteerComposer({ entry, onSteer, onStop, onAppendToDetail, captureIntent
                   size="sm"
                   className="h-6 px-2 text-dense"
                   disabled={!canSteer || text.trim() === "" || tooLong || status.kind === "sending"}
-                  onClick={() => send(captureIntent())}
+                  onClick={send}
                   data-testid="live-step-steer-send"
                 >
                   {t("workBoard.liveSteerSend")}
@@ -895,7 +893,6 @@ export function LiveRunPanel(props: LiveRunPanelProps) {
                 onSteer={props.onSteer}
                 onStop={props.onStop}
                 onAppendToDetail={props.onAppendToDetail}
-                captureIntent={props.captureIntent}
               />
             ) : (
               <SettledActions entry={selected} onRerun={onRerun} />

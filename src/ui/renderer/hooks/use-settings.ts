@@ -223,6 +223,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
       const nextRoutePricing: ModelPricingRoute = {
         ...(route.baseUrl !== undefined ? { baseUrl: route.baseUrl } : {}),
         ...(route.reportedPricing !== undefined ? { reported: route.reportedPricing } : {}),
+        ...(route.reportedPricingEndpoint !== undefined ? { reportedAt: route.reportedPricingEndpoint } : {}),
       };
       // Content-compared: every settings broadcast resolves a fresh object, and a new identity would re-render every chat tile
       // for the same route.

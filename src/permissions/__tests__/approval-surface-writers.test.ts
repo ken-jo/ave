@@ -9,7 +9,7 @@ import { approvalSurfaceRegistry } from "../approval-surface-registry.js";
 
 const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const OWNER_FILE = join(SOURCE_ROOT, "permissions/approval-surface-registry.ts");
-const REGISTRY_MODULE = /(?:^|\/)approval-surface-registry\.(?:[cm]?js|ts)$/;
+const REGISTRY_MODULE = /(?:^|\/)approval-surface-registry(?:\.[cm]?[jt]s)?$/;
 // Side-effect-free lookups. Every other registry method is a writer and must run inside updateApprovalSurface.
 const READERS: ReadonlySet<string> = new Set(["resolve", "terminalSessionId"]);
 
@@ -52,6 +52,7 @@ function writerViolations(sources: readonly ts.SourceFile[], ownerFile: string):
   const updateFunctions = owner.statements.filter((node) => ts.isFunctionDeclaration(node) && node.name?.text === "updateApprovalSurface");
   if (updateFunctions.length !== 1) violations.push("Registry module must have one updateApprovalSurface function");
   const [updateFunction] = updateFunctions;
+  const projectLookupOwner = resolve(dirname(ownerFile), "../boot/approval-surface.ts");
 
   for (const source of sources) {
     const location = relative(dirname(ownerFile), source.fileName);
@@ -69,6 +70,9 @@ function writerViolations(sources: readonly ts.SourceFile[], ownerFile: string):
               const imported = binding.propertyName?.text ?? binding.name.text;
               if (imported === "ApprovalSurfaceRegistry" && !binding.isTypeOnly) violations.push(location + ": registry class value imported outside its owner");
               if (imported === "approvalSurfaceRegistry" && !binding.isTypeOnly) views.add(binding.name.text);
+              if (imported === "workBoardApprovalProjectOf" && !binding.isTypeOnly && resolve(source.fileName) !== projectLookupOwner) {
+                violations.push(`${location}: project lookup imported outside boot`);
+              }
             }
           }
         }
@@ -115,7 +119,7 @@ function writerViolations(sources: readonly ts.SourceFile[], ownerFile: string):
 function inspectSourceFiles(files: string[], ownerFile: string): string[] {
   const project = mkdtempSync(join(tmpdir(), "ave-approval-writer-syntax-"));
   const config = join(project, "tsconfig.json");
-  writeFileSync(config, JSON.stringify({ compilerOptions: { noResolve: true, noLib: true, types: [] }, files }));
+  writeFileSync(config, JSON.stringify({ compilerOptions: { allowJs: true, noResolve: true, noLib: true, types: [] }, files }));
   const api = new API({ cwd: project });
   try {
     const program = api.updateSnapshot({ openProjects: [config] }).getProjects()[0]?.program;
@@ -158,8 +162,8 @@ function inspectWriterAttempt(ownerSuffix: string, consumer = ""): string[] {
 describe("approval surface mutation ownership", () => {
   it("routes every production attachment and lifecycle mutation through the common update", () => {
     const files = readdirSync(SOURCE_ROOT, { recursive: true, withFileTypes: true })
-      .filter((entry) => entry.isFile() && /\.tsx?$/.test(entry.name)
-        && !/\.(?:test|spec)\.tsx?$/.test(entry.name)
+      .filter((entry) => entry.isFile() && /\.(?:[cm]?[jt]s|[jt]sx)$/.test(entry.name)
+        && !/\.(?:test|spec)\.(?:[cm]?[jt]s|[jt]sx)$/.test(entry.name)
         && !/(?:^|[/\\])__(?:tests|probes)__(?:[/\\]|$)/.test(entry.parentPath))
       .map((entry) => join(entry.parentPath, entry.name));
     expect(files.length).toBeGreaterThan(1000);
@@ -208,6 +212,7 @@ describe("approval surface mutation ownership", () => {
     ["import { approvalSurfaceRegistry as delivery } from './approval-surface-registry.js'; delivery.bindTerminalSession('tab', 'session');", "registry view accesses writer"],
     ["import { approvalSurfaceRegistry as delivery } from './approval-surface-registry.js'; delivery['releaseTerminal']('tab');", "registry view accesses a computed writer"],
     ["import { ApprovalSurfaceRegistry as OtherRegistry } from './approval-surface-registry.js'; new OtherRegistry();", "registry class value imported"],
+    ["import { workBoardApprovalProjectOf as projectOf } from './approval-surface-registry.js';", "project lookup imported outside boot"],
     ["import * as delivery from './approval-surface-registry.js';", "namespace or default registry import"],
     ["export { ApprovalSurfaceRegistry } from './approval-surface-registry.js';", "registry value re-export"],
     ["const delivery = await import('./approval-surface-registry.js');", "dynamic registry value import"],

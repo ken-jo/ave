@@ -9,6 +9,7 @@ export function observeWindowsGrantIdentity(target: string) {
   const pins = vi.spyOn(facts, "pinWindowsPaths");
   return {
     canonical: stripExtendedPathPrefix(identity.canonical!),
+    objectIdentity: facts.windowsObjectKey(identity),
     assertPinned() {
       const matches = pins.mock.results.flatMap(result => result.type === "return" ? result.value : [])
         .flatMap(row => [...row.ancestors, row])

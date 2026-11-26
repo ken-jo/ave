@@ -62,6 +62,7 @@ export function AttachWorkflowScheduleDialog({ api, routine, onClose, onAttached
         ...(routine ? { scheduleId: routine.id } : { schedule: { at: date.toISOString(), repeat: { kind: repeat } } }),
       });
       if (result.ok) onAttached();
+      else if (result.error === "user-keyboard-required") setError(t("workflowSchedule.keyboardRequired"));
       else {
         const known = result.error === "schedule-requires-read-only" || result.error === "scope-changed"
           || result.error === "scope-not-authorised" || result.error === "template-archived" || result.error === "not-current-version";

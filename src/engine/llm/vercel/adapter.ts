@@ -73,6 +73,8 @@ import { TOOL_SEARCH_TOOL_NAME } from "../../../tools/registry.js";
 import type { MarketplaceInstalledProviderPreset } from "../../../shared/marketplace-package-assets.js";
 import { isGuardedInsecureCredentialedModelProviderFetch } from "../marketplace-provider-fetch.js";
 import { normalizeOutputTokenLimit } from "../output-token-limit.js";
+import { configuredEndpointId } from "../pricing.js";
+import { urlIsUnderBase, vendorNativeBase, type ServedRouteEvidence } from "../../../shared/model-pricing.js";
 import { planReasoning, usesOpenAIResponsesWire } from "../reasoning-plan.js";
 import {
   catalogModelFor,
@@ -85,6 +87,7 @@ import {
 import { supportsVision } from "../vendor-capabilities.js";
 import { toGrammarSafeToolSchemas } from "../grammar-safe-tool-schema.js";
 import { selectAssistantWireThinkingBlocks } from "../assistant-wire-content.js";
+import { observeServedRequest } from "./observe-served-request.js";
 
 /** Vendor slot recognised by VercelUnifiedProvider. */
 export type VercelVendor = LLMVendor;
@@ -229,6 +232,35 @@ function observeRequestControls(
   };
 }
 
+/**
+ * Decide the route class at dispatch and keep only the verdict. With a configured endpoint
+ * the answer must come from under that endpoint, by whole path segments: another path of
+ * the same host, or a redirect out of it, establishes nothing. The verdict names the
+ * vendor's canonical base and, for a configured endpoint, a process-keyed id of the
+ * setting. No part of the request path is kept.
+ */
+function servedRouteEvidence(
+  vendor: LLMVendor,
+  configuredBaseUrl: string | undefined,
+  sdkBaseUrl: string | undefined,
+  servedAddress: string | undefined,
+): ServedRouteEvidence {
+  if (servedAddress === undefined) return { kind: "unknown" };
+  let origin: string;
+  try {
+    origin = new URL(servedAddress).origin;
+  } catch {
+    return { kind: "unknown" };
+  }
+  const base = vendorNativeBase(vendor, servedAddress);
+  if (configuredBaseUrl === undefined) return base !== undefined ? { kind: "vendor-native", base } : { kind: "unknown", origin };
+  if (sdkBaseUrl === undefined || !urlIsUnderBase(servedAddress, sdkBaseUrl)) return { kind: "unknown", origin };
+  const configuredBaseId = configuredEndpointId(configuredBaseUrl);
+  return base !== undefined
+    ? { kind: "vendor-native", base, configuredBaseId }
+    : { kind: "configured-endpoint", origin, configuredBaseId };
+}
+
 function routelessModelCapabilities(params: {
   vendor: string;
   model: string;
@@ -260,6 +292,18 @@ export function normalizeAzureFoundryBaseURL(rawBaseUrl: string): string {
 
   parsedUrl.pathname = pathname || "/";
   return parsedUrl.toString().replace(/\/$/, "");
+}
+
+/** The base address the SDK factory for this slot is given, when one is configured. */
+function sdkBaseUrl(slot: VercelVendor, configuredBaseUrl: string | undefined): string | undefined {
+  const configured = configuredBaseUrl?.trim();
+  if (!configured) return undefined;
+  if (slot !== "azure-foundry") return configured;
+  try {
+    return normalizeAzureFoundryBaseURL(configured);
+  } catch {
+    return undefined;
+  }
 }
 
 function assertCredentialedBaseUrlUsesHttps(
@@ -443,9 +487,14 @@ export class VercelUnifiedProvider implements LLMProvider {
         : undefined;
       const interleavedNumericThinking = numericThinking && hasTools
         && claudeShape?.interleavedNumericThinking === true;
+      // Per call, so concurrent turns on one provider never share evidence.
+      let servedRoute: ServedRouteEvidence | undefined;
+      const configuredBaseUrl = baseUrl?.trim() || undefined;
+      const dispatchBaseUrl = sdkBaseUrl(slot, baseUrl);
       const model = this.resolveModel(
         params.model,
         useOpenAIResponsesAliases,
+        (address) => { servedRoute = servedRouteEvidence(this.vendor, configuredBaseUrl, dispatchBaseUrl, address); },
         slot === "claude" && outputTokenLimit !== undefined
           && (numericThinking || reportedCeiling)
           ? { outputTokenLimit, interleavedThinking: interleavedNumericThinking, numericThinking, reportedCeiling }
@@ -707,7 +756,9 @@ export class VercelUnifiedProvider implements LLMProvider {
         for await (const event of restoredEvents) {
           if (params.abortSignal?.aborted) return;
           idleController.signal.throwIfAborted();
-          yield event;
+          yield event.type === "message_complete" && event.usage !== undefined && servedRoute !== undefined
+            ? { ...event, usage: { ...event.usage, servedRoute } }
+            : event;
         }
         if (params.abortSignal?.aborted) return;
         idleController.signal.throwIfAborted();
@@ -743,17 +794,43 @@ export class VercelUnifiedProvider implements LLMProvider {
     const baseURL = this.providerMetadata?.baseUrl ?? this.baseUrl;
     if (!this.customFetch) throw new Error('Embedding transport is required');
     assertCredentialedBaseUrlUsesHttps(slot, baseURL, this.apiKey, this.customFetch);
-    const options = { apiKey: this.apiKey, fetch: this.wireFetch(modelId), ...(baseURL ? { baseURL } : {}) };
-    if (slot === "openai") return createOpenAI(options).embeddingModel(modelId);
-    if (slot === "gemini") return createGoogleGenerativeAI(options).embeddingModel(modelId);
-    if (slot === "azure-foundry" && baseURL) return createAzure({ ...options, baseURL: normalizeAzureFoundryBaseURL(baseURL) }).embeddingModel(modelId);
-    if (isOpenAICompatibleVendor(slot) && baseURL) return createOpenAICompatible({ ...options, baseURL, name: OPENAI_COMPAT_PROVIDER_NAME }).embeddingModel(modelId);
+    const embeddingFetch = this.wireFetch(modelId);
+    if (slot === "openai") {
+      return createOpenAI({
+        apiKey: this.apiKey,
+        baseURL: baseURL || undefined,
+        fetch: embeddingFetch,
+      }).embeddingModel(modelId);
+    }
+    if (slot === "gemini") {
+      return createGoogleGenerativeAI({
+        apiKey: this.apiKey,
+        baseURL: baseURL || undefined,
+        fetch: embeddingFetch,
+      }).embeddingModel(modelId);
+    }
+    if (slot === "azure-foundry" && baseURL) {
+      return createAzure({
+        apiKey: this.apiKey,
+        baseURL: normalizeAzureFoundryBaseURL(baseURL),
+        fetch: embeddingFetch,
+      }).embeddingModel(modelId);
+    }
+    if (isOpenAICompatibleVendor(slot) && baseURL) {
+      return createOpenAICompatible({
+        apiKey: this.apiKey,
+        baseURL,
+        name: OPENAI_COMPAT_PROVIDER_NAME,
+        fetch: embeddingFetch,
+      }).embeddingModel(modelId);
+    }
     throw new Error('Provider has no embedding factory');
   }
 
   private resolveModel(
     modelId: string,
     openAIResponsesWire: boolean,
+    onServedRequest: (servedAddress: string | undefined) => void,
     outputProjection?: NativeOutputProjection,
     onRequestControls?: StreamTurnParams["onRequestControls"],
   ) {
@@ -764,15 +841,16 @@ export class VercelUnifiedProvider implements LLMProvider {
     assertCredentialedBaseUrlUsesHttps(
       slot, this.providerMetadata?.baseUrl ?? this.baseUrl, this.apiKey, this.customFetch,
     );
-
+    // Build the gate around the original transport so it can recheck deferred sends.
     const wireFetch = this.wireFetch(modelId);
+    const observedFetch = observeServedRequest(wireFetch, onServedRequest);
 
     if (slot === "claude") {
-      const nativeFetch = onRequestControls ? observeRequestControls(wireFetch, onRequestControls) : wireFetch;
+      const nativeFetch = onRequestControls ? observeRequestControls(observedFetch, onRequestControls) : observedFetch;
       const fetchImpl = outputProjection ? projectNativeOutput(nativeFetch, outputProjection) : nativeFetch;
       const anthropic = createAnthropic({
         apiKey: this.apiKey,
-        ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
+        baseURL: this.baseUrl || undefined,
         fetch: fetchImpl,
       });
       return anthropic.languageModel(modelId);
@@ -781,8 +859,8 @@ export class VercelUnifiedProvider implements LLMProvider {
     if (slot === "gemini") {
       const google = createGoogleGenerativeAI({
         apiKey: this.apiKey,
-        ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
-        fetch: wireFetch,
+        baseURL: this.baseUrl || undefined,
+        fetch: observedFetch,
       });
       return google(modelId);
     }
@@ -790,8 +868,8 @@ export class VercelUnifiedProvider implements LLMProvider {
     if (slot === "openai") {
       const openai = createOpenAI({
         apiKey: this.apiKey,
-        ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
-        fetch: wireFetch,
+        baseURL: this.baseUrl || undefined,
+        fetch: observedFetch,
       });
       // Responses API for every model the catalog says reasons, or for every
       // model when the connection pins `openaiWire: "responses"`; Chat
@@ -819,7 +897,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         // fields below): `stream_options` is part of the OpenAI Chat
         // Completions schema itself, not a server extension.
         includeUsage: true,
-        fetch: wireFetch,
+        fetch: observedFetch,
       });
       return compat(modelId);
     }
@@ -838,7 +916,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       const azure = createAzure({
         baseURL: normalizeAzureFoundryBaseURL(this.baseUrl),
         apiKey: this.apiKey,
-        fetch: wireFetch,
+        fetch: observedFetch,
       });
       return azure.responses(modelId);
     }
@@ -861,7 +939,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       const vertex = createVertex({
         project,
         location,
-        fetch: wireFetch,
+        fetch: observedFetch,
       });
       return vertex(modelId);
     }

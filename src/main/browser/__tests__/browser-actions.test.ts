@@ -1,8 +1,13 @@
+import { buildBrowserCaptureStitchChild } from "../../../__tests__/support/browser-capture-stitch-bundle.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
+import { childBundleDir } from "../../../plugins/isolation/__tests__/child-entry-bundle.js";
 import { tmpdir } from "node:os";
 import {
   BrowserActionError,
@@ -35,6 +40,12 @@ import { browserOrigin, createBrowserTools } from "../../../tools/browser-tools.
 import { fenceBrowserContent } from "../../../tools/browser-tools-execute.js";
 import { BrowserTabRegistry } from "../browser-tab-registry.js";
 import { BROWSER_ACTION_WORLD, SELECT_NATIVE_OPTION } from "../browser-select-script.js";
+
+const captureRuntime = vi.hoisted(() => ({ mainDir: undefined as string | undefined }));
+vi.mock("../../main-paths.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../main-paths.js")>();
+  return { ...actual, get mainDir() { return captureRuntime.mainDir ?? actual.mainDir; } };
+});
 
 function ax(nodeId: string, role: string, name: string, extra: Partial<AXNode> = {}): AXNode {
   return { nodeId, role: { type: "role", value: role }, name: { type: "computedString", value: name }, ...extra };
@@ -1913,6 +1924,17 @@ it("leaves user-owned guests on their existing painting and throttle path", asyn
 });
 
 it.each(["full-page", "ref", "region"] as const)("captures a parked %s page without native focus and rejects changed readback ownership", async (mode) => {
+  if (mode === "full-page") {
+    const cacheDir = childBundleDir("");
+    mkdirSync(cacheDir, { recursive: true });
+    const outdir = mkdtempSync(join(cacheDir, "browser-actions-capture-"));
+    onTestFinished(async () => {
+      captureRuntime.mainDir = undefined;
+      await cleanupTmpDir(outdir);
+    });
+    await buildBrowserCaptureStitchChild(outdir);
+    captureRuntime.mainDir = outdir;
+  }
   const sharp = (await import("sharp")).default;
   const png = await sharp({ create: { width: 1024, height: 768, channels: 3, background: "blue" } }).png().toBuffer();
   for (const change of ["none", "document", "takeover", "debugger"] as const) {
