@@ -867,21 +867,25 @@ from the shared policy builder, including the physical targets of supported link
 `.ave` directory, a write root, or an ancestor of either refuses the launch.
 The container makes a present entry read-only unless a read deny also applies.
 It denies a missing child by name when its parent exists. A project without
-`.ave` keeps its write grant and watches `.ave/commands` and `.ave/hooks`.
-If either appears, cleanup quarantines that child at shell exit or holder
-release, preserving the carrier and any siblings. The disposable process home
+`.ave` keeps its write grant, and `.ave/commands` and `.ave/hooks` end
+`watched`: no directory watch is armed, and no deny is placed on `.ave`.
+If either exists at shell exit, at holder release, or when a host-side
+consumer of the project is about to run, that child is quarantined,
+preserving the carrier and any siblings. The disposable process home
 and holder staging supply their own `.ave` so the two child denies can be
 exact there.
 
-After a holder releases, successful protected-path moves and sweep failures
-are recorded in the host log. Holder status in the UI covers admission and
+A holder has no command result. After it releases, successful protected-path
+moves and failed ones are recorded in the host log and carried by the next
+sandboxed command's result, as are those found for a host-side consumer or
+at a background shell's exit. Holder status in the UI covers admission and
 lifecycle state. The quarantine list shows entries that were moved.
 
 The ACL-backed route requires existing entries so it can stamp write denies
 before admitting a covering grant. A missing entry refuses the grant with a
 message naming the path. Neither route creates a protected entry to carry a
 deny. If an already live ACL-backed writer can reach an entry that becomes
-absent, the [protected-name watch](architecture.md#ave-home-boundary-and-protected-name-mechanics)
+absent, the [protected-name check](architecture.md#ave-home-boundary-and-protected-name-mechanics)
 remains a cleanup safeguard. Quarantine verifies the parent and moves only the
 protected child.
 

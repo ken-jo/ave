@@ -3303,7 +3303,7 @@ The [decision tree](permission-decision-tree.md) states the policy: what is priv
 
 Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home): Linux bind masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a file the host replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path handling, which this boundary does not change. macOS seatbelt rules are path-based, so neither case reopens a denied path there. Per-exec shells re-apply masks and stamps on every spawn.
 
-Absent protected names on Windows (owner decision 2026-11-24): an ACL can only deny an existing object, and Ave never creates a placeholder in the user's workspace or home to carry a deny. A protected name (for example `.vscode`, `.idea`, `.git/hooks`) that is absent at launch is watched instead: when a sandboxed command ends, a worker is released, or a host-side consumer (host git, host hooks) is about to act on that workspace while a sandboxed process is still live, a watched name that now exists is moved to quarantine under the Ave home, the command result carries a named violation, and the user is told and may restore it. A failed move refuses host-side consumers of that workspace. macOS seatbelt rules are patterns and cover absent names without this.
+Absent protected names on Windows (owner decision 2026-11-24): an ACL can only deny an existing object, and Ave never creates a placeholder in the user's workspace or home to carry a deny. A protected name (for example `.vscode`, `.idea`, `.git/hooks`) that is absent at launch is watched instead: when a sandboxed command ends, a worker or holder is released, or a host-side consumer is about to act on that workspace, a watched name that now exists is moved to quarantine under the Ave home, the command result carries a named violation, and the user is told and may restore it. No directory watch is involved: each of the three is a fresh existence check beneath the recorded folder, which must still be the recorded object. The host-side consumers are host Git, the project command list and lookup, project hook discovery and dispatch, and stage-folder seeding; all ask one gate (`isHostWorkspaceConsumable`). A failed move, or a check that cannot be made, refuses those consumers for that workspace. A violation found where no command result exists (a holder's release, a background shell's exit, a check made for a host consumer) is logged and carried by the next sandboxed command's result. Restoring an entry while another launch still claims its name keeps that claim: host consumers stay refused until that launch is released, and its release checks the name again. macOS seatbelt rules are patterns and cover absent names without this.
 
 **Local memory inference.** Local memory inference uses the Windows system directory for its working directory. The sandbox account already has read access there, so inference needs no ACL grant for its fresh process HOME. The active model is under the denied Ave home models directory and the host streams its verified bytes.
 
@@ -3524,17 +3524,22 @@ in its directory.
   this spawn. Denies are recomputed each spawn, restoring precise entries once
   it exists; an approved file tool can still create the directory.
   The three [required Windows write denies](permission-policy-design.md#os-shell-sandbox-policy)
-  are exact. A missing parent for one of these rows refuses the covering
-  write grant for the launch, except a missing project `.ave` carrier: its
-  `commands` and `hooks` children are watched and quarantined after creation.
-  The watch is a live directory watch on the write root, and on the carrier
-  once it appears, armed before the container starts and closed with the run;
-  a watch that cannot be armed refuses the launch, naming the protected path.
-  Once the carrier exists, the next launch denies both children exactly; a
-  running launch keeps its watch until it ends, since its grants are fixed.
-  Only the host-derived `.ave\commands` and `.ave\hooks` rows of a write root
-  may be watched; another missing required row refuses the grant, and a
-  configured, user or secret deny at the same path keeps its own outcome.
+  are exact and never raised to a parent. One whose parent is missing ends
+  `watched`: the write grant proceeds, and the result records the name with
+  its nearest existing folder and that folder's volume and file identity. The
+  outcome check accepts a watched row only at the deny's own path, under the
+  deny's own anchor object. Any other deny whose first missing component is
+  the same missing parent is not raised either: a write deny is watched at its
+  own path, and a user or secret read deny refuses the launch, naming it. A
+  deny the policy states on the parent itself keeps its own outcome.
+  Admission does not depend on a live watch. The launch's last synchronous
+  check (shell activation, the holder's check before native creation) confirms
+  the folder is still the ranked object and the first missing component is
+  still missing, then claims every watched row or none; a refusal names the
+  protected path. Only a started launch fences host consumers and is checked
+  at its release. Once the parent exists, the next launch denies the name
+  exactly; a running launch keeps its claim until it ends, since its grants
+  are fixed.
   Literal denies apply throughout the command.
   Pattern denies are enumerated at launch; a file another process creates during a command's lifetime that first matches the pattern is not covered until the next command.
   In the six installed x64 runs observed on 2026-11-11, node opens of the Ave
