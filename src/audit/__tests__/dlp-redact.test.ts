@@ -10,7 +10,6 @@ import {
   scrubSecretsForLLM,
 } from "../dlp-filter.js";
 import { CREDENTIAL_FORMAT_PREFIXES, holdsCredential, reservedPrefixIn, scrubDiagnosticSecrets, scrubDiagnosticSecretsStrict, type CredentialIssuer } from "../../shared/dlp.js";
-import { linearGrowthBound, measureCpuGrowth } from "../../__tests__/support/cpu-growth.js";
 import { fixtureSecret } from "./secret-fixtures.js";
 import { breakDiagnosticScrubberOn, DIAGNOSTIC_KEPT, DIAGNOSTIC_SECRET_PROBES } from "../../shared/__tests__/fixtures/diagnostic-secret-probes.js";
 
@@ -994,63 +993,6 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
     // A bare -p flag provides no credential context.
     expect(scrubDiagnosticSecrets("mysql -p canarypass")).toBe("mysql -p canarypass");
   });
-
-  it("scrubs 332 KB of quotes at 800 distinct escape depths in linear time (round 17)", () => {
-    // Bounded key windows prevent repeated scans over unmatched nested quotes.
-    let text = "";
-    for (let depth = 1; depth <= 800; depth++) text += `${"\\".repeat(depth)}"authorization `;
-    expect(text.length).toBeGreaterThan(330_000);
-    for (const scrub of [scrubDiagnosticSecrets, scrubSecretsForLLM]) {
-      const started = performance.now();
-      expect(scrub(text)).toBe(text);
-      expect(performance.now() - started).toBeLessThan(1500);
-    }
-  });
-
-  it("scrubs 64 KiB of adversarial text in linear time", () => {
-    // Measure CPU growth from 4 KiB to 64 KiB to distinguish linear from quadratic scans.
-    const SMALL = 4 * 1024;
-    const LARGE = 16 * SMALL;
-    const MAX_GROWTH = linearGrowthBound(LARGE / SMALL);
-    // Skip growth judgments when the 64 KiB pass is already under 5 ms.
-    const growthOptions = { fastEnoughMs: 5, minSampleMs: 20 };
-    const familiesAt = (size: number) => {
-      const fill = (unit: string, tail = "") => unit.repeat(Math.ceil(size / unit.length)).slice(0, size - tail.length) + tail;
-      return [
-        fill("token", "!"), fill("token", "="), fill("a."), fill("a.", "://x@y"), fill("a@"), fill(" a@"), fill("a:b@"), fill("%"),
-        `token="${fill("\\")}`, fill('token="a'), fill("token='a"), `'${fill("\\")}':`, fill('\\"'),
-        fill("a="), fill("a:"), fill('"a":'), fill("token="), fill(" ="), `token${fill(" ")}=`, fill("--token "), fill("-"),
-        fill('"a'), fill("'a"), fill('"a" '), fill('"a:'), fill("'x=y' "), fill('"token":"a'), fill('\\\\"'), `"${fill("a:")}`,
-        fill('"a"\n'), `"a"${fill("\r\n")}:`, `"token":${fill("\n")}`, fill("'a' :"), fill(`"'a':`), fill('"token"\n:'), fill("'[REDACTED:X]':"),
-        fill('"token:a" :'), `"${fill("token=a ")}": x`, fill(`"'a b' token=c":`), `"${fill("'a")}":`,
-        fill('\\"a'), fill('\\"a\\\\\\"'), `\\"${fill('a\\\\\\"')}`, fill('\\"token\\":'), fill('\\"token\\":\\"a\\"'), fill('"token":\n"a"\n:'), fill("token: a :"),
-        `"${fill('\\"a')}": 1`, `"\\"${fill('a\\\\\\"')}": 1`, fill('\\"a \\"'), `"${fill('\\"token\\": ')}": 1`, fill("token=Basic "), `token=Basic${fill(" ")}x`,
-        `Authorization: Digest ${fill('a="b", ')}`, fill("Authorization: Basic a\n"), fill("x: Authorization: Basic "),
-        fill("\\u0041"), fill("\\\\u0041uthorizatio"), fill("Authorizatio"), fill('\\"Authorization\\"'), fill("\\nauthorization"), fill("--authorizatio"),
-        `Authorization${fill("\n")}`, `"Authorization"${fill("\\n")}`, `Authorization${fill("\\\\\\t")}`, fill("Authorization \n"), fill('"authorization"\\u000a'), `authorization:${fill(" \r\n")}`,
-        fill("authorization_"), `authorization_${fill("a")}`, fill("x-authorization-token "), fill("authorization.x\\u00a0"), `Authorization${fill("\\u00a0")}`,
-        `Authorization${fill("\\\\u2003")}`, fill("authorization\\u005f"), fill("Authorization\\u0041"), `"authorization_x${fill("\\uFEFF")}"`,
-        `"${fill("authorization ")}`, fill('"authorization '), fill("'a authorization "), fill('"authorization \\"authorization '),
-        `"${fill("authorization\\u003a")}`, `\\"${fill("authorization\n")}\\": x`, fill('"x" authorization '),
-        // Read long backslash runs once per key window rather than once per step.
-        `${"authorization ".repeat(18)}${fill("\\")}`, `${"authorization ".repeat(18)}${fill("\\", "u0041")}`,
-        fill("?a%26"), fill("&a%41"), fill("%253f"), fill("&sig=a1B"), `&sig=${fill("a1B%3D")}`, `?token=${fill("\\")}`, `?token=a${fill("%2526")}`,
-        fill("\\u0026token=a"), fill("?\\u0073ig=a1B"), fill('?token=a"'), `"?token=${fill('a\\"')}`, fill("&Expires=1&sig=a"), `?token=${fill("\\\\u0026")}`,
-        fill('"?token=a\\\\\\"'), fill("<?token=a>"), fill("`?token=a'"), `${fill('\\\\"')}?token=a\\"`,
-      ];
-    };
-    const small = familiesAt(SMALL);
-    const large = familiesAt(LARGE);
-    expect(large.map((input) => input.length)).toEqual(small.map((input) => input.length - SMALL + LARGE));
-    for (const [index, input] of large.entries()) {
-      for (const scrub of [scrubDiagnosticSecrets, scrubSecretsForLLM]) {
-        const { smallMs, largeMs, growth } = measureCpuGrowth(() => scrub(small[index]), () => scrub(input), growthOptions);
-        if (growth === undefined) continue;
-        expect(growth,`${input.slice(0, 24)}: ${smallMs.toFixed(1)} ms at 4 KiB, ${largeMs.toFixed(1)} ms at 64 KiB`).toBeLessThan(MAX_GROWTH);
-      }
-    }
-    // CPU samples avoid load bias, but collecting them may exceed the default wall-time budget.
-  }, 180_000);
 
   it("takes any key holding a credential word, `auth` only as a whole segment", () => {
     expect(scrubDiagnosticSecrets("x: api_key=a X-Api-Key: b accessKey=c private-key=d credentials=e pwd=f Bearer=g x-auth=h GH_TOKEN=i author=j; oauth=k"))

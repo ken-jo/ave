@@ -14,6 +14,7 @@ import { isLinkOwned } from "./main/link-window-registry.js";
 import { shouldBlockGlobalWebviewNavigation } from "./main/webview-navigation-policy.js";
 import { installSideBrowserPartitionPolicy, SideBrowserPolicyInstallError } from "./main/side-browser-webview.js";
 import { desktopResourcePath } from "./main/desktop-resource-path.js";
+import { configureHostResources } from "./main/host-resources.js";
 import { findAveProtocolUri } from "./main/ave-protocol.js";
 import {
   decideAveProtocolClientRegistration,
@@ -94,6 +95,8 @@ import {
   setRendererReloadReady,
   setServices,
 } from "./main/app-state.js";
+
+configureHostResources({ resourcePath: desktopResourcePath(projectRoot), isPackaged: app.isPackaged });
 
 const log = createLogger("ave");
 

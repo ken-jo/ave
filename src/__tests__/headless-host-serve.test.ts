@@ -1,11 +1,16 @@
 /** Stub boot dependencies to isolate --serve behavior when the optional observer fails. */
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupTmpDir } from "./support/tmp-dir-teardown.js";
 
 const startTailnetSurface = vi.fn<() => Promise<unknown>>();
 const startLocalApi = vi.fn(async () => ({ port: 47_001 }));
+const turn = vi.hoisted(() => ({ controller: new AbortController() }));
 
 vi.mock("../boot/node-host-runtime.js", () => ({ createNodeBootHost: vi.fn(async () => ({})) }));
-vi.mock("../boot/dev-flags.js", () => ({ getIsPackaged: () => false }));
+vi.mock("../boot/dev-flags.js", () => ({ getIsPackaged: () => false, isPackagedElectronProcess: () => false }));
 vi.mock("../main/main-paths.js", () => ({ projectRoot: "/project" }));
 vi.mock("../main/ensure-workspace-cwd.js", () => ({ ensureWorkspaceCwd: vi.fn() }));
 vi.mock("../main/project-root-authorization.js", () => ({ isAuthorizedWorkspaceProjectRoot: vi.fn(() => true) }));
@@ -24,7 +29,7 @@ vi.mock("../workload/runtime.js", () => ({
 }));
 vi.mock("../main/windowless-host.js", () => ({
   createWindowlessHost: vi.fn(async () => ({
-    services: { conversationLoop: { abortCurrentTurn: vi.fn() } },
+    services: { conversationLoop: { abortCurrentTurn: vi.fn((reason?: Error) => { turn.controller.abort(reason); }) } },
     conversationSurfaceRuntime: { sharedProjection: { stop: vi.fn() } },
     startLocalApi,
     startTailnetSurface,
@@ -53,6 +58,19 @@ afterEach(() => {
   startTailnetSurface.mockReset();
 });
 
+it("aborts the current turn's tool invocations as host shutdown on a signal", async () => {
+  turn.controller = new AbortController();
+  const { admitToolInvocation } = await import("../tools/invocation-ledger.js");
+  const { isHostExitAbort } = await import("../shared/host-exit-abort.js");
+  const admission = admitToolInvocation("bash", turn.controller.signal);
+  try {
+    expect(await serveUntilReady()).toBe(0);
+    expect(isHostExitAbort(admission.signal.reason)).toBe(true);
+  } finally {
+    admission.settle();
+  }
+});
+
 async function serveUntilReady(): Promise<number> {
   const { main } = await import("../headless-host.js");
   const exit = main();
@@ -62,6 +80,38 @@ async function serveUntilReady(): Promise<number> {
 }
 
 describe("headless --serve", () => {
+  it.runIf(process.platform === "win32")("registers the node host resources before Windows path protection", async () => {
+    const { main } = await import("../headless-host.js");
+    const { createNodeBootHost } = await import("../boot/node-host-runtime.js");
+    const { ensureWorkspaceCwd } = await import("../main/ensure-workspace-cwd.js");
+    const { getConfiguredHostResources } = await import("../main/host-resources.js");
+    const { resolveWindowsPathKindHelper, windowsPathKindHelperIn } = await import("../main/windows-path-kind-launcher.js");
+    const resourcePath = mkdtempSync(join(tmpdir(), "headless-host-resources-"));
+    const binary = windowsPathKindHelperIn(resourcePath);
+    const stop = new Error("path-classifier-resolved");
+    let resourcesAtWorkspaceSetup: ReturnType<typeof getConfiguredHostResources>;
+    try {
+      mkdirSync(dirname(binary), { recursive: true });
+      writeFileSync(binary, "");
+      vi.stubEnv("AVE_RESOURCES_DIR", resourcePath);
+      vi.mocked(ensureWorkspaceCwd).mockImplementationOnce(() => {
+        resourcesAtWorkspaceSetup = getConfiguredHostResources();
+        return resourcePath;
+      });
+      vi.mocked(createNodeBootHost).mockImplementationOnce(async (options) => {
+        expect(resolveWindowsPathKindHelper()).toBe(binary);
+        expect(options).toMatchObject({ resourcePath, isPackaged: false });
+        throw stop;
+      });
+
+      await expect(main()).rejects.toBe(stop);
+      expect(resourcesAtWorkspaceSetup).toEqual({ resourcePath, isPackaged: false });
+    } finally {
+      vi.unstubAllEnvs();
+      await cleanupTmpDir(resourcePath);
+    }
+  });
+
   it("makes its first AVE_HOME write through ensureWorkspaceCwd, before the host-instance lock and the windowless host", async () => {
     // ensureWorkspaceCwd only creates a missing home (create-only helper); repair runs in bootstrap() under the lock.
     startTailnetSurface.mockResolvedValue({ ok: true, enabled: false });

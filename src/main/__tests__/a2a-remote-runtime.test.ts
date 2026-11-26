@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import type { SettingsService } from "../../data/settings-store.js";
 import { buildSingleFlightAgentActionApprover } from "../../permissions/agent-action-approver.js";
 import {
@@ -50,7 +51,7 @@ describe("A2A remote boot runtime", () => {
     const decision = new Promise<{ requestId: string; choice: "allow-once" }>((resolve) => {
       release = () => resolve({ requestId: "shared-approval", choice: "allow-once" });
     });
-    const requestAndWait = vi.fn(async () => await decision);
+    const requestAndWait = answeringRequestAndWait(() => decision);
     const shared = buildSingleFlightAgentActionApprover({ requestAndWait } as never)!;
     const value = settings(
       { a2aRemoteRouting: true, a2aRemoteReceiver: true },

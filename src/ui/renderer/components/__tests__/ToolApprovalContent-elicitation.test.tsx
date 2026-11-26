@@ -2,6 +2,8 @@
 import "../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, screen } from "@testing-library/react";
+import { answeringRequestAndWait } from "../../../../__tests__/support/answering-approval-gate.js";
+import type { ApprovalRequestInput } from "../../../../permissions/approval-gate.js";
 import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import {
@@ -132,7 +134,7 @@ describe("ToolApprovalContent MCP elicitation form", () => {
     let sawUnsupportedNotice = false;
     const resolve = createElicitationResolverFactory({
       approvalGate: {
-        requestAndWait: async (gateRequest) => {
+        requestAndWait: answeringRequestAndWait((gateRequest: ApprovalRequestInput) => {
           let captured: { elicitationContent?: Record<string, unknown> } | undefined;
           renderApproval({
             id: gateRequest.id,
@@ -154,11 +156,10 @@ describe("ToolApprovalContent MCP elicitation form", () => {
           approveWasDisabled = approve.disabled;
           fireEvent.click(approve);
           return {
-            requestId: gateRequest.id,
-            choice: "allow-once" as const,
+            choice: "allow-once",
             ...(captured?.elicitationContent ? { elicitationContent: captured.elicitationContent } : {}),
           };
-        },
+        }),
       },
     })("hr-server");
 

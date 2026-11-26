@@ -22,6 +22,7 @@ import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.j
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const hookRoots: string[] = [];
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
@@ -111,7 +112,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
     const permissions = new PermissionManager(join(root, "permissions.json"));
     permissions.setMode("allow");
     const hooks = new ScriptHookManager();
-    const hookApproval = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-once" as const }));
+    const hookApproval = answeringRequestAndWait<ApprovalRequestInput>(() => ({ choice: "allow-once" }));
     hooks.setCommandAuthorizer(createHookCommandAuthorizer({ permissionManager: permissions, approvalGate: { requestAndWait: hookApproval } }));
     hooks.setTrustedRegistry([], [{ id: "stop-guidance", event: "Stop", source: "config", configDir: resolve(__dirname, "../../../test/fixtures/hooks"),
       command: ["node", resolve(__dirname, "../../../test/fixtures/hooks/contract-command.cjs"), "echo"], timeoutMs: 5000 }]);
@@ -121,7 +122,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
       lifecycleOrigins.push({ event, floor: turnExtensionPolicyContext.getStore()?.floor?.code });
       return lifecycle(event, ...args);
     });
-    const targetApproval = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-once" as const }));
+    const targetApproval = answeringRequestAndWait<ApprovalRequestInput>(() => ({ choice: "allow-once" as const }));
     const { loop } = makeLoop(twoToolRounds(), { permissionManager: permissions, scriptHookManager: hooks,
       approvalGate: { requestAndWait: targetApproval } });
     const turn = loop.runTurn("Follow the current task", {}, undefined, { ...userKeyboardTurn() });

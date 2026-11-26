@@ -42,6 +42,7 @@ import { userPermissionContext } from "./tool-context-fixture.js";
 import { ToolRegistry } from "../registry.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { tryUserApprovalMemorySkip } from "../pipeline/approval-memory-skip.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 describe("ToolExecutor — explicit-approval memory skips the foreground modal (Store B)", () => {
   let dir: string;
@@ -78,10 +79,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       revokedAt: null,
     };
 
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "allow-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -210,7 +208,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     permMgr.setMode("allow");
     const corrupt = new UserApprovalStoreCorruptError("/state/permissions/user-approvals.json", "invalid JSON");
     lookupUserDecisionMock.mockRejectedValue(corrupt);
-    const requestAndWait = vi.fn(async (req: { id: string; reason?: string }) => ({ requestId: req.id, choice: "deny-once" as const }));
+    const requestAndWait = answeringRequestAndWait<{ id: string; reason?: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(registry, undefined, permMgr, undefined, { requestAndWait } as never);
     try {
       const [write, read] = await executor.executeAll(
@@ -345,10 +343,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     // lookupApproval returns null for revoked or missing entries.
     state.lookupResult = null;
 
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "allow-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -386,10 +381,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       revokedAt: null,
     };
 
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "allow-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -479,10 +471,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       revokedAt: null,
     };
 
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "deny-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -556,7 +545,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     registry.register(makeWriteProbeTool(executeSpy, { source: "plugin", pluginId: "meeting" }));
 
     const permMgr = makeManager();
-    const requestAndWait = vi.fn(async () => ({ choice: "deny-once" as const }));
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -588,10 +577,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     registry.register(makeWriteProbeTool(executeSpy, { source: "plugin", pluginId: "meeting" }));
 
     const permMgr = makeManager("strict");
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "deny-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -622,10 +608,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     registry.register(makeWriteProbeTool(executeSpy, { source: "plugin", pluginId: "meeting" }));
 
     const permMgr = makeManager();
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "deny-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -671,10 +654,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       revokedAt: null,
     };
 
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "allow-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -763,9 +743,9 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       revokedAt: null,
     };
 
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
+    const requestAndWait = answeringRequestAndWait(async (req: { id: string }) => ({
       requestId: req.id,
-      choice: "deny" as const,
+      choice: "deny-once" as const,
     }));
     const executor = new ToolExecutor(
       registry,

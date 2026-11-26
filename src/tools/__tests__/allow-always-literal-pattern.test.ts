@@ -18,6 +18,7 @@ import {
   recordApproval,
 } from "../../permissions/user-approval-store.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const TOOL_NAME = "wildcard_probe";
 
@@ -60,7 +61,7 @@ function harness(
   // A HIGH reviewer result reaches the normal card that persists an exact grant.
   const permMgr = makePermissionManager(dir, vi.fn(() => ({ level: "high" as const, reason: "needs confirmation" })), "auto");
 
-  const requestAndWait = vi.fn(async (req: ApprovalRequestInput) => {
+  const requestAndWait = answeringRequestAndWait(async (req: ApprovalRequestInput) => {
     // Persist the host-issued frozen directory identity; unscoped legacy records cannot be reused.
     const workingDirectory = req.reviewerApprovalBasis?.workingDirectory;
     expect(workingDirectory).toBeDefined();

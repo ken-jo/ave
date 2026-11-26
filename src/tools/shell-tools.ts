@@ -1,3 +1,4 @@
+import { raceWithAbort } from "../shared/abortable-deadline.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import { attachSandboxBlock, sandboxBlockForResult, issueFilesystemSandboxBlock } from "../shared/sandbox-block.js";
 import { captureToolApprovalWait } from "./executor-ceiling.js";
@@ -30,7 +31,7 @@ import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-p
  */
 
 import { spawn, type ChildProcess, type ChildProcessByStdio, type SpawnOptions } from "node:child_process";
-import { assertSrtWinSpawnIntegrity } from "../permissions/srt-win-integrity.js";
+import { assertSrtWinSpawnIntegrity, srtWinSpawnEnvironment } from "../permissions/srt-win-integrity.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve as pathResolve, win32 as win32Path } from "node:path";
@@ -2034,7 +2035,8 @@ async function runBrokeredBash(
     sandbox: { mode: "disposable", detail: "disposable-container" }, outputAvailability: "on-completion" });
   let completed = false;
   try {
-  await refreshShellRemoteAuthority();
+  await raceWithAbort(refreshShellRemoteAuthority(), ctx.abortSignal);
+  ctx.abortSignal?.throwIfAborted();
   assertShellRemoteAuthority();
   const result = await authority.runtime.executeBrokeredWorkloadRequest(
     authority.capability,
@@ -2612,8 +2614,9 @@ export async function spawnWithSandbox(
   }
 
   // Per-platform env: on win32 ASRT returns a REAL env carrying the proxy
-  // set (srt-win forwards its env verbatim — the proxy vars are NOT baked into
-  // the command string as on mac/linux, where `wrapped.env` IS process.env).
+  // set (srt-win's own; its child gets only the variables its argv names, and
+  // srtWinSpawnEnvironment gives srt-win the host's state location; on mac/linux
+  // `wrapped.env` IS process.env).
   // buildSandboxedChildEnv composes the SAME secret-stripped result on both: the
   // safe whitelist baseline + ONLY the allow-listed proxy/CA/SANDBOX_RUNTIME
   // keys ASRT set/changed. So the Windows proxy set is propagated (the "spread")
@@ -2643,7 +2646,7 @@ export async function spawnWithSandbox(
         cwd: resolvedCwd,
         stdio: ["ignore", "pipe", "pipe"],
         shell: false,
-        env: childEnv,
+        env: srtWinSpawnEnvironment(cmd, childEnv),
       });
     } catch (err) {
       observation?.finish(null, "failed");
@@ -4007,8 +4010,8 @@ async function spawnPowerShellWithSandbox(
   }
 
   // Per-platform env: on win32 ASRT returns a REAL env carrying the proxy
-  // set the sandboxed child needs (srt-win forwards its env verbatim — the proxy
-  // vars are NOT baked into the command string as they are on mac/linux). On
+  // set (srt-win's own; its child gets only the variables its argv names, and
+  // srtWinSpawnEnvironment gives srt-win the host's state location). On
   // mac/linux `wrapped.env` IS process.env (the proxy is in the wrapped command
   // string). Either way buildSandboxedChildEnv composes the SAME secret-stripped
   // result: it starts from the safe whitelist baseline and overlays ONLY the
@@ -4040,7 +4043,7 @@ async function spawnPowerShellWithSandbox(
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
         shell: false,
-        env: childEnv,
+        env: srtWinSpawnEnvironment(cmd, childEnv),
       });
     } catch (err) {
       observation?.finish(null, "failed");

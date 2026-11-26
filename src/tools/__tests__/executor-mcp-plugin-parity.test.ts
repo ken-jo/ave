@@ -11,6 +11,7 @@ import { createDynamicTool } from "../base.js";
 import { ToolExecutor, type ToolCallMeta, type ToolExecutorCallbacks } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { makePermissionManager } from "./executor-reviewer-fixtures.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 // Isolate identical tools in separate registries while sharing permission, approval, and audit state.
 const PROBE = "parity_probe";
@@ -116,7 +117,7 @@ async function runParityPair(opts: { deny?: boolean; level?: "medium" | "high" }
   if (opts.deny) await permMgr.addAlwaysDeniedPersist(PROBE);
 
   const gate = {
-    requestAndWait: vi.fn(async (req: { id: string }) => ({ requestId: req.id, choice: "allow-once" as const })),
+    requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const })),
   };
   const auditLogger = new AuditLogger(auditDir);
   await auditLogger.setupPermissionAuditChain(SECRET);

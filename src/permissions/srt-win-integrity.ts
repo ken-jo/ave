@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir, type } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { homedir, tmpdir, type } from "node:os";
+import { dirname, join, win32 } from "node:path";
 
+import { t } from "../i18n/index.js";
 import { writeExitDiagnostic } from "../shared/exit-diagnostic.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
@@ -264,9 +265,46 @@ export function srtWinPrivateDirectories(): string[] {
   return [...copies.values()].map((copy) => dirname(copy.executable));
 }
 
+const isDrivePath = (value: string | undefined): value is string => value !== undefined && /^[A-Za-z]:\\/u.test(value);
+
+/** The two variables the helper locates its state from, read from its own environment: the host's. Undefined when either
+ * is missing or not a drive path. */
+function srtWinStateBases(env: NodeJS.ProcessEnv): { LOCALAPPDATA: string; ProgramData: string } | undefined {
+  const { LOCALAPPDATA: local, ProgramData: programData } = env;
+  return isDrivePath(local) && isDrivePath(programData) ? { LOCALAPPDATA: local, ProgramData: programData } : undefined;
+}
+
+/** The helper's own state: its per-user ACL ledger under `%LOCALAPPDATA%` (the runtime's ACL calls inherit the host's
+ * environment, and every helper spawn is handed it by {@link srtWinSpawnEnvironment}), the profile's default for that
+ * folder, and the machine store under `%ProgramData%`. Undefined when either variable is missing or not a drive path. */
+export function srtWinConfinementStatePaths(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] | undefined {
+  const bases = srtWinStateBases(env);
+  if (bases === undefined) return undefined;
+  return [...new Set([bases.LOCALAPPDATA, win32.join(home, "AppData", "Local"), bases.ProgramData]
+    .map((base) => win32.join(base, "sandbox-runtime")))];
+}
+
+const isSrtWinHelper = (executable: string): boolean => win32.basename(executable).toLowerCase() === "srt-win.exe";
+const STATE_VARIABLES = new Set(["LOCALAPPDATA", "PROGRAMDATA"]);
+
+/** The environment every helper spawn uses: `env` with the host's state variables in place of any spelling of them, so the
+ * helper's ledger is the one the state check protects and never one the child's environment names. The helper's child
+ * gets only the variables its command line names. Any other executable keeps `env`. Throws when the host's cannot be
+ * determined. */
+export function srtWinSpawnEnvironment<V extends string | undefined>(executable: string, env: Readonly<Record<string, V>>,
+  hostEnv: NodeJS.ProcessEnv = process.env): Record<string, V | string> {
+  if (!isSrtWinHelper(executable)) return { ...env };
+  const state = srtWinStateBases(hostEnv);
+  if (state === undefined) {
+    const code = "srt-win-state-location-unresolved";
+    throw Object.assign(new Error(t("be_confinementState.helperStateUnresolved", { code })), { code });
+  }
+  return { ...Object.fromEntries(Object.entries(env).filter(([key]) => !STATE_VARIABLES.has(key.toUpperCase()))), ...state };
+}
+
 // Recheck immediately before each host-controlled helper spawn.
 export function assertSrtWinSpawnIntegrity(executable: string): void {
-  if (process.platform !== "win32" || basename(executable).toLowerCase() !== "srt-win.exe") return;
+  if (process.platform !== "win32" || !isSrtWinHelper(executable)) return;
   const copy = [...copies.values()].find((candidate) => candidate.executable === executable);
   if (!copy) throw new SrtWinIntegrityError("srt-win-integrity-mismatch");
   assertSrtWinDigest(readHelper(executable), copy.arch);

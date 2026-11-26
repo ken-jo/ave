@@ -13,6 +13,8 @@ import { UserOwnedSurfaceReviewError, type UserOwnedSurfaceReviewInput } from ".
 import { runWithCeiling } from "../tools/executor-ceiling.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { isRemoteControllerBoundToSession, isUntaintedToolTrustOrigin } from "../shared/chat-origin.js";
+import type { AnsweredProvenance, DecisionProvenance } from "./approval-gate.js";
+import { HOST_PROVENANCE, RULE_PROVENANCE } from "./decision-provenance.js";
 import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion } from "../shared/shell-rule-version.js";
 
 
@@ -217,6 +219,10 @@ export interface PermissionCheckResult {
     reason: string;
     source: string;
   }>;
+  // Who made this decision; audit rows record it. A step that changes the decision sets it again.
+  provenance: DecisionProvenance;
+  // The answered allow a host refusal overrode; the deny row keeps its answerer beside the host's own origin.
+  answer?: AnsweredProvenance;
 }
 
 export interface PermissionCheckContext {
@@ -1632,6 +1638,8 @@ export class PermissionManager {
     });
     const decision = decidePermission(request);
     const result: PermissionCheckResult = {
+      // Nobody able to answer is the host's refusal, not a policy that forbids the action.
+      provenance: decision.reasonCode === "no-approver" ? HOST_PROVENANCE : RULE_PROVENANCE,
       decision: decision.outcome === "sandbox-auto" ? "allow" : decision.outcome === "ask-forced" ? "ask" : decision.outcome,
       reason: decision.reason,
       reasonCode: decision.reasonCode,

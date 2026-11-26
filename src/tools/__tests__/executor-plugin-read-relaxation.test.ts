@@ -15,6 +15,7 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { gateMutatingEffect, __resetEffectGrantsForTest } from "../../permissions/effect-enforcement.js";
 import type { ScriptHookManager } from "../../hooks/script-hook-manager.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const resources = new PermissionTestResources();
 let directory: string;
@@ -34,10 +35,10 @@ function fixture(options: {
 } = {}) {
   const requests: ApprovalRequestInput[] = [];
   const gate = {
-    requestAndWait: async (request: ApprovalRequestInput) => {
+    requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => {
       requests.push(request);
       return { requestId: request.id, choice: "deny-once" };
-    },
+    }),
   } as unknown as ApprovalGate;
   const execute = vi.fn(async () => {
     if (options.effect) {

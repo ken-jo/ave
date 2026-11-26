@@ -46,6 +46,12 @@ function containedServer() {
     release: async () => finish({ exitCode: 0, timedOut: false }) };
 }
 
+// Every drive path below is synthetic, the host's state too, so on any host there is no backend state to check here;
+// the state rule has its own tests.
+vi.mock("../../permissions/confinement-state-paths.js", async (original) => ({
+  ...await original<typeof import("../../permissions/confinement-state-paths.js")>(),
+  declaredConfinementStatePaths: () => [],
+}));
 // The in-memory drive has no directory identities: recording the issued HOME is observed, not performed.
 vi.mock("../../permissions/sandbox-home-registry.js", async (original) => ({
   ...await original<typeof import("../../permissions/sandbox-home-registry.js")>(),

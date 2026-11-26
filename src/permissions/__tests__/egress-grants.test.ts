@@ -9,6 +9,8 @@ import { dirname, join, resolve } from "node:path";
 import { connect, createServer, type AddressInfo } from "node:net";
 import { once } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import type { ApprovalRequestInput } from "../approval-gate.js";
 import {
   canonicalEgressHost,
   egressGrantFilePath,
@@ -690,10 +692,10 @@ describe("terminal tab grants in the running process (egress-runtime)", () => {
     const requests: unknown[] = [];
     const callback = createEgressAskRuntimeCallback({
       approvalGate: {
-        requestAndWait: async (request) => {
+        requestAndWait: answeringRequestAndWait((request: ApprovalRequestInput) => {
           requests.push(request);
           return { requestId: request.id, choice: "allow-once", egressScope: "tab" };
-        },
+        }),
       },
       shellAskEnabled: () => true,
     });
@@ -740,11 +742,11 @@ describe("shell domain grants in the running process", () => {
     const requests: unknown[] = [];
     const permissionManager = new PermissionManager(join(dir, "permissions.json"));
     permissionManager.setMode("strict");
-    const callback = createEgressAskRuntimeCallback({ permissionManager, approvalGate: { requestAndWait: async (request) => {
+    const callback = createEgressAskRuntimeCallback({ permissionManager, approvalGate: { requestAndWait: answeringRequestAndWait((request: ApprovalRequestInput) => {
       requests.push(request);
       if (request.egressHost?.terminalTabId) return { requestId: request.id, choice: "deny-once" };
       return { requestId: request.id, choice: "allow-once", egressScope: "always" };
-    } }, shellAskEnabled: () => true });
+    }) }, shellAskEnabled: () => true });
     const destination = { host: "downloads.example.com", port: 443 };
     const target = { scope: "always" as const, origin: "shell" as const, ...destination, network: "public" as const };
     const ask = async (token: string) => {
@@ -781,7 +783,7 @@ describe("shell domain grants in the running process", () => {
     const permissionManager = new PermissionManager(join(dir, "permissions.json"));
     const callback = createEgressAskRuntimeCallback({
       permissionManager, shellAskEnabled: () => true,
-      approvalGate: { requestAndWait: async request => ({ requestId: request.id, choice: "allow-once", egressScope: "always" }) },
+      approvalGate: { requestAndWait: answeringRequestAndWait(() => ({ choice: "allow-once", egressScope: "always" })) },
     });
     const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
       context: { sessionId: "domain-session", workspaceRoot: dir, approvalSurface: "interactive" } });
