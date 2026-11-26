@@ -83,6 +83,10 @@ export function withLocalityDecision<T>(fn: () => T): T {
     chosen.assertUsable();
     if (typeof (result as { then?: unknown } | null)?.then === "function") throw new Error("A locality decision cannot span an await");
     return result;
+  } catch (error) {
+    // Whatever a failed decision throws carries its failure, however a lookup wrapped it.
+    if (chosen.failure !== undefined && typeof error === "object" && error !== null) driveQueryFailures.add(error);
+    throw error;
   } finally {
     active = previous;
     if (previous === undefined) chosen.close();

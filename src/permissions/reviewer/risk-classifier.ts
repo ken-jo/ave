@@ -1862,8 +1862,13 @@ export class LlmRiskClassifier implements RiskClassifier {
     input: ToolInvocationContext,
     opts?: { abortSignal?: AbortSignal },
   ): Promise<LlmRiskClassificationTrace> {
-    // Composition baseline — rule first, LLM cannot downgrade.
-    const ruleVerdict = this.rule.classify(input);
+    // Composition baseline — rule first, LLM cannot downgrade. The baseline and the prompt's operand facts are one
+    // judgment: one decision observes them, and a failed observation fails the review instead of taking a fallback.
+    const { ruleVerdict, userPrompt } = withLocalityDecision(() => {
+      const ruleVerdict = this.rule.classify(input);
+      const settled = isHostDeterminedRiskTool(input) || ruleVerdict.level === "high" || ruleVerdict.requiresExplicitApproval === true;
+      return { ruleVerdict, userPrompt: settled ? "" : buildUserPrompt(input, ruleVerdict) };
+    });
 
     // Host-determined tools never consult the LLM: their risk is settled by system structure, not by anything a model could weigh. For agent_spawn the structural fact is that every effectful call the child makes re-enters this same permission pipeline — a fact that is not in the reviewer prompt, so asking the LLM poses a question it cannot answer; it kept replying HIGH ("no sandbox isolation, file access") and the max(rule, llm) composition let that guess override the host's LOW. Name-scoped and builtin-only: a plugin/MCP tool that happens to share the name still takes the full composed path.
     if (isHostDeterminedRiskTool(input)) {
@@ -1881,7 +1886,6 @@ export class LlmRiskClassifier implements RiskClassifier {
 
     let llmVerdict: RiskVerdict;
     try {
-      const userPrompt = buildUserPrompt(input, ruleVerdict);
       const { completion, attempts } = await this.runProviderWithRetry(
         userPrompt,
         opts?.abortSignal,

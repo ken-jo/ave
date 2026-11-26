@@ -1,6 +1,7 @@
 // Successful low and medium review allows; high review asks the owner. Failures always require a human decision.
 import { LlmRiskClassifier, RuleBasedRiskClassifier, type RiskClassifier, type LlmRiskClassificationTrace, type RiskVerdict, type ToolInvocationContext } from "../reviewer/risk-classifier.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { isLocalityFailure } from "../../shared/local-path-io.js";
 import {
   JudgeFailure,
   JudgeContractError,
@@ -46,7 +47,8 @@ export function traceRiskClassifier(classifier: RiskClassifier): TracingRiskClas
         if (error instanceof JudgeContractError) throw error;
         const finalVerdict: RiskVerdict = { level: "high", reason: `reviewer error — ${errorMessage(error)}` };
         return {
-          ruleVerdict: new RuleBasedRiskClassifier().classify(input),
+          // A failed drive query failed the judgment; no fresh rule pass stands in for it.
+          ruleVerdict: isLocalityFailure(error) ? finalVerdict : new RuleBasedRiskClassifier().classify(input),
           llmVerdict: classifier instanceof LlmRiskClassifier ? finalVerdict : null,
           finalVerdict, outcome: "error",
         };
