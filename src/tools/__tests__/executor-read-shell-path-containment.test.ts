@@ -1,5 +1,6 @@
 // Command-bearing inputs retain secret-read modes and credential admission after read-risk inspection.
-import { describe, it, expect } from "vitest";
+import { beforeAll, describe, it, expect } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,6 +69,9 @@ async function runPluginCommand(
     await cleanupTmpDir(dir);
   }
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("ToolExecutor — shell path containment runs for read-classified commands", () => {
   it("requires the normal card for a secret-file operand the host classifies as read", async () => {

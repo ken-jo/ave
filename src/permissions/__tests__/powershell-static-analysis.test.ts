@@ -161,6 +161,21 @@ describe("PowerShell static floor analysis", () => {
     }
   });
 
+  // A loopback share is judged as its drive path only as a read operand; a destination keeps the share transfer signal.
+  it.each([
+    "Copy-Item local.txt '\\\\localhost\\C$\\out\\remote.txt'",
+    "Copy-Item -Path local.txt -Destination '\\\\localhost\\C$\\out\\remote.txt'",
+    "Move-Item local.txt '\\\\127.0.0.1\\C$\\out\\remote.txt'",
+    "Set-Content -Path '\\\\localhost\\C$\\out\\remote.txt' -Value data",
+  ])("keeps the share transfer signal for a loopback destination: %s", command => {
+    expect(inspectPowerShellCommand(command, CWD).exfiltration).toEqual(expect.any(String));
+  });
+
+  // Only Windows maps a loopback share to a local drive; elsewhere every share spelling is remote.
+  it.runIf(process.platform === "win32")("reads a loopback share without a transfer signal", () => {
+    expect(inspectPowerShellCommand("Get-Content '\\\\localhost\\C$\\notes.txt'", CWD).exfiltration).toBeNull();
+  });
+
   // Windows PowerShell 5.1 and 7 both bind -I through -InFile to InFile (PathNotFound for a missing file).
   it("retains the upload floor for every -InFile prefix PowerShell binds", () => {
     for (const parameter of ["-I", "-In", "-InF", "-InFi", "-InFil"]) {

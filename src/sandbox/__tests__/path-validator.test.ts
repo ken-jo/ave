@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import {
   mkdtempSync,
@@ -7,12 +7,15 @@ import {
   symlinkSync,
   realpathSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { homedir, tmpdir } from "node:os";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { validateSandboxPath } from "../path-validator.js";
 
 const dirLinkType = process.platform === "win32" ? "junction" : "dir";
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("validateSandboxPath", () => {
   let sandboxCwd: string;
@@ -40,7 +43,7 @@ describe("validateSandboxPath", () => {
     try {
       expect(validateSandboxPath(sandboxCwd, sandboxCwd)).toEqual({
         allowed: false,
-        reason: `cannot resolve sandbox path (${code})`,
+        reason: process.platform === "win32" ? "cannot prove a local sandbox path" : `cannot resolve sandbox path (${code})`,
       });
     } finally {
       spy.mockRestore();

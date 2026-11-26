@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, promises, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -42,10 +42,11 @@ const helperPresent = process.platform === "win32" && existsSync(windowsPathKind
 const appWindows: Array<{ isDestroyed: () => boolean; webContents: object }> = [];
 const deps = { auditLogger: { log: vi.fn() }, getAppWindows: () => appWindows, getMainWindow: () => null } as never;
 
-// The ceiling binds. The exact pin is the current measurement (0 on main cde88405d): lower it when launches are removed;
+// The ceiling binds. The exact pin is the current measurement (0 on main cde88405d; 3 with Windows lookups: the first check, the
+// post-read recheck, and the observation with its open grant, one batched pin each): lower it when launches are removed;
 // raise it only up to PREVIEW_TEXT_OPEN_TARGET, stating the measured count in the PR.
 const PREVIEW_TEXT_OPEN_TARGET = 4;
-const PREVIEW_TEXT_OPEN_LAUNCHES = {};
+const PREVIEW_TEXT_OPEN_LAUNCHES = { "--pin": 3 };
 
 let root: string;
 
@@ -113,5 +114,35 @@ describe.skipIf(!helperPresent)("preview native helper launch budget", () => {
     expect(totalLaunches(launches), JSON.stringify(launches)).toBeLessThanOrEqual(PREVIEW_TEXT_OPEN_TARGET);
     expect(launches, JSON.stringify(launches)).toEqual(PREVIEW_TEXT_OPEN_LAUNCHES);
     event.sender.emit("destroyed");
+  });
+
+  // The recheck after the read is its own decision: pins taken before the await do not vouch for the path after it.
+  it("refuses a preview whose directory is swapped for a junction during the read", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "ave-preview-outside-"));
+    try {
+      writeFileSync(join(outside, "notes.txt"), "outside");
+      const inner = join(root, "inner");
+      mkdirSync(inner);
+      writeFileSync(join(inner, "notes.txt"), "plain");
+      const stat = promises.stat.bind(promises);
+      const swap = vi.spyOn(promises, "stat").mockImplementationOnce(async (path) => {
+        renameSync(inner, join(root, "inner-before"));
+        symlinkSync(outside, inner, "junction");
+        return stat(path);
+      });
+      const event = documentEvent();
+      const read = handlers.get(CHANNELS.preview.readFile);
+      if (!read) throw new Error("preview.readFile is not registered");
+      let result: PreviewReadFileResult;
+      try {
+        result = await read(event, join(inner, "notes.txt"), { offset: 0 }) as PreviewReadFileResult;
+      } finally {
+        swap.mockRestore();
+      }
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: false, error: "path-not-allowed", message: "Preview read scope changed" });
+      event.sender.emit("destroyed");
+    } finally {
+      await cleanupTmpDir(outside);
+    }
   });
 });

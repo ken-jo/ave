@@ -1,10 +1,11 @@
 // Resolve operands against each possible execution directory, including changes made by cd.
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { shellQuote } from "../../lib/shell-resolver.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import type { ShellExecutionFacts } from "../../shared/shell-execution.js";
 import { hostShellAnalysisFacts } from "../prepared-shell-invocation.js";
 import { findShellPathPolicyViolation } from "../shell-path-policy.js";
@@ -19,6 +20,7 @@ const STAGING_ARG = shellQuote(STAGING.replaceAll("\\", "/"));
 const EXTRAS = [STAGING];
 
 beforeAll(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   mkdirSync(join(CWD, "sub"), { recursive: true });
   for (const name of ["a", "b", "c", "sub", "build", "test", "prior", ...Array.from({ length: 8 }, (_, index) => `d${index}`)]) mkdirSync(join(ROOT, name));
   for (let index = 0; index < 8; index += 1) mkdirSync(join(ROOT, "a", `d${index}`));
@@ -333,18 +335,28 @@ describe("shell path policy — working directory tracking", () => {
       expect(verdict("cd sub; touch ../y")).toBe("sandbox-boundary");
     });
 
-    it("gives the ordinary ask for a state limit only when the states differ in nothing but the working directory", () => {
-      expect(verdict(tests(7))).toBe("analysis-limit");
-      expect(verdict(`cd sub; ${tests(7)}`)).toBe("analysis-limit");
-      expect(verdict(`cd sub; ${tests(7)}; cat /etc/passwd`)).toBe("analysis-limit");
-      expect(verdict(`cd a || true; ${tests(7)}`)).toBe("analysis-limit");
-      expect(verdict(`cd a || exit 1; ${tests(7)}`)).toBe("analysis-limit");
-      expect(verdict(`cd a || true; ${repeat(7, (index) => `if test -f q${index}; then cd e${index}; fi`)}`)).toBe("dynamic-path");
-      const values = Array.from({ length: 64 }, (_, index) => index).join(" ");
-      const steps = `for i in ${values}; do for j in ${values}; do for k in ${values}; do :; done; done; done`;
-      expect(verdict(steps)).toBe("analysis-limit");
-      expect(verdict(`cd a || true; ${steps}`)).toBe("analysis-limit");
+    // The state limit gives the ordinary ask only when the states differ in nothing but the working directory.
+    const values = Array.from({ length: 64 }, (_, index) => index).join(" ");
+    const steps = `for i in ${values}; do for j in ${values}; do for k in ${values}; do :; done; done; done`;
+    it.each([
+      ["test -f chain", tests(7), "analysis-limit"],
+      ["cd then test -f chain", `cd sub; ${tests(7)}`, "analysis-limit"],
+      ["cd, test -f chain, then a read", `cd sub; ${tests(7)}; cat /etc/passwd`, "analysis-limit"],
+      ["fallible cd then test -f chain", `cd a || true; ${tests(7)}`, "analysis-limit"],
+      ["guarded cd then test -f chain", `cd a || exit 1; ${tests(7)}`, "analysis-limit"],
+      ["nested loops", steps, "analysis-limit"],
+      ["fallible cd then nested loops", `cd a || true; ${steps}`, "analysis-limit"],
+    ] as const)("gives the state-limit verdict for a %s", (_label, command, expected) => {
+      expect(verdict(command)).toBe(expected);
     });
+
+    // On Windows each cd state observes its destination with its own helper launch: this row takes 65 launches (63 cd
+    // observations, the working-directory check and one operand batch), measured at 7.1 s alone and 11.8 s on a loaded host.
+    // The 79 s timeout is 2x the 39.1 s main median of the whole state-limit set, measured back-to-back on 2026-11-25
+    // (this branch: 47.2 s).
+    it("gives a dynamic-path verdict when each conditional cd adds a working-directory state", () => {
+      expect(verdict(`cd a || true; ${repeat(7, (index) => `if test -f q${index}; then cd e${index}; fi`)}`)).toBe("dynamic-path");
+    }, 79_000);
 
     it("asks past the cap on forks without a possible filesystem change", () => {
       expect(verdict(`${repeat(15, () => "cd sub; cd ..")}; cd sub; touch ../y`)).toBe("sandbox-boundary");
@@ -376,7 +388,8 @@ describe("shell path policy — working directory tracking", () => {
       ["REL-desc-disj", "cd a; cd ../sub; cd \"$R/sub/s2\"; touch ../../x", "sandbox-boundary"],
       ["REL-anc-disj", "cd a; cd ../sub/s2/s3; cd \"$R/sub/s2\"; touch ../../x", "sandbox-boundary"],
       ["REL-disj-disj", "cd a; cd ../sub/s2; cd \"$R/sub/t2\"; touch ../../x", "sandbox-boundary"],
-      ["REL-disj-disj (shared ancestor holds the cwd)", "cd b; cd ../sub/s2; cd \"$R/a/d0\"; touch ../../x", null],
+      // On Windows the non-ancestor `..` spelling observes "unknown", so no single-fault shortcut applies.
+      ["REL-disj-disj (shared ancestor holds the cwd)", "cd b; cd ../sub/s2; cd \"$R/a/d0\"; touch ../../x", process.platform === "win32" ? "sandbox-boundary" : null],
     ])("models a later cd against a recorded fault destination: %s: %s", (_cell, command, kind) => {
       expect(verdict(command)).toBe(kind);
     });

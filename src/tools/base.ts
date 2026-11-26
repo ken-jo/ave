@@ -114,6 +114,9 @@ export interface Tool {
   /** Manifest-declared filesystem path fields. Used by the executor's Layer 0/1 path policy for dynamic
    * plugin/MCP tools whose argument names are not the built-in `path | file_path | filePath` convention. */
   readonly pathFields?: readonly string[];
+  /** The value an omitted path field executes with. It is bound into the input before permission evaluation, so the
+   * omitted field is judged as that explicit path. */
+  readonly pathFieldDefaults?: Readonly<Record<string, string>>;
   /**
    * §6.4 Tool versioning — semver string (e.g. "1.0.0"). Required so the
    * registry can pick the latest implementation when multiple versions of the

@@ -48,7 +48,7 @@ try {
   imageResponse = JSON.parse(execFileSync(process.execPath, [imageChild, JSON.stringify({
     path: imagePath, options: { maxBytes: 512, maxDimension: 2 },
     scope: { cwd: imageDirectory, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true },
-  })], {
+  }), JSON.stringify({ resourcePath: resolve(root, "resources"), isPackaged: true })], {
     encoding: "utf8", timeout: 30_000, maxBuffer: 8192,
     env: { ...process.env, NODE_ENV: "production" },
   }));

@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { tmpdir } from "node:os";
 
 const budget = vi.hoisted(() => ({ bytes: 64 * 1024 * 1024 }));
@@ -20,6 +21,8 @@ beforeEach(async () => {
   vi.stubEnv("AVE_HOME", join(root, "state"));
 });
 afterEach(async () => { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("checkpoint line-count storage", () => {
   it("does not discard a fitting restore image to add informational counts at the quota boundary", async () => {

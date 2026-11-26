@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { getConfiguredHostResources, type HostResources } from "./host-resources.js";
 import { windowsPathKindHelperIn } from "./windows-path-kind-launcher.js";
@@ -48,9 +49,12 @@ export function hostScriptWriteDenyPaths(): readonly string[] {
   return [...new Set(denied)];
 }
 
+// A caller operand is resolved only on a route proven local; any other spelling names no host file.
 function sameFile(left: string, right: string): boolean {
-  try { return realpathSync.native(left) === realpathSync.native(right); }
-  catch { return false; }
+  try {
+    return withLocalityDecision(() =>
+      localFs.realpathNative(admitLocalRoute(left).verdict) === localFs.realpathNative(admitLocalRoute(right).verdict));
+  } catch { return false; }
 }
 
 /** Only direct, unchanged build outputs are executable resources. Links never qualify. */

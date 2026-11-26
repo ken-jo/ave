@@ -1,5 +1,93 @@
-import { describe, expect, it } from "vitest";
-import { modelShellPath } from "../shell-native-path.js";
+import { hostname } from "node:os";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { isAmbiguousNativeSpelling, isWindowsNetworkOrDevicePath, localDriveAlias, modelShellPath, withoutStreamSuffixes } from "../shell-native-path.js";
+import { setWindowsDriveQueryForTest } from "../windows-drive-locality.js";
+
+// The shared setup answers every drive as local; these cases need a host with no X: drive, as the query reports it.
+vi.unmock("../windows-drive-locality.js");
+beforeEach(() => setWindowsDriveQueryForTest(drive => drive === "X:" ? null : String.raw`\Device\HarddiskVolume1`));
+afterEach(() => setWindowsDriveQueryForTest());
+
+describe("local drive aliases", () => {
+  it.each([
+    [String.raw`\\.\D:\a\settings.json`, String.raw`D:\a\settings.json`],
+    [String.raw`\\?\d:\a`, String.raw`D:\a`],
+    [String.raw`\\localhost\D$\a`, String.raw`D:\a`],
+    [String.raw`\\127.0.0.1\d$\a\b`, String.raw`D:\a\b`],
+    [String.raw`\\127.4.5.6\D$\a`, String.raw`D:\a`],
+    [String.raw`\\?\UNC\localhost\D$\a`, String.raw`D:\a`],
+    [String.raw`\\.\unc\LOCALHOST\D$\a`, String.raw`D:\a`],
+    ["//LocalHost/d$/a/b", String.raw`D:\a\b`],
+    [String.raw`\\::1\D$\a`, String.raw`D:\a`],
+    [String.raw`\\[::1]\D$\a`, String.raw`D:\a`],
+    [String.raw`\\0--1.ipv6-literal.net\D$\a`, String.raw`D:\a`],
+    [String.raw`\\localhost\D$`, "D:\\"],
+    [String.raw`\\localhost\D$\a::$DATA`, String.raw`D:\a::$DATA`],
+  ])("maps %s to its drive", (path, expected) => {
+    expect(localDriveAlias(path, "win32")).toBe(expected);
+  });
+
+  it("maps the host's own name", () => {
+    expect(localDriveAlias(`\\\\${hostname()}\\D$\\a`, "win32")).toBe(String.raw`D:\a`);
+  });
+
+  it.each([
+    String.raw`\\?\GLOBALROOT\??\D:\a`, String.raw`\\?\Volume{00000000-0000-0000-0000-000000000000}\a`,
+    String.raw`\\.\D:`, String.raw`\\.\D:x`, String.raw`\\.\D:\a.`, String.raw`\\.\D:\a \b`, String.raw`\\.\D:\a\..\b`, String.raw`\\.\D:\a\.\b`,
+    String.raw`\\files.example\D$\a`, String.raw`\\localhost\share\a`, String.raw`\\localhost\DE$\a`, String.raw`\\localhost.\D$\a`,
+    String.raw`\\127.0.0.256\D$\a`, String.raw`\\.\D$\a`, String.raw`D:\a`,
+    // Letters that fold to ASCII only under Unicode case rules: the Kelvin sign and the long s.
+    "\\\\.\\\u212A:\\a", "\\\\localho\u017Ft\\D$\\a",
+  ])("leaves %s unproven", path => {
+    expect(localDriveAlias(path, "win32")).toBeUndefined();
+  });
+
+  it("maps nothing on other platforms", () => {
+    expect(localDriveAlias(String.raw`\\.\D:\a`, "linux")).toBeUndefined();
+  });
+});
+
+// Spellings whose target the Win32 path rules can read more than one way: an NT prefix, a slash or an empty component
+// after the extended prefix (which skips normalization), and components ending in a dot or space (which it strips).
+describe("ambiguous native spellings", () => {
+  it.each([
+    String.raw`\??\D:\a`, "/??/D:/a", String.raw`\\?\D:\a/b`, String.raw`\\?\D:\a\\b`, String.raw`\\.\D:\a.`, String.raw`\\.\D:\a \b`,
+    String.raw`\\localhost\D$\..\a`, String.raw`\\files.example\share\a.`,
+  ])("treats %s as an unproven device path", path => {
+    expect(isAmbiguousNativeSpelling(path, "win32")).toBe(true);
+    expect(isWindowsNetworkOrDevicePath(path, "win32")).toBe(true);
+    expect(localDriveAlias(path, "win32")).toBeUndefined();
+  });
+
+  it.each([
+    String.raw`D:\a.`, "D:/a/b", String.raw`\\?\D:\a\b`, String.raw`\\.\D:\a`, String.raw`\\files.example\share\a`, String.raw`\\?\UNC\files.example\share\a`,
+  ])("leaves %s unambiguous", path => {
+    expect(isAmbiguousNativeSpelling(path, "win32")).toBe(false);
+  });
+
+  it("finds nothing ambiguous on other platforms", () => {
+    expect(isAmbiguousNativeSpelling(String.raw`\??\D:\a`, "linux")).toBe(false);
+    expect(isWindowsNetworkOrDevicePath(String.raw`\??\D:\a`, "linux")).toBe(false);
+  });
+});
+
+describe("stream suffixes", () => {
+  it.each([
+    [String.raw`D:\a\b.txt::$DATA`, String.raw`D:\a\b.txt`],
+    [String.raw`D:\a\b.txt:alt:$DATA`, String.raw`D:\a\b.txt`],
+    [String.raw`D:\a:s\b`, String.raw`D:\a\b`],
+    [String.raw`\\::1\D$\a::$DATA`, String.raw`\\::1\D$\a`],
+    [String.raw`\\?\D:\a::$DATA`, String.raw`\\?\D:\a`],
+    [String.raw`\\?\UNC\files.example\share\a:s`, String.raw`\\?\UNC\files.example\share\a`],
+    [String.raw`D:\a`, String.raw`D:\a`],
+  ])("names %s as %s", (path, expected) => {
+    expect(withoutStreamSuffixes(path, "win32")).toBe(expected);
+  });
+
+  it("keeps colons on other platforms", () => {
+    expect(withoutStreamSuffixes("/a/b:c", "linux")).toBe("/a/b:c");
+  });
+});
 
 describe.runIf(process.platform === "win32")("native shell path model", () => {
   it.each([

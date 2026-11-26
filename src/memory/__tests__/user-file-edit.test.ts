@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile, chmod } from "node:fs/promises";
 import { renameSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { tmpdir } from "node:os";
 import * as checkpoints from "../code-checkpoints.js";
 import { availableReview as available, createProjectScope } from "../../__tests__/support/code-checkpoint-turn.js";
@@ -28,6 +29,8 @@ beforeEach(async () => {
   vi.stubEnv("AVE_HOME", join(root, "state"));
 });
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("reading a file to edit", () => {
   it("returns the bytes and the hash a save must still find", async () => {

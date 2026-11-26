@@ -4,10 +4,15 @@ import { win32 } from "node:path";
 import * as filesystemPaths from "../../shared/shell-filesystem-path.js";
 import * as shellPaths from "../../shared/shell-native-path.js";
 import { inspectPowerShellPermissionPaths } from "../rules/powershell-exfiltration.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 const SHARE_PROJECT = String.raw`\\host\share\project`;
 
-afterEach(() => vi.restoreAllMocks());
+const hostPlatform = process.platform;
+afterEach(() => {
+  setProcessPlatform(hostPlatform);
+  vi.restoreAllMocks();
+});
 
 function provideAccessibleShare() {
   vi.spyOn(shellPaths, "modelShellPath").mockImplementation((value, model) => {
@@ -61,11 +66,16 @@ describe("share filesystem write boundaries", () => {
     String.raw`Get-Content '\\other\share\notes.txt'`,
     String.raw`Write-Output '\\other\share\notes.txt'`,
     String.raw`Get-Content notes.txt | Out-Printer -Name '\\other\queue'`,
-  ])("does not turn non-filesystem-write destinations into escapes: %s", command => {
+  ].flatMap(command => (["win32", "darwin"] as const).map(platform => ({ command, platform }))))(
+    "does not turn non-filesystem-write destinations into escapes on $platform: $command", ({ command, platform }) => {
+    // Only Windows reads a doubled leading separator as a share; another host reads it as a local name.
+    setProcessPlatform(platform);
     provideAccessibleShare();
     const result = inspectPowerShellPermissionPaths(command, SHARE_PROJECT);
     expect(result.unknownProtectedWrite).toBeUndefined();
     expect(result.paths.filter(path => path.effect === "write")).toEqual([]);
-    expect(result.paths.some(path => path.projectEscape)).toBe(false);
+    // Only the read of a share outside the project escapes, and only as the floor for an unmapped spelling.
+    expect(result.paths.filter(path => path.projectEscape).map(path => path.effect))
+      .toEqual(platform === "win32" && command.startsWith("Get-Content '") ? ["read"] : []);
   });
 });

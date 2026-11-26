@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmod, link, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { randomUUID } from "node:crypto";
 import { deleteCodeCheckpoints, restoreCodeCheckpoint, withCodeCheckpoint } from "../code-checkpoints.js";
 import { CODE_CHECKPOINT_POLICY } from "../../shared/code-rewind.js";
@@ -30,6 +31,8 @@ const edit = createCodeCheckpointEdit(() => file);
 const namespaceBytes = async () => (await Promise.all((await readdir(storage))
   .map(async (name) => (await stat(join(storage, name))).size))).reduce((sum, bytes) => sum + bytes, 0);
 const backupName = async () => (await readdir(storage)).find((name) => name.endsWith(".bak"))!;
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("checkpoint quarantine storage", () => {
   it("preserves the on-disk quarantine set and bounds total bytes after large later edits", async () => {

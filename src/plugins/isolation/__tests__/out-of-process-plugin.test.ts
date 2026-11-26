@@ -40,6 +40,7 @@ vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
 
 /** Sandbox liveness is controlled here; shared-config registration is inert because spawns are recorded. */
 const sandbox = vi.hoisted(() => ({ active: false, registeredSocketDirs: [] as string[] }));
+const pierceNotices = vi.hoisted(() => vi.fn((pierces: readonly string[], owner?: string) => pierces.map((pierce) => `deny inside ${pierce} for ${owner}`)));
 vi.mock("../../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../permissions/asrt-sandbox.js")>()),
   isAsrtSandboxActive: () => sandbox.active,
@@ -49,6 +50,7 @@ vi.mock("../../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   },
   unregisterWorkerUnixSocketDir: async () => undefined,
   cleanupAsrtSandboxAfterCommand: async () => undefined,
+  userDenyInsidePierceNotices: pierceNotices,
 }));
 
 /** Record grant order and holder loss without changing real access lists. */
@@ -134,6 +136,7 @@ vi.mock("../../../permissions/sandbox-process-home.js", async (importOriginal) =
 
 const transportWarnings = vi.hoisted(() => [] as unknown[][]);
 const factoryDebug = vi.hoisted(() => [] as string[]);
+const factoryWarnings = vi.hoisted(() => [] as string[]);
 const sessionWarnings = vi.hoisted(() => [] as unknown[][]);
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
@@ -149,6 +152,7 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
       if (name === "out-of-process-plugin" || name === "plugin-runtime") {
         return Object.assign(Object.create(logger) as typeof logger, {
           debug: (...args: unknown[]) => void factoryDebug.push(args.map(String).join(" ")),
+          warn: (...args: unknown[]) => void factoryWarnings.push(args.map(String).join(" ")),
         });
       }
       if (name !== "plugin-child-transport") return logger;
@@ -1169,6 +1173,35 @@ describe("native floor pierces", () => {
         .resolves.toEqual([join(aveHome(), "certs")]);
       expect(spawnNativeChild).toHaveBeenCalledTimes(3);
     } finally { roots.remove(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("names a user deny inside a pierce against the plugin only once its child is wrapped", async () => {
+    const roots = spawnableRoots();
+    const { dir, entryPath } = writePluginModule();
+    let spawned: { floorPierces?: readonly string[]; onWrapped?: () => void } | undefined;
+    spawnConfinedChild.mockReset().mockImplementationOnce(async (spec: typeof spawned) => {
+      spawned = spec;
+      throw new Error("fixture spawn reached");
+    });
+    pierceNotices.mockClear();
+    factoryWarnings.length = 0;
+    try {
+      const factory = createOutOfProcessPluginFactory({ manifest: { ...MANIFEST, sandbox: { read: [{ kind: "hostDirectory", segments: ["certs"], why: "Trust anchors." }] } },
+        launch: { kind: "entry", entryPath }, registerSandboxEnvelope: () => ({ assertCurrent() {}, dispose() {}, quarantine() {}, terminating() {} }) });
+      await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toThrow("fixture spawn reached");
+      const certs = join(aveHome(), "certs");
+      expect(spawned?.floorPierces).toEqual([certs]);
+      // An unwrapped spawn never reaches onWrapped, so nothing is withheld and nothing is named.
+      expect(pierceNotices).not.toHaveBeenCalled();
+      expect(factoryWarnings).toEqual([]);
+      spawned?.onWrapped?.();
+      expect(pierceNotices).toHaveBeenCalledExactlyOnceWith([certs], `plugin:${MANIFEST.id}`);
+      expect(factoryWarnings).toEqual([`[${MANIFEST.id}] deny inside ${certs} for plugin:${MANIFEST.id}`]);
+    } finally {
+      spawnConfinedChild.mockReset();
+      roots.remove();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

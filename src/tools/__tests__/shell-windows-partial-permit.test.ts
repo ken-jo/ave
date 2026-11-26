@@ -2,7 +2,9 @@ vi.mock("../../shared/windows-path-facts.js", async original => (await import(".
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
 import type { ToolExecutionContext } from "../types.js";
 import {
@@ -40,6 +42,9 @@ const SHELLS = [
     input: { command: "Write-Output permit", timeoutSeconds: 5 },
   },
 ] as const;
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("builtin shell — Windows partial Plan-B permit", () => {
   afterEach(() => {

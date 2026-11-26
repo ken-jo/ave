@@ -1,6 +1,7 @@
 // App guidance enters at round boundaries and stages the remaining turn origin.
 // User guidance must not inherit app permission requirements or provenance.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -23,6 +24,7 @@ import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 const hookRoots: string[] = [];
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 afterEach(async () => {
   for (const root of hookRoots.splice(0)) await cleanupTmpDir(root);
 });

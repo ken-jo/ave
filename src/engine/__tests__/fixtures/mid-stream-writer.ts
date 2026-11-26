@@ -11,6 +11,10 @@ import { join } from "node:path";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { MemoryManager } from "../../../memory/memory-manager.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
+import { configureHostResources } from "../../../main/host-resources.js";
+
+// This child stands in for the app process, which composes its host before any session runs.
+configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
 
 const [aveDir, sessionId, toolRoundsArg, mode] = process.argv.slice(2);
 const toolRounds = Number(toolRoundsArg);

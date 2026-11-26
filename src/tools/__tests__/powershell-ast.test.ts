@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { beforeAll, afterEach, describe, expect, it } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { normalizePowerShellAstSummary, type PowerShellArgument, type PowerShellAstSummary } from "../powershell-ast.js";
 import { findPowerShellAstPathViolation, validatePowerShellAst } from "../shell-tools.js";
 import { powerShellLiteral as literal } from "../../__tests__/support/powershell-ast.js";
@@ -15,6 +16,9 @@ function check(summary: PowerShellAstSummary) {
   const root = mkdtempSync(join(tmpdir(), "ave-ps-facts-")); roots.push(root);
   return findPowerShellAstPathViolation(summary, root, root, [], true);
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("native PowerShell AST facts", () => {
   it("keeps detached process invocation structurally denied even with a literal read body", () => {

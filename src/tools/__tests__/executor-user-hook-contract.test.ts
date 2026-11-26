@@ -1,7 +1,8 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { createDynamicTool } from "../base.js";
@@ -44,6 +45,9 @@ function setup(event: string, errored = false, denied = false, targetAsks = fals
   return { execute, authorizeCommand, requestAndWait, targetRequestAndWait, run: () => executor.executeAll([{ id: "contract-tool", name: "contract_probe", input: {} }],
     { sessionId: "contract-session", permissionContext: userPermissionContext() }) };
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("user hook model feedback and permission precedence", () => {
   it("returns exit-2 stderr to the model before the tool can execute", async () => {

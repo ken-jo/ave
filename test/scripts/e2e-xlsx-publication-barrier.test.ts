@@ -111,7 +111,7 @@ describe("workbook publication build", () => {
         const denyWrite = hostScriptWriteDenyPaths();
         const grants = rankMxcFilesystem(shellPolicyModel({
           allowRead, allowWrite: [workspace], denyWrite, denyRead: [], protectedFloor: [],
-        }), existsSync);
+        }));
         expect(grants.readonly).toContain(helper);
         expect(denyWrite).toContain(helper);
         expect(grants.readwrite).not.toContain(helper);

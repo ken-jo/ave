@@ -1096,6 +1096,10 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_pluginUiHost.pluginUiTitle": "익스텐션 UI",
   "be_pluginUiHost.pluginUiLoadingDesc": "익스텐션 화면을 로딩합니다.",
 
+  // be_policyModel
+  "be_policyModel.userDenyCoversPierce": "읽기 거부 규칙 {rule}이(가) 이 실행에 필요한 {pierce}의 읽기를 막고 있어 실행을 거부했습니다 ({code})",
+  "be_policyModel.userDenyMayCoverPierce": "읽기 거부 규칙 {rule}이(가) 이 실행에 필요한 {pierce}의 읽기를 막는지 Ave가 판단할 수 없어 실행을 거부했습니다 ({code})",
+
   // be_policyStore
   "be_policyStore.managedPolicyUserCannotChange": "IT 관리 정책은 사용자가 변경할 수 없습니다.",
 
@@ -3345,6 +3349,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "inputActionBar.sandboxCauseWindowsSetupIncomplete": "Windows 샌드박스 설정(srt-win)이 완료되지 않음",
   "inputActionBar.sandboxCauseLinuxRuntimeProbeFailed": "bubblewrap을 실행할 수 없음 (시작 점검 실패)",
   "inputActionBar.sandboxCauseInitFailed": "샌드박스 시작 실패",
+  "inputActionBar.sandboxCauseWindowsDenyUnenforceable": "보호된 경로가 네트워크 위치에 있어 차단 규칙을 보장할 수 없음",
+  "inputActionBar.sandboxCauseWindowsDenyPathUnenforceable": "보호된 경로를 안전하게 확인할 수 없어 차단 규칙을 보장할 수 없음",
   "inputActionBar.sandboxCausePlatformUnsupported": "이 플랫폼에서는 지원되지 않음",
   "inputActionBar.sandboxCauseWindowsShellNotContained": "Windows 셸은 샌드박스 밖에서 실행됨 (경로 ACL 부여가 안전하지 않음)",
   "inputActionBar.sandboxCauseShellNotContained": "활성 샌드박스가 셸을 격리하지 못해 셸 명령은 승인을 받은 뒤 샌드박스 없이 실행됨",
@@ -5032,6 +5038,13 @@ export const ko: Record<MessageCatalogKey, string> = {
   "sandboxPolicy.scanInaccessible": "프로젝트를 안전하게 읽거나 경로를 확인할 수 없어 중첩 저장소 검색을 완료하지 못했습니다",
   "sandboxPolicy.scanRouting": "쓰기 가능한 경로 링크가 보호된 저장소 경로를 교체할 수 있습니다",
   "sandboxPolicy.noWriteRoots": "쓰기 가능한 프로젝트 루트 없음",
+  "sandboxPolicy.savedSessionReadWithheld": "Windows 셸 샌드박스에서 저장된 세션 저장소 읽기를 차단했습니다.",
+  "sandboxPolicy.pierceUserDenyPartMaybe": "읽기 거부 규칙 {rule}이(가) 이 실행이 읽는 {path} 안에 적용되는지 Ave가 판단할 수 없습니다. 나머지는 그대로 읽지만 규칙에 맞는 경로는 읽을 수 없습니다.",
+  "sandboxPolicy.pierceUserDenyPart": "읽기 거부 규칙 {rule}이(가) 이 실행이 읽는 {path} 안에 적용됩니다. 나머지는 그대로 읽지만 규칙에 맞는 경로는 읽을 수 없습니다.",
+  "sandboxPolicy.sessionReadUserDenyMaybe": "읽기 거부 규칙 {rule}이(가) 저장된 세션 저장소 {path}를 막는지 Ave가 판단할 수 없어 셸 명령이 이를 읽을 수 없습니다.",
+  "sandboxPolicy.sessionReadUserDenyPartMaybe": "읽기 거부 규칙 {rule}이(가) 저장된 세션 저장소 {path} 안에 적용되는지 Ave가 판단할 수 없습니다. 셸 명령은 규칙에 맞는 경로를 읽을 수 없습니다.",
+  "sandboxPolicy.sessionReadUserDenyPart": "읽기 거부 규칙 {rule}이(가) 저장된 세션 저장소 {path} 안에 적용되어 셸 명령이 해당 경로를 읽을 수 없습니다.",
+  "sandboxPolicy.sessionReadUserDenyWhole": "읽기 거부 규칙 {rule}이(가) 저장된 세션 저장소 {path}를 막고 있어 셸 명령이 이를 읽을 수 없습니다.",
   "sandboxPolicy.cleanupPending": "샌드박스 프로세스 종료를 확인하지 못해 저장소 항목 격리가 대기 중입니다.",
   "sandboxPolicy.cleanupFailed": "샌드박스 저장소 항목 격리 실패: {reason}. 저장소 항목이 남아 있을 수 있으므로 외부 Git을 실행하기 전에 확인하세요.",
   "sandboxPolicy.terminalWindow": "Linux 에이전트 터미널은 셸 시작 시 수행한 Git 보호 스캔을 유지합니다. 기존 쓰기 허용 루트 안에 나중에 생긴 저장소나 Git 제어 경로는 셸이 종료될 때까지 쓰기 가능할 수 있으며 시간 상한이 없습니다. 포그라운드 명령, 백그라운드 작업, 직접 터미널 입력에 같은 제한이 적용됩니다. 해당 저장소를 사용하기 전에 에이전트 셸을 닫았다가 다시 여세요. 초기 쓰기 허용 루트 밖의 프로젝트는 계속 읽기 전용입니다.",
@@ -5230,6 +5243,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "shellExecution.homePrivacyHelperUnavailable": "시작할 때 Ave가 홈 폴더 보호를 확인하지 못해 셸 명령과 훅이 꺼져 있습니다. Ave를 다시 시작하세요. 문제가 계속되면 Ave를 다시 설치하세요.",
   "shellExecution.boundaryUnverifiedAsk": "시작할 때 Ave 홈 보호를 확인할 수 없어, 셸 명령은 승인한 뒤에만 OS 샌드박스 없이 실행됩니다. 한 번만 승인하거나, 홈 보호를 확인할 수 없는 동안 이 세션의 이후 셸 명령과 훅에 대한 샌드박스 승인을 면제할 수 있습니다. 다른 권한 검사는 계속 적용되며 다시 승인을 요청할 수 있습니다.",
   "shellExecution.sandboxUnavailableAsk": "OS 샌드박스가 켜져 있지만 사용할 수 없어, 셸 명령은 승인한 뒤이거나 저장된 규칙이 명령과 정확히 일치할 때에만 샌드박스 없이 실행됩니다. 한 번만 승인하거나, 샌드박스를 사용할 수 없는 동안 이 세션의 이후 셸 명령과 훅에 대한 샌드박스 승인을 면제할 수 있습니다. 다른 권한 검사는 계속 적용되며 다시 승인을 요청할 수 있습니다.",
+  "shellExecution.denyUnenforceableAsk": "보호된 경로가 네트워크 위치에 있어 차단 규칙을 보장할 수 없으므로 OS 샌드박스를 사용할 수 없고, 이 셸 명령은 승인한 뒤에만 샌드박스 없이 실행됩니다. 한 번 또는 이 세션 동안 승인하세요.",
+  "shellExecution.denyPathUnenforceableAsk": "보호된 경로를 안전하게 확인할 수 없어 차단 규칙을 보장할 수 없으므로 OS 샌드박스를 사용할 수 없고, 이 셸 명령은 승인한 뒤에만 샌드박스 없이 실행됩니다. 한 번 또는 이 세션 동안 승인하세요.",
   "shellExecution.shellNotContainedAsk": "OS 샌드박스가 켜져 있지만 이 컴퓨터에서는 셸 명령을 격리할 수 없어, 셸 명령은 샌드박스 없이 실행됩니다. 승인을 요청받으면 해당 명령을 한 번 승인하거나 이 세션의 이후 셸 명령과 훅에 대한 샌드박스 승인을 면제할 수 있습니다. 다른 권한 검사는 계속 적용되며 다시 승인을 요청할 수 있습니다.",
   "shellExecution.sandboxInstallHint": "OS 샌드박스를 다시 사용하려면 이 컴퓨터에 다음을 설치한 뒤 Ave를 다시 시작하세요: {packages}",
   "shellExecution.location": "실행 위치: 현재 호스트({platform}).",

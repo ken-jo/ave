@@ -7,7 +7,9 @@ import { t } from "../i18n/index.js";
 import { analyzeShell, displayShellWord, shellWordHasSingleField, staticShellWord, type PreparedShellAnalysis, type ShellWord } from "../shared/shell-analysis.js";
 import { commandLeaf, effectiveShellWords, namesCommandPath, stripCommandPath } from "../shared/shell-effective-command.js";
 import { assertStableShellEnvironmentVariable, inspectShellExecution, resolveGuestShellPath, ShellExecutionError, type ShellExecutionFacts, type ShellCommandEvent } from "../shared/shell-execution.js";
-import { validateSandboxPath } from "../sandbox/path-validator.js";
+import { pinSandboxLookups, validateSandboxPath } from "../sandbox/path-validator.js";
+import { observeWindowsShellDirectories } from "../permissions/admitted-obligation.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators, isConfiguredSessionReadPath, isAdmissionDeniedPath, createPermissionPathEvidence, type PermissionPathEvidence } from "../permissions/sensitive-paths.js";
 import { isReadOnlyShellLeaf } from "../permissions/reviewer/host-risk-inspector.js";
 import { pathEffectIsConfined, type PathEffect } from "../permissions/allowed-directories.js";
@@ -1663,7 +1665,12 @@ function hostBoundPathWord(word: ShellWord, incoming: Readonly<Record<string, st
     || part.kind === "parameter" && part.index === undefined && incoming[part.name] !== undefined && sameBoundValue(part.name, incoming[part.name]!, current[part.name]));
 }
 
-export function findShellPathPolicyViolation(
+// One analysis is one locality decision: its operands share drive answers and pin facts; the next analysis reads them again.
+export function findShellPathPolicyViolation(...args: Parameters<typeof findShellPathPolicyViolationInDecision>): ShellPathPolicyViolation | null {
+  return withLocalityDecision(() => findShellPathPolicyViolationInDecision(...args));
+}
+
+function findShellPathPolicyViolationInDecision(
   command: string, cwd: string, sandboxRoot: string, extraAllowedDirectories: readonly string[],
   blockReadsOutsideWorkingDirectories: boolean,
   facts: ShellExecutionFacts = { dialect: "bash", environment: {} },
@@ -1674,6 +1681,7 @@ export function findShellPathPolicyViolation(
   literalBudget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 },
   inspectPowerShellBody?: PowerShellPathInspector,
   argumentView?: { rootAlreadyParsed: true; literalBodiesAlreadyInspected: boolean },
+  observeDirectory = observeWindowsShellDirectories,
 ): ShellPathPolicyViolation | null {
   // One decision-scoped cache for the sensitive-path scan, which canonicalizes the same Ave-home chain
   // for every operand. `chainFacts` shares the Step 1 lstat walk so the common prefix is walked once;
@@ -1757,7 +1765,9 @@ export function findShellPathPolicyViolation(
       if (error.code === "ENETWORKSHAREPATH") {
         if (evidence) {
           const lexical = isAbsolute(path) ? path : win32.resolve(cwd ?? sandboxRoot, path);
-          evidence.push({ ...opaqueEvidenceForPath!({ lexical, canonical: win32.normalize(lexical), effect }), projectEscape: true,
+          // A share or device spelling can pass outside the sandbox's folder rules, so it escapes. Its evidence comes from the
+          // spelling and the lexical identity it reaches, as for native tools; nothing past the share is opened.
+          evidence.push({ ...evidenceForPath!({ lexical, canonical: canonicalize(lexical), effect }), projectEscape: true,
             ...(deleting ? { deleteIntent: true as const } : {}) });
           return;
         }
@@ -1778,8 +1788,23 @@ export function findShellPathPolicyViolation(
       evidence.push({ ...evidenceForPath!({ lexical, canonical: absolute, runtimePath: absolute, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
       return;
     }
+    if (pending) { pending.push({ absolute, label, effect }); return; }
     const violation = findResolvedShellPathViolation(absolute, label, sandboxRoot, extraAllowedDirectories, effect, blockReadsOutsideWorkingDirectories, canonicalize);
     if (violation) throw new PathPolicyError(violation);
+  };
+  // On Windows the resolved operands of every cwd state are judged after the walk, in walk order, so their lookups share one
+  // batched pin (pinAll chunks argv at 32,767 - 4,096 command-line units per launch). The first deferred violation still wins over anything the walk raised
+  // after it, so outcomes match judging each operand as it is reached.
+  const pending: { absolute: string; label: string; effect: PathEffect }[] | undefined = !evidence && process.platform === "win32" ? [] : undefined;
+  const firstPendingViolation = (): ShellPathPolicyViolation | null => {
+    if (!pending?.length) return null;
+    const confined = pending.filter(entry => pathEffectIsConfined(entry.effect, blockReadsOutsideWorkingDirectories));
+    if (confined.length > 0) pinSandboxLookups([...confined.map(entry => entry.absolute), sandboxRoot, ...extraAllowedDirectories]);
+    for (const { absolute, label, effect } of pending.splice(0)) {
+      const violation = findResolvedShellPathViolation(absolute, label, sandboxRoot, extraAllowedDirectories, effect, blockReadsOutsideWorkingDirectories, canonicalize);
+      if (violation) return violation;
+    }
+    return null;
   };
   // A projected argv reuses its original input charge and separately inspected bodies.
   let firstAnalysis = true;
@@ -1791,6 +1816,7 @@ export function findShellPathPolicyViolation(
       literalBudget.tokens.count += count;
       if (literalBudget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) throw new ShellExecutionError("Shell analysis total token limit exceeded");
     }, path: (path, raw, at, effect, role) => checkPath(path, raw, at, effect, false, role),
+      observeDirectory,
       word(word) {
         if (word.parts.some((part) => part.kind !== "literal")) targetProof?.dynamicWords.add(word);
       },
@@ -1970,8 +1996,10 @@ export function findShellPathPolicyViolation(
       }
       if (!argumentView?.literalBodiesAlreadyInspected) inspectEmbeddedShellPrograms(event,outerSlots);
     }}, evidence ? MAX_SHELL_ANALYSIS_TOKENS : undefined, prepared);
-    return unresolvedEvidence;
+    return firstPendingViolation() ?? unresolvedEvidence;
   }catch(error){
+    const earlier = firstPendingViolation();
+    if(earlier)return earlier;
     if(error instanceof PathPolicyError)return error.violation;
     if(error instanceof ShellExecutionError)return {kind:evidenceBudgetExceeded(error) ? "analysis-limit" : "dynamic-path",reason:"Shell path policy: "+error.message,...(error.operand?{candidate:error.operand}:{})};
     throw error;
@@ -1980,7 +2008,7 @@ export function findShellPathPolicyViolation(
 
 /** Collect parsed operands, retaining repeated spellings and their individual effects.
  * A non-null unproven result means paths may be partial; route that uncertainty through the pipeline. */
-export function inspectPosixShellPermissionPaths(command: string, cwd: string, facts: ShellExecutionFacts = { dialect: "bash", environment: {} }, prepared?: PreparedShellAnalysis, literalBudget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }, inspectPowerShellBody?: PowerShellPathInspector, argumentView?: { rootAlreadyParsed: true; literalBodiesAlreadyInspected: boolean }): {
+export function inspectPosixShellPermissionPaths(command: string, cwd: string, facts: ShellExecutionFacts = { dialect: "bash", environment: {} }, prepared?: PreparedShellAnalysis, literalBudget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }, inspectPowerShellBody?: PowerShellPathInspector, argumentView?: { rootAlreadyParsed: true; literalBodiesAlreadyInspected: boolean }, observeDirectory?: typeof observeWindowsShellDirectories): {
   paths: readonly PermissionPathEvidence[];
   unproven: ShellPathPolicyViolation | null;
   unknownProtectedWrite?: string;
@@ -1991,7 +2019,7 @@ export function inspectPosixShellPermissionPaths(command: string, cwd: string, f
   const paths: PermissionPathEvidence[] = [];
   let unknownProtectedWrite: string | undefined;
   const targetProof: ShellWriteTargetProof = { dynamicWords: new Set(), boundTargets: new Set(), commands: 0, simpleDataCommand: true };
-  const unproven = findShellPathPolicyViolation(command, cwd, cwd, [], false, facts, paths, (reason) => { unknownProtectedWrite ??= reason; }, targetProof, prepared, literalBudget, inspectPowerShellBody, argumentView);
+  const unproven = findShellPathPolicyViolation(command, cwd, cwd, [], false, facts, paths, (reason) => { unknownProtectedWrite ??= reason; }, targetProof, prepared, literalBudget, inspectPowerShellBody, argumentView, observeDirectory);
   const resolvedWriteTargetsOnly = unproven === null && !unknownProtectedWrite && targetProof.commands > 0 && targetProof.simpleDataCommand
     && targetProof.dynamicWords.size > 0 && [...targetProof.dynamicWords].every((word) => targetProof.boundTargets.has(word));
   return { paths, unproven, ...(unknownProtectedWrite ? { unknownProtectedWrite } : {}), ...(resolvedWriteTargetsOnly ? { resolvedWriteTargetsOnly: true as const } : {}) };

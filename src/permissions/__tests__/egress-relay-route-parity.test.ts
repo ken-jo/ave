@@ -1,5 +1,6 @@
 // The two contained routes, driven through the entry points their owners call: a shell's launch and an extension's lease.
 // Every row uses an address literal and a loopback upstream, so nothing is resolved and no destination traffic leaves this process.
+import { realpathSync } from "node:fs";
 import net from "node:net";
 import { resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -128,15 +129,16 @@ describe.skipIf(process.platform !== "win32").each(["shell", "extension"] as con
         context: { sessionId: "conversation", workspaceRoot: policyFixture(), approvalSurface: "interactive" },
       });
       cleanups.push(invocation.release);
+      // The launch admits its grants on native path facts, so the workspace is a real folder.
+      const workspace = realpathSync.native(policyFixture());
       const launch = await prepareOwnedMxcShellLaunch({
         egressToken: invocation.token,
         commandLine: "contained command",
-        cwd: "C:\\work",
-        filesystem: { allowRead: [], allowWrite: ["C:\\work"], denyRead: [], denyWrite: [] },
+        cwd: workspace,
+        filesystem: { allowRead: [], allowWrite: [workspace], denyRead: [], denyWrite: [] },
         env: { LOCALAPPDATA: "C:\\example\\AppData\\Local" },
         timeoutMs: 1_000,
         exists: () => true,
-        list: () => [],
       });
       cleanups.push(launch.release);
       launch.activate();

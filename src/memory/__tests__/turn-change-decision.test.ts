@@ -1,8 +1,9 @@
 import { mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readdir, readFile, realpath, rm, stat, writeFile, unlink, chmod } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { tmpdir } from "node:os";
 import * as checkpoints from "../code-checkpoints.js";
 import { parseTurnReviewDecision, type TurnReviewDecision } from "../../shared/turn-change-review.js";
@@ -46,6 +47,8 @@ beforeEach(async () => {
   vi.stubEnv("AVE_HOME", join(root, "state"));
 });
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("undo", () => {
   it("writes back one hunk and leaves the other change and the rewind image as they were", async () => {
