@@ -68,14 +68,16 @@ export const FIXTURE_TEST_BUDGET: TestBudget = Object.freeze({ bodyMs: FIXTURE_D
   diagnosticMs: 3 * FIXTURE_DEADLINES.diagnosticMs, teardownMs: FIXTURE_TEARDOWN_MS });
 
 /**
- * Runs the body under its own deadline, then diagnostics and teardown under theirs. A body past its deadline is
- * abandoned: teardown settles the fixture, which fences its later launch or command use.
+ * Runs the body under its own deadline, then diagnostics and teardown under theirs. At the deadline the body's signal
+ * aborts, so every step that checks it stops before launch, state, model reply or approval work.
  */
-export async function runBoundedTest(steps: { body(): Promise<void>; diagnose(error: unknown): Promise<void>;
+export async function runBoundedTest(steps: { body(signal: AbortSignal): Promise<void>; diagnose(error: unknown): Promise<void>;
   teardown(): Promise<unknown[]> }, budget: TestBudget = FIXTURE_TEST_BUDGET): Promise<void> {
   let bodyFailure: { error: unknown } | undefined;
-  try { await withinDeadline(Promise.resolve().then(() => steps.body()), budget.bodyMs, "Workbook test body"); }
+  const body = new AbortController();
+  try { await withinDeadline(Promise.resolve().then(() => steps.body(body.signal)), budget.bodyMs, "Workbook test body"); }
   catch (error) {
+    body.abort(error);
     bodyFailure = { error };
     await withinDeadline(Promise.resolve().then(() => steps.diagnose(error)), budget.diagnosticMs, "Workbook diagnostics")
       .catch(() => {});

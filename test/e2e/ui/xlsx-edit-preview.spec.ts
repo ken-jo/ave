@@ -172,15 +172,8 @@ test("approved agent edits stream into the read-only workbook panel", async () =
   const directory = mkdtempSync(join(process.cwd(), ".cache", "xlsx-agent-live-"));
   const path = join(directory, "live-values.xlsx");
   const requestPath = join(directory, "edits.json");
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, {
-    A10001: { t: "s", v: "Existing cell" }, B10002: { t: "n", v: 12 }, "!ref": "A10001:B10002",
-  }, "Values");
-  const archive = await JSZip.loadAsync(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }));
-  archive.file("xl/media/observation-fixture.bin", randomBytes(9 * 1024 * 1024));
-  const originalBytes = await archive.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
-  writeFileSync(path, originalBytes);
-  writeFileSync(requestPath, JSON.stringify({ sheet: 0, edits: [{ cell: "A10001", value: "Agent changed" }, { cell: "B10002", value: 84 }] }));
+  let originalBytes = Buffer.alloc(0);
+  let bodySignal: AbortSignal | undefined;
   let releaseEdit: (() => void) | undefined;
   let shellCommand = "";
   let modelCalls = 0;
@@ -208,14 +201,17 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     if (request.method !== "POST" || request.url !== "/v1/chat/completions") { response.writeHead(404).end(); return; }
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    if (bodySignal?.aborted) { response.writeHead(503).end(); return; }
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { messages?: Array<{ role: string; content: unknown }> };
     toolResults.push(...(body.messages ?? []).filter((message) => message.role === "tool"));
     modelCalls += 1;
     response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
     if (modelCalls === 1) { sendTool(response, "agent-open-workbook", "open_document", { path }); return; }
     if (modelCalls === 2) {
-      releaseEdit = () => sendTool(response, "agent-edit-workbook", process.platform === "win32" ? "powershell" : "bash",
-        { command: shellCommand, cwd: directory });
+      releaseEdit = () => {
+        if (!bodySignal?.aborted) sendTool(response, "agent-edit-workbook", process.platform === "win32" ? "powershell" : "bash",
+          { command: shellCommand, cwd: directory });
+      };
       response.flushHeaders();
       return;
     }
@@ -225,8 +221,22 @@ test("approved agent edits stream into the read-only workbook panel", async () =
   });
   let barrier: ReturnType<typeof prepareWorkbookPublicationBuild> | undefined;
   let ctx: Awaited<ReturnType<typeof launchSeededElectron>> | undefined;
-  await runBoundedTest({ body: async () => {
+  await runBoundedTest({ body: async (signal) => {
+    bodySignal = signal;
+    // Each step that launches, changes state, replies or approves first checks that the body is still live.
+    const live = () => signal.throwIfAborted();
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, {
+      A10001: { t: "s", v: "Existing cell" }, B10002: { t: "n", v: 12 }, "!ref": "A10001:B10002",
+    }, "Values");
+    const archive = await JSZip.loadAsync(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }));
+    archive.file("xl/media/observation-fixture.bin", randomBytes(9 * 1024 * 1024));
+    originalBytes = await archive.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+    writeFileSync(path, originalBytes);
+    writeFileSync(requestPath, JSON.stringify({ sheet: 0, edits: [{ cell: "A10001", value: "Agent changed" }, { cell: "B10002", value: 84 }] }));
+    live();
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    live();
     const settings = buildLlmSettings("openai-compatible", model);
     settings.appearance = buildE2eBaseSettings(true, "en").appearance;
     (settings.llm as { vendors: Record<string, { baseUrl?: string }> }).vendors["openai-compatible"].baseUrl =
@@ -236,11 +246,14 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     barrier = publicationBarrier;
     ctx = await publicationBarrier.launch(() => launchSeededElectron({ sessionTitle: "Agent document observation", settings,
       historyRows: [], mainEntry: publicationBarrier.mainEntry, owner: publicationBarrier }));
+    live();
     writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [directory],
       reviewer: { interactive: { autoApprove: "off" } } } }));
     const runtime = await ctx.app.evaluate(() => process.execPath);
+    live();
     const argv = publicationBarrier.argv(runtime, path, requestPath);
     shellCommand = renderWorkbookCommand(process.platform, argv);
+    live();
     await ctx.page.evaluate(async () => {
       await window.aveApi.setApiKey("openai-compatible", "sk-e2e-loopback-document");
       const mode = await window.ave.permission.setMode("strict");
@@ -249,6 +262,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
       state.observedDocumentEvents = [];
       window.ave.preview.onAgentObservation((events) => state.observedDocumentEvents.push(...events));
     });
+    live();
     await ctx.page.exposeFunction("captureProvisionalDocumentFrame", (frame: ProvisionalFrame) => {
       const sourceHash = createHash("sha256").update(readFileSync(path)).digest("hex");
       const originalHash = createHash("sha256").update(originalBytes).digest("hex");
@@ -290,9 +304,12 @@ test("approved agent edits stream into the read-only workbook panel", async () =
       observer.observe(document.body, { subtree: true, childList: true, characterData: true,
         attributes: true, attributeFilter: ["data-advisory"] });
     });
+    live();
     await setWindowSize(ctx.app, 960, 860);
     const composer = ctx.page.locator('[data-composer-surface="main"] [data-testid="composer-textarea"]');
+    live();
     await composer.fill("Observe agent workbook edits.");
+    live();
     await composer.press("Enter");
     // Ordinary reads are allowed without a card (permission-decision-tree.md, "ordinary-read"); only the edit asks.
     const grid = ctx.page.getByTestId("chat-side-panel-table-grid");
@@ -301,13 +318,16 @@ test("approved agent edits stream into the read-only workbook panel", async () =
       .getByRole("button", { name: "Open in default app", exact: true })).toBeVisible();
     await expect.poll(() => typeof releaseEdit).toBe("function");
     await expect(grid.getByRole("gridcell", { name: "12", exact: true })).toBeVisible();
+    live();
     await grid.getByRole("gridcell", { name: "12", exact: true }).dblclick();
     await expect(ctx.page.getByTestId("xlsx-cell-editor")).toHaveCount(0);
     expect(await ctx.page.evaluate(() => "editXlsx" in window.ave.preview)).toBe(false);
+    live();
     releaseEdit!();
     const approval = ctx.page.getByTestId(TEST_IDS.approvalDock).first();
     await expect(approval.getByTestId(TEST_IDS.approveButton)).toBeVisible({ timeout: 20_000 });
     expect(readFileSync(path)).toEqual(originalBytes);
+    live();
     await approval.getByTestId(TEST_IDS.approveButton).click();
     await expect.poll(() => existsSync(publicationBarrier.readyPath) ? prepublicationProof : undefined,
       { timeout: 30_000 }).toBeDefined();
@@ -321,6 +341,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     const provisionalScreenshot = test.info().outputPath("agent-document-provisional.png");
     await ctx.page.screenshot({ path: provisionalScreenshot });
     await test.info().attach("agent-document-provisional", { path: provisionalScreenshot, contentType: "image/png" });
+    live();
     publicationBarrier.release();
     await expect.poll(() => modelCalls, { timeout: 30_000 }).toBeGreaterThanOrEqual(3);
     const published = XLSX.read(readFileSync(path), { type: "buffer" }).Sheets.Values!;

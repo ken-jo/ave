@@ -541,6 +541,33 @@ describe("workbook publication build", () => {
         for (const path of [fixture.root, ...seeds, fixture.workspace]) expect(existsSync(path)).toBe(false);
       });
 
+      it("stops a body that times out mid-approval before any further edit release or approval", async () => {
+        const actions: string[] = [];
+        let resolvePending: () => void = () => {};
+        let bodyDone: Promise<void> | undefined;
+        let abortedDuringDiagnostics = false;
+        const failure = await runBoundedTest({
+          body: (signal) => {
+            const live = () => signal.throwIfAborted();
+            bodyDone = (async () => {
+              await new Promise<void>((resolve) => { resolvePending = resolve; });
+              live();
+              actions.push("releaseEdit");
+              await Promise.resolve();
+              live();
+              actions.push("approve");
+            })().catch(() => {});
+            return bodyDone;
+          },
+          diagnose: async () => { abortedDuringDiagnostics = true; resolvePending(); await bodyDone; },
+          teardown: async () => { actions.push(`teardown:${actions.length}`); return []; },
+        }, budget).catch((error: unknown) => error);
+        await bodyDone;
+        expect(String(failure)).toBe("Error: Workbook test body exceeded 100 ms");
+        expect(abortedDuringDiagnostics).toBe(true);
+        expect(actions).toEqual(["teardown:0"]);
+      });
+
       it("bounds a hung model server close and a hung seed remover inside the teardown budget", async () => {
         const fixture = prepared();
         const [profile, home] = seededDirectories() as [string, string];
