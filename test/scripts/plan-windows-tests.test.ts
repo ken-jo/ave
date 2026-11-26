@@ -36,6 +36,21 @@ describe("Windows shard planning", () => {
     expect(nativeOnly.shards).toEqual(plan.shards);
   });
 
+  it("uses the full census duration only when planning the selected census tier", () => {
+    const [censusFile] = CENSUS_TIER_TESTS;
+    if (censusFile === undefined) throw new Error("No census suites");
+    const duration = windowsTestDurations({
+      unit: "ms",
+      files: { [censusFile]: 7 },
+      macEstimate: { scale: 1, files: {} },
+      census: { [censusFile]: 10_000_000 },
+    });
+
+    const plan = planWindowsTests(collected, duration, ["native", "census"]);
+    expect(plan.shards).toEqual(planWindowsTests(collected, file => duration(file)).shards);
+    expect(plan.tierShards[0]).toEqual({ id: 1, files: [censusFile], weightMs: 10_001_000 });
+  });
+
   it("reads the selected tiers from AVE_WINDOWS_TEST_TIERS", () => {
     expect(windowsPlanTiers("")).toEqual([]);
     expect(windowsPlanTiers("native,census")).toEqual(["native", "census"]);

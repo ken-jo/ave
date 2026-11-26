@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { createRationaleApprovalCallback } from "../../../__tests__/support/rationale-approval-callback.js";
 import { describe, expect, it, vi } from "vitest";
 import type { ApprovalGate } from "../../../permissions/approval-gate.js";
@@ -31,7 +32,7 @@ const rationaleProvenance = {
   taint: "none",
 } as const;
 const permission = {
-  decision: "ask",
+  decision: "ask", provenance: RULE_PROVENANCE,
   reason: "Automatic review requires human approval.",
   reasonCode: "reviewer-human-required",
   reviewer: {

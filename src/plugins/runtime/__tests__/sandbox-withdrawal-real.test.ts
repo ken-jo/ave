@@ -20,7 +20,7 @@ let worker: SpawnedWorker | undefined;
 
 class RunningSandboxRuntime extends PluginRuntime {
   register(path: string, pluginRoot: string, dataDir: string) {
-    return this.registerSandboxEnvelope(PLUGIN_ID, [path], pluginRoot, dataDir);
+    return this.registerSandboxEnvelope(PLUGIN_ID, [{ path, access: "write" }], pluginRoot, dataDir);
   }
 
   attach(stop: () => Promise<void>, stopWorker: () => void): void {
@@ -107,7 +107,7 @@ describe("real sandbox ceiling withdrawal", () => {
           pluginRoot,
           pluginDataDir: dataDir,
           configValue: () => chosen,
-          onUserChosenDirectory: (path) => chosenPaths.push(path),
+          onUserChosenDirectory: (grant) => chosenPaths.push(grant.path),
         });
         const registration = subject.register(chosenPaths[0]!, pluginRoot, dataDir);
         child = await spawnConfinedPluginChild({

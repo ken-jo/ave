@@ -1,5 +1,6 @@
 // Serialize row appends in history order and throttle partial snapshots to bound crash loss.
 // Host exit aborts running turns and waits for bounded settlement; final saves remain the commit point.
+import { HostExitAbortError } from "../../shared/host-exit-abort.js";
 import { createDlpSafeUuid } from "../../shared/dlp-safe-id.js";
 import { createLogger } from "../../lib/logger.js";
 import type { MemoryManager } from "../../memory/memory-manager.js";
@@ -167,17 +168,7 @@ export class TurnJournal {
   }
 }
 
-class HostExitAbortError extends Error {
-  readonly hostExit = true as const;
-  constructor() {
-    super("application shutdown");
-    this.name = "HostExitAbortError";
-  }
-}
-
-export function isHostExitAbort(reason: unknown): boolean {
-  return reason instanceof HostExitAbortError;
-}
+export { isHostExitAbort } from "../../shared/host-exit-abort.js";
 
 interface RunningTurn {
   readonly abort: (reason: Error) => void;
@@ -200,13 +191,7 @@ export function registerRunningTurn(abort: (reason: Error) => void): { settle():
   };
 }
 
-/** Abort every running loop on host exit and wait within the deadline for interrupted records.
- * Timed-out turns retain their crash journal. */
-export async function interruptRunningTurnsForExit(
-  timeoutMs: number,
-): Promise<{ turns: number; settled: boolean }> {
-  const turns = [...runningTurns];
-  if (turns.length === 0) return { turns: 0, settled: true };
+function abortTurnsForExit(turns: readonly RunningTurn[]): void {
   for (const turn of turns) {
     try {
       turn.abort(new HostExitAbortError());
@@ -214,6 +199,20 @@ export async function interruptRunningTurnsForExit(
       log.warn("running turn abort failed: %s", err);
     }
   }
+}
+
+export function abortRunningTurnsForExit(): void {
+  abortTurnsForExit([...runningTurns]);
+}
+
+/** Abort every running loop on host exit and wait within the deadline for interrupted records.
+ * Timed-out turns retain their crash journal. */
+export async function interruptRunningTurnsForExit(
+  timeoutMs: number,
+): Promise<{ turns: number; settled: boolean }> {
+  const turns = [...runningTurns];
+  if (turns.length === 0) return { turns: 0, settled: true };
+  abortTurnsForExit(turns);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<false>((resolve) => {
     timer = setTimeout(() => resolve(false), timeoutMs);

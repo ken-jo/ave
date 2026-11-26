@@ -4664,14 +4664,14 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..63657daab9a18cf9b9718b95f2c06614
  //# sourceMappingURL=sandbox-schemas.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-utils.js b/dist/sandbox/sandbox-utils.js
-index 3c92084..620c33e 100644
+index 3c92084..a4c0727 100644
 --- a/dist/sandbox/sandbox-utils.js
 +++ b/dist/sandbox/sandbox-utils.js
 @@ -377,6 +377,8 @@ function warnIfParentRefUnfolded(normalizedPath) {
   */
  export function normalizePathForSandbox(pathPattern, opts) {
      const isGlobSpelling = (p) => !opts?.literal && containsGlobCharsForPlatform(p);
-+    // Ave patch: Windows spellings take Windows path rules whatever module the host loads.
++    // The explicit platform switch only matters in simulated-platform tests.
 +    const platformPath = getPlatform() === 'windows' ? path.win32 : path;
      // Windows pre-processing: expand `%USERPROFILE%` / `%HOMEDRIVE%` /
      // `%HOMEPATH%`, strip the `\\?\` / `\\?\UNC\` extended prefix (its

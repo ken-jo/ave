@@ -1,4 +1,5 @@
-/** Module factories for tests that simulate win32 on a POSIX host; each returns the real module on Windows. Use from vi.mock factories via a dynamic import. */
+/** Fixtures for tests that simulate win32. Load module factories from vi.mock via a dynamic import. */
+import { vi } from "vitest";
 import type * as Fs from "node:fs";
 import type * as Module from "node:module";
 import type * as Os from "node:os";
@@ -13,6 +14,15 @@ type Fn = (...args: unknown[]) => unknown;
 const DRIVE_PATH = /^[A-Za-z]:[\x5c/]/;
 const DRIVE_ROOT = /^[A-Za-z]:[\x5c/]$/;
 const host = process.platform;
+
+export function stubSimulatedWindowsStateEnvironment(): void {
+  vi.stubEnv("LOCALAPPDATA", "C:\\example-host\\local");
+  vi.stubEnv("ProgramData", "C:\\example-host\\machine");
+  if (host !== "win32") {
+    vi.stubEnv("HOME", "C:\\Users\\alice");
+    vi.stubEnv("AVE_TEST_SANDBOX_BASE", "C:\\example-host\\sandbox");
+  }
+}
 
 /** The simulated native clock has 100ns precision, including reads of the same host descriptor. */
 export function simulatedConfigurationFs(actual: typeof Fs, nativeHost = host): typeof Fs {

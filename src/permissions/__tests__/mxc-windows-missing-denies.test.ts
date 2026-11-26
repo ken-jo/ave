@@ -603,7 +603,7 @@ describe.skipIf(process.platform !== "win32")("composed container floors", () =>
       const project = join(scratch, "project");
       for (const path of [profile, home, project]) mkdirSync(path);
       vi.stubEnv("AVE_HOME", home);
-      vi.stubEnv("USERPROFILE", profile);
+      // The policy fixture is separate from the host profile that locates the helper ledger.
       vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
       try { run(profile, project); }
       finally { vi.unstubAllEnvs(); }
@@ -654,7 +654,9 @@ describe.skipIf(process.platform !== "win32")("composed container floors", () =>
     { label: "workspace grant alone", profileFirst: false, includeProfile: false, backend: "mxc", masked: false },
     { label: "production grant order", profileFirst: false, includeProfile: true, backend: "mxc", masked: true },
     { label: "reverse grant order", profileFirst: true, includeProfile: true, backend: "mxc", masked: true },
-  ] as const)("starts the native shell in the requested workspace with $label", async ({ profileFirst, includeProfile, backend, masked }, context) => {
+  ] as const)("starts the native shell in the requested workspace with $label", {
+    timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs,
+  }, async ({ profileFirst, includeProfile, backend, masked }, context) => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     await requireMxcCapability(context.skip);
     const launcher = await resolveHostWxcExecPath();
@@ -692,7 +694,7 @@ describe.skipIf(process.platform !== "win32")("composed container floors", () =>
       vi.unstubAllEnvs();
       rmSync(scratch, { recursive: true, force: true });
     }
-  }, TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
+  });
 
   it("refuses the native shell before the command when it cannot establish the requested working directory", async (context) => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });

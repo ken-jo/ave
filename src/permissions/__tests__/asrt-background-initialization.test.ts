@@ -1,3 +1,9 @@
+// Faked win32 on a POSIX host: no backend state to check here; a Windows host keeps its own.
+const { hostPlatform } = vi.hoisted(() => ({ hostPlatform: process.platform }));
+vi.mock("../confinement-state-paths.js", async (original) => {
+  const actual = await original<typeof import("../confinement-state-paths.js")>();
+  return hostPlatform === "win32" ? actual : { ...actual, declaredConfinementStatePaths: () => [] };
+});
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 const presentTargets = vi.hoisted(() => new Set<string>());
@@ -57,6 +63,8 @@ import { useTempDirs as trackTempDirs } from "../../__tests__/test-helpers.js";
 import { useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { permissionsFilePath } from "../permissions-store.js";
+import { sandboxQuarantineRoot } from "../sandbox-quarantine.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../sandbox-capability.js";
 import * as facts from "../../shared/windows-path-facts.js";
 import * as denyAcl from "../windows-deny-acl.js";
@@ -110,8 +118,6 @@ function wrapWriteDenies(wrap: typeof wrapToolCommand, denyWrite: string[]) {
 }
 
 // A write deny outside every write grant restricts nothing and is no policy row, so budget rows lie inside one.
-// A present loader file under the grant is a mandatory row on every host. The app-owned rows outside every grant are
-// retained only by admitted origin, which a simulated layout on a POSIX host does not have.
 // The required protected entries of a write root, present on disk so admission finds them.
 function presentRequired(root: string): string[] {
   const required = SANDBOX_NAMED_ENTRIES.map(entry => win32.join(root, entry));
@@ -120,6 +126,7 @@ function presentRequired(root: string): string[] {
   return required;
 }
 
+// A present loader file under the grant is a mandatory row on every host.
 function grantedFixture(): string[] {
   mkdirSync(fixtureRoot, { recursive: true });
   present([win32.join(fixtureRoot, ".npmrc")]);
@@ -280,14 +287,33 @@ describe("background session isolation", () => {
   });
 
   it.each(WIN32_WRAPPERS)("keeps the next %s wrap admissible after mandatory rows exceed the budget", async (_name, wrap) => {
-    await initializeAsrtSandbox({ allowWrite: grantedFixture() });
+    const allowWrite = grantedFixture();
+    const quarantineDirectory = sandboxQuarantineRoot();
+    const permissionsFile = permissionsFilePath();
+    if (ORIGINAL_PLATFORM === "win32") {
+      mkdirSync(quarantineDirectory, { recursive: true });
+      present([permissionsFile]);
+      // The floor rows need a grant, which in turn needs its protected entries.
+      const permissionsRoot = win32.dirname(permissionsFile);
+      presentRequired(permissionsRoot);
+      allowWrite.push(permissionsRoot);
+    }
+    await initializeAsrtSandbox({ allowWrite });
     const oversized = denyRows("oversized", 1024);
     present(oversized);
     await expect(wrapWriteDenies(wrap, oversized))
       .rejects.toThrow(t("sandboxPolicy.configuredDeniesTooLarge"));
     expect(manager.wrapWithSandboxArgv).not.toHaveBeenCalled();
-    await expect(wrapWriteDenies(wrap, denyRows("ordinary", 1))).resolves.toMatchObject({ argv: ["confined"] });
+    const wrapped = await wrapWriteDenies(wrap, denyRows("ordinary", 1));
+    expect(wrapped.argv).toEqual(["confined"]);
     expect(manager.wrapWithSandboxArgv).toHaveBeenCalledOnce();
+    const denyWrite = wrapped.filesystemPolicy?.denyWrite
+      ?.map(entry => windowsDenyOperandKey((typeof entry === "string" ? entry : entry.path).replace(/\\$/u, "")));
+    expect(denyWrite).toContain(windowsDenyOperandKey(win32.join(fixtureRoot, ".npmrc")));
+    if (ORIGINAL_PLATFORM === "win32") {
+      expect(denyWrite, "quarantine directory deny").toContain(windowsDenyOperandKey(quarantineDirectory));
+      expect(denyWrite, "permissions file deny").toContain(windowsDenyOperandKey(permissionsFile));
+    }
   });
 
   it.each(WIN32_WRAPPERS)("keeps the next %s wrap admissible after the runtime rejects its expanded policy", async (_name, wrap) => {

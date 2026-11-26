@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import type { ApprovalGate } from "../approval-gate.js";
 import { buildSingleFlightAgentActionApprover } from "../agent-action-approver.js";
 
@@ -19,9 +20,9 @@ describe("single-flight agent-action approver", () => {
   });
 
   it("builds a host-constrained one-shot request for an external action", async () => {
-    const requestAndWait = vi.fn(async () => ({
+    const requestAndWait = answeringRequestAndWait(() => ({
       requestId: "approval-1",
-      choice: "allow-once" as const,
+      choice: "allow-once",
       rememberPattern: "ignored",
     }));
     const approve = buildSingleFlightAgentActionApprover(gate(requestAndWait))!;
@@ -77,7 +78,7 @@ describe("single-flight agent-action approver", () => {
     const decision = new Promise<{ requestId: string; choice: "allow-once" }>((resolve) => {
       release = () => resolve({ requestId: "approval-1", choice: "allow-once" });
     });
-    const requestAndWait = vi.fn(async () => await decision);
+    const requestAndWait = answeringRequestAndWait(() => decision);
     const onConcurrent = vi.fn(() => {
       throw new Error("diagnostic failed");
     });
@@ -103,9 +104,8 @@ describe("single-flight agent-action approver", () => {
   });
 
   it("fails closed on a gate error and releases the single-flight guard", async () => {
-    const requestAndWait = vi.fn()
-      .mockRejectedValueOnce(new Error("must-not-enter-diagnostics"))
-      .mockResolvedValueOnce({ requestId: "approval-2", choice: "allow-once" as const });
+    const requestAndWait = answeringRequestAndWait(() => ({ requestId: "approval-2", choice: "allow-once" }))
+      .mockRejectedValueOnce(new Error("must-not-enter-diagnostics"));
     const onError = vi.fn(() => {
       throw new Error("diagnostic failed");
     });
