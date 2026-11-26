@@ -1000,11 +1000,14 @@ describe("the browser download staging folder in the srt-win session floor and w
 });
 
 describe("the browser download staging folder at the srt-win ACL holder's grant turn", () => {
-  const grantReleaseRows = ({ read }: { read: readonly string[] }) => pinWindowsPaths(read).map((pin, index) => ({
-    path: read[index]!,
-    status: "revoked" as const,
-    objectIdentity: windowsObjectKey(pin),
-  }));
+  const grantReleaseRows = ({ read }: { read: readonly string[] }) => {
+    const pins = pinWindowsPaths(read);
+    return read.map((path, index) => {
+      const pin = pins[index];
+      if (!pin) throw new Error(`no pin for ${path}`);
+      return { path, status: "revoked" as const, objectIdentity: windowsObjectKey(pin) };
+    });
+  };
   let releaseRows: ReturnType<typeof grantReleaseRows>;
 
   beforeEach(() => {
