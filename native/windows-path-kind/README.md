@@ -296,6 +296,15 @@ without partial output; output failures return 3. Missing objects are data.
 `--content` requests whose content exceeds 1,048,576 bytes exit with status 5 and write no partial output.
 Relative paths, device namespace paths and alternate streams are refused.
 
+`ave-path-kind.exe --dacl --file-access <absolute-file-path>...` opens only the
+requested files with metadata access. It returns ordered rows with
+`volumeSerialNumber`, `fileIndex`, `control` (DACL presence, protection and
+auto-inheritance bits), and `aclHex` (ACL revision followed by ordered, complete
+ACE bytes, or `null` for a missing or null ACL). The control bits distinguish
+missing and null ACLs. The caller checks each identity against its file
+snapshot or descriptor. An unreadable file, reparse point, directory or
+multiply linked file fails the whole request.
+
 `ave-path-kind.exe --dacl --parent --stdin` reads the parent DACL request
 from a binary stdin frame. A little-endian u32 payload size precedes a u32
 path count and one u32 byte length plus UTF-8 bytes per path. The helper

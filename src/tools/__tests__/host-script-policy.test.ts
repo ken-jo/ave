@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { hostScriptInvocationReadPaths, hostScriptRuntimePaths, isVerifiedHostScript } from "../../main/host-script-runtime.js";
+import { windowsPathKindHelperIn } from "../../main/windows-path-kind-launcher.js";
 import { isSensitivePath } from "../../permissions/sensitive-paths.js";
 import { getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
 import { findShellPathPolicyViolation } from "../shell-path-policy.js";
@@ -54,6 +55,27 @@ describe("host-owned script roles", () => {
     expect(paths).toContain(process.execPath);
     expect(paths).toContain(script);
     expect(hostScriptRuntimePaths()?.javascriptRuntime).toBe(process.execPath);
+  });
+
+  it.runIf(process.platform === "win32")("admits the shipped access reader only with the verified workbook script", () => {
+    const resources = join(root, "resources");
+    const helper = windowsPathKindHelperIn(resources);
+    const workbookScript = join(resources, "skill-scripts", "edit-xlsx.cjs");
+    const source = "console.log('ready');\n";
+    const digest = createHash("sha256").update(source).digest("hex");
+    writeFileSync(workbookScript, source);
+    writeFileSync(join(resources, "skill-scripts", "manifest.json"), JSON.stringify({ version: 1,
+      scripts: { "command.cjs": digest, "edit-xlsx.cjs": digest } }));
+    mkdirSync(dirname(helper), { recursive: true });
+    writeFileSync(helper, "fixture");
+
+    const env = { ELECTRON_RUN_AS_NODE: "1" };
+    expect(hostScriptInvocationReadPaths([process.execPath, script], env)).not.toContain(helper);
+    expect(hostScriptInvocationReadPaths([process.execPath, workbookScript], env)).toContain(helper);
+    expect(isSensitivePath(helper, "write")).toBe("host-script-resources");
+    expect(violation(shellQuote(helper))?.kind).toBe("sensitive-path");
+    writeFileSync(workbookScript, "changed");
+    expect(hostScriptInvocationReadPaths([process.execPath, workbookScript], env)).toEqual([]);
   });
 
   it("keeps workbook operands and redirections inside the admitted write roots", () => {

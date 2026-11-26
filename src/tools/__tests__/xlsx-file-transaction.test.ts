@@ -11,7 +11,7 @@ import { editWorkbookFile } from "../../skills/xlsx-edit.js";
 import { publishWorkbookEdit, readWorkbookSnapshot } from "../../skills/xlsx-file-transaction.js";
 import { parseTableDocument } from "../table-document-reader.js";
 import { configureHostResources } from "../../main/host-resources.js";
-import { readWindowsDacls } from "../../shared/windows-path-facts.js";
+import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 
 // Confined shells refuse hard links; every case here runs without that right.
 vi.mock("node:fs", async (importOriginal) => ({
@@ -20,7 +20,10 @@ vi.mock("node:fs", async (importOriginal) => ({
 }));
 
 let directory: string;
-beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "ave-workbook-transaction-")); });
+beforeEach(() => {
+  directory = mkdtempSync(join(tmpdir(), "ave-workbook-transaction-"));
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+});
 afterEach(() => { rmSync(directory, { recursive: true, force: true }); });
 
 async function workbook(large = false): Promise<{ path: string; before: Buffer; output: Buffer }> {
@@ -183,27 +186,40 @@ describe("workbook file transaction", () => {
 
   describe.runIf(process.platform === "win32")("Windows access rules", () => {
     const aces = (path: string) => {
-      const list = readWindowsDacls([path])[0]?.dacl?.aces;
+      const list = windowsPathFacts.readWindowsDacls([path])[0]?.dacl?.aces;
       if (!list?.length) throw new Error("No access list was read");
       return list.map(({ type, flags, mask, sid }) => ({ type, flags, mask, sid }));
     };
     const grantOwnRule = (path: string) => {
       execFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe"), [path, "/grant", "*S-1-1-0:(R)"], { stdio: "ignore" });
     };
-    const unanswered = [() => { throw new Error("unavailable"); }, () => ["D:AI(A;ID;FA;;;SY)"], () => ["access", "denied"]];
-    beforeEach(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
-
-    it.each([true, false])("refuses when access rules cannot be compared (large: %s)", async (large) => {
+    it.each([true, false])("refuses when the installed access-list reader is unavailable (large: %s)", async (large) => {
       const { path, before, output } = await workbook(large);
       const snapshot = readWorkbookSnapshot(path);
       const scope = large ? "backup" : "workbook";
-      for (const readAccessRules of unanswered) {
-        expect(() => publishWorkbookEdit(path, snapshot, output, 1, { readAccessRules })).toThrow(`[${scope}-acl-unreadable]`);
-      }
-      expect(() => publishWorkbookEdit(path, snapshot, output, 1, { readAccessRules: () => ["D:AI(A;ID;FA;;;SY)", "D:AI(A;ID;FA;;;BA)"] }))
-        .toThrow(`[${scope}-acl-differs]`);
+      const write = vi.fn((descriptor: number, bytes: Buffer, offset: number, length: number) => writeSync(descriptor, bytes, offset, length));
+      configureHostResources({ resourcePath: join(directory, "missing-resources"), isPackaged: true });
+
+      expect(() => publishWorkbookEdit(path, snapshot, output, 1, { write }))
+        .toThrow(`[${scope}-acl-unreadable]`);
+      expect(write).not.toHaveBeenCalled();
       expect(existsSync(`${path}.ave-bak`)).toBe(false);
-      expect(readFileSync(path).equals(before)).toBe(true);
+      expect(readFileSync(path)).toEqual(before);
+      expect(temporaryNames()).toEqual([]);
+    });
+
+    it("refuses a native DACL reply bound to the wrong files", async () => {
+      const { path, before, output } = await workbook();
+      const snapshot = readWorkbookSnapshot(path);
+      const read = windowsPathFacts.readWindowsFileDacls;
+      const swap = vi.spyOn(windowsPathFacts, "readWindowsFileDacls")
+        .mockImplementationOnce((paths) => [...read(paths)].reverse());
+      try {
+        expect(() => publishWorkbookEdit(path, snapshot, output, 1)).toThrow("[workbook-acl-unreadable]");
+      } finally {
+        swap.mockRestore();
+      }
+      expect(readFileSync(path)).toEqual(before);
       expect(temporaryNames()).toEqual([]);
     });
 

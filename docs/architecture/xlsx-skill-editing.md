@@ -40,7 +40,9 @@ code-loading environment overrides. PowerShell uses the documented single
 mode-assignment prefix and one literal native command.
 
 The [shell policy](permission-policy-design.md#os-shell-sandbox-policy) grants
-read roles only to the exact host runtime and verified first script operand.
+read roles to the exact host runtime and verified first script operand.
+On Windows, the verified workbook script also receives read access to the
+shipped path helper for its access-list check.
 Workbook/request operands and redirections retain ordinary path, permission and
 approval checks. Runtime reads are bound to that invocation, cannot pierce
 protected read floors, and add no write roots. The host script directory remains
@@ -174,15 +176,18 @@ sources or observed link substitutions. The host observer imports no workbook
 publisher and never changes the source or backup.
 
 The source and complete edited output must fit the 20 MiB ceiling. For source
-bytes strictly above the 8 MiB backup threshold, the writer creates an exclusive
-temporary file in the workbook's directory, writes the recovery bytes, calls
-`fsync`, and verifies their length and SHA-256. Only then does an exclusive hard
-link publish `<path>.ave-bak`. An existing final path, including a partial backup
-or dangling link, refuses the edit without overwriting the recovery copy or
-workbook. A failed temporary backup is removed; retry can succeed when no final
-backup was published. Files at or below the threshold have no automatic backup.
-A filesystem that cannot publish the hard link refuses rather than weakening
-this rule.
+bytes strictly above the 8 MiB backup threshold, the writer exclusively creates
+`<path>.ave-bak` in the workbook's directory, writes the recovery bytes, calls
+`fsync`, and verifies their length and SHA-256. An existing recovery path,
+including a partial backup or dangling link, refuses the edit. A failed copy is
+removed when it still holds the identity created by this edit. Files at or below
+the threshold have no automatic backup.
+
+On Windows, the writer checks each newly created backup or staging file before
+writing workbook bytes. The native helper reports DACL control flags and the
+complete ordered ACE bytes for the source and new file. The writer checks both
+identities and requires equal DACLs. A missing, unreadable or different DACL
+refuses the edit.
 
 A later edit above the threshold also refuses while that recovery path exists.
 The recovery copy must be preserved or moved separately before retrying; neither

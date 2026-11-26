@@ -156,16 +156,12 @@ function helperLaunchFailureCode(error: unknown): string | undefined {
   return typeof code === "string" && /^E[A-Z0-9]{1,31}$/u.test(code) && code !== "ENOBUFS" ? code : undefined;
 }
 
-function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = []): WindowsPathFacts[] {
-  if (paths.length === 0) return [];
-  const framed = mode === "--dacl" && flags.includes("--parent") && !flags.includes("--content");
-  if (!framed && paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
-  const input = framed ? encodeParentDaclFrame(paths) : undefined;
+function requestNative(mode: "--pin" | "--dacl", flags: readonly string[], paths: readonly string[], input?: Buffer): string {
   let output: Buffer;
   try {
     output = runWindowsNative(() => {
       const helper = resolveWindowsPathKindHelper();
-      const args = [mode, ...flags, ...(framed ? ["--stdin"] : paths)];
+      const args = [mode, ...flags, ...(input ? ["--stdin"] : paths)];
       if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
         throw new Error("Windows path facts command line exceeds the process limit");
       }
@@ -189,7 +185,15 @@ function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: read
     }
     throw failure ?? error;
   }
-  return decodeWindowsPathFacts(decodeWindowsNativeReply(output), paths.length, mode, flags, framed ? paths : undefined);
+  return decodeWindowsNativeReply(output);
+}
+
+function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = []): WindowsPathFacts[] {
+  if (paths.length === 0) return [];
+  const framed = mode === "--dacl" && flags.includes("--parent") && !flags.includes("--content");
+  if (!framed && paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
+  const output = requestNative(mode, flags, paths, framed ? encodeParentDaclFrame(paths) : undefined);
+  return decodeWindowsPathFacts(output, paths.length, mode, flags, framed ? paths : undefined);
 }
 
 export function decodeWindowsPathFacts(output: string, expectedRows: number, mode: "--pin" | "--dacl", flags: readonly string[] = [], expectedPaths?: readonly string[]): WindowsPathFacts[] {
@@ -232,6 +236,36 @@ export function pinWindowsPaths(paths: readonly string[]): readonly WindowsPathF
 export function readWindowsDacls(paths: readonly string[], options: { parent?: boolean; content?: boolean } = {}): readonly WindowsDaclFacts[] {
   // The native walk holds non-write/non-delete-shared component handles through DACL capture; separate pins add no snapshot binding.
   return request(paths, "--dacl", [...(options.parent ? ["--parent"] : []), ...(options.content ? ["--content"] : [])]) as WindowsDaclFacts[];
+}
+
+interface WindowsFileDacl {
+  readonly volumeSerialNumber: string;
+  readonly fileIndex: string;
+  readonly control: number;
+  readonly aclHex: string | null;
+}
+
+const DACL_PRESENT = 0x0004;
+const FILE_DACL_CONTROL_MASK = 0x1500 | DACL_PRESENT;
+
+function isFileDacl(value: unknown): value is WindowsFileDacl {
+  if (value === null || typeof value !== "object") return false;
+  const row = value as WindowsFileDacl;
+  return typeof row.volumeSerialNumber === "string" && HEX_64_PATTERN.test(row.volumeSerialNumber)
+    && BigInt(row.volumeSerialNumber) <= 0xffffffffn
+    && typeof row.fileIndex === "string" && HEX_64_PATTERN.test(row.fileIndex)
+    && isUint(row.control, FILE_DACL_CONTROL_MASK) && (row.control & ~FILE_DACL_CONTROL_MASK) === 0 && (row.control & DACL_PRESENT) !== 0
+    && (row.aclHex === null || (typeof row.aclHex === "string"
+      && row.aclHex.length <= 131072 && row.aclHex.length % 2 === 0 && /^[0-9a-f]+$/u.test(row.aclHex)));
+}
+
+/** File-only metadata for callers that bind the result to an already known identity. */
+export function readWindowsFileDacls(paths: readonly string[]): readonly WindowsFileDacl[] {
+  if (paths.length === 0) return [];
+  if (paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
+  const rows: unknown = JSON.parse(requestNative("--dacl", ["--file-access"], paths));
+  if (!Array.isArray(rows) || rows.length !== paths.length || !rows.every(isFileDacl)) throw new Error("Invalid Windows file DACL response");
+  return rows;
 }
 
 /** This is the sole admission rule for Windows path pins, including unfamiliar tags. */

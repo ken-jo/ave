@@ -70,6 +70,10 @@ bool path_components(const wchar_t* input, std::vector<std::wstring>& components
   return true;
 }
 
+std::wstring extended_path(const std::wstring& path) {
+  return path.compare(0, 2, L"\\\\") == 0 ? L"\\\\?\\UNC\\" + path.substr(2) : L"\\\\?\\" + path;
+}
+
 bool handle_facts(HANDLE handle, PathFacts& facts) {
   FILE_BASIC_INFO basic{};
   if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &facts.tag, sizeof(facts.tag))
@@ -175,12 +179,10 @@ bool pin_path(const wchar_t* input, PinnedPath& pinned, bool content = false) {
     auto& facts = pinned.facts.back();
     if (blocked || missing) { if (missing) facts.exists = 0; continue; }
     const auto& component = pinned.components[index];
-    const std::wstring extended = component.compare(0, 2, L"\\\\") == 0
-      ? L"\\\\?\\UNC\\" + component.substr(2) : L"\\\\?\\" + component;
     DWORD access = FILE_READ_ATTRIBUTES | READ_CONTROL;
     if (content && index + 1 == pinned.components.size()) access |= FILE_READ_DATA;
     HANDLE handle = index == 0
-      ? CreateFileW(extended.c_str(), access, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+      ? CreateFileW(extended_path(component).c_str(), access, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
           FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)
       : open_child(pinned.handles.back().value, component.substr(pinned.components[index - 1].size()
           + (pinned.components[index - 1].back() == L'\\' ? 0 : 1)), access);

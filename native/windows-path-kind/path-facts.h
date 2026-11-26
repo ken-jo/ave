@@ -182,21 +182,72 @@ bool token_json(std::string& output) {
 }
 
 constexpr int CONTENT_TOO_LARGE_EXIT_CODE = 5;
+void append_hex(std::string& output, const BYTE* bytes, size_t length) {
+  static constexpr char HEX[] = "0123456789abcdef";
+  for (size_t index = 0; index < length; ++index) {
+    output += HEX[bytes[index] >> 4];
+    output += HEX[bytes[index] & 15];
+  }
+}
+
 int content_json(HANDLE handle, std::string& output) {
   LARGE_INTEGER size{};
   if (!GetFileSizeEx(handle, &size) || size.QuadPart < 0) return 4;
   if (size.QuadPart > 1048576) return CONTENT_TOO_LARGE_EXIT_CODE;
   std::vector<BYTE> bytes(static_cast<size_t>(size.QuadPart)); DWORD read = 0;
   if (!bytes.empty() && (!ReadFile(handle, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) || read != bytes.size())) return 4;
-  static constexpr char HEX[] = "0123456789abcdef";
   output = "\"";
-  for (BYTE byte : bytes) { output += HEX[byte >> 4]; output += HEX[byte & 15]; }
+  append_hex(output, bytes.data(), bytes.size());
   output += "\"";
   return 0;
 }
 
+bool file_access_json(const wchar_t* path, std::string& output) {
+  std::vector<std::wstring> components;
+  if (!path_components(path, components) || components.size() < 2) return false;
+  // The caller checks the opened file's identity against its own descriptor or snapshot.
+  // Open just the file so this mode also works with read access limited to a workspace.
+  PinnedHandle file(CreateFileW(extended_path(components.back()).c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL,
+    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+  BY_HANDLE_FILE_INFORMATION info{};
+  NativeDacl security;
+  if (file.value == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(file.value, &info)
+      || (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0
+      || info.nNumberOfLinks != 1 || !read_descriptor(file.value, security)) return false;
+  constexpr SECURITY_DESCRIPTOR_CONTROL access_flags =
+    SE_DACL_PRESENT | SE_DACL_PROTECTED | SE_DACL_AUTO_INHERIT_REQ | SE_DACL_AUTO_INHERITED;
+  output += "{\"volumeSerialNumber\":" + hex_number(info.dwVolumeSerialNumber)
+    + ",\"fileIndex\":" + hex_number((static_cast<ULONGLONG>(info.nFileIndexHigh) << 32) | info.nFileIndexLow)
+    + ",\"control\":" + std::to_string(security.control & access_flags) + ",\"aclHex\":";
+  if (security.dacl == nullptr) {
+    output += "null}";
+    return true;
+  }
+  output += "\"";
+  append_hex(output, &security.dacl->AclRevision, 1);
+  for (DWORD index = 0; index < security.dacl->AceCount; ++index) {
+    void* raw = nullptr;
+    if (!GetAce(security.dacl, index, &raw)) return false;
+    append_hex(output, static_cast<const BYTE*>(raw), static_cast<const ACE_HEADER*>(raw)->AceSize);
+  }
+  output += "\"}";
+  return true;
+}
+
+int print_file_access(int argc, wchar_t** argv) {
+  if (argc < 4) return 2;
+  std::string output = "[";
+  for (int index = 3; index < argc; ++index) {
+    if (index != 3) output += ",";
+    if (!file_access_json(argv[index], output) || output.size() + 2 > MAX_PATH_FACTS_OUTPUT_BYTES) return 4;
+  }
+  output += "]\n";
+  return std::fwrite(output.data(), 1, output.size(), stdout) == output.size() && std::fflush(stdout) == 0 ? 0 : 3;
+}
+
 int print_path_facts(int argc, wchar_t** argv) {
   const bool dacl = std::wstring(argv[1]) == L"--dacl";
+  if (dacl && argc > 2 && std::wstring(argv[2]) == L"--file-access") return print_file_access(argc, argv);
   bool parent = false, content = false, framed = false;
   int start = 2;
   while (start < argc && std::wstring(argv[start]).compare(0, 2, L"--") == 0) {

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync, readdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -7,6 +7,8 @@ import JSZip from "jszip";
 import * as XLSX from "xlsx";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { build } from "esbuild";
+import { stageWindowsPathKindHelper } from "../../__tests__/support/bundled-skill-resources.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import { editWorkbookFile } from "../../skills/xlsx-edit.js";
 import { parseTableDocument } from "../table-document-reader.js";
 import { readDocumentResponse } from "../preview-document-protocol.js";
@@ -16,7 +18,11 @@ let commandDirectory: string;
 let script: string;
 beforeAll(async () => {
   commandDirectory = mkdtempSync(join(tmpdir(), "ave-workbook-command-"));
-  script = join(commandDirectory, "edit-xlsx.cjs");
+  const scripts = join(commandDirectory, "skill-scripts");
+  mkdirSync(scripts);
+  stageWindowsPathKindHelper(commandDirectory);
+  script = join(scripts, "edit-xlsx.cjs");
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   await build({ entryPoints: [resolve("src/skills/xlsx-edit-cli.ts")], outfile: script,
     bundle: true, platform: "node", format: "cjs", target: "node22" });
 });

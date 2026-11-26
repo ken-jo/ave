@@ -7,7 +7,7 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
 import { isWindowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
-import { admitWindowsReparse, decodeWindowsPathFacts, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, windowsPathKey, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
+import { admitWindowsReparse, decodeWindowsPathFacts, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, readWindowsFileDacls, windowsObjectKey, windowsOwnerRules, windowsPathKey, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -215,6 +215,54 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     expect(row!.parent).toBeTruthy();
     expect(evaluateWindowsReadDacl(row!).status).toMatch(/private|readable/);
     expect(execFileSync(icacls, [fixture, "/T"], { encoding: "utf8", windowsHide: true })).toBe(before);
+  });
+
+  it("reads a writable file's DACL with identity, inheritance flags and ordered ACE bytes", () => {
+    const file = join(fixture, "directory", "file with spaces [é]");
+    const opened = openSync(file, "wx");
+    try {
+      const expected = fstatSync(opened, { bigint: true });
+      const [row] = readWindowsFileDacls([file]);
+      if (!row?.aclHex) throw new Error("No file access list was read");
+      expect(vi.mocked(execFileSync).mock.lastCall?.[1]).toEqual(["--dacl", "--file-access", file]);
+      expect(BigInt(row.volumeSerialNumber)).toBe(expected.dev);
+      expect(BigInt(row.fileIndex)).toBe(expected.ino);
+      expect(row.control & 0x1000).toBe(0);
+
+      const bytes = Buffer.from(row.aclHex, "hex");
+      const aceHeaders = [];
+      for (let offset = 1; offset < bytes.length;) {
+        aceHeaders.push({ type: bytes.readUInt8(offset), flags: bytes.readUInt8(offset + 1), mask: bytes.readUInt32LE(offset + 4) });
+        const size = bytes.readUInt16LE(offset + 2);
+        expect(size).toBeGreaterThanOrEqual(8);
+        offset += size;
+      }
+      const [facts] = readWindowsDacls([file]);
+      expect(aceHeaders).toEqual(facts?.dacl?.aces.map(({ type, flags, mask }) => ({ type, flags, mask })));
+    } finally {
+      closeSync(opened);
+    }
+
+    const [inherited] = readWindowsFileDacls([file]);
+    const systemRoot = process.env.SystemRoot;
+    if (!systemRoot) throw new Error("No Windows system directory");
+    const icacls = join(systemRoot, "System32", "icacls.exe");
+    execFileSync(icacls, [file, "/inheritance:d"], { stdio: "ignore" });
+    const [protectedDacl] = readWindowsFileDacls([file]);
+    if (!protectedDacl || !inherited) throw new Error("No file access list was read");
+    expect(protectedDacl.control & 0x1000).toBe(0x1000);
+    expect(protectedDacl.aclHex).not.toBe(inherited.aclHex);
+    expect(() => readWindowsFileDacls([file, join(fixture, "missing")])).toThrow(/helper failed/);
+    expect(() => readWindowsFileDacls([join(fixture, "junction")])).toThrow(/helper failed/);
+  });
+
+  it("rejects incomplete or malformed file DACL replies", () => {
+    const file = join(fixture, "directory", "file");
+    const identity = { volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex };
+    for (const rows of [[], [identity], [{ ...identity, control: 4, aclHex: "abc" }], [{ ...identity, control: 2, aclHex: null }]]) {
+      vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify(rows)));
+      expect(() => readWindowsFileDacls([file])).toThrow("Invalid Windows file DACL response");
+    }
   });
 
   it("distinguishes missing paths from native failures and returns no partial batch", () => {

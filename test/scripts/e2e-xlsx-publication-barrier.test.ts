@@ -7,6 +7,7 @@ import { basename, join, resolve } from "node:path";
 import { build } from "esbuild";
 import * as XLSX from "xlsx";
 import { describe, expect, it } from "vitest";
+import { stageWindowsPathKindHelper } from "../../src/__tests__/support/bundled-skill-resources.js";
 import { configureHostResources } from "../../src/main/host-resources.js";
 import { hostScriptInvocationReadPaths } from "../../src/main/host-script-runtime.js";
 import { PermissionManager } from "../../src/permissions/permission-manager.js";
@@ -22,6 +23,7 @@ describe("workbook publication barrier", () => {
     const workspace = join(root, "workspace");
     const home = join(root, "home");
     mkdirSync(scripts, { recursive: true });
+    stageWindowsPathKindHelper(resources);
     mkdirSync(workspace);
     mkdirSync(join(home, "document-observation"), { recursive: true });
     const producer = join(scripts, "edit-xlsx.cjs");

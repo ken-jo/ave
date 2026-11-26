@@ -5,13 +5,17 @@ import { join, resolve } from "node:path";
 import { build } from "esbuild";
 import * as XLSX from "xlsx";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { stageWindowsPathKindHelper } from "../../__tests__/support/bundled-skill-resources.js";
 import { parseTableDocument } from "../table-document-reader.js";
 
 let bundleDirectory: string;
 let script: string;
 beforeAll(async () => {
   bundleDirectory = mkdtempSync(join(tmpdir(), "ave-journal-open-bundle-"));
-  script = join(bundleDirectory, "edit-xlsx.cjs");
+  const scripts = join(bundleDirectory, "dist", "skill-scripts");
+  mkdirSync(scripts, { recursive: true });
+  stageWindowsPathKindHelper(join(bundleDirectory, "resources"));
+  script = join(scripts, "edit-xlsx.cjs");
   await build({ entryPoints: [resolve("src/skills/xlsx-edit-cli.ts")], outfile: script,
     bundle: true, platform: "node", format: "cjs", target: "node22" });
 });

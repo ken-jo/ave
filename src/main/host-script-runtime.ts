@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { getConfiguredHostResources, type HostResources } from "./host-resources.js";
+import { windowsPathKindHelperIn } from "./windows-path-kind-launcher.js";
 
 interface ScriptRuntimePaths { javascriptRuntime: string; bundledScriptsDirectory: string }
 interface ScriptRootSnapshot { device: bigint; inode: bigint; manifestDigest: string }
@@ -36,9 +37,11 @@ export function hostScriptRuntimePaths(): ScriptRuntimePaths | undefined {
 }
 
 export function hostScriptWriteDenyPaths(): readonly string[] {
+  const resources = getConfiguredHostResources();
   const paths = hostScriptRuntimePaths();
-  if (!paths) return [];
+  if (!paths || !resources) return [];
   const denied = [paths.bundledScriptsDirectory, paths.javascriptRuntime];
+  if (process.platform === "win32") denied.push(windowsPathKindHelperIn(resources.resourcePath));
   for (const path of [...denied]) {
     try { denied.push(realpathSync.native(path)); } catch { /* Missing resources stay denied by name. */ }
   }
@@ -79,7 +82,7 @@ export function isVerifiedHostScript(path: string): boolean {
   } catch { return false; }
 }
 
-/** Exact argv roles only: command image, direct script operand, then ordinary data paths. */
+/** The verified runtime/script pair receives only its shipped executable dependencies. */
 export function hostScriptInvocationReadPaths(
   argv: readonly (string | undefined)[],
   environment: Readonly<Record<string, string | undefined>> = {},
@@ -91,7 +94,17 @@ export function hostScriptInvocationReadPaths(
       && /^(?:NODE_|LD_|DYLD_)/i.test(name))) return [];
   if (!paths || !runtime || !script || runtime !== paths.javascriptRuntime || !isAbsolute(runtime) || !sameFile(runtime, paths.javascriptRuntime)
     || !isVerifiedHostScript(script)) return [];
-  return [...new Set([runtime, realpathSync.native(runtime), dirname(realpathSync.native(runtime)), script])];
+  const runtimePath = realpathSync.native(runtime);
+  const allowed = [runtime, runtimePath, dirname(runtimePath), script];
+  const resources = getConfiguredHostResources();
+  if (process.platform === "win32" && resources && basename(script) === "edit-xlsx.cjs") {
+    try {
+      const helper = windowsPathKindHelperIn(realpathSync.native(resources.resourcePath));
+      const info = lstatSync(helper);
+      if (info.isFile() && info.nlink === 1 && realpathSync.native(helper) === helper) allowed.push(helper);
+    } catch { /* Missing helper grants no read access. */ }
+  }
+  return [...new Set(allowed)];
 }
 
 export function isHostScriptReadPath(path: string): boolean {
