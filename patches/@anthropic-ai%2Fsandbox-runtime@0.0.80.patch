@@ -4664,10 +4664,39 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..63657daab9a18cf9b9718b95f2c06614
  //# sourceMappingURL=sandbox-schemas.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-utils.js b/dist/sandbox/sandbox-utils.js
-index 3c92084..598e094 100644
+index 3c92084..620c33e 100644
 --- a/dist/sandbox/sandbox-utils.js
 +++ b/dist/sandbox/sandbox-utils.js
-@@ -515,44 +515,15 @@ const HOME_CONVENIENCE_WRITE_DIRS = [
+@@ -377,6 +377,8 @@ function warnIfParentRefUnfolded(normalizedPath) {
+  */
+ export function normalizePathForSandbox(pathPattern, opts) {
+     const isGlobSpelling = (p) => !opts?.literal && containsGlobCharsForPlatform(p);
++    // Ave patch: Windows spellings take Windows path rules whatever module the host loads.
++    const platformPath = getPlatform() === 'windows' ? path.win32 : path;
+     // Windows pre-processing: expand `%USERPROFILE%` / `%HOMEDRIVE%` /
+     // `%HOMEPATH%`, strip the `\\?\` / `\\?\UNC\` extended prefix (its
+     // `?` is a literal, not a glob char), and uppercase the drive
+@@ -417,8 +419,8 @@ export function normalizePathForSandbox(pathPattern, opts) {
+     // A pattern with no tilde to expand and no root is resolved against the
+     // working directory; path.resolve covers './', '../', '.' and a bare
+     // relative name alike.
+-    if (normalizedPath === pathPattern && !path.isAbsolute(pathPattern)) {
+-        normalizedPath = path.resolve(process.cwd(), pathPattern);
++    if (normalizedPath === pathPattern && !platformPath.isAbsolute(pathPattern)) {
++        normalizedPath = platformPath.resolve(process.cwd(), pathPattern);
+     }
+     // POSIX: collapse the interior spellings realpath would have removed, on the
+     // EXPANDED path — the trailing strip above runs before expansion and only
+@@ -451,7 +453,7 @@ export function normalizePathForSandbox(pathPattern, opts) {
+             // If staticPrefix ends with /, remove it to get the directory
+             const baseDir = staticPrefix.endsWith('/')
+                 ? staticPrefix.slice(0, -1)
+-                : path.dirname(staticPrefix);
++                : platformPath.dirname(staticPrefix);
+             // Try to resolve symlinks for the base directory
+             try {
+                 const resolvedBaseDir = realPathOf(baseDir);
+@@ -515,44 +517,15 @@ const HOME_CONVENIENCE_WRITE_DIRS = [
      '.npm/_logs',
      '.claude/debug',
  ];
@@ -4719,7 +4748,7 @@ index 3c92084..598e094 100644
      ];
  }
  /**
-@@ -1329,6 +1300,7 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
+@@ -1329,6 +1302,7 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
      const listings = opts.listings ?? new Map();
      const pending = [];
      const codeOf = (err) => err?.code;
@@ -4727,7 +4756,7 @@ index 3c92084..598e094 100644
      /**
       * A filesystem call on a real path and, when that fails, on a shorter name
       * for it. The real path crosses no link, so a long chain of them cannot fail
-@@ -1349,13 +1321,15 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
+@@ -1349,13 +1323,15 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
              return call(real);
          }
          catch (first) {
@@ -4744,7 +4773,7 @@ index 3c92084..598e094 100644
                  throw absent(first) && !absent(second) ? second : first;
              }
              if (!absent(first) && codeOf(first) !== 'ENAMETOOLONG') {
-@@ -1441,6 +1415,22 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
+@@ -1441,6 +1417,22 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
              isSymbolicLink: () => type === 'link',
          };
      };
@@ -4767,7 +4796,7 @@ index 3c92084..598e094 100644
      // The base as the filesystem is asked about it: a drive root gets back its
      // separator, since 'C:' on its own names the drive's current directory.
      // The positions are still reached from the base without one.
-@@ -1472,6 +1462,7 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
+@@ -1472,6 +1464,7 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
          const fresh = frame.positions.filter(p => !record.listedFor.has(p));
          if (fresh.length === 0)
              continue;
@@ -4775,7 +4804,7 @@ index 3c92084..598e094 100644
          yield;
          // Once. What one pattern denies is denied for the whole configuration, so
          // what the short name listed is kept for the next pattern like any other.
-@@ -1490,12 +1481,12 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
+@@ -1490,12 +1483,12 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
                  throw known;
              entries =
                  known ??
@@ -4791,7 +4820,7 @@ index 3c92084..598e094 100644
              const errorCode = codeOf(err);
              logForDebugging(`[Sandbox] Error listing ${dir} for glob pattern ${globPath}: ${err}`, { level: errorCode === 'ENOENT' ? 'info' : 'warn' });
              if (errorCode !== 'ENOENT') {
-@@ -1533,8 +1524,10 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
+@@ -1533,8 +1526,10 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
                  ? spelled.slice(anchor.length)
                  : spelled;
              const isMatch = positions.matches(fresh, entry.name, candidate);
