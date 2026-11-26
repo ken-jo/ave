@@ -17,6 +17,14 @@ import { emptyWorkflowDraft } from "./WorkflowTemplateEditor.js";
 import { WorkflowTemplateDetails } from "./workflow-template-details.js";
 import { stageDisplayName, WorkflowStageGraph } from "./workflow-template-graph.js";
 
+const WORKFLOW_EXAMPLES = {
+  builtin: [["plan"], ["run"]],
+  feature: [["plan"], ["backend", "frontend", "design"], ["review"], ["uiTests"], ["publish"]],
+  bugfix: [["reproduce"], ["fix"], ["verify"]],
+} as const;
+
+type WorkflowExample = keyof typeof WORKFLOW_EXAMPLES;
+
 interface WorkflowTemplateLibraryProps {
   api: AveApi;
   project?: ProjectIdentity;
@@ -29,6 +37,8 @@ interface WorkflowTemplateLibraryProps {
 
 export function WorkflowTemplateLibrary({ api, project, projects, existingItem, onClose, restoreFocus, onLaunch }: WorkflowTemplateLibraryProps) {
   const { t } = useTranslation();
+  const projectRoot = project?.projectRoot;
+  const [example, setExample] = useState<WorkflowExample>("feature");
   const [templates, setTemplates] = useState<WorkflowTemplate[]>();
   const [listError, setListError] = useState(false);
   const [selection, setSelection] = useState(() => existingItem?.templateId ? { id: existingItem.templateId } : undefined);
@@ -95,7 +105,7 @@ export function WorkflowTemplateLibrary({ api, project, projects, existingItem, 
     const read = async () => {
       const current = ++sequence;
       try {
-        const result = await api.listWorkBoard();
+        const result = await api.listWorkBoard(projectRoot ? { projectRoot } : undefined);
         if (!active || current !== sequence) return;
         if ("status" in result && result.status === "ok") {
           setPinnedItems(result.items.filter(item => item.templateId === selectedId));
@@ -108,7 +118,7 @@ export function WorkflowTemplateLibrary({ api, project, projects, existingItem, 
     const unsubscribe = api.onWorkBoardItemChanged(() => void read());
     void read();
     return () => { active = false; unsubscribe(); };
-  }, [api, selectedId, starting, editor]);
+  }, [api, selectedId, starting, editor, projectRoot]);
 
   const version = record?.versions.find(entry => entry.version === selectedVersion);
   const current = record?.versions.find(entry => entry.version === record.template.currentVersion);
@@ -218,7 +228,29 @@ export function WorkflowTemplateLibrary({ api, project, projects, existingItem, 
               <Button ref={newTemplateButton} type="button" onClick={() => setEditor({ id: null, draft: emptyWorkflowDraft() })}>{t("workflowTemplates.newTemplate")}</Button>
               <p className="text-sm text-muted-foreground">{t("workflowTemplates.proposalHint")}</p>
             </div>
-            {list?.length === 0 && !listError && <p className="text-sm text-muted-foreground">{t("workflowTemplates.empty")}</p>}
+            {list?.length === 0 && !listError && (
+              <fieldset className="space-y-2">
+                <legend className="text-sm font-medium">{t("workflowTemplates.examples")}</legend>
+                <p className="text-sm text-muted-foreground">{t("workflowTemplates.empty")}</p>
+                <div className="flex flex-wrap gap-2">
+                  {(Object.keys(WORKFLOW_EXAMPLES) as WorkflowExample[]).map(id => (
+                    <Button key={id} type="button" size="sm" variant={example === id ? "default" : "outline"}
+                      aria-pressed={example === id} onClick={() => setExample(id)}>{t(`workflowTemplates.examples.${id}`)}</Button>
+                  ))}
+                </div>
+                <p className="text-sm">{t(`workflowTemplates.examples.${example}.description`)}</p>
+                <ol aria-label={t("workflowTemplates.exampleSteps")} className="flex flex-wrap gap-2">
+                  {WORKFLOW_EXAMPLES[example].map(step => (
+                    <li key={step[0]} className="space-y-1 rounded-md border bg-card p-2 text-sm">
+                      {step.length > 1 && <p className="text-xs text-muted-foreground">{t("workflowTemplates.exampleParallel")}</p>}
+                      <ul className="space-y-1">
+                        {step.map(stage => <li key={stage}>{t(`workflowTemplates.exampleStage.${stage}`)}</li>)}
+                      </ul>
+                    </li>
+                  ))}
+                </ol>
+              </fieldset>
+            )}
             <ul className="space-y-2">
               {list?.map(template => (
                 <li key={template.id} className="min-w-0 space-y-2 rounded-lg border bg-background p-3">

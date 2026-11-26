@@ -39,7 +39,7 @@ const project = { projectRoot: "/workspace/report", projectName: "Report workspa
 function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [template], queue: ApprovalRequest[] = []) {
   let progress: (event: RunProgressEventPayload) => void = () => {};
   const api = {
-    listWorkBoard: vi.fn(async () => ({ status: "ok", items })),
+    listWorkBoard: vi.fn(async (_filter?: { projectRoot?: string }) => ({ status: "ok", items })),
     getWorkBoardRunTranscript: vi.fn(async () => ({ events: [] })),
     getSettings: vi.fn(async () => ({ workBoard: { toolApprovalSurface: "chat" } })),
     getWorkBoardItem: vi.fn(async () => ({ status: "found", item: { ...(items[0] ?? item), ...project } })),
@@ -57,6 +57,7 @@ function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [
     captureUserKeyboardIntent: vi.fn(() => ({ inputOrigin: "user-keyboard", token: "click" })),
     decideWorkStage: vi.fn(async () => ({ ok: true, status: "approved" })),
     decideWorkJoin: vi.fn(async () => ({ ok: true })),
+    openWorkBoardJoin: vi.fn(async () => ({ ok: true })),
     retryWorkStage: vi.fn(async () => ({ ok: true })),
     onWorkBoardItemChanged: () => () => {},
     onWorkBoardRunFinished: () => () => {},
@@ -196,7 +197,7 @@ it("reviews the result and conflict shown on the desktop before sending their ex
   const row = {
     ...item, runPin: pin, pendingWorkflowDecisions: [
       { kind: "stage-gate", binding: stage, result: "Review this exact result", arrivedAt: at },
-      { kind: "join-conflict", binding: join, evidence: { reason: "same-path", files: [{ path: "shared.md", stageIds: ["gather", "summarize"] }] }, arrivedAt: null },
+      { kind: "join-conflict", binding: join, generation: 1, canOpenFolder: true, evidence: { reason: "merge-conflict", files: [{ path: "shared.md", stageIds: ["gather", "summarize"] }] }, arrivedAt: null },
     ],
   } as WorkItemResolved;
   const { api } = mount([row]);
@@ -208,7 +209,11 @@ it("reviews the result and conflict shown on the desktop before sending their ex
   expect(api.decideWorkStage).not.toHaveBeenCalled();
   fireEvent.click(view.getByRole("button", { name: t("workflowTemplates.approveStage") }));
   expect(api.decideWorkStage).toHaveBeenCalledExactlyOnceWith(item.id, { ...stage, decision: "approve" });
-  fireEvent.click(view.getByRole("button", { name: t("workflowTemplates.retryJoin") }));
+  fireEvent.click(view.getByRole("button", { name: t("workflowTemplates.openJoinFolder") }));
+  expect(api.openWorkBoardJoin).toHaveBeenCalledExactlyOnceWith(item.id, join);
+  const retry = view.getByRole("button", { name: t("workflowTemplates.retryJoin") });
+  await vi.waitFor(() => expect(retry).toBeEnabled());
+  fireEvent.click(retry);
   expect(api.decideWorkJoin).toHaveBeenCalledExactlyOnceWith(item.id, { ...join, decision: "retry_merge" });
 });
 
@@ -240,10 +245,66 @@ it("reopens a pinned graph with recorded handoffs, verdict, activity, and breake
 
 it("lists only the runs pinned to the selected immutable version", async () => {
   const row = { ...item, workflowRunPins: [{ runId: "run-a", pin, startedAt: at }] } as WorkItemResolved;
-  mount([row]);
+  const { api } = mount([row]);
+  api.listWorkBoard.mockImplementation(async (filter?: { projectRoot?: string }) => ({ status: "ok", items: filter?.projectRoot === project.projectRoot ? [row] : [] }));
   const library = await templates();
   fireEvent.click(await library.findByRole("button", { name: template.name }));
   expect(await library.findByRole("list", { name: t("workflowTemplates.pinnedRuns") })).toHaveTextContent(item.title);
   fireEvent.change(library.getByLabelText(t("workflowTemplates.versions")), { target: { value: "1" } });
   expect(library.getByRole("list", { name: t("workflowTemplates.pinnedRuns") })).not.toHaveTextContent(item.title);
+});
+
+it("previews three first-visit examples without reading or saving template records", async () => {
+  const { api } = mount([], []);
+  const library = await templates();
+  expect(await library.findByRole("button", { name: t("workflowTemplates.examples.builtin") })).toBeVisible();
+  expect(library.getByRole("button", { name: t("workflowTemplates.examples.feature") })).toBeVisible();
+  expect(library.getByRole("button", { name: t("workflowTemplates.examples.bugfix") })).toBeVisible();
+  expect(library.getByText(t("workflowTemplates.exampleStage.backend"))).toBeVisible();
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.examples.bugfix") }));
+  expect(library.getByText(t("workflowTemplates.exampleStage.reproduce"))).toBeVisible();
+  expect(library.getByText(t("workflowTemplates.exampleStage.verify"))).toBeVisible();
+  expect(api.getWorkflowTemplate).not.toHaveBeenCalled();
+  expect(api.draftWorkflowTemplate).not.toHaveBeenCalled();
+  expect(api.runWorkBoardItem).not.toHaveBeenCalled();
+});
+
+it("moves focus to the run heading when the keyboard decision removes its card", async () => {
+  const binding = { runId: "run-a", stageId: "summarize", attempt: 1, resultHash: graphHash };
+  const row: WorkItemResolved = { ...item, runPin: pin, pendingWorkflowDecisions: [
+    { kind: "stage-gate", binding, result: "A result awaiting review", arrivedAt: at },
+  ] };
+  const { api } = mount([row]);
+  api.decideWorkStage.mockImplementation(async () => {
+    api.getWorkBoardItem.mockResolvedValue({ status: "found", item: { ...row, ...project, pendingWorkflowDecisions: [] } });
+    return { ok: true, status: "approved" };
+  });
+  fireEvent.click(await screen.findByRole("button", { name: t("workflowTemplates.openRun") }));
+  const view = within(await screen.findByRole("dialog", { name: item.title }));
+  const approve = await view.findByRole("button", { name: t("workflowTemplates.approveStage") });
+  approve.focus();
+  await userEvent.keyboard("{Enter}");
+  await vi.waitFor(() => expect(approve).not.toBeInTheDocument());
+  expect(view.getByRole("heading", { name: item.title })).toHaveFocus();
+});
+
+it("presents enabled controls for a reissued join conflict of the same files", async () => {
+  const first = { runId: "run-a", joinId: "step-1", conflictHash: graphHash };
+  const next = { ...first, conflictHash: "e".repeat(64) };
+  const pending: Extract<import("../../../../shared/workflow-run-view.js").PendingWorkflowDecision, { kind: "join-conflict" }> = { kind: "join-conflict", binding: first, generation: 1, arrivedAt: null,
+    evidence: { reason: "same-path", files: [{ path: "report.md", stageIds: ["gather", "summarize"] }] } };
+  const row: WorkItemResolved = { ...item, runPin: pin, pendingWorkflowDecisions: [pending] };
+  const { api } = mount([row]);
+  api.decideWorkJoin.mockImplementation(async () => {
+    api.getWorkBoardItem.mockResolvedValue({ status: "found", item: { ...row, ...project, pendingWorkflowDecisions: [
+      { ...pending, binding: next, generation: 2 },
+    ] } });
+    return { ok: true };
+  });
+  fireEvent.click(await screen.findByRole("button", { name: t("workflowTemplates.openRun") }));
+  const view = within(await screen.findByRole("dialog", { name: item.title }));
+  const retry = await view.findByRole("button", { name: t("workflowTemplates.retryJoin") });
+  fireEvent.click(retry);
+  await vi.waitFor(() => expect(retry).not.toBeInTheDocument());
+  expect(view.getByRole("button", { name: t("workflowTemplates.retryJoin") })).toBeEnabled();
 });
