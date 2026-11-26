@@ -5,10 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import JSZip from "jszip";
 import * as XLSX from "xlsx";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { editWorkbookFile } from "../../skills/xlsx-edit.js";
 import { publishWorkbookEdit, readWorkbookSnapshot } from "../../skills/xlsx-file-transaction.js";
 import { parseTableDocument } from "../table-document-reader.js";
+
+// Confined shells refuse hard links; every case here runs without that right.
+vi.mock("node:fs", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:fs")>(),
+  linkSync: () => { throw Object.assign(new Error("EPERM: operation not permitted, link"), { code: "EPERM" }); },
+}));
 
 let directory: string;
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "ave-workbook-transaction-")); });
@@ -128,6 +134,38 @@ describe("workbook file transaction", () => {
     } })).toThrow("Workbook changed");
     expect(readFileSync(`${path}.ave-bak`).equals(before)).toBe(true);
     expect(readFileSync(path, "utf8")).toBe("concurrent writer");
+    expect(temporaryNames()).toEqual([]);
+  });
+
+  it("publishes a verified recovery copy without a hard link", async () => {
+    const { path, before, output } = await workbook(true);
+    const snapshot = readWorkbookSnapshot(path);
+    expect(publishWorkbookEdit(path, snapshot, output, 1)).toEqual({ editedCells: 1, needsRecalculation: true, backup: `${path}.ave-bak` });
+    expect(readFileSync(`${path}.ave-bak`).equals(before)).toBe(true);
+    expect(readFileSync(path).equals(output)).toBe(true);
+    expect(temporaryNames()).toEqual([]);
+  });
+
+  it("removes a recovery copy whose write fails", async () => {
+    const { path, before, output } = await workbook(true);
+    const snapshot = readWorkbookSnapshot(path);
+    expect(() => publishWorkbookEdit(path, snapshot, output, 1, { write(descriptor, bytes, offset, length) {
+      if (offset > 0) throw Object.assign(new Error("No space left"), { code: "ENOSPC" });
+      return writeSync(descriptor, bytes, offset, length);
+    } })).toThrow("No space left");
+    expect(existsSync(`${path}.ave-bak`)).toBe(false);
+    expect(readFileSync(path).equals(before)).toBe(true);
+    expect(temporaryNames()).toEqual([]);
+  });
+
+  it("removes a recovery copy that fails verification", async () => {
+    const { path, before, output } = await workbook(true);
+    const snapshot = readWorkbookSnapshot(path);
+    expect(() => publishWorkbookEdit(path, snapshot, output, 1, { write(descriptor, bytes, offset, length) {
+      return writeSync(descriptor, bytes === snapshot.data ? Buffer.alloc(bytes.length) : bytes, offset, length);
+    } })).toThrow("Backup verification failed");
+    expect(existsSync(`${path}.ave-bak`)).toBe(false);
+    expect(readFileSync(path).equals(before)).toBe(true);
     expect(temporaryNames()).toEqual([]);
   });
 

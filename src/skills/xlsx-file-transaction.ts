@@ -105,6 +105,32 @@ function verifyStagedBytes(path: string, bytes: Buffer, message: string): void {
   requireCondition(saved.length === bytes.length && sha256(saved) === sha256(bytes), message);
 }
 
+/** Exclusive create keeps any existing entry, links included, and needs no hard-link right. A copy that fails verification is removed. */
+function writeRecoveryCopy(path: string, bytes: Buffer, io: WorkbookEditIo, verifySource: () => void): void {
+  if (fs.lstatSync(path, { throwIfNoEntry: false }) !== undefined) {
+    throw Object.assign(new Error(`Recovery path already exists: ${path}`), { code: "EEXIST" });
+  }
+  const descriptor = fs.openSync(path, "wx", 0o600);
+  let created: fs.BigIntStats | undefined;
+  try {
+    try {
+      const opened = fs.fstatSync(descriptor, { bigint: true });
+      const named = fs.lstatSync(path, { bigint: true });
+      requireCondition(named.isFile() && named.dev === opened.dev && named.ino === opened.ino, "Recovery path changed while opening.");
+      created = opened;
+      writeAndSync(descriptor, bytes, io);
+    } finally { fs.closeSync(descriptor); }
+    verifyStagedBytes(path, bytes, "Backup verification failed.");
+    verifySource();
+  } catch (error) {
+    try {
+      const current = fs.lstatSync(path, { bigint: true });
+      if (created && current.dev === created.dev && current.ino === created.ino) fs.unlinkSync(path);
+    } catch { /* leave whatever now holds the name */ }
+    throw error;
+  }
+}
+
 /** Callers validate the output package before publication. A completed recovery copy remains on later failure.
  * The final path check and rename still have a same-user race; this is not a power-loss transaction. */
 export function publishWorkbookEdit(path: string, snapshot: WorkbookFileSnapshot, output: Buffer,
@@ -122,13 +148,8 @@ export function publishWorkbookEdit(path: string, snapshot: WorkbookFileSnapshot
   let backup: string | null = null;
   if (snapshot.data.length > XLSX_EDIT_LIMITS.backupBytes) {
     backup = backupPath;
-    const staged = temporaryFile(path);
-    try {
-      try { writeAndSync(staged.descriptor, snapshot.data, io); } finally { fs.closeSync(staged.descriptor); }
-      verifyStagedBytes(staged.path, snapshot.data, "Backup verification failed.");
-      checkSource(requestedPath, snapshot, location);
-      fs.linkSync(staged.path, `${location.path}.ave-bak`);
-    } finally { fs.unlinkSync(staged.path); }
+    checkSource(requestedPath, snapshot, location);
+    writeRecoveryCopy(`${location.path}.ave-bak`, snapshot.data, io, () => checkSource(requestedPath, snapshot, location));
   }
   checkSource(requestedPath, snapshot, location);
   const staged = temporaryFile(path);
