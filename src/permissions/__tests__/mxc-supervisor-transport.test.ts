@@ -144,6 +144,22 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     expect(f.fatal).not.toHaveBeenCalled();
   });
 
+  it("checks fenced application EOF independently of teardown", async () => {
+    const f = transportFixture();
+    const owned = await f.launch();
+    const ended = vi.fn();
+    f.fixture.stdin.once("finish", ended);
+    let live = true;
+    owned.fenceInput(() => { if (!live) throw new Error("admission expired"); });
+    try {
+      const eof = new Promise<Error | null | undefined>(resolve => owned.stdin.end(resolve));
+      live = false;
+      expect((await eof)?.message).toBe("admission expired");
+      expect(ended).not.toHaveBeenCalled();
+    } finally { await owned.dispose(); }
+    expect(f.fixture.native.kill).toHaveBeenCalledOnce();
+  });
+
   it("revalidates admission after bootstrap and native probing before authorizing spawn", async () => {
     const f = transportFixture();
     const beforeSpawn = vi.fn(() => {

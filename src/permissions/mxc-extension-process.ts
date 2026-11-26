@@ -95,7 +95,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
       },
       final: (callback) => {
         if (this.stopping || this.result) return callback();
-        void this.channel.send({ type: "stdin-end" }).then(() => callback(), (error: Error) => callback(error));
+        void this.channel.send({ type: "stdin-end" }, this.admitInput).then(() => callback(), (error: Error) => callback(error));
       },
     });
     const fail = (error: Error): void => this.fail(error);

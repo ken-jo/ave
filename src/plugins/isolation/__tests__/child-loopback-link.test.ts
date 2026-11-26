@@ -333,6 +333,24 @@ describe("the child accepts exactly one authenticated host", () => {
 });
 
 describe("the host connects to the child it spawned", () => {
+  it("withholds the handshake proof when admission expires after dialing", async () => {
+    const stdout = new PassThrough();
+    const announce = announced();
+    const accepted = acceptHostOverLoopback({ ...announce, acceptTimeoutMs: 500, handshakeTimeoutMs: 500 }).catch(() => undefined);
+    const { port, nonce } = await nextLine(announce.lines);
+    let checks = 0;
+    const connecting = connectToAnnouncedChild({
+      stdout, exited: NEVER, timeoutMs: 1_000,
+      ...{ assertStillValid: () => { if (++checks > 1) throw new Error("admission expired"); } },
+    });
+    stdout.write(`AVE-CHILD-LISTEN ${port} ${nonce}\n`);
+    try {
+      await expect(connecting.then(socket => { socket.destroy(); })).rejects.toThrow("admission expired");
+      expect(await accepted).toBeUndefined();
+      expect(checks).toBe(2);
+    } finally { (await accepted)?.destroy(); }
+  });
+
   it("reads the announce past blank lines, connects, and is accepted", async () => {
     const stdout = new PassThrough();
     const accepted = acceptHostOverLoopback({
