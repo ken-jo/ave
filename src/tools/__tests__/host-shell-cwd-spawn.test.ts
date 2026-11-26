@@ -2,6 +2,8 @@ import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { execFileSync } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +18,7 @@ const spawnBoundary = vi.hoisted(() => ({
   launcherExe: undefined as string | undefined,
   onHelper: undefined as ((helper: import("node:child_process").ChildProcess) => void) | undefined,
   commands: [] as string[],
+  launcher: undefined as ChildProcess | undefined,
 }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -30,6 +33,7 @@ vi.mock("node:child_process", async (importOriginal) => {
         return helper;
       }
       spawnBoundary.commands.push(String(args[0]));
+      if (String(args[0]).endsWith("ave-job.exe") && spawnBoundary.launcher !== undefined) return spawnBoundary.launcher;
       if (spawnBoundary.launcherExe !== undefined) args[0] = spawnBoundary.launcherExe;
       if (spawnBoundary.mutate !== undefined) {
         const mutate = spawnBoundary.mutate;
@@ -43,9 +47,14 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import * as hostShellPermit from "../../permissions/host-shell-execution-permit.js";
 import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, HOST_SHELL_DIRECTORY_HOLD_ERROR, mintHostShellExecutionPermit, recordHostShellPolicyAuthorization } from "../../permissions/host-shell-execution-permit.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
-import { BashTool, PowerShellTool } from "../shell-tools.js";
+import { backgroundShellManager, BashTool, createBashOutputTool, PowerShellTool } from "../shell-tools.js";
+import { __resetManagedChildProcessesForTest, forceKillAndDrainManagedChildProcesses, forceKillManagedChildProcesses, sealManagedChildProcessAdmission } from "../../main/managed-child-processes.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import type { WindowsHoldVerdict } from "../../shared/windows-path-facts.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { HOST_SHELL_CWD_REVOKED_EXIT_CODE } from "../host-shell-cwd-guard.js";
@@ -64,6 +73,7 @@ beforeEach(() => {
   spawnBoundary.launcherExe = undefined;
   spawnBoundary.onHelper = undefined;
   spawnBoundary.commands = [];
+  spawnBoundary.launcher = undefined;
 });
 afterEach(async () => {
   spawnBoundary.mutate = undefined;
@@ -475,5 +485,77 @@ describe.runIf(process.platform === "win32")("Windows host cwd hold at launch", 
     expect(outcome).not.toMatchObject({ isError: false });
     expect(spawnBoundary.commands).toEqual([]);
     expect(existsSync(join(directory, "current", "marker"))).toBe(false);
+  });
+
+  it.each(["before spawn", "after bind"] as const)("honors quit %s during a deferred background handoff", async (order) => {
+    setShellSandboxRequestedAtBoot(false);
+    mkdirSync(join(directory, "current"));
+    const { input, context } = await authorizedContext("current", "touch marker", ["Bash(touch marker)"], true);
+    const entered = deferred<void>();
+    const resume = deferred<void>();
+    const verdict = deferred<WindowsHoldVerdict>();
+    const kill = vi.fn(() => true);
+    const stop = vi.fn(() => {
+      setTimeout(() => verdict.resolve({ kind: "unconfirmed" }), TOOL_TIMEOUT_POLICY.windowsHoldStopMs);
+      return verdict.promise;
+    });
+    const bind = vi.fn(() => ({ verdict: verdict.promise, stop }));
+    spawnBoundary.launcher = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null, kill }) as unknown as ChildProcess;
+    const handoffSpy = vi.spyOn(hostShellPermit, "withHostShellExecutionHandoff").mockImplementationOnce(async (_authorization, handoff) => {
+      if (order === "before spawn") {
+        entered.resolve();
+        await resume.promise;
+      }
+      const started = handoff({ bind, launcherArgs: [], assertHeld() {}, dispose() {}, command: undefined, stdio: undefined });
+      if (order === "after bind") {
+        entered.resolve();
+        await resume.promise;
+      }
+      return started;
+    });
+    const pending = new BashTool().execute(input, { ...context, metadata: { ...context.metadata, sessionId: "owner" } });
+    const outcome = pending.catch((error: unknown) => error);
+    let quitting: Promise<unknown> | undefined;
+    const drain = vi.fn(() => forceKillAndDrainManagedChildProcesses("test quit"));
+    try {
+      await Promise.race([entered.promise, pending.then(() => { throw new Error("background handoff was not entered"); })]);
+      vi.useFakeTimers();
+      sealManagedChildProcessAdmission("test quit");
+      quitting = backgroundShellManager.stopAllHeldShells(new AbortController().signal).then(drain);
+      if (order === "before spawn") {
+        await quitting;
+        resume.resolve();
+        expect(await outcome).toMatchObject({ message: expect.stringContaining("after shutdown started") });
+        expect(bind).not.toHaveBeenCalled();
+        expect(spawnBoundary.commands).toEqual([]);
+      } else {
+        expect(bind).toHaveBeenCalledOnce();
+        expect(stop).toHaveBeenCalledOnce();
+        expect(drain).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsHoldStopMs - 1);
+        expect(drain).not.toHaveBeenCalled();
+        // The emergency sweep must also defer to the held owner after the stop request.
+        forceKillManagedChildProcesses("test emergency sweep");
+        expect(kill).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        await quitting;
+        expect(drain).toHaveBeenCalledOnce();
+        expect(kill).not.toHaveBeenCalled();
+        resume.resolve();
+        const result = await pending;
+        const output = await createBashOutputTool().execute({ shellId: result.metadata?.shellId }, { ...context, metadata: { sessionId: "owner" } });
+        expect(output).toMatchObject({ isError: true, notice: expect.stringContaining("cwd-pin-unconfirmed") });
+        expect(JSON.parse(output.output)).toMatchObject({ status: "failed" });
+      }
+    } finally {
+      resume.resolve();
+      verdict.resolve({ kind: "unconfirmed" });
+      await outcome;
+      await quitting;
+      backgroundShellManager._resetForTest();
+      __resetManagedChildProcessesForTest();
+      handoffSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });

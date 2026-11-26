@@ -595,7 +595,7 @@ interface BackgroundShellEntry {
   outputTruncated: boolean;
   readCursor: number;
   startedAt: string;
-  stopTracking: () => void;
+  stopTracking: (() => void) | undefined;
   terminate: () => void;
   waiters: Set<() => void>;
   observation?: AgentTerminalObservationLease;
@@ -1178,10 +1178,11 @@ function createManager(): BackgroundShellManager {
         }
       }
       const shellId = randomUUID();
-      const stopTracking = trackManagedChildProcess(child, {
+      // Held launchers belong to the hold's stop protocol, including during emergency shutdown.
+      const stopTracking = held === undefined ? trackManagedChildProcess(child, {
         label: "tool:bash:background",
         killProcessGroup,
-      });
+      }) : undefined;
       let terminationRequested = false;
       let settled!: () => void;
       const terminate = (): void => {
@@ -1546,7 +1547,7 @@ function createManager(): BackgroundShellManager {
       for (const entry of heldShells) entry.terminate();
       heldShells.clear();
       for (const entry of [...shells.values()]) {
-        entry.stopTracking();
+        entry.stopTracking?.();
         entry.observation?.revoke();
       }
       for (const entry of brokerShells.values()) entry.observation?.revoke();
@@ -2312,44 +2313,45 @@ async function spawnBackground(command: string, cwd: string, sessionId: string, 
       metadata: { backgroundUnavailable: true },
     };
   }
-  assertManagedChildProcessAdmissionOpen("tool:bash:background");
   const observation = startShellObservation(command, cwd, sandbox);
-  let child: ChildProcess;
-  let held: HeldWindowsRun | undefined;
+  let launched: { child: ChildProcess; shellId: string } | undefined;
   try {
-    const launch = (hold?: HostShellSpawnDirectoryHold) => process.platform === "win32"
-      ? spawnWindowsJobProcess(shell.cmd, [...argv], { cwd, env }, hold)
-      : spawn(shell.cmd, [...argv], {
-        cwd,
-        stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
-        env,
-        shell: false,
-        detached: true,
+    const launch = (hold?: HostShellSpawnDirectoryHold) => {
+      signal?.throwIfAborted();
+      assertManagedChildProcessAdmissionOpen("tool:bash:background");
+      const child = process.platform === "win32"
+        ? spawnWindowsJobProcess(shell.cmd, [...argv], { cwd, env }, hold)
+        : spawn(shell.cmd, [...argv], {
+          cwd,
+          stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
+          env,
+          shell: false,
+          detached: true,
+        });
+      const held = hold?.bind(child);
+      const cleanup = transferPreparedShellInvocation(prepared);
+      if (held === undefined) child.once("close", cleanup);
+      else void held.verdict.then(cleanup);
+      const shellId = backgroundShellManager.register({
+        sessionId,
+        command,
+        child,
+        held,
+        startedAt: new Date().toISOString(),
+        killProcessGroup: process.platform !== "win32",
+        observation,
       });
+      return { child, shellId };
+    };
     signal?.throwIfAborted();
-    const launched = authorization === undefined || prelude !== undefined ? launch()
+    launched = authorization === undefined || prelude !== undefined ? launch()
       : await withHostShellExecutionHandoff(authorization, (hold) => {
-          signal?.throwIfAborted();
           assertShellRemoteAuthority();
-          const started = launch(hold);
-          held = hold.bind(started);
-          return started;
+          return launch(hold);
         }, refreshShellRemoteAuthority);
     if (launched === undefined) throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
-    child = launched;
   } catch (error) { observation?.finish(null, "failed"); throw error; }
-  const cleanup = transferPreparedShellInvocation(prepared);
-  if (held === undefined) child.once("close", cleanup);
-  else void held.verdict.then(cleanup);
-  const shellId = backgroundShellManager.register({
-    sessionId,
-    command,
-    child,
-    held,
-    startedAt: new Date().toISOString(),
-    killProcessGroup: process.platform !== "win32",
-    observation,
-  });
+  const { child, shellId } = launched;
   if (prelude !== undefined && authorization !== undefined) {
     const timeout = AbortSignal.timeout(TOOL_TIMEOUT_POLICY.shellCeilingGraceMs);
     const control = attachHostShellControlChannel(child, authorization, signal === undefined ? timeout : AbortSignal.any([signal, timeout]));
