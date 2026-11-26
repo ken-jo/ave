@@ -365,3 +365,89 @@ describe('local model lifecycle', () => {
     finally { await f.close(); }
   });
 });
+
+describe('model effects after fetch', () => {
+  it.each(['loss', 'disable', 'cancel'] as const)('stops effects when %s occurs during the first file fetch', async event => {
+    const root = await mkdtemp(join(tmpdir(), 'ave-model-'));
+    roots.push(root);
+    const sha256 = createHash('sha256').update('model').digest('hex');
+    const files = ['first.bin','second.bin'].map(name => ({ name, bytes: 5, sha256 }));
+    let current = true;
+    let enabled = true;
+    let completeFetch!: (value: Response) => void;
+    const response = new Promise<Response>(resolve => { completeFetch = resolve; });
+    const downloadFile = vi.fn(async () => new Response('model')).mockReturnValueOnce(response);
+    const createFile = vi.fn(name => open(join(root, name), 'wx'));
+    const savePath = vi.fn();
+    const manager = new LocalModelManager({
+      namespace: {
+        dir: root, readJson: async (_, fallback) => fallback, writeJson: async () => {},
+        childDir: async name => { const path = join(root, name); await mkdir(path, { recursive: true }); return path; },
+        createFile,
+      },
+      files, downloadFile, savePath, readPath: () => undefined,
+      refreshAdmission: async () => () => {
+        if (!current) throw new MemoryMapHostError('local-runtime-unavailable');
+        if (!enabled) throw new MemoryMapHostError('local-inference-disabled');
+      },
+    });
+    const operation = manager.download().catch(error => error);
+    try {
+      await vi.waitFor(() => expect(downloadFile).toHaveBeenCalledOnce());
+      if (event === 'cancel') manager.cancel();
+      if (event === 'loss') current = false;
+      if (event === 'disable') enabled = false;
+      completeFetch(new Response('model'));
+      await operation;
+      expect.soft(createFile).not.toHaveBeenCalled();
+      expect.soft(downloadFile).toHaveBeenCalledOnce();
+      expect.soft(savePath).not.toHaveBeenCalled();
+    } finally {
+      completeFetch(new Response('model'));
+      await operation;
+    }
+  });
+});
+
+it('refuses adoption when admission is lost during model validation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'ave-adopt-'));
+  roots.push(root);
+  const folder = join(root, 'installed');
+  await mkdir(folder);
+  await writeFile(join(folder, 'weights.bin'), 'model');
+  const files = [{ name: 'weights.bin', bytes: 5, sha256: createHash('sha256').update('model').digest('hex') }];
+  const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+  const mockPath = vi.mocked(realpath);
+  let startCheck!: () => void;
+  const started = new Promise<void>(resolve => { startCheck = resolve; });
+  let finishCheck!: () => void;
+  const canContinue = new Promise<void>(resolve => { finishCheck = resolve; });
+  let allowed = true;
+  mockPath.mockImplementation(async path => {
+    if (path === folder) {
+      startCheck();
+      await canContinue;
+    }
+    return actual.realpath(path);
+  });
+  const savePath = vi.fn();
+  const manager = new LocalModelManager({
+    namespace: { dir: root, readJson: async (_, fallback) => fallback, writeJson: async () => {},
+      childDir: async name => { const path = join(root, name); await mkdir(path, { recursive: true }); return path; },
+      createFile: name => open(join(root, name), 'wx') },
+    files, readPath: () => undefined, savePath,
+    refreshAdmission: async () => () => { if (!allowed) throw new MemoryMapHostError('local-runtime-unavailable'); },
+  });
+  const pending = manager.adoptExistingFolder(folder).catch(error => error);
+  try {
+    await started;
+    allowed = false;
+    finishCheck();
+    await pending;
+    expect(savePath).not.toHaveBeenCalled();
+  } finally {
+    finishCheck();
+    await pending;
+    mockPath.mockImplementation(actual.realpath);
+  }
+});
