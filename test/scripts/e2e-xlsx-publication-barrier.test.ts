@@ -471,7 +471,8 @@ describe("workbook publication build", () => {
     });
 
     describe("bounded test run", () => {
-      const budget = { bodyMs: 100, diagnosticMs: 100, teardownMs: 6 * 200 + 2 * 200 };
+      // Mirrors FIXTURE_TEARDOWN_MS at the quick deadlines.
+      const budget = { bodyMs: 100, diagnosticMs: 100, teardownMs: 6 * 200 + 200 + 2 * 200 + 2 * 200 };
       const deadlines = { ...quick, serverMs: 200 };
       async function listening() {
         const server = createServer((_request, response) => { response.writeHead(200); response.write("open"); });
@@ -566,6 +567,41 @@ describe("workbook publication build", () => {
         expect(String(failure)).toBe("Error: Workbook test body exceeded 100 ms");
         expect(abortedDuringDiagnostics).toBe(true);
         expect(actions).toEqual(["teardown:0"]);
+      });
+
+      it("reports a close still pending at return for an app that arrived after settle", async () => {
+        const fixture = prepared();
+        const seeds = seededDirectories();
+        let finishClose: () => void = () => {};
+        const { app, child, calls } = fakeApp(() => new Promise<void>((resolve) => { finishClose = resolve; }));
+        let arrive: () => void = () => {};
+        const server = { listening: true, closeAllConnections: () => {},
+          close: (callback: (error?: Error) => void) => { arrive(); setTimeout(() => callback(), 20); } };
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        const failure = await runBoundedTest({
+          body: () => fixture.launch(async () => {
+            seedAll(fixture, seeds);
+            fixture.starting();
+            await new Promise<void>((resolve) => { arrive = resolve; });
+            fixture.own(app);
+          }).then(() => {}),
+          diagnose: async () => {},
+          teardown: () => teardownWorkbookTest(fixture, server, fixture.workspace, deadlines),
+        }, budget).catch((error: unknown) => error);
+        try {
+          const kept = [fixture.root, ...seeds, fixture.workspace].join(", ");
+          const messages = (failure as AggregateError).errors.map(String);
+          expect(messages).toContain(`Error: Workbook fixture paths retained because the launch is still in progress: ${kept}`);
+          expect(messages.at(-1)).toBe(`Error: Workbook late app close unresolved after 600 ms (1 of 1 pending); retained paths: ${kept}`);
+          expect(calls.close).toBe(1);
+        } finally {
+          child.exit();
+          child.closePipes();
+          finishClose();
+          await fixture.late();
+          errors.mockRestore();
+          for (const path of [fixture.root, ...seeds, fixture.workspace]) rmSync(path, { recursive: true, force: true });
+        }
       });
 
       it("bounds a hung model server close and a hung seed remover inside the teardown budget", async () => {

@@ -55,8 +55,9 @@ export const FIXTURE_DEADLINES: FixtureDeadlines & { readonly startupMs: number;
 /** The longest settle() takes with a profile and home seeded: close, launch settlement, then each removal. */
 export const FIXTURE_CLEANUP_MS = FIXTURE_DEADLINES.shutdownMs + FIXTURE_DEADLINES.closeMs + FIXTURE_DEADLINES.launchMs
   + 3 * FIXTURE_DEADLINES.removeMs;
-/** settle(), then the model server's close and the workspace removal. */
-export const FIXTURE_TEARDOWN_MS = FIXTURE_CLEANUP_MS + FIXTURE_DEADLINES.serverMs + FIXTURE_DEADLINES.removeMs;
+/** settle(), the model server's close, the join of late close work, then the workspace removal. */
+export const FIXTURE_TEARDOWN_MS = FIXTURE_CLEANUP_MS + FIXTURE_DEADLINES.serverMs + FIXTURE_DEADLINES.shutdownMs
+  + FIXTURE_DEADLINES.closeMs + 2 * FIXTURE_DEADLINES.removeMs;
 
 export interface TestBudget {
   readonly bodyMs: number;
@@ -99,7 +100,7 @@ interface ModelServer {
 
 /** Releases and settles the fixture, closes the model server, and removes the workspace only after a confirmed close. */
 export async function teardownWorkbookTest(fixture: { release(): void;
-  settle(deadlines: FixtureDeadlines): Promise<{ closed: boolean; failures: unknown[] }> } | undefined,
+  settle(deadlines: FixtureDeadlines): Promise<{ closed: boolean; failures: unknown[] }>; join(deadlines: FixtureDeadlines): Promise<unknown[]> } | undefined,
   server: ModelServer, workspace: string, deadlines: FixtureDeadlines & { readonly serverMs: number } = FIXTURE_DEADLINES): Promise<unknown[]> {
   const failures: unknown[] = [];
   const step = async (action: () => void | Promise<void>) => {
@@ -111,6 +112,7 @@ export async function teardownWorkbookTest(fixture: { release(): void;
   await step(() => server.closeAllConnections());
   await step(() => server.listening ? withinDeadline(new Promise<void>((resolve, reject) =>
     server.close((error) => error ? reject(error) : resolve())), deadlines.serverMs, "Workbook model server close") : undefined);
+  if (fixture) failures.push(...await fixture.join(deadlines));
   if (settled.closed) await step(() => rmSync(workspace, { recursive: true, force: true, maxRetries: 5 }));
   return failures;
 }
@@ -233,7 +235,12 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
   let phase: "open" | "settling" | "settled" = "open";
   let settleDeadlines: FixtureDeadlines = FIXTURE_DEADLINES;
   let arrivalClose: Promise<unknown[]> | undefined;
-  const lateArrivals: Promise<unknown[]>[] = [];
+  const lateArrivals: { done: boolean; work: Promise<unknown[]> }[] = [];
+  const track = (work: Promise<unknown[]>) => {
+    const entry = { done: false, work };
+    lateArrivals.push(entry);
+    void work.finally(() => { entry.done = true; });
+  };
   const retainedPaths = () => [root, ...seededPaths.map((entry) => entry.path), workspace].filter((path) => existsSync(path)).join(", ");
   const reportLate = (message: string, failures: unknown[] = []): void => { console.error(message, ...failures); };
   const fence = (operation: string): void => {
@@ -274,7 +281,7 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
       if (phase === "settled") {
         const failure = new Error(`Workbook app seeded after its fixture was settled; retained paths: ${retainedPaths()}`);
         reportLate(failure.message);
-        lateArrivals.push(Promise.resolve([failure]));
+        track(Promise.resolve([failure]));
       }
     },
     /** A child may exist from now on, so nothing is removed without an owned close. */
@@ -290,7 +297,7 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
         const failure = new Error(`Workbook app arrived after its fixture was settled; retained paths: ${retainedPaths()}`);
         reportLate(failure.message);
         const lifetime = ownLifetime(app, receipt);
-        lateArrivals.push(closeOwned(lifetime).then((failures) => {
+        track(closeOwned(lifetime).then((failures) => {
           reportLate(`Late workbook app close ${lifetime.isClosed() ? "confirmed" : "not confirmed"}; retained paths: ${retainedPaths()}`, failures);
           return [failure, ...failures];
         }));
@@ -302,7 +309,18 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
     },
     /** Reports from arrivals after settle, each bounded by the close deadlines. */
     async late(): Promise<unknown[]> {
-      return (await Promise.all(lateArrivals)).flat();
+      return (await Promise.all(lateArrivals.map((entry) => entry.work))).flat();
+    },
+    /** Joins close work registered so far within a bound; unfinished work is reported with the retained paths. */
+    async join(deadlines: FixtureDeadlines = FIXTURE_DEADLINES): Promise<unknown[]> {
+      const ms = deadlines.shutdownMs + deadlines.closeMs + deadlines.removeMs;
+      try { return (await withinDeadline(Promise.all(lateArrivals.map((entry) => entry.work)), ms, "Workbook late app close")).flat(); }
+      catch {
+        const pending = lateArrivals.filter((entry) => !entry.done).length;
+        const failure = new Error(`Workbook late app close unresolved after ${ms} ms (${pending} of ${lateArrivals.length} pending); retained paths: ${retainedPaths()}`);
+        reportLate(failure.message);
+        return [failure];
+      }
     },
     /**
      * Close the owned app through its handles within deadlines. The copy, profile and home are removed only after the
