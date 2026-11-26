@@ -586,7 +586,7 @@ export async function restoreWatchedQuarantine(slot: string, index: number): Pro
       const slotEntry = entryAt(slotPath, true);
       const physicalSlot = admitLocalRoute(slotPath).physical;
       const manifestEntry = entryAt(manifest, true);
-      if (slotEntry?.isDirectory() !== true || manifestEntry?.isFile() !== true) {
+      if (slotEntry?.isDirectory() !== true || physicalSlot === undefined || manifestEntry?.isFile() !== true) {
         throw new Error("Quarantine slot or manifest is unavailable");
       }
       const entries = readManifest(slot);

@@ -16,7 +16,7 @@ import { classifyWindowsSpelling, normalizeWindowsPathSpelling, windowsVolumeRoo
  * changed after it returns, so a failed drive query, which fails the whole decision at its exit, never leaves a
  * half-applied change behind. A failed drive query poisons its decision: a catch that turns lookup errors into "no
  * answer" calls `rethrowLocalityFailure` first, and nothing filesystem-backed runs on the poisoned decision afterwards.
- * Facts drawn from the filesystem are memoized only through `decisionMemo`, never across decisions.
+ * Windows filesystem facts are never memoized across decisions.
  */
 
 class Decision {
@@ -41,6 +41,7 @@ class Decision {
 
 let active: Decision | undefined;
 const driveQueryFailures = new WeakSet<object>();
+const ownerMemos = new WeakMap<object, Map<string, unknown>>();
 
 /** Whether `error` is a failed drive query: no fallback, default or provider path may stand in for its decision. */
 export function isLocalityFailure(error: unknown): boolean {
@@ -120,6 +121,17 @@ export function decisionMemo<V>(owner: object): Map<string, V> {
   if (memo === undefined) {
     memo = new Map();
     decision.memos.set(owner, memo);
+  }
+  return memo as Map<string, V>;
+}
+
+/** Matcher facts live for one Windows decision or for the lifetime of their owner on other hosts. */
+export function matcherMemo<V>(owner: object): Map<string, V> {
+  if (process.platform === "win32") return decisionMemo<V>(owner);
+  let memo = ownerMemos.get(owner);
+  if (memo === undefined) {
+    memo = new Map();
+    ownerMemos.set(owner, memo);
   }
   return memo as Map<string, V>;
 }

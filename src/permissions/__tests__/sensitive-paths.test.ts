@@ -9,6 +9,8 @@ import {
   isSensitivePath,
   allowKeyMaterialInspectionUnder,
   isAdmissionDeniedPath,
+  createConfiguredSessionReadPathMatcher,
+  createSensitiveLocationMatcher,
   createSensitivePathMatcher,
   policyMatchPaths,
   canonicalizePathForMatch,
@@ -46,6 +48,38 @@ describe("per-decision sensitive matcher", () => {
       } finally { canonical.mockRestore(); }
     });
   });
+});
+
+it.skipIf(process.platform === "win32")("keeps session root, search anchors and application index for the matcher's lifetime", () => {
+  const directory = realpathSync(resources.makeTmpDir("sensitive-matcher-home-"));
+  const initial = join(directory, "initial");
+  const next = join(directory, "next");
+  for (const home of [initial, next]) {
+    mkdirSync(join(home, "sessions"), { recursive: true });
+    mkdirSync(join(home, "secrets"));
+  }
+  const factsAt = (home: string) => [
+    canonicalizePathForMatch(join(home, "sessions", "session.jsonl")),
+    caseFoldForMatch(canonicalizePathForMatch(join(home, "secrets"))),
+    canonicalizePathForMatch(join(home, "secrets", "data.txt")),
+  ] as const;
+  const matchers = () => [createConfiguredSessionReadPathMatcher(), createSensitiveLocationMatcher(), createSensitivePathMatcher("read")] as const;
+  vi.stubEnv("AVE_HOME", initial);
+  try {
+    const [isSession, secretUnder, sensitive] = matchers();
+    const [initialSession, initialSearch, initialSecret] = factsAt(initial);
+    expect([isSession(initialSession), secretUnder(initialSearch), sensitive(initialSecret)])
+      .toEqual([true, initialSearch, "ave-home:secrets"]);
+
+    vi.stubEnv("AVE_HOME", next);
+    const [nextSession, nextSearch, nextSecret] = factsAt(next);
+    const [freshSession, freshSearch, freshSensitive] = matchers();
+    expect([freshSession(nextSession), freshSearch(nextSearch), freshSensitive(nextSecret)])
+      .toEqual([true, nextSearch, "ave-home:secrets"]);
+    expect([isSession(nextSession), secretUnder(nextSearch), sensitive(nextSecret)]).toEqual([false, null, null]);
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
 
 afterEach(async () => {

@@ -170,6 +170,39 @@ describe("bounded visible floor inspection", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32").each([
+    ["Bash", () => {
+      const parsed = shellFloorSyntax.parseShellFloorCommand("cat ./data/secrets/note.txt");
+      return (cwd: string) => shellFloors.inspectShellCommand(parsed, cwd);
+    }],
+    ["PowerShell", () => {
+      const parsed = parsePowerShellCommand("Get-Content ./data/secrets/note.txt");
+      return (cwd: string) => inspectPowerShellCommand(parsed, cwd);
+    }],
+  ] as const)("retains the %s matcher snapshot on a reused POSIX parse across a cwd change", (_dialect, prepare) => {
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), "floor-reused-parse-cwd-")));
+    const initialCwd = join(directory, "initial-work");
+    const nextCwd = join(directory, "next-work");
+    const initialHome = join(directory, "initial-home");
+    const nextHome = join(nextCwd, "data");
+    for (const cwd of [initialCwd, nextCwd]) {
+      mkdirSync(join(cwd, "data", "secrets"), { recursive: true });
+      writeFileSync(join(cwd, "data", "secrets", "note.txt"), "fixture");
+    }
+    mkdirSync(initialHome);
+    vi.stubEnv("AVE_HOME", initialHome);
+    try {
+      const inspect = prepare();
+      expect(inspect(initialCwd).sensitive).toBeNull();
+      vi.stubEnv("AVE_HOME", nextHome);
+      expect(prepare()(nextCwd).sensitive).toBe("ave-home:secrets");
+      expect(inspect(nextCwd).sensitive).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("reuses failed ancestor observations across sibling paths", () => {
     const directory = realpathSync(mkdtempSync(join(tmpdir(), "floor-path-cache-")));
     try {

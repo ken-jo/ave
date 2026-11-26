@@ -41,7 +41,7 @@ import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets, testSandboxP
 import { expandLeadingTilde, leadingTildeHome } from "../shared/home-tilde.js";
 import { holdSandboxGitWrites } from "../shared/host-git.js";
 import { projectLocalWindowsFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
-import { admitLocalPath, admitLocalRoute, assertLocalityDecisionUsable, decisionMemo, localFs, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
+import { admitLocalPath, admitLocalRoute, assertLocalityDecisionUsable, localFs, matcherMemo, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { admitObligations, consumeObligations, ObligationRefusedError, type ObligationRow, type ObligationSource, obligationWithin, POSIX_CRON_DENIES, posixOnlyDenyPaths, requireEnforceable, windowsObligationsApply } from "./admitted-obligation.js";
 import { compileGlobMatcher, globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
@@ -1514,7 +1514,7 @@ function aveHomeProfileChildren(): ReadonlyMap<string, readonly string[]> {
     if (snapshot === undefined) return projectAveHomeProfileChildren(roots);
     const key = roots.map((root) => caseFoldForMatch(resolve(root))).join("|");
     type HomeProjection = { children: ReadonlyMap<string, readonly string[]> } | { error: unknown };
-    const observations = decisionMemo<HomeProjection>(snapshot);
+    const observations = matcherMemo<HomeProjection>(snapshot);
     let result = observations.get(key);
     if (result === undefined) {
       try { result = { children: projectAveHomeProfileChildren(roots) }; }
@@ -1924,7 +1924,7 @@ function readDenyCovering(denied: readonly FilesystemPathEntry[]): (canonicalPat
   // Compiled on first use, as readDenyCoversPath reaches an entry only when no earlier one covered the path.
   const matcherOwner = {};
   const matcher = (index: number, entry: FilesystemPathEntry): (candidate: string) => boolean => {
-    const matchers = decisionMemo<(candidate: string) => boolean>(matcherOwner);
+    const matchers = matcherMemo<(candidate: string) => boolean>(matcherOwner);
     const key = String(index);
     let match = matchers.get(key);
     if (match === undefined) {

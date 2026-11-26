@@ -137,6 +137,7 @@ import {
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
   getBuiltinShellReadPolicy,
+  protectedReadDenyMatcher,
   appOwnedSandboxPrivateRoots,
   aveHomeReadBoundaryCovering,
   registerWorkerUnixSocketDir,
@@ -377,6 +378,27 @@ describe.runIf(process.platform === "win32")("Windows deny route preflight", () 
       await cleanupTmpDir(parent);
     }
   });
+});
+
+it.skipIf(process.platform === "win32")("keeps compiled read-deny matchers for the matcher's lifetime", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "read-deny-matcher-")));
+  try {
+    const first = join(root, "first");
+    const second = join(root, "second");
+    const alias = join(root, "alias");
+    mkdirSync(first);
+    mkdirSync(second);
+    symlinkSync(first, alias, "dir");
+    const floor = [{ path: alias, literal: true as const }];
+    const covering = protectedReadDenyMatcher(floor);
+    expect(covering(join(first, "file.txt"))).toBe(alias);
+    rmSync(alias);
+    symlinkSync(second, alias, "dir");
+    expect(protectedReadDenyMatcher(floor)(join(second, "file.txt"))).toBe(alias);
+    expect([covering(join(first, "file.txt")), covering(join(second, "file.txt"))]).toEqual([alias, undefined]);
+  } finally {
+    await cleanupTmpDir(root);
+  }
 });
 
 describe("asrt-sandbox — gate default OFF", () => {

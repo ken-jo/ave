@@ -11,7 +11,7 @@ import { createAveHomeBoundarySnapshot } from "../ave-home-boundary-snapshot.js"
 import { aveHomeReadBoundaryCovering, getBuiltinShellReadPolicy } from "../asrt-sandbox.js";
 import { decidePermission } from "../decision-pipeline.js";
 import { PermissionManager } from "../permission-manager.js";
-import { bindStageWorkspace, boundStageWorkspace, isOwnStageWorkspacePath, unbindStageWorkspace } from "../stage-workspace-binding.js";
+import { bindStageWorkspace, boundStageWorkspace, createStageWorkspacesMatcher, isOwnStageWorkspacePath, unbindStageWorkspace } from "../stage-workspace-binding.js";
 
 installVerifiedAveHomePrivacy();
 
@@ -90,6 +90,21 @@ afterEach(() => {
 });
 
 describe("stage workspace binding", () => {
+  it.skipIf(process.platform === "win32")("resolves the stage-workspaces home when the matcher is created", () => {
+    const next = join(home, "relocated-home");
+    const match = createStageWorkspacesMatcher();
+    const previousHome = process.env.AVE_HOME;
+    process.env.AVE_HOME = next;
+    try {
+      const relocatedPath = join(next, "worktrees", "project", "file.txt");
+      expect(createStageWorkspacesMatcher()(relocatedPath)).toBe(true);
+      expect([match(own), match(relocatedPath)]).toEqual([true, false]);
+    } finally {
+      if (previousHome === undefined) delete process.env.AVE_HOME;
+      else process.env.AVE_HOME = previousHome;
+    }
+  });
+
   it("a read and a write inside the bound workspace are not a protected-path floor", async () => {
     expect(boundStageWorkspace(STAGE)).toBe(own);
     expect(await floors(STAGE, join(own, "notes.txt"))).toEqual(CARVED);

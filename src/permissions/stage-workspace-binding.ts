@@ -1,6 +1,6 @@
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
-import { admitLocalRoute, decisionMemo, localFs, withLocalityDecision } from "../shared/local-path-io.js";
+import { admitLocalRoute, localFs, matcherMemo, withLocalityDecision } from "../shared/local-path-io.js";
 import { inspectPhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 
 /** Host-minted, memory only: a session id to the one real stage folder it works in. Never a path-prefix rule. */
@@ -94,9 +94,9 @@ function tryLocalRealpath(path: string): string | undefined {
 /** Whether an absolute path, as spelled, is `<home>/worktrees` or lies beneath it, for the home's given and physical spelling. */
 export function createStageWorkspacesMatcher(): (path: string) => boolean {
   const owner = {};
-  return path => withLocalityDecision(() => {
+  const match = (path: string) => withLocalityDecision(() => {
     if (!isAbsolute(path)) return false;
-    const memo = decisionMemo<string[]>(owner);
+    const memo = matcherMemo<string[]>(owner);
     let homes = memo.get("homes");
     if (homes === undefined) {
       const home = resolve(aveHome());
@@ -107,6 +107,8 @@ export function createStageWorkspacesMatcher(): (path: string) => boolean {
     }
     return homes.some(home => below(home, resolve(path))?.[0] === "worktrees");
   });
+  if (process.platform !== "win32") match(resolve(aveHome()));
+  return match;
 }
 
 export function isStageWorkspacesPath(path: string): boolean {

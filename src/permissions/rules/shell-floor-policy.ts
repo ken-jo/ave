@@ -43,7 +43,7 @@ export function shellFloorBudgetSignals(): ShellFloorSignals {
 export function shellFloorParserBudgetExceeded(reason: string): boolean {
   return SHELL_PARSER_BUDGET_ERRORS.has(reason) || /^(?:\d+:\d+: )?shell (?:parser recursion|total token) limit exceeded$/.test(reason);
 }
-import { decisionMemo, withLocalityDecision } from "../../shared/local-path-io.js";
+import { matcherMemo, withLocalityDecision } from "../../shared/local-path-io.js";
 import { caseFoldForMatch, createConfiguredSessionReadPathMatcher, createKeyMaterialPathMatcher, createPathCanonicalizer, createSensitiveLocationMatcher, createSensitivePathMatcher, foldCanonicalPathSeparators, MAX_WALK_UP } from "../sensitive-paths.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { type ShellPathDialect } from "../../shared/shell-native-path.js";
@@ -78,8 +78,6 @@ export class ShellFloorContext {
   readonly requiresContentInspection = createKeyMaterialPathMatcher();
   private matchNames: ReturnType<typeof createSensitivePathMatcher> | undefined;
   private matchOpaqueNames: ReturnType<typeof createSensitivePathMatcher> | undefined;
-  private readonly pathMatches = new Map<string, string | null>();
-  private readonly nameMatches = new Map<string, string | null>();
   private readonly pathMatchOwner = {};
   private readonly nameMatchOwner = {};
 
@@ -97,7 +95,7 @@ export class ShellFloorContext {
         if (process.platform !== "win32" && this.inspectHostFiles) this.contentInspections.count += 1;
         return this.match(path);
       }
-      const matches = process.platform === "win32" ? decisionMemo<string | null>(this.pathMatchOwner) : this.pathMatches;
+      const matches = matcherMemo<string | null>(this.pathMatchOwner);
       const cached = matches.get(path);
       if (cached !== undefined) return cached;
       const hit = this.match(path);
@@ -111,7 +109,7 @@ export class ShellFloorContext {
     const match = (): string | null => {
       const folded = caseFoldForMatch(foldCanonicalPathSeparators(path));
       const key = JSON.stringify([includeKeyMaterial, folded]);
-      const matches = process.platform === "win32" ? decisionMemo<string | null>(this.nameMatchOwner) : this.nameMatches;
+      const matches = matcherMemo<string | null>(this.nameMatchOwner);
       const cached = matches.get(key);
       if (cached !== undefined) return cached;
       let matcher: ReturnType<typeof createSensitivePathMatcher>;

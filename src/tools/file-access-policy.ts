@@ -9,7 +9,7 @@ import {
   resolvePathForPolicy,
 } from "../permissions/sensitive-paths.js";
 import { createStageWorkspacesMatcher } from "../permissions/stage-workspace-binding.js";
-import { decisionMemo, withLocalityDecision } from "../shared/local-path-io.js";
+import { matcherMemo, withLocalityDecision } from "../shared/local-path-io.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 
@@ -46,8 +46,8 @@ export function createFilePathPolicy(effect: PathEffect = "read"): {
 export function createStageWorkspacesSkip(root: string): (path: string) => boolean {
   const inside = createStageWorkspacesMatcher();
   const owner = {};
-  return path => withLocalityDecision(() => {
-    const memo = decisionMemo<boolean>(owner);
+  const skip = (path: string) => withLocalityDecision(() => {
+    const memo = matcherMemo<boolean>(owner);
     let rootInside = memo.get("inside");
     if (rootInside === undefined) {
       rootInside = inside(root) || inside(resolvePathForPolicy(root));
@@ -55,6 +55,8 @@ export function createStageWorkspacesSkip(root: string): (path: string) => boole
     }
     return !rootInside && inside(path);
   });
+  if (process.platform !== "win32") skip(root);
+  return skip;
 }
 
 /** Execute-time sensitive and directory gates shared by native file operations. */

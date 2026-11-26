@@ -40,7 +40,7 @@ import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { compileSensitivePathGlob } from "./sensitive-path-glob.js";
 import { isWindowsNetworkOrDevicePath, localDriveAlias, modelShellPath, withoutStreamSuffixes } from "../shared/shell-native-path.js";
 import {
-  admitLocalPath, admitLocalRoute, admitRouteAncestor, decisionMemo, type LocalFilesystemFacts, localFs,
+  admitLocalPath, admitLocalRoute, admitRouteAncestor, decisionMemo, type LocalFilesystemFacts, localFs, matcherMemo,
   type LocalRoute, rethrowLocalityFailure, unprovenLookup, withLocalityDecision,
 } from "../shared/local-path-io.js";
 import { classifyWindowsSpelling } from "../shared/windows-path-spelling.js";
@@ -697,7 +697,7 @@ export function createProjectMembership(projectRoot: string, canonicalize: (path
     if (!hasNativeRoot) return false;
     const target = normalize(canonical);
     if (within(target, root)) return true;
-    const memo = decisionMemo<string>(owner);
+    const memo = matcherMemo<string>(owner);
     let realRoot = memo.get("root");
     if (realRoot === undefined) {
       realRoot = normalize(canonicalize(projectRoot));
@@ -707,7 +707,7 @@ export function createProjectMembership(projectRoot: string, canonicalize: (path
   });
 }
 
-/** Snapshot matcher roots once for a decision, while retaining every lexical/canonical target. */
+/** Reuse matcher roots according to the platform's memo lifetime while retaining every lexical and canonical target. */
 export function createPermissionPathEvidence(
   projectRoot: string,
   canonicalize?: (path: string) => string,
@@ -723,7 +723,7 @@ export function createPermissionPathEvidence(
   const matchers = new Map<PathEffect, { secret: (path: string) => string | null; admission: (path: string) => string | null }>();
   const owner = {};
   return path => withLocalityDecision(() => {
-    const observations = decisionMemo<Pick<PermissionPathEvidence, "secret" | "admissionDenial" | "protectedControl" | "projectEscape">>(owner);
+    const observations = matcherMemo<Pick<PermissionPathEvidence, "secret" | "admissionDenial" | "protectedControl" | "projectEscape">>(owner);
     const lexical = normalize(path.lexical);
     const canonical = normalize(path.canonical);
     // A device or share spelling is judged as the drive path it names and, since no spelling proves that identity, also as
@@ -832,11 +832,11 @@ export function isConfiguredSessionReadPath(canonicalPath: string): boolean {
   return isSessionReadPathUnderRoot(canonicalPath, root);
 }
 
-// Snapshot the namespace once for one permission decision.
+// Reuse the namespace within the platform's matcher memo lifetime.
 export function createConfiguredSessionReadPathMatcher(): (canonicalPath: string) => boolean {
   const owner = {};
   return canonicalPath => withLocalityDecision(() => {
-    const memo = decisionMemo<string | undefined>(owner);
+    const memo = matcherMemo<string | undefined>(owner);
     if (!memo.has("root")) memo.set("root", getConfiguredSessionReadRoot());
     return isSessionReadPathUnderRoot(canonicalPath, memo.get("root"));
   });
@@ -888,10 +888,10 @@ export function createSensitiveLocationMatcher(canonicalize: (path: string) => s
   const anchorOwner = {};
   const resultOwner = {};
   return directory => withLocalityDecision(() => {
-    const results = decisionMemo<string | null>(resultOwner);
+    const results = matcherMemo<string | null>(resultOwner);
     const cached = results.get(directory);
     if (cached !== undefined) return cached;
-    const memo = decisionMemo<readonly string[]>(anchorOwner);
+    const memo = matcherMemo<readonly string[]>(anchorOwner);
     let anchors = memo.get("anchors");
     if (anchors === undefined) {
       anchors = sensitiveSearchAnchors(canonicalize);
@@ -992,7 +992,7 @@ function createRevalidatingCanonicalizer(): () => (path: string) => string {
   const owner = {};
   type ResolutionWitness = { canonical: string; entries: Array<[string, ChainEntry]>; direct: boolean };
   return () => {
-    const resolved = decisionMemo<ResolutionWitness | null>(owner);
+    const resolved = matcherMemo<ResolutionWitness | null>(owner);
     const readings = new Map<string, ChainEntry | undefined>();
     const read = (path: string): ChainEntry | undefined => {
       if (!readings.has(path)) readings.set(path, readChainEntry(path));
@@ -1060,7 +1060,7 @@ export function isSensitiveContent(absPath: string, bytes: Buffer, size = bytes.
   return absPath ? createPathSensitivityMatcher("read", undefined, canonicalizePathForMatch, false, "agent", bytes, size)(absPath) : null;
 }
 
-// Snapshot policy roots and compiled globs once for one permission decision.
+// Reuse policy roots and compiled globs within the platform's matcher memo lifetime.
 interface SensitivePattern {
   pattern: string;
   insensitive: boolean;
@@ -1457,7 +1457,7 @@ function createPathSensitivityMatcher(
   // A stream names data of its file, and a device or loopback share alias the drive path, which are judged as well.
   return (absPath) => withLocalityDecision(() => {
     if (!absPath) return null;
-    const memo = decisionMemo<MatcherDecision>(memoOwner);
+    const memo = matcherMemo<MatcherDecision>(memoOwner);
     let state = memo.get("matcher");
     if (state === undefined) {
       state = {};
