@@ -33,7 +33,7 @@ it.skipIf(process.platform === "win32")("reuses an explicit POSIX locality decis
 
 it.skipIf(process.platform === "win32")("does not inspect a nested POSIX locality result for a then getter", () => {
   const then = vi.fn(() => undefined);
-  const value = { get then() { return then(); } };
+  const value = Object.defineProperty({}, "then", { get: then });
   expect(withLocalityDecision(() => {
     expect(withLocalityDecision(() => value)).toBe(value);
     return 1;

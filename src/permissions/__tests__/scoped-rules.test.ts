@@ -279,7 +279,7 @@ describe("scoped permission rules", () => {
     expect(evaluateScopedRules(subject, project, [{ pattern: "Edit(src/**)", action: "ask" }], [{ pattern: "Edit(src/nested/**)", action: "deny" }])).toMatchObject({ decision: "deny" });
   });
 
-  it("refuses a sealed Edit target after a symlink changes", () => {
+  it.runIf(process.platform === "win32")("refuses a sealed Edit target after a symlink changes", () => {
     const outside = join(directory, "outside");
     mkdirSync(outside);
     const link = join(project, "src", "link");
@@ -291,6 +291,20 @@ describe("scoped permission rules", () => {
     const subject: ScopedRuleSubject = { kind: "edit", paths: [filePath], cwd: project, targets: [{ filePath, canonicalPath }] };
     expect(() => evaluate(subject, [allow("Edit(src/**)")])).toThrow("Sealed Edit target changed");
     expect(() => evaluate({ ...subject, targets: [] }, [allow("Edit(src/**)")])).toThrow("Edit target was not sealed by the host");
+  });
+
+  it.skipIf(process.platform === "win32")("judges a POSIX Edit operand by its frozen target after a symlink changes", () => {
+    const outside = join(directory, "outside");
+    mkdirSync(outside);
+    const link = join(project, "src", "link");
+    symlinkSync(outside, link);
+    const filePath = join(link, "new.ts");
+    const canonicalPath = join(outside, "new.ts");
+    unlinkSync(link);
+    symlinkSync(join(project, "src", "nested"), link);
+    const subject: ScopedRuleSubject = { kind: "edit", paths: [filePath], cwd: project, targets: [{ filePath, canonicalPath }] };
+    expect(evaluate(subject, [allow("Edit(src/**)")]).decision).toBeUndefined();
+    expect(() => evaluate({ ...subject, targets: [] }, [])).toThrow("Edit target was not sealed by the host");
   });
 
   it.each(["deny", "ask"] as const)("retains a lexical %s for a current sealed target after a rule anchor symlink changes", (action) => {

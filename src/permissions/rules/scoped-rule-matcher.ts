@@ -38,17 +38,20 @@ function isWithinRoot(root: string, path: string): boolean {
 function editPaths(subject: Extract<ScopedRuleSubject, { kind: "edit" }>, root: string) {
   if (subject.pathEffects && subject.pathEffects.length !== subject.paths.length) throw new Error("Edit path effects do not match sealed operands");
   const inProject = createProjectMembership(root);
+  const isWindows = process.platform === "win32";
   return subject.paths.map((path, index) => {
     const absolute = resolveToolPathForPermission(path, subject.cwd);
     const lexical = foldCanonicalPathSeparators(absolute);
     const frozen = subject.targets?.find((target) => caseFoldForMatch(foldCanonicalPathSeparators(target.filePath)) === caseFoldForMatch(lexical));
     if (subject.targets && !frozen) throw new Error("Edit target was not sealed by the host");
-    const resolved = resolveShellFilesystemPath(frozen ? absolute : expandLeadingTilde(path), subject.cwd);
-    if (process.platform !== "win32" && (path.includes("\\") || subject.cwd.includes("\\") || resolved.includes("\\"))) {
+    const resolved = isWindows
+      ? resolveShellFilesystemPath(frozen ? absolute : expandLeadingTilde(path), subject.cwd)
+      : frozen?.canonicalPath ?? resolveShellFilesystemPath(expandLeadingTilde(path), subject.cwd);
+    if (!isWindows && (path.includes("\\") || subject.cwd.includes("\\") || resolved.includes("\\"))) {
       throw new Error("Write path cannot be represented by normalized rules");
     }
     const canonical = foldCanonicalPathSeparators(resolved);
-    if (frozen && caseFoldForMatch(canonical) !== caseFoldForMatch(foldCanonicalPathSeparators(frozen.canonicalPath))) {
+    if (isWindows && frozen && caseFoldForMatch(canonical) !== caseFoldForMatch(foldCanonicalPathSeparators(frozen.canonicalPath))) {
       throw new Error("Sealed Edit target changed");
     }
     const effect = subject.pathEffects?.[index] ?? "write";
