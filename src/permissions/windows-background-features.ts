@@ -11,6 +11,7 @@ import {
   markSandboxHomesUnavailable,
 } from "./sandbox-capability.js";
 import {
+  getWindowsContainerBackendLossEpoch,
   refreshWindowsBackendEvidence,
   WINDOWS_BACKEND_EVIDENCE,
   type WindowsBackend,
@@ -77,9 +78,21 @@ function admissionOver(stateOf: (owner: WindowsBackendEvidenceOwner) => WindowsB
  * owner still carries the evidence this refresh produced, so the caller decides synchronously, with no await before the
  * action. A caller that asks about the switches alone gets its refusal without a probe once any backend is on record.
  */
-export async function refreshWindowsBackgroundAdmission(scope: "all" | "switches" | WindowsBackend = "all"): Promise<WindowsBackgroundAdmission> {
+export async function refreshWindowsBackgroundAdmission(scope: "all" | "switches" | "extension" | WindowsBackend = "all"): Promise<WindowsBackgroundAdmission> {
   const releaseGeneration = getMxcReleaseGateGeneration();
   const releaseIsCurrent = () => releaseGeneration === getMxcReleaseGateGeneration();
+  if (scope === "extension") {
+    if (!isWindowsBackgroundFeatureReleaseEnabled() || isSandboxGateUndecidedAtBoot()) return INACTIVE_ADMISSION;
+    const plan = getWindowsExtensionBackendPlan();
+    const epoch = getWindowsContainerBackendLossEpoch();
+    return {
+      ...INACTIVE_ADMISSION,
+      // The holder separately verifies its own native start. Shell startup evidence cannot admit or withdraw it.
+      isBackendOperational: (backend) => backend === "container" && plan?.selectedBackend === "mxc" && plan.readiness === "ready"
+        && releaseIsCurrent() && getWindowsExtensionBackendPlan() === plan && epoch === getWindowsContainerBackendLossEpoch()
+        && hasWindowsBackgroundHealth(),
+    };
+  }
   if (scope !== "all" && scope !== "switches") {
     if (process.platform !== "win32" || isSandboxGateUndecidedAtBoot()) return INACTIVE_ADMISSION;
     const owner = WINDOWS_BACKEND_EVIDENCE[scope];

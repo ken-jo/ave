@@ -28,7 +28,7 @@ function confinedLocalInferenceRoute(): Exclude<LocalInferenceRoute, "unconfined
 export function refreshLocalInferenceAdmission(scope?: "switches"): Promise<WindowsBackgroundAdmission> {
   if (scope === "switches" || process.platform !== "win32") return refreshWindowsBackgroundAdmission("switches");
   const route = confinedLocalInferenceRoute();
-  return refreshWindowsBackgroundAdmission(route === "mxc" ? "container" : route === "offline-sandbox" ? "account" : "switches");
+  return refreshWindowsBackgroundAdmission(route === "mxc" ? "extension" : route === "offline-sandbox" ? "account" : "switches");
 }
 
 /** Select the currently permitted route using the caller's exact admission. */

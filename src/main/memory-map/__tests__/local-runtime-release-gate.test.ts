@@ -8,19 +8,22 @@ import { setProcessPlatform } from '../../../__tests__/support/process-platform.
 import { createTmpDirTracker } from '../../../__tests__/support/tmp-dir-teardown.js';
 import { registerMxcReleaseGateEvidence } from '../../../permissions/mxc-extension-admission.js';
 import { refreshWindowsBackgroundAdmission, sessionSearchIndexPolicySource } from '../../../permissions/windows-background-features.js';
-import { invalidateWindowsBackendEvidence } from '../../../permissions/windows-confinement-evidence.js';
+import { invalidateWindowsBackendEvidence, observeWindowsBackend, onWindowsContainerEvidenceChanged, reportWindowsBackendLoss } from '../../../permissions/windows-confinement-evidence.js';
+import { runInferenceChild } from '../inference-child.js';
 import type { SandboxWindowsExtensionPlan, SandboxWindowsSubstrateInfo } from '../../../shared/sandbox-capability-info.js';
 import { assertLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from '../local-runtime.js';
 
 const NO_ACCOUNT = { errors: [] as string[], warnings: [] as string[], accountBackendAbsent: true as const };
 const NO_CONTAINER = { state: 'unavailable', reason: 'container-unavailable', windowsBuild: null, detail: '', baseContainerApiPresent: false, containerBackendAbsent: true };
 const state = vi.hoisted(() => ({
+  spawnMxc: vi.fn(),
   accountHelperIdentity: 'account-helper-1', confined: false, homeVerified: true, verifiedShell: { confidence: 'verified' },
   accountOperational: vi.fn(async () => true), accountInventory: vi.fn(async (): Promise<object> => ({})),
   containerInventory: vi.fn(async (): Promise<object> => ({})), containerStart: vi.fn(async (): Promise<object> => ({})),
   plan: undefined as Pick<SandboxWindowsExtensionPlan, 'selectedBackend' | 'readiness' | 'reason'> | undefined,
   substrate: undefined as Pick<SandboxWindowsSubstrateInfo, 'mxc' | 'srtWinReady' | 'accountBackendAbsent' | 'shells'> | undefined,
 }));
+vi.mock('../../../sandbox/wrap-bundled-command.js', () => ({ spawnMxcBundledHolder: state.spawnMxc }));
 vi.mock('../../../permissions/asrt-sandbox.js', () => ({
   isWindowsBackgroundConfinementRuntimeActive: () => state.confined || state.substrate?.shells === 'mxc',
   isOfflineProcessConfinementActive: () => state.confined,
@@ -97,6 +100,40 @@ describe('Windows local inference release gate', () => {
     state.substrate = CONTAINER_ROUTE;
     expect(await runtime(false)).toBe('mxc');
     expect(await switches()).toBe(false);
+  });
+
+  it.each(['shell', 'common'] as const)('keeps the pending inference gate in step with %s evidence loss', async scope => {
+    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    state.plan = { selectedBackend: 'mxc', readiness: 'ready', reason: 'ready' };
+    state.substrate = CONTAINER_ROUTE;
+    const shellAdmission = await refreshWindowsBackgroundAdmission('container');
+    const prepared = deferred<void>();
+    const deliver = deferred<void>();
+    const completed = new Error('Reached the admitted receiver');
+    let admitted = true;
+    state.spawnMxc.mockImplementationOnce(async ({ assertStillValid }: { assertStillValid: () => void }) => {
+      const unwatch = onWindowsContainerEvidenceChanged(() => {
+        try { assertStillValid(); } catch { admitted = false; }
+      });
+      try {
+        prepared.resolve();
+        await deliver.promise;
+        assertStillValid();
+        throw completed;
+      } finally { unwatch(); }
+    });
+    const controller = new AbortController();
+    const result = runInferenceChild('', { kind: 'embed', text: 'fixture' }, controller.signal).catch((error: unknown) => error);
+    await prepared.promise;
+    const lost = reportWindowsBackendLoss(observeWindowsBackend('container', scope));
+    deliver.resolve();
+    const failure = await result;
+    expect(lost).toBe(true);
+    expect(controller.signal.aborted).toBe(false);
+    expect(shellAdmission.isBackendOperational('container')).toBe(false);
+    expect(admitted).toBe(scope === 'shell');
+    if (scope === 'shell') expect(failure).toBe(completed);
+    else expect(failure).toMatchObject({ code: 'local-runtime-unavailable' });
   });
 
   it('defaults to the host child with confirmed backend absence and honours explicit false', async () => {
