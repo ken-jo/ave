@@ -155,6 +155,7 @@ describe.runIf(process.platform === "win32")("held working directory under the c
       expect(listed.members.filter(({ pid }) => alive(pid))).toEqual([]);
       expect(result.isError).toBe(true);
       expect(result.output.endsWith(t("shellExecution.cwdPinUnconfirmed"))).toBe(true);
+      expect(result.notice).toBe(t("shellExecution.cwdPinUnconfirmed"));
       expect(result.metadata).toMatchObject({ cwdPinUnconfirmed: true });
     } finally { boundary.unqueryable = false; }
   });

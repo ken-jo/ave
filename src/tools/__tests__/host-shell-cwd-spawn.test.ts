@@ -13,6 +13,7 @@ const spawnBoundary = vi.hoisted(() => ({
   cwd: undefined as string | undefined,
   helperArgs: undefined as string[] | undefined,
   helperExe: undefined as string | undefined,
+  launcherExe: undefined as string | undefined,
   onHelper: undefined as ((helper: import("node:child_process").ChildProcess) => void) | undefined,
   commands: [] as string[],
 }));
@@ -29,6 +30,7 @@ vi.mock("node:child_process", async (importOriginal) => {
         return helper;
       }
       spawnBoundary.commands.push(String(args[0]));
+      if (spawnBoundary.launcherExe !== undefined) args[0] = spawnBoundary.launcherExe;
       if (spawnBoundary.mutate !== undefined) {
         const mutate = spawnBoundary.mutate;
         spawnBoundary.mutate = undefined;
@@ -43,7 +45,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, HOST_SHELL_DIRECTORY_HOLD_ERROR, mintHostShellExecutionPermit, recordHostShellPolicyAuthorization } from "../../permissions/host-shell-execution-permit.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
-import { BashTool } from "../shell-tools.js";
+import { BashTool, PowerShellTool } from "../shell-tools.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { HOST_SHELL_CWD_REVOKED_EXIT_CODE } from "../host-shell-cwd-guard.js";
@@ -59,6 +61,7 @@ beforeEach(() => {
   spawnBoundary.cwd = undefined;
   spawnBoundary.helperArgs = undefined;
   spawnBoundary.helperExe = undefined;
+  spawnBoundary.launcherExe = undefined;
   spawnBoundary.onHelper = undefined;
   spawnBoundary.commands = [];
 });
@@ -66,6 +69,7 @@ afterEach(async () => {
   spawnBoundary.mutate = undefined;
   spawnBoundary.helperArgs = undefined;
   spawnBoundary.helperExe = undefined;
+  spawnBoundary.launcherExe = undefined;
   spawnBoundary.onHelper = undefined;
   delete process.env.AVE_TEST_HOLD_RECHECK;
   await cleanupTmpDir(directory);
@@ -372,6 +376,7 @@ describe.runIf(process.platform === "win32")("Windows host cwd hold at launch", 
     // Only the launcher can say the run was reaped, and it went with the job.
     expect(result.isError).toBe(true);
     expect(result.output).toContain("cwd-pin-unconfirmed");
+    expect(result.notice).toContain("cwd-pin-unconfirmed");
     await new Promise(resolve => setTimeout(resolve, Math.max(0, 5500 - (Date.now() - started))));
     expect(existsSync(join(directory, "current", "marker"))).toBe(false);
     expect(existsSync(join(directory, "current", "late"))).toBe(false);
@@ -388,6 +393,52 @@ describe.runIf(process.platform === "win32")("Windows host cwd hold at launch", 
     expect(existsSync(join(directory, "current", "marker"))).toBe(true);
     expect(result.isError).toBe(true);
     expect(result.output).toContain("cwd-pin-lost");
+    expect(result.notice).toContain("cwd-pin-lost");
+  });
+
+  it.each([
+    ["confirms", undefined, false],
+    ["fails when the directory no longer stands for", "lost", true],
+  ] as const)("%s a PowerShell command on the plain host route", async (_name, recheck, failed) => {
+    const fixture = join(process.cwd(), "resources", "windows-path-kind", process.arch, "ave-path-kind-hold-fixture.exe");
+    if (!existsSync(fixture)) throw new Error("Build the hold fixture: bun run build:windows-job -- -Helper path-kind -HoldFixture");
+    mkdirSync(join(directory, "current"));
+    const plan = getHostShellExecutionPlan();
+    const input = { command: "Set-Content -LiteralPath marker -Value held; Write-Output ('pinned' + 'run')", cwd: "current", timeoutSeconds: 30 };
+    const binding = buildHostShellExecutionPermitBinding({
+      plan, toolName: "powershell", toolUseId: "cwd-spawn", rawInput: input, executionCwd: directory, extraAllowedDirectories: [],
+    });
+    if (binding === undefined) throw new Error("no permit binding");
+    recordHostShellPolicyAuthorization(binding);
+    const permit = mintHostShellExecutionPermit({ plan, binding, approvalDecision: undefined });
+    expect(permit).toBeDefined();
+    spawnBoundary.helperExe = fixture;
+    if (recheck !== undefined) process.env.AVE_TEST_HOLD_RECHECK = recheck;
+    const result = await new PowerShellTool().execute(input, {
+      cwd: directory, extraAllowedDirectories: [], metadata: { toolUseId: "cwd-spawn" }, hostShellExecutionPlan: plan, hostShellExecutionPermit: permit,
+    });
+    expect(spawnBoundary.commands.filter(command => command.endsWith("ave-job.exe"))).toHaveLength(1);
+    expect(existsSync(join(directory, "current", "marker"))).toBe(true);
+    expect(result.output).toContain("pinnedrun");
+    expect(result.isError).toBe(failed);
+    if (failed) {
+      expect(result.notice).toContain("cwd-pin-lost");
+      expect(result.metadata).toMatchObject({ cwdPinLost: true });
+    } else expect(result.notice).toBeUndefined();
+  }, 60000);
+
+  it("reports a launcher that never starts as a spawn failure the hold could not confirm", async () => {
+    mkdirSync(join(directory, "current"));
+    const { input, context } = await authorizedContext("current");
+    spawnBoundary.launcherExe = join(directory, "absent.exe");
+    const result = await new BashTool().execute(input, context);
+    expect(spawnBoundary.commands).toHaveLength(1);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("spawn failed");
+    expect(result.output).toContain("cwd-pin-unconfirmed");
+    expect(result.notice).toContain("cwd-pin-unconfirmed");
+    expect(result.metadata).toMatchObject({ cwdPinUnconfirmed: true });
+    expect(existsSync(join(directory, "current", "marker"))).toBe(false);
   });
 
   it("stops a descendant still holding the output when the command exits", async () => {

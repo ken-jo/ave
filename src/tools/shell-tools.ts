@@ -464,14 +464,17 @@ function checkedShellClose(child: ChildProcess, required: boolean, held?: HeldWi
 }
 
 /** A held run publishes nothing before its launcher's verdict: stop, close and a started child's error all wait for it.
+ * A launcher that never started ran nothing, so it ends as the route's spawn failure carrying that verdict.
  * Any other run settles on the first of them. */
 function onShellEnd(
   child: ChildProcess, lifetime: { stopped: Promise<void> }, held: HeldWindowsRun | undefined,
   finish: (code: number | null, signal: NodeJS.Signals | null, pin?: WindowsHoldVerdict) => Promise<void>,
-  failed: (err: Error) => void, fault: (err: unknown) => void,
+  failed: (err: Error, pin?: WindowsHoldVerdict) => void, fault: (err: unknown) => void,
 ): void {
   if (held !== undefined) {
-    void held.verdict.then((pin) => finish(child.exitCode, child.signalCode, pin)).catch(fault);
+    let unstarted: Error | undefined;
+    child.once("error", (err) => { if (child.pid === undefined) unstarted = err; });
+    void held.verdict.then((pin) => unstarted === undefined ? finish(child.exitCode, child.signalCode, pin) : failed(unstarted, pin)).catch(fault);
     return;
   }
   void lifetime.stopped.then(() => finish(child.exitCode, null)).catch(fault);
@@ -2850,7 +2853,7 @@ export async function spawnWithSandbox(
     };
     const fault = finalizationFault("tool:bash:asrt", resolveResult, "", () => held);
 
-    onShellEnd(child, lifetime, held, finish, (err) => {
+    onShellEnd(child, lifetime, held, finish, (err, pin) => {
       void (async () => {
         if (closed !== undefined) await closed;
         if (settled) return;
@@ -2862,11 +2865,11 @@ export async function spawnWithSandbox(
         const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${err.message}`, command, lifecycleCleaned);
         outputCollector.finishObservation(null, "failed");
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
-        resolveResult(withReleaseFailures({
+        resolveResult(withReleaseFailures(withCwdPinOutcome({
           output: annotated.output,
           isError: true,
           metadata: { ...artifactMetadata, ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-        }, released));
+        }, pin, true), released));
       })().catch(fault);
     }, fault);
   });
@@ -3019,7 +3022,7 @@ async function spawnWithTimeout(
     };
 
     const fault = finalizationFault("tool:bash", resolve, "", () => held);
-    onShellEnd(child, lifetime, held, finish, (err) => {
+    onShellEnd(child, lifetime, held, finish, (err, pin) => {
       void (async () => {
         if (closed !== undefined) await closed;
         if (settled) return;
@@ -3029,11 +3032,11 @@ async function spawnWithTimeout(
         control?.dispose();
         const artifactMetadata = await outputCollector.finish(true);
         outputCollector.finishObservation(null, "failed");
-        resolve({
+        resolve(withCwdPinOutcome({
           output: `spawn failed: ${err.message}`,
           isError: true,
           metadata: { ...artifactMetadata },
-        });
+        }, pin, true));
       })().catch(fault);
     }, fault);
   });
@@ -4243,7 +4246,7 @@ async function spawnPowerShellWithSandbox(
     };
     const fault = finalizationFault("tool:powershell:asrt", resolveResult, "PowerShell ", () => held);
 
-    onShellEnd(child, lifetime, held, finish, (err) => {
+    onShellEnd(child, lifetime, held, finish, (err, pin) => {
       void (async () => {
         if (closed !== undefined) await closed;
         if (settled) return;
@@ -4258,11 +4261,11 @@ async function spawnPowerShellWithSandbox(
             : `PowerShell spawn failed: ${err.message}`, command, lifecycleCleaned);
         outputCollector.finishObservation(null, "failed");
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
-        resolveResult(withReleaseFailures({
+        resolveResult(withReleaseFailures(withCwdPinOutcome({
           output: annotated.output,
           isError: true,
           metadata: { ...artifactMetadata, ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-        }, released));
+        }, pin, true), released));
       })().catch(fault);
     }, fault);
   });
@@ -4640,7 +4643,7 @@ async function spawnPowerShell(
     };
 
     const fault = finalizationFault("tool:powershell", resolve, "PowerShell ", () => held);
-    onShellEnd(child, lifetime, held, finish, (err) => {
+    onShellEnd(child, lifetime, held, finish, (err, pin) => {
       void (async () => {
         if (closed !== undefined) await closed;
         if (settled) return;
@@ -4648,13 +4651,13 @@ async function spawnPowerShell(
         control?.dispose();
         const artifactMetadata = await outputCollector.finish(true);
         outputCollector.finishObservation(null, "failed");
-        resolve({
+        resolve(withCwdPinOutcome({
           output: err && "code" in err && err.code === "ENOENT"
             ? `PowerShell executable not found: ${executable}`
             : `PowerShell spawn failed: ${err.message}`,
           isError: true,
           metadata: { ...artifactMetadata },
-        });
+        }, pin, true));
       })().catch(fault);
     }, fault);
   });
