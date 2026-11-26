@@ -21,6 +21,7 @@ export function issueHostTerminalWriteAuthority(input: {
   const sealed = {
     backend: input.decidedBackend,
     forcedReason: input.settled.pipelineRequest?.floor?.code,
+    floorSessionEligible: input.settled.pipelineRequest?.floorSessionEligible === true,
     source: input.human ? "person" : input.reviewed ? "ask:user-owned-surface-review" : `allow:${input.settled.reasonCode}`,
   };
   const authority: HostTerminalWriteAuthority = {
@@ -29,8 +30,9 @@ export function issueHostTerminalWriteAuthority(input: {
       if (now.decision === "deny") return now.reason;
       const backend = input.backendIdentity();
       const forcedReason = now.pipelineRequest?.floor?.code;
+      const floorSessionEligible = now.pipelineRequest?.floorSessionEligible === true;
       const source = input.human ? "person" : `${now.decision}:${now.reasonCode}`;
-      if (backend !== sealed.backend || forcedReason !== sealed.forcedReason || source !== sealed.source) {
+      if (backend !== sealed.backend || forcedReason !== sealed.forcedReason || floorSessionEligible !== sealed.floorSessionEligible || source !== sealed.source) {
         return HOST_TERMINAL_PERMISSION_CHANGED;
       }
       return personAnswerStands(input.manager, opened, input.cardForced, () => now)

@@ -1,4 +1,4 @@
-import { type AnswerEpochs, type SameCardPolicyTransition, answerEpochsOf, onlyMemoryRulesChangedSince, personAnswerStands } from "../permissions/pending-answer-policy.js";
+import { type AnswerEpochs, type SameCardPolicyTransition, answerEpochsOf, forcedQuestionOf, onlyMemoryRulesChangedSince, personAnswerStands } from "../permissions/pending-answer-policy.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
@@ -1154,6 +1154,7 @@ export async function executeAuthorizedToolInvocation(
       permissionResult = services.permissionManager.recheckPermission(permissionResult);
       if (permissionResult.decision !== "ask") throw new Error(permissionResult.reason);
     }
+    const openedQuestion = forcedQuestionOf(permissionResult);
     // Use the reason and surface facts from the current decision.
     const liveRequest: ApprovalRequestInput = { ...request,
       userOwnedSurface: undefined, userOwnedSurfaceReviewFallback: undefined, reasonCode: undefined,
@@ -1177,21 +1178,29 @@ export async function executeAuthorizedToolInvocation(
     abortSignal?.throwIfAborted();
     const currentEpoch = services.permissionManager?.getPolicyEpoch();
     const policyChanged = "Permission policy changed before execution.";
-    const sameCardTransition: { denial?: string } = {};
+    const sameCardTransition: { denial?: string; fresh?: PermissionCheckResult } = {};
     const answerOutdated = services.permissionManager !== undefined &&
       !lateApprovalStands(true, {
         gate: services.approvalGate!,
         decision,
+        ...(openedQuestion === undefined ? {} : { question: openedQuestion }),
         onTransition: () => {
           const current = context.checkCurrentPermission?.();
           if (!current) {
             sameCardTransition.denial = policyChanged;
             return;
           }
-          permissionResult = current;
+          permissionResult = sameCardTransition.fresh = current;
           if (current.decision === "deny") sameCardTransition.denial = current.reason;
+          return current;
         },
       });
+    if (answerOutdated && sameCardTransition.fresh !== undefined && sameCardTransition.denial === undefined) {
+      // The card's own save moved the call to another forced question: that answer is stale, and the retry asks the fresh one on a new card.
+      humanApproved = false;
+      terminalWriteAuthority = undefined;
+      return;
+    }
     const invalidationReason = answerOutdated ? policyChanged : sameCardTransition.denial;
     if (invalidationReason !== undefined) {
       permissionResult = { ...permissionResult, decision: "deny", reason: invalidationReason };

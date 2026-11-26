@@ -12,10 +12,27 @@ export interface AnswerEpochs { readonly epoch: string; readonly contextEpoch: s
 
 type EpochSource = Pick<PermissionManager, "getPolicyEpoch" | "getPolicyContextEpoch">;
 type Rechecked = Pick<PermissionCheckResult, "decision" | "forceModal">;
+/** The forced question a card asked: its floor and reason, and whether "This session" could answer it (no competing floor). */
+export interface ForcedQuestion { readonly floor?: string; readonly reason?: string; readonly sessionEligible: boolean }
 export interface SameCardPolicyTransition {
   readonly gate: Partial<Pick<ApprovalGate, "allowsPolicyTransition">>;
   readonly decision: ApprovalDecision;
-  onTransition?(): void;
+  /** The card's forced question when it opened; a fresh forced ask that asks another question leaves the answer stale. */
+  readonly question?: ForcedQuestion;
+  /** The fresh check of the pending call after the card's own policy step. */
+  onTransition?(): Pick<PermissionCheckResult, "decision" | "forceModal" | "pipelineRequest"> | undefined;
+}
+
+export function forcedQuestionOf(result: Pick<PermissionCheckResult, "forceModal" | "pipelineRequest">): ForcedQuestion | undefined {
+  if (result.forceModal !== true) return undefined;
+  const request = result.pipelineRequest;
+  return { floor: request?.floor?.code, reason: request?.floor?.reason, sessionEligible: request?.floorSessionEligible === true };
+}
+
+function sameForcedQuestion(opened: ForcedQuestion, now: Pick<PermissionCheckResult, "decision" | "forceModal" | "pipelineRequest">): boolean {
+  if (now.decision !== "ask") return true;
+  const asked = forcedQuestionOf(now);
+  return asked === undefined || asked.floor === opened.floor && asked.reason === opened.reason && asked.sessionEligible === opened.sessionEligible;
 }
 
 export function answerEpochsOf(manager: EpochSource): AnswerEpochs {
@@ -42,8 +59,8 @@ export function personAnswerStands(manager: EpochSource, opened: AnswerEpochs, c
   const current = manager.getPolicyEpoch();
   if (current === opened.epoch) return true;
   if (sameCard?.gate.allowsPolicyTransition?.(sameCard.decision, opened.epoch, current)) {
-    sameCard.onTransition?.();
-    return true;
+    const now = sameCard.onTransition?.();
+    return sameCard.question === undefined || !now || sameForcedQuestion(sameCard.question, now);
   }
   if (!onlyMemoryRulesChangedSince(manager, opened)) return false;
   const now = recheck();

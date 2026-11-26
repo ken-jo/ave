@@ -1,4 +1,4 @@
-import { answerEpochsOf, personAnswerStands } from "../permissions/pending-answer-policy.js";
+import { answerEpochsOf, forcedQuestionOf, personAnswerStands } from "../permissions/pending-answer-policy.js";
 import { RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
@@ -948,6 +948,7 @@ export async function authorizeToolInvocation(
           ? classifyCurrentRule() : undefined;
         const approvalAnswerEpochs = services.permissionManager ? answerEpochsOf(services.permissionManager) : undefined;
         const approvalPolicyEpoch = approvalAnswerEpochs?.epoch;
+        const approvalQuestion = forcedQuestionOf(permissionResult);
         const readjudicationAssessment = source === "plugin" && context.pluginRuntimeInstance !== undefined &&
           permissionResult.forceModal !== true && !evaluationContext.headless &&
           !permissionResult.pipelineRequest?.userOwnedSurface &&
@@ -1216,9 +1217,11 @@ export async function authorizeToolInvocation(
           !personAnswerStands(services.permissionManager, approvalAnswerEpochs, permissionResult.forceModal === true, recheckAnsweredPermission, {
             gate: services.approvalGate,
             decision,
+            ...(approvalQuestion === undefined ? {} : { question: approvalQuestion }),
             onTransition: () => {
               const current = recheckAnsweredPermission();
               if (current.decision === "deny") sameCardTransition.denial = current.reason;
+              return current;
             },
           });
         const approvalInvalidationReason = answerOutdated

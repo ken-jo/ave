@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince, personAnswerStands } from "../pending-answer-policy.js";
+import { answerEpochsOf, answerSurvivesRecheck, forcedQuestionOf, onlyMemoryRulesChangedSince, personAnswerStands } from "../pending-answer-policy.js";
 
 /** A manager's two epochs, moved by hand. */
 function policy() {
@@ -65,5 +65,30 @@ describe("a person's answer across a policy change", () => {
     expect(personAnswerStands(manager, opened, cardForced, recheck)).toBe(stands);
     expect(recheck).toHaveBeenCalledOnce();
     expect(answerSurvivesRecheck(now, cardForced)).toBe(stands);
+  });
+
+  const forcedRequest = { tool: { name: "terminal_run", source: "builtin" as const, kind: "shell" as const }, mode: "default" as const, headless: false };
+  const sandboxFloor = { code: "sandbox-unavailable" as const, reason: "No sandbox." };
+  const floorAsk = (floorSessionEligible: boolean, floor: { code: "sandbox-unavailable" | "protected-path"; reason: string } = sandboxFloor) => ({
+    decision: "ask" as const, forceModal: true,
+    pipelineRequest: { ...forcedRequest, floor, ...(floorSessionEligible ? { floorSessionEligible: true as const } : {}) },
+  });
+  it.each([
+    ["the same forced question", floorAsk(true), true],
+    ["now allowed by the card's own save", allow, true],
+    ["now denied (the caller's denial decides)", deny, true],
+    ["the floor lost its session eligibility", floorAsk(false), false],
+    ["another floor", floorAsk(true, { code: "protected-path", reason: "Protected." }), false],
+    ["the same floor with another reason", floorAsk(true, { ...sandboxFloor, reason: "Other." }), false],
+  ] as const)("across the card's own policy step the fresh check decides: %s", (_name, now, stands) => {
+    const manager = policy();
+    const opened = answerEpochsOf(manager);
+    manager.otherStep();
+    const recheck = vi.fn(() => allow);
+    const question = forcedQuestionOf(floorAsk(true));
+    expect(personAnswerStands(manager, opened, true, recheck, {
+      gate: { allowsPolicyTransition: () => true }, decision: { requestId: "card", choice: "allow-once" }, question, onTransition: () => now,
+    })).toBe(stands);
+    expect(recheck).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,7 @@
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -219,8 +219,8 @@ describe("live native approval ownership", () => {
     vi.stubEnv("AVE_HOME", f.root);
     setShellSandboxRequestedAtBoot(true);
     f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "allow");
-    const cwd = join(f.root, "work");
-    mkdirSync(cwd);
+    const cwd = join(f.root, "workspace", "work");
+    mkdirSync(cwd, { recursive: true });
     const windowId = 101;
     const terminal = terminalSessionFixture("terminal:0000c0de-1", "manual");
     const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
@@ -268,7 +268,7 @@ describe("live native approval ownership", () => {
     return { ...f, cwd, write, runTerminal, recordTerminalWaiver };
   }
 
-  it.each(["deny", "allow"] as const)("rechecks the original terminal command after saving its late floor waiver: %s", async current => {
+  it.each(["deny", "allow", "changed forced question"] as const)("rechecks the original terminal command after saving its late floor waiver: %s", async current => {
     const f = await terminalFloorSubject();
     const frame = frameEvent(f.windowA);
     const warmup = runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "initial-waiver" }, () =>
@@ -279,6 +279,13 @@ describe("live native approval ownership", () => {
     expect((await warmup)[0]?.is_error).toBeFalsy();
     expect(f.write.mock.calls).toEqual([["printf initial"]]);
     f.write.mockClear();
+    const command = current === "changed forced question" ? "printf ready > output/result.txt" : "printf ready";
+    const outputDir = join(f.cwd, "output");
+    const protectedDir = join(f.cwd, ".vscode");
+    if (current === "changed forced question") {
+      mkdirSync(outputDir);
+      mkdirSync(protectedDir);
+    }
 
     const reached = deferred<void>();
     const held = f.hold();
@@ -292,14 +299,17 @@ describe("live native approval ownership", () => {
       },
     }));
     const lateCard = deferred<ApprovalRequest>();
+    const freshCard = deferred<ApprovalRequest>();
     f.windowA.webContents.send.mockImplementation((channel: string, card: ApprovalRequest) => {
-      if (channel === IPC_APPROVAL_REQUEST) lateCard.resolve(card);
+      if (channel !== IPC_APPROVAL_REQUEST) return;
+      if (f.cards(f.windowA).length === 2) lateCard.resolve(card);
+      else freshCard.resolve(card);
     });
     const transition = vi.spyOn(f.gate, "allowsPolicyTransition");
     const issueWriteAuthority = vi.spyOn(terminalWriteAuthority, "issueHostTerminalWriteAuthority");
     const turnId = "late-waiver";
     await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId }, async () => {
-      const pending = f.runTerminal(turnId, "printf ready");
+      const pending = f.runTerminal(turnId, command);
       const settledEarly = pending.then(result => { throw new Error(`Terminal command settled early: ${result[0]?.content}`); });
       await Promise.race([reached.promise, lateCard.promise.then(() => { throw new Error("Approval card arrived before handler admission"); }), settledEarly]);
       expect(admission.mock.calls[0]?.[0].permissionResult).toMatchObject({ decision: "allow", reasonCode: "floor-session-allow" });
@@ -310,7 +320,7 @@ describe("live native approval ownership", () => {
 
       const card = await Promise.race([lateCard.promise, settledEarly]);
       expect(card).toMatchObject({
-        args: { command: "printf ready" },
+        args: { command },
         allowedChoices: ["allow-once", "deny-once"],
         shellRule: { floorSessionOnly: true, sessionAllowed: true },
       });
@@ -320,7 +330,32 @@ describe("live native approval ownership", () => {
       expect(await f.recordTerminalWaiver(card)).toEqual({ ok: true });
       expect(f.manager.getPolicyEpoch()).not.toBe(openedEpoch);
       if (current === "deny") noteOtherPrincipalGuidance();
+      if (current === "changed forced question") {
+        renameSync(outputDir, join(f.cwd, "former-output"));
+        symlinkSync(protectedDir, outputDir, "junction");
+      }
       await invoke(PERMISSIONS.approvalRespond, frame, allowOnceCardAnswer(card));
+
+      if (current === "changed forced question") {
+        const fresh = await Promise.race([freshCard.promise, pending.then(() => undefined)]);
+        expect(transition).toHaveReturnedWith(true);
+        expect.soft(issueWriteAuthority).not.toHaveBeenCalled();
+        expect.soft(f.write).not.toHaveBeenCalled();
+        expect(fresh).toBeDefined();
+        if (!fresh) return;
+        expect(fresh.id).not.toBe(card.id);
+        expect(fresh).toMatchObject({ args: { command }, reason: card.reason, allowedChoices: ["allow-once", "deny-once"] });
+        expect(fresh.shellRule?.sessionAllowed).not.toBe(true);
+        expect(invoke(PERMISSIONS.approvalPending, frame)).toEqual([fresh]);
+        await invoke(PERMISSIONS.approvalRespond, frame, allowOnceCardAnswer(card));
+        expect(invoke(PERMISSIONS.approvalPending, frame)).toEqual([fresh]);
+        await invoke(PERMISSIONS.approvalRespond, frame, allowOnceCardAnswer(fresh));
+        const [result] = await pending;
+        expect(result?.is_error, result?.content).toBeFalsy();
+        expect(issueWriteAuthority).toHaveBeenCalled();
+        expect(f.write.mock.calls).toEqual([[command]]);
+        return;
+      }
 
       const [result] = await pending;
       expect(transition).toHaveReturnedWith(true);
@@ -335,9 +370,32 @@ describe("live native approval ownership", () => {
       } else {
         expect(result?.is_error, result?.content).toBeFalsy();
         expect(result?.tool_use_id).toBe(turnId);
-        expect(f.write.mock.calls).toEqual([["printf ready"]]);
+        expect(f.write.mock.calls).toEqual([[command]]);
       }
     });
+  });
+
+  it("refuses the terminal floor card's answer when its save left another forced question", async () => {
+    const f = await terminalFloorSubject();
+    const command = "printf ready > output/result.txt";
+    const outputDir = join(f.cwd, "output");
+    const protectedDir = join(f.cwd, ".vscode");
+    mkdirSync(outputDir);
+    mkdirSync(protectedDir);
+    const transition = vi.spyOn(f.gate, "allowsPolicyTransition");
+    const issueWriteAuthority = vi.spyOn(terminalWriteAuthority, "issueHostTerminalWriteAuthority");
+    const pending = runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "changed-initial" }, () => f.runTerminal("changed-initial", command));
+    const card = await f.waitForCard();
+    expect(card).toMatchObject({ args: { command }, shellRule: { floorSessionOnly: true, sessionAllowed: true } });
+    expect(await f.recordTerminalWaiver(card)).toEqual({ ok: true });
+    renameSync(outputDir, join(f.cwd, "former-output"));
+    symlinkSync(protectedDir, outputDir, "junction");
+    await invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+    const [result] = await pending;
+    expect(transition).toHaveReturnedWith(true);
+    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("Permission policy changed while approval was pending") });
+    expect(issueWriteAuthority).not.toHaveBeenCalled();
+    expect(f.write).not.toHaveBeenCalled();
   });
 
   it.each(["before save", "during audit", "unchanged"] as const)("checks the terminal floor card's directory when it is %s", async scenario => {
