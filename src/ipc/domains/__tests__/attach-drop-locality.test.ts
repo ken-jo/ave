@@ -29,7 +29,7 @@ const frame = { url: HOST_FRAME_URL, processId: 7, routingId: 0, detached: false
 const sender = Object.assign(new EventEmitter(), { id: 7, mainFrame: frame, session: defaultSession,
   getType: () => "window", isDestroyed: () => false });
 const event = { senderFrame: frame, sender, frameId: 0, processId: 7 };
-const call = (channel: string, ...args: unknown[]): Promise<unknown> => Promise.resolve(handlers.get(channel)!(event, ...args));
+const call = (channel: string, ...args: unknown[]): Promise<unknown> => Promise.resolve(handlers.get(channel)?.(event, ...args));
 
 describe.runIf(process.platform === "win32")("drop redemption on a failed drive query", () => {
   let root: string;

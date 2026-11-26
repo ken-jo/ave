@@ -266,7 +266,7 @@ describe("RoutineEngine workspace lifecycle", () => {
 
   it("revokes an active loop and stops visiting it after completion", async () => {
     let releaseTurn: ((value: { text: string; toolCalls: never[]; route: string }) => void) | undefined;
-    const revokeWorkspaceRoot = vi.fn(() => ({
+    const revokeWorkspaceRoot = vi.fn((_root: string, _options: unknown) => ({
       sessionDirectoriesRemoved: 1,
       turnDirectoriesRemoved: 2,
       projectRebound: true,

@@ -349,8 +349,7 @@ describe("native Windows file permission targets", () => {
 });
 
 describe("sealed file targets up to their effects", () => {
-  const LINK = `${PROJECT}\linked.txt`;
-  const INSIDE = `${PROJECT}\inside.txt`;
+  const INSIDE = `${PROJECT}\\inside.txt`;
 
   async function runAnswered(choice: "allow-once" | "allow-session" | "allow-always", drift: () => void, lifecycle?: { allowDirectory: (root: string, source: "permission-slash", authority?: { isCurrent(): boolean }) => Promise<string[]>; denyDirectory: () => Promise<string[]> }) {
     const tool = new WriteFileTool();

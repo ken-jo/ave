@@ -568,7 +568,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
       if (Date.now() > pending.expires) return { ok: false, error: "drop-token-expired" };
       // Every key first, in one decision; the batch is authorized only when all of them are known.
       const keys = withLocalityDecision(() => pending.files.map((file) => chosenFileKey(file.path)));
-      pending.files.forEach((file, index) => authorizePath(file.path, keys[index]));
+      pending.files.forEach((file, index) => { authorizePath(file.path, keys[index]); });
       return { ok: true, files: pending.files };
     },
   );
