@@ -2,6 +2,7 @@ import { constants, promises as fs, type BigIntStats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { basename, extname, isAbsolute, join } from "node:path";
+import { t } from "../../i18n/index.js";
 import { sameFileIdentity, type FileIdentity } from "../../lib/file-identity.js";
 import { openFeatureNamespace } from "../storage/feature-namespace.js";
 import { unattendedApprovalDenial } from "../../shared/turn-extension-policy.js";
@@ -222,7 +223,7 @@ export async function stageBrowserUpload(
   assertDestination: () => void,
 ): Promise<BrowserUploadSelection | null> {
   const unattended = unattendedApprovalDenial();
-  if (unattended) throw new BrowserActionError(unattended, "This operation needs an interactive file picker");
+  if (unattended) throw new BrowserActionError(unattended, t("reasonCodes.unattended-approval-denied"));
   assertUploadActive(destination.signal);
   assertDestination();
   let chosen: readonly string[] | null;
