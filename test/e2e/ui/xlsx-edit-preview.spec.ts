@@ -241,8 +241,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [directory],
       reviewer: { interactive: { autoApprove: "off" } } } }));
     const runtime = await ctx.app.evaluate(() => process.execPath);
-    const argv = [runtime, publicationBarrier.scriptPath, path, requestPath,
-      publicationBarrier.readyPath, publicationBarrier.releasePath];
+    const argv = publicationBarrier.argv(runtime, path, requestPath);
     const quoted = process.platform === "win32"
       ? argv.map((value) => `'${value.replaceAll("'", "''")}'`)
       : argv.map((value) => `'${value.replaceAll("'", "'\\''")}'`);

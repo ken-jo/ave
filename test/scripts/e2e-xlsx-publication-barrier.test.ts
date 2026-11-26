@@ -3,15 +3,18 @@ import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { join, resolve, win32 } from "node:path";
 import { build } from "esbuild";
 import * as XLSX from "xlsx";
 import { describe, expect, it } from "vitest";
 import { stageWindowsPathKindHelper } from "../../src/__tests__/support/bundled-skill-resources.js";
 import { configureHostResources } from "../../src/main/host-resources.js";
-import { hostScriptInvocationReadPaths } from "../../src/main/host-script-runtime.js";
+import { hostScriptInvocationReadPaths, hostScriptWriteDenyPaths } from "../../src/main/host-script-runtime.js";
+import { windowsPathKindHelperIn } from "../../src/main/windows-path-kind-launcher.js";
+import { rankMxcFilesystem } from "../../src/permissions/mxc-windows.js";
 import { PermissionManager } from "../../src/permissions/permission-manager.js";
 import { shellQuote } from "../../src/lib/shell-resolver.js";
+import { shellPolicyModel } from "../../src/tools/mxc-shell-launch.js";
 import { findShellPathPolicyViolation } from "../../src/tools/shell-path-policy.js";
 import { prepareWorkbookPublicationBarrier } from "../e2e/ui/xlsx-publication-barrier.js";
 
@@ -19,7 +22,7 @@ describe("workbook publication barrier", () => {
   it("holds the real producer after journal cells and preserves strict script admission and publication", async () => {
     const root = mkdtempSync(join(tmpdir(), "workbook-publication-"));
     const resources = join(root, "resources");
-    const scripts = join(resources, "skill-scripts");
+    const scripts = join(root, "dist", "skill-scripts");
     const workspace = join(root, "workspace");
     const home = join(root, "home");
     mkdirSync(scripts, { recursive: true });
@@ -46,9 +49,21 @@ describe("workbook publication barrier", () => {
     let closed: Promise<unknown> | undefined;
     try {
       expect(readFileSync(barrier.scriptPath).subarray(-producerBytes.length)).toEqual(producerBytes);
-      configureHostResources({ resourcePath: resources, isPackaged: true });
-      const argv = [process.execPath, barrier.scriptPath, workbookPath, requestPath, barrier.readyPath, barrier.releasePath];
-      expect(hostScriptInvocationReadPaths(argv, { ELECTRON_RUN_AS_NODE: "1" })).toContain(barrier.scriptPath);
+      configureHostResources({ resourcePath: resources, isPackaged: false });
+      const argv = barrier.argv(process.execPath, workbookPath, requestPath);
+      const allowRead = hostScriptInvocationReadPaths(argv, { ELECTRON_RUN_AS_NODE: "1" });
+      expect(allowRead).toContain(barrier.scriptPath);
+      if (process.platform === "win32") {
+        const helper = windowsPathKindHelperIn(resources);
+        const denyWrite = hostScriptWriteDenyPaths();
+        const grants = rankMxcFilesystem(shellPolicyModel({
+          allowRead, allowWrite: [workspace], denyWrite, denyRead: [], protectedFloor: [],
+        }), existsSync);
+        expect(grants.readonly).toContain(helper);
+        expect(denyWrite).toContain(helper);
+        expect(grants.readwrite).not.toContain(helper);
+        expect([...grants.readonly, ...grants.readwrite].filter(grant => win32.parse(grant).root === grant)).toEqual([]);
+      }
       const command = `ELECTRON_RUN_AS_NODE=1 ${argv.map(shellQuote).join(" ")}`;
       expect(findShellPathPolicyViolation(command, workspace, workspace, [], true)).toBeNull();
       const permissions = new PermissionManager(join(root, "permissions.json"));
@@ -78,12 +93,10 @@ describe("workbook publication barrier", () => {
       expect(JSON.parse(stdout)).toEqual({ editedCells: 2, needsRecalculation: true, backup: null });
       expect(records().map(record => record.kind)).toEqual(["begin", "cell", "cell", "commit"]);
       expect(XLSX.read(readFileSync(workbookPath), { type: "buffer" }).Sheets.Values?.B1?.v).toBe(84);
-      expect(readFileSync(producer)).toEqual(producerBytes);
       barrier.restore();
       barrier.restore();
       expect(readFileSync(manifestPath)).toEqual(originalManifest);
-      expect(existsSync(barrier.scriptPath)).toBe(false);
-      expect(basename(barrier.scriptPath)).toMatch(/^xlsx-publication-[a-f0-9]+\.cjs$/);
+      expect(readFileSync(producer)).toEqual(producerBytes);
     } finally {
       barrier.release();
       if (child && child.exitCode === null && child.signalCode === null) child.kill();

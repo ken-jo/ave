@@ -1,10 +1,11 @@
-import { createHash, randomBytes } from "node:crypto";
-import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const PUBLICATION_BARRIER_PRELUDE = String.raw`"use strict";
 (() => {
   const fileSystem = require("node:fs");
+  if (process.argv.length === 4) return;
   const [readyPath, releasePath] = process.argv.splice(4, 2);
   if (!readyPath || !releasePath || process.argv.length !== 4) throw new Error("Expected workbook publication markers");
   const nativeWrite = fileSystem.writeSync;
@@ -32,27 +33,31 @@ export function prepareWorkbookPublicationBarrier(scriptsDirectory: string, work
   const manifestPath = join(scriptsDirectory, "manifest.json");
   const originalManifest = readFileSync(manifestPath);
   const manifest = JSON.parse(originalManifest.toString("utf8")) as { version: number; scripts: Record<string, string> };
-  const producer = readFileSync(join(scriptsDirectory, "edit-xlsx.cjs"));
-  if (manifest.version !== 1 || manifest.scripts["edit-xlsx.cjs"] !== digest(producer)) {
+  const name = "edit-xlsx.cjs";
+  const scriptPath = join(scriptsDirectory, name);
+  const producer = readFileSync(scriptPath);
+  if (manifest.version !== 1 || manifest.scripts[name] !== digest(producer)) {
     throw new Error("Workbook producer does not match its resource manifest");
   }
-  const name = `xlsx-publication-${randomBytes(6).toString("hex")}.cjs`;
-  const scriptPath = join(scriptsDirectory, name);
   const readyPath = join(workspace, "publication-ready");
   const releasePath = join(workspace, "publication-release");
   const script = Buffer.concat([Buffer.from(PUBLICATION_BARRIER_PRELUDE), producer]);
   const preparedManifest = Buffer.from(`${JSON.stringify({ ...manifest,
     scripts: { ...manifest.scripts, [name]: digest(script) } }, null, 2)}\n`);
-  writeFileSync(scriptPath, script, { flag: "wx", mode: 0o600 });
-  try { writeFileSync(manifestPath, preparedManifest); }
-  catch (error) {
+  try {
+    writeFileSync(scriptPath, script);
+    writeFileSync(manifestPath, preparedManifest);
+  } catch (error) {
+    writeFileSync(scriptPath, producer);
     writeFileSync(manifestPath, originalManifest);
-    unlinkSync(scriptPath);
     throw error;
   }
   let restored = false;
   return {
     scriptPath,
+    argv(runtime: string, workbookPath: string, requestPath: string): string[] {
+      return [runtime, scriptPath, workbookPath, requestPath, readyPath, releasePath];
+    },
     readyPath,
     releasePath,
     release(): void {
@@ -67,8 +72,8 @@ export function prepareWorkbookPublicationBarrier(scriptsDirectory: string, work
       if (!readFileSync(manifestPath).equals(preparedManifest) || !readFileSync(scriptPath).equals(script)) {
         throw new Error("Workbook fixture resources changed before restoration");
       }
+      writeFileSync(scriptPath, producer);
       writeFileSync(manifestPath, originalManifest);
-      unlinkSync(scriptPath);
       restored = true;
     },
   };
