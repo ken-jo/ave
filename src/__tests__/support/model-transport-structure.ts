@@ -1,8 +1,8 @@
 import { ts } from "ts-morph";
 
 /**
- * Structural rules that keep every model transport behind the retirement gate. The checker is a pure function over a
- * path → source map, so a test can prove each rule against an in-memory mutation.
+ * Lint for accidental ungated model sends. The boundary is the runtime gate (`gateModelFetch`), backed by the
+ * retired-model behavioural test across provider factories. In-memory source fixtures exercise the lint rules.
  */
 
 /** The only production files that may hold a value import of the model SDK, and which bindings of `ai` they may take. */
@@ -40,6 +40,9 @@ const FACTORY = "src/engine/llm/provider-factory.ts";
 const SERVED_REQUEST_OBSERVER = "observeServedRequest";
 const SERVED_REQUEST_MODULE = "./observe-served-request.js";
 const SERVED_REQUEST_FILE = "src/engine/llm/vercel/observe-served-request.ts";
+const OBSERVER_BANNED_IDENTIFIERS = new Set([
+  "fetch", "globalThis", "XMLHttpRequest", "WebSocket", "EventSource", "navigator", "window", "self", "require",
+]);
 /** Wrappers in the adapter that observe or project a response and send through the fetch they are given. */
 const FETCH_WRAPPERS = new Set(["observeRequestControls", "projectNativeOutput"]);
 const WIRE_FETCH_BODY = "{ return gateModelFetch(this.customFetch, () => this.extras.getRetiredModelId(modelId)); }";
@@ -102,7 +105,24 @@ function isFetchWrapper(identifier: ts.Identifier, checker: ts.TypeChecker): boo
     && FETCH_WRAPPERS.has(identifier.text);
 }
 
-/** The observer returns the response from one call to its supplied fetch, with calls for observation only. */
+/** Rule 1b: the whole observer module has no imports or ambient network identifiers. */
+function observerModuleViolations(source: ts.SourceFile): string[] {
+  const violations: string[] = [];
+  each(source, (node) => {
+    if (ts.isImportDeclaration(node) || ts.isImportEqualsDeclaration(node)
+      || (ts.isExportDeclaration(node) && node.moduleSpecifier)
+      || (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword)) {
+      violations.push(`${SERVED_REQUEST_FILE}: cannot import or re-export modules`);
+    }
+    if (ts.isIdentifier(node) && OBSERVER_BANNED_IDENTIFIERS.has(node.text)
+      && !(node.text === "fetch" && ts.isTypeQueryNode(node.parent))) {
+      violations.push(`${SERVED_REQUEST_FILE}: cannot reference ${node.text} at runtime`);
+    }
+  });
+  return violations;
+}
+
+/** The only calls in the module send once, report the address, or parse it. */
 function observerDelegatesToFetch(source: ts.SourceFile): boolean {
   const observer = source.statements.find((node): node is ts.FunctionDeclaration =>
     ts.isFunctionDeclaration(node) && node.name?.text === SERVED_REQUEST_OBSERVER
@@ -111,9 +131,11 @@ function observerDelegatesToFetch(source: ts.SourceFile): boolean {
   const [outerReturn] = observer?.body?.statements ?? [];
   if (!fetchParameter || !callback || observer?.body?.statements.length !== 1
     || !outerReturn || !ts.isReturnStatement(outerReturn) || !outerReturn.expression
-    || !ts.isArrowFunction(outerReturn.expression) || !ts.isBlock(outerReturn.expression.body)) return false;
+    || !ts.isArrowFunction(outerReturn.expression)) return false;
 
-  const { body } = outerReturn.expression;
+  const observe = outerReturn.expression;
+  const { body } = observe;
+  if (!ts.isBlock(body)) return false;
   const returned = body.statements.at(-1);
   if (!returned || !ts.isReturnStatement(returned) || !returned.expression || !ts.isIdentifier(returned.expression)) return false;
 
@@ -126,12 +148,19 @@ function observerDelegatesToFetch(source: ts.SourceFile): boolean {
   const addressHelper = source.statements.find((node): node is ts.FunctionDeclaration =>
     ts.isFunctionDeclaration(node) && node.name?.text === "requestAddress");
   let delegates = true;
-  each(body, (node) => {
-    if (ts.isReturnStatement(node) && node !== returned) delegates = false;
-    if (ts.isIdentifier(node) && node !== send.expression && bindingOf(node, checker)?.valueDeclaration === fetchParameter) delegates = false;
+  each(source, (node) => {
+    if (ts.isReturnStatement(node) && enclosingFunction(node) === observe && node !== returned) delegates = false;
+    if (ts.isIdentifier(node) && node !== fetchParameter.name && node !== send.expression
+      && bindingOf(node, checker)?.valueDeclaration === fetchParameter) delegates = false;
+    if (ts.isNewExpression(node)) {
+      if (!ts.isIdentifier(node.expression) || node.expression.text !== "URL" || bindingOf(node.expression, checker)) delegates = false;
+      return;
+    }
     if (!ts.isCallExpression(node) || node === send) return;
     const callee = ts.isIdentifier(node.expression) ? bindingOf(node.expression, checker)?.valueDeclaration : undefined;
-    if (callee === undefined || (callee !== callback && callee !== addressHelper)) delegates = false;
+    if (enclosingFunction(node) !== observe || callee === undefined || (callee !== callback && callee !== addressHelper)) {
+      delegates = false;
+    }
   });
   return delegates;
 }
@@ -156,35 +185,19 @@ function isGateDerived(expression: ts.Expression, checker: ts.TypeChecker, alias
   return false;
 }
 
-/** Whether an SDK factory's options carry a gated fetch: named directly, or inherited from a spread options object. */
-function optionsCarryGatedFetch(options: ts.Expression | undefined, checker: ts.TypeChecker, depth = 0): boolean {
-  if (!options || depth > 4) return false;
-  if (ts.isIdentifier(options)) return optionsCarryGatedFetch(constInitializer(options, checker), checker, depth + 1);
-  if (!ts.isObjectLiteralExpression(options)) return false;
-  let gated = false;
-  for (const property of options.properties) {
-    if (ts.isSpreadAssignment(property)) {
-      if (ts.isIdentifier(property.expression)) {
-        gated = optionsCarryGatedFetch(property.expression, checker, depth + 1);
-      } else if (!spreadsNoFetch(property.expression)) {
-        // A spread that could carry a fetch of its own would replace the gated one.
-        return false;
-      }
-    } else if (ts.isPropertyAssignment(property) && property.name.getText() === "fetch") {
-      gated = isGateDerived(property.initializer, checker);
-    } else if (ts.isShorthandPropertyAssignment(property) && property.name.text === "fetch") {
-      gated = isGateDerived(property.name, checker);
-    }
-  }
-  return gated;
+/** Rule 1a: factory options are created at the call site with one explicit fetch alias. */
+function isInlineFactoryOptions(options: ts.Expression | undefined): options is ts.ObjectLiteralExpression {
+  return options !== undefined && ts.isObjectLiteralExpression(options) && options.properties.every((property) =>
+    (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) && !ts.isComputedPropertyName(property.name));
 }
 
-/** A spread of literal option objects, possibly conditional, none of which names a fetch. */
-function spreadsNoFetch(expression: ts.Expression): boolean {
-  if (ts.isParenthesizedExpression(expression)) return spreadsNoFetch(expression.expression);
-  if (ts.isConditionalExpression(expression)) return spreadsNoFetch(expression.whenTrue) && spreadsNoFetch(expression.whenFalse);
-  return ts.isObjectLiteralExpression(expression) && expression.properties.every((property) =>
-    (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) && property.name.getText() !== "fetch");
+function optionsCarryGatedFetch(options: ts.ObjectLiteralExpression, checker: ts.TypeChecker): boolean {
+  const [fetchProperty, ...duplicates] = options.properties.filter(({ name }) =>
+    name && (ts.isIdentifier(name) || ts.isStringLiteral(name)) && name.text === "fetch");
+  const alias = fetchProperty && ts.isPropertyAssignment(fetchProperty) ? fetchProperty.initializer
+    : fetchProperty && ts.isShorthandPropertyAssignment(fetchProperty) ? fetchProperty.name
+    : undefined;
+  return duplicates.length === 0 && alias !== undefined && ts.isIdentifier(alias) && isGateDerived(alias, checker);
 }
 
 /** Whether a function awaits, or enters the address-validating guard, in its own body rather than in a nested function. */
@@ -419,7 +432,10 @@ export function inspectModelTransportStructure(sources: ReadonlyMap<string, stri
         violations.push(`${file}: ${node.text} is aliased or passed around instead of being called with a gated fetch`);
         return;
       }
-      if (!optionsCarryGatedFetch(call.arguments[0], checker)) {
+      const [options] = call.arguments;
+      if (!isInlineFactoryOptions(options)) {
+        violations.push(`${file}: ${node.text}(…) must take inline options without spreads or computed properties`);
+      } else if (!optionsCarryGatedFetch(options, checker)) {
         violations.push(`${file}: ${node.text}(…) is not given the gated wire fetch`);
       }
     });
@@ -434,11 +450,10 @@ export function inspectModelTransportStructure(sources: ReadonlyMap<string, stri
       violations.push(`${file}: gateModelFetch must come from ../model-wire-gate.js`);
     }
   }
-  if (parsed.has(ADAPTER)) {
-    const observer = parsed.get(SERVED_REQUEST_FILE);
-    if (!observer || !observerDelegatesToFetch(observer)) {
-      violations.push(`${SERVED_REQUEST_FILE}: observeServedRequest must send through its first parameter`);
-    }
+  const observer = parsed.get(SERVED_REQUEST_FILE);
+  if (observer) violations.push(...observerModuleViolations(observer));
+  if (observer ? !observerDelegatesToFetch(observer) : parsed.has(ADAPTER)) {
+    violations.push(`${SERVED_REQUEST_FILE}: observeServedRequest must send through its first parameter and use only observation calls`);
   }
   // Rule 8: where production code supplies evidence, the fetch beside it comes from a reviewed constructor.
   const siteFiles = new Set(probeSites.map((site) => site.file));

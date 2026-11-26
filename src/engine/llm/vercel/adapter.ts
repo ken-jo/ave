@@ -794,11 +794,36 @@ export class VercelUnifiedProvider implements LLMProvider {
     const baseURL = this.providerMetadata?.baseUrl ?? this.baseUrl;
     if (!this.customFetch) throw new Error('Embedding transport is required');
     assertCredentialedBaseUrlUsesHttps(slot, baseURL, this.apiKey, this.customFetch);
-    const options = { apiKey: this.apiKey, fetch: this.wireFetch(modelId), ...(baseURL ? { baseURL } : {}) };
-    if (slot === "openai") return createOpenAI(options).embeddingModel(modelId);
-    if (slot === "gemini") return createGoogleGenerativeAI(options).embeddingModel(modelId);
-    if (slot === "azure-foundry" && baseURL) return createAzure({ ...options, baseURL: normalizeAzureFoundryBaseURL(baseURL) }).embeddingModel(modelId);
-    if (isOpenAICompatibleVendor(slot) && baseURL) return createOpenAICompatible({ ...options, baseURL, name: OPENAI_COMPAT_PROVIDER_NAME }).embeddingModel(modelId);
+    const embeddingFetch = this.wireFetch(modelId);
+    if (slot === "openai") {
+      return createOpenAI({
+        apiKey: this.apiKey,
+        baseURL: baseURL || undefined,
+        fetch: embeddingFetch,
+      }).embeddingModel(modelId);
+    }
+    if (slot === "gemini") {
+      return createGoogleGenerativeAI({
+        apiKey: this.apiKey,
+        baseURL: baseURL || undefined,
+        fetch: embeddingFetch,
+      }).embeddingModel(modelId);
+    }
+    if (slot === "azure-foundry" && baseURL) {
+      return createAzure({
+        apiKey: this.apiKey,
+        baseURL: normalizeAzureFoundryBaseURL(baseURL),
+        fetch: embeddingFetch,
+      }).embeddingModel(modelId);
+    }
+    if (isOpenAICompatibleVendor(slot) && baseURL) {
+      return createOpenAICompatible({
+        apiKey: this.apiKey,
+        baseURL,
+        name: OPENAI_COMPAT_PROVIDER_NAME,
+        fetch: embeddingFetch,
+      }).embeddingModel(modelId);
+    }
     throw new Error('Provider has no embedding factory');
   }
 
@@ -825,7 +850,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       const fetchImpl = outputProjection ? projectNativeOutput(nativeFetch, outputProjection) : nativeFetch;
       const anthropic = createAnthropic({
         apiKey: this.apiKey,
-        ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
+        baseURL: this.baseUrl || undefined,
         fetch: fetchImpl,
       });
       return anthropic.languageModel(modelId);
@@ -834,7 +859,7 @@ export class VercelUnifiedProvider implements LLMProvider {
     if (slot === "gemini") {
       const google = createGoogleGenerativeAI({
         apiKey: this.apiKey,
-        ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
+        baseURL: this.baseUrl || undefined,
         fetch: observedFetch,
       });
       return google(modelId);
@@ -843,7 +868,7 @@ export class VercelUnifiedProvider implements LLMProvider {
     if (slot === "openai") {
       const openai = createOpenAI({
         apiKey: this.apiKey,
-        ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
+        baseURL: this.baseUrl || undefined,
         fetch: observedFetch,
       });
       // Responses API for every model the catalog says reasons, or for every
