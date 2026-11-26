@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { Writable } from "node:stream";
 import { readFile, rm } from "node:fs/promises";
-import { parse, resolve, sep } from "node:path";
+import { isAbsolute, parse, resolve, sep } from "node:path";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { findHostProgram } from "../shared/host-program-path.js";
 import { createLogger } from "../lib/logger.js";
@@ -149,6 +149,20 @@ async function spawnGatedProcess(
     child.off("exit", onExit);
     if (tracked) child.off("error", onError);
   }
+}
+
+export function spawnManagedNodeChild(
+  entry: string,
+  { cwd, env }: { cwd?: string; env: NodeJS.ProcessEnv },
+  label: string,
+): ChildProcess {
+  if (!isAbsolute(entry)) throw new Error("Managed Node child entry must be absolute");
+  return spawnManaged(process.execPath, [entry], {
+    cwd,
+    env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
+    shell: false,
+    stdio: ["pipe", "pipe", "pipe"],
+  }, { label });
 }
 
 // Spawn and track together to preserve quit cleanup; detached POSIX children default to group-kill unless an external supervisor owns them.

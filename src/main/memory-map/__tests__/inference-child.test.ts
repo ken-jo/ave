@@ -8,6 +8,7 @@ import { duplexPair, PassThrough, Writable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setProcessPlatform } from '../../../__tests__/support/process-platform.js';
 import { deferred } from '../../../__tests__/support/deferred.js';
+import { mainDir } from '../../main-paths.js';
 import { MemoryMapHostError } from '../errors.js';
 import type { LocalInferenceRoute } from '../local-runtime.js';
 import type { ConfinedChildSpec } from '../../../permissions/confined-child.js';
@@ -22,7 +23,10 @@ const { spawn, spawnMxc, spawnHost, route, refreshAdmission, grant, createHome, 
   route: vi.fn<(_enabled?: boolean) => LocalInferenceRoute>(() => 'offline-sandbox'),
   refreshAdmission: vi.fn<() => Promise<undefined>>(async () => undefined),
 }));
-vi.mock('../../managed-child-processes.js', () => ({ spawnManaged: spawnHost }));
+vi.mock('node:child_process', async importOriginal => ({
+  ...await importOriginal<typeof import('node:child_process')>(),
+  spawn: spawnHost,
+}));
 vi.mock('../../../sandbox/wrap-bundled-command.js', () => ({ spawnMxcBundledHolder: spawnMxc }));
 vi.mock('../../../permissions/confined-child.js', () => ({
   spawnConfinedChild: spawn, NODE_PRESERVE_SYMLINK_FLAGS: [], srtWinTargetEnv: (_base: unknown, extra: unknown) => extra,
@@ -264,12 +268,13 @@ it('streams verified bytes to a managed host child only for the unconfined route
   route.mockReturnValue('unconfined');
   createHome.mockReturnValue({ env: {}, cleanup: vi.fn() });
   const { child, completed } = serveReply();
+  child.kill.mockImplementationOnce(() => child.emit('close'));
   spawnHost.mockReturnValue(child);
   await expect(runInferenceChild(folder, TASK, new AbortController().signal)).resolves.toBe('embedded');
-  expect(spawnHost).toHaveBeenCalledWith(process.execPath, expect.any(Array), expect.objectContaining({
-    cwd: win32.join(FIXTURE_SYSTEM_ROOT, 'System32'), stdio: ['pipe', 'pipe', 'pipe'],
+  expect(spawnHost).toHaveBeenCalledExactlyOnceWith(process.execPath, [join(mainDir, 'memory-map-child.js')], expect.objectContaining({
+    cwd: win32.join(FIXTURE_SYSTEM_ROOT, 'System32'), shell: false, stdio: ['pipe', 'pipe', 'pipe'],
     env: expect.objectContaining({ ELECTRON_RUN_AS_NODE: '1', ORT_DISABLE_TELEMETRY: '1' }),
-  }), { label: 'memory-map-inference' });
+  }));
   expect(completed).toHaveBeenCalledOnce();
   expect(child.kill).toHaveBeenCalledOnce();
   expect(spawn).not.toHaveBeenCalled();

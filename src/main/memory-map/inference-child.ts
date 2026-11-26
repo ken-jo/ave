@@ -15,7 +15,7 @@ import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import { win32SystemBinary } from '../../shared/windows-system-path.js';
 import { buildSafeChildEnv } from '../../tools/safe-env.js';
 import { mainDir } from '../main-paths.js';
-import { spawnManaged } from '../managed-child-processes.js';
+import { spawnManagedNodeChild } from '../managed-child-processes.js';
 import { MemoryMapHostError } from './errors.js';
 import { checkedInferenceFrameBytes, INFERENCE_FILES, INFERENCE_PREFIX_BYTES } from './inference-request.js';
 import { assertLocalEmbeddingRuntime, bindLocalEmbeddingRuntime, refreshLocalInferenceAdmission, type LocalInferenceRoute } from './local-runtime.js';
@@ -133,9 +133,7 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
     const extraEnv = { ...home?.env, ...TELEMETRY_OPT_OUT };
     assertStillValid();
     if (route === 'unconfined') {
-      child = spawnManaged(process.execPath, [entry], {
-        cwd, env: { ...baseEnv, ...extraEnv }, stdio: ['pipe', 'pipe', 'pipe'],
-      }, { label: INFERENCE_CHILD_LABEL });
+      child = spawnManagedNodeChild(entry, { cwd, env: { ...baseEnv, ...extraEnv } }, INFERENCE_CHILD_LABEL);
     } else {
       // The account backend delivers no spawn environment or stdin, so it uses authenticated loopback.
       const launch = home
