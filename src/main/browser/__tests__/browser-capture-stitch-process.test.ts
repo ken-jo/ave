@@ -1,7 +1,8 @@
-import type { ChildProcess } from "node:child_process";
+import { ChildProcess } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildMainBoundaryBundle, repositoryRoot } from "../../../plugins/isolation/__tests__/child-entry-bundle.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
@@ -9,7 +10,7 @@ import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import type { CdpSession } from "../browser-action-guard.js";
 
 const { runtime, decoder, termination } = vi.hoisted(() => ({
-  runtime: { mainDir: "" }, decoder: { stalled: false },
+  runtime: { mainDir: "", child: undefined as ChildProcess | undefined }, decoder: { stalled: false },
   termination: { hold: undefined as ((child: ChildProcess) => Promise<void>) | undefined },
 }));
 vi.mock("../../main-paths.js", async (importOriginal) => ({
@@ -20,8 +21,10 @@ vi.mock("../../managed-child-processes.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../managed-child-processes.js")>();
   return {
     ...actual,
+    spawnManaged: (...args: Parameters<typeof actual.spawnManaged>) => runtime.child ?? actual.spawnManaged(...args),
     forceKillManagedChildProcess: (...args: Parameters<typeof actual.forceKillManagedChildProcess>) => {
       const held = termination.hold?.(args[0]);
+      if (args[0] === runtime.child) return held;
       return held ? held.then(() => actual.forceKillManagedChildProcess(...args)) : actual.forceKillManagedChildProcess(...args);
     },
   };
@@ -56,6 +59,16 @@ function entryDir(program?: string): string {
   const dir = mkdtempSync(join(cacheDir, "case-"));
   if (program !== undefined) writeFileSync(join(dir, ENTRY), program);
   return dir;
+}
+
+function mockStitchChild(pid?: number): ChildProcess {
+  const child = new ChildProcess();
+  child.pid = pid;
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  runtime.mainDir = entryDir("");
+  runtime.child = child;
+  return child;
 }
 
 function replyFrame(message: unknown, payload = Buffer.alloc(0)): Buffer {
@@ -170,7 +183,7 @@ beforeAll(() => {
   mkdirSync(join(repositoryRoot(), ".cache"), { recursive: true });
   cacheDir = mkdtempSync(join(repositoryRoot(), ".cache", "browser-capture-stitch-"));
 });
-afterEach(() => { decoder.stalled = false; });
+afterEach(() => { decoder.stalled = false; runtime.child = undefined; });
 afterAll(async () => { await cleanupTmpDir(cacheDir); });
 
 describe("browser capture stitch process", () => {
@@ -333,6 +346,44 @@ describe("browser capture stitch process", () => {
       runtime.mainDir = healthyEntry;
       await expect(session.capture({ fullPage: true })).resolves.toMatchObject({ height: CONTENT_HEIGHT });
       await expect.poll(getManagedChildProcessCount).toBe(0);
+    },
+  );
+
+  it.each(["tile acknowledgement", "encode acknowledgement", "error reply"])(
+    "retains ownership while settling a valid %s", async (kind) => {
+      const png = await sharp({ create: { width: WIDTH, height: CONTENT_HEIGHT, channels: 3, background: "white" } }).png().toBuffer();
+      const frame = kind === "error reply" ? replyFrame({ id: 0, error: { message: "decode failed" } })
+        : replyFrame({ id: 0 }, kind === "encode acknowledgement" ? png : undefined);
+      const child = mockStitchChild();
+      const stitcher = startCaptureStitcher(WIDTH, CONTENT_HEIGHT);
+      const result = kind === "encode acknowledgement" ? stitcher.encode() : stitcher.decode(png, {
+        pixelWidth: WIDTH, pixelHeight: CONTENT_HEIGHT, scale: 1, skip: 0, copied: 0, rows: CONTENT_HEIGHT,
+      });
+      const ownership: boolean[] = [];
+      let jobs: Map<unknown, unknown> | undefined;
+      const get = Map.prototype.get;
+      const lookup = vi.spyOn(Map.prototype, "get").mockImplementation(function (this: Map<unknown, unknown>, key: unknown) {
+        const entry: unknown = get.call(this, key);
+        const job = entry as { expectsPayload?: boolean; resolve(payload: Buffer): void; reject(error: Error): void } | undefined;
+        if (key !== 0 || typeof job?.expectsPayload !== "boolean") return entry;
+        jobs = this;
+        return {
+          ...job,
+          resolve: (payload: Buffer) => { ownership.push(this.has(key)); job.resolve(payload); },
+          reject: (error: Error) => { ownership.push(this.has(key)); job.reject(error); },
+        };
+      });
+      try {
+        child.stdout?.emit("data", frame);
+      } finally {
+        lookup.mockRestore();
+      }
+      const pending = jobs?.has(0);
+      child.emit("close", 0, null);
+      if (kind === "error reply") await expect(result).rejects.toThrow("decode failed");
+      else await expect(result).resolves.toEqual(kind === "encode acknowledgement" ? png : undefined);
+      expect(ownership).toEqual([true]);
+      expect(pending).toBe(false);
     },
   );
 

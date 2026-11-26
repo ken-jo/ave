@@ -117,9 +117,9 @@ export function startCaptureStitcher(
         replyError = error.code === "screenshot-limit" || error.code === "screenshot-unavailable"
           ? new BrowserActionError(error.code, error.message) : new Error(error.message);
       }
-      jobs.delete(id);
       if (replyError) job.reject(replyError);
       else job.resolve(payload);
+      jobs.delete(id);
     });
     stdout.on("data", (chunk: Buffer) => {
       if (stopped || exited) return;
