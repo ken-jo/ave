@@ -249,6 +249,7 @@ it.each([
       markSandboxGatePendingAtBoot();
       await main.verifyOrRebuildSearchIndex();
       await expect(isolated.detachSessionsFromProject(root)).resolves.toBe(1);
+      await isolated.searchIndexIdle();
       expect.soft(existsSync(mainIndex)).toBe(true);
       expect.soft(existsSync(isolatedIndex)).toBe(true);
       expect.soft(openIndex).not.toHaveBeenCalled();
@@ -284,6 +285,7 @@ it.each([
       expect(existsSync(isolatedIndex)).toBe(!absent);
       if (inactive) {
         await main.saveSession(sessionId, [{ role: "user", content: "deferred indexing update" }]);
+        await main.searchIndexIdle();
         expect.soft((await refreshWindowsBackgroundAdmission()).searchIndexPolicy(false)).toBe("inactive");
         expect.soft(readFileSync(mainIndex).equals(originalMainIndex)).toBe(true);
         expect.soft(readFileSync(isolatedIndex).equals(originalIsolatedIndex)).toBe(true);
@@ -368,6 +370,7 @@ it.each([
       await repository.saveSessionMetadata(sessionId, { projectRoot, title: "Changed title" });
       await expect(repository.detachSessionsFromProject(projectRoot)).resolves.toBe(1);
       await repository.deleteSession(sessionId);
+      await repository.searchIndexIdle();
       expect.soft((await refreshWindowsBackgroundAdmission()).searchIndexPolicy(false)).toBe("inactive");
       expect.soft(openIndex).toHaveBeenCalledTimes(0);
       expect.soft(rebuildIndex).toHaveBeenCalledTimes(0);
@@ -419,7 +422,8 @@ it.each(["failed", "refused"] as const)("keeps progress and other reads responsi
     const discardIndex = vi.spyOn(SessionSearchIndex.prototype, "discard");
     try {
       const verify = repository.verifyOrRebuildSearchIndex();
-      const save = repository.saveSession(sessionId, [{ role: "user", content: "changed during the delay" }]);
+      await repository.saveSession(sessionId, [{ role: "user", content: "changed during the delay" }]);
+      await repository.saveSessionMetadata(sessionId, { title: "Saved during the delay" });
       const search = repository.searchSessionsWithCurrentPolicy("indexed before the delay");
       await expect(repository.appendSessionProgress(sessionId, [
         { role: "user", content: "changed during the delay" }, { role: "assistant", content: "progress during the delay" },
@@ -428,12 +432,24 @@ it.each(["failed", "refused"] as const)("keeps progress and other reads responsi
       expect(repository.loadSession(sessionId)).toHaveLength(2);
       expect(repository.listSessions()).toHaveLength(1);
       expect(repository.searchSessions("indexed before the delay")).toEqual([]);
+      // Both settings channels answer from the boot record of a present backend: no native query, no wait.
+      const settingsService = {
+        getAll: () => DEFAULT_SETTINGS,
+        get: (key: keyof typeof DEFAULT_SETTINGS) => DEFAULT_SETTINGS[key],
+        hasStoredSecret: async () => false,
+      };
+      const memoryMap = createMemoryMapRuntime({ settingsService, singleHopNetworkFetch: vi.fn() } as unknown as IpcDeps, vi.fn());
+      const inventories = h.detectMxc.mock.calls.length + h.checkDeps.mock.calls.length;
+      expect((await rendererSettingsSnapshot(settingsService as unknown as IpcDeps["settingsService"])).features ?? {})
+        .not.toHaveProperty("sessionIndexingWithoutContainment");
+      expect(await memoryMap.settingsGet()).not.toHaveProperty("localInferenceWithoutSandbox");
+      expect(h.detectMxc.mock.calls.length + h.checkDeps.mock.calls.length).toBe(inventories);
       expect(h.startProbe).toHaveBeenCalledOnce();
       expect(openIndex).toHaveBeenCalledTimes(0);
 
       answer.resolve(outcome === "failed" ? Promise.reject(new Error("native answer failed"))
         : { state: "unavailable", reason: "powershell-start-failed", windowsBuild: "10.0.26300.9711" });
-      await Promise.all([verify, save]);
+      await verify;
       expect(await search).toEqual([]);
       expect(openIndex).toHaveBeenCalledTimes(0);
       expect(updateIndex).toHaveBeenCalledTimes(0);
@@ -481,6 +497,7 @@ it.each([
     try {
       await repository.verifyOrRebuildSearchIndex();
       await repository.saveSession(sessionId, [{ role: "user", content: "changed after the backend appeared" }]);
+      await repository.searchIndexIdle();
       expect.soft(await repository.searchSessionsWithCurrentPolicy("indexed without a backend")).toEqual([]);
       expect.soft((await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable()).toBe(false);
       const admission = await refreshWindowsBackgroundAdmission();
@@ -526,6 +543,7 @@ it.each([undefined, false])("retains indexes and recovers skipped writes across 
       await empty.verifyOrRebuildSearchIndex();
       await main.saveSession(duringId, [{ role: "user", content: "new transcript evidence" }]);
       await empty.saveSession(duringId, [{ role: "user", content: "new transcript evidence" }]);
+      await Promise.all([main.searchIndexIdle(), empty.searchIndexIdle()]);
       expect.soft(await main.searchSessionsWithCurrentPolicy("retained evidence")).toEqual([]);
       expect.soft(readFileSync(index).equals(originalIndex)).toBe(true);
       expect.soft(existsSync(emptyIndex)).toBe(false);
@@ -668,6 +686,7 @@ it.each([
     try {
       await repository.verifyOrRebuildSearchIndex();
       await repository.saveSession(sessionId, [{ role: "user", content: "changed evidence" }]);
+      await repository.searchIndexIdle();
       expect.soft((await refreshWindowsBackgroundAdmission()).searchIndexPolicy(preference)).toBe("inactive");
       expect.soft((await refreshWindowsBackgroundAdmission()).areSwitchesAvailable()).toBe(false);
       expect.soft(openIndex).toHaveBeenCalledTimes(0);

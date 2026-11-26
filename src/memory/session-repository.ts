@@ -790,6 +790,8 @@ export class SessionRepository {
   private readonly searchIndex: SessionSearchIndex;
   private readonly getSearchIndexPolicy: () => SessionSearchIndexPolicy;
   private readonly refreshSearchIndexPolicy: (() => Promise<() => SessionSearchIndexPolicy>) | undefined;
+  private readonly searchIndexQueue: Array<(admit: () => SessionSearchIndexPolicy) => void> = [];
+  private searchIndexDrain: Promise<void> | undefined;
   private readonly sessionNamespace: ReturnType<typeof openFeatureNamespace>;
   private searchIndexState: "current" | "stale" | "discarded" = "current";
   private searchIndexChecked = false;
@@ -873,15 +875,57 @@ export class SessionRepository {
     this.searchIndex.close();
   }
 
-  /** The policy for one operation's database work. The caller uses it synchronously: no await may separate it from the action. */
-  private admitSearchIndex(): (() => SessionSearchIndexPolicy) | Promise<() => SessionSearchIndexPolicy> {
-    if (this.refreshSearchIndexPolicy === undefined) return this.getSearchIndexPolicy;
-    return this.refreshSearchIndexPolicy().catch(() => () => "inactive");
+  /**
+   * Runs database work under a policy that is current when the work runs. A refreshing source is awaited off the
+   * caller's path: saves return once their files are written, work queued during one refresh shares it, and each
+   * batch then runs in order with no await between the policy and the database.
+   */
+  private withSearchIndexPolicy(work: (admit: () => SessionSearchIndexPolicy) => void): void {
+    if (this.refreshSearchIndexPolicy === undefined) {
+      work(this.getSearchIndexPolicy);
+      return;
+    }
+    this.searchIndexQueue.push(work);
+    this.searchIndexDrain ??= this.drainSearchIndexQueue(this.refreshSearchIndexPolicy);
   }
 
-  /** Searches with the policy refreshed for this call. */
-  async searchSessionsWithCurrentPolicy(query: string, options: Pick<ListSessionsOptions, "kind" | "routineId" | "projectRoot" | "includeUnscoped"> = {}): Promise<SessionSearchEntry[]> {
-    return this.querySearchIndex(query, options, await this.admitSearchIndex());
+  private async drainSearchIndexQueue(refresh: () => Promise<() => SessionSearchIndexPolicy>): Promise<void> {
+    try {
+      while (this.searchIndexQueue.length > 0) {
+        const admit = await refresh().catch((): (() => SessionSearchIndexPolicy) => () => "inactive");
+        for (const work of this.searchIndexQueue.splice(0)) {
+          try {
+            work(admit);
+          } catch (error) {
+            log.warn({ error }, "session search index work failed");
+          }
+        }
+      }
+    } finally {
+      this.searchIndexDrain = undefined;
+    }
+  }
+
+  private answerFromSearchIndex<T>(work: (admit: () => SessionSearchIndexPolicy) => T): Promise<T> {
+    return new Promise((resolve, reject) => {
+      this.withSearchIndexPolicy((admit) => {
+        try {
+          resolve(work(admit));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+  }
+
+  /** Resolves once the database work queued so far has run. */
+  searchIndexIdle(): Promise<void> {
+    return this.searchIndexDrain ?? Promise.resolve();
+  }
+
+  /** Searches after the queued writes, with the policy refreshed for this call. */
+  searchSessionsWithCurrentPolicy(query: string, options: Pick<ListSessionsOptions, "kind" | "routineId" | "projectRoot" | "includeUnscoped"> = {}): Promise<SessionSearchEntry[]> {
+    return this.answerFromSearchIndex((admit) => this.querySearchIndex(query, options, admit));
   }
 
   /** A synchronous search cannot refresh the policy, so a repository that requires a refresh answers nothing. */
@@ -938,7 +982,8 @@ export class SessionRepository {
     if (!this.isTurnJournalLive(sessionId)) {
       removeTurnInflightRecord(turnInflightPath(this.sessionsDir, sessionId));
     }
-    this.indexSessionForSearch(sessionId, messages, await this.admitSearchIndex());
+    const indexed = [...messages];
+    this.withSearchIndexPolicy((admit) => this.indexSessionForSearch(sessionId, indexed, admit));
   }
 
   // Rewrite through temp, fsync, and rename so crashes retain a complete prior transcript.
@@ -1237,8 +1282,12 @@ export class SessionRepository {
   }
 
   // Boot integrity repair rebuilds missing or corrupt indexes from JSONL; search never scans as a fallback.
-  async verifyOrRebuildSearchIndex(): Promise<void> {
-    if (!this.canUseSearchIndex("read", await this.admitSearchIndex())) return;
+  verifyOrRebuildSearchIndex(): Promise<void> {
+    return this.answerFromSearchIndex((admit) => this.verifyOrRebuildSearchIndexUnder(admit));
+  }
+
+  private verifyOrRebuildSearchIndexUnder(admit: () => SessionSearchIndexPolicy): void {
+    if (!this.canUseSearchIndex("read", admit)) return;
     const opened = this.searchIndex.open();
     if (opened) {
       try {
@@ -1572,14 +1621,15 @@ export class SessionRepository {
       this.notePaneSession(sessionId, safe);
     });
     // Reindex metadata-only updates too because project, kind, routine, and title fields are denormalized.
-    const admit = await this.admitSearchIndex();
-    if (!this.canUseSearchIndex("write", admit)) return;
-    const messages = this.loadSession(sessionId);
-    if (Array.isArray(messages)) {
-      this.indexSessionForSearch(sessionId, messages, admit);
-    } else {
-      this.deleteSessionFromSearchIndex(sessionId, admit);
-    }
+    this.withSearchIndexPolicy((admit) => {
+      if (!this.canUseSearchIndex("write", admit)) return;
+      const messages = this.loadSession(sessionId);
+      if (Array.isArray(messages)) {
+        this.indexSessionForSearch(sessionId, messages, admit);
+      } else {
+        this.deleteSessionFromSearchIndex(sessionId, admit);
+      }
+    });
   }
 
   // Re-add permits new bindings but keeps old session tombstones; it does not reassign detached chats.
@@ -1690,7 +1740,7 @@ export class SessionRepository {
       }
     });
 
-    this.repairAllSessionSearchRowsForProjectDetach(await this.admitSearchIndex());
+    this.withSearchIndexPolicy((admit) => this.repairAllSessionSearchRowsForProjectDetach(admit));
     return detachedCount;
   }
 
@@ -2096,7 +2146,7 @@ export class SessionRepository {
       } catch (err) {
         log.warn(`deleteSession: failed to remove diff cache dir ${diffCacheDir}: ${(err as Error).message}`);
       }
-      this.deleteSessionFromSearchIndex(sessionId, await this.admitSearchIndex());
+      this.withSearchIndexPolicy((admit) => this.deleteSessionFromSearchIndex(sessionId, admit));
     });
   }
 
