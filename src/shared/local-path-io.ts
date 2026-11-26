@@ -14,7 +14,7 @@ import { classifyWindowsSpelling, normalizeWindowsPathSpelling, windowsVolumeRoo
  */
 
 class Decision {
-  readonly drives = new Map<string, DriveIdentity>();
+  readonly drives = new Map<string, DriveIdentity | { error: unknown }>();
   readonly memos = new Map<object, Map<string, unknown>>();
   // A decision opened by a single lookup outside any running decision; it serves only the synchronous run that opened it.
   open = true;
@@ -134,9 +134,14 @@ function refuseSpelling(path: string): string | undefined {
 function driveIdentity(drive: string, decision: Decision): DriveIdentity {
   let identity = decision.drives.get(drive);
   if (identity === undefined) {
-    identity = queryDriveIdentity(drive);
+    try {
+      identity = queryDriveIdentity(drive);
+    } catch (error) {
+      identity = { error };
+    }
     decision.drives.set(drive, identity);
   }
+  if ("error" in identity) throw identity.error;
   return identity;
 }
 

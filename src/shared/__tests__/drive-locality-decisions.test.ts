@@ -97,6 +97,24 @@ describe.runIf(process.platform === "win32")("drive locality is proven in each d
     expect(queries.filter(query => query === drive)).toHaveLength(2);
   });
 
+  it("retries an unexpected drive-query failure only in a new decision", () => {
+    const failure = new Error("Drive query returned an invalid mapping");
+    const drive = root.slice(0, 2).toUpperCase();
+    const path = join(root, "notes.txt");
+    const query = vi.fn<(drive: string) => string | null>()
+      .mockImplementationOnce(() => { throw failure; })
+      .mockReturnValue(String.raw`\Device\HarddiskVolume1`);
+    setWindowsDriveQueryForTest(query);
+
+    withLocalityDecision(() => {
+      expect(() => verifyLocalFilesystemChain(path)).toThrow(failure);
+      expect(() => verifyLocalFilesystemChain(path)).toThrow(failure);
+    });
+    expect(query.mock.calls).toEqual([[drive]]);
+    expect(() => verifyLocalFilesystemChain(path)).not.toThrow();
+    expect(query.mock.calls).toEqual([[drive], [drive]]);
+  });
+
   it("proves a listing's drive again for the first row after an await", async () => {
     const drive = root.slice(0, 2).toUpperCase();
     mkdirSync(join(root, "project"));
