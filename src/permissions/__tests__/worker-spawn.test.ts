@@ -44,19 +44,26 @@ vi.mock("node:fs", async (importOriginal) => ({
 
 const SANDBOX_HOME = "/tmp/ave-sandbox-home-test";
 const sandboxHomeCleanupMock = vi.fn();
+const sandboxHomeRefusal = vi.hoisted(() => ({ next: undefined as Error | undefined }));
 vi.mock("../sandbox-process-home.js", () => ({
-  createSandboxProcessHome: () => ({
-    path: SANDBOX_HOME,
-    env: {
-      HOME: SANDBOX_HOME,
-      USERPROFILE: SANDBOX_HOME,
-      APPDATA: `${SANDBOX_HOME}/AppData/Roaming`,
-      LOCALAPPDATA: `${SANDBOX_HOME}/AppData/Local`,
-      XDG_CONFIG_HOME: `${SANDBOX_HOME}/config`,
-    },
-    cleanup: sandboxHomeCleanupMock,
-  }),
+  createSandboxProcessHome: () => {
+    const refusal = sandboxHomeRefusal.next;
+    sandboxHomeRefusal.next = undefined;
+    if (refusal !== undefined) throw refusal;
+    return sandboxHomeFixture();
+  },
 }));
+const sandboxHomeFixture = () => ({
+  path: SANDBOX_HOME,
+  env: {
+    HOME: SANDBOX_HOME,
+    USERPROFILE: SANDBOX_HOME,
+    APPDATA: `${SANDBOX_HOME}/AppData/Roaming`,
+    LOCALAPPDATA: `${SANDBOX_HOME}/AppData/Local`,
+    XDG_CONFIG_HOME: `${SANDBOX_HOME}/config`,
+  },
+  cleanup: sandboxHomeCleanupMock,
+});
 const workerWarnings = vi.hoisted((): string[] => []);
 vi.mock("../../lib/logger.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../lib/logger.js")>();
@@ -312,6 +319,31 @@ describe("spawnWorker — gate OFF (default)", () => {
     } finally {
       peer.close();
     }
+  });
+
+  it("refuses a Windows worker with the named reason when no sandbox HOME can be made, and frees its slot", async () => {
+    setProcessPlatform("win32");
+    gateActive = true;
+    setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: "win32", reason: "Filesystem confinement", confines: { filesystem: true, process: false, network: true } });
+    const holder = new StubWorkerChild();
+    holder.pid = 5103;
+    spawnMock.mockReturnValueOnce(holder);
+    const refusal = Object.assign(new Error("sandboxed processes are unavailable"), { code: "sandbox-home-unavailable" });
+    sandboxHomeRefusal.next = refusal;
+    const spec = { pluginId: "local-indexer", workerId: "no-home", command: "C:/runtime/worker.exe", control: "output-only-v1" as const };
+    await expect(spawnWorker(spec)).rejects.toBe(refusal);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    // The grant holder started for it is stopped: its stdin closed and the process terminated.
+    expect(holder.stdin.writableEnded).toBe(true);
+    expect(holder.killCalls).not.toEqual([]);
+    sandboxHomeRefusal.next = refusal;
+    const second = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(second);
+    await expect(spawnWorker(spec)).rejects.toBe(refusal);
+    // The freed slot admits the second attempt, which again starts only its holder and stops it.
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock.mock.calls.map(([command]) => String(command).toLowerCase().endsWith("more.com"))).toEqual([true, true]);
+    expect(second.stdin.writableEnded).toBe(true);
   });
 
   it("starts srt-win and the worker in the worker's granted sandbox HOME, never the host's cwd", async () => {
@@ -1257,6 +1289,7 @@ describe("spawnWorker — Windows with gate ON", () => {
       allowRead: [SANDBOX_HOME, stateDir, pythonExecutable, workerScript],
       allowWrite: [SANDBOX_HOME, stateDir, indexDir],
       assertStillValid: expect.any(Function),
+      sandboxHome: SANDBOX_HOME,
     });
 
     expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);

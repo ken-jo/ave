@@ -33,6 +33,11 @@ const state = vi.hoisted(() => ({
   probe: vi.fn(),
 }));
 
+// The in-memory drive has no directory identities: recording the issued HOME is observed, not performed.
+vi.mock("../../permissions/sandbox-home-registry.js", async (original) => ({
+  ...await original<typeof import("../../permissions/sandbox-home-registry.js")>(),
+  recordIssuedContainerHome: vi.fn(), forgetIssuedContainerHome: vi.fn(),
+}));
 vi.mock("../../permissions/confined-child.js", () => ({
   spawnMxcConfinedChild: (spec: unknown) => state.spawn(spec),
   spawnConfinedChild: vi.fn(),
@@ -203,6 +208,7 @@ const {
   spawnMxcBundledHolder,
 } = holderModule;
 const { registerMxcReleaseGateEvidence } = await import("../../permissions/mxc-extension-admission.js");
+const { forgetIssuedContainerHome, recordIssuedContainerHome } = await import("../../permissions/sandbox-home-registry.js");
 const { MXC_RELEASE_GATE_EVIDENCE } = await import("../../__tests__/support/mxc-supervisor.js");
 const { prepareMxcPluginChildLaunch } = await import("../../plugins/isolation/mxc-plugin-child-launch.js");
 const { resolvePluginHostStorageDir } = await import("../../plugins/plugin-storage-layout.js");
@@ -535,10 +541,13 @@ describe("holder layout", () => {
 describe("teardown", () => {
   it("removes the staging tree after verified termination without following a planted link", async () => {
     const holder = await spawnMxcBundledHolder(input());
-    const temp = lastSpec().temp;
+    const { home, temp } = lastSpec();
+    // Its staging HOME is the one issued to it, until the tree goes.
+    expect(recordIssuedContainerHome).toHaveBeenCalledWith(home, winPath.dirname(SYNTHETIC_MXC_STAGING_PARENT));
     state.links.set(`${temp}\\escape`, "D:\\work");
     await holder.release();
     await holder.release();
+    expect(vi.mocked(forgetIssuedContainerHome).mock.calls.filter(([path]) => path === home)).toHaveLength(1);
     expect(spawned.release).toHaveBeenCalledTimes(1);
     // Removal runs on the retired sibling, so the link is unlinked under that name.
     expect(state.removed.some((path) => /\\[0-9a-f]{32}\.retired\\temp\\escape$/u.test(path))).toBe(true);

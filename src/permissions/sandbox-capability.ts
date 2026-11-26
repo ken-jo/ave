@@ -257,6 +257,25 @@ export function detectMxcShellCapability(): SandboxCapability | undefined {
   return _mxcShellCapability;
 }
 
+// Windows: no sandbox HOME can be made this run (the container runtime root is unproved, or its HOME parent was replaced).
+// It holds until a restart, whatever the sandbox setting, since unconfined children need a HOME too.
+let _sandboxHomesUnavailable = false;
+
+export function markSandboxHomesUnavailable(): void {
+  if (_sandboxHomesUnavailable) return;
+  _sandboxHomesUnavailable = true;
+  notifySandboxStatusChanged();
+}
+
+export function getSandboxHomesUnavailable(): boolean {
+  return _sandboxHomesUnavailable;
+}
+
+// @internal — test teardown only.
+export function __resetSandboxHomesUnavailableForTest(): void {
+  _sandboxHomesUnavailable = false;
+}
+
 // @internal — test teardown only.
 export function __resetWindowsSandboxSubstrateForTest(): void {
   if (_windowsSubstrate !== null || _mxcShellCapability !== undefined) _sandboxGeneration += 1;

@@ -1158,5 +1158,13 @@ export async function detectHostMxcPrerequisites(): Promise<MxcSupport> {
 
 // probeMxcPowerShellStart against this host's shipped binary (after boot).
 export async function probeHostMxcPowerShellStart(): Promise<MxcSupport> {
+  // The probe starts a container too: a runtime root that was not proved private refuses it, under its own reason.
+  const { MxcRuntimeRootError, requireMxcContainerStartRoot } = await import("./mxc-runtime-root.js");
+  try {
+    requireMxcContainerStartRoot();
+  } catch (error) {
+    if (!(error instanceof MxcRuntimeRootError)) throw error;
+    return { state: "unavailable", reason: "runtime-root-unproved", windowsBuild: null, detail: `runtime root proof failed: ${error.message}` };
+  }
   return await withHostMxcDeps(probeMxcPowerShellStart);
 }

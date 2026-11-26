@@ -1,5 +1,6 @@
 // The write jail is the canonical union of plugin DATA storage and user-authorized directories; never grant the plugin root containing executable bundles or manifests, since self-rewrite enables later host execution. Reads use separate policy.
 import { aveHome } from "../shared/ave-home.js";
+import { baseAllowedDirectories } from "./base-allowed-directories.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 
 // Inputs for deriveSandboxWritePaths. Pure data — no I/O of its own.
@@ -34,4 +35,16 @@ export function deriveSandboxWritePaths(input: SandboxWriteJailInput): string[] 
     out.push(canonical);
   }
   return out;
+}
+
+// The directories a container shell's roots are derived from. On Windows: the working directory and the extra allowed directories, without the host temp directory the per-turn base carries for the file tools (`baseAllowedDirectories`). Other processes keep files there, and the shell's own temp directory is inside its HOME. Only that exact directory is dropped; the working directory and any other directory stay, wherever they are. Elsewhere nothing is dropped.
+export function containerShellAllowedDirectories(
+  cwd: string,
+  extraAllowedDirectories: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  if (platform !== "win32") return [cwd, ...extraAllowedDirectories];
+  const fold = (path: string): string => caseFoldForMatch(canonicalizePathForMatch(path));
+  const base = new Set(baseAllowedDirectories().map(fold));
+  return [cwd, ...extraAllowedDirectories.filter((directory) => !base.has(fold(directory)))];
 }
