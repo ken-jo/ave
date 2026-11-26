@@ -2242,20 +2242,17 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     const turn = new AbortController();
     let signalGivenToGate: AbortSignal | undefined;
     let abortedAtRequest: boolean | undefined;
-    const approvalGate = {
-      requestAndWait: vi.fn((req: { id: string; abortSignal?: AbortSignal }) => {
-        signalGivenToGate = req.abortSignal;
-        abortedAtRequest = req.abortSignal?.aborted;
-        queueMicrotask(() => turn.abort(new Error("user cancelled turn")));
-        return new Promise<{ requestId: string; choice: "deny-once" }>((resolve) => {
-          const denyOnce = () => resolve({ requestId: req.id, choice: "deny-once" });
-          // Model gate timeout denial when abort wiring is absent so a regression fails assertions instead of hanging.
-          if (req.abortSignal === undefined) denyOnce();
-          else req.abortSignal.addEventListener("abort", denyOnce, { once: true });
-        });
-      }),
-    };
-    const executor = new ToolExecutor(registry, undefined, permMgr, undefined, approvalGate as never);
+    const surface = makeMockWebContents();
+    const approvalGate = new ApprovalGate(surface as never);
+    const requestAndWait = approvalGate.requestAndWait.bind(approvalGate);
+    vi.spyOn(approvalGate, "requestAndWait").mockImplementation((req) => {
+      signalGivenToGate = req.abortSignal;
+      abortedAtRequest = req.abortSignal?.aborted;
+      if (!req.abortSignal) throw new Error("Missing approval abort signal");
+      queueMicrotask(() => turn.abort(new Error("user cancelled turn")));
+      return requestAndWait(req);
+    });
+    const executor = new ToolExecutor(registry, undefined, permMgr, undefined, approvalGate);
 
     const results = await executor.executeAll(
       [{ id: "tu-stop-probe", name: "tool_stop_probe", input: { value: "a" } }],

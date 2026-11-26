@@ -84,14 +84,14 @@ describe("registered approval surface resolution", () => {
     expect(owner.contents.send).not.toHaveBeenCalled();
   });
 
-  it("reports an extension start card nobody answered as unanswered, never as a person's no", async () => {
+  it("reports an unanswered extension start card as expired", async () => {
     vi.useFakeTimers();
     const registry = new ApprovalSurfaceRegistry();
     registry.register("board-root", surfaceFixture().contents);
     const asker = createExtensionStartAsker({ approvalGate: gateFixture(registry), reason: () => "start it?", notify: vi.fn() });
     const answer = asker.ask([{ key: "mcp-stdio:files", identity: "fixture", kind: "mcp-stdio", label: "files", cause: "no-backend" }], { sessionId: "board-root" });
     await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
-    await expect(answer).resolves.toBe("no-approver");
+    await expect(answer).resolves.toBe("expired");
   });
 
   it("keeps an ownerless parked card pending until the normal five-minute deny timeout", async () => {

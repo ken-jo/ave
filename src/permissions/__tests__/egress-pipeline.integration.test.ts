@@ -94,7 +94,7 @@ describe("actual shell network pipeline authority", () => {
     expect(decision).toEqual({ allow: false, reason });
   });
 
-  it.each(["desk first", "revocation first"] as const)("keeps the correct egress refusal with %s", async order => {
+  it.each(["desk first", "revocation first", "revocation before delivery"] as const)("keeps the correct egress refusal with %s", async order => {
     let current = true;
     const remoteControllerAuthority = bindRemoteControllerToSession({
       kind: "tailnet-controller",
@@ -103,18 +103,30 @@ describe("actual shell network pipeline authority", () => {
       pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current },
     }, "session-1");
     const f = fixture({ remoteControllerAuthority, afterAnswer: () => { current = false; } });
+    if (order === "revocation before delivery") {
+      const requestAndWait = f.gate.requestAndWait.bind(f.gate);
+      vi.spyOn(f.gate, "requestAndWait").mockImplementationOnce(request => {
+        current = false;
+        return requestAndWait(request);
+      });
+    }
     const pending = f.callback(DESTINATION, { attributionKey: TOKEN, identity: "listener", phase: "resolved",
       addresses: ["93.184.216.34"], resolution: "pinned" });
-    const request = await f.card(1);
-    if (order === "revocation first") current = false;
-    const decision = await f.gate.resolveFromDesktopRendererWithFreshIdentity(request.id, {
-      requestId: request.id, nonce: request.nonce, hmac: request.hmac, choice: "deny-once",
-    }, f.wc as never);
-    expect(decision?.choice).toBe("deny-once");
-    expect(isHostApprovalRejectedDecision(decision)).toBe(order === "revocation first");
+    if (order !== "revocation before delivery") {
+      const request = await f.card(1);
+      if (order === "revocation first") current = false;
+      const decision = await f.gate.resolveFromDesktopRendererWithFreshIdentity(request.id, {
+        requestId: request.id, nonce: request.nonce, hmac: request.hmac, choice: "deny-once",
+      }, f.wc as never);
+      expect(decision?.choice).toBe("deny-once");
+      expect(isHostApprovalRejectedDecision(decision)).toBe(order === "revocation first");
+    }
     const reason = order === "desk first" ? "denied by the user" : "remote-controller-revoked";
     expect(await pending).toEqual({ allow: false, reason });
-    expect(f.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ decision: "deny", reason }));
+    if (order === "revocation before delivery") expect(sentApprovalCards(f.wc)).toHaveLength(0);
+    expect(f.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      decision: "deny", reason, basis: order === "desk first" ? "prompt" : "policy",
+    }));
   });
 
   it("a remembered destination cannot bypass an inherited floor in allow mode", async () => {

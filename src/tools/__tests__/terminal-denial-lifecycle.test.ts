@@ -470,11 +470,12 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
     });
   });
 
-  it("an automatic headless refusal committed after Stop is cancelled without an event", async () => {
+  it("keeps a settled headless refusal when Stop lands before its row", async () => {
     await run("headless-then-abort", async (probe) => {
       expect(probe.controller.signal.aborted).toBe(true);
-      await expectNoDenial(probe, "user aborted turn");
-      expect(reasons(await settledRow(probe))[1]).toBe("approval rejected by host");
+      const row = await settledRow(probe);
+      expect(row).toMatchObject({ decision: "deny", terminalKind: "denied", trustOrigin: "unknown" });
+      expect(firstReason(row)).toBe("approval rejected by host");
     });
   });
 
@@ -487,11 +488,13 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
     });
   });
 
-  it("cancels a non-human directory denial when Stop lands before its row", async () => {
+  it("keeps a settled host directory refusal when Stop lands before its row", async () => {
     await run("dir-host-deny-then-abort", async (probe) => {
       expect(probe.requestAndWait).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: "out-of-allowed-dir" }));
       expect(probe.controller.signal.aborted).toBe(true);
-      await expectNoDenial(probe, "user aborted turn");
+      const row = await settledRow(probe);
+      expect(row).toMatchObject({ decision: "deny", terminalKind: "denied", trustOrigin: "unknown" });
+      expect(firstReason(row)).toBe("approval rejected by host");
     });
   });
 

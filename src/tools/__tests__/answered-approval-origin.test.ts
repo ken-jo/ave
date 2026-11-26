@@ -191,8 +191,10 @@ describe("the answerer contract", () => {
   it.each([
     { substitution: "another invocation", toolUseId: "other-invocation", reason: "does not settle this allow of write_file" },
     { substitution: "another card", toolUseId: "plugin-substituted-write", reason: "Approval answer does not match the pending request" },
-  ])("refuses an allow the gate settled for $substitution before the tool runs", async ({ toolUseId, reason }) => {
-    const requestAndWait = vi.fn(async () => answeredApprovalDecision({ choice: "allow-once" }, "desk", "write_file", toolUseId));
+  ])("refuses an allow the gate settled for $substitution before the tool runs", async ({ substitution, toolUseId, reason }) => {
+    const requestAndWait = vi.fn((request: ApprovalRequestInput) => answeredApprovalDecision({
+      choice: "allow-once", requestId: substitution === "another invocation" ? request.id : "another-card",
+    }, "desk", "write_file", toolUseId));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     await expect(executor.executeAll([{ id: "plugin-substituted-write", name: "write_file", input: { path: join(project, "substituted.txt"), content: "substituted" } }], {
       sessionId: randomUUID(), executionCwd: project,
@@ -230,8 +232,10 @@ describe("the answerer contract", () => {
     { substitution: "another invocation", choice: "deny-once", foreignToolUseId: "other-invocation", reason: "does not settle this deny of write_file" },
     { substitution: "another invocation", choice: "deny-always", foreignToolUseId: "other-invocation", reason: "does not settle this deny of write_file" },
     { substitution: "another card", choice: "deny-always", foreignToolUseId: "foreign-deny", reason: "Approval answer does not match the pending request" },
-  ] as const)("refuses a $choice the gate settled for $substitution before it is selected or remembered", async ({ choice, foreignToolUseId, reason }) => {
-    const requestAndWait = vi.fn(async () => answeredApprovalDecision({ choice }, "desk", "write_file", foreignToolUseId));
+  ] as const)("refuses a $choice the gate settled for $substitution before it is selected or remembered", async ({ choice, substitution, foreignToolUseId, reason }) => {
+    const requestAndWait = vi.fn((request: ApprovalRequestInput) => answeredApprovalDecision({
+      choice, requestId: substitution === "another invocation" ? request.id : "another-card",
+    }, "desk", "write_file", foreignToolUseId));
     const remembered = vi.spyOn(manager, "addAlwaysDeniedPersist");
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     await executor.executeAll([{ id: "foreign-deny", name: "write_file", input: { path: join(project, "foreign-deny.txt"), content: "x" } }], {
@@ -318,7 +322,7 @@ describe("one terminal row per plugin-emitted invocation answered at the desk", 
     expect(JSON.stringify(rows[0]?.denyReasons).includes("remote-controller-revoked")).toBe(vetoed);
   });
 
-  it.each(["rule", "revoked"] as const)("reports a %s refusal after the directory answer", async outcome => {
+  it.each(["rule", "host"] as const)("preserves a settled %s refusal after the directory answer and controller revocation", async outcome => {
     const outside = join(root, "outside");
     await mkdir(outside);
     const sessionId = randomUUID();
@@ -331,8 +335,8 @@ describe("one terminal row per plugin-emitted invocation answered at the desk", 
     const surface = await import("../pipeline/user-owned-surface.js");
     const reason = "The surface policy refused this directory.";
     const resolve = vi.spyOn(surface, "resolveUserOwnedSurfaceApproval").mockImplementationOnce(async ({ decision }) => {
-      if (outcome === "revoked") current = false;
-      const provenance = outcome === "revoked" ? HOST_PROVENANCE : RULE_PROVENANCE;
+      current = false;
+      const provenance = outcome === "host" ? HOST_PROVENANCE : RULE_PROVENANCE;
       return { permission: { decision: "deny", reason, provenance }, decision: { requestId: decision.requestId, choice: "deny-once" }, provenance, answer: undefined };
     });
     const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" as const }));
@@ -346,10 +350,9 @@ describe("one terminal row per plugin-emitted invocation answered at the desk", 
       });
       expect(resolve).toHaveBeenCalledOnce();
       expect(requestAndWait).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: "out-of-allowed-dir" }));
-      const expected = outcome === "revoked" ? "remote-controller-revoked" : reason;
-      expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(expected) });
+      expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(reason) });
       expect(await ledger(id)).toEqual([expect.objectContaining({
-        decision: "deny", trustOrigin: "tailnet-surface", denyReasons: [expect.objectContaining({ reason: expected })],
+        decision: "deny", trustOrigin: outcome === "host" ? "unknown" : "tailnet-surface", denyReasons: [expect.objectContaining({ reason })],
       })]);
       await expect(readFile(path)).rejects.toThrow();
     } finally {

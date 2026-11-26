@@ -445,6 +445,13 @@ export function isHostApprovalRejectedDecision(
   );
 }
 
+const remoteControllerRevokedDecisions = new WeakSet<ApprovalDecision>();
+const REMOTE_CONTROLLER_REFUSAL = "Remote controller authentication or session binding is unavailable.";
+
+export function isHostApprovalControllerRevoked(decision: ApprovalDecision): boolean {
+  return remoteControllerRevokedDecisions.has(decision);
+}
+
 /** The gate's record of an accepted answer: which way it went, who gave it and the origin that answerer writes. */
 export interface AnsweredRecord {
   readonly decision: "allow" | "deny";
@@ -668,6 +675,12 @@ function markHostApprovalRejectedDecision(
   decision: ApprovalDecision,
 ): ApprovalDecision {
   hostRejectedApprovalDecisions.add(decision);
+  return decision;
+}
+
+function hostControllerRevokedDecision(requestId: string): ApprovalDecision {
+  const decision = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: REMOTE_CONTROLLER_REFUSAL });
+  remoteControllerRevokedDecisions.add(decision);
   return decision;
 }
 
@@ -1442,8 +1455,11 @@ export class ApprovalGate {
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
       return rejectBeforeAnswer("Approval execution budget was not issued by the host");
     }
-    if (!isRemoteControllerBoundToSession(remoteControllerAuthority, req.sessionId) || (remoteControllerOrigin !== undefined && remoteControllerOrigin !== remoteControllerAuthority?.kind)) {
-      return rejectBeforeAnswer("Remote controller authentication or session binding is unavailable.");
+    if (!isRemoteControllerBoundToSession(remoteControllerAuthority, req.sessionId)) {
+      return isAborted() ? denyForAbortedTurn() : hostControllerRevokedDecision(req.id);
+    }
+    if (remoteControllerOrigin !== undefined && remoteControllerOrigin !== remoteControllerAuthority?.kind) {
+      return rejectBeforeAnswer(REMOTE_CONTROLLER_REFUSAL);
     }
     const forceExplicit = requestedForceExplicit || childProvenance !== undefined;
     if ((requestedUserOwnedSurface !== undefined && (!isUserOwnedSurface(requestedUserOwnedSurface) || !req.sessionId)) ||
@@ -2099,13 +2115,7 @@ export class ApprovalGate {
     if (!entry) return null;
     const identityCurrent = await refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId);
     if (this.pending.get(requestId) !== entry) return null;
-    if (!identityCurrent) {
-      clearTimeout(entry.timer);
-      this.pending.delete(requestId);
-      const rejected = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: "Remote controller authentication or session binding is unavailable." });
-      entry.resolve(rejected);
-      return rejected;
-    }
+    if (!identityCurrent) return this.refuseRevokedController(requestId, entry);
     return this.resolveDecision(requestId, decision, answeredBy, false, undefined, true);
   }
 
@@ -2114,14 +2124,16 @@ export class ApprovalGate {
     if (!entry || !this.canAccessRendererRequest(requestId, responder, "desk")) return null;
     const identityCurrent = await refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId);
     if (this.pending.get(requestId) !== entry) return null;
-    if (!identityCurrent) {
-      clearTimeout(entry.timer);
-      this.pending.delete(requestId);
-      const rejected = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: "Remote controller authentication or session binding is unavailable." });
-      entry.resolve(rejected);
-      return rejected;
-    }
+    if (!identityCurrent) return this.refuseRevokedController(requestId, entry);
     return this.resolveDecision(requestId, decision, "desk", true, responder, true);
+  }
+
+  private refuseRevokedController(requestId: string, entry: PendingEntry): ApprovalDecision {
+    clearTimeout(entry.timer);
+    this.pending.delete(requestId);
+    const rejected = hostControllerRevokedDecision(requestId);
+    entry.resolve(rejected);
+    return rejected;
   }
 
   // Resolve responses from non-native host surfaces. Ignores unknown pending entries, making duplicate responses safe. `answeredBy` is host-derived AT THE CALL SITE, never read from the decision payload: the renderer's IPC route and the plugin host-API route use separate entry points; the paired chat-platform card handler is the one caller that passes `"platform-bridge"`. Every answerer passes the same integrity and allowed-choice checks below — there is deliberately no second integrity or choice-validation implementation.
@@ -2214,11 +2226,7 @@ export class ApprovalGate {
     // Tailnet answers need a fresh owner-identity probe; a synchronous answer path for them is a host contract violation, not a revoked controller.
     if (entry.remoteControllerAuthority?.kind === "tailnet-controller" && !identityRefreshed) throw new ApprovalFreshIdentityRequiredError(requestId);
     if (!isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId)) {
-      clearTimeout(entry.timer);
-      this.pending.delete(requestId);
-      const rejected = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: "Remote controller authentication or session binding is unavailable." });
-      entry.resolve(rejected);
-      return rejected;
+      return this.refuseRevokedController(requestId, entry);
     }
     if ((entry.browserSite !== undefined || entry.userOwnedSurface !== undefined || entry.hostShellExecutionPermitBinding?.executionMode === "host" || entry.hostTerminal !== undefined) && !nativeRenderer) {
       // Signed card contents authenticate a request, not the answering surface. Reject plugin/platform answers while keeping the desktop request pending.

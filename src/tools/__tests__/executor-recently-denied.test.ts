@@ -118,9 +118,9 @@ describe("executor denial history and manual rerun", () => {
     // The identical retry in the same invocation must still need a card.
     await vi.waitFor(() => expect(current.cards).toHaveLength(2), CARD_WAIT);
     const retry = current.cards[1];
-    current.gate.resolveFromDesktopRenderer(retry.id, {
-      requestId: retry.id, nonce: retry.nonce, hmac: retry.hmac, choice: "deny-once",
-    }, current.sender as never);
+    expect(current.gate.resolveFromDesktopRenderer(retry.id, {
+      requestId: retry.id, nonce: retry.nonce, hmac: "invalid", choice: "allow-once",
+    }, current.sender as never)).toMatchObject({ choice: "deny-once", rememberPattern: "approval integrity check failed" });
     const [result] = await pending;
     expect(recheck).toHaveBeenCalled();
     expect(caught).toHaveBeenCalledTimes(2);

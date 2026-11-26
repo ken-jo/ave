@@ -133,6 +133,7 @@ export interface EgressAskDeps {
 
 // Fixed refusal reasons, so the model and the audit log read the same words.
 export const EGRESS_DENY_REASONS = {
+  controllerRevoked: "remote-controller-revoked",
   unattributed: "unattributed connection",
   malformed: "malformed destination",
   workerOffList: "not on the extension's network allowlist",
@@ -197,7 +198,7 @@ const log = createLogger("egress-ask");
 
 const unattributed = (): Decision =>
   ({ allow: false, basis: "policy", scope: null, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
-const revokedConnection = (): Decision => deny("policy", "remote-controller-revoked");
+const revokedConnection = (): Decision => deny("policy", EGRESS_DENY_REASONS.controllerRevoked);
 
 function networkDenial(evaluation: {
   readonly permission: Pick<NetworkPermissionEvaluation["permission"], "reason">;
@@ -373,6 +374,9 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       }
     }
     if (!answer.allow) {
+      if (answer.reason === EGRESS_DENY_REASONS.controllerRevoked) {
+        return { allow: false, decision: revokedConnection(), settledRefusal: true };
+      }
       const recheck = answer.recheckRefusal;
       const decision = recheck?.kind === "denied"
         ? networkDenial({ permission: { reason: answer.reason }, rule: recheck.rule })

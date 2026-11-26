@@ -31,7 +31,7 @@ describe("sandbox domain review", () => {
   // The real manager applies the shared mode/reviewer decision before the requester asks a person.
   it("escalates an ambiguous auto-reviewed request to the existing approval gate", async () => {
     const manager = reviewer("ask");
-    const requestAndWait = vi.fn(async () => ({ requestId: "network-ask", choice: "deny-once" as const }));
+    const requestAndWait = answeringRequestAndWait<ApprovalRequestInput>(() => ({ choice: "deny-once" }));
     await expect(createApprovalGateEgressRequester({ requestAndWait }, manager)(request))
       .resolves.toEqual({ allow: false, humanDenied: true, reason: "denied by the user" });
     expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
