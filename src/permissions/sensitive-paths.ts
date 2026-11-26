@@ -819,11 +819,12 @@ export function isConfiguredSessionReadPath(canonicalPath: string): boolean {
 
 // Snapshot the namespace once for one permission decision.
 export function createConfiguredSessionReadPathMatcher(): (canonicalPath: string) => boolean {
-  let snapshot: { root: string | undefined } | undefined;
-  return (canonicalPath) => {
-    snapshot ??= { root: getConfiguredSessionReadRoot() };
-    return isSessionReadPathUnderRoot(canonicalPath, snapshot.root);
-  };
+  const owner = {};
+  return canonicalPath => withLocalityDecision(() => {
+    const memo = decisionMemo<string | undefined>(owner);
+    if (!memo.has("root")) memo.set("root", getConfiguredSessionReadRoot());
+    return isSessionReadPathUnderRoot(canonicalPath, memo.get("root"));
+  });
 }
 
 function isSessionReadPathUnderRoot(canonicalPath: string, root: string | undefined): boolean {
@@ -869,18 +870,24 @@ function sensitiveSearchAnchors(canonicalize: (path: string) => string = canonic
 
 // Cache the secret-holding location reached by each recursive-search root in one request.
 export function createSensitiveLocationMatcher(canonicalize: (path: string) => string = canonicalizePathForMatch): (directory: string) => string | null {
-  let anchors: readonly string[] | undefined;
-  const results = new Map<string, string | null>();
-  return (directory) => {
+  const anchorOwner = {};
+  const resultOwner = {};
+  return directory => withLocalityDecision(() => {
+    const results = decisionMemo<string | null>(resultOwner);
     const cached = results.get(directory);
     if (cached !== undefined) return cached;
-    anchors ??= sensitiveSearchAnchors(canonicalize);
+    const memo = decisionMemo<readonly string[]>(anchorOwner);
+    let anchors = memo.get("anchors");
+    if (anchors === undefined) {
+      anchors = sensitiveSearchAnchors(canonicalize);
+      memo.set("anchors", anchors);
+    }
     const trimmed = directory.length > 1 ? directory.replace(/\/+$/, "") : directory;
     const prefix = trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
     const result = anchors.find((anchor) => anchor === trimmed || anchor.startsWith(prefix)) ?? null;
     results.set(directory, result);
     return result;
-  };
+  });
 }
 
 /**

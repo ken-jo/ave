@@ -40,15 +40,6 @@ import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
 import { resolveGuestShellPath, type ShellExecutionFacts } from "../../shared/shell-execution.js";
 
-class SharedPowerShellContext extends PowerShellAnalysisContext {
-  readonly floor = new ShellFloorContext("powershell");
-}
-
-function sharedWork(context: PowerShellAnalysisContext): ShellFloorContext {
-  if (!(context instanceof SharedPowerShellContext)) throw new Error("Missing shell analysis context");
-  return context.floor;
-}
-
 const VISIBLE_SENDER = /\s*(?:[\w.]+\\)?(?:iwr|irm|invoke-webrequest|invoke-restmethod)(?=\s)/iy;
 
 // A sender at a statement or pipeline-stage start of the direct program, optionally module-qualified. Text in quotes or
@@ -78,7 +69,7 @@ function directVisibleSender(visible: string): boolean {
 
 // Publish visible upload evidence before syntax or structural refusal can discard a frame.
 // This adds a floor only; it never proves a computed command's launch identity.
-function retainVisibleUpload(command: string, context: PowerShellAnalysisContext): void {
+function visibleUploadReason(command: string): string | null {
   const visible = normalizeDashes(command.slice(0, POWERSHELL_ANALYSIS_LIMITS.inputChars));
   let sender = directVisibleSender(visible);
   // Literal fragments can identify a sender for a floor without proving its launch.
@@ -88,8 +79,9 @@ function retainVisibleUpload(command: string, context: PowerShellAnalysisContext
   }
   // PowerShell binds any prefix of -InFile on these cmdlets (common -Information* lose), even -I.
   if (sender && /(?:^|[\s"'])-i(?:n(?:f(?:i(?:le?)?)?)?)?(?::|\s)/i.test(visible) && /https?:\/\//i.test(visible)) {
-    sharedWork(context).retained.exfiltration ??= "PowerShell upload of a file (visible -InFile)";
+    return "PowerShell upload of a file (visible -InFile)";
   }
+  return null;
 }
 
 // Lexer
@@ -971,13 +963,13 @@ export interface ParsedPowerShellCommand {
   readonly analysisLimited: boolean;
   readonly facts: Map<string, unknown>;
   readonly context: PowerShellAnalysisContext;
+  readonly visibleUpload: string | null;
 }
 export type PowerShellCommandInput = ShellCommandInput | ParsedPowerShellCommand;
 
 export function parsePowerShellCommand(command: string, resolver?: VerifiedArgvResolver): ParsedPowerShellCommand {
-  const context = new SharedPowerShellContext();
+  const context = new PowerShellAnalysisContext();
   if (resolver !== undefined) context.facts.set("verified-argv-resolver", resolver);
-  retainVisibleUpload(command, context);
   let syntax: LexedPowerShell;
   let analysisLimited = false;
   try {
@@ -989,7 +981,7 @@ export function parsePowerShellCommand(command: string, resolver?: VerifiedArgvR
     syntax = { pipelines: null, reason: error.message };
     analysisLimited = true;
   } finally { if (context.currentFrameDepth() > 0) context.leave(); }
-  return { command, syntax, analysisLimited: analysisLimited || context.limited, facts: context.facts, context };
+  return { command, syntax, analysisLimited: analysisLimited || context.limited, facts: context.facts, context, visibleUpload: visibleUploadReason(command) };
 }
 
 function asPowerShellCommand(input: PowerShellCommandInput): ParsedPowerShellCommand {
@@ -1098,11 +1090,8 @@ function literalStageBodies(stage: StaticStage) {
 function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined, budget: LiteralBodyBudget, supplied?: ShellFloorContext): ShellFloorSignals {
   budget.tokens.count += parsed.context.visits.grammarRecords;
   if (budget.depth >= POWERSHELL_ANALYSIS_LIMITS.depth || budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return shellFloorBudgetSignals();
-  const work = supplied ?? sharedWork(parsed.context);
-  const retained = {
-    sensitive: work.retained.sensitive ?? sharedWork(parsed.context).retained.sensitive,
-    exfiltration: work.retained.exfiltration ?? sharedWork(parsed.context).retained.exfiltration,
-  };
+  const work = supplied ?? new ShellFloorContext("powershell");
+  const retained = { sensitive: null, exfiltration: parsed.visibleUpload };
   if (parsed.analysisLimited) return { ...shellFloorBudgetSignals(), ...retained,
     ...(retained.sensitive !== null || retained.exfiltration !== null ? { outcome: "visible-floor" as const } : {}) };
   const { pipelines, reason, readable } = parsed.syntax;
@@ -1288,6 +1277,7 @@ function inspectPowerShellPermissionPathsInDecision(input: PowerShellCommandInpu
   if (parsed.analysisLimited || budget.depth >= POWERSHELL_ANALYSIS_LIMITS.depth || budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return { paths: [], unproven: true, credentialStore: null, evidenceLimitExceeded: true };
   const paths: PermissionPathEvidence[] = [];
   const inspectHostFiles = options.inspectHostFiles !== false;
+  const work = new ShellFloorContext("powershell", { inspectHostFiles });
   const initialDirectory = inspectHostFiles || posix.isAbsolute(cwd) && !cwd.includes("\0") ? cwd : null;
   const shellFacts = (directory: string | null, values: Readonly<Record<string, string | undefined>>): ShellExecutionFacts => ({
     dialect: "bash", environment: values,
@@ -1427,7 +1417,7 @@ function inspectPowerShellPermissionPathsInDecision(input: PowerShellCommandInpu
     unknownProtectedWrite ??= implicitWrite;
     if (stage.proof.kind === "static-complete" && stage.proof.dataOnly) continue;
     if (policy === undefined || policy.native) {
-      credentialStore ??= nativeCredentialStore(stage, sharedWork(parsed.context));
+      credentialStore ??= nativeCredentialStore(stage, work);
       const values = stage.command.tokens.map((token, index) => stage.argv[index] === undefined ? permissionArgumentBinding(token, stageEnvironment) : { value: stage.argv[index]!, dynamic: false });
       const source = values.map((binding, index) => binding && !binding.dynamic ? shellQuote(binding.value) : stage.raw[index]!).join(" ");
       unknownProtectedWrite ??= inspectUnknownNativeWriteArguments(values.map((binding) => binding && !binding.dynamic ? binding.value : undefined), stage.raw);
@@ -1491,8 +1481,7 @@ export function powerShellExfiltrationSignal(input: ShellCommandInput, cwd?: str
 
 export function _inspectPowerShellForTest(input: ShellCommandInput, cwd?: string) {
   const command = typeof input === "string" ? input : input.command;
-  const context = new SharedPowerShellContext();
-  retainVisibleUpload(command, context);
+  const context = new PowerShellAnalysisContext();
   let syntax: LexedPowerShell, limited = false;
   try {
     context.enter(command);
@@ -1503,9 +1492,10 @@ export function _inspectPowerShellForTest(input: ShellCommandInput, cwd?: string
     syntax = { pipelines: null, reason: error.message };
     limited = true;
   } finally { if (context.currentFrameDepth() > 0) context.leave(); }
-  const parsed: ParsedPowerShellCommand = { command, syntax, analysisLimited: limited || context.limited, facts: context.facts, context };
-  const result = applyStartupPolicy(inspectParsed(parsed, cwd, { tokens: { count: 0 }, depth: 0 }));
-  return { ...result, limited: parsed.analysisLimited, visits: context.visits, shellVisits: context.floor.visits, limits: POWERSHELL_ANALYSIS_LIMITS };
+  const parsed: ParsedPowerShellCommand = { command, syntax, analysisLimited: limited || context.limited, facts: context.facts, context, visibleUpload: visibleUploadReason(command) };
+  const work = new ShellFloorContext("powershell");
+  const result = applyStartupPolicy(inspectParsed(parsed, cwd, { tokens: { count: 0 }, depth: 0 }, work));
+  return { ...result, limited: parsed.analysisLimited, visits: context.visits, shellVisits: work.visits, limits: POWERSHELL_ANALYSIS_LIMITS };
 }
 
 // Recursive traversal
