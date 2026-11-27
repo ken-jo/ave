@@ -2,9 +2,10 @@ import { lstatSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { sameFileIdentity } from "../lib/file-identity.js";
+import { getHostResources } from "../main/host-resources.js";
 import {
   aveHomeReadBoundaryCovering, getDefaultSensitiveWriteDenyEntries, getProtectedReadDenyFloor,
-  getUserReadDenies, protectedReadDenyMatcher, runWithSandboxWritePreflight,
+  getUserReadDenies, getUserWriteDenies, protectedReadDenyMatcher, runWithSandboxWritePreflight,
 } from "../permissions/asrt-sandbox.js";
 import { openHostEgressListener } from "../permissions/egress-host-listener.js";
 import { openInvocationProxyListener } from "../permissions/egress-invocation-listener.js";
@@ -12,12 +13,17 @@ import {
   egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased,
 } from "../permissions/egress-invocations.js";
 import { buildSeatbeltShellRequest } from "../permissions/mxc-macos.js";
-import { posixPolicyLookups } from "../permissions/mxc-posix.js";
+import { buildBubblewrapShellRequest, requireMxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
+import { holdMxcLinuxPlaceholders } from "../permissions/mxc-linux-placeholders.js";
+import { atOrUnder, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants } from "../permissions/mxc-posix.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
 import { stageMxcShellRequest, startMxcShellSupervisor } from "../permissions/mxc-shell-supervisor-client.js";
 import { policyFloorRow } from "../permissions/policy-model.js";
 import { detectMxcShellCapability, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
-import { buildSeatbeltSandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
+import { prepareSandboxBareRepositoryCleanup } from "../permissions/sandbox-bare-repository-cleanup.js";
+import { buildMandatorySandboxWritePolicy, buildSeatbeltSandboxWritePolicy, restrictSandboxGitControlSnapshot } from "../permissions/sandbox-write-policy.js";
+import { startMxcLinuxShell } from "../sandbox/linux-container-shell.js";
+import { holdSandboxGitWrites } from "../shared/host-git.js";
 import { getPolicyHome } from "../shared/policy-home.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 import { shellPolicyModel, type PrepareMxcShellLaunchInput } from "./mxc-shell-launch.js";
@@ -46,7 +52,8 @@ function pathFoldsCase(path: string): boolean {
 
 export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, lifecycle: ContainedShellLifecycle) {
   const capability = detectMxcShellCapability();
-  if (capability?.platform !== "darwin") throw new Error("macOS container shell route is unavailable");
+  if (capability?.platform !== "darwin" && capability?.platform !== "linux") throw new Error("POSIX container shell route is unavailable");
+  const linux = capability.platform === "linux";
   const runtimeRoot = requireMxcContainerStartRoot();
   const token = input.egressToken;
   const owner = egressInvocationOwner(token);
@@ -74,8 +81,18 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
   const admittedPath = (path: string) => inRuntime(path) === undefined && aveHomeReadBoundaryCovering(path) === undefined;
   const sensitive = getDefaultSensitiveWriteDenyEntries();
   const routingPaths = sensitive.map(entry => typeof entry === "string" ? entry : entry.path);
-  const mandatory = await runWithSandboxWritePreflight(lifecycle.signal, () =>
-    buildSeatbeltSandboxWritePolicy(input.allowWrite.filter(admittedPath), undefined, routingPaths));
+  const programs = linux ? await requireMxcLinuxShellPrograms(getHostResources()) : undefined;
+  const mandatory = await runWithSandboxWritePreflight(lifecycle.signal, () => {
+    const allowWrite = input.allowWrite.filter(admittedPath);
+    if (!linux) return { ...buildSeatbeltSandboxWritePolicy(allowWrite, undefined, routingPaths), gitControlSnapshot: undefined };
+    const policy = buildMandatorySandboxWritePolicy(allowWrite, undefined, routingPaths,
+      routingPaths.filter(path => path.startsWith("/") && !/[*?[\]]/u.test(path)));
+    return {
+      ...policy,
+      literalRows: policy.denyWrite.map(entry => policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", true)),
+      patternRows: [],
+    };
+  });
   const userDenyRead = getUserReadDenies();
   const protectedFloor = getProtectedReadDenyFloor().filter(path => !userDenyRead.includes(path));
   const model = shellPolicyModel({
@@ -84,10 +101,16 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
     denyWrite: [],
     floorPierces: input.floorPierces,
   }, [...mandatory.literalRows, ...mandatory.patternRows, ...sensitive.map(entry =>
-    policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", typeof entry !== "string"))]);
+    policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", linux || typeof entry !== "string")),
+    ...(linux ? getUserWriteDenies().map(entry => policyFloorRow(
+      typeof entry === "string" ? entry : entry.path, "ro", "protected-name", typeof entry !== "string" && entry.literal === true,
+    )) : []),
+    ...(programs === undefined ? [] : [programs.launcher, programs.helper].map(path =>
+      policyFloorRow(dirname(path), "ro", "protected-name", true))),
+  ]);
   const roots = [hostHome, input.cwd, ...mandatory.allowWrite];
   const lookups = posixPolicyLookups(hostHome, false);
-  const foldsCase = roots.every(path => pathFoldsCase(lookups.canonical(path)));
+  const foldsCase = !linux && roots.every(path => pathFoldsCase(lookups.canonical(path)));
 
   let active = false;
   const admission = {
@@ -107,12 +130,21 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
   relay.registerPort(listener.port);
 
   assertAdmission();
-  const { request, grants } = buildSeatbeltShellRequest({
-    ...input, model, lookups: { ...lookups, foldsCase }, proxyUrl: listener.url,
-  });
+  const held = programs === undefined ? undefined : await holdMxcLinuxPlaceholders(lookups,
+    (current) => rankPosixContainerRows(model, "bubblewrap", current));
+  if (held !== undefined) lifecycle.defer(() => held.release());
+  const { request, grants } = programs !== undefined && held !== undefined
+    ? { grants: held.grants, request: buildBubblewrapShellRequest({
+      ...input, grants: held.grants, lookups, helper: programs.helper, proxyUrl: listener.url,
+    }) }
+    : buildSeatbeltShellRequest({ ...input, model, lookups: { ...lookups, foldsCase }, proxyUrl: listener.url });
   const staging = await mkdtemp(join(runtimeRoot, "shell-"));
   lifecycle.defer(() => rm(staging, { recursive: true }));
   const staged = await stageMxcShellRequest(join(staging, "request.json"), request);
+  const writeRoots = mandatory.allowWrite.filter(path => grants.readwrite.includes(lookups.canonical(path)));
+  const cleanupGit = mandatory.gitControlSnapshot === undefined ? undefined : await prepareSandboxBareRepositoryCleanup(
+    writeRoots, basename(staging), restrictSandboxGitControlSnapshot(mandatory.gitControlSnapshot, writeRoots, gitExclusions(grants)),
+  );
 
   return {
     carvedReadLimitedAt: grants.carvedReadLimitedAt,
@@ -122,9 +154,41 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
       if (active) throw new Error("Container shell launch already started");
       assertAdmission();
       active = true;
+      if (programs !== undefined && held !== undefined) {
+        programs.validate();
+        held.validate();
+        const releaseGit = cleanupGit === undefined ? undefined : holdSandboxGitWrites(writeRoots);
+        let launch: ReturnType<typeof startMxcLinuxShell>;
+        try { launch = startMxcLinuxShell(programs, staged, input.timeoutMs, lifecycle.signal, revoke, label); } catch (error) {
+          releaseGit?.();
+          throw error;
+        }
+        const pid = launch.child.pid;
+        const marked = pid === undefined ? Promise.resolve() : held.recordLauncher(pid).catch((error: unknown) => {
+          revoke();
+          return error;
+        });
+        const completion = Promise.all([launch.completion, marked]).then(async ([exit, markerError]) => {
+          await held.release();
+          const cleanupNotice = exit.rejected ? undefined : cleanupGit?.();
+          releaseGit?.();
+          if (markerError !== undefined) throw markerError;
+          return { ...exit, ...(cleanupNotice === undefined ? {} : { cleanupNotice }) };
+        });
+        lifecycle.jobStarted(completion);
+        return { child: launch.child, completion };
+      }
       const launch = startMxcShellSupervisor(staged, input.timeoutMs, lifecycle.signal, revoke, label);
       lifecycle.jobStarted(launch.completion);
       return launch;
     },
   };
+}
+
+function gitExclusions(grants: PosixFilesystemGrants): (path: string, includesChildren?: boolean) => boolean {
+  const protectedRows = [...grants.readonly, ...grants.denied];
+  const covering = (path: string, rows: readonly string[]) => Math.max(-1,
+    ...rows.filter(root => atOrUnder(path, root, false)).map(root => root.length));
+  return (path, includesChildren) => covering(path, grants.readwrite) <= covering(path, protectedRows)
+    || (includesChildren === true && protectedRows.some(row => atOrUnder(row, path, false)));
 }

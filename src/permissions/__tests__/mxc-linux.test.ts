@@ -1,8 +1,9 @@
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { _detectMxcLinuxShellSupportForTest as detect, _trustedLinuxPathForTest } from "../mxc-linux.js";
+import { _detectMxcLinuxShellSupportForTest as detect, _trustedLinuxPathForTest, buildBubblewrapShellRequest } from "../mxc-linux.js";
+import { posixPolicyLookups } from "../mxc-posix.js";
 
 function probeInputs() {
   return {
@@ -58,4 +59,18 @@ describe("Linux container shell boot proof", () => {
       rmSync(planted, { recursive: true });
     }
   });
+});
+
+it("keeps the Linux request bytes stable and requires the nearest cwd row to allow it", () => {
+  const lookups = { ...posixPolicyLookups("/home/example", false), exists: () => true, canonical: (path: string) => path };
+  const input = {
+    grants: { readwrite: ["/work", "/work/.ave"], readonly: ["/usr", "/tmp"], denied: ["/work/.ave/hooks"],
+      chainFolders: [], ungrantedDenies: [] },
+    lookups, cwd: "/work", commandLine: "printf '%s' control", timeoutMs: 3000,
+    env: { HOME: "/work/sandbox-home", TMPDIR: "/work/sandbox-home/temp", PATH: "/usr/bin", HTTPS_PROXY: "discard", NO_PROXY: "discard" },
+    proxyUrl: "http://127.0.0.1:12345", helper: "/app/filter/apply-seccomp",
+  };
+  const request = buildBubblewrapShellRequest(input);
+  expect(`${JSON.stringify(request, null, 2)}\n`).toBe(readFileSync(new URL("./fixtures/bubblewrap-shell-request.json", import.meta.url), "utf8"));
+  expect(() => buildBubblewrapShellRequest({ ...input, cwd: "/work/.ave/hooks" })).toThrow("outside its filesystem grants");
 });

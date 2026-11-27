@@ -2859,6 +2859,7 @@ async function runPosixContainerShell(input: {
       const policyNotices = [...read.policyNotices,
         ...(launch.carvedReadLimitedAt?.map(folder => t("sandboxPolicy.carvedReadLimited", { folder })) ?? []),
         ...launch.narrowedWriteRoots.map(({ root }) => t("sandboxPolicy.containerWriteWithheld", { root })),
+        ...("cleanupNotice" in exit && typeof exit.cleanupNotice === "string" ? [exit.cleanupNotice] : []),
       ];
       // The SDK reports a shell ended by a signal, or a child lost before exec, as -1; 255 is a literal exit status.
       const noExitCode = exit.code === -1;
@@ -2922,7 +2923,7 @@ export async function spawnWithSandbox(
   cwdHold = directoryHold;
   const { shell, homePath, hostHome: home, environment } = preparedShellCommand(prepared);
   if (!homePath) throw new Error("Sandbox shell preparation has no owned HOME");
-  if (plan?.platform === "darwin" && plan.substrate === "mxc") {
+  if ((plan?.platform === "darwin" || plan?.platform === "linux") && plan.substrate === "mxc") {
     const { argv, probe } = preparedShellCwdProbe(prepared);
     return await runPosixContainerShell({
       command, commandLine: `exec ${[shell.cmd, ...argv].map(shellQuote).join(" ")}`, cwd: resolvedCwd,
@@ -4354,7 +4355,7 @@ async function spawnPowerShellWithSandbox(
   catch (error) { sandboxHome.cleanup(); throw error; }
   const sandboxCommand = isWindows ? powerShellLaunch.args.at(-1)!
     : [executable, ...powerShellLaunch.args].map(posixSingleQuote).join(" ");
-  if (plan?.platform === "darwin" && plan.substrate === "mxc") {
+  if ((plan?.platform === "darwin" || plan?.platform === "linux") && plan.substrate === "mxc") {
     try {
       return await runPosixContainerShell({
         command, commandLine: `exec ${sandboxCommand}`, cwd, writePaths,

@@ -96,16 +96,45 @@ export interface MxcLinuxShellPrograms {
   readonly env: Readonly<Record<string, string>>;
 }
 
+export async function requireMxcLinuxShellPrograms(resources: HostResources) {
+  const { target, launcher, helper, helperArch, env } = linuxShellPrograms(resources, process.arch);
+  if (target === undefined || launcher === undefined || helper === undefined || helperArch === undefined) {
+    throw new Error("Linux container shell programs are unavailable on this architecture");
+  }
+  const inputs = [[launcher, pinnedLauncherSha256(target)], [helper, filterPins[helperArch]]] as const;
+  const identities = inputs.map(([path]) => executableIdentity(path));
+  const verified = await Promise.all(inputs.map(([path, pin]) => verifyLinuxExecutable(path, pin)));
+  if (verified.includes(false) || inputs.some(([path], index) => executableIdentity(path) !== identities[index])) {
+    throw new Error("Linux container shell programs do not match their pins");
+  }
+  return {
+    launcher, helper, env,
+    validate() {
+      if (inputs.some(([path], index) => executableIdentity(path) !== identities[index])) {
+        throw new Error("Linux container shell programs changed before launch");
+      }
+    },
+  };
+}
+
 const executableChecks = new Map<string, Promise<boolean>>();
 
 function verifyLinuxExecutable(path: string, expected: string): Promise<boolean> {
-  const key = `${path}\0${expected}`;
+  let identity: string;
+  try { identity = executableIdentity(path); } catch { return Promise.resolve(false); }
+  const key = `${path}\0${expected}\0${identity}`;
   let verified = executableChecks.get(key);
   if (verified === undefined) {
-    verified = readFile(path).then((bytes) => createHash("sha256").update(bytes).digest("hex") === expected, () => false);
+    verified = readFile(path).then((bytes) => createHash("sha256").update(bytes).digest("hex") === expected
+      && executableIdentity(path) === identity).catch(() => false);
     executableChecks.set(key, verified);
   }
   return verified;
+}
+
+function executableIdentity(path: string): string {
+  const { dev, ino, size, mtimeNs, ctimeNs } = statSync(path, { bigint: true });
+  return `${dev}:${ino}:${size}:${mtimeNs}:${ctimeNs}`;
 }
 
 function linuxShellPrograms(resources: HostResources, arch: string) {
@@ -117,7 +146,7 @@ function linuxShellPrograms(resources: HostResources, arch: string) {
   return {
     target, launcher, helper, helperArch, directories,
     env: { PATH: directories.join(":"), LC_ALL: "C" },
-  };
+  } as const;
 }
 
 export async function detectHostMxcLinuxShellSupport(resources: HostResources, signal?: AbortSignal): Promise<SandboxContainerShellSupport> {
@@ -189,6 +218,10 @@ export function buildBubblewrapShellRequest(input: {
   }
   const env = Object.entries(input.env).flatMap(([key, value]) =>
     key && !key.includes("=") && !PROXY_VARIABLES.test(key) ? [`${key}=${value}`] : []);
+  const home = input.env.HOME;
+  // Git expects its global config to be a file. A masked, absent config has no settings to read.
+  if (home !== undefined && input.env.GIT_CONFIG_GLOBAL === undefined
+    && grants.placeholders?.some(row => row.path === posix.join(home, ".gitconfig"))) env.push("GIT_CONFIG_GLOBAL=/dev/null");
   const bootstrap = `export NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1\n${input.commandLine}`;
   return {
     version: "0.9.0-alpha",

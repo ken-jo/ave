@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   isProbeError: vi.fn(),
   isMacProbeError: vi.fn(),
   detectMacShell: vi.fn<() => Promise<SandboxContainerShellSupport>>(),
+  detectLinuxShell: vi.fn<() => Promise<SandboxContainerShellSupport>>(),
   logger: {
     debug: vi.fn(),
     info: vi.fn(),
@@ -39,6 +40,10 @@ vi.mock("../../lib/logger.js", () => ({
 
 vi.mock("../../permissions/mxc-macos.js", () => ({
   detectHostMxcMacShellSupport: h.detectMacShell,
+}));
+
+vi.mock("../../permissions/mxc-linux.js", () => ({
+  detectHostMxcLinuxShellSupport: h.detectLinuxShell,
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
@@ -96,6 +101,8 @@ beforeEach(() => {
   h.isMacProbeError.mockReturnValue(false);
   h.detectMacShell.mockReset();
   h.detectMacShell.mockResolvedValue({ state: "available" });
+  h.detectLinuxShell.mockReset();
+  h.detectLinuxShell.mockResolvedValue({ state: "available" });
   h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");
   vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "");
@@ -226,6 +233,15 @@ describe("macOS container shell probe failure", () => {
     expect(plan).toMatchObject({ mode: "plain", fallbackReason: "active-sandbox-not-shell-contained" });
     expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
   });
+});
+
+it("records missing Linux shell tools even when the legacy dependency gate degrades", async () => {
+  h.checkDeps.mockResolvedValue({ errors: ["missing bwrap"], warnings: [] });
+  h.detectLinuxShell.mockResolvedValue({ state: "unavailable", reason: "tools-missing", detail: ["bwrap", "slirp4netns"] });
+  await expect(initSandboxGate(harness.context(true))).resolves.toBeUndefined();
+  expect(h.initialize).not.toHaveBeenCalled();
+  expect(getContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "tools-missing", detail: ["bwrap", "slirp4netns"] });
+  expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", substrate: "none", requiresExplicitUserApproval: true });
 });
 
 describe("macOS sandbox runtime probe failure", () => {

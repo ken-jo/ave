@@ -60,28 +60,31 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
     expect(getHostShellExecutionPlan().fallbackReason).toBe("requested-sandbox-unavailable");
   });
 
-  it.runIf(platform === "linux")("keeps the Linux shell on its wrap and both container routes off", () => {
+  it.runIf(platform === "linux")("requires the Linux container proof for shells and keeps the hook wrap", () => {
     publishWrap();
-    expect(isContainerShellRouteEnabled(platform)).toBe(false);
+    expect(isContainerShellRouteEnabled(platform)).toBe(true);
     expect(isContainerHolderRouteEnabled(platform)).toBe(false);
+    setContainerShellSubstrate("linux", { state: "unavailable", reason: "tools-missing", detail: ["slirp4netns"] });
     expect(detectMxcShellCapability()).toBeUndefined();
-    expect(getHostShellExecutionPlan().identity).toBe("host-shell-execution-plan/v4:linux:asrt");
+    expect(getHostShellExecutionPlan()).toMatchObject({ substrate: "none", requiresExplicitUserApproval: true,
+      fallbackReason: "active-sandbox-not-shell-contained" });
+    expect(getContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "tools-missing", detail: ["slirp4netns"] });
+    expect(getHostShellExecutionPlan("default", "hook").identity).toBe("host-shell-execution-plan/v4:linux:asrt");
+    setContainerShellSubstrate("linux", { state: "available" });
+    expect(getHostShellExecutionPlan()).toMatchObject({ identity: "host-shell-execution-plan/v4:linux:mxc", sandboxed: true,
+      egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } });
   });
 
-  it("starts the relay only on the enabled macOS shell route", async () => {
+  it("starts the relay on enabled POSIX shell routes", async () => {
     try {
       const sandbox = await initializeAsrtSandbox({ allowedDomains: [] }, async () => false);
       expect(sandbox.isCurrent()).toBe(true);
       const lease = openEgressInvocation({ kind: "shell", toolName: "bash", requiresListener: true,
         toolUseId: undefined, context: { approvalSurface: "unavailable", sessionId: undefined, workspaceRoot: undefined } });
       try {
-        if (platform === "darwin") {
-          expect(egressIdentityStrength("shell", { identity: "listener", attributionKey: lease.token })).toBe("shared");
-          const relay = await openEgressRelay(lease.token);
-          await relay.close();
-        } else {
-          await expect(openEgressRelay(lease.token)).rejects.toThrow("the service is not started");
-        }
+        expect(egressIdentityStrength("shell", { identity: "listener", attributionKey: lease.token })).toBe("shared");
+        const relay = await openEgressRelay(lease.token);
+        await relay.close();
       } finally { lease.release(); }
     } finally {
       await resetAsrtSandbox();
@@ -106,7 +109,7 @@ describe("container route call sites", () => {
 
   it("shares the request builder between boot verification and the POSIX shell launch", () => {
     expect(callers(/\brankPosixContainerRows\b/u, "src/permissions/mxc-posix.ts"))
-      .toEqual(["src/permissions/mxc-linux.ts", "src/permissions/mxc-macos.ts"]);
+      .toEqual(["src/permissions/mxc-linux.ts", "src/permissions/mxc-macos.ts", "src/tools/mxc-posix-shell-launch.ts"]);
     expect(callers(/\bmxc-macos\.[jt]s\b|\bdetectHostMxcMacShellSupport\b/u, "src/permissions/mxc-macos.ts"))
       .toEqual(["src/boot/steps/sandbox-init.ts", "src/permissions/mxc-shell-supervisor-service.ts", "src/tools/mxc-posix-shell-launch.ts"]);
     expect(callers(/\bsetContainerShellSubstrate\s*\(/u, "src/permissions/sandbox-capability.ts"))

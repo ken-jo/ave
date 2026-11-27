@@ -244,11 +244,11 @@ export function egressProtocolCoverageFor(substrate: "mxc" | "asrt" | "srt-win" 
   return substrate === "mxc" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
 }
 
-const SEATBELT_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "blocked" });
+const POSIX_CONTAINER_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "blocked" });
 
 export function containerEgressProtocolCoverage(backend: ContainerBackend): EgressProtocolCoverage {
   if (backend === "process-container") return MXC_EGRESS_PROTOCOL_COVERAGE;
-  return backend === "seatbelt" ? SEATBELT_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
+  return POSIX_CONTAINER_EGRESS_PROTOCOL_COVERAGE;
 }
 
 /** The scopes an egress grant can be given. A shell tool call's card offers Deny plus once, session, project, always (owner 2026-10-25, five-choice network card); a workspace terminal

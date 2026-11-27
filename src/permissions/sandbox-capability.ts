@@ -393,15 +393,15 @@ export function getHostShellExecutionPlan(
   consumer: "shell" | "hook" = "shell",
 ): HostShellExecutionPlan {
   const generation = getSandboxGeneration();
-  const darwin = process.platform === "darwin";
-  const selectsMacContainer = darwin && consumer === "shell" && isContainerShellRouteEnabled("darwin");
-  const mxc = darwin && consumer === "hook" ? undefined : detectMxcShellCapability();
+  const posix = process.platform === "darwin" || process.platform === "linux";
+  const selectsPosixContainer = posix && consumer === "shell" && isContainerShellRouteEnabled(process.platform);
+  const mxc = posix && consumer === "hook" ? undefined : detectMxcShellCapability();
   const privacyFailure = getAveHomePrivacyFailure();
   const plan = buildHostShellExecutionPlan({
     platform: process.platform,
     requestedSandbox: isShellSandboxRequestedAtBoot(),
     activeCapability: mxc ?? detectShellSandboxCapability(),
-    shellSubstrate: mxc !== undefined ? "mxc" : selectsMacContainer ? "none" : "asrt",
+    shellSubstrate: mxc !== undefined ? "mxc" : selectsPosixContainer ? "none" : "asrt",
     executionMode,
     unavailableCauses: _bootOutcome?.causes,
     unavailableSandboxRequiresAsk: privacyFailure !== undefined || windowsDenyUnenforceableAtBoot() !== undefined,

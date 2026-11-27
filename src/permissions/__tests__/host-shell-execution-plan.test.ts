@@ -439,7 +439,7 @@ describe("host shell execution plan — Windows MXC substrate", () => {
 
   it.each([
     ["darwin", "host-shell-execution-plan/v4:darwin:mxc", { dns: "blocked", rawIp: "blocked" }],
-    ["linux", "host-shell-execution-plan/v4:linux:mxc", { dns: "unknown", rawIp: "unknown" }],
+    ["linux", "host-shell-execution-plan/v4:linux:mxc", { dns: "blocked", rawIp: "blocked" }],
   ] as const)("describes the container egress evidence on %s", (platform, identity, coverage) => {
     expect(buildHostShellExecutionPlan({
       platform, requestedSandbox: true, activeCapability: { ...FULL_ASRT, platform }, shellSubstrate: "mxc",
