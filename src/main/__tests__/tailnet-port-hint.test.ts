@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { parseWindowsTailnetPortHint } from "../tailnet-port-hint.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { getWindowsTailnetPortHint, parseWindowsTailnetPortHint } from "../tailnet-port-hint.js";
+
+const runSystemCommand = vi.hoisted(() => vi.fn());
+vi.mock("../document-engine-system-command.js", () => ({ runDocumentEngineSystemCommand: runSystemCommand }));
 
 // Excerpt of the localized IPv4 TCP exclusion table returned by the system utility.
 const EXCLUDED_PORTS = [
@@ -15,6 +19,47 @@ const EXCLUDED_PORTS = [
   "* - 관리 포트 제외입니다.",
   "",
 ].join("\r\n");
+
+describe("Windows Tailnet port hint query", () => {
+  afterEach(() => {
+    runSystemCommand.mockReset();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("parses the managed query output with the configured timeout", async () => {
+    vi.stubGlobal("process", Object.create(process, { platform: { value: "win32" } }));
+    vi.stubEnv("SystemRoot", "C:\\Windows");
+    const signal = new AbortController().signal;
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(signal);
+    runSystemCommand.mockResolvedValue(EXCLUDED_PORTS);
+
+    await expect(getWindowsTailnetPortHint(5113)).resolves.toBe("excluded-range");
+    expect(timeout).toHaveBeenCalledWith(TOOL_TIMEOUT_POLICY.tailnetPortHintMs);
+    expect(runSystemCommand).toHaveBeenCalledExactlyOnceWith(
+      "C:\\Windows\\System32\\netsh.exe",
+      ["interface", "ipv4", "show", "excludedportrange", "protocol=tcp"],
+      signal,
+    );
+  });
+
+  it("returns no hint when the managed query fails", async () => {
+    vi.stubGlobal("process", Object.create(process, { platform: { value: "win32" } }));
+    vi.stubEnv("SystemRoot", "C:\\Windows");
+    runSystemCommand.mockRejectedValue(new Error("Query failed"));
+
+    await expect(getWindowsTailnetPortHint(46_200)).resolves.toBeNull();
+    expect(runSystemCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["darwin", "linux"])("skips the managed query on %s", async platform => {
+    vi.stubGlobal("process", Object.create(process, { platform: { value: platform } }));
+
+    await expect(getWindowsTailnetPortHint(46_200)).resolves.toBeNull();
+    expect(runSystemCommand).not.toHaveBeenCalled();
+  });
+});
 
 describe("Windows Tailnet port hints", () => {
   it.each([5113, 5212, 5357, 50_059])("recognizes excluded port %i", port => {

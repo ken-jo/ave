@@ -1,4 +1,6 @@
 import type { TailnetObserverPortHint } from "../shared/tailnet-observer-config.js";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { win32SystemBinary } from "../shared/windows-system-path.js";
 
 const MIRRORED_PORT_RANGE = [44_620, 48_715] as const;
 
@@ -37,8 +39,13 @@ export function parseWindowsTailnetPortHint(output: string, port: number): Tailn
 export async function getWindowsTailnetPortHint(port: number): Promise<TailnetObserverPortHint | null> {
   if (process.platform !== "win32") return null;
   try {
-    const { readWindowsTcpExcludedPortRanges } = await import("./document-engine-system-command.js");
-    return parseWindowsTailnetPortHint(await readWindowsTcpExcludedPortRanges(), port);
+    const { runDocumentEngineSystemCommand } = await import("./document-engine-system-command.js");
+    const output = await runDocumentEngineSystemCommand(
+      win32SystemBinary("netsh"),
+      ["interface", "ipv4", "show", "excludedportrange", "protocol=tcp"],
+      AbortSignal.timeout(TOOL_TIMEOUT_POLICY.tailnetPortHintMs),
+    );
+    return parseWindowsTailnetPortHint(output, port);
   } catch {
     return null;
   }

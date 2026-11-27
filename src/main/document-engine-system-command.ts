@@ -3,22 +3,7 @@ import { spawnManaged, forceKillManagedChildProcess } from "./managed-child-proc
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { win32SystemBinary } from "../shared/windows-system-path.js";
-import { execFile } from "node:child_process";
 import { basename } from "node:path";
-import { promisify } from "node:util";
-
-const NETSH_MAX_OUTPUT_BYTES = 64 * 1024;
-const execFileAsync = promisify(execFile);
-
-export async function readWindowsTcpExcludedPortRanges(): Promise<string> {
-  const { stdout } = await execFileAsync(
-    win32SystemBinary("netsh"),
-    ["interface", "ipv4", "show", "excludedportrange", "protocol=tcp"],
-    { windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.tailnetPortHintMs, maxBuffer: NETSH_MAX_OUTPUT_BYTES },
-  );
-  return stdout;
-}
 
 /** Execute only a host-selected system utility, with bounded output and managed cancellation. */
 export async function runDocumentEngineSystemCommand(command: string, args: readonly string[], signal: AbortSignal): Promise<string> {
