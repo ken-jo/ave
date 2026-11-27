@@ -90,7 +90,7 @@ it("does not change execution or repeat an effect when the logger throws", async
   expect(failing).toHaveBeenCalledWith(expect.objectContaining({ event: "permission_decision", decision: "allow" }));
 });
 
-it("keeps the credential-shaped tool-call ID and nested canary out of production console, file and support bundle logs", async () => {
+it.each(["normal", "slow"])("logs safely to production console, file and support bundle with %s storage", async (storage) => {
   const root = mkdtempSync(join(tmpdir(), "ave-permission-log-sink-"));
   roots.push(root);
   const logsDir = join(root, "logs");
@@ -103,21 +103,58 @@ it("keeps the credential-shaped tool-call ID and nested canary out of production
     "import { createDynamicTool } from \"./src/tools/base.ts\";",
     "import { RULE_PROVENANCE } from \"./src/permissions/decision-provenance.ts\";",
     "import { join } from \"node:path\";",
+    "import fs from \"node:fs\";",
+    "import { syncBuiltinESMExports } from \"node:module\";",
+    "import { setImmediate } from \"node:timers/promises\";",
+    "import { desktopApprovalCardPresenters } from \"./src/main/desktop-approval-presentation.ts\";",
+    "import { installApprovalCardPresenters } from \"./src/permissions/approval-presentation.ts\";",
+    "import { ApprovalGate, IPC_APPROVAL_REQUEST } from \"./src/permissions/approval-gate.ts\";",
+    "import { logPermissionEvent } from \"./src/lib/permission-log.ts\";",
+    "import { drainToolInvocationsForExit } from \"./src/tools/invocation-ledger.ts\";",
     "import { configureHostResources } from \"./src/main/host-resources.ts\";",
     "configureHostResources({ resourcePath: join(process.cwd(), \"resources\"), isPackaged: false });",
-    "const [root, logs, canary, toolUseId] = process.argv.slice(1);",
-    "if (!initFileLogSink({ dir: logs })) throw new Error(\"Missing file sink\");",
+    "const [root, logs, canary, toolUseId, storage] = process.argv.slice(1);",
+    "if (!initFileLogSink({ dir: logs, ...(storage === \"slow\" ? { maxBytes: 1 } : {}) })) throw new Error(\"Missing file sink\");",
+    "let asyncReads = 0, syncReads = 0, release;",
+    "const held = new Promise((resolve) => { release = resolve; });",
+    "const syncRead = fs.readdirSync, asyncRead = fs.promises.readdir;",
+    "if (storage === \"slow\") {",
+    "  fs.readdirSync = (dir, ...args) => { if (dir === logs) syncReads++; return syncRead(dir, ...args); };",
+    "  fs.promises.readdir = async (dir, ...args) => { if (dir === logs) { asyncReads++; await held; } return asyncRead(dir, ...args); };",
+    "  syncBuiltinESMExports();",
+    "}",
     "const manager = new PermissionManager(join(root, \"permissions.json\"));",
     "manager.checkDetailed = () => ({ decision: \"allow\", reason: canary, provenance: RULE_PROVENANCE });",
     "const registry = new ToolRegistry();",
     "registry.register(createDynamicTool({ name: \"allow_probe\", description: \"probe\", category: \"read\", source: \"builtin\", isReadOnly: () => true, jsonSchema: { type: \"object\" }, execute: async () => ({ output: canary, isError: false }) }));",
     "const [result] = await new ToolExecutor(registry, undefined, manager).executeAll([{ id: toolUseId, name: \"allow_probe\", input: { nested: { command: canary } } }], { sessionId: \"permission-session\", permissionContext: { trustOrigin: \"user-keyboard\" } });",
     "if (result.is_error || result.content !== canary || result.tool_use_id !== toolUseId) throw new Error(\"Unexpected effect result\");",
+    "await setImmediate();",
+    "if (storage === \"slow\") {",
+    "  if (syncReads || !asyncReads) throw new Error(\"Permission event used a synchronous roll scan\");",
+    "  const uninstall = installApprovalCardPresenters(desktopApprovalCardPresenters);",
+    "  let deliverCard;",
+    "  const sent = new Promise((resolve) => { deliverCard = resolve; });",
+    "  const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel, payload) => { if (channel === IPC_APPROVAL_REQUEST) deliverCard(payload); } });",
+    "  const pending = gate.requestAndWait({ id: \"sink-approval\", category: \"tool\", toolName: \"allow_probe\", source: \"builtin\", reason: \"fixture\", args: {}, createdAt: Date.now() });",
+    "  const card = await Promise.race([sent, pending]);",
+    "  if (!card?.id) throw new Error(\"No approval card was delivered: \" + card?.choice);",
+    "  gate.resolve(card.id, { requestId: card.id, nonce: card.nonce, hmac: card.hmac, choice: \"allow-once\" });",
+    "  if ((await pending).choice !== \"allow-once\") throw new Error(\"Approval did not settle while storage was slow\");",
+    "  uninstall();",
+    "  if (await drainToolInvocationsForExit(25) !== \"committed\") throw new Error(\"Forced drain waited on storage\");",
+    "}",
     "closeFileLogSink();",
+    "release();",
+    "if (storage === \"slow\") {",
+    "  await setImmediate();",
+    "  for (let i = 0; i < 300; i++) logPermissionEvent(\"queue_probe\", { index: i });",
+    "  await setImmediate();",
+    "}",
   ].join("\n");
   const { stdout, stderr } = await promisify(execFile)(process.execPath, [
-    "--import", "tsx", "--input-type=module", "-e", script, "--", root, logsDir, CANARY, CREDENTIAL_SHAPED_ID,
-  ], { env: { ...inherited, AVE_HOME: root, ELECTRON_RUN_AS_NODE: "1", NODE_ENV: "production", LOG_LEVEL: "info" }, windowsHide: true });
+    "--import", "tsx", "--input-type=module", "-e", script, "--", root, logsDir, CANARY, CREDENTIAL_SHAPED_ID, storage,
+  ], { env: { ...inherited, AVE_HOME: root, ELECTRON_RUN_AS_NODE: "1", NODE_ENV: "production", LOG_LEVEL: "info" }, windowsHide: true, timeout: 10_000 });
   const file = readdirSync(logsDir).map((name) => readFileSync(join(logsDir, name), "utf8")).join("\n");
   const bundle = new AdmZip(await buildDiagnosticsBundle({
     settings: DEFAULT_SETTINGS, appVersion: "test", crashDumpsDir: join(root, "crashes"), logsDir,
@@ -129,6 +166,10 @@ it("keeps the credential-shaped tool-call ID and nested canary out of production
     expect(decisions).toHaveLength(1);
     expect(output).not.toContain(CREDENTIAL_SHAPED_ID);
     expect(output).not.toContain(CANARY);
+  }
+  if (storage === "slow") {
+    const overflow = stdout.split("\n").find((line) => line.includes('\"event\":\"permission_log_overflow\"'));
+    expect(JSON.parse(overflow ?? "{}")).toMatchObject({ dropped: 44 });
   }
   expect(stderr).not.toContain(CANARY);
   expect(stderr).not.toContain(CREDENTIAL_SHAPED_ID);

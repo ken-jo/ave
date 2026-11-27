@@ -1,6 +1,7 @@
 /** Attach file logging at boot through a mutable stream target. */
 import pino from "pino";
 import prettyStream from "pino-pretty";
+import sonicBoom, { type SonicBoom as SonicBoomInstance, type SonicBoomOpts } from "sonic-boom";
 import { createLogFileSink, type LogFileSink, type LogFileSinkOptions } from "./log-file-sink.js";
 import { isPackagedElectronProcess } from "../boot/dev-flags.js";
 import { execModeRequested } from "../main/exec-mode.js";
@@ -21,14 +22,14 @@ const LOG_LEVEL = process.env.LOG_LEVEL ?? ((isProduction || isPackagedElectron)
 /** One-shot execution owns stdout for JSON events; choose stderr from argv at import time before host services exist. */
 const execHeadless = execModeRequested(process.argv);
 
+const prettyOptions = { colorize: true, translateTime: "SYS:HH:MM:ss.l", ignore: "pid,hostname" };
+
 function createConsoleStream(): NodeJS.WritableStream {
   return useJsonFormat
     ? (execHeadless ? process.stderr : process.stdout)
     : // Use a pretty-print stream rather than a worker transport whose entry cannot resolve inside packaged archives.
       prettyStream({
-        colorize: true,
-        translateTime: "SYS:HH:MM:ss.l",
-        ignore: "pid,hostname",
+        ...prettyOptions,
         ...(execHeadless ? { destination: process.stderr } : {}),
       });
 }
@@ -99,8 +100,30 @@ export function closeFileLogSink(): void {
   try { sink?.destroy(); } catch { /* Logging cannot affect shutdown. */ }
 }
 
+const SonicBoomCtor = sonicBoom as unknown as new (opts: SonicBoomOpts) => SonicBoomInstance;
+
+let bestEffortLogger: pino.Logger | undefined;
+
+function getBestEffortLogger(): pino.Logger {
+  if (!bestEffortLogger) {
+    const destination = new SonicBoomCtor({
+      fd: execHeadless ? 2 : 1,
+      sync: false,
+      maxLength: 1024 * 1024,
+    });
+    destination.on("error", () => {});
+    const pretty = useJsonFormat ? undefined : prettyStream.prettyFactory(prettyOptions);
+    const consoleStream = { write: (chunk: string) => destination.write(pretty ? pretty(chunk) : chunk) };
+    bestEffortLogger = pino({ level: LOG_LEVEL, redact }, pino.multistream([
+      { stream: consoleStream, level: LOG_LEVEL as pino.Level },
+      { stream: fileStream as NodeJS.WritableStream, level: LOG_LEVEL as pino.Level },
+    ]));
+  }
+  return bestEffortLogger;
+}
+
 /** Use console proxies only in unpackaged tests; packaged runs retain structured production logging. */
-export function createLogger(module: string): pino.Logger {
+export function createLogger(module: string, bestEffort = false): pino.Logger {
   if (isTest) {
     const prefix = `[${module}]`;
     const consoleFn = (level: "warn" | "error" | "info" | "debug") =>
@@ -132,5 +155,5 @@ export function createLogger(module: string): pino.Logger {
     } as unknown as pino.Logger;
   }
 
-  return logger.child({ module });
+  return (bestEffort ? getBestEffortLogger() : logger).child({ module });
 }
