@@ -251,16 +251,21 @@ export interface HeldWindowsRun {
   stop(): Promise<WindowsHoldVerdict>;
 }
 
+export interface HeldWindowsPolicy {
+  bindReader(pid: number, onFailure: () => void): Promise<void>;
+  onFailure(): void;
+}
+
 export interface HeldWindowsDirectory {
   readonly facts: WindowsPathFacts;
   /** Job launcher arguments for a held command. */
   readonly launcherArgs: readonly string[];
   /** The job launcher invocation that starts `executable` with `launcherArgs`. */
-  command(executable: string, args: readonly string[]): { executable: string; args: string[] };
+  command(executable: string, args: readonly string[], heldPolicy?: boolean): { executable: string; args: string[] };
   /** The standard handles a held launcher is started with: owner, output, error, hold channel, verdict. */
   readonly stdio: "pipe"[];
   /** Connect the started launcher to the helper and return its run. One launcher per hold. */
-  bind(launcher: ChildProcess): HeldWindowsRun;
+  bind(launcher: ChildProcess, policy?: HeldWindowsPolicy): HeldWindowsRun;
   /** False once the helper that owns the handles has exited or failed, or after `release`. */
   isHeld(): boolean;
   /** Idempotent. Resolves once the helper has closed its handles. */
@@ -270,6 +275,7 @@ export interface HeldWindowsDirectory {
 const HOLD_VERDICT_LIMIT = 64;
 const HOLD_DRAIN_MS = 2_000;
 const HOLD_REQUEST_BYTES = 8;
+const HELD_POLICY_FRAME_BYTES = 8;
 
 /** Hold a directory and every ancestor against rename and delete until `release`; undefined when the helper did not hold it.
  * The handles and the kill-on-close job live in the helper, so its exit stops the launcher and everything it started. */
@@ -298,12 +304,14 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     onLost?.();
     return closed;
   };
-  const bind = (launcher: ChildProcess): HeldWindowsRun => {
+  const bind = (launcher: ChildProcess, policy?: HeldWindowsPolicy): HeldWindowsRun => {
     if (run !== undefined) throw new Error("The working directory hold already has a launcher");
     let finish!: (verdict: WindowsHoldVerdict) => void;
     let done = false;
     let deadline: NodeJS.Timeout | undefined;
     let record = "";
+    const [, , , relay, report, control] = launcher.stdio as readonly (Duplex | null | undefined)[];
+    let policyConfirmed = false;
     const verdict = new Promise<WindowsHoldVerdict>((resolve) => {
       finish = (result) => {
         if (done) return;
@@ -317,24 +325,35 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       if (!done && deadline === undefined) {
         deadline = setTimeout(() => finish({ kind: "unconfirmed" }), TOOL_TIMEOUT_POLICY.windowsHoldStopMs);
         launcher.stdin?.destroy();
+        if (policy !== undefined) control?.destroy();
       }
       return verdict;
     };
     run = { verdict, stop };
-    onLost = stop;
-    const [, , , relay, report] = launcher.stdio as readonly (Duplex | null | undefined)[];
+    const failPolicy = (): void => {
+      if (done || deadline !== undefined) return;
+      void stop();
+      if (policy !== undefined) queueMicrotask(policy.onFailure);
+    };
+    onLost = policy === undefined ? stop : failPolicy;
     for (const stream of [launcher.stdin, relay, report, channel]) stream?.on("error", () => {});
     launcher.on("error", () => {
       // A start without a process has nothing to wait for; a failed operation on a live one is a stop request.
       if (launcher.pid === undefined) finish({ kind: "unconfirmed" });
-      else void stop();
+      else if (policy === undefined) void stop();
+      else failPolicy();
     });
     const launcherPid = launcher.pid;
     if (launcherPid === undefined || relay == null || report == null) {
-      void stop();
+      if (policy === undefined) void stop();
+      else failPolicy();
       return run;
     }
-    const stopAdmission = (): void => { relay.destroy(); void stop(); };
+    const stopAdmission = (): void => {
+      relay.destroy();
+      if (policy === undefined) void stop();
+      else failPolicy();
+    };
     const admitRelay = (): void => {
       const frame = relay.read(HOLD_REQUEST_BYTES) as Buffer | null;
       if (frame === null) return;
@@ -354,6 +373,7 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     channel.once("close", () => relay.destroy());
     report.on("data", (chunk: Buffer) => { if (record.length <= HOLD_VERDICT_LIMIT) record += chunk.toString("latin1"); });
     launcher.once("exit", (code) => {
+      if (policy !== undefined && !policyConfirmed) failPolicy();
       const read = (): void => {
         clearTimeout(drain);
         const ok = /^AVJ1 ok (\d{1,10}) ([01])\n$/.exec(record);
@@ -363,13 +383,40 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       const drain = setTimeout(read, HOLD_DRAIN_MS);
       launcher.once("close", read);
     });
-    if (lost || released) void stop();
+    if (policy !== undefined) {
+      launcher.stdin?.on("error", failPolicy);
+      relay.once("close", failPolicy);
+      if (control == null) failPolicy();
+      else {
+        let frame = Buffer.alloc(0);
+        control.on("error", failPolicy);
+        control.once("close", () => { if (!policyConfirmed) failPolicy(); });
+        control.on("data", (chunk: Buffer) => {
+          if (done || deadline !== undefined) return;
+          if (frame.length + chunk.length > HELD_POLICY_FRAME_BYTES) { failPolicy(); return; }
+          frame = Buffer.concat([frame, chunk]);
+          if (frame.length !== HELD_POLICY_FRAME_BYTES) return;
+          const pid = frame.readUInt32LE(4);
+          if (frame.toString("ascii", 0, 4) !== "AVP1" || pid === 0 || pid === launcherPid) { failPolicy(); return; }
+          const acknowledge = async (): Promise<void> => {
+            await policy.bindReader(pid, failPolicy);
+            if (done || deadline !== undefined || control.destroyed) return;
+            const reply = Buffer.from(frame);
+            reply.write("AVR1");
+            policyConfirmed = true;
+            control.end(reply, () => control.destroy());
+          };
+          void acknowledge().catch(failPolicy);
+        });
+      }
+    }
+    if (lost || released) onLost();
     return run;
   };
   const held = (facts: WindowsPathFacts): HeldWindowsDirectory => ({
     facts,
     launcherArgs: ["--hold"],
-    command: (executable, args) => ({ executable: resolveWindowsJobLauncher(), args: ["--hold", executable, ...args] }),
+    command: (executable, args, heldPolicy) => ({ executable: resolveWindowsJobLauncher(), args: [heldPolicy ? "--hold-policy-v1" : "--hold", executable, ...args] }),
     stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
     bind,
     isHeld: () => !released && !lost,

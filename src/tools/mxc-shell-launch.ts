@@ -1,7 +1,6 @@
 // Prepare invocation-scoped container launch resources. The invocation's lifecycle closes the proxy only after the launcher and its job
 // have exited, so a surviving process can never reach a port reused by another invocation.
 import { win32 as winPath } from "node:path";
-import type { ChildProcess } from "node:child_process";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
 import { appOwnedSandboxPrivateRoots, aveHomeReadBoundaryCovering, getProtectedReadDenyFloor, getUserReadDenies, insideOwnWindowsSandboxHome, protectedReadDenyMatcher } from "../permissions/asrt-sandbox.js";
@@ -13,6 +12,7 @@ import { detectMxcShellCapability, onSandboxStatusChanged } from "../permissions
 import {
   buildMxcShellRequest,
   openMxcRequestTransport,
+  type MxcRequestTransport,
   rankMxcFilesystem,
   resolveHostWxcExecPath,
 } from "../permissions/mxc-windows.js";
@@ -22,15 +22,13 @@ import { assertIssuedContainerHomeInPlace, heldIssuedContainerHome, isIssuedCont
 import { claimMxcWatchedRows, hasWatchedWork, sweepWatchedRows, WatchedQuarantineError } from "../permissions/windows-watched-rows.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 
-export interface MxcShellLaunch {
+export interface MxcShellLaunch extends Pick<MxcRequestTransport, "bindChild" | "bindHeldPolicy"> {
   /** `wxc-exec.exe` followed by its arguments; spawn with `shell: false`. */
   readonly argv: readonly string[];
   readonly proxyPort: number;
   readonly watchedNotice?: string | undefined;
   /** Admit connections after the final shell admission checks, immediately before spawn. */
   activate(): void;
-  /** Bind policy delivery immediately after spawning the launcher. */
-  bindChild(child: ChildProcess): void;
 }
 
 /** A shell command's policy as the lists the shell composes. */
@@ -89,6 +87,7 @@ export interface PrepareMxcShellLaunchInput {
   /** The child's secret-stripped environment. */
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
+  readonly directoryHeld?: boolean;
   readonly exists: (path: string) => boolean;
 }
 
@@ -201,7 +200,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     proxyUrl: listener.url,
     timeoutMs: input.timeoutMs + MXC_TIMEOUT_MARGIN_MS,
   });
-  const transport = await openMxcRequestTransport(request, wxcExec);
+  const transport = await openMxcRequestTransport(request, wxcExec, input.directoryHeld);
   lifecycle.defer(() => transport.release());
   assertAdmission();
   let watchedNotice: string | undefined;
@@ -236,5 +235,6 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
       active = true;
     },
     bindChild: transport.bindChild,
+    ...(transport.bindHeldPolicy !== undefined && { bindHeldPolicy: transport.bindHeldPolicy }),
   };
 }

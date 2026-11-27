@@ -83,6 +83,27 @@ static bool holdTransfer(HANDLE channel, bool write, void* target, DWORD size) {
   }
   return true;
 }
+struct PolicyControl { HANDLE channel; DWORD pid; };
+static bool controlEmpty(HANDLE channel) {
+  DWORD available = 0;
+  return PeekNamedPipe(channel, nullptr, 0, nullptr, &available, nullptr) && available == 0;
+}
+static DWORD WINAPI confirmPolicyReader(void* context) {
+  const auto& control = *static_cast<const PolicyControl*>(context);
+  DWORD report[]{0x31505641, control.pid}; // AVP1
+  DWORD reply[2]{};
+  if (!controlEmpty(control.channel) ||
+      !holdTransfer(control.channel, true, report, sizeof(report)) ||
+      !holdTransfer(control.channel, false, reply, sizeof(reply)) ||
+      reply[0] != 0x31525641 || reply[1] != control.pid) return 1; // AVR1
+  // The reply is the only host frame. Anything after it is invalid, including a duplicate.
+  char extra;
+  DWORD count = 0;
+  if (ReadFile(control.channel, &extra, 1, &count, nullptr)) return count == 0 ? 0 : 1;
+  const DWORD error = GetLastError();
+  return error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED ? 0 : 1;
+}
+
 // One frame to the hold helper and its 9-byte reply; returns the reply kind, 0 on failure.
 static char holdAsk(HANDLE channel, DWORD kind, DWORD value, ULONGLONG* answer = nullptr) {
   struct { DWORD kind; DWORD value; } frame{kind, value};
@@ -170,7 +191,8 @@ int wmain(int argc, wchar_t** argv) {
   // the helper's exit stops both. It alone decides the run: `AVJ1 ok <exit code> <stopped>` once its
   // own job is proven empty and the helper confirms the held directory, `AVJ1 lost` (exit 125) when
   // the hold was refused or the directory changed, `AVJ1 unconfirmed` (exit 125) otherwise.
-  const bool held = argc >= 2 && wcscmp(argv[1], L"--hold") == 0;
+  const bool heldPolicy = argc >= 2 && wcscmp(argv[1], L"--hold-policy-v1") == 0;
+  const bool held = heldPolicy || (argc >= 2 && wcscmp(argv[1], L"--hold") == 0);
   const int first = contained ? 3 : held ? 2 : 1;
   if (contained && (argc < 3 || !absolutePath(argv[2]))) {
     std::fprintf(stderr, "Windows job launcher requires an absolute receipt path\n");
@@ -185,6 +207,9 @@ int wmain(int argc, wchar_t** argv) {
       return 125;
     }
   }
+  const HANDLE policyChannel = heldPolicy ? inheritedHandle(5) : INVALID_HANDLE_VALUE;
+  if (heldPolicy && (GetFileType(GetStdHandle(STD_INPUT_HANDLE)) != FILE_TYPE_PIPE || !controlEmpty(policyChannel)))
+    endHeld(kUnconfirmed, 125);
   if (argc <= first || !absolutePath(argv[first])) {
     std::fprintf(stderr, "Windows job launcher requires an absolute executable path\n");
     return 125;
@@ -261,7 +286,7 @@ int wmain(int argc, wchar_t** argv) {
   // Assignment is atomic with creation, eliminating even an abandoned suspended
   // process if this launcher is terminated between creation and assignment.
   if (!CreateProcessW(argv[first], commandLine.data(), nullptr, nullptr, TRUE,
-                      EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                      EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | (heldPolicy ? CREATE_SUSPENDED : 0),
                       nullptr, nullptr, &startup.StartupInfo, &child)) {
     fail("CreateProcess in job");
     if (held) endHeld(kUnconfirmed, 125);
@@ -269,7 +294,6 @@ int wmain(int argc, wchar_t** argv) {
   }
   DeleteProcThreadAttributeList(attributes);
   for (HANDLE handle : inherited) CloseHandle(handle);
-  CloseHandle(child.hThread);
   // A NUL stdin has no owner to watch; a held command is then bound to the hold helper alone.
   const bool watched = !held || GetFileType(GetStdHandle(STD_INPUT_HANDLE)) == FILE_TYPE_PIPE;
   HANDLE owner = watched ? CreateThread(nullptr, 0, watchOwner, GetStdHandle(STD_INPUT_HANDLE), 0, nullptr) : nullptr;
@@ -278,6 +302,21 @@ int wmain(int argc, wchar_t** argv) {
     if (held) endHeld(kUnconfirmed, 125);
     return 125;
   }
+  if (heldPolicy) {
+    PolicyControl control{policyChannel, child.dwProcessId};
+    HANDLE confirm = CreateThread(nullptr, 0, confirmPolicyReader, &control, 0, nullptr);
+    HANDLE startupWaits[]{owner, child.hProcess, confirm};
+    DWORD result = 1;
+    const bool confirmed = confirm && WaitForMultipleObjects(3, startupWaits, FALSE, 10000) == WAIT_OBJECT_0 + 2 &&
+        GetExitCodeThread(confirm, &result) && result == 0 && WaitForSingleObject(owner, 0) == WAIT_TIMEOUT;
+    if (!confirmed || ResumeThread(child.hThread) != 1) {
+      CloseHandle(job);
+      endHeld(kUnconfirmed, 125);
+    }
+    CloseHandle(confirm);
+    CloseHandle(policyChannel);
+  }
+  CloseHandle(child.hThread);
   HANDLE waits[]{child.hProcess, owner};
   DWORD result = WaitForMultipleObjects(watched ? 2 : 1, waits, FALSE, INFINITE);
   DWORD code = 125;
