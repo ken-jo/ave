@@ -27,10 +27,10 @@ export class WindowsExecutableError extends Error {
   }
 }
 
-function windowsFiles(bindingPath = "koffi") {
+function windowsFiles() {
   if (api !== undefined) return api;
   const requireNative = typeof require === "function" ? require : createRequire(import.meta.url);
-  const kernel = requireNative(bindingPath).load("kernel32.dll");
+  const kernel = requireNative("koffi").load("kernel32.dll");
   const createFile = kernel.func("intptr_t __stdcall CreateFileW(str16, uint32_t, uint32_t, void *, uint32_t, uint32_t, void *)");
   const lastError = kernel.func("uint32_t __stdcall GetLastError()");
   const checkOpen = handle => {
@@ -134,9 +134,9 @@ function* holdExecutable(api, executable) {
 }
 
 /** Hold the resolved image and directory entries across the synchronous process creation call. */
-export function lockWindowsExecutable(executable, bindingPath) {
+export function lockWindowsExecutable(executable) {
   if (process.platform !== "win32") throw new Error("Executable locking requires Windows");
-  const operations = holdExecutable(windowsFiles(bindingPath), executable);
+  const operations = holdExecutable(windowsFiles(), executable);
   let step = operations.next();
   while (!step.done) {
     const [call, ...args] = step.value;

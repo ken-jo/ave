@@ -1,12 +1,12 @@
 import { execFile, spawnSync } from "node:child_process";
-import { accessSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { accessSync, readFileSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { dirname, join, win32 } from "node:path";
 import { lockWindowsExecutable, lockWindowsExecutableAsync, WindowsExecutableError } from "../../scripts/lib/windows-locked-executable.mjs";
 import { windowsPeImageDigest } from "../../scripts/lib/windows-path-kind-image-digest.mjs";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
-import { getConfiguredHostResources, getHostResources } from "./host-resources.js";
+import { getHostResources } from "./host-resources.js";
 
 // The signing-stable image digest of the helper built with this bundle; packaging requires the shipped helper to match.
 declare const __AVE_WINDOWS_PATH_KIND_SHA256__: string | null;
@@ -24,18 +24,6 @@ export function windowsPathKindHelperIn(resourcePath: string): string {
   return join(resourcePath, "windows-path-kind", process.arch, "ave-path-kind.exe");
 }
 
-export function windowsWorkbookLockerBindingIn(resourcePath: string, isPackaged: boolean): string {
-  const modules = isPackaged ? join(resourcePath, "app.asar.unpacked", "node_modules") : join(resourcePath, "..", "node_modules");
-  return join(modules, "@koromix", `koffi-win32-${process.arch}`, `win32_${process.arch}`, "koffi.node");
-}
-
-export function resolveWindowsWorkbookLockerBinding(resourcePath: string, isPackaged: boolean): string {
-  const path = windowsWorkbookLockerBindingIn(resourcePath, isPackaged);
-  const info = lstatSync(path);
-  if (!info.isFile() || info.nlink !== 1) throw new Error("Expected a regular Windows executable locker binding");
-  return realpathSync.native(path);
-}
-
 export function resolveWindowsPathKindHelper(resourcePath = getHostResources().resourcePath): string {
   const binary = windowsPathKindHelperIn(resourcePath);
   try {
@@ -48,15 +36,9 @@ export function resolveWindowsPathKindHelper(resourcePath = getHostResources().r
 }
 
 /** Dispatch synchronously while the file and its parents are held. An async child is opened before spawn returns. */
-export function withWindowsPathKindHelper<T>(launch: (helper: string) => T, resourcePath = getHostResources().resourcePath, workbook = false): T {
-  const packagedWorkbook = workbook && getConfiguredHostResources()?.isPackaged;
-  if (packagedWorkbook && typeof __AVE_WINDOWS_PATH_KIND_SHA256__ !== "string") {
-    throw windowsPathKindHelperUnavailable(`Windows folder classifier pin is missing. ${REPAIR}`);
-  }
+export function withWindowsPathKindHelper<T>(launch: (helper: string) => T, resourcePath = getHostResources().resourcePath): T {
   if (!pinned()) return launch(resolveWindowsPathKindHelper(resourcePath));
-  // An absolute native binding needs no package resolution in the confined workbook process.
-  const binding = workbook ? resolveWindowsWorkbookLockerBinding(resourcePath, Boolean(packagedWorkbook)) : undefined;
-  const executable = holdBuiltWindowsPathKindHelper(windowsPathKindHelperIn(resourcePath), binding);
+  const executable = holdBuiltWindowsPathKindHelper(windowsPathKindHelperIn(resourcePath));
   try {
     return launch(executable.path);
   } finally {
@@ -64,10 +46,10 @@ export function withWindowsPathKindHelper<T>(launch: (helper: string) => T, reso
   }
 }
 
-export function holdBuiltWindowsPathKindHelper(path: string, binding?: string): ReturnType<typeof lockWindowsExecutable> {
+export function holdBuiltWindowsPathKindHelper(path: string): ReturnType<typeof lockWindowsExecutable> {
   let executable: ReturnType<typeof lockWindowsExecutable>;
   try {
-    executable = lockWindowsExecutable(path, binding);
+    executable = lockWindowsExecutable(path);
   } catch (error) {
     throw helperOpenFailure(error);
   }

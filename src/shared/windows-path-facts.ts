@@ -168,10 +168,10 @@ function helperLaunchFailureCode(error: unknown): string | undefined {
   return typeof code === "string" && /^E[A-Z0-9]{1,31}$/u.test(code) && code !== "ENOBUFS" ? code : undefined;
 }
 
-function requestNative(mode: "--pin" | "--dacl", flags: readonly string[], paths: readonly string[], input?: Buffer): string {
+function requestNative(mode: "--pin" | "--dacl", flags: readonly string[], paths: readonly string[], input?: Buffer, heldHelper?: string): string {
   let output: Buffer;
   try {
-    output = runWindowsNative(() => withWindowsPathKindHelper(helper => {
+    const launch = (helper: string) => {
       const args = [mode, ...flags, ...(input === undefined ? paths : ["--stdin"])];
       if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
         throw Object.assign(new Error("Windows path facts command line exceeds the process limit"), { code: "E2BIG" });
@@ -180,7 +180,8 @@ function requestNative(mode: "--pin" | "--dacl", flags: readonly string[], paths
         windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
         maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
       });
-    }, undefined, flags.includes("--file-access")));
+    };
+    output = runWindowsNative(() => heldHelper === undefined ? withWindowsPathKindHelper(launch) : launch(heldHelper));
   } catch (error) {
     // Spawn and timeout errors name the helper's install path; only their code is kept.
     if (isWindowsPathKindHelperTimeout(error)) {
@@ -604,10 +605,10 @@ function isFileDacl(value: unknown): value is WindowsFileDacl {
 }
 
 /** File-only metadata for callers that bind the result to an already known identity. */
-export function readWindowsFileDacls(paths: readonly string[]): readonly WindowsFileDacl[] {
+export function readWindowsFileDacls(paths: readonly string[], heldHelper?: string): readonly WindowsFileDacl[] {
   if (paths.length === 0) return [];
   if (paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
-  const rows: unknown = JSON.parse(requestNative("--dacl", ["--file-access"], paths));
+  const rows: unknown = JSON.parse(requestNative("--dacl", ["--file-access"], paths, undefined, heldHelper));
   if (!Array.isArray(rows) || rows.length !== paths.length || !rows.every(isFileDacl)) throw new Error("Invalid Windows file DACL response");
   return rows;
 }

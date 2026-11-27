@@ -1,8 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { windowsWorkbookLockerBindingIn } from "../../../src/main/windows-path-kind-launcher.js";
+import { join } from "node:path";
 
 const PUBLICATION_BARRIER_PRELUDE = String.raw`"use strict";
 (() => {
@@ -243,11 +242,6 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
     root = io.canonical(root);
     io.copy(join(checkout, "dist", "src"), join(root, "dist", "src"));
     io.copy(join(checkout, "resources"), join(root, "resources"));
-    if (process.platform === "win32") {
-      const binding = windowsWorkbookLockerBindingIn(join(root, "resources"), false);
-      mkdirSync(dirname(binding), { recursive: true });
-      io.copy(windowsWorkbookLockerBindingIn(join(checkout, "resources"), false), binding);
-    }
     if (existsSync(join(checkout, "build"))) io.copy(join(checkout, "build"), join(root, "build"));
     mkdirSync(scriptsDirectory());
     for (const entry of Object.keys(manifest.scripts)) {

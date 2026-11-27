@@ -1,5 +1,7 @@
 import { copyFileSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { buildSkillScripts } from "../../../scripts/build-skill-scripts.mjs";
+import { windowsPeImageDigest } from "../../../scripts/lib/windows-path-kind-image-digest.mjs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import * as XLSX from "xlsx";
@@ -18,6 +20,7 @@ import { detectHostMxcMacShellSupport } from "../../permissions/mxc-macos.js";
 import { establishMxcRuntimeRoot } from "../../permissions/mxc-runtime-root.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { hostScriptRuntimePaths } from "../../main/host-script-runtime.js";
+import { windowsPathKindHelperIn } from "../../main/windows-path-kind-launcher.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
 import { parseTableDocument } from "../table-document-reader.js";
 import { runWithAgentObservationInvocation, runWithAgentObservationTurn, setAgentObservationSink } from "../agent-observation-context.js";
@@ -43,6 +46,7 @@ describe("native governed XLSX command", () => {
     const testScripts = process.env.AVE_TEST_SKILL_SCRIPTS_DIR;
     const developmentScripts = testScripts ?? join(resolve("dist"), "skill-scripts");
     const windows = process.platform === "win32";
+    const windowsBuild = windows ? realpathSync.native(mkdtempSync(join(tmpdir(), "ave-xlsx-pinned-build-"))) : undefined;
     const stageWindowsResources = (resourcePath: string) => {
       for (const binary of [join("mxc", process.arch, "wxc-exec.exe"), join("windows-path-kind", process.arch, "ave-path-kind.exe")]) {
         mkdirSync(dirname(join(resourcePath, binary)), { recursive: true });
@@ -50,11 +54,16 @@ describe("native governed XLSX command", () => {
       }
     };
     const hostResources = mac ? await macResources() : {
-      resourcePath: testScripts ? resolve(testScripts, "../../resources") : resolve("resources"),
+      resourcePath: windowsBuild ? join(windowsBuild, "resources") : testScripts ? resolve(testScripts, "../../resources") : resolve("resources"),
       isPackaged: false,
     };
     if (mac) cpSync(developmentScripts, join(hostResources.resourcePath, "..", "dist", "skill-scripts"), { recursive: true });
-    if (windows && testScripts) stageWindowsResources(hostResources.resourcePath);
+    if (windowsBuild) {
+      stageWindowsResources(hostResources.resourcePath);
+      const pin = windowsPeImageDigest(readFileSync(windowsPathKindHelperIn(hostResources.resourcePath)));
+      await buildSkillScripts({ pathKindSha256: pin, directory: join(windowsBuild, "dist", "skill-scripts") });
+      vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", pin);
+    }
     configureHostResources(hostResources);
     const runtime = hostScriptRuntimePaths()!;
     const script = join(runtime.bundledScriptsDirectory, "edit-xlsx.cjs");
@@ -184,11 +193,13 @@ describe("native governed XLSX command", () => {
       setAgentObservationSink(undefined);
       await resetAsrtSandbox();
       vi.restoreAllMocks();
+      vi.unstubAllGlobals();
       __resetActiveSandboxCapabilityForTest();
       __resetSandboxRequestedAtBootForTest();
       __resetWindowsSandboxSubstrateForTest();
       if (mac) setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
       for (const supervisor of supervisors) supervisor.dispose();
+      if (windowsBuild) rmSync(windowsBuild, { recursive: true, force: true });
       rmSync(directory, { recursive: true, force: true });
     }
   }, TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);

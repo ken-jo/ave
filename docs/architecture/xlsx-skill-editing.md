@@ -42,7 +42,11 @@ mode-assignment prefix and one literal native command.
 The [shell policy](permission-policy-design.md#os-shell-sandbox-policy) grants
 read roles to the exact host runtime and verified first script operand.
 On Windows, the verified workbook script also receives read access to the
-shipped path helper for its access-list check.
+shipped path helper for its access-list check. For pinned builds the host verifies
+the helper against the build digest and holds its image and path components
+until the shell exits. The shell policy admits that exact file and the workbook
+process launches it through the held volume path. The workbook process needs
+no native addon or helper directory grant.
 Workbook/request operands and redirections retain ordinary path, permission and
 approval checks. Runtime reads are bound to that invocation, cannot pierce
 protected read floors, and add no write roots. The host script directory remains

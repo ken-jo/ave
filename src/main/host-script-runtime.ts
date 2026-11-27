@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { WINDOWS_WORKBOOK_HELPER_ENV } from "../shared/xlsx-edit.js";
 import { getConfiguredHostResources, type HostResources } from "./host-resources.js";
-import { holdBuiltWindowsPathKindHelper, resolveWindowsWorkbookLockerBinding, windowsPathKindHelperIn, windowsPathKindHelperUnavailable, windowsWorkbookLockerBindingIn } from "./windows-path-kind-launcher.js";
+import { holdBuiltWindowsPathKindHelper, windowsPathKindHelperIn, windowsPathKindHelperUnavailable } from "./windows-path-kind-launcher.js";
 
 declare const __AVE_WINDOWS_PATH_KIND_SHA256__: string | null;
 
@@ -46,11 +47,6 @@ export function hostScriptWriteDenyPaths(): readonly string[] {
   const denied = [paths.bundledScriptsDirectory, paths.javascriptRuntime];
   if (process.platform === "win32") {
     denied.push(windowsPathKindHelperIn(resources.resourcePath));
-    const binding = windowsWorkbookLockerBindingIn(resources.resourcePath, resources.isPackaged);
-    try {
-      const resolved = resolveWindowsWorkbookLockerBinding(resources.resourcePath, resources.isPackaged);
-      denied.push(binding, resolved);
-    } catch { /* No usable binding at this location. */ }
   }
   for (const path of [...denied]) {
     try { denied.push(realpathSync.native(path)); } catch { /* Missing resources stay denied by name. */ }
@@ -116,9 +112,6 @@ export function hostScriptInvocationReadPaths(
       const info = lstatSync(helper);
       if (info.isFile() && info.nlink === 1 && realpathSync.native(helper) === helper) allowed.push(helper);
     } catch { /* Missing helper grants no read access. */ }
-    try {
-      allowed.push(resolveWindowsWorkbookLockerBinding(resources.resourcePath, resources.isPackaged));
-    } catch { /* Missing binding grants no read access. */ }
   }
   return [...new Set(allowed)];
 }
@@ -129,12 +122,14 @@ export function isHostScriptReadPath(path: string): boolean {
 }
 
 /** Pinned workbook commands keep the verified image held until the shell has finished. */
-export async function withWindowsWorkbookHelper<T>(reads: readonly string[], launch: () => Promise<T>): Promise<T> {
+export async function withWindowsWorkbookHelper<T>(
+  reads: readonly string[], launch: (environment: Record<string, string>) => Promise<T>,
+): Promise<T> {
   const resources = getConfiguredHostResources();
   const paths = hostScriptRuntimePaths();
   if (process.platform !== "win32" || !resources || !paths
-    || !reads.includes(join(paths.bundledScriptsDirectory, "edit-xlsx.cjs"))) return launch();
-  if (typeof __AVE_WINDOWS_PATH_KIND_SHA256__ === "undefined" && !resources.isPackaged) return launch();
+    || !reads.includes(join(paths.bundledScriptsDirectory, "edit-xlsx.cjs"))) return launch({});
+  if (typeof __AVE_WINDOWS_PATH_KIND_SHA256__ === "undefined" && !resources.isPackaged) return launch({});
   if (typeof __AVE_WINDOWS_PATH_KIND_SHA256__ !== "string") {
     throw windowsPathKindHelperUnavailable("Windows folder classifier pin is missing.");
   }
@@ -142,7 +137,8 @@ export async function withWindowsWorkbookHelper<T>(reads: readonly string[], lau
   if (!reads.includes(helper)) throw windowsPathKindHelperUnavailable("Windows folder classifier path was not admitted.");
   const executable = holdBuiltWindowsPathKindHelper(helper);
   try {
-    return await launch();
+    // The policy admits the file by its DOS spelling. The child uses the held volume path.
+    return await launch({ [WINDOWS_WORKBOOK_HELPER_ENV]: `${__AVE_WINDOWS_PATH_KIND_SHA256__}:${executable.path}` });
   } finally {
     executable.close();
   }

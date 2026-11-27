@@ -8,6 +8,7 @@ import { XLSX_EDIT_LIMITS } from "../shared/xlsx-edit.js";
 export interface WorkbookFileSnapshot { data: Buffer; identity: fs.BigIntStats }
 export interface WorkbookEditIo {
   write?: (descriptor: number, bytes: Buffer, offset: number, length: number) => number;
+  windowsAccessHelper?: string;
 }
 export interface WorkbookEditResult { editedCells: number; needsRecalculation: true; backup: string | null }
 
@@ -123,10 +124,10 @@ function accessRulesRefusal(kind: keyof typeof ACCESS_RULES_REFUSALS, reason: "d
 }
 
 /** Check the created file's owner and access list before writing workbook bytes. */
-function requireSameAccessRules(kind: keyof typeof ACCESS_RULES_REFUSALS, source: WorkbookFile, copy: WorkbookFile): void {
+function requireSameAccessRules(kind: keyof typeof ACCESS_RULES_REFUSALS, source: WorkbookFile, copy: WorkbookFile, helper?: string): void {
   const files = [source, copy];
   let rules: ReturnType<typeof readWindowsFileDacls>;
-  try { rules = readWindowsFileDacls(files.map(file => file.path)); }
+  try { rules = readWindowsFileDacls(files.map(file => file.path), helper); }
   catch { throw accessRulesRefusal(kind, "unreadable"); }
   const [original, created] = rules;
   if (!original || !created || rules.length !== files.length || !rules.every((rule, index) => {
@@ -151,7 +152,7 @@ function writeRecoveryCopy(source: WorkbookFile, path: string, bytes: Buffer, io
       const named = fs.lstatSync(path, { bigint: true });
       requireCondition(named.isFile() && named.dev === opened.dev && named.ino === opened.ino, "Recovery path changed while opening.");
       created = opened;
-      requireSameAccessRules("backup", source, { path, identity: opened });
+      requireSameAccessRules("backup", source, { path, identity: opened }, io.windowsAccessHelper);
       writeAndSync(descriptor, bytes, io);
     } finally { fs.closeSync(descriptor); }
     verifyStagedBytes(path, bytes, "Backup verification failed.");
@@ -201,7 +202,7 @@ export function publishWorkbookEdit(path: string, snapshot: WorkbookFileSnapshot
   const staged = windowsStaged ?? temporaryFile(path);
   try {
     try {
-      if (windowsStaged) requireSameAccessRules("workbook", source, windowsStaged);
+      if (windowsStaged) requireSameAccessRules("workbook", source, windowsStaged, io.windowsAccessHelper);
       writeAndSync(staged.descriptor, output, io);
     } finally { fs.closeSync(staged.descriptor); }
     verifyStagedBytes(staged.path, output, "Output verification failed.");

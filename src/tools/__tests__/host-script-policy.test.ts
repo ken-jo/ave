@@ -73,8 +73,14 @@ describe("host-owned script roles", () => {
       scripts: { "command.cjs": digest, "edit-xlsx.cjs": digest } }));
     // The suite setup staged the shipped helper here; path admission runs it.
     const env = { ELECTRON_RUN_AS_NODE: "1" };
+    const oldBinding = join(resources, "app.asar.unpacked", "node_modules", "@koromix",
+      `koffi-win32-${process.arch}`, `win32_${process.arch}`, "koffi.node");
+    mkdirSync(dirname(oldBinding), { recursive: true });
+    writeFileSync(oldBinding, "native addon fixture");
     expect(hostScriptInvocationReadPaths([process.execPath, script], env)).not.toContain(helper);
-    expect(hostScriptInvocationReadPaths([process.execPath, workbookScript], env)).toContain(helper);
+    const runtime = realpathSync.native(process.execPath);
+    expect(new Set(hostScriptInvocationReadPaths([process.execPath, workbookScript], env)))
+      .toEqual(new Set([process.execPath, runtime, dirname(runtime), workbookScript, helper]));
     expect(isSensitivePath(helper, "write")).toBe("host-script-resources");
     expect(violation(shellQuote(helper))?.kind).toBe("sensitive-path");
     writeFileSync(workbookScript, "changed");
