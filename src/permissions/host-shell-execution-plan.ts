@@ -212,6 +212,8 @@ export function buildHostShellExecutionPlan(input: {
   activeCapability: SandboxCapability;
   // What would confine a sandboxed child: `mxc` only when the host's MXC route is live and `activeCapability` is that route's capability. Defaults to the ASRT wrap.
   shellSubstrate?: "asrt" | "mxc" | "none";
+  // The container route's coverage as this boot measured it (Windows MXC probe, POSIX canary). It counts only through
+  // `acceptMeasuredContainerEgress` for this platform's own backend; absent or rejected means unmeasured: `unknown` raw IP.
   measuredContainerEgress?: EgressProtocolCoverage;
   executionMode?: HostShellExecutionRequest;
   // Boot could not establish Ave home privacy (any category but helper-unavailable, which `unconfinedShellDenied` blocks): every plain host shell

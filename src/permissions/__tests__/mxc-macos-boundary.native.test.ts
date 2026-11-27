@@ -339,7 +339,7 @@ describe.runIf(NATIVE)("native product shell launch", () => {
       kind: "asrt", platform: "darwin", confidence: "verified", reason: "Test relay",
       confines: { filesystem: true, network: true, process: true },
     });
-    setContainerShellSubstrate({ state: "available" });
+    setContainerShellSubstrate("darwin", { state: "available" });
     leases = [];
     listeners = [];
   });

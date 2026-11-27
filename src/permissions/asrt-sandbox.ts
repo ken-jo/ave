@@ -1879,6 +1879,10 @@ export function getUserReadDenies(): readonly string[] {
   return _baseTrustedSettings?.denyRead ?? [];
 }
 
+export function getUserWriteDenies(): readonly FilesystemPathEntry[] {
+  return _baseTrustedSettings?.denyWrite ?? [];
+}
+
 // The protected read deny covering `path`, if any. A plugin's chosen directory is refused when one does: its read half would re-allow the deny on every platform, and on Linux its write half would too.
 export function protectedReadDenyCovering(path: string, floor: readonly FilesystemPathEntry[] = getProtectedReadDenyPaths()): string | undefined {
   return protectedReadDenyMatcher(floor)(path);

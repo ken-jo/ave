@@ -22,7 +22,7 @@ const WINDOWS_VALIDATION_RESULTS = {
 };
 const BASE_AGGREGATE_JOBS = [
   "build", "background-ui", "vitest", "vitest-tiers", "windows-native-preparation", "windows-permission-tests", "windows-tier-tests",
-  "windows-arm64-path-kind", "macos-permission-tests", "linux-confinement-tests", "gate-core", "mxc-pins",
+  "windows-arm64-path-kind", "macos-permission-tests", "linux-confinement-tests", "linux-confinement-x64", "gate-core", "mxc-pins",
 ];
 const SHARD_JOB_EVIDENCE = JSON.stringify([{
   total_count: 1,
@@ -115,7 +115,7 @@ it("requires every extracted Windows validation whenever preparation is selected
           VITEST_RESULT: "success", DOCS_ONLY: "false", PLATFORM_CHECKS: String(platform),
           WINDOWS_PREPARATION_RESULT: expected,
           WINDOWS_RESULT: platform ? "success" : "skipped", MACOS_RESULT: platform ? "success" : "skipped",
-          LINUX_RESULT: platform ? "success" : "skipped", WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
+          LINUX_RESULT: platform ? "success" : "skipped", LINUX_X64_RESULT: platform ? "success" : "skipped", WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
           VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: String(tiers),
           WINDOWS_TIER_RESULT: tiers ? "success" : "skipped",
           ...Object.fromEntries(values.map(key => [key, expected])), [variable]: result,
@@ -543,7 +543,7 @@ it("requires the arm64 result for selected runs, including docs-only main pushes
         GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
         VITEST_RESULT: docs === "true" ? "skipped" : "success", DOCS_ONLY: docs, PLATFORM_CHECKS: "false",
         ...Object.fromEntries(Object.values(WINDOWS_VALIDATION_RESULTS).map(variable => [variable, "skipped"])),
-        WINDOWS_PREPARATION_RESULT: "skipped", WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
+        WINDOWS_PREPARATION_RESULT: "skipped", WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped", LINUX_X64_RESULT: "skipped",
         WINDOWS_ARM64_PATH_KIND: selected, WINDOWS_ARM64_PATH_KIND_RESULT: arm64,
         VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: "false", WINDOWS_TIER_RESULT: "skipped",
       });
@@ -632,7 +632,7 @@ it("requires selected Windows tiers when the platform matrix is skipped", () => 
       GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
       VITEST_RESULT: "success", DOCS_ONLY: "false", PLATFORM_CHECKS: "false",
       ...Object.fromEntries(Object.values(WINDOWS_VALIDATION_RESULTS).map(variable => [variable, tiers === "true" ? "success" : "skipped"])),
-      WINDOWS_PREPARATION_RESULT: preparation, WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
+      WINDOWS_PREPARATION_RESULT: preparation, WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped", LINUX_X64_RESULT: "skipped",
       WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
       VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: tiers, WINDOWS_TIER_RESULT: tierResult,
     });

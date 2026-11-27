@@ -2860,18 +2860,22 @@ async function runPosixContainerShell(input: {
     child.stdout.on("data", collector.collect);
     child.stderr.on("data", collector.collectStderr);
     const exit = await completion;
-    const interrupted = exit.cancelled || exit.timedOut || exit.cleanupUnverified || exit.failure !== undefined;
+    const failure = "failure" in exit ? exit.failure : undefined;
+    const interrupted = exit.cancelled || exit.timedOut || exit.cleanupUnverified || failure !== undefined;
     const artifact = await collector.finish(interrupted);
     collector.finishObservation(exit.code, exit.cancelled ? "cancelled" : interrupted || exit.rejected ? "failed" : undefined);
     if (exit.rejected) {
       result = {
-        output: t("sandboxPolicy.containerStartRefused"), isError: true,
+        output: [process.platform === "linux" ? t("sandboxPolicy.linuxContainerStartRefused") : t("sandboxPolicy.containerStartRefused"),
+          // A launcher that failed after the command began still had its writes quarantined; say so.
+          ...("cleanupNotice" in exit && typeof exit.cleanupNotice === "string" ? [exit.cleanupNotice] : [])].join("\n"), isError: true,
         metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
       };
     } else {
       const policyNotices = [...read.policyNotices,
         ...(launch.carvedReadLimitedAt?.map(folder => t("sandboxPolicy.carvedReadLimited", { folder })) ?? []),
         ...launch.narrowedWriteRoots.map(({ root }) => t("sandboxPolicy.containerWriteWithheld", { root })),
+        ...("cleanupNotice" in exit && typeof exit.cleanupNotice === "string" ? [exit.cleanupNotice] : []),
       ];
       // The SDK reports a shell ended by a signal, or a child lost before exec, as -1; 255 is a literal exit status.
       const noExitCode = exit.code === -1;
@@ -2879,10 +2883,10 @@ async function runPosixContainerShell(input: {
         ? collector.format() : collector.format({ code: exit.code, signal: null });
       const ending = exit.cancelled ? t("sandboxPolicy.containerShellCancelled")
         : exit.timedOut ? t("sandboxPolicy.containerShellTimedOut", { seconds: timeoutMs / 1000 })
-          : exit.startFailed ? t("sandboxPolicy.containerShellStartFailed")
+          : "startFailed" in exit && exit.startFailed ? t("sandboxPolicy.containerShellStartFailed")
             : exit.cleanupUnverified ? t("sandboxPolicy.containerShellCleanupUnverified")
-              : exit.transportFailed ? t("sandboxPolicy.containerShellTransportFailed")
-                : exit.failure ? t("sandboxPolicy.containerShellRefused", { reason: exit.failure.code })
+              : "transportFailed" in exit && exit.transportFailed ? t("sandboxPolicy.containerShellTransportFailed")
+                : failure ? t("sandboxPolicy.containerShellRefused", { reason: failure.code })
                   : noExitCode ? t("sandboxPolicy.containerShellNoExitCode") : "";
       const output = await annotateWithSandboxViolations(egress.token, [format, ending].filter(Boolean).join("\n"), undefined, policyNotices);
       result = {
@@ -2912,7 +2916,8 @@ async function runPosixContainerShell(input: {
     result = input.signal?.aborted
       ? { output: t("sandboxPolicy.containerShellCancelled"), isError: true, metadata: { aborted: true, sandboxed: false } }
       : revoked ? { output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true, metadata: { sandboxed: false, sandboxAttempted: true } }
-        : { output: t("sandboxPolicy.containerShellRefused", { reason: shellFailureText([error], "code") }), isError: true,
+        : { output: t(process.platform === "linux" ? "sandboxPolicy.linuxContainerShellRefused" : "sandboxPolicy.containerShellRefused",
+          { reason: shellFailureText([error], "code") }), isError: true,
           metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } };
   }
   return withReleaseFailures(result, await lifecycle.dispose(), "code");
@@ -2941,7 +2946,7 @@ export async function spawnWithSandbox(
   cwdHold = directoryHold;
   const { shell, homePath, hostHome: home, environment } = preparedShellCommand(prepared);
   if (!homePath) throw new Error("Sandbox shell preparation has no owned HOME");
-  if (plan?.platform === "darwin" && plan.substrate === "mxc") {
+  if ((plan?.platform === "darwin" || plan?.platform === "linux") && plan.substrate === "mxc") {
     const { argv, probe } = preparedShellCwdProbe(prepared);
     return await runPosixContainerShell({
       command, commandLine: `exec ${[shell.cmd, ...argv].map(shellQuote).join(" ")}`, cwd: resolvedCwd,
@@ -4447,7 +4452,7 @@ async function spawnPowerShellWithSandbox(
   catch (error) { sandboxHome.cleanup(); throw error; }
   const sandboxCommand = isWindows ? powerShellLaunch.args.at(-1)!
     : [executable, ...powerShellLaunch.args].map(posixSingleQuote).join(" ");
-  if (plan?.platform === "darwin" && plan.substrate === "mxc") {
+  if ((plan?.platform === "darwin" || plan?.platform === "linux") && plan.substrate === "mxc") {
     try {
       return await runPosixContainerShell({
         command, commandLine: `exec ${sandboxCommand}`, cwd, writePaths,
