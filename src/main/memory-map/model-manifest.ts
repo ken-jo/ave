@@ -8,7 +8,11 @@ export const MODEL_FILES: readonly ModelFile[] = Object.freeze([
   { name: 'tokenizer_config.json', bytes: 443, sha256: 'a1d6bc8734a6f635dc158508bef000f8e2e5a759c7d92f984b2c86e5ff53425b' },
   { name: 'config.json', bytes: 653, sha256: 'bbb7c1333fc4b3e27fbc9cd5d2070aabcc1d4dfb99917c3633e772f97545a6b6' },
 ]);
-export function modelFileUrl(name: string): string {
+function modelFileUrl(name: string): string {
   if (!MODEL_FILES.some(file => file.name === name)) throw new Error('Unknown model file');
   return `https://huggingface.co/${LOCAL_MODEL_ID}/resolve/${LOCAL_MODEL_REVISION}/onnx/${name}`;
+}
+
+export function downloadModelFile(name: string, signal: AbortSignal): Promise<Response> {
+  return fetch(modelFileUrl(name), { signal, redirect: 'follow' });
 }

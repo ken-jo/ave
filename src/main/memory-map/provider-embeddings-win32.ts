@@ -1,13 +1,7 @@
-import { runWithCeiling } from '../../tools/executor-ceiling.js';
-import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
-import { embedMany } from 'ai';
 import type { SettingsService } from '../../data/settings-store.js';
-import { createEmbeddingModel, secretKeyFor } from '../../engine/llm/provider-factory.js';
-import { createPublicModelProviderFetch, selectProviderRuntimeFetch } from '../../engine/llm/marketplace-provider-fetch.js';
-import { noRetirementEvidence } from '../../engine/llm/model-wire-gate.js';
+import { secretKeyFor } from '../../engine/llm/provider-factory.js';
 import { LLM_VENDORS, getLlmVendorSettings, canUseLlmVendorWithoutApiKey, isOpenAICompatibleVendor } from '../../shared/llm-vendor-defaults.js';
 import { marketplaceProviderPresetSecretKey } from '../../shared/marketplace-package-assets.js';
-import { createSafeLlmFetch } from '../safe-llm-fetch.js';
 import { isDefaultModelListEndpoint } from '../../engine/llm/model-list.js';
 import { MEMORY_EMBEDDING_CONSENT_VERSION, type MemoryEmbeddingConsent } from '../../shared/memory-embedding-config.js';
 import type { EmbeddingNamespace, MemoryEmbeddingProvider, MemoryMapProgress, GraphSnapshot, MemoryMapRecord } from '../../shared/memory-map.js';
@@ -16,6 +10,7 @@ import { runMemoryWorker, type MemoryWorkerRunner } from './worker-client-win32.
 import { digest, LOCAL_NAMESPACE, vectorKey, type VectorCache } from './graph.js';
 import { MemoryMapHostError } from './errors.js';
 import type { ProviderEgress } from './provider-egress.js';
+import { sendProviderEmbeddings } from './provider-embeddings.js';
 import { commitUnderAdmission } from '../../shared/admission-commit.js';
 
 const EMBEDDING_BATCH_SIZE = 16;
@@ -133,48 +128,11 @@ export class ProviderEmbeddings {
     if (!values.length || values.length > EMBEDDING_BATCH_SIZE) throw new MemoryMapHostError('invalid-input');
     await this.validate(providerId, modelId);
     const route = this.route(providerId);
-    const { baseUrl } = route;
-    if (!baseUrl) throw new MemoryMapHostError('provider-unavailable');
     const assertCurrent = () => {
       assertConsent();
       assertAuthority?.();
     };
-    let egressError: MemoryMapHostError | undefined;
-    const egress: typeof fetch = async (input, init) => {
-      assertCurrent();
-      const url = new URL(typeof input === 'string' || input instanceof URL ? input.toString() : input.url);
-      if (url.origin !== new URL(baseUrl).origin) throw new MemoryMapHostError('provider-unavailable');
-      try {
-        return await this.egress.send(url, { ...init, signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal }, assertCurrent);
-      } catch (error) {
-        if (error instanceof MemoryMapHostError) egressError = error;
-        throw error;
-      }
-    };
-    const transport = selectProviderRuntimeFetch({ vendor: route.vendor, baseUrl: route.baseUrl, providerMetadata: route.preset, llmFetch: createSafeLlmFetch(egress), networkFetch: egress }) ?? createPublicModelProviderFetch(route.baseUrl, egress);
-    const fetchImpl = transport;
-    try {
-      const apiKey = await this.settings.getSecret(route.secret) ?? '';
-      if (!apiKey && (route.preset ? route.preset.requiresApiKey !== false : !canUseLlmVendorWithoutApiKey(route.vendor, route.block))) throw new MemoryMapHostError('provider-unavailable');
-      assertCurrent();
-      const model = await createEmbeddingModel({ vendor: route.vendor, apiKey, baseUrl: route.baseUrl, wire: route.block.wire, fetch: fetchImpl, providerMetadata: route.preset, getRetiredModelId: noRetirementEvidence }, modelId);
-      const outcome = await runWithCeiling(abortSignal => embedMany({ model, values, abortSignal, maxParallelCalls: 1, maxRetries: 0, telemetry: { isEnabled: false, recordInputs: false, recordOutputs: false } }), TOOL_TIMEOUT_POLICY.modelStreamIdleCeilingMs, signal, 'memory embeddings');
-      if (!outcome.ok) throw outcome.error;
-      const { embeddings } = outcome.value;
-      assertCurrent();
-      if (embeddings.length !== values.length) throw new MemoryMapHostError('provider-embedding-failed');
-      const dimensions = namespace.dimensions || embeddings[0]?.length;
-      return embeddings.map(vector => {
-        if (!dimensions || dimensions > 65536 || vector.length !== dimensions) throw new MemoryMapHostError('provider-dimension-mismatch');
-        const norm = Math.hypot(...vector);
-        if (!Number.isFinite(norm) || !norm || vector.some(value => !Number.isFinite(value))) throw new MemoryMapHostError('provider-embedding-failed');
-        return vector.map(value => value / norm);
-      });
-    } catch (error) {
-      if (egressError) throw egressError;
-      if (error instanceof MemoryMapHostError) throw error;
-      throw new MemoryMapHostError(signal.aborted ? 'request-stale' : 'provider-embedding-failed');
-    }
+    return sendProviderEmbeddings({ settings: this.settings, egress: this.egress, route, namespace, modelId, values, signal, assertCurrent });
   }
   async build(catalog: MemoryMapCatalog, namespace: EmbeddingNamespace, saved: { snapshot: { model: { namespace: EmbeddingNamespace } } | null; cache: VectorCache }, signal: AbortSignal, onProgress: (progress: MemoryMapProgress) => void, assertAuthority: (batch: readonly MemoryMapRecord[]) => void, assertCatalog: () => void) {
     const assertConsent = this.bindConsent(namespace, signal);
