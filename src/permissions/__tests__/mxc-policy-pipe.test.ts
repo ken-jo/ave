@@ -123,9 +123,9 @@ describe.skipIf(process.platform !== "win32")("native held policy delivery", () 
       },
       stdio: [...held.stdio, "pipe", "pipe", ...(fault === undefined ? [] : ["pipe" as const])], windowsHide: true,
     });
-    const control = child.stdio[5] as Duplex;
-    const report = child.stdio[6] as Duplex;
-    const gate = child.stdio[7] as Duplex | undefined;
+    const control = child.stdio.at(5) as Duplex;
+    const report = child.stdio.at(6) as Duplex;
+    const gate = child.stdio.at(7) as Duplex | undefined;
     for (const stream of [control, report, gate]) stream?.on("error", () => {});
     let stdout = "";
     let stderr = "";
