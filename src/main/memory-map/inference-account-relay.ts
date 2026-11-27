@@ -56,9 +56,9 @@ export async function bindInferenceAccountJob() {
       const handle = open(0x1000, false, Number(pid));
       if (!handle) throw new Error('Inference relay job member is unverified');
       pins.set(pid, handle);
-      const length = [image.length / 2];
+      const length: [number] = [image.length / 2];
       const expected = win32.join(systemRoot, pid === BigInt(process.ppid) ? 'cmd.exe' : 'conhost.exe');
-      if (!imageName(handle, 0, image, length) || image.toString('utf16le', 0, length[0]! * 2).toLowerCase() !== expected) {
+      if (!imageName(handle, 0, image, length) || image.toString('utf16le', 0, length[0] * 2).toLowerCase() !== expected) {
         throw new Error('Inference relay job member is unverified');
       }
     }

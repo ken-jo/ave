@@ -87,6 +87,9 @@ export function shellPolicyModel(lists: MxcShellPolicyLists, literalAndPatternFl
   });
 }
 
+export type MxcShellPreparationStage = "sandbox-prep" | "egress-prep" | "inline-policy-ready" | "policy-pipe-ready";
+export type MxcParserPreparationStage = MxcShellPreparationStage | "launcher-verified" | "seal-verified" | "seal-verified-at-activation";
+
 export interface PrepareMxcShellLaunchInput {
   /** The invocation's egress token (`egress-invocations.ts`): the identity its listener stamps. */
   readonly egressToken: string;
@@ -103,6 +106,8 @@ export interface PrepareMxcShellLaunchInput {
   readonly exists: (path: string) => boolean;
   readonly assertCommand?: () => void;
   readonly assertDelivery?: () => void;
+  readonly markTiming?: (stage: MxcShellPreparationStage) => void;
+  readonly markParserTiming?: (stage: MxcParserPreparationStage) => void;
 }
 
 function matchesRankedPath({ path, obligation }: MxcRankedPath, facts: WindowsPathFacts | undefined): boolean {
@@ -128,6 +133,7 @@ const MXC_TIMEOUT_MARGIN_MS = 30_000;
  * change) revokes the lifecycle, which stops all forwarding at once.
  */
 export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle): Promise<MxcShellLaunch> {
+  const markTiming = input.markParserTiming ?? input.markTiming;
   // The HOME issuance this launch holds through every wait below.
   const issuedHome = issuedContainerHome(input.sandboxHome);
   const capability = detectMxcShellCapability();
@@ -184,6 +190,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     reportWindowsBackendLoss(backendObservation);
     throw new Error("Contained shell launcher is missing from this installation");
   }
+  input.markParserTiming?.("launcher-verified");
   // The invocation's own HOME lies in the runtime root's state; it is passed only while live and still the issuance held.
   const ownHome = (): string | undefined => {
     if (issuedHome === undefined) return undefined;
@@ -249,6 +256,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     if (getHostWxcExecIdentity() !== launcherIdentity) throw new Error("Contained shell launcher changed before spawn");
   });
   assertAdmission();
+  markTiming?.("sandbox-prep");
   const relay = await openHostEgressListener(token, admission);
   assertAdmission();
   const listener = await openInvocationProxyListener({
@@ -260,7 +268,9 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   });
   assertAdmission();
   relay.registerPort(listener.port);
+  markTiming?.("egress-prep");
   assertDispatch();
+  input.markParserTiming?.("seal-verified");
   const systemRoot = windowsSystemRoot();
   const env: Record<string, string> = { ...input.env };
   if (!Object.keys(env).some((key) => key.toUpperCase() === "SYSTEMROOT")) env["SYSTEMROOT"] = systemRoot;
@@ -282,6 +292,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   });
   lifecycle.defer(() => transport.release());
   assertAdmission();
+  markTiming?.(transport.args[0] === "--config" ? "policy-pipe-ready" : "inline-policy-ready");
   let watchedNotice: string | undefined;
   const claim = grants.watched === undefined ? undefined : claimMxcWatchedRows(grants.watched, { commandId: token });
   // Command end is a detection point: this launch's own names first, then every watched name and the receipts no result carried yet.
@@ -317,6 +328,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
       else claim.start(assertStillValid);
       const observation = observeWindowsBackend("container", "shell");
       active = true;
+      input.markParserTiming?.("seal-verified-at-activation");
       return observation;
     },
     bindChild: (child) => {

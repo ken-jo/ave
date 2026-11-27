@@ -5,6 +5,8 @@ import { t } from "../i18n/index.js";
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lstatSync } from "node:fs";
+import { isIPv4 } from "node:net";
+import { gzipSync } from "node:zlib";
 import type { ProbeOutput } from "@microsoft/mxc-sdk/v1";
 import { z } from "zod";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
@@ -24,14 +26,19 @@ import {
 
 import { errorMessage } from "../shared/error-message.js";
 import { getHostResources } from "../main/host-resources.js";
+import { raceWithAbort } from "../shared/abortable-deadline.js";
 import { compileGlobMatcher, globToRegExp } from "../lib/glob-matcher.js";
 import { isPlainWindowsPathComponent } from "../shared/windows-path-spelling.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
 import { containerTarget } from "../shared/container-platform.js";
 import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
+import { openMxcRawIpUdpListener, type MxcRawIpUdpArrival, type MxcRawIpUdpSend } from "./mxc-raw-ip-udp.js";
+import { createLogger } from "../lib/logger.js";
+import type { openInvocationProxyListener } from "./egress-invocation-listener.js";
 
 // The stable MXC configuration schema version every request is written in. The launcher is `@microsoft/mxc-sdk` 1.1.0's, pinned by scripts/fetch-mxc.mjs.
 const MXC_CONFIG_SCHEMA_VERSION = "1.0.0";
+const log = createLogger("mxc-windows");
 
 // Why MXC cannot carry agent shells on this host. Stable codes, shown in Settings.
 type MxcUnavailableReason = SandboxMxcUnavailableReason;
@@ -176,21 +183,285 @@ export interface DetectMxcSupportDeps {
 const MXC_PROBE_TIMEOUT_MS = 20_000;
 // A cold Windows PowerShell start inside a fresh container.
 const MXC_START_PROBE_TIMEOUT_MS = 60_000;
+const MXC_START_LAUNCHER_GRACE_MS = 5_000;
+const MXC_START_EXIT_RESERVE_MS = 1_000;
+const MXC_START_CLEANUP_RETRY_MS = 1_000;
+const MXC_RAW_IP_TARGET_TIMEOUT_MS = 3_000;
+const MXC_RAW_IP_PROBE_TIMEOUT_MS = 12_000;
+const MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS = 6_000;
+const MXC_RAW_IP_EVIDENCE_MARKER = "AVE_MXC_RAW_IP ";
+const MXC_NETWORK_CAPABILITY_SIDS = new Set(["S-1-15-3-1", "S-1-15-3-2", "S-1-15-3-3"]);
+
+type MxcRawIpTarget = "t4" | "t6" | "tl";
+type MxcRawIpTargetResult = number | "connected" | "deadline" | "other";
+type MxcRawIpProbeEvidence = Readonly<Record<MxcRawIpTarget, MxcRawIpTargetResult>> & {
+  readonly control: boolean;
+  readonly capabilitySids: readonly string[] | null;
+  readonly udp: MxcRawIpUdpSend;
+};
+type MxcRawIpUnknownReason = "listener-unavailable" | "no-evidence" | "control-failed" | "raw-ip-reachable"
+  | "ipv6-unmeasured" | "udp-unmeasured" | "no-route" | "timeout" | "unclassified" | "cleanup-failed";
+type MxcRawIpProbeVerdict = {
+  readonly reachableTargets: readonly (MxcRawIpTarget | "udp")[];
+  readonly udpArrival: MxcRawIpUdpArrival;
+} & ({ readonly rawIp: "blocked"; readonly reason: "blocked"; readonly evidenceKind: "measured" | "structural" }
+  | { readonly rawIp: "unknown"; readonly reason: MxcRawIpUnknownReason });
+type MxcStartDiagnostic = "STATUS_DLL_INIT_FAILED" | "nonzero-exit" | "launch-rejected" | "startup-deadline"
+  | "unsupported-arch" | "runtime-root-unproved" | "base-container-start-failed";
+type MxcStartSupport = Extract<MxcSupport, { state: "unavailable" }>
+  | (Extract<MxcSupport, { state: "available" }> & { readonly rawIpProbe?: MxcRawIpProbeVerdict });
+type MxcLanProbeTarget = { readonly address: string; readonly port: number };
+
+function isRawIpTargetResult(value: unknown): value is MxcRawIpTargetResult {
+  return value === "connected" || value === "deadline" || value === "other"
+    || (typeof value === "number" && Number.isSafeInteger(value) && value > 0);
+}
+
+function isCapabilitySid(value: unknown): value is string {
+  return typeof value === "string" && /^S-1-15-3(?:-(?:0|[1-9]\d{0,9})){1,14}$/.test(value)
+    && value.split("-").slice(4).every(part => Number(part) <= 0xffffffff);
+}
+
+export function parseMxcRawIpProbeEvidence(stdout: string, probeId: string, stderr = ""): MxcRawIpProbeEvidence | undefined {
+  const prefix = `${MXC_RAW_IP_EVIDENCE_MARKER}${probeId} `;
+  if (stderr !== "" || !stdout.startsWith(prefix) || !stdout.endsWith("\n")) return undefined;
+  const payload = stdout.slice(prefix.length, stdout.endsWith("\r\n") ? -2 : -1);
+  try {
+    const evidence = JSON.parse(payload) as Partial<MxcRawIpProbeEvidence> | null;
+    if (evidence === null || typeof evidence.control !== "boolean" || !Object.hasOwn(evidence, "capabilitySids")
+        || (evidence.udp !== "sent" && evidence.udp !== "refused-local" && evidence.udp !== "unmeasured")
+        || !isRawIpTargetResult(evidence.t4) || !isRawIpTargetResult(evidence.t6) || !isRawIpTargetResult(evidence.tl)) return undefined;
+    const { control, t4, t6, tl, capabilitySids, udp } = evidence;
+    if (capabilitySids !== null && (!Array.isArray(capabilitySids) || !capabilitySids.every(isCapabilitySid))) return undefined;
+    const frame = { control, t4, t6, tl, capabilitySids, udp };
+    if (payload !== JSON.stringify(frame)) return undefined;
+    return frame;
+  } catch {
+    return undefined;
+  }
+}
+
+function rawIpInconclusiveReason(result: MxcRawIpTargetResult): "timeout" | "unclassified" {
+  return result === 10060 || result === "deadline" ? "timeout" : "unclassified";
+}
+
+export function mxcRawIpBlockingRequirement({ t6, capabilitySids }: Pick<MxcRawIpProbeEvidence, "t6" | "capabilitySids">):
+  "refused-local" | "refused-structural" | "ipv6-unmeasured" | "timeout" | "unclassified" {
+  if (t6 === 10013) return "refused-local";
+  if (t6 === 10051 || t6 === 10065) {
+    return capabilitySids !== null && !capabilitySids.some(sid => MXC_NETWORK_CAPABILITY_SIDS.has(sid))
+      ? "refused-structural" : "ipv6-unmeasured";
+  }
+  if (t6 === 10049 || t6 === 10047) return "ipv6-unmeasured";
+  return rawIpInconclusiveReason(t6);
+}
+
+export function classifyMxcRawIpProbe(
+  evidence: MxcRawIpProbeEvidence | undefined, controlRefused: boolean, udpArrival: MxcRawIpUdpArrival,
+): MxcRawIpProbeVerdict {
+  const reachableTargets: (MxcRawIpTarget | "udp")[] = evidence === undefined
+    ? [] : (["t4", "t6", "tl"] as const).filter(target => evidence[target] === "connected" || evidence[target] === 10061);
+  const unknown = (reason: MxcRawIpUnknownReason): MxcRawIpProbeVerdict => ({ rawIp: "unknown", reason, reachableTargets, udpArrival });
+  if (udpArrival === "arrived") {
+    reachableTargets.push("udp");
+    return unknown("raw-ip-reachable");
+  }
+  if (evidence === undefined) return unknown("no-evidence");
+  if (!evidence.control || !controlRefused) return unknown("control-failed");
+  if (reachableTargets.length > 0) return unknown("raw-ip-reachable");
+  if (evidence.t4 === 10051 || evidence.t4 === 10065) return unknown("no-route");
+  if (evidence.t4 !== 10013) return unknown(rawIpInconclusiveReason(evidence.t4));
+  const t6 = mxcRawIpBlockingRequirement(evidence);
+  if (t6 !== "refused-local" && t6 !== "refused-structural") return unknown(t6);
+  if (udpArrival === "unmeasured") return unknown("udp-unmeasured");
+  return { rawIp: "blocked", reason: "blocked", evidenceKind: t6 === "refused-local" ? "measured" : "structural", reachableTargets, udpArrival };
+}
+
+function buildMxcRawIpProbeScript(
+  probeId: string, port: number, controlHost: string, lan: MxcLanProbeTarget | undefined, udp: MxcLanProbeTarget | undefined, deadline: number,
+): string {
+  const script = String.raw`
+function Get-Remaining($targetClock) {
+  [int][Math]::Min(${MXC_RAW_IP_TARGET_TIMEOUT_MS} - $targetClock.ElapsedMilliseconds, $probeBudget - $probeClock.ElapsedMilliseconds)
+}
+function Get-SocketError($cause) {
+  while ($cause.InnerException -and $cause -isnot [Net.Sockets.SocketException]) { $cause = $cause.InnerException }
+  if ($cause -is [Net.Sockets.SocketException]) { return $cause.NativeErrorCode }
+  return 'other'
+}
+function Invoke-Tcp([string] $address, [int] $port, [string] $controlHost) {
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  $socket = $null
+  $connecting = $false
+  try {
+    if ((Get-Remaining $clock) -le 0) { return 'deadline' }
+    $ip = [Net.IPAddress]::Parse($address)
+    $socket = [Net.Sockets.Socket]::new($ip.AddressFamily, [Net.Sockets.SocketType]::Stream, [Net.Sockets.ProtocolType]::Tcp)
+    $connecting = $true
+    $pending = $socket.BeginConnect($ip, $port, $null, $null)
+    $remaining = Get-Remaining $clock
+    if ($remaining -le 0 -or -not $pending.AsyncWaitHandle.WaitOne($remaining)) { return 'deadline' }
+    $socket.EndConnect($pending)
+    $remaining = Get-Remaining $clock
+    if ($remaining -le 0) { return 'deadline' }
+    if (-not $controlHost) { return 'connected' }
+
+    $socket.SendTimeout = $remaining
+    $crlf = [string][char]13 + [char]10
+    $request = [Text.Encoding]::ASCII.GetBytes("GET http://$controlHost/ HTTP/1.1" + $crlf + "Host: $controlHost" + $crlf + 'Connection: close' + $crlf + $crlf)
+    if ($socket.Send($request) -ne $request.Length) { return 'other' }
+    $buffer = [byte[]]::new(512)
+    $head = ''
+    while ($head.Length -lt 4096) {
+      $remaining = Get-Remaining $clock
+      if ($remaining -le 0) { return 'deadline' }
+      $socket.ReceiveTimeout = $remaining
+      $count = $socket.Receive($buffer)
+      if ((Get-Remaining $clock) -le 0) { return 'deadline' }
+      if ($count -eq 0) { return 'other' }
+      $head += [Text.Encoding]::ASCII.GetString($buffer, 0, $count)
+      $end = $head.IndexOf($crlf + $crlf)
+      if ($end -ge 0) {
+        $headers = $head.Substring(0, $end)
+        if ($headers -match '\AHTTP/1\.[01] 403(?: |\r)' -and $headers -match '\r\nx-ave-egress-refused:[ \t]*loopback destination(?:\r\n|\z)') { return 'refused' }
+        return 'other'
+      }
+    }
+    return 'other'
+  } catch {
+    if ((Get-Remaining $clock) -le 0) { return 'deadline' }
+    if ($connecting -and -not $controlHost) { return (Get-SocketError $_.Exception) }
+    return 'other'
+  } finally {
+    if ($socket) { $socket.Dispose() }
+  }
+}
+function Invoke-Udp([string] $address, [int] $port, [string] $nonce) {
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  $client = $null
+  try {
+    $client = [Net.Sockets.UdpClient]::new()
+    $target = [Net.IPEndPoint]::new([Net.IPAddress]::Parse($address), $port)
+    $bytes = [Text.Encoding]::ASCII.GetBytes($nonce)
+    $remaining = Get-Remaining $clock
+    if ($remaining -le 0) { return 'unmeasured' }
+    $client.Client.SendTimeout = $remaining
+    if ($client.Send($bytes, $bytes.Length, $target) -eq $bytes.Length) { return 'sent' }
+  } catch {
+    if ((Get-Remaining $clock) -gt 0 -and (Get-SocketError $_.Exception) -eq 10013) { return 'refused-local' }
+  } finally {
+    if ($client) { $client.Dispose() }
+  }
+  return 'unmeasured'
+}
+function Read-CapabilitySids {
+  $identity = $null
+  $buffer = [IntPtr]::Zero
+  try {
+    $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly([Reflection.AssemblyName]::new('AveProbeToken'), 'Run')
+    $type = $assembly.DefineDynamicModule('Token').DefineType('TokenInfo')
+    $method = $type.DefinePInvokeMethod('GetTokenInformation', 'advapi32.dll', 'Public, Static, PinvokeImpl',
+      'Standard', [bool], [Type[]]@([IntPtr], [int], [IntPtr], [int], ([int]).MakeByRefType()), 'Winapi', 'Auto')
+    $method.SetImplementationFlags($method.GetMethodImplementationFlags() -bor [Reflection.MethodImplAttributes]::PreserveSig)
+    $tokenInfo = $type.CreateType()
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $token = $identity.Token
+    $size = 0
+    $tokenCapabilities = 30
+    $null = $tokenInfo::GetTokenInformation($token, $tokenCapabilities, [IntPtr]::Zero, 0, [ref]$size)
+    if ($size -lt 4) { return $null }
+    $buffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($size)
+    $written = 0
+    if (-not $tokenInfo::GetTokenInformation($token, $tokenCapabilities, $buffer, $size, [ref]$written)) { return $null }
+
+    # TOKEN_GROUPS starts with a count followed by pointer-aligned SID_AND_ATTRIBUTES entries.
+    $count = [Runtime.InteropServices.Marshal]::ReadInt32($buffer)
+    $offset = [IntPtr]::Size
+    $stride = 2 * $offset
+    if ($written -lt 4 -or $count -lt 0 -or ($count -gt 0 -and ($offset + $count * $stride) -gt $written)) { return $null }
+    $sids = [Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $count; $i++) {
+      $sid = [Runtime.InteropServices.Marshal]::ReadIntPtr($buffer, $offset + $i * $stride)
+      $sids.Add([Security.Principal.SecurityIdentifier]::new($sid).Value)
+    }
+    return ,$sids.ToArray()
+  } catch {
+    return $null
+  } finally {
+    if ($buffer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($buffer) }
+    if ($identity) { $identity.Dispose() }
+  }
+}
+try {
+  $ErrorActionPreference = 'Stop'
+  $ProgressPreference = 'SilentlyContinue'
+  $probeBudget = [Math]::Min([long]${MXC_RAW_IP_PROBE_TIMEOUT_MS}, ${deadline} - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+  if ($probeBudget -le 0) { exit 0 }
+  $probeClock = [Diagnostics.Stopwatch]::StartNew()
+  $control = (Invoke-Tcp '127.0.0.1' ${port} '${controlHost}') -ceq 'refused'
+  $udp = ${udp === undefined ? "'unmeasured'" : `Invoke-Udp '${udp.address}' ${udp.port} '${probeId}'`}
+  $t4 = Invoke-Tcp '192.0.2.1' 443
+  $t6 = Invoke-Tcp '2001:db8::1' 443
+  $tl = ${lan === undefined ? "'other'" : `Invoke-Tcp '${lan.address}' ${lan.port}`}
+  $capabilitySids = $null
+  if ($t6 -eq 10051 -or $t6 -eq 10065) { $capabilitySids = Read-CapabilitySids }
+  if ($probeClock.ElapsedMilliseconds -ge $probeBudget) { exit 0 }
+  $evidence = [ordered]@{ control = $control; t4 = $t4; t6 = $t6; tl = $tl; capabilitySids = $capabilitySids; udp = $udp } | ConvertTo-Json -Compress
+  [Console]::WriteLine('${MXC_RAW_IP_EVIDENCE_MARKER}${probeId} ' + $evidence)
+} catch {} finally { exit 0 }
+`;
+  // The probe request encodes the PowerShell command line inside its own base64 envelope.
+  const compressed = gzipSync(script).toString("base64");
+  return `
+$inputStream = [IO.MemoryStream]::new([Convert]::FromBase64String('${compressed}'))
+$stream = [IO.Compression.GZipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+$reader = [IO.StreamReader]::new($stream)
+try { $probe = $reader.ReadToEnd() } finally { $reader.Dispose() }
+& ([ScriptBlock]::Create($probe))
+`;
+}
+
+async function findMxcLanProbeTarget(deps: DetectMxcSupportDeps, timeoutMs: number): Promise<MxcLanProbeTarget | undefined> {
+  const shell = win32SystemBinary("WindowsPowerShell/v1.0/powershell", { SystemRoot: deps.systemRoot });
+  const command = `
+$ErrorActionPreference = 'Stop'
+$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
+$route = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' |
+  Sort-Object { [int]$_.RouteMetric + [int]$_.InterfaceMetric } | Select-Object -First 1
+if (-not $route) { exit 0 }
+$address = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $route.InterfaceIndex -AddressState Preferred |
+  Where-Object { -not $_.SkipAsSource -and $_.IPAddress -notlike '127.*' } | Select-Object -First 1 -ExpandProperty IPAddress
+if (-not $address) { exit 0 }
+$listening = @(Get-NetTCPConnection -State Listen | Select-Object -ExpandProperty LocalPort)
+$port = 49152..65535 | Where-Object { $_ -notin $listening } | Select-Object -First 1
+if ($port) { [Console]::WriteLine(('{0}:{1}' -f $address, $port)) }
+`;
+  try {
+    const result = await deps.run(shell, [...WIN32_POWERSHELL_STARTUP_ARGS, "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], timeoutMs);
+    const match = /^([\d.]+):(\d+)$/.exec(result.stdout.trim());
+    if (result.code !== 0 || match === null) return undefined;
+    const [, address = "", portText] = match;
+    const port = Number(portText);
+    return isIPv4(address) && !address.startsWith("127.") && address !== "0.0.0.0" && port >= 49152 && port <= 65535
+      ? { address, port } : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // Judge the PowerShell 5.1 start probe: exit 0 is a start. A UI-subsystem initialization failure (`STATUS_DLL_INIT_FAILED`, 0xC0000142) is what a non-interactive session produces (measured over SSH), so it is reported as unverified rather than as a host that cannot run PowerShell.
 export function classifyMxcStartProbe(
   code: number | null,
   stdout: string,
   stderr: string,
-): { readonly ok: true } | { readonly ok: false; readonly reason: "powershell-start-failed" | "unverified-session"; readonly detail: string } {
+): { readonly ok: true } | { readonly ok: false; readonly reason: "powershell-start-failed" | "unverified-session"; readonly detail: MxcStartDiagnostic } {
   if (code === 0) return { ok: true };
   const text = `${stdout}\n${stderr}`;
-  const lines = outputLines(stdout, stderr);
-  const detail = (lines.find(isBaseContainerStartDiagnostic) ?? lines[0] ?? `exit ${String(code)}`).slice(0, 500);
   // 0xC0000142 as the unsigned exit code, or the launcher's own diagnostic.
-  if ((code !== null && (code >>> 0) === 0xc0000142) || /STATUS_DLL_INIT_FAILED|0xC0000142/i.test(text)) {
-    return { ok: false, reason: "unverified-session", detail };
+  if ((code !== null && (code >>> 0) === 0xc0000142) || /\b(?:STATUS_DLL_INIT_FAILED|0xC0000142)\b/i.test(text)) {
+    return { ok: false, reason: "unverified-session", detail: "STATUS_DLL_INIT_FAILED" };
   }
+  const detail = outputLines(stdout, stderr).some(isBaseContainerStartDiagnostic) ? "base-container-start-failed" : "nonzero-exit";
   return { ok: false, reason: "powershell-start-failed", detail };
 }
 
@@ -271,41 +542,169 @@ export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promis
   return { state: "available", windowsBuild: deps.windowsBuild };
 }
 
+async function closeMxcStartupListener(release: () => Promise<void>): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await release();
+      return true;
+    } catch {
+      // Keep ownership until release is confirmed.
+    }
+  }
+  const retry = () => {
+    setTimeout(() => { void Promise.resolve().then(release).catch(retry); }, MXC_START_CLEANUP_RETRY_MS).unref();
+  };
+  retry();
+  return false;
+}
+
 // The slow half of detectMxcSupport (a cold container start; up to a minute): run after detectMxcPrerequisites passed, off the boot path.
-export async function probeMxcPowerShellStart(deps: DetectMxcSupportDeps): Promise<MxcSupport> {
-  const unavailable = (reason: MxcUnavailableReason, detail: string): MxcSupport => ({
+export async function probeMxcPowerShellStart(
+  deps: DetectMxcSupportDeps, openListener?: typeof openInvocationProxyListener,
+): Promise<MxcStartSupport> {
+  const isWindows = deps.platform === "win32";
+  const unavailable = (reason: MxcUnavailableReason, detail: string): MxcStartSupport => ({
     state: "unavailable",
     reason,
     windowsBuild: deps.windowsBuild,
     detail,
   });
   const wxcExec = wxcExecPathFor(deps.resourcePath, deps.arch);
-  if (wxcExec === undefined) return unavailable("unsupported-arch", `arch ${deps.arch}`);
-  // A dry run proves the request is accepted, not that the shell starts. Start the real thing once: System32 Windows PowerShell 5.1 in a container of the shape every command gets (caller-owned reduced environment, proxy mode).
-  const startRequest = buildMxcShellRequest({
-    commandLine: powerShellMxcCommandLine(deps.systemRoot, "exit 0", deps.probeDirectory),
-    cwd: deps.probeDirectory,
-    grants: { readwrite: [deps.probeDirectory], readonly: [], denied: [] },
-    env: {
-      SYSTEMROOT: deps.systemRoot,
-      LOCALAPPDATA: deps.probeDirectory,
-      TEMP: deps.probeDirectory,
-      TMP: deps.probeDirectory,
-      PATH: `${win32SystemBinary("", { SystemRoot: deps.systemRoot })};${deps.systemRoot}`,
-    },
-    // Nothing listens there: the probe makes no network call.
-    proxyUrl: "http://127.0.0.1:9",
-    timeoutMs: MXC_START_PROBE_TIMEOUT_MS,
-  });
-  let started: MxcRunResult;
+  if (wxcExec === undefined) return unavailable("unsupported-arch", isWindows ? "unsupported-arch" : `arch ${deps.arch}`);
+  const buildRequest = (script: string, proxyUrl: string, timeoutMs: number) =>
+    buildMxcShellRequest({
+      commandLine: powerShellMxcCommandLine(deps.systemRoot, script, deps.probeDirectory),
+      cwd: deps.probeDirectory,
+      grants: { readwrite: [deps.probeDirectory], readonly: [], denied: [] },
+      env: {
+        SYSTEMROOT: deps.systemRoot,
+        LOCALAPPDATA: deps.probeDirectory,
+        TEMP: deps.probeDirectory,
+        TMP: deps.probeDirectory,
+        PATH: `${win32SystemBinary("", { SystemRoot: deps.systemRoot })};${deps.systemRoot}`,
+      },
+      proxyUrl,
+      timeoutMs,
+    });
+  const buildPlainRequest = (timeoutMs: number) => buildRequest("exit 0", "http://127.0.0.1:9", timeoutMs);
+  // Off Windows, request construction errors propagate to the caller.
+  const nonWindowsRequest = isWindows ? undefined : buildPlainRequest(MXC_START_PROBE_TIMEOUT_MS);
+  const launch = async (request: MxcContainerRequest, timeoutMs: number) => {
+    const started = await deps.run(wxcExec, mxcRequestArgs(request, wxcExec), timeoutMs + MXC_START_LAUNCHER_GRACE_MS);
+    return { request, started };
+  };
+
+  const measure = isWindows && openListener !== undefined;
+  const available = { state: "available", windowsBuild: deps.windowsBuild } as const;
+  let rawIpProbe: MxcRawIpProbeVerdict = { rawIp: "unknown", reason: "listener-unavailable", reachableTargets: [], udpArrival: "unmeasured" };
+  let result: Awaited<ReturnType<typeof launch>> | undefined;
   try {
-    started = await deps.run(wxcExec, mxcRequestArgs(startRequest, wxcExec), MXC_START_PROBE_TIMEOUT_MS + 5_000);
+    if (measure) {
+      const deadline = Date.now() + MXC_START_PROBE_TIMEOUT_MS;
+      const measurementDeadline = deadline - MXC_START_EXIT_RESERVE_MS;
+      const controller = new AbortController();
+      const { signal } = controller;
+      const expiry = setTimeout(() => controller.abort(), MXC_START_PROBE_TIMEOUT_MS);
+      const expired = () => signal.aborted || Date.now() >= deadline;
+      let closeTcp: (() => Promise<void>) | undefined;
+      let closeUdp: (() => Promise<void>) | undefined;
+      let closing: Promise<boolean> | undefined;
+      const cleanup = () => closing ??= Promise.all([
+        closeTcp && closeMxcStartupListener(closeTcp),
+        closeUdp && closeMxcStartupListener(closeUdp),
+      ]).then(results => results.every(result => result !== false));
+      const handleExpiry = () => { void cleanup(); };
+      signal.addEventListener("abort", handleExpiry, { once: true });
+      try {
+        const probeId = randomBytes(16).toString("hex");
+        const controlHost = `127.${[...randomBytes(3)].join(".")}`;
+        let controlRefused = false;
+        const opening = openListener({
+          upstream: () => undefined,
+          onRefused: (destination) => { if (destination === controlHost) controlRefused = true; },
+          admission: {
+            signal,
+            assertCanBind: () => { if (expired()) throw new Error("MXC startup deadline reached"); },
+            acceptsConnections: () => !expired(),
+            adopt: (release) => { closeTcp = release; },
+          },
+        }).then((bound) => {
+          if (signal.aborted) {
+            if (closeTcp === undefined) void closeMxcStartupListener(bound.close);
+          } else {
+            closeTcp = bound.close;
+          }
+          return bound;
+        });
+        const listener = await raceWithAbort(opening, signal).catch(() => undefined);
+        if (listener === undefined) {
+          void cleanup();
+          const startBudget = deadline - Date.now();
+          if (expired()) return unavailable("powershell-start-failed", "startup-deadline");
+          result = await launch(buildPlainRequest(startBudget), startBudget);
+        } else {
+          const lookupBudget = Math.min(MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS, measurementDeadline - Date.now());
+          const lan = lookupBudget > 0 ? await raceWithAbort(findMxcLanProbeTarget(deps, lookupBudget), signal) : undefined;
+          let udp: Awaited<ReturnType<typeof openMxcRawIpUdpListener>>;
+          if (lan !== undefined) {
+            const binding = openMxcRawIpUdpListener(lan.address, probeId, measurementDeadline, release => { closeUdp = release; }).then((bound) => {
+              if (bound === undefined) return undefined;
+              if (signal.aborted) {
+                if (closeUdp === undefined) void closeMxcStartupListener(bound.close);
+              } else {
+                closeUdp = bound.close;
+              }
+              return bound;
+            });
+            udp = await raceWithAbort(binding, signal);
+          }
+          if (expired()) return unavailable("powershell-start-failed", "startup-deadline");
+          const startBudget = deadline - Date.now();
+          const script = buildMxcRawIpProbeScript(probeId, listener.port, controlHost, lan, udp, measurementDeadline);
+          try {
+            result = await launch(buildRequest(script, listener.url, startBudget), startBudget);
+          } finally {
+            const started = result?.started;
+            const evidence = started?.code === 0 && !expired()
+              ? parseMxcRawIpProbeEvidence(started.stdout, probeId, started.stderr) : undefined;
+            const udpArrival = await udp?.observe(evidence?.udp ?? "unmeasured", MXC_RAW_IP_TARGET_TIMEOUT_MS) ?? "unmeasured";
+            rawIpProbe = classifyMxcRawIpProbe(evidence, controlRefused, udpArrival);
+          }
+        }
+      } finally {
+        try {
+          const closed = await raceWithAbort(cleanup(), signal).catch(() => false);
+          if (!closed) {
+            rawIpProbe = { rawIp: "unknown", reason: "cleanup-failed", reachableTargets: rawIpProbe.reachableTargets, udpArrival: rawIpProbe.udpArrival };
+          }
+        } finally {
+          clearTimeout(expiry);
+          signal.removeEventListener("abort", handleExpiry);
+        }
+      }
+    } else {
+      result = await launch(nonWindowsRequest ?? buildPlainRequest(MXC_START_PROBE_TIMEOUT_MS), MXC_START_PROBE_TIMEOUT_MS);
+    }
+    const { request, started } = result;
+    if (!isWindows && started.code !== 0) {
+      const { code, stdout, stderr } = started;
+      const lines = outputLines(stdout, stderr);
+      const detail = (lines.find(isBaseContainerStartDiagnostic) ?? lines[0] ?? `exit ${String(code)}`).slice(0, 500);
+      const isSessionFailure = (code !== null && (code >>> 0) === 0xc0000142) || /STATUS_DLL_INIT_FAILED|0xC0000142/i.test(`${stdout}\n${stderr}`);
+      return unavailable(isSessionFailure ? "unverified-session" : "powershell-start-failed", detail);
+    }
+    const start = classifyMxcStartProbe(started.code, started.stdout, started.stderr);
+    if (!start.ok) return unavailable(start.reason, start.detail);
+    if (!measure) return available;
+    log.info({ launcherSha256: pinnedWxcExecSha256(deps.arch), schema: request.version,
+      network: request.network, windowsBuild: deps.windowsBuild }, "MXC raw IP startup measurement");
+    if (rawIpProbe.udpArrival !== "arrived" && rawIpProbe.reachableTargets.length > 0) log.warn("raw-ip-reachable");
+    return { ...available, rawIpProbe };
   } catch (error) {
-    return unavailable("powershell-start-failed", errorMessage(error));
+    return unavailable("powershell-start-failed", isWindows ? "launch-rejected" : errorMessage(error));
+  } finally {
+    if (rawIpProbe.udpArrival === "arrived") log.warn("raw-ip-reachable (udp)");
   }
-  const start = classifyMxcStartProbe(started.code, started.stdout, started.stderr);
-  if (!start.ok) return unavailable(start.reason, start.detail);
-  return { state: "available", windowsBuild: deps.windowsBuild };
 }
 
 // The filesystem lists of one MXC launch, already ranked.
@@ -1302,10 +1701,12 @@ export async function resolveHostWxcExecPath(expectedIdentity?: string): Promise
   return path;
 }
 
-type HostProbe = (deps: DetectMxcSupportDeps) => Promise<MxcSupport>;
-
 // Run one detection step against this host's shipped binary, in a fresh probe directory.
-async function withHostMxcDeps(step: HostProbe, expectedLauncherIdentity: string | undefined, assertRoot?: () => void): Promise<MxcSupport> {
+async function withHostMxcDeps<T extends MxcSupport>(
+  step: (deps: DetectMxcSupportDeps) => Promise<T>,
+  expectedLauncherIdentity: string | undefined,
+  assertRoot?: () => void,
+): Promise<T> {
   const [{ execFile }, { existsSync }, { mkdtemp, rm }, os, path] = await Promise.all([
     import("node:child_process"),
     import("node:fs"),
@@ -1321,7 +1722,7 @@ async function withHostMxcDeps(step: HostProbe, expectedLauncherIdentity: string
       throw new Error("Contained shell launcher changed before spawn");
     }
   };
-  let result: MxcSupport;
+  let result: T;
   try {
     result = await step({
       platform: process.platform,
@@ -1362,18 +1763,21 @@ export async function detectHostMxcPrerequisites(expectedLauncherIdentity?: stri
 }
 
 // probeMxcPowerShellStart against this host's shipped binary (after boot).
-export async function probeHostMxcPowerShellStart(expectedLauncherIdentity?: string): Promise<MxcSupport> {
+export async function probeHostMxcPowerShellStart(expectedLauncherIdentity?: string): Promise<MxcStartSupport> {
   // The probe starts a container too: a runtime root that was not proved private refuses it, under its own reason.
   const { MxcRuntimeRootError, requireMxcContainerStartRoot } = await import("./mxc-runtime-root.js");
   try {
     const root = requireMxcContainerStartRoot();
     const launcherIdentity = expectedLauncherIdentity ?? getHostWxcExecIdentity();
     await resolveHostWxcExecPath(launcherIdentity);
-    return await withHostMxcDeps(probeMxcPowerShellStart, launcherIdentity, () => {
+    const openListener = process.platform === "win32"
+      ? (await import("./egress-invocation-listener.js")).openInvocationProxyListener : undefined;
+    return await withHostMxcDeps(deps => probeMxcPowerShellStart(deps, openListener), launcherIdentity, () => {
       if (requireMxcContainerStartRoot() !== root) throw new MxcRuntimeRootError("Container runtime root changed before the start probe");
     });
   } catch (error) {
     if (!(error instanceof MxcRuntimeRootError)) throw error;
-    return { state: "unavailable", reason: "runtime-root-unproved", windowsBuild: null, detail: `runtime root proof failed: ${error.message}` };
+    const detail = process.platform === "win32" ? "runtime-root-unproved" : `runtime root proof failed: ${error.message}`;
+    return { state: "unavailable", reason: "runtime-root-unproved", windowsBuild: null, detail };
   }
 }

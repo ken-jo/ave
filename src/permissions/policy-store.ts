@@ -14,7 +14,9 @@ import { WindowsPolicyReadError } from "../shared/windows-admin-policy.js";
 import { readAveHomeConfigurationFile, readAveHomeRestrictionSource, resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
 const log = createLogger("policy-store");
 
-export const userPolicyPath = (home = aveHome()): string => resolve(aveHomeConfigurationDirectory(home), "policy.json");
+export const USER_POLICY_FILENAME = "policy.json";
+
+export const userPolicyPath = (home = aveHome()): string => resolve(aveHomeConfigurationDirectory(home), USER_POLICY_FILENAME);
 
 export function getAdminPolicyPath(): string {
   switch (process.platform) {

@@ -431,7 +431,9 @@ describe("verified native installations", () => {
     const inspections = nativeFacts.read.mock.calls.length;
     expect(resolveVerifiedExecutable(candidates, "win32")).toBe(verified);
     expect(nativeFacts.read.mock.calls).toHaveLength(inspections);
-    const image = nativeFacts.read.getMockImplementation()!([WINDOWS_EXECUTABLE])[0];
+    const read = nativeFacts.read.getMockImplementation();
+    if (read === undefined) throw new Error("Expected a path facts fixture");
+    const image = read([WINDOWS_EXECUTABLE])[0];
     nativeFacts.pin.mockReset().mockReturnValueOnce([image]).mockReturnValueOnce([{ ...image, fileId: "replacement" }]);
     expect(() => verified?.assertStillValid?.()).not.toThrow();
     expect(nativeFacts.pin).toHaveBeenCalledExactlyOnceWith([WINDOWS_EXECUTABLE]);

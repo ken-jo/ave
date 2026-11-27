@@ -112,6 +112,7 @@ export function projectWorkflowRun(
         : gate && { ...gate, ...(gate.note !== undefined && { note: maskWorkflowText(gate.note) }) };
       return {
         stageId, attempt, status, childSessionId, startedAt, endedAt, failure, gate: shownGate, receivedInputs,
+        ...(stage.deniedCalls?.length ? { deniedCalls: stage.deniedCalls.map(({ toolName, code }) => ({ toolName: maskWorkflowText(toolName), code })) } : {}),
         ...(output !== undefined && { result: maskWorkflowText(output) }), resultHash, ...sessionFacts?.(stage),
       };
     }),

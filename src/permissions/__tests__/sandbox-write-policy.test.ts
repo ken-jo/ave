@@ -6,6 +6,7 @@ import * as filesystem from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
+import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, buildSeatbeltSandboxWritePolicy, compactSandboxWriteDenies, findNonRepositoryWriteRoots, isGrantPathWithin, isSandboxGitMetadataEntry, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
 import { getLocale, setLocale, t } from "../../i18n/index.js";
@@ -80,6 +81,15 @@ describe("mandatory sandbox control-file writes", () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it.runIf(process.platform === "win32")("pins the user configuration once for the mandatory write floor", () => {
+    const configuration = join(root, "ave", "config");
+    const pin = vi.spyOn(windowsPathFacts, "pinWindowsPaths");
+    const { denyWrite } = buildMandatorySandboxWritePolicy([root]);
+    expectLiteralDenyCovers(denyWrite, join(root, "ave", "settings.json"));
+    expectLiteralDenyCovers(denyWrite, join(root, "ave", "policy.json"));
+    expect(pin.mock.calls.filter(([paths]) => paths.includes(configuration))).toHaveLength(1);
   });
 
   it("projects the mandatory macOS floor as literal names and recursive patterns", () => {

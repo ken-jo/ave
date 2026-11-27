@@ -3695,12 +3695,48 @@ in its directory.
   resolved and an unknown name returned NXDOMAIN. The host DNS client cache can
   answer both lookups, so these results establish access to the host resolver.
   The resolver remains a potential egress path outside the proxy. MXC shell
-  and extension plans report `dns: "host-resolver"` and `rawIp: "unknown"`.
-  The direct port 53 refusal above lacks protocol attribution. Direct UDP port
-  53 and ICMP blocking remain unverified. Host-side WFP observation can identify
-  filtering decisions, and receiver-side evidence can confirm traffic arrival.
-  Plan coverage is reporting metadata. Settings uses it to disclose both limits.
-  Launch and admission policies do not enforce this coverage metadata.
+  and extension plans report `dns: "host-resolver"`.
+- **Shell raw IP egress measurement.** The existing post-boot shell start check
+  measures egress in a container with the same network policy as a user shell.
+  The control requires a `403` with the `x-ave-egress-refused` header for a
+  random loopback destination and a matching refusal recorded by the host
+  invocation proxy. The script attempts direct TCP connections to
+  `192.0.2.1:443`, `[2001:db8::1]:443`, and the host's primary LAN IPv4 on a
+  high port absent from the host's listening table because the initial host
+  check found TCP port 135 open. The LAN target can only downgrade coverage.
+  UDP is checked by arrival only.
+  The host listens on that LAN address at an OS-assigned port, and the script
+  sends the launch identifier as a nonce. The host lookup, listener open and
+  close, contained start, and host evidence acceptance share a sixty-second
+  deadline. The script uses up to three
+  seconds per target and twelve seconds overall, with one second reserved for
+  exit. The host can wait up to three seconds for a sent datagram within that
+  measurement deadline. The plain exit check uses the remaining startup
+  budget if the invocation listener is unavailable. A measured launch's exit
+  result determines shell availability.
+  `rawIp: "blocked"` requires the control to pass, an IPv4 local `10013`
+  refusal, IPv6 refusal evidence, no TCP response on the LAN target, and no UDP
+  arrival. A local IPv6 `10013` is measured evidence. For IPv6 no-route codes
+  `10051` or `10065`, a successful read of the container token with all three
+  network capability SIDs absent is structural evidence. A present network
+  capability or a failed or unparseable read leaves IPv6 unmeasured.
+  A successful TCP connection or remote refusal yields `rawIp: "unknown"`
+  with a `raw-ip-reachable` warning. A matching datagram yields unknown with
+  `raw-ip-reachable (udp)` even if the contained start fails. A UDP timeout or
+  local send refusal leaves the TCP
+  verdict standing. An unavailable UDP observation leaves coverage unknown
+  when TCP would otherwise support a blocked verdict.
+  Unconfirmed TCP or UDP listener cleanup leaves coverage unknown while the
+  host continues cleanup.
+  The host accepts a single complete evidence frame with its launch identifier.
+  Missing evidence or a failed control leaves coverage unknown. Shell
+  availability follows the PowerShell exit result. The measurement file record
+  contains the launcher hash, schema, network section, and Windows build.
+  Reachability warnings are logged separately. The evidence kind stays in
+  memory for the current boot, and coverage is reported on Windows MXC shell
+  plans and in the Windows substrate snapshot.
+  The container request and host proxy enforce the network policy. Extension plans retain
+  `rawIp: "unknown"`. Direct UDP and ICMP remain unverified.
 - **Inbound.** Proxy mode requires `ingress.default: "allow"`, which grants
   the container `privateNetworkClientServer`. The pinned SDK describes
   host-loopback allow as stateful outbound connectivity at baseline; native

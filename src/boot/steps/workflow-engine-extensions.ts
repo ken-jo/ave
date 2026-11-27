@@ -1,5 +1,5 @@
 import { createLogger } from "../../lib/logger.js";
-import { isAllReadOnlyVersion } from "../../work-board/template-graph.js";
+import { isAllReadOnlyVersion, qualifyUnattended } from "../../work-board/template-graph.js";
 import { authoriseRunSource } from "../../work-board/workflow/run-authority.js";
 import { assertPinnedVersion } from "../../work-board/workflow/stage-graph.js";
 import { createPassConditionRegistry } from "../../work-board/workflow/stage-gates.js";
@@ -13,6 +13,7 @@ import { bindStageWorkspace, unbindStageWorkspace } from "../../permissions/stag
 import type { PermissionManager } from "../../permissions/permission-manager.js";
 import { createRunScopeHooks } from "../../permissions/run-scope.js";
 import { unattendedLaneHooks } from "../../permissions/unattended-lane-registry.js";
+import type { ToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import type { StageRunEngineDeps } from "../../work-board/workflow/stage-run-engine.js";
 
 const log = createLogger("ave");
@@ -28,7 +29,7 @@ type WorkflowEngineExtensions = Pick<
  * is the board store's covered run file. Every stage works in its own folder under the home's `worktrees`, bound to its session, and with
  * no lane only an all-read-only version may run unattended. A run's "Allow for this run" grants and its stage sessions' reviewer
  * breakers are held by the permission manager and end as the run tells it. */
-export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<WorkflowTemplateStore, "getAttachment" | "resolveVersion">, permissionManager: PermissionManager): WorkflowEngineExtensions {
+export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<WorkflowTemplateStore, "getAttachment" | "resolveVersion">, permissionManager: PermissionManager, effects: ToolEffectResolver | null = null): WorkflowEngineExtensions {
   const runs = boardRunState(store);
   // A run's output folder lives as long as its item. A record can go while its row is still listed (a later run superseded it and the
   // row's history let it go): that run's output stays until the row goes. A board that cannot be read removes nothing.
@@ -103,6 +104,12 @@ export function workflowEngineExtensions(store: WorkBoardStore, templates: Pick<
     workspaceBinding: { bind: bindStageWorkspace, unbind: unbindStageWorkspace },
     authoriseRunSource,
     passConditions: createPassConditionRegistry(),
+    unattendedAllowed: version => {
+      const qualification = qualifyUnattended(version, effects);
+      if (!qualification.ok && "tool" in qualification) return qualification;
+      // The interim lane admits only read-only graphs and does not require an envelope.
+      return isAllReadOnlyVersion(version) ? { ok: true } : { ok: false, code: "unattended-not-read-only" };
+    },
     lane: {
       ...unattendedLaneHooks,
       admit: async ({ runKey }) => {

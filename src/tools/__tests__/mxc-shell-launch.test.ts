@@ -8,6 +8,7 @@ import { deferred } from "../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as asrtSandbox from "../../permissions/asrt-sandbox.js";
+import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { t } from "../../i18n/index.js";
 import { closed, echoParentProxy, openTunnel, probePort, within } from "../../__tests__/support/proxy-tunnel-probe.js";
 import { deferWatchedReceipt, isWatchedWorkspaceConsumable, listWatchedQuarantine, pruneWatchedRows, WATCHED_ROW_VIOLATION, watchedProtectedRows } from "../../permissions/windows-watched-rows.js";
@@ -204,14 +205,18 @@ vi.mock("../../permissions/windows-confinement-evidence.js", () => {
 import { prepareMxcShellLaunch, type PrepareMxcShellLaunchInput } from "../mxc-shell-launch.js";
 import { observeWindowsBackend, reportWindowsBackendLoss } from "../../permissions/windows-confinement-evidence.js";
 import { createContainedShellLifecycle } from "../contained-shell-lifecycle.js";
-import { MXC_REQUEST_CHARACTER_LIMIT } from "../../permissions/mxc-windows.js";
+import { MXC_REQUEST_CHARACTER_LIMIT, probeMxcPowerShellStart } from "../../permissions/mxc-windows.js";
+import { ObligationRefusedError } from "../../permissions/admitted-obligation.js";
 import { mxcConfinementStatePaths } from "../../permissions/mxc-runtime-root.js";
 import { srtWinConfinementStatePaths } from "../../permissions/srt-win-integrity.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "../../permissions/egress-invocations.js";
+import * as invocationProxy from "../../permissions/egress-invocation-listener.js";
 import * as policyPipe from "../../permissions/mxc-policy-pipe.js";
 import * as sandboxCapability from "../../permissions/sandbox-capability.js";
 import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../../permissions/sandbox-home-registry.js";
 import { decisionMemo } from "../../shared/local-path-io.js";
+import * as windowsDriveLocality from "../../shared/windows-drive-locality.js";
+import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 
 // The container route goes away: no capability, announced as a status change.
 function endRoute(): () => void {
@@ -363,6 +368,77 @@ describe("prepareMxcShellLaunch", () => {
     const final = seen.slice(-2);
     expect(final.map(([check]) => check)).toEqual(["home", "declared"]);
     expect(final[0]?.[1]).toBe(final[1]?.[1]);
+  });
+
+  it.runIf(process.platform === "win32")("batches admission and post-ranking pins with one drive query per seal observation", async () => {
+    relay();
+    const denied = winPath.join(WS, "control");
+    const pin = vi.spyOn(windowsPathFacts, "pinWindowsPaths");
+    const query = vi.spyOn(windowsDriveLocality, "queryDriveIdentity").mockReturnValue({ local: true });
+    const starts: Array<{ pins: number; queries: number }> = [];
+    h.observe = (check) => {
+      if (check === "home") starts.push({ pins: pin.mock.calls.length, queries: query.mock.calls.length });
+    };
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const launch = await prepareMxcShellLaunch({ ...INPUT, filesystem: { ...INPUT.filesystem, denyWrite: [denied] } }, lifecycle);
+      launch.activate();
+      expect(starts).toHaveLength(3);
+      const ends = [...starts.slice(1), { pins: pin.mock.calls.length, queries: query.mock.calls.length }];
+      const endAt = (index: number) => { const end = ends[index]; if (!end) throw new Error("missing observation end"); return end; };
+      for (const [index, { pins }] of starts.entries()) {
+        const batches = pin.mock.calls.slice(pins, endAt(index).pins);
+        expect(batches.map(([, options]) => options)).toEqual([undefined, { batch: true }]);
+        for (const [paths] of batches) expect(paths).toEqual(expect.arrayContaining([WS, denied]));
+      }
+      expect(starts.map(({ queries }, index) => query.mock.calls.slice(queries, endAt(index).queries)
+        .filter(([drive]) => drive === "C:").length)).toEqual([1, 1, 1]);
+    } finally {
+      h.observe = undefined;
+      await lifecycle.dispose();
+    }
+  });
+
+  it.runIf(process.platform === "win32").each([2, 3])("refuses admission when the helper fails at seal observation %i", async (observation) => {
+    relay();
+    const pin = vi.spyOn(windowsPathFacts, "pinWindowsPaths");
+    let checks = 0;
+    h.observe = (check) => {
+      if (check === "home" && ++checks === observation) {
+        pin.mockImplementationOnce(() => { throw windowsPathKindHelperUnavailable("Path facts unavailable", "EIO"); });
+      }
+    };
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const filesystem = { ...INPUT.filesystem, denyWrite: [winPath.join(WS, "control")] };
+      const preparing = prepareMxcShellLaunch({ ...INPUT, filesystem }, lifecycle);
+      if (observation === 2) await expect(preparing).rejects.toThrow(ObligationRefusedError);
+      else {
+        const launch = await preparing;
+        expect(() => launch.activate()).toThrow(ObligationRefusedError);
+      }
+      expect(checks).toBe(observation);
+      expect(h.openRelay.mock.calls[0]?.[1].acceptsConnections()).toBe(false);
+    } finally {
+      h.observe = undefined;
+      await lifecycle.dispose();
+    }
+  });
+
+  it("marks parser preparation through the final seal verification", async () => {
+    relay();
+    const markParserTiming = vi.fn();
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const launch = await prepareMxcShellLaunch({ ...INPUT, markParserTiming }, lifecycle);
+      expect(markParserTiming.mock.calls.flat()).toEqual([
+        "launcher-verified", "sandbox-prep", "egress-prep", "seal-verified", "inline-policy-ready",
+      ]);
+      launch.activate();
+      expect(markParserTiming).toHaveBeenLastCalledWith("seal-verified-at-activation");
+    } finally {
+      await lifecycle.dispose();
+    }
   });
 
   it("refuses a working directory the runtime root came to cover during the launch's waits", async () => {
@@ -577,6 +653,44 @@ describe("prepareMxcShellLaunch", () => {
     }
     expect(await probePort(launch.proxyPort)).toBe("refused");
     expect(h.closeRelay).toHaveBeenCalledOnce();
+  });
+
+  it("serializes the same network policy and each invocation's own proxy listener URL", async () => {
+    const networkBytes = (encoded: string | undefined): Buffer => {
+      const json = Buffer.from(encoded ?? "", "base64").toString("utf8");
+      const network = /,"network":(.+?),"runtimeConfig":/.exec(json)?.[1];
+      if (network === undefined) throw new Error("Missing network section");
+      return Buffer.from(network, "utf8");
+    };
+    relay();
+    const openListener = vi.spyOn(invocationProxy, "openInvocationProxyListener");
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const { argv } = await prepareMxcShellLaunch(INPUT, lifecycle);
+      let probeNetwork: Buffer | undefined;
+      let probeProxy: string | undefined;
+      await expect(probeMxcPowerShellStart({
+        platform: "win32", arch: "x64", resourcePath: "C:/example/resources", windowsBuild: null,
+        probeDirectory: "C:/example/scratch", systemRoot: "C:/Windows", exists: () => true, sha256: async () => "",
+        run: async (file, args) => {
+          if (args[0] === "--config-base64") {
+            probeNetwork = networkBytes(args[1]);
+            probeProxy = decodeRequest([file, ...args]).runtimeConfig.networkProxy;
+          }
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      }, openListener)).resolves.toMatchObject({ state: "available" });
+      expect(openListener).toHaveBeenCalledTimes(2);
+      const shellListener = await openListener.mock.results[0]?.value;
+      const probeListener = await openListener.mock.results[1]?.value;
+      if (shellListener === undefined || probeListener === undefined) throw new Error("Missing invocation listener");
+      expect(decodeRequest(argv).runtimeConfig.networkProxy).toBe(shellListener.url);
+      expect(probeProxy).toBe(probeListener.url);
+      expect(probeListener.url).not.toBe(shellListener.url);
+      expect(probeNetwork).toEqual(networkBytes(argv[2]));
+    } finally {
+      await lifecycle.dispose();
+    }
   });
 
   it("grants nothing inside the Ave home outside its re-allowed children", async () => {

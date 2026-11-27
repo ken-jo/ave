@@ -11,6 +11,7 @@ import type { RoutineRecord, RoutineRunOutcome, RoutineRunMetrics } from "../../
 import { wakeRoutineChat } from "../../main/app-state.js";
 import { turnExtensionPolicyContext, withholdSessionAuthorityFor } from "../../shared/turn-extension-policy.js";
 import { fireScheduledTemplate } from "../../main/routines-template-run.js";
+import { mayFire } from "../../work-board/workflow/schedule-breaker.js";
 
 const log = createLogger("ave");
 
@@ -188,7 +189,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
   });
   routinesScheduler.onTemplateRun(fire => {
     const { routine } = fire;
-    void fireScheduledTemplate(ctx, fire).catch((error: unknown) => {
+    void fireScheduledTemplate(ctx, fire, mayFire).catch((error: unknown) => {
       log.warn("scheduled template dispatch failed (%s): %s", routine.id, sanitizeRoutineFailureReason((error as Error).message));
       if (routine.lastFiredAt) {
         void routinesStore.recordRunOutcome(routine.id, routine.lastFiredAt, { ok: false, kind: "error", reason: "run-state-unavailable" })

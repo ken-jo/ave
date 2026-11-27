@@ -12,6 +12,7 @@ import type { RepeatKind, RoutineEditPatch, RoutineRecord, RoutineRepeat, Routin
 import { isValidCronExpression } from "../../../../routines/cron-evaluator.js";
 import { describeSchedule } from "../RoutinePanel.js";
 import { ChatLinkField, type ChatChoice } from "./chat-link.js";
+import { reasonText } from "../../hooks/use-work-board-run.js";
 
 const REPEATS: Array<{ kind: Exclude<RepeatKind, "cron">; labelKey: string }> = [
   { kind: "none", labelKey: "routinePanel.repeatNone" },
@@ -175,7 +176,8 @@ export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
       {props.templateNote && <p className="text-xs text-muted-foreground" data-testid="schedule-template-note">{props.templateNote}</p>}
       {routine.pausedAt && (
         <p className="rounded-md bg-muted px-2 py-1.5 text-xs" role="status" data-testid="schedule-paused-note">
-          {t(routine.pausedBy === "agent" ? "schedulePanel.pausedByAgent" : "schedulePanel.pausedByUser", {
+          {t(routine.pausedBy === "schedule-breaker" ? "schedulePanel.pausedByScheduleBreaker"
+            : routine.pausedBy === "agent" ? "schedulePanel.pausedByAgent" : "schedulePanel.pausedByUser", {
             when: formatMediumDateTime(routine.pausedAt),
           })}
           {" "}{t("schedulePanel.resumeRule")}
@@ -196,7 +198,7 @@ export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
       {failure && (
         <p className="flex items-start gap-1 break-words text-xs text-destructive" role="status">
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          {failure.kind === "error" ? t("schedulePanel.lastRunFailed", { reason: failure.reason }) : t("schedulePanel.lastRunTimedOut")}
+          {failure.kind === "error" ? t("schedulePanel.lastRunFailed", { reason: reasonText(failure.reason) ?? failure.reason }) : t("schedulePanel.lastRunTimedOut")}
         </p>
       )}
 

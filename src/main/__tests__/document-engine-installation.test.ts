@@ -144,7 +144,8 @@ describe("optional document engine installation", () => {
   it("refuses changed dependency bytes even when file metadata is unchanged", async () => {
     const signal = new AbortController().signal;
     await installer.installDocumentEngine(() => {}, signal);
-    const installation = (await installer.getVerifiedDocumentEngineInstallation(signal))!;
+    const installation = await installer.getVerifiedDocumentEngineInstallation(signal);
+    if (installation === null) throw new Error("Expected a verified document engine installation");
     const dependency = join(installation.root, "program", "library");
     const before = await lstat(dependency, { bigint: true });
     const replacement = Buffer.from("altered bytes!");

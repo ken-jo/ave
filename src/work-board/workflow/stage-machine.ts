@@ -2,6 +2,7 @@ import type { WorkPlanDecision } from "../../shared/work-board-types.js";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
 import type { StageJoin, TemplateGraph, WorkItemStageRun } from "../../shared/workflow-template-types.js";
 import type { JoinConflict, StageFailure } from "./shipped-shapes.js";
+import { stageReachedDenialLimit } from "./run-budget.js";
 import { currentStepOf, joinIdOfStep, readyStages, stepsOf } from "./stage-graph.js";
 
 /** A reissued conflict is a new decision even when the sealed inputs and diagnostics are identical. */
@@ -18,14 +19,21 @@ export function issueJoinConflict(join: StageJoin, conflict: JoinConflict): Stag
 export const MAX_PARALLEL_STAGES = 3;
 export const MAX_STAGE_ATTEMPTS = 3;
 
+export type StageEnded = {
+  type: "stage_ended"; stageId: string; attempt: number; ok: boolean; output?: string; taint?: WorkItemStageRun["taint"]; reason?: string;
+  interrupted?: boolean; failure?: StageFailure; usage?: WorkItemStageRun["usage"]; deniedCalls?: WorkItemStageRun["deniedCalls"];
+  childSessionId?: string; blocked?: WorkItemStageRun["blocked"];
+};
+
 export type RunEvent =
-  | { type: "started" } | { type: "stage_linked"; stageId: string; childSessionId: string }
-  | { type: "stage_ended"; stageId: string; attempt: number; ok: boolean; output?: string; taint?: WorkItemStageRun["taint"]; reason?: string; interrupted?: boolean; failure?: StageFailure }
+  | { type: "started" } | { type: "stage_linked"; stageId: string; childSessionId: string; usage?: WorkItemStageRun["usage"] }
+  | StageEnded | { type: "slot_released"; stageId: string; attempt: number }
   | { type: "gate_evaluated"; stageId: string; attempt: number; passed: boolean; evidence: string; judgedBy: "host" | "model" }
   | { type: "gate_decided"; stageId: string; attempt: number; decision: WorkPlanDecision; note?: string }
   | { type: "retry_requested"; stageId: string } | { type: "continue_requested" } | { type: "stop_requested" }
   | { type: "join_integrated"; joinId: string } | { type: "join_conflict"; joinId: string; conflict: JoinConflict }
   | { type: "join_decided"; joinId: string; decision: "retry_merge" | "reject" }
+  | { type: "seal_saved"; stageId: string; attempt: number; sealCommit: string }
   // Host outcomes of an effect: the run's source is no longer authorised, a passed stage could not be sealed, the pin or wiring failed.
   | { type: "spawn_requested"; stageId: string; attempt: number } | { type: "spawn_refused"; stageId: string; attempt: number } | { type: "seal_failed"; stageId: string } | { type: "fault" };
 
@@ -46,6 +54,8 @@ export interface RunSnapshot {
   faulted?: boolean;
   /** Recovery may finish an existing join while leaving the next child for an explicit continuation. */
   parked?: boolean;
+  /** A live or starting child keeps its slot after the stage's failure is stored. */
+  liveStageIds?: readonly string[];
   now: string;
 }
 
@@ -59,7 +69,11 @@ export interface RunStep {
 function rerun(run: WorkItemStageRun): void {
   run.attempt += 1;
   run.status = "waiting";
-  for (const key of ["failure", "resultHash", "childSessionId", "startedAt", "endedAt", "blocked"] as const) delete run[key];
+  for (const key of ["failure", "resultHash", "childSessionId", "startedAt", "endedAt", "blocked", "usage", "deniedCalls"] as const) delete run[key];
+}
+
+export function hasRejectedWork(stageRuns: readonly WorkItemStageRun[], joins: readonly StageJoin[]): boolean {
+  return stageRuns.some(run => run.status === "rejected") || joins.some(join => join.status === "rejected");
 }
 
 /** The whole scheduler as one pure step. It never spawns, writes or reads a clock; the engine runs the effects it returns. */
@@ -69,9 +83,8 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
   const joins = snapshot.joins.map(join => ({ ...join }));
   const effects: RunEffect[] = [];
   const find = (stageId: string): WorkItemStageRun | undefined => stageRuns.find(run => run.stageId === stageId);
-  const denied = (): boolean => stageRuns.some(run => run.status === "rejected") || joins.some(join => join.status === "rejected");
   const faulted = snapshot.faulted === true || event.type === "fault";
-  const winding = (): boolean => snapshot.stopping || snapshot.refused || faulted || denied();
+  const winding = (): boolean => snapshot.stopping || snapshot.refused || faulted || hasRejectedWork(stageRuns, joins);
   const interruptRunning = (): void => {
     for (const run of stageRuns) if (run.status === "running") effects.push({ type: "interrupt", stageId: run.stageId });
   };
@@ -83,6 +96,7 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
   switch (event.type) {
     case "started":
     case "continue_requested":
+    case "slot_released":
       break;
     case "fault":
       // A live child is never left behind: each is interrupted, and the run ends when the last one has unwound.
@@ -90,13 +104,20 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
       break;
     case "stage_linked": {
       const run = find(event.stageId);
-      if (run?.status === "running") run.childSessionId = event.childSessionId;
+      if (run?.status === "running") {
+        run.childSessionId = event.childSessionId;
+        if (event.usage) run.usage = event.usage;
+      }
       break;
     }
     case "stage_ended": {
       const run = find(event.stageId);
       if (run?.status !== "running" || run.attempt !== event.attempt) break;
       run.endedAt = now;
+      if (event.childSessionId !== undefined) run.childSessionId = event.childSessionId;
+      if (event.usage) run.usage = event.usage;
+      if (event.deniedCalls) run.deniedCalls = event.deniedCalls;
+      if (event.blocked) run.blocked = event.blocked;
       if (event.output !== undefined) run.output = event.output;
       if (event.taint) run.taint = event.taint;
       if (winding()) run.status = "cancelled";
@@ -204,7 +225,7 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
   }
 
   if (winding()) {
-    if (stageRuns.some(run => run.status === "running")) return { stageRuns, joins, runStatus: "executing", effects };
+    if (snapshot.liveStageIds?.length || stageRuns.some(run => run.status === "running")) return { stageRuns, joins, runStatus: "executing", effects };
     for (const run of stageRuns) if (run.status === "waiting" || run.status === "awaiting_gate") run.status = "cancelled";
     return settle(snapshot.stopping ? "cancelled" : faulted ? "error" : snapshot.refused ? "cancelled" : "denied");
   }
@@ -219,8 +240,10 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
     joins.push({ joinId, stageIds: [...step], status: "integrating" });
     effects.push({ type: "integrate", joinId, stageIds: [...step] });
   } else {
-    let slots = MAX_PARALLEL_STAGES - stageRuns.filter(run => run.status === "running").length;
+    let slots = MAX_PARALLEL_STAGES - stageRuns.filter(run => run.status === "running" || snapshot.liveStageIds?.includes(run.stageId)).length;
+    const parkedOnDenials = stageRuns.some(stageReachedDenialLimit);
     for (const id of snapshot.parked ? [] : readyStages(graph, stageRuns, joins)) {
+      if (parkedOnDenials && (event.type !== "retry_requested" || event.stageId !== id)) continue;
       const run = find(id);
       if (slots <= 0 || !run) continue;
       run.status = "running";
