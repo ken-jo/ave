@@ -45,7 +45,7 @@ import { newHolderLabels } from "../permissions/holder-label-sweep.js";
 import { provenSeatbeltHolderRoute } from "../permissions/seatbelt-holder-boot.js";
 import { withLocalityDecision } from "../shared/local-path-io.js";
 import { isFullyQualifiedWindowsPath } from "../shared/windows-path-spelling.js";
-import { getExtensionBackendPlan, getMacHolderCapability } from "../permissions/sandbox-capability.js";
+import { getExtensionBackendPlan, getMacHolderCapability, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
 import { listAuthorizedWorkspaceRoots } from "../permissions/workspace-authorized-roots.js";
 import type { SandboxWindowsExtensionPlan } from "../shared/sandbox-capability-info.js";
 import { createSandboxProcessHome, resolvedHostProcessOwner } from "../permissions/sandbox-process-home.js";
@@ -940,14 +940,24 @@ export async function spawnSeatbeltOfflineHolder(input: {
     const { launch, identity } = boundary.run(() => withLocalityDecision(() => ({
       launch: composeSeatbeltHolderLaunch(launchInput, floors), identity: measurePosixExecutableIdentity(input.command),
     })));
-    holder = await startSeatbeltHolder(launch, {
-      label: input.label, helper: route.helper, launchers: route.launchers, admittedDigest: launch.digest,
-      assertStillValid: () => {
-        assertManagedChildProcessAdmissionOpen(input.label);
-        if (getMacHolderCapability()?.state !== "ready") throw new MxcProcessContractError(`${input.label}: the macOS holder route is no longer proven`);
-        if (measurePosixExecutableIdentity(input.command) !== identity) throw new MxcProcessContractError("Container executable changed after admission");
-      },
+    // A capability lost between the gate and the ready byte stops the holder at once.
+    const revoked = new AbortController();
+    const unsubscribe = onSandboxStatusChanged(() => {
+      if (getMacHolderCapability()?.state !== "ready") revoked.abort();
     });
+    try {
+      holder = await startSeatbeltHolder(launch, {
+        label: input.label, helper: route.helper, launchers: route.launchers, admittedDigest: launch.digest,
+        assertStillValid: () => {
+          assertManagedChildProcessAdmissionOpen(input.label);
+          if (getMacHolderCapability()?.state !== "ready") throw new MxcProcessContractError(`${input.label}: the macOS holder route is no longer proven`);
+          if (measurePosixExecutableIdentity(input.command) !== identity) throw new MxcProcessContractError("Container executable changed after admission");
+        },
+        revoked: revoked.signal,
+      });
+    } finally {
+      unsubscribe();
+    }
   } catch (error) {
     // An unverified refused start may have left a process: its staging stays, and so does the quarantine.
     if (error instanceof MxcProcessCleanupError) quarantinedOfflineHolders.add(input.label);

@@ -265,6 +265,9 @@ export interface StartSeatbeltHolderOptions {
   /** The row-2 recheck. It runs synchronously after the group is registered and before the release byte. */
   readonly assertStillValid: () => void;
   readonly egress?: SeatbeltHolderEgress;
+  /** Aborted when the holder's admission is revoked after the gate released it: the start stops it and refuses, instead
+   * of waiting for the ready byte. The caller's post-start recheck covers a revocation after the ready byte. */
+  readonly revoked?: AbortSignal;
   readonly resources?: ManagedResources;
   readonly startMs?: number;
 }
@@ -290,7 +293,8 @@ const EXIT_SHIM_NOT_EXECUTED = 71;
 type StartObservation =
   | { readonly kind: "ready" }
   | { readonly kind: "closed"; readonly code: number | null; readonly signal: NodeJS.Signals | null }
-  | { readonly kind: "stalled" };
+  | { readonly kind: "stalled" }
+  | { readonly kind: "revoked" };
 
 function startRefusal(code: number | null, signal: NodeJS.Signals | null, diagnostic: string): MxcHolderStartRefusedError {
   if (code === EXIT_PROFILE_REJECTED) return new MxcHolderStartRefusedError("request-rejected", diagnostic || "the kernel refused the profile");
@@ -372,8 +376,11 @@ export async function startSeatbeltHolderNow(launch: SeatbeltHolderLaunch, optio
   const observation = await new Promise<StartObservation>((resolve) => {
     const timer = setTimeout(() => resolve({ kind: "stalled" }), options.startMs ?? TOOL_TIMEOUT_POLICY.mxcMacHolderStartMs);
     timer.unref?.();
-    ready.once("data", () => { clearTimeout(timer); resolve({ kind: "ready" }); });
-    void closed.then(({ code, signal }) => { clearTimeout(timer); resolve({ kind: "closed", code, signal }); });
+    const onRevoked = (): void => { clearTimeout(timer); resolve({ kind: "revoked" }); };
+    ready.once("data", () => { clearTimeout(timer); options.revoked?.removeEventListener("abort", onRevoked); resolve({ kind: "ready" }); });
+    void closed.then(({ code, signal }) => { clearTimeout(timer); options.revoked?.removeEventListener("abort", onRevoked); resolve({ kind: "closed", code, signal }); });
+    if (options.revoked?.aborted) onRevoked();
+    else options.revoked?.addEventListener("abort", onRevoked, { once: true });
   });
   ready.destroy();
   child.stderr?.off("data", onDiagnostic);
@@ -400,7 +407,8 @@ export async function startSeatbeltHolderNow(launch: SeatbeltHolderLaunch, optio
 
   if (observation.kind !== "ready") {
     // A refused start still runs the sweep: something may have started between the profile and the failure.
-    await dispose(observation.kind === "stalled" ? "holder start stalled" : "holder start refused");
+    await dispose(observation.kind === "stalled" ? "holder start stalled" : observation.kind === "revoked" ? "holder start revoked" : "holder start refused");
+    if (observation.kind === "revoked") throw new MxcProcessContractError("Container holder admission was revoked during its start");
     if (observation.kind === "stalled") throw new MxcHolderStartRefusedError("holder-start-failed", "the holder did not start in time");
     throw startRefusal(observation.code, observation.signal, diagnostic.trim());
   }
