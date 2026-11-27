@@ -52,7 +52,7 @@ describe("useSettings", () => {
       },
     };
     const { api } = makeMockAveApi({ settings: initial, hasApiKey: false });
-    expect(modelCardChoices(initial.llm)).toContainEqual(expect.objectContaining({ modelId: model, current: true }));
+    expect(modelCardChoices(initial.llm, { kind: "api", vendor: "deepseek", model })).toContainEqual(expect.objectContaining({ modelId: model, current: true }));
 
     installModelCatalog({ ...catalog, providers: {
       ...catalog.providers,
@@ -63,7 +63,7 @@ describe("useSettings", () => {
       await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
       expect(result.current.llmModel).toBe(model);
       expect(result.current.retiredLlmProvider).toBeNull();
-      expect(modelCardChoices(initial.llm)).not.toContainEqual(expect.objectContaining({ modelId: model }));
+      expect(modelCardChoices(initial.llm, { kind: "api", vendor: "deepseek", model })).not.toContainEqual(expect.objectContaining({ modelId: model }));
       expect(result.current.deprecatedLlmModel).toMatchObject({ model });
     } finally {
       installModelCatalog(catalog);

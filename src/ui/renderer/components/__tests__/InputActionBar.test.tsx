@@ -652,6 +652,7 @@ describe("model card (status-row model cell)", () => {
 
   /** Settings where two models are pinned and offered, and one pinned id is offered by nothing. */
   const settingsWithPins = () => ({
+    activeChatModel: { kind: "api", vendor: "openai-compatible", model: "qwen3.8-27b-gguf" },
     llm: {
       provider: "openai-compatible",
       activeChatRuntime: { kind: "api" },
@@ -1268,6 +1269,11 @@ describe("localized configured route billing accessibility", () => {
       ["keyless preset", "keyless-fixture", "keyless"],
       ["keyed preset", "keyed-fixture", "api-key"],
     ] as const)(`describes %s in ${locale}`, async (_label, presetId, kind) => {
+      const settings = fakeAppSettings({ llm: {
+        provider: "openai-compatible",
+        vendors: { "openai-compatible": { model: "qwen3.8-27b-nvfp4", baseUrl: "http://llm.example.test/v1" } },
+      } });
+      getSettings.mockResolvedValue(settings);
       const { getLocale, setLocale } = await import("../../../../i18n/runtime.js");
       const { loadLocaleMessages } = await import("../../../../i18n/messages/index.js");
       const previousLocale = getLocale();

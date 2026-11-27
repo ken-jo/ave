@@ -463,7 +463,7 @@ export type ModelCardChoice = ApiModelCardChoice | SubscriptionModelCardChoice;
 
 /** Show the active runtime as checked and API pins as alternatives; resolve pins against offered models and retain user
  * order. */
-export function modelCardChoices(llm: AppSettings["llm"], activeChatModel?: ActiveChatModel): ModelCardChoice[] {
+export function modelCardChoices(llm: AppSettings["llm"], activeChatModel: ActiveChatModel): ModelCardChoice[] {
   const pinned = llm.pinnedModels ?? [];
   const offered = new Map<string, Set<LLMVendor>>();
   const active = llm.provider;
@@ -498,8 +498,8 @@ export function modelCardChoices(llm: AppSettings["llm"], activeChatModel?: Acti
     offer(active, modelId);
   }
   const followsApi = llm.activeChatRuntime?.kind !== "subscription";
-  const apiModelCurrent = followsApi && !llm.retiredProvider
-    && (activeChatModel === undefined || activeChatModel.kind === "api");
+  const apiModelCurrent = followsApi && !llm.retiredProvider && activeChatModel?.kind === "api"
+    && activeChatModel.vendor === active && activeChatModel.model === currentModel;
   const choices: ModelCardChoice[] = [];
   for (const modelId of pinned) {
     for (const vendor of offered.get(modelId) ?? []) {
@@ -519,7 +519,8 @@ export function modelCardChoices(llm: AppSettings["llm"], activeChatModel?: Acti
   )) {
     choices.unshift({ kind: "api", vendor: active, vendorLabel: getVendorOption(active).label, modelId: currentModel, current: apiModelCurrent });
   }
-  if (activeChatModel?.kind === "subscription") {
+  if (activeChatModel?.kind === "subscription" && llm.activeChatRuntime?.kind === "subscription"
+    && isSubscriptionRuntimeId(activeChatModel.provider) && activeChatModel.provider === llm.activeChatRuntime.provider) {
     choices.unshift({
       kind: "subscription",
       provider: activeChatModel.provider,
