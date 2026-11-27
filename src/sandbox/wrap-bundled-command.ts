@@ -12,7 +12,7 @@ import type { ChildProcess } from "node:child_process";
 import {
   abandonManagedLaunch, assertManagedChildProcessAdmissionOpen, createManagedRelayResources, createManagedResources, ManagedExitUnconfirmedError,
   observeManagedWindowsRelayExit, observeManagedWindowsRelayTreeExit, recordManagedCleanup,
-  releaseManagedResources, type ManagedResources, type RelayBestEffortExit,
+  releaseManagedResources, type ConfirmedExit, type ManagedResources, type RelayBestEffortExit,
 } from "../main/managed-child-processes.js";
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -956,8 +956,29 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
 /** A started host-owned offline holder: its pipes, and the one hand on its lifetime. */
 export interface SeatbeltOfflineHolder {
   readonly process: MxcHolderProcess;
-  /** Idempotent. Rejects when termination is unverified; that label then starts nothing more this app run. */
-  release(): Promise<void>;
+  /** Idempotent. Resolves with the exit receipt (issued on the caller's `resources`, when given) after a verified stop;
+   * rejects when termination is unverified, and that label then starts nothing more this app run. */
+  release(): Promise<ConfirmedExit>;
+}
+
+/**
+ * A host session an offline holder runs in instead of its own staging (owner L-O1, the document engine): the caller's
+ * one private write root, which is also its HOME, temp and cwd; reads of its authenticated runtime inside the read floor;
+ * and the one per-session 0700 Unix-socket directory inside that root. Nothing else is written or connected.
+ */
+export interface SeatbeltOfflineHolderSession {
+  readonly writeRoot: string;
+  readonly runtimeReads: readonly string[];
+  readonly socketDirectory: string;
+}
+
+function assertPrivateSocketDirectory(path: string, writeRoot: string): void {
+  const entry = lstatSync(path, { throwIfNoEntry: false });
+  const uid = process.getuid?.();
+  if (entry === undefined || !entry.isDirectory() || entry.isSymbolicLink() || (entry.mode & 0o777) !== 0o700 || entry.uid !== uid
+    || realpathSync.native(path) !== path || !posixHolderPaths.strictlyUnder(path, writeRoot)) {
+    throw new MxcProcessContractError("An offline holder's socket directory must be a private 0700 directory of this user, canonical and inside its write root");
+  }
 }
 
 const quarantinedOfflineHolders = new Set<string>();
@@ -974,6 +995,9 @@ export async function spawnSeatbeltOfflineHolder(input: {
   readonly args: readonly string[];
   readonly baseEnv: Readonly<NodeJS.ProcessEnv>;
   readonly holderEnv?: Readonly<Record<string, string>>;
+  readonly session?: SeatbeltOfflineHolderSession;
+  /** The caller's process handle: the stop's exit receipt is issued on it. */
+  readonly resources?: ManagedResources;
 }): Promise<SeatbeltOfflineHolder> {
   const route = provenSeatbeltHolderRoute();
   if (process.platform !== "darwin" || route === undefined || getMacHolderCapability()?.state !== "ready") {
@@ -981,16 +1005,24 @@ export async function spawnSeatbeltOfflineHolder(input: {
   }
   if (quarantinedOfflineHolders.has(input.label)) throw new MxcHolderQuarantinedError(input.label);
   assertManagedChildProcessAdmissionOpen(input.label);
-  const staging = createHolderStaging();
+  const { session } = input;
+  if (session !== undefined) assertPrivateSocketDirectory(session.socketDirectory, session.writeRoot);
+  // A session holder writes only the caller's root, so it has no staging tree of its own.
+  const staging = session === undefined ? createHolderStaging() : undefined;
+  const removeStaging = async (): Promise<void> => { if (staging !== undefined) await removeHolderStaging(staging.root); };
   let holder: Awaited<ReturnType<typeof startSeatbeltHolder>>;
   try {
-    const writeRoots = [staging.root];
+    const writeRoot = session?.writeRoot ?? (staging as HolderStaging).root;
+    const home = session?.writeRoot ?? (staging as HolderStaging).home;
+    const temp = session?.writeRoot ?? (staging as HolderStaging).temp;
+    const writeRoots = [writeRoot];
     const boundary = createAveHomeBoundarySnapshot();
-    const floors = await boundary.run(() => captureSeatbeltHolderFloors({ cwd: staging.home, writeRoots }));
+    const floors = await boundary.run(() => captureSeatbeltHolderFloors({ cwd: home, writeRoots }));
     const launchInput: SeatbeltHolderLaunchInput = {
-      command: input.command, args: [...input.args], cwd: staging.home,
-      env: seatbeltHolderEnvironment({ baseEnv: input.baseEnv, holderEnv: input.holderEnv, home: staging.home, temp: staging.temp, cwd: staging.home }),
-      readRoots: [], writeRoots, floorPierces: [], network: "offline", labels: newHolderLabels(),
+      command: input.command, args: [...input.args], cwd: home,
+      env: seatbeltHolderEnvironment({ baseEnv: input.baseEnv, holderEnv: input.holderEnv, home, temp, cwd: home }),
+      readRoots: [], writeRoots, floorPierces: [...(session?.runtimeReads ?? [])], network: "offline", labels: newHolderLabels(),
+      ...(session === undefined ? {} : { unixSocketDirectory: session.socketDirectory }),
     };
     const { launch, identity } = boundary.run(() => withLocalityDecision(() => ({
       launch: composeSeatbeltHolderLaunch(launchInput, floors), identity: measurePosixExecutableIdentity(input.command),
@@ -1009,6 +1041,7 @@ export async function spawnSeatbeltOfflineHolder(input: {
           if (measurePosixExecutableIdentity(input.command) !== identity) throw new MxcProcessContractError("Container executable changed after admission");
         },
         revoked: revoked.signal,
+        ...(input.resources === undefined ? {} : { resources: input.resources }),
       });
     } finally {
       unsubscribe();
@@ -1016,13 +1049,13 @@ export async function spawnSeatbeltOfflineHolder(input: {
   } catch (error) {
     // An unverified refused start may have left a process: its staging stays, and so does the quarantine.
     if (error instanceof MxcProcessCleanupError) quarantinedOfflineHolders.add(input.label);
-    else await removeHolderStaging(staging.root);
+    else await removeStaging();
     throw error;
   }
-  let releasing: Promise<void> | undefined;
+  let releasing: Promise<ConfirmedExit> | undefined;
   return Object.freeze({
     process: seatbeltHolderProcess(holder),
-    release: () => releasing ??= holder.dispose().then(() => removeHolderStaging(staging.root), (error: unknown) => {
+    release: () => releasing ??= holder.dispose().then(async (receipt) => { await removeStaging(); return receipt; }, (error: unknown) => {
       quarantinedOfflineHolders.add(input.label);
       throw new MxcProcessCleanupError(`${input.label}: offline holder termination is unverified`, { cause: error });
     }),

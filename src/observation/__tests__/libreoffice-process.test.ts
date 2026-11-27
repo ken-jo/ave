@@ -20,6 +20,7 @@ const HOST_PLATFORM = process.platform;
 const residentStartup = { publish: true };
 const javaFixture = vi.hoisted(() => ({ home: undefined as string | undefined, broken: false, registrationFails: false }));
 const engineRegistration = vi.hoisted(() => ({ beforeRetain: undefined as (() => void) | undefined }));
+const holderRoute = vi.hoisted(() => ({ on: false }));
 // win32 chmod maps only the read-only attribute, so a 0o400 create reads back as 0o444 (r--r--r--).
 const READ_ONLY_FILE_MODE = process.platform === "win32" ? 0o444 : 0o400;
 
@@ -28,6 +29,11 @@ vi.mock("../../permissions/offline-process-sandbox.js", async (original) => ({
   wrapOfflineProcess: vi.fn<typeof import("../../permissions/offline-process-sandbox.js").wrapOfflineProcess>(async input => ({
     argv: [input.command, ...input.args], env: input.env,
   })),
+  startOfflineProcessHolder: vi.fn(),
+}));
+vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
+  ...await original<typeof import("../../permissions/asrt-sandbox.js")>(),
+  isOfflineHolderConfinementActive: () => holderRoute.on,
 }));
 vi.mock("../../main/managed-child-processes.js", async original => {
   const actual = await original<typeof import("../../main/managed-child-processes.js")>();
@@ -67,8 +73,8 @@ vi.mock("node:fs/promises", async importOriginal => {
 });
 
 import { LibreOfficeSessionPool, sweepStaleDocumentEngineRuntimes } from "../libreoffice-process.js";
-import { __resetManagedChildProcessesForTest, spawnManaged, forceKillManagedChildProcess, recordManagedCleanup } from "../../main/managed-child-processes.js";
-import { OfflineScanExitUnconfirmedError, wrapOfflineProcess } from "../../permissions/offline-process-sandbox.js";
+import { __resetManagedChildProcessesForTest, spawnManaged, forceKillManagedChildProcess, observeManagedProcessGroup, recordManagedCleanup } from "../../main/managed-child-processes.js";
+import { OfflineScanExitUnconfirmedError, startOfflineProcessHolder, wrapOfflineProcess } from "../../permissions/offline-process-sandbox.js";
 import { fakeFixtureAclTransport, installFixtureAclTransport } from "../../__tests__/support/native-executable.js";
 import { _setWindowsAclTransportForTest } from "../../main/windows-acl-host.js";
 
@@ -610,6 +616,46 @@ describe("private conversion process ownership", () => {
       .rejects.toMatchObject({ code: "corrupt-document" });
     await expect(pool.convert(installation, "one", Buffer.alloc(PREVIEW_DOCUMENT_LIMITS.maxFileBytes + 1), "xlsx", new AbortController().signal))
       .rejects.toMatchObject({ code: "too-large" });
+    expect(spawnManaged).not.toHaveBeenCalled();
+  });
+});
+
+describe("macOS holder route (owner L-O1)", () => {
+  afterEach(() => { holderRoute.on = false; });
+
+  it("starts every engine process as an offline holder with the session's one socket directory, never through the wrap", async () => {
+    holderRoute.on = true;
+    const confirmed: string[] = [];
+    vi.mocked(startOfflineProcessHolder).mockImplementation(async input => {
+      const fixture = createProcessFixture(input.command, input.args);
+      const exit = observeManagedProcessGroup(fixture as unknown as ChildProcess, input.resources);
+      return { stdout: fixture.stdout, stderr: fixture.stderr,
+        exit: { wait: exit.wait, confirmExit: (reason?: string) => { confirmed.push(input.args.at(-1) ?? ""); return exit.confirmExit(reason); } } };
+    });
+    const converted = await pool.convert(installation, "one", Buffer.from("admitted bytes"), "docx", new AbortController().signal);
+    expect(converted.pdf.toString()).toContain("%PDF-");
+    expect(wrapOfflineProcess).not.toHaveBeenCalled();
+    expect(spawnManaged).not.toHaveBeenCalled();
+    const calls = vi.mocked(startOfflineProcessHolder).mock.calls.map(call => call[0]);
+    expect(calls.length).toBe(children.length);
+    for (const call of calls) {
+      expect(call.label).toBe("document-engine");
+      // The socket directory is the session's own IPC directory, inside the output root the engine writes.
+      expect(call.ipcDirectory).toBe(join(call.outputDirectory, "ipc"));
+      expect(call.env.OSL_SOCKET_PATH).toBe(call.ipcDirectory);
+      expect(call.runtimeDirectories).toEqual([installation.root]);
+    }
+    await pool.dispose();
+    pool = new LibreOfficeSessionPool();
+    // Every holder's stop was confirmed, the resident's included.
+    expect(confirmed.length).toBe(calls.length);
+  });
+
+  it("does not fall back to the wrap when the holder start is refused", async () => {
+    holderRoute.on = true;
+    vi.mocked(startOfflineProcessHolder).mockRejectedValue(new TableDocumentError("engine-confinement-unavailable", "Offline document engine confinement is unavailable."));
+    await expect(pool.convert(installation, "one", Buffer.from("x"), "docx", new AbortController().signal)).rejects.toMatchObject({ code: "engine-confinement-unavailable" });
+    expect(wrapOfflineProcess).not.toHaveBeenCalled();
     expect(spawnManaged).not.toHaveBeenCalled();
   });
 });

@@ -322,6 +322,76 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     }
   });
 
+  it("L-O1: a session holder binds and connects only in its one 0700 socket directory, and writes only its root", async () => {
+    const { createServer } = await import("node:net");
+    const session = join(root, "session");
+    const output = join(session, "output");
+    const ipc = join(output, "ipc");
+    const input = join(session, "input");
+    mkdirSync(ipc, { recursive: true, mode: 0o700 });
+    chmodSync(ipc, 0o700);
+    mkdirSync(input);
+    // A host socket in the same write root but outside the socket directory, and one elsewhere: both stay unreachable.
+    const beside = join(output, "beside.sock");
+    const elsewhere = join(root, "elsewhere.sock");
+    const servers = [createServer(socket => socket.end()).listen(beside), createServer(socket => socket.end()).listen(elsewhere)];
+    await Promise.all(servers.map(server => new Promise(r => server.once("listening", r))));
+    const perlConnect = (path: string) => `/usr/bin/perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Peer => $ARGV[0]) or exit 1' '${path}' 2>/dev/null`;
+    const pipe = join(ipc, "OSL_PIPE_test");
+    const serve = `/usr/bin/perl -MIO::Socket::UNIX -e 'my $s = IO::Socket::UNIX->new(Local => $ARGV[0], Listen => 1) or exit 3; print "bound\\n"; $| = 1; my $c = $s->accept; print scalar <$c>' '${pipe}'`;
+    const sessionOf = { writeRoot: output, runtimeReads: [], socketDirectory: ipc };
+    try {
+      for (const path of [beside, elsewhere]) execFileSync("/usr/bin/perl", ["-MIO::Socket::UNIX", "-e", "IO::Socket::UNIX->new(Peer => $ARGV[0]) or exit 1", path], { timeout: 5000 });
+      const server = await spawnSeatbeltOfflineHolder({ label: "test:engine-a", command: "/bin/sh", args: ["-c", serve], baseEnv: { PATH }, session: sessionOf });
+      const client = [
+        `${perlConnect(beside)} && echo beside-open || echo beside-refused`,
+        `${perlConnect(elsewhere)} && echo elsewhere-open || echo elsewhere-refused`,
+        `/usr/bin/perl -MIO::Socket::UNIX -e 'my $c = IO::Socket::UNIX->new(Peer => $ARGV[0]) or exit 1; print $c "hello\\n"' '${pipe}' && echo pipe-open || echo pipe-refused`,
+        `(echo x > "$HOME/ok" && echo home-written) || echo home-refused`,
+        `(echo x > '${join(input, "x")}' 2>/dev/null && echo input-written) || echo input-refused`,
+      ].join("; ");
+      try {
+        expect(await line(server.process.stdout)).toBe("bound");
+        const received = line(server.process.stdout);
+        const started = await spawnSeatbeltOfflineHolder({ label: "test:engine-b", command: "/bin/sh", args: ["-c", client], baseEnv: { PATH }, session: sessionOf });
+        try {
+          const out: string[] = [];
+          started.process.stdout.on("data", (chunk: Buffer) => out.push(chunk.toString()));
+          await started.process.completion;
+          await vi.waitFor(() => expect(out.join("").trim().split("\n")).toEqual(["beside-refused", "elsewhere-refused", "pipe-open", "home-written", "input-refused"]),
+            { timeout: 5_000, interval: 25 });
+          expect(await received).toBe("hello");
+          expect(readFileSync(join(output, "ok"), "utf8")).toBe("x\n");
+        } finally {
+          await started.release();
+        }
+      } finally {
+        await server.release();
+      }
+    } finally {
+      for (const server of servers) server.close();
+    }
+  });
+
+  it("L-O1: a session's socket directory must be a private 0700 directory inside its write root", async () => {
+    const output = join(root, "out2");
+    const open = join(output, "ipc");
+    mkdirSync(open, { recursive: true });
+    chmodSync(open, 0o755);
+    await expect(spawnSeatbeltOfflineHolder({ label: "test:engine-c", command: "/usr/bin/true", args: [], baseEnv: { PATH },
+      session: { writeRoot: output, runtimeReads: [], socketDirectory: open } })).rejects.toThrow("private 0700 directory");
+    const outside = join(root, "ipc-outside");
+    mkdirSync(outside, { mode: 0o700 });
+    await expect(spawnSeatbeltOfflineHolder({ label: "test:engine-c", command: "/usr/bin/true", args: [], baseEnv: { PATH },
+      session: { writeRoot: output, runtimeReads: [], socketDirectory: outside } })).rejects.toThrow("private 0700 directory");
+    // Control: the same directory made private starts.
+    chmodSync(open, 0o700);
+    const started = await spawnSeatbeltOfflineHolder({ label: "test:engine-c", command: "/usr/bin/true", args: [], baseEnv: { PATH },
+      session: { writeRoot: output, runtimeReads: [], socketDirectory: open } });
+    await started.process.completion;
+    await started.release();
+  });
+
   it("N13: a kernel-refused start runs nothing and leaves no staging tree", async () => {
     const staging = join(cache, "ai.agent-connector.ave", "mxc-runtime", "staging");
     const before = existsSync(staging) ? readdirSync(staging).length : 0;

@@ -32,7 +32,8 @@ const HOLDER_PROXY_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy
 const HOLDER_READ_BASE = "/";
 
 export class SeatbeltHolderLaunchError extends Error {
-  constructor(readonly code: "cwd-ungranted" | "proxy-invalid" | "read-base-supplied" | "command-invalid" | "write-root-withheld", message: string) {
+  constructor(readonly code: "cwd-ungranted" | "proxy-invalid" | "read-base-supplied" | "command-invalid" | "write-root-withheld"
+    | "socket-directory-invalid", message: string) {
     super(message);
     this.name = "SeatbeltHolderLaunchError";
   }
@@ -55,6 +56,12 @@ export interface SeatbeltHolderLaunchInput {
   readonly floorPierces?: readonly string[];
   readonly network: SeatbeltHolderNetwork;
   readonly labels: SeatbeltHolderLabels;
+  /**
+   * The one Unix-socket directory an offline host holder may bind and connect in (owner L-O1: the document engine's
+   * per-session 0700 IPC directory), rendered in srt's rule form. It must be canonical and inside a write root; no
+   * other socket path is ever allowed, and a networked holder takes none.
+   */
+  readonly unixSocketDirectory?: string;
 }
 
 /** Everything one holder start runs with, named by one digest. Nothing of it is written to disk. */
@@ -167,7 +174,12 @@ export function composeSeatbeltHolderLaunch(input: SeatbeltHolderLaunchInput, ho
     || (!inChain && ![...grants.readonly, ...grants.readwrite].some(coversCwd))) {
     throw new SeatbeltHolderLaunchError("cwd-ungranted", `Container holder working directory is outside its filesystem grants: ${cwd}`);
   }
-  const profile = buildSeatbeltHolderProfile({ model, grants, lookups, unixSocketRoots: [], proxyPort, labels: input.labels });
+  const socket = input.unixSocketDirectory;
+  if (socket !== undefined && (input.network !== "offline" || !posix.isAbsolute(socket) || canonicalPath(socket, true, lookups) !== socket
+    || !lookups.exists(socket) || !grants.readwrite.some(root => atOrUnder(socket, root, lookups.foldsCase)))) {
+    throw new SeatbeltHolderLaunchError("socket-directory-invalid", `Container holder socket directory must be a canonical directory inside an offline holder's write root: ${socket}`);
+  }
+  const profile = buildSeatbeltHolderProfile({ model, grants, lookups, unixSocketRoots: socket === undefined ? [] : [socket], proxyPort, labels: input.labels });
   const env = Object.freeze(holderEnvironment(input.env, input.network));
   const argv = Object.freeze(["-p", profile, HOLDER_SHELL, "-c", HOLDER_READY_SHIM, "ave-holder", input.command, ...input.args]);
   const record = { profile, argv, env, cwd, proxyPort };
