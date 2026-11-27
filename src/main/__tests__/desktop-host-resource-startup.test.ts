@@ -197,15 +197,28 @@ describe("desktop host resource startup", () => {
   it("does no target I/O if the desktop host starts without global resources and the helper is missing", async () => {
     const { app } = await import("electron");
     const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
+    const { protectedControlEntryFor } = await import("../../permissions/sensitive-paths.js");
+    const { openLocalityDecision, withLocalityDecision } = await import("../../shared/local-path-io.js");
     Object.defineProperty(app, "isPackaged", { value: true });
     io.accessHelper.mockImplementationOnce(() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); });
     io.lstat.mockClear();
     const host = createDesktopBootHost(PROJECT_ROOT);
-    await host.close();
-    expect(io.accessHelper).toHaveBeenCalledExactlyOnceWith(win32.join(PACKAGED_RESOURCES, "windows-path-kind", process.arch, "ave-path-kind.exe"));
-    expect(io.spawnHelper).not.toHaveBeenCalled();
-    expect(io.realpath).not.toHaveBeenCalled();
-    expect(io.lstat).not.toHaveBeenCalled();
+    try {
+      expect(io.accessHelper).toHaveBeenCalledExactlyOnceWith(win32.join(PACKAGED_RESOURCES, "windows-path-kind", process.arch, "ave-path-kind.exe"));
+      expect(io.spawnHelper).not.toHaveBeenCalled();
+      expect(io.realpath).not.toHaveBeenCalled();
+      expect(io.lstat).not.toHaveBeenCalled();
+
+      vi.stubEnv("AVE_HOME", "C:\\ave-home");
+      const unknownPhysicalPath = "C:\\physical\\settings.json";
+      expect(withLocalityDecision(
+        () => protectedControlEntryFor(unknownPhysicalPath),
+        openLocalityDecision(PACKAGED_RESOURCES),
+      )).toBe("runtime-settings-file");
+    } finally {
+      vi.unstubAllEnvs();
+      await host.close();
+    }
   });
 
   it("uses separate Node host locality decisions without global resources", async () => {

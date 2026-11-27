@@ -51,25 +51,26 @@ export const MAX_WALK_UP = 64;
 
 const NO_RUNTIME_SECRET_KEY_PATHS: readonly string[] = Object.freeze([]);
 let runtimeSecretKeyPaths: { configured: string; paths: readonly string[] } | undefined;
-const runtimeSettingsScopes = new Map<symbol, ReadonlySet<string>>();
+const runtimeSettingsScopes = new Map<symbol, { targets: ReadonlySet<string>; canonicalKnown: boolean }>();
 
 /** Protect one live host's settings file and its directory until that host closes. */
 export function protectRuntimeSettingsPath(path: string, resourcePath?: string): () => void {
   if (!isAbsolute(path) || path.includes("\0")) throw new Error("Settings path must be absolute");
-  const files = [process.platform === "win32" ? foldCanonicalPathSeparators(pathResolve(path)) : pathResolve(path)];
+  const lexical = process.platform === "win32" ? foldCanonicalPathSeparators(pathResolve(path)) : pathResolve(path);
+  let canonical: string | undefined;
   try {
-    files.push(withLocalityDecision(() => canonicalizePathForMatch(path),
-      resourcePath === undefined ? undefined : openLocalityDecision(resourcePath)));
+    canonical = withLocalityDecision(() => canonicalizePathForMatch(path),
+      process.platform === "win32" && resourcePath !== undefined ? openLocalityDecision(resourcePath) : undefined);
   } catch (error) {
     if (process.platform !== "win32" || !isWindowsPathKindHelperUnavailable(error)) throw error;
-    // Install the lexical deny without attempting target I/O. Native lookups still require a working classifier.
+    // The lexical deny still applies. Native writes must wait for a host that can also protect the physical path.
   }
   const targets = new Set<string>();
-  for (const file of files) {
+  for (const file of canonical === undefined ? [lexical] : [canonical, lexical]) {
     for (const target of [file, dirname(file)]) targets.add(caseFoldForMatch(target).replace(/\/+$/u, ""));
   }
   const scope = Symbol();
-  runtimeSettingsScopes.set(scope, targets);
+  runtimeSettingsScopes.set(scope, { targets, canonicalKnown: canonical !== undefined });
   return () => { runtimeSettingsScopes.delete(scope); };
 }
 
@@ -635,7 +636,7 @@ export function protectedControlEntryFor(path: string, canonicalize: (path: stri
     if (entry) return entry;
     if (options.inspectHostFiles === false) {
       if (segments.includes(".ave")) return "application-home";
-      if ([...runtimeSettingsScopes.values()].some(targets => [...targets].some(target =>
+      if ([...runtimeSettingsScopes.values()].some(({ targets }) => [...targets].some(target =>
         normalizePath(target).normalize("NFC").toLowerCase() === normalized))) return "runtime-settings-file";
       return undefined;
     }
@@ -647,7 +648,7 @@ export function protectedControlEntryFor(path: string, canonicalize: (path: stri
       .map((home) => caseFoldForMatch(normalizePath(home).normalize("NFC")).replace(/\/+$/u, "") + "/workspace")
       .find((base) => folded === base || folded.startsWith(base + "/"));
     if (!workspace && homes.some((base) => normalized === base || normalized.startsWith(base + "/"))) return "application-home";
-    if ([...runtimeSettingsScopes.values()].some((targets) => [...targets].some((target) => {
+    if ([...runtimeSettingsScopes.values()].some(({ targets, canonicalKnown }) => !canonicalKnown || [...targets].some((target) => {
       const base = normalizePath(target).toLowerCase();
       return normalized === base;
     }))) return "runtime-settings-file";
@@ -1394,7 +1395,7 @@ function createPathSensitivityMatcher(
     }
     if (!admissionOnly && effect === "write" && candidates.some((candidate) => {
       const target = caseFoldForMatch(candidate).replace(/\/+$/u, "");
-      return [...runtimeSettingsScopes.values()].some((targets) => targets.has(target));
+      return [...runtimeSettingsScopes.values()].some(({ targets, canonicalKnown }) => (!nameOnly && !canonicalKnown) || targets.has(target));
     })) {
       return "runtime-settings-file";
     }
