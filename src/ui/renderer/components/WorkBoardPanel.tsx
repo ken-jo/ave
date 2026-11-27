@@ -432,6 +432,7 @@ interface CardActions {
   stepsShowingId: number | null;
   /** The head tool approval each item's run waits on, for items whose run waits on one. */
   toolApprovals: ReadonlyMap<number, readonly ApprovalRequest[]>;
+  pendingOutputItemIds: ReadonlySet<number>;
   approvalSurface: WorkBoardToolApprovalSurface;
 }
 
@@ -541,7 +542,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
                 <LiveRunChip
                   run={live}
                   startedAt={runStartedAt(item)}
-                  toolApprovalPending={toolApproval !== undefined}
+                  toolApprovalPending={toolApproval !== undefined || actions.pendingOutputItemIds.has(item.id)}
                   reviewPending={item.templateRunState === "awaiting_review"}
                 />
                 {/* A strut in the due line's type, so this row is exactly as tall as the due line it replaces. */}
@@ -1965,7 +1966,9 @@ export function WorkBoardPanel({
     if (workflowDialog?.kind !== "launch-notice" || !workflowDialog.opening || !projectRootEquals(scopeRoot, workflowDialog.target.projectRoot)) return;
     setWorkflowDialog({ kind: "run", item: workflowDialog.item, requestedVersion: workflowDialog.version });
   }, [scopeRoot, workflowDialog]);
-  const { byItem: toolApprovals, surface: approvalSurfaceValue } = useBoardApprovals(visibleRunItems, runState, scopeRoot, project?.isDefault === true, workflowItem);
+  const { byItem: toolApprovals, pendingOutputItemIds, surface: approvalSurfaceValue } = useBoardApprovals(
+    visibleRunItems, runState, scopeRoot, project?.isDefault === true, workflowItem,
+  );
   const approvalSurface = useToolApprovalSurface(api);
 
   // The live step panel: which run it follows, whether it jumps to a newly started run, and whether a settled run stays listed.
@@ -2122,8 +2125,9 @@ export function WorkBoardPanel({
     onShowSteps: showSteps,
     stepsShowingId: stepsOpen ? stepsItemId : null,
     toolApprovals,
+    pendingOutputItemIds,
     approvalSurface,
-  }), [onStart, onComplete, onReopen, onRun, clearRun, onOpenDetail, onOpenWorkflowRun, showSteps, stepsOpen, stepsItemId, toolApprovals, approvalSurface]);
+  }), [onStart, onComplete, onReopen, onRun, clearRun, onOpenDetail, onOpenWorkflowRun, showSteps, stepsOpen, stepsItemId, toolApprovals, pendingOutputItemIds, approvalSurface]);
 
   // Below the narrow panel width the overview's columns become status tabs and the step panel docks below the board.
   const [statusTab, setStatusTab] = useState<"planned" | "in-progress" | "review" | "completed">("in-progress");

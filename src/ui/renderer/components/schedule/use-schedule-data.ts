@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AveApi } from "../../types.js";
 import type { InvalidRoutine, RoutineOccurrence, RoutineRecord, RoutineRun } from "../../../../shared/routines-types.js";
 
-/** How often an open view re-reads: a skipped occurrence has no fired event. */
+/** Keep the time-based range current even when the schedule store is idle. */
 const SCHEDULE_REFRESH_MS = 30_000;
 
 export interface ScheduleData {
@@ -31,6 +31,7 @@ export function useScheduleData(
   const [loaded, setLoaded] = useState(false);
   const [running, setRunning] = useState<Map<string, string>>(() => new Map());
   const mounted = useRef(true);
+  const readSequence = useRef(0);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
@@ -43,12 +44,13 @@ export function useScheduleData(
 
   const refresh = useCallback(async () => {
     if (!enabledRef.current) return;
+    const sequence = ++readSequence.current;
     const filter = projectRoot ? { projectRoot } : undefined;
     const [list, occ] = await Promise.all([
       api.listRoutines(filter),
       api.listRoutineOccurrences({ ...filter, from: fromIso, to: toIso }),
     ]);
-    if (!mounted.current) return;
+    if (!mounted.current || !enabledRef.current || sequence !== readSequence.current) return;
     setRecords(list.routines);
     setInvalid(list.invalid);
     if (occ.ok) {
@@ -63,10 +65,14 @@ export function useScheduleData(
   // Fetching follows `enabled`; a hidden view reads again when it is shown.
   useEffect(() => {
     if (!enabled) return undefined;
+    const unsubscribe = api.onRoutinesChanged(() => void refresh());
     void refresh();
     const timer = setInterval(() => void refresh(), SCHEDULE_REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [refresh, enabled]);
+    return () => {
+      unsubscribe();
+      clearInterval(timer);
+    };
+  }, [api, refresh, enabled]);
 
   // Running events are always followed, so a run that ends while the view is hidden does not leave a stale running state.
   useEffect(() => {

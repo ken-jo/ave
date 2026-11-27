@@ -21,6 +21,7 @@ import { verifyAveScratchDir } from "../shared/ave-scratch.js";
 import { hostScriptRuntimePaths } from "../main/host-script-runtime.js";
 import type { ProjectIdentity } from "../shared/project-identity.js";
 import { escapeHtml } from "../shared/escape-html.js";
+import { BROWSER_TOOL } from "../shared/browser-tools.js";
 import { formatLocalIsoWithOffset, hostTimeZone } from "../shared/format-time.js";
 import { execTurnRequested } from "../main/exec-mode.js";
 import { getHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
@@ -99,6 +100,7 @@ export interface SystemPromptBuilderDeps {
   getAvailableSkills?: () => SkillCatalogEntry[];
   /** Pull active-session card context at next prompt build; slot writes must never start turns. */
   getAppModelContext?: (sessionId: string) => string;
+  getBrowserPaneGuidance?: (sessionId: string) => string;
   /** Render approved-server instructions as untrusted metadata through callbacks, without importing network layers. */
   mcpServerGuidanceProvider?: () => Array<{ serverId: string; instructions: string }>;
   /** Records injected memory ids; paired with the user's memory store, so isolated child builders never inherit it. */
@@ -127,8 +129,8 @@ export class SystemPromptBuilder {
   } | null = null;
   private indexedDocsContext: string = "";
   private projectContext: ProjectIdentity | null = null;
-  /** Bind the active session before each build so app context cannot leak across sessions. */
-  private appContextSessionId: string | null = null;
+  /** Bind the active session before each build so session context cannot leak across sessions. */
+  private activeSessionId: string | null = null;
   private activeRolePrompt: ActiveRolePrompt | null = null;
   /** Titles are host-managed inert context; final answers must not emit hidden title tags. */
   private sessionTitle: string | null = null;
@@ -349,7 +351,7 @@ export class SystemPromptBuilder {
   }
 
   setActiveSessionId(sessionId: string | null): void {
-    this.appContextSessionId = sessionId && sessionId.length > 0 ? sessionId : null;
+    this.activeSessionId = sessionId && sessionId.length > 0 ? sessionId : null;
   }
 
   /** Set the selected role immediately before build and clear it immediately afterward. */
@@ -550,7 +552,7 @@ export class SystemPromptBuilder {
         name: "MCP App Context",
         refresh: "per-turn",
         build: () => {
-          const sid = this.appContextSessionId;
+          const sid = this.activeSessionId;
           if (!sid) return "";
           return getAppModelContext(sid);
         },
@@ -606,10 +608,14 @@ export class SystemPromptBuilder {
           ? toolRegistry.getToolSchemasForScope(scope)
           : toolRegistry.getToolSchemas();
         if (schemas.length === 0) return "";
+        const paneGuidance = this.activeSessionId && deps.getBrowserPaneGuidance && schemas.some((schema) => schema.name === BROWSER_TOOL.navigate)
+          ? deps.getBrowserPaneGuidance(this.activeSessionId)
+          : "";
         return [
           "<available-tools>",
           t("be_systemPromptBuilder.toolSchemasAvailableIntro"),
           t("be_systemPromptBuilder.toolSchemasSourceNote"),
+          ...(paneGuidance ? [paneGuidance] : []),
           "",
           ...renderToolGroups(schemas, (s) =>
             `- **${s.name}**: ${s.description}`,
