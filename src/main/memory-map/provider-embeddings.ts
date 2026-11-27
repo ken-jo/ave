@@ -200,12 +200,15 @@ export class ProviderEmbeddings {
       commitUnderAdmission(assertBatch, () => onProgress({ jobId, phase: 'embedding', completed, total: records.length }));
     }
     if (!selected.dimensions) throw new MemoryMapHostError('provider-embedding-failed');
+    const windows = process.platform === 'win32';
     const assertProjection = () => { assertCatalog(); assertConsent(); };
     let projecting!: Promise<{ snapshot: GraphSnapshot; cache: VectorCache }>;
     commitUnderAdmission(assertProjection, () => {
       projecting = this.runWorker('', { kind: 'project', input: { ...catalog, namespace: selected, cache, jobId } }, signal, progress => {
         if (progress.phase === 'embedding') return;
-        try { commitUnderAdmission(assertProjection, () => onProgress(progress)); } catch { /* Refused. */ }
+        if (windows) {
+          try { commitUnderAdmission(assertProjection, () => onProgress(progress)); } catch { /* Refused. */ }
+        } else onProgress(progress);
       });
     });
     const result = await projecting;

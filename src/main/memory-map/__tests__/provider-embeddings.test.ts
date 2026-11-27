@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
-import { mkdtemp, mkdir, open, readFile, writeFile, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, open, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -46,10 +46,11 @@ async function fixture(allowedDomains = ['127.0.0.1']) {
   const nativeFetch = globalThis.fetch;
   const chokepoint = vi.fn<typeof fetch>((input, init) => nativeFetch(input, init));
   vi.stubGlobal('fetch', vi.fn(() => { throw new Error('Ambient fetch is forbidden'); }));
+  const project = vi.fn(buildGraph);
   const worker: MemoryWorkerRunner = async <T>(folder: string, task: Parameters<MemoryWorkerRunner>[1], signal: AbortSignal, report: Parameters<MemoryWorkerRunner>[3]) => {
     expect(folder).toBe(''); expect(task.kind).toBe('project'); signal.throwIfAborted();
     if (task.kind !== 'project') throw new Error('Unexpected worker task');
-    return await buildGraph(task.input, { embed: async () => { throw new Error('Unexpected local embedding'); }, dispose: async () => {} }, report ?? (() => {})) as T;
+    return await project(task.input, { embed: async () => { throw new Error('Unexpected local embedding'); }, dispose: async () => {} }, report ?? (() => {})) as T;
   };
   const audit = vi.fn();
   const provider = new ProviderEmbeddings(settings, createMemoryProviderEgress(chokepoint, allowedDomains, audit), worker);
@@ -63,9 +64,31 @@ async function fixture(allowedDomains = ['127.0.0.1']) {
     llm.vendors['openai-compatible'].baseUrl = next;
     llm.modelListCache.saved.baseUrl = next;
     llm.modelListCache.saved.endpoint = `${next}/models`;
-  }, pauseResponse: () => { let release!: () => void; responseWait = new Promise<void>(resolve => { release = resolve; }); return release; }, provider, host, settings, audit, namespace, catalog, requests, chokepoint, progress, key, consent, get config() { return config; }, set config(value) { config = value; }, set dimensions(value: number) { dimensions = value; }, set inconsistent(value: boolean) { inconsistent = value; }, set fail(value: boolean) { fail = value; } };
+  }, pauseResponse: () => { let release!: () => void; responseWait = new Promise<void>(resolve => { release = resolve; }); return release; }, provider, host, settings, audit, namespace, catalog, requests, chokepoint, progress, project, key, consent, get config() { return config; }, set config(value) { config = value; }, set dimensions(value: number) { dimensions = value; }, set inconsistent(value: boolean) { inconsistent = value; }, set fail(value: boolean) { fail = value; } };
 }
 describe('provider memory embeddings', () => {
+  it.skipIf(process.platform === 'win32')('forwards POSIX provider projection progress without catalog reads and rejects stale publication', async () => {
+    const f = await fixture();
+    f.consent();
+    let catalog = f.catalog;
+    const readCatalog = vi.fn(() => catalog);
+    const progressReads: number[] = [];
+    f.project.mockImplementationOnce((input, embedder, report) => buildGraph(input, embedder, progress => {
+      if (progress.phase === 'projection') {
+        catalog = { ...catalog, records: catalog.records.map((record, index) =>
+          index === 0 ? { ...record, contentRevision: 'updated' } : record) };
+      }
+      const before = readCatalog.mock.calls.length;
+      report(progress);
+      if (progress.phase !== 'embedding') progressReads.push(readCatalog.mock.calls.length - before);
+    }));
+
+    await expect(f.host.build(readCatalog)).rejects.toMatchObject({ code: 'request-stale' });
+    expect.soft(progressReads).toEqual([0, 0]);
+    expect.soft(f.progress.map(({ phase }) => phase)).toEqual(['embedding', 'neighbours', 'projection']);
+    await expect(lstat(join(f.namespace.dir, 'snapshot.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('withholds provider batch progress when consent is withdrawn after embedding', async () => {
     const f = await fixture();
     f.consent();
