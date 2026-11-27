@@ -216,7 +216,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
       establishMxcRuntimeRoot();
       const support = await detectHostMxcMacShellSupport(supervisor.resources);
       expect(support).toEqual({ state: "available" });
-      setContainerShellSubstrate(support);
+      setContainerShellSubstrate("darwin", support);
     }
     const context = { cwd, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true, metadata: {} };
     const read = await new BashTool().execute({ command: "cat " + shellQuote(transcript), timeoutSeconds: 15 }, context);

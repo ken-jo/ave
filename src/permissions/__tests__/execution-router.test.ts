@@ -203,7 +203,7 @@ function issuedAsrt(executionMode: "default" | "host" = "default") {
   resetSandbox();
   setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability(fullAsrt);
-  if (process.platform === "darwin") setContainerShellSubstrate({ state: "available" });
+  if (process.platform === "darwin") setContainerShellSubstrate("darwin", { state: "available" });
   return getHostShellExecutionPlan(executionMode);
 }
 
@@ -308,14 +308,14 @@ describe("execution router", () => {
       resetSandbox();
       setShellSandboxRequestedAtBoot(true);
       setActiveSandboxCapability({ ...fullAsrt, platform: "darwin" });
-      setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+      setContainerShellSubstrate("darwin", { state: "unavailable", reason: "shell-start-failed" });
       const unproven = getHostShellExecutionPlan();
       expect(unproven).toMatchObject({ mode: "plain", sandboxed: false, requiresExplicitUserApproval: true, fallbackReason: "active-sandbox-not-shell-contained" });
       expect(buildHostShellExecutionRouteProjection({
         legacyPlan: unproven, toolName: "bash", command: "printf ok", cwd: "/workspace", timeoutSeconds: 120, background: false,
       })).toMatchObject({ decision: "approval-required", route: "host", fallback: "active-sandbox-not-shell-contained" });
 
-      setContainerShellSubstrate({ state: "available" });
+      setContainerShellSubstrate("darwin", { state: "available" });
       const proven = getHostShellExecutionPlan();
       expect(proven).toMatchObject({ mode: "asrt", sandboxed: true, substrate: "mxc", requiresExplicitUserApproval: false, fallbackReason: "none" });
       expect(buildExecutionPlan({ legacyPlan: proven, effect: effect(), capability: capability() }))

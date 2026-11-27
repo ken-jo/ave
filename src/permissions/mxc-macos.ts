@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import type { HostResources } from "../main/host-resources.js";
-import type { SandboxMacContainerShellSupport, SandboxMacContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
+import type { SandboxContainerShellSupport, SandboxContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import pins from "./mxc-launcher-pins.json" with { type: "json" };
 import { atOrUnder, canonicalPath, posixPolicyLookups, rankPosixContainerRows, type PosixPolicyLookups } from "./mxc-posix.js";
@@ -96,8 +96,8 @@ interface MacShellProbeDependencies {
   canary(root: string): Promise<CanaryVerdict>;
 }
 
-async function detectMxcMacShellSupport(deps: MacShellProbeDependencies): Promise<SandboxMacContainerShellSupport> {
-  const unavailable = (reason: SandboxMacContainerShellUnavailableReason): SandboxMacContainerShellSupport =>
+async function detectMxcMacShellSupport(deps: MacShellProbeDependencies): Promise<SandboxContainerShellSupport> {
+  const unavailable = (reason: SandboxContainerShellUnavailableReason): SandboxContainerShellSupport =>
     ({ state: "unavailable", reason });
   if (deps.arch !== "arm64") return unavailable("unsupported-arch");
   if (!deps.libraryExists()) return unavailable("binary-missing");
@@ -111,7 +111,7 @@ async function detectMxcMacShellSupport(deps: MacShellProbeDependencies): Promis
   return verdict === "available" ? { state: "available" } : unavailable(verdict);
 }
 
-export function detectHostMxcMacShellSupport(resources: HostResources, signal?: AbortSignal): Promise<SandboxMacContainerShellSupport> {
+export function detectHostMxcMacShellSupport(resources: HostResources, signal?: AbortSignal): Promise<SandboxContainerShellSupport> {
   signal?.throwIfAborted();
   const location = mxcShellSupervisorLocation(resources);
   return detectMxcMacShellSupport({

@@ -34,7 +34,7 @@ function arrangeSubstrate(substrate: Substrate): void {
   __resetActiveSandboxCapabilityForTest();
   // On macOS the shell backend is the container route: an active sandbox is a published container shell, never the wrap alone.
   if (process.platform === "darwin") {
-    setContainerShellSubstrate(substrate === "sandbox-active" ? { state: "available" } : { state: "unavailable", reason: "shell-start-failed" });
+    setContainerShellSubstrate("darwin", substrate === "sandbox-active" ? { state: "available" } : { state: "unavailable", reason: "shell-start-failed" });
   }
   if (substrate === "sandbox-active") {
     setShellSandboxRequestedAtBoot(true);

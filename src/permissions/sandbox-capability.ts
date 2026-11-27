@@ -9,8 +9,8 @@ import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
   SandboxBootOutcome,
   SandboxConfinement,
-  SandboxMacContainerShellInfo,
-  SandboxMacContainerShellSupport,
+  SandboxContainerShellInfo,
+  SandboxContainerShellSupport,
   SandboxWindowsSubstrateInfo,
   SandboxWindowsExtensionPlan,
 } from "../shared/sandbox-capability-info.js";
@@ -253,14 +253,19 @@ export function getWindowsExtensionBackendPlan(): SandboxWindowsExtensionPlan | 
   return _windowsSubstrate?.extensionPlan;
 }
 
-let _containerShellSubstrate: SandboxMacContainerShellSupport | undefined;
+const containerShellSubstrates: Partial<Record<"darwin" | "linux", SandboxContainerShellSupport>> = {};
 const MAC_CONTAINER_SHELL_CAPABILITY: SandboxCapability = Object.freeze({
   kind: "asrt", platform: "darwin", confidence: "verified", reason: "macOS container shell verified",
   confines: Object.freeze({ filesystem: true, process: true, network: true }),
 });
 
-export function setContainerShellSubstrate(support: SandboxMacContainerShellSupport): void {
-  _containerShellSubstrate = Object.freeze({ ...support });
+const LINUX_CONTAINER_SHELL_CAPABILITY: SandboxCapability = Object.freeze({
+  kind: "asrt", platform: "linux", confidence: "verified", reason: "Linux container shell verified",
+  confines: Object.freeze({ filesystem: true, process: true, network: true }),
+});
+
+export function setContainerShellSubstrate(platform: "darwin" | "linux", support: SandboxContainerShellSupport): void {
+  containerShellSubstrates[platform] = Object.freeze({ ...support });
   _sandboxGeneration += 1;
   notifySandboxStatusChanged();
 }
@@ -268,23 +273,29 @@ export function setContainerShellSubstrate(support: SandboxMacContainerShellSupp
 // The capability of a Bash/PowerShell tool command launched in an MXC container, or undefined when that route is not live: MXC carries the shells this boot, the shell sandbox was requested, and the process-wide ASRT runtime (whose proxy the containers reach) is still published.
 export function detectMxcShellCapability(): SandboxCapability | undefined {
   if (!_shellSandboxRequestedAtBoot || _activeCapability?.kind !== "asrt") return undefined;
-  if (process.platform === "darwin" && isContainerShellRouteEnabled("darwin")) {
-    return _containerShellSubstrate?.state === "available" ? MAC_CONTAINER_SHELL_CAPABILITY : undefined;
+  const platform = process.platform;
+  if ((platform === "darwin" || platform === "linux") && isContainerShellRouteEnabled(platform)) {
+    if (containerShellSubstrates[platform]?.state !== "available") return undefined;
+    return platform === "darwin" ? MAC_CONTAINER_SHELL_CAPABILITY : LINUX_CONTAINER_SHELL_CAPABILITY;
   }
   return _mxcShellCapability;
 }
 
 // @internal — test teardown only.
 export function __resetContainerShellSubstrateForTest(): void {
-  if (_containerShellSubstrate !== undefined) _sandboxGeneration += 1;
-  _containerShellSubstrate = undefined;
+  if (containerShellSubstrates.darwin !== undefined || containerShellSubstrates.linux !== undefined) _sandboxGeneration += 1;
+  delete containerShellSubstrates.darwin;
+  delete containerShellSubstrates.linux;
 }
 
-export function getMacContainerShellInfo(): SandboxMacContainerShellInfo | undefined {
-  if (process.platform !== "darwin" || !isShellSandboxRequestedAtBoot() || _containerShellSubstrate === undefined) return undefined;
-  const support = _containerShellSubstrate.state === "available" && detectMxcShellCapability() === undefined
-    ? { state: "unavailable", reason: "shell-start-failed" } as const : _containerShellSubstrate;
-  return { ...support, egressProtocolCoverage: containerEgressProtocolCoverage("seatbelt") };
+export function getContainerShellInfo(): SandboxContainerShellInfo | undefined {
+  const platform = process.platform;
+  if ((platform !== "darwin" && platform !== "linux") || !isShellSandboxRequestedAtBoot()) return undefined;
+  const recorded = containerShellSubstrates[platform];
+  if (recorded === undefined) return undefined;
+  const support = recorded.state === "available" && detectMxcShellCapability() === undefined
+    ? { state: "unavailable", reason: "shell-start-failed" } as const : recorded;
+  return { ...support, egressProtocolCoverage: containerEgressProtocolCoverage(platform === "darwin" ? "seatbelt" : "bubblewrap") };
 }
 
 // Windows: no sandbox HOME can be made this run (the container runtime root is unproved, or its HOME parent was replaced).

@@ -42,7 +42,7 @@ import {
   egressProtocolCoverageFor,
   type EgressProtocolCoverage,
   type SandboxCapabilityInfo,
-  type SandboxMacContainerShellUnavailableReason,
+  type SandboxContainerShellUnavailableReason,
   type SandboxMxcUnavailableReason,
   type SandboxWindowsExtensionReason,
   type SandboxWindowsStatusInfo,
@@ -205,7 +205,9 @@ const MAC_CONTAINER_REASON_KEY = {
   "runtime-root-unproved": "permissionsTab.osSandboxMacContainerReasonRuntimeRootUnproved",
   "request-rejected": "permissionsTab.osSandboxMacContainerReasonRequestRejected",
   "shell-start-failed": "permissionsTab.osSandboxMacContainerReasonShellStartFailed",
-} as const satisfies Record<SandboxMacContainerShellUnavailableReason, string>;
+  "tools-missing": "permissionsTab.osSandboxMacContainerReasonShellStartFailed",
+  "namespaces-unavailable": "permissionsTab.osSandboxMacContainerReasonShellStartFailed",
+} as const satisfies Record<SandboxContainerShellUnavailableReason, string>;
 
 /** Every reason the shared extension plan can carry, so no reason renders as a raw key. */
 const WINDOWS_EXTENSION_REASON_KEY = {

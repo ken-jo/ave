@@ -339,11 +339,11 @@ describe("macOS container shell completion", () => {
       kind: "asrt", confidence: "verified", platform: "darwin",
       reason: "Controlled wrapper", confines: { filesystem: true, process: true, network: true },
     });
-    setContainerShellSubstrate({ state: "available" });
+    setContainerShellSubstrate("darwin", { state: "available" });
     containerLaunch.settle = undefined;
     containerLaunch.child = undefined;
   });
-  afterEach(() => { setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" }); });
+  afterEach(() => { setContainerShellSubstrate("darwin", { state: "unavailable", reason: "shell-start-failed" }); });
 
   async function run(outcome: Partial<typeof exited>, stdout = "") {
     const pending = new BashTool().execute({ command: "echo ready", timeoutSeconds: 1 }, {
@@ -414,7 +414,7 @@ describe.runIf(HOST_PLATFORM !== "win32")("macOS container shell spawn directory
       kind: "asrt", confidence: "verified", platform: "darwin",
       reason: "Controlled wrapper", confines: { filesystem: true, process: true, network: true },
     });
-    setContainerShellSubstrate({ state: "available" });
+    setContainerShellSubstrate("darwin", { state: "available" });
     containerLaunch.settle = undefined;
     containerLaunch.child = undefined;
     containerLaunch.prepared = undefined;
@@ -422,7 +422,7 @@ describe.runIf(HOST_PLATFORM !== "win32")("macOS container shell spawn directory
   });
   afterEach(async () => {
     containerLaunch.prepared = undefined;
-    setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+    setContainerShellSubstrate("darwin", { state: "unavailable", reason: "shell-start-failed" });
     await cleanupTmpDir(directory);
   });
 

@@ -75,7 +75,7 @@ describe("native governed XLSX command", () => {
         establishMxcRuntimeRoot();
         const support = await detectHostMxcMacShellSupport(hostResourcesNow());
         expect(support).toEqual({ state: "available" });
-        setContainerShellSubstrate(support);
+        setContainerShellSubstrate("darwin", support);
       };
       let currentResources = hostResources;
       const hostResourcesNow = () => currentResources;
@@ -182,7 +182,7 @@ describe("native governed XLSX command", () => {
       __resetActiveSandboxCapabilityForTest();
       __resetSandboxRequestedAtBootForTest();
       __resetWindowsSandboxSubstrateForTest();
-      if (mac) setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+      if (mac) setContainerShellSubstrate("darwin", { state: "unavailable", reason: "shell-start-failed" });
       for (const supervisor of supervisors) supervisor.dispose();
       rmSync(directory, { recursive: true, force: true });
     }

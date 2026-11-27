@@ -275,15 +275,15 @@ const MXC_UNAVAILABLE_REASONS = {
 } as const;
 export type SandboxMxcUnavailableReason = keyof typeof MXC_UNAVAILABLE_REASONS;
 
-export type SandboxMacContainerShellUnavailableReason = Extract<SandboxMxcUnavailableReason,
+export type SandboxContainerShellUnavailableReason = Extract<SandboxMxcUnavailableReason,
   "unsupported-arch" | "binary-missing" | "launcher-mismatch" | "runtime-root-unproved" | "request-rejected"
-> | "shell-start-failed";
+> | "shell-start-failed" | "tools-missing" | "namespaces-unavailable";
 
-export type SandboxMacContainerShellSupport =
+export type SandboxContainerShellSupport =
   | { readonly state: "available" }
-  | { readonly state: "unavailable"; readonly reason: SandboxMacContainerShellUnavailableReason };
+  | { readonly state: "unavailable"; readonly reason: SandboxContainerShellUnavailableReason; readonly detail?: readonly string[] };
 
-export type SandboxMacContainerShellInfo = SandboxMacContainerShellSupport & {
+export type SandboxContainerShellInfo = SandboxContainerShellSupport & {
   readonly egressProtocolCoverage: EgressProtocolCoverage;
 };
 
@@ -412,7 +412,7 @@ export interface SandboxCapabilityInfo {
   /** Windows: which substrate carries shells and extensions this boot, and how strongly their egress is attributed. `null` off Windows, and on Windows when boot never ran the gate. */
   windowsSubstrate?: SandboxWindowsSubstrateInfo | null;
   /** Boot verification for the macOS shell container. */
-  containerShell?: SandboxMacContainerShellInfo;
+  containerShell?: SandboxContainerShellInfo;
   /** Windows: no sandboxed process can start this run because the container runtime root is unproved; set whatever the sandbox setting. */
   sandboxHomesUnavailable?: boolean;
   /** The shell sandbox as the chat input's permission card shows it. */

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import type { SandboxMacContainerShellSupport } from "../../shared/sandbox-capability-info.js";
+import type { SandboxContainerShellSupport } from "../../shared/sandbox-capability-info.js";
 import {
   createSandboxBootHarness,
   type SandboxBootHarness,
@@ -20,7 +20,7 @@ const h = vi.hoisted(() => ({
   checkDeps: vi.fn(),
   isProbeError: vi.fn(),
   isMacProbeError: vi.fn(),
-  detectMacShell: vi.fn<() => Promise<SandboxMacContainerShellSupport>>(),
+  detectMacShell: vi.fn<() => Promise<SandboxContainerShellSupport>>(),
   logger: {
     debug: vi.fn(),
     info: vi.fn(),
@@ -73,7 +73,7 @@ import {
   __resetSandboxRequestedAtBootForTest,
   detectSandboxCapability,
   getHostShellExecutionPlan,
-  getMacContainerShellInfo,
+  getContainerShellInfo,
   getSandboxBootOutcome,
   isPluginWorkerConfinementRequestedAtBoot,
   isShellSandboxRequestedAtBoot,
@@ -221,7 +221,7 @@ describe("macOS container shell probe failure", () => {
 
     await expect(initSandboxGate(harness.context(true))).resolves.toBeUndefined();
     expect(h.initialize).toHaveBeenCalledOnce();
-    expect(getMacContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "shell-start-failed" });
+    expect(getContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "shell-start-failed" });
     const plan = getHostShellExecutionPlan();
     expect(plan).toMatchObject({ mode: "plain", fallbackReason: "active-sandbox-not-shell-contained" });
     expect(requiresUnsandboxedShellAsk(plan)).toBe(true);

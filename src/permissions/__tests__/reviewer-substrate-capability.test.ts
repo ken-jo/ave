@@ -65,14 +65,14 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
         reason: "ASRT (Seatbelt) active — fs+process+network contained",
         confines: { filesystem: true, process: true, network: true },
       });
-      setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+      setContainerShellSubstrate("darwin", { state: "unavailable", reason: "shell-start-failed" });
       for (const toolName of ["bash", "powershell"]) {
         const cap = resolveReviewerSandboxCapability("builtin", toolName);
         expect(cap.kind).toBe("none");
         expect(isWeakSandbox(cap)).toBe(true);
       }
 
-      setContainerShellSubstrate({ state: "available" });
+      setContainerShellSubstrate("darwin", { state: "available" });
       for (const toolName of ["bash", "powershell"]) {
         const cap = resolveReviewerSandboxCapability("builtin", toolName);
         expect(cap).toMatchObject({ kind: "asrt", platform: "darwin", reason: "macOS container shell verified" });
@@ -80,7 +80,7 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
         expect(isWeakSandbox(cap)).toBe(false);
       }
     } finally {
-      setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+      setContainerShellSubstrate("darwin", { state: "unavailable", reason: "shell-start-failed" });
       setProcessPlatform(HOST_PLATFORM);
     }
   });
@@ -230,7 +230,7 @@ describe("substrate-aware capability — end-to-end reviewer prompt + downgrade 
         confines: { filesystem: true, process: true, network: true },
       });
       // macOS shells are contained by the container the boot canary proved, not by ASRT.
-      if (platform === "darwin") setContainerShellSubstrate({ state: "available" });
+      if (platform === "darwin") setContainerShellSubstrate("darwin", { state: "available" });
 
       const { provider, complete } = capturingProvider();
       const classifier = new LlmRiskClassifier(provider, "gpt-4o-mini");
@@ -248,7 +248,7 @@ describe("substrate-aware capability — end-to-end reviewer prompt + downgrade 
       // The genuinely-wrapped host-shell substrate earns the asrt report.
       expect(userPrompt).toContain("executionSandbox=asrt");
     } finally {
-      if (platform === "darwin") setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+      if (platform === "darwin") setContainerShellSubstrate("darwin", { state: "unavailable", reason: "shell-start-failed" });
       setProcessPlatform(HOST_PLATFORM);
     }
   });

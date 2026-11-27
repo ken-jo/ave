@@ -10,7 +10,7 @@ import { openEgressInvocation } from "../egress-invocations.js";
 import { openEgressRelay } from "../egress-relay/relay.js";
 import {
   __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest,
-  detectMxcShellCapability, getHostShellExecutionPlan, getMacContainerShellInfo, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot,
+  detectMxcShellCapability, getHostShellExecutionPlan, getContainerShellInfo, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot,
 } from "../sandbox-capability.js";
 
 const platform = process.platform;
@@ -34,19 +34,19 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
     publishWrap();
     expect(isContainerShellRouteEnabled(platform)).toBe(true);
     expect(isContainerHolderRouteEnabled(platform)).toBe(false);
-    setContainerShellSubstrate({ state: "available" });
+    setContainerShellSubstrate("darwin", { state: "available" });
     expect(getHostShellExecutionPlan()).toMatchObject({
       identity: "host-shell-execution-plan/v4:darwin:mxc", sandboxed: true,
       egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" },
     });
     expect(getHostShellExecutionPlan("default", "hook").identity).toBe("host-shell-execution-plan/v4:darwin:asrt");
-    expect(getMacContainerShellInfo()).toEqual({ state: "available", egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } });
+    expect(getContainerShellInfo()).toEqual({ state: "available", egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } });
     // An explicit host request on a host whose backend is ready keeps ordinary rules and modes (tree: host-shell row).
     expect(getHostShellExecutionPlan("host")).toMatchObject({
       mode: "plain", executionRequest: "host", identity: "host-shell-execution-plan/v4:darwin:explicit-host",
     });
-    setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
-    expect(getMacContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "shell-start-failed" });
+    setContainerShellSubstrate("darwin", { state: "unavailable", reason: "shell-start-failed" });
+    expect(getContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "shell-start-failed" });
     expect(getHostShellExecutionPlan()).toMatchObject({
       mode: "plain", substrate: "none", requiresExplicitUserApproval: true, fallbackReason: "active-sandbox-not-shell-contained",
     });
@@ -106,7 +106,7 @@ describe("container route call sites", () => {
 
   it("shares the request builder between boot verification and the POSIX shell launch", () => {
     expect(callers(/\brankPosixContainerRows\b/u, "src/permissions/mxc-posix.ts"))
-      .toEqual(["src/permissions/mxc-macos.ts"]);
+      .toEqual(["src/permissions/mxc-linux.ts", "src/permissions/mxc-macos.ts"]);
     expect(callers(/\bmxc-macos\.[jt]s\b|\bdetectHostMxcMacShellSupport\b/u, "src/permissions/mxc-macos.ts"))
       .toEqual(["src/boot/steps/sandbox-init.ts", "src/permissions/mxc-shell-supervisor-service.ts", "src/tools/mxc-posix-shell-launch.ts"]);
     expect(callers(/\bsetContainerShellSubstrate\s*\(/u, "src/permissions/sandbox-capability.ts"))

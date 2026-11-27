@@ -565,7 +565,7 @@ describe("sandboxCapability shell status (the permission card's checkbox)", () =
   // and the terminal (architecture.md "macOS agent shells in containers"; getHostShellExecutionPlan selects "none" without it).
   it("is on when the verified macOS container carries shells", async () => {
     const capability = await bootAsrt("darwin");
-    capability.setContainerShellSubstrate({ state: "available" });
+    capability.setContainerShellSubstrate("darwin", { state: "available" });
     expect(await readShell({ osToolSandbox: true })).toEqual({
       state: "on", setting: true, envForced: false, causes: [],
     });
@@ -576,7 +576,7 @@ describe("sandboxCapability shell status (the permission card's checkbox)", () =
     ["failed its boundary check", { state: "unavailable", reason: "shell-start-failed" }],
   ] as const)("does not count the ASRT wrap as shell containment on macOS when the container %s", async (_label, support) => {
     const capability = await bootAsrt("darwin");
-    if (support !== undefined) capability.setContainerShellSubstrate(support);
+    if (support !== undefined) capability.setContainerShellSubstrate("darwin", support);
     expect(await readShell({ osToolSandbox: true })).toEqual({
       state: "unavailable", setting: true, envForced: false, causes: ["shell-not-contained"],
     });
