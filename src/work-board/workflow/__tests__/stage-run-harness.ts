@@ -81,6 +81,8 @@ function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>, onScheduled
 export async function stageRunHarness(opts: {
   /** Returns a result to end the child at once; undefined leaves it live until the test finishes it. */
   script?: (input: SubAgentSpawnInput) => Partial<SubAgentSpawnResult> | undefined;
+  /** Override when a child's interruption settles. */
+  interruptChild?: (child: FakeChild) => void;
   /** Use a real runner for tests that need child-loop behavior. */
   runner?: (dir: string) => SubAgentRunner;
   descendants?: (originSessionId: string) => Pick<SubAgentRunSnapshot, "childSessionId" | "turnCount">[];
@@ -221,6 +223,11 @@ export async function stageRunHarness(opts: {
       finish: (result = {}) => {
         if (child.ended) return;
         child.ended = true;
+        if (input.claimRound && result.stopReason !== "interrupted") {
+          for (let round = 0; round < (result.turnCount ?? 1); round++) {
+            if (!input.claimRound()) break;
+          }
+        }
         launch?.resume();
         end({ summary: `output of ${sessionId}`, toolCallCount: 0, turnCount: 1, childSessionId: sessionId, entries: [], ok: true, endTrustOrigin: "llm-tool-arg", ...result });
         if (liveChildren.delete(child)) notify();
@@ -250,7 +257,10 @@ export async function stageRunHarness(opts: {
     interruptRun(id: string) {
       interrupts.push(id);
       const child = children.find(candidate => candidate.sessionId === id && !candidate.ended);
-      child?.finish({ ok: false, summary: "interrupted", error: "interrupted", stopReason: "interrupted" });
+      if (child) {
+        if (opts.interruptChild) opts.interruptChild(child);
+        else child.finish({ ok: false, summary: "interrupted", error: "interrupted", stopReason: "interrupted" });
+      }
       return { ok: child !== undefined, message: "" };
     },
     queueHostDirectiveToWorkBoardChild(_origin: string, id: string, text: string) {

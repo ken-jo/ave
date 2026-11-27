@@ -166,6 +166,8 @@ export interface RunTurnOptions {
   originSource?: string | null;
   // Round budgets stop cleanly between rounds and remain distinct from user cancellation.
   maxRounds?: number;
+  /** Reserve one round from a host-owned allowance before making its request. */
+  claimRound?: () => boolean;
   // Child overrides attribute tool audits to the child session rather than the parent.
   sessionIdOverride?: string;
   // Spawn depth must reach execution so nested agent_spawn calls are refused.

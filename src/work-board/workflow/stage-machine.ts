@@ -2,6 +2,7 @@ import type { WorkPlanDecision } from "../../shared/work-board-types.js";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
 import type { StageJoin, TemplateGraph, WorkItemStageRun } from "../../shared/workflow-template-types.js";
 import type { JoinConflict, StageFailure } from "./shipped-shapes.js";
+import { stageReachedDenialLimit } from "./run-budget.js";
 import { currentStepOf, joinIdOfStep, readyStages, stepsOf } from "./stage-graph.js";
 
 /** A reissued conflict is a new decision even when the sealed inputs and diagnostics are identical. */
@@ -225,7 +226,9 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
     effects.push({ type: "integrate", joinId, stageIds: [...step] });
   } else {
     let slots = MAX_PARALLEL_STAGES - stageRuns.filter(run => run.status === "running").length;
+    const parkedOnDenials = stageRuns.some(stageReachedDenialLimit);
     for (const id of snapshot.parked ? [] : readyStages(graph, stageRuns, joins)) {
+      if (parkedOnDenials && (event.type !== "retry_requested" || event.stageId !== id)) continue;
       const run = find(id);
       if (slots <= 0 || !run) continue;
       run.status = "running";

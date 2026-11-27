@@ -6,7 +6,7 @@ import { resultHashOf } from "../../shared/workflow-template-output.js";
 import type { StageJoin, TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkItemStageRun } from "../../shared/workflow-template-types.js";
 import { issueJoinConflict } from "./stage-machine.js";
 import { WorkflowTemplateError } from "../template-graph.js";
-import { MAX_LANE_DENIALS_PER_STAGE } from "./run-budget.js";
+import { stageReachedDenialLimit } from "./run-budget.js";
 
 /** Everything a template run is decided from. It lives in the covered run file, keyed by `runId`; a board row names a run only by that id
  * and nothing on a board row is ever read as one of these fields. */
@@ -141,10 +141,6 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
     dropHeld: (run, identity) => store.runs.dropHeld(run, identity),
     heldEvents: run => store.runs.heldEvents(run),
   };
-}
-
-function stageReachedDenialLimit(stage: WorkItemStageRun): boolean {
-  return stage.status === "failed" && stage.failure === "budget" && stage.deniedCalls?.length === MAX_LANE_DENIALS_PER_STAGE;
 }
 
 export function parkedStageOutcome(run: Pick<RunRecord, "stageRuns">): "parked-on-denials" | "failed" | undefined {

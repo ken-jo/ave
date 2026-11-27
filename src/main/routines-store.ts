@@ -14,7 +14,7 @@ import { assertHostDecisionProof, type HostDecisionProof } from "./workflow-temp
 import type { ScheduleAttachment, TemplateScope, WorkflowTemplate } from "../shared/workflow-template-types.js";
 import { isTemplateId, attachmentScopeMatches, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { isValidSessionId } from "../shared/session-id.js";
-import { nextScheduleState, type ScheduledRunOutcome } from "../work-board/workflow/schedule-breaker.js";
+import { nextScheduleState, SCHEDULE_BREAKER_THRESHOLD, type ScheduledRunOutcome } from "../work-board/workflow/schedule-breaker.js";
 const log = createLogger("ave");
 
 // Re-export from shared so callers that import from routines-store continue to work unchanged, while the renderer imports from shared/ (no Node built-ins).
@@ -147,7 +147,8 @@ function isValidRecord(r: unknown): r is StoredRoutine {
     || (x.pausedBy !== undefined && !isActor(x.pausedBy) && !(x.execution === "template-run" && x.pausedBy === "schedule-breaker"))) return false;
   if (x.scheduleBreaker !== undefined) {
     const breaker = x.scheduleBreaker;
-    if (x.execution !== "template-run" || !isRecord(breaker) || ![0, 1, 2].includes(breaker.consecutiveBad as number)
+    if (x.execution !== "template-run" || !isRecord(breaker) || typeof breaker.consecutiveBad !== "number"
+      || !Number.isInteger(breaker.consecutiveBad) || breaker.consecutiveBad < 0 || breaker.consecutiveBad > SCHEDULE_BREAKER_THRESHOLD
       || typeof breaker.firedAt !== "string" || !Number.isFinite(Date.parse(breaker.firedAt))) return false;
   }
   if (x.resumedAt !== undefined && typeof x.resumedAt !== "string") return false;
@@ -869,15 +870,15 @@ export class RoutinesStore {
     if (!Number.isFinite(Date.parse(firedAt))) throw new Error("Invalid template schedule fire time");
     return this.mutate(id, (r) => {
       if (r.execution !== "template-run") throw new Error("Expected a template routine");
-      if (r.pausedAt || (r.scheduleBreaker && firedAt <= r.scheduleBreaker.firedAt)) return false;
-      const next = nextScheduleState({ consecutiveBad: r.scheduleBreaker?.consecutiveBad ?? 0 }, outcome);
+      const previous = r.scheduleBreaker;
+      if (r.pausedAt || (previous && firedAt < previous.firedAt)) return false;
+      // A manual retry can complete the latest firing after its initial bad outcome was persisted.
+      if (previous?.firedAt === firedAt && (outcome !== "completed" || previous.consecutiveBad === 0)) return false;
+      const next = nextScheduleState({ consecutiveBad: previous?.consecutiveBad ?? 0 }, outcome);
       r.scheduleBreaker = { consecutiveBad: next.consecutiveBad, firedAt };
-      if (next.pausedAt) {
-        r.pausedAt = next.pausedAt;
-        r.pausedBy = "schedule-breaker";
-      }
+      if (next.consecutiveBad === SCHEDULE_BREAKER_THRESHOLD) pauseRoutine(r, "schedule-breaker");
       return true;
-    });
+    }, { skipDismissed: true });
   }
 
   // The fire at `firedAt` did not run because its connected chat was busy. A one-shot stays listed as skipped instead of done; it is not
@@ -965,12 +966,7 @@ export class RoutinesStore {
   }
 
   async pause(id: string, by: RoutineActor): Promise<RoutineRecord | null> {
-    return this.mutate(id, (r) => {
-      if (r.pausedAt) return false;
-      r.pausedAt = new Date().toISOString();
-      r.pausedBy = by;
-      return true;
-    }, { skipDismissed: true });
+    return this.mutate(id, r => pauseRoutine(r, by), { skipDismissed: true });
   }
 
   // Resuming does not replay what was paused: a repeating item's next fire moves past now, and a one-shot whose time passed is
@@ -1088,6 +1084,13 @@ function inProject(record: Pick<RoutineRecord, "projectRoot">, projectRoot: stri
 function isOneShot(record: RoutineRecord): boolean {
   const repeat = record.schedule?.repeat;
   return !repeat || repeat.kind === "none";
+}
+
+function pauseRoutine(routine: RoutineRecord, by: NonNullable<RoutineRecord["pausedBy"]>): boolean {
+  if (routine.pausedAt) return false;
+  routine.pausedAt = new Date().toISOString();
+  routine.pausedBy = by;
+  return true;
 }
 
 function advanceRepeatingSchedule(routine: RoutineRecord, now: string): void {

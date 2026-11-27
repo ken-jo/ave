@@ -1,4 +1,4 @@
-import type { StageEnvelope } from "../../shared/workflow-template-types.js";
+import type { StageEnvelope, WorkItemStageRun } from "../../shared/workflow-template-types.js";
 
 export interface StageUsage {
   rounds: number;
@@ -10,6 +10,10 @@ export interface StageUsage {
 export type BudgetVerdict = { ok: true } | { ok: false; code: "rounds" | "minutes" | "cost" | "denials" };
 
 export const MAX_LANE_DENIALS_PER_STAGE = 3;
+
+export function stageReachedDenialLimit(stage: WorkItemStageRun): boolean {
+  return stage.status === "failed" && stage.failure === "budget" && stage.deniedCalls?.length === MAX_LANE_DENIALS_PER_STAGE;
+}
 
 export function checkStageBudget(usage: StageUsage, budget: StageEnvelope["budget"], now: number): BudgetVerdict {
   if (usage.denials >= MAX_LANE_DENIALS_PER_STAGE) return { ok: false, code: "denials" };

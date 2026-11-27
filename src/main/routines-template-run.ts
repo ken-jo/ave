@@ -6,7 +6,7 @@ import type { WorkBoardStore } from "./work-board-store.js";
 import type { WorkflowTemplateStore } from "./workflow-template-store.js";
 import { createLogger } from "../lib/logger.js";
 import { parkedStageOutcome } from "../work-board/workflow/run-state.js";
-import { mayFire, type ScheduledRunOutcome } from "../work-board/workflow/schedule-breaker.js";
+import type { mayFire, ScheduledRunOutcome } from "../work-board/workflow/schedule-breaker.js";
 
 interface ScheduledTemplateDeps {
   routinesStore: RoutinesStore;
@@ -24,11 +24,7 @@ function refusedFire(code: string, tool?: EnvelopeToolRef): RoutineRunOutcome {
     ? { ok: false, kind: "template-skipped", skip: { code, tool } } : failed(code);
 }
 
-function skippedUnavailable(outcome: RoutineRunOutcome): boolean {
-  return !outcome.ok && outcome.kind === "template-skipped" && "tool" in outcome.skip;
-}
-
-export async function fireScheduledTemplate(deps: ScheduledTemplateDeps, { routine, attachment }: TemplateRoutineFire): Promise<void> {
+export async function fireScheduledTemplate(deps: ScheduledTemplateDeps, { routine, attachment }: TemplateRoutineFire, checkAdmission: typeof mayFire): Promise<void> {
   const { routinesStore, workflowTemplateStore, workBoardStore, workBoardEngine } = deps;
   const { id, lastFiredAt: firedAt } = routine;
   if (!firedAt || routine.execution !== "template-run") throw new Error("Expected a fired template routine");
@@ -41,7 +37,7 @@ export async function fireScheduledTemplate(deps: ScheduledTemplateDeps, { routi
     const unsettled = {
       outcome: { ok: false, kind: "template-skipped", skip: { code: "run-unsettled" } } satisfies RoutineRunOutcome,
     };
-    const firstCheck = mayFire({ unsettledRun: pending.has(id), paused: current.pausedAt !== undefined });
+    const firstCheck = checkAdmission({ unsettledRun: pending.has(id), paused: current.pausedAt !== undefined });
     if (!firstCheck.fire) return firstCheck.reason === "paused" ? null : unsettled;
     if ("reason" in attachment && attachment.reason === "attachment-unavailable") return { outcome: failed(attachment.reason) };
     const attachments = await workflowTemplateStore.listByRoutine(id);
@@ -63,7 +59,7 @@ export async function fireScheduledTemplate(deps: ScheduledTemplateDeps, { routi
     }
     // Recover a late outcome from the run file if this process did not observe it.
     const updated = latestEnd && await routinesStore.recordTemplateScheduleOutcome(id, latestEnd.firedAt, latestEnd.outcome);
-    const admission = mayFire({ unsettledRun, paused: (updated ?? current).pausedAt !== undefined });
+    const admission = checkAdmission({ unsettledRun, paused: (updated ?? current).pausedAt !== undefined });
     if (!admission.fire) return admission.reason === "paused" ? null : unsettled;
     if ("reason" in attachment) return { outcome: failed(attachment.reason) };
     const active = attachments.find(entry => entry.detachedAt === undefined);
@@ -75,10 +71,10 @@ export async function fireScheduledTemplate(deps: ScheduledTemplateDeps, { routi
     const started = await workBoardEngine.startScheduledTemplate({ kind: "schedule-attachment", attachmentId, pin: { templateId, version, graphHash }, firedAt }, current.title ?? templateId);
     if (started.ok) {
       pending.add(id);
-      return { result: started.result, breakerOutcome: started.breakerOutcome };
+      return { result: started.result, breakerOutcome: started.breakerOutcome, completion: started.completion };
     }
     const outcome = refusedFire(started.code, started.tool);
-    if (skippedUnavailable(outcome)) await routinesStore.recordTemplateScheduleOutcome(id, firedAt, "skipped-unavailable");
+    if (!outcome.ok && outcome.kind === "template-skipped") await routinesStore.recordTemplateScheduleOutcome(id, firedAt, "skipped-unavailable");
     return { outcome };
   });
   if (!admitted) return;
@@ -90,25 +86,31 @@ export async function fireScheduledTemplate(deps: ScheduledTemplateDeps, { routi
     const result = await admitted.result;
     const completed = result.status === "completed";
     const parked = result.status === "awaiting_approval" && result.reasonCode === undefined;
-    const outcome = completed || parked ? { ok: true } as const : refusedFire(result.reasonCode ?? "template-run-unavailable", result.reasonTool);
+    const outcome = completed || parked ? { ok: true } as const : failed(result.reasonCode ?? "template-run-unavailable");
     await routinesStore.withTemplateSchedule(id, async () => {
       const breakerOutcome = completed ? "completed"
-        : skippedUnavailable(outcome) ? "skipped-unavailable"
         : result.reasonCode === "parked-on-denials" ? "parked-on-denials"
-        : result.status === "error" || result.reasonCode === "stage-failed" ? "failed"
+        : (result.status === "error" && result.reasonTool === undefined) || result.reasonCode === "stage-failed" ? "failed"
         : undefined;
       if (breakerOutcome) await routinesStore.recordTemplateScheduleOutcome(id, firedAt, breakerOutcome);
       await routinesStore.recordRunOutcome(id, firedAt, outcome);
     });
-    if (parked) {
-      void admitted.breakerOutcome.then(async (later) => {
-        if (later === null) return;
-        await routinesStore.withTemplateSchedule(id, async () => {
-          await routinesStore.recordTemplateScheduleOutcome(id, firedAt, later);
-          await routinesStore.recordRunOutcome(id, firedAt, later === "completed" ? { ok: true }
-            : failed(later === "parked-on-denials" ? later : "stage-failed"));
-        });
-      }).catch(() => log.warn("scheduled template outcome could not be stored (%s)", id));
+    const recordLater = (later: ScheduledRunOutcome) =>
+      routinesStore.withTemplateSchedule(id, async () => {
+        await routinesStore.recordTemplateScheduleOutcome(id, firedAt, later);
+        await routinesStore.recordRunOutcome(id, firedAt, later === "completed" ? { ok: true }
+          : failed(later === "parked-on-denials" ? later : "stage-failed"));
+      });
+    if (result.status === "awaiting_approval") {
+      const persistLater = async () => {
+        if (parked) {
+          const later = await admitted.breakerOutcome;
+          if (later !== null) await recordLater(later);
+          if (later === "completed") return;
+        }
+        if (await admitted.completion) await recordLater("completed");
+      };
+      void persistLater().catch(() => log.warn("scheduled template outcome could not be stored (%s)", id));
     }
   } finally {
     pending.delete(id);

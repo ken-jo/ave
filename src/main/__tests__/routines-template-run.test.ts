@@ -8,6 +8,7 @@ import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-wo
 import { untilAsserted } from "../../__tests__/support/signal-wait.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
+import { mayFire } from "../../work-board/workflow/schedule-breaker.js";
 import { RoutinesScheduler } from "../routines-scheduler.js";
 import { RoutinesStore, removeRoutineWithRuns, type TemplateRoutineFire } from "../routines-store.js";
 import { mintHostDecisionProof } from "../workflow-template-decision.js";
@@ -33,7 +34,7 @@ async function setup(h: Awaited<ReturnType<typeof stageRunHarness>>) {
   const { fireScheduledTemplate } = await import("../routines-template-run.js");
   const fire = (event: TemplateRoutineFire) => fireScheduledTemplate({
     routinesStore: store, workflowTemplateStore: h.templates, workBoardStore: h.board, workBoardEngine: h.engine,
-  }, event);
+  }, event, mayFire);
   scheduler.onTemplateRun(event => { dispatches.push(fire(event)); });
   const add = (at?: string) => store.add(input(at), proof());
   const attach = (scheduleId: string, version: TemplateVersion, scope: TemplateScope = { kind: "all" }) =>
@@ -266,6 +267,66 @@ it("two failed stages park their runs and pause the routine across reload until 
   expect(f.h.children).toHaveLength(3);
   expect((await f.store.listScheduleDisplay()).routines[0].attachmentId).toBe(replacement.id);
 }));
+
+it("two bad runs pause the schedule and a completed run resets the count", () => fixture(async f => {
+  const routine = await f.add();
+  await f.attach(routine.id, await f.h.confirm([autoStageOf("report")]));
+  const first = await f.dispatch(routine.id);
+  (await f.h.untilLive(1))[0].finish({ ok: false, error: "Stage failed" });
+  await first.result;
+  const [row] = await f.rows();
+  if (!row.runId) throw new Error("Expected the parked run");
+  expect(await f.h.engine.retryStage(row.id, { runId: row.runId, stageId: "report", attempt: 1 })).toEqual({ ok: true });
+  (await f.h.untilLive(1, row.id))[0].finish();
+  await f.h.until(row.id, item => item.runStatus === "completed");
+  await untilAsserted(wake => f.store.changed.subscribe(wake), () => {
+    expect(f.store.list()[0].lastFailure).toBeUndefined();
+  }, "the same firing's completed retry to clear its failure");
+
+  const from = f.h.events.length;
+  const second = await f.dispatch(routine.id);
+  const linked = await f.h.waitForProgress(event => event.stageId === "report" && event.runSessionId !== undefined, "the second scheduled child", from);
+  const child = f.h.children.find(candidate => candidate.sessionId === linked.runSessionId);
+  if (!child) throw new Error("Expected the second scheduled child");
+  child.finish({ ok: false, error: "Stage failed again" });
+  await second.result;
+  expect(f.store.list()[0].pausedAt).toBeUndefined();
+}));
+
+it("the breaker uses the ordinary pause guard for a dismissed routine", () => fixture(async f => {
+  const routine = await f.add();
+  const outcomeAt = new Date(Date.now()).toISOString();
+  await f.store.recordTemplateScheduleOutcome(routine.id, outcomeAt, "failed");
+  await f.store.dismiss(routine.id);
+  const secondAt = new Date(Date.parse(outcomeAt) + 1).toISOString();
+  expect(await f.store.pause(routine.id, "user")).toBeNull();
+  expect((await f.store.recordTemplateScheduleOutcome(routine.id, secondAt, "failed"))?.pausedAt).toBeUndefined();
+}));
+
+it("a post-link refusal does not count as an unavailable firing", async () => {
+  const tool = { stageId: "second", collection: "mcpReadOnlyTools", name: "lookup" } as const;
+  let available = false;
+  await fixture(async f => {
+    const routine = await f.add();
+    const version = await f.h.confirm([autoStageOf("first"), autoStageOf("second", { inputs: ["first"] })]);
+    await f.attach(routine.id, version);
+    await (await f.dispatch(routine.id)).result;
+    expect(f.store.list()[0].lastTemplateSkip).toEqual({ code: "tool-effect-unknown", tool });
+    available = true;
+    const linked = await f.dispatch(routine.id);
+    const [first] = await f.h.untilLive(1);
+    available = false;
+    first.finish();
+    await linked.result;
+    expect(await f.rows()).toMatchObject([{ runStatus: "cancelled" }]);
+    expect(f.store.list()[0]).toMatchObject({ lastFailure: { reason: "tool-effect-unknown" } });
+    expect(f.store.list()[0].lastTemplateSkip).toBeUndefined();
+    expect(f.store.list()[0].pausedAt).toBeUndefined();
+    expect(f.h.children).toHaveLength(1);
+    await (await f.dispatch(routine.id)).result;
+    expect(f.store.list()[0].pausedBy).toBe("schedule-breaker");
+  }, { workflow: { unattendedAllowed: () => available ? { ok: true } : { ok: false, code: "tool-effect-unknown", tool } } });
+});
 
 it("after a replacement attach a fire is skipped while the earlier attachment's run still has a live child, and that child is not interrupted", () => fixture(async f => {
   const routine = await f.add();
@@ -535,7 +596,7 @@ it("a fire refuses unreadable attachment storage without starting or removing th
   expect(f.h.children).toEqual([]);
 }));
 
-it("a run waiting at a gate does not count as bad", async () => {
+it("preserves the breaker streak across a human gate and clears it on approval and completion", async () => {
   const tool = { stageId: "first", collection: "mcpReadOnlyTools", name: "lookup" } as const;
   let available = false;
   await fixture(async f => {

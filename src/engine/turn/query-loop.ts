@@ -119,6 +119,7 @@ export async function queryLoop(
     overlayTriggerOrigin: string | null,
     bounds: {
       maxRounds?: number;
+      claimRound?: () => boolean;
       thinkingOverride?: RunTurnOptions["thinkingOverride"];
       sessionIdOverride?: string;
       spawnDepth?: number;
@@ -860,6 +861,17 @@ export async function queryLoop(
       const roundJournal = self.activeTurnJournal;
       // Flush completed rows before the next provider request so process death cannot lose completed rounds.
       if (roundJournal) await roundJournal.settled();
+      if (bounds.claimRound) {
+        abortSignal?.throwIfAborted();
+        if (!bounds.claimRound()) {
+          return withServingIdentity({
+            text: resolveRoundCapText(null, self.history.getMessages(), t("be_conversationLoop.toolRoundLimitExceeded")),
+            toolCalls: allToolCalls,
+            usage: turnUsage,
+            stopReason: "round-cap",
+          });
+        }
+      }
       const carryTextAtStreamStart = continuationCarryText;
       const carryThoughtAtStreamStart = continuationCarryThought;
       let streamedText = "";
