@@ -42,11 +42,9 @@ const helperPresent = process.platform === "win32" && existsSync(windowsPathKind
 const appWindows: Array<{ isDestroyed: () => boolean; webContents: object }> = [];
 const deps = { auditLogger: { log: vi.fn() }, getAppWindows: () => appWindows, getMainWindow: () => null } as never;
 
-// The ceiling binds. The exact pin is the current measurement (0 on main cde88405d; 3 with Windows lookups: the first check, the
-// post-read recheck, and the observation with its open grant, one batched pin each): lower it when launches are removed;
-// raise it only up to PREVIEW_TEXT_OPEN_TARGET, stating the measured count in the PR.
+// Initial read admission and post-read publication each pin once. The latter shares its pin with observation and the open grant.
 const PREVIEW_TEXT_OPEN_TARGET = 4;
-const PREVIEW_TEXT_OPEN_LAUNCHES = { "--pin": 3 };
+const PREVIEW_TEXT_OPEN_LAUNCHES = { "--pin": 2 };
 
 let root: string;
 
