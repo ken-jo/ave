@@ -1595,7 +1595,9 @@ describe("HostApi incarnation authority", () => {
   });
 
   it.each(["strict", "default"] as const)("in %s mode keeps approved background effects to their declared targets", async (mode) => {
-    const transport = vi.fn(async (input: string | URL | Request) => String(input).includes("/hop")
+    const transport = vi.fn(async (input: string | URL | Request) => String(input).includes("/allowed-hop")
+      ? new Response(null, { status: 303, headers: { location: "https://93.184.216.34/landing" } })
+      : String(input).includes("/hop")
       ? new Response(null, { status: 302, headers: { location: "https://93.184.216.35/landing" } })
       : new Response("ok")) as unknown as typeof fetch;
     const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-kinds-")));
@@ -1638,9 +1640,15 @@ describe("HostApi incarnation authority", () => {
     await expect(background(async () => (await api.hostFetch("https://93.184.216.34/x")).text())).resolves.toBe("ok");
     await expect(background(async () => (await api.hostFetch("http://127.0.0.1:8080/x")).text())).resolves.toBe("ok");
     expect(transport).toHaveBeenCalledTimes(2);
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    await expect(background(async () => (await api.hostFetch("https://93.184.216.34/allowed-hop", { redirect: "follow" })).text())).resolves.toBe("ok");
+    expect(capture.events).toContainEqual({ event: "plugin_host_fetch_hop", pluginId: "plugin-a", method: "GET", effect: "read", hop: 1 });
+    expect(capture.events.some(({ event }) => event === "plugin_directory_refused")).toBe(false);
     await refused(() => api.hostFetch("https://93.184.216.35/x"));
     await refused(() => api.hostFetch("https://93.184.216.34/hop", { redirect: "follow" }));
     expect((transport as ReturnType<typeof vi.fn>).mock.calls.map(([input]) => String(input))).not.toContain("https://93.184.216.35/landing");
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "plugin_host_fetch_denied" }));
     expect(await refused(() => api.raiseAlert({ kind: "undeclared", slots: {} } as never))).toBeInstanceOf(EffectBoundaryDeniedError);
     expect(await refused(() => api.raiseAlert({ kind: "digest", slots: { topics: ["a"] } } as never))).not.toBeInstanceOf(EffectBoundaryDeniedError);
     expect(await refused(() => api.triggerConversation({ source: "overlay:undeclared", prompt: "x" } as never))).toBeInstanceOf(EffectBoundaryDeniedError);

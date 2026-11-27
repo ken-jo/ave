@@ -911,11 +911,7 @@ export function createHostApiFactory(
           allowedDomains: manifest.networkAccess?.allowedDomains ?? [],
           allowPrivateNetworks: manifest.networkAccess?.allowPrivateNetworks === true,
           ...(injectSessionCookie ? { injectSessionCookie } : {}),
-          auditHop: (_line) => {
-            try {
-              logPermissionEvent("plugin_directory_refused", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
-            } catch { /* audit must not break host */ }
-          },
+          auditHop: (hop) => logPermissionEvent("plugin_host_fetch_hop", { pluginId: permissionLogId(pluginId), ...hop }),
           auditDeny: logEgressDenial,
           onResponseBodyError: (error) => {
             if (error instanceof CredentialLeaseError) leaseDenialAudit.record(pluginId, "hostFetch", error);
