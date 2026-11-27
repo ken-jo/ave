@@ -1,13 +1,19 @@
+import { randomBytes } from "node:crypto";
+import { createSocket } from "node:dgram";
 import { existsSync, lstatSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
-import { tmpdir } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import type { HostResources } from "../main/host-resources.js";
-import type { SandboxMacContainerShellSupport, SandboxMacContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
+import type { MacRawIpVerdict, MxcRawIpUdpArrival, SandboxMacContainerShellSupport, SandboxMacContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { INVOCATION_PROXY_REFUSED_STATUS, openInvocationProxyListener } from "./egress-invocation-listener.js";
 import pins from "./mxc-launcher-pins.json" with { type: "json" };
+import {
+  parseRawIpProbeOutput, RAW_IP_PROBE_BUDGET_S, RAW_IP_PROBER, RAW_IP_TARGET_DEADLINE_S, rawIpVerdict, seatbeltProfileAllowsOnlyProxyEgress,
+} from "./mxc-macos-raw-ip.js";
 import { atOrUnder, canonicalPath, posixPolicyLookups, rankPosixContainerRows, type PosixPolicyLookups } from "./mxc-posix.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
 import { mxcShellSupervisorLocation, stageMxcShellRequest, startMxcShellSupervisor } from "./mxc-shell-supervisor-client.js";
@@ -89,11 +95,16 @@ export function mapSeatbeltShellRequest(wire: ReturnType<typeof buildSeatbeltShe
 
 type CanaryVerdict = "available" | "request-rejected" | "shell-start-failed" | "launcher-mismatch";
 
+/** What one canary start found: availability, and the raw-IP verdict measured in the same start. */
+type CanaryResult =
+  | { readonly verdict: "available"; readonly rawIpProbe: MacRawIpVerdict }
+  | { readonly verdict: Exclude<CanaryVerdict, "available"> };
+
 interface MacShellProbeDependencies {
   readonly arch: string;
   libraryExists(): boolean;
   requireRuntimeRoot(): string;
-  canary(root: string): Promise<CanaryVerdict>;
+  canary(root: string): Promise<CanaryResult>;
 }
 
 async function detectMxcMacShellSupport(deps: MacShellProbeDependencies): Promise<SandboxMacContainerShellSupport> {
@@ -107,8 +118,8 @@ async function detectMxcMacShellSupport(deps: MacShellProbeDependencies): Promis
   } catch {
     return unavailable("runtime-root-unproved");
   }
-  const verdict = await deps.canary(root);
-  return verdict === "available" ? { state: "available" } : unavailable(verdict);
+  const result = await deps.canary(root);
+  return result.verdict === "available" ? { state: "available", rawIpProbe: result.rawIpProbe } : unavailable(result.verdict);
 }
 
 export function detectHostMxcMacShellSupport(resources: HostResources, signal?: AbortSignal): Promise<SandboxMacContainerShellSupport> {
@@ -124,7 +135,7 @@ export function detectHostMxcMacShellSupport(resources: HostResources, signal?: 
         return await runSeatbeltCanary(location, root, signal);
       } catch {
         signal?.throwIfAborted();
-        return "shell-start-failed";
+        return { verdict: "shell-start-failed" };
       }
     },
   });
@@ -163,16 +174,81 @@ function listenOnLoopback(server: Server): Promise<number> {
   });
 }
 
-async function runSeatbeltCanary(location: ReturnType<typeof mxcShellSupervisorLocation>, root: string, signal?: AbortSignal): Promise<CanaryVerdict> {
+/** The host's primary non-loopback IPv4 address: the first one the interface table lists, or undefined offline. */
+function primaryIpv4(): string | undefined {
+  for (const entries of Object.values(networkInterfaces())) {
+    for (const entry of entries ?? []) if (entry.family === "IPv4" && !entry.internal) return entry.address;
+  }
+  return undefined;
+}
+
+/** A port that was free on `address` a moment ago: bound ephemerally, then closed just before the run. */
+async function closedPortOn(address: string): Promise<number> {
+  const server = createServer();
+  const port = await new Promise<number>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, address, () => {
+      const bound = server.address();
+      if (bound === null || typeof bound === "string") reject(new Error("Invalid raw-IP probe port"));
+      else resolve(bound.port);
+    });
+  });
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
+/** A host-side UDP listener for the arrival check; `arrived` turns true when a datagram carrying `nonce` comes in. */
+async function openUdpArrival(address: string, nonce: string) {
+  const socket = createSocket("udp4");
+  let arrived = false;
+  let notify: (() => void) | undefined;
+  socket.on("message", (message) => {
+    if (message.toString("utf8").includes(nonce)) { arrived = true; notify?.(); }
+  });
+  const port = await new Promise<number>((resolve, reject) => {
+    socket.once("error", reject);
+    socket.bind(0, address, () => resolve(socket.address().port));
+  });
+  return {
+    port,
+    get arrived() { return arrived; },
+    /** Waits up to the per-target deadline for a datagram that has not arrived yet. */
+    async settle(): Promise<boolean> {
+      if (arrived) return true;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, RAW_IP_TARGET_DEADLINE_S * 1_000);
+        notify = () => { clearTimeout(timer); resolve(); };
+      });
+      return arrived;
+    },
+    close: () => new Promise<void>((resolve) => socket.close(() => resolve())),
+  };
+}
+
+/** Native tests only: replace the prober text, or edit the staged profile, to drive the raw-IP failure and control cases. */
+interface CanaryTestOverrides {
+  readonly prober?: string;
+  readonly editProfile?: (profile: string) => string;
+}
+
+async function runSeatbeltCanary(
+  location: ReturnType<typeof mxcShellSupervisorLocation>, root: string, signal?: AbortSignal, overrides: CanaryTestOverrides = {},
+): Promise<CanaryResult> {
   let scratch: string | undefined;
   let socketAlias: string | undefined;
   let otherPortConnected = false;
   let unixSocketConnected = false;
+  // The raw-IP control goes through a real invocation listener: it refuses `<nonce>.localhost` as a loopback
+  // destination and reports that refusal here. It forwards nothing, since the canary holds no egress grant.
+  const nonce = randomBytes(16).toString("hex");
+  let nonceRecorded = false;
   const unix = createServer(socket => { unixSocketConnected = true; socket.destroy(); });
-  const proxy = createServer(socket => socket.destroy());
   const other = createServer(socket => { otherPortConnected = true; socket.destroy(); });
+  let proxy: Awaited<ReturnType<typeof openInvocationProxyListener>> | undefined;
+  let udp: Awaited<ReturnType<typeof openUdpArrival>> | undefined;
   const teardown = async () => {
-    proxy.close();
+    await proxy?.close();
+    await udp?.close();
     other.close();
     unix.close();
     if (socketAlias !== undefined) await rm(socketAlias, { recursive: true });
@@ -193,7 +269,10 @@ async function runSeatbeltCanary(location: ReturnType<typeof mxcShellSupervisorL
     const renamed = join(working, "renamed");
     let unixPath = join(working, "s");
     const laterFile = join(working, "later", "file.locked");
+    const prober = join(working, "raw-ip.pl");
+    const rawIpOutput = join(working, "raw-ip.out");
     await writeFile(protectedFile, "canary-sealed-file\n", { flag: "wx", mode: 0o600 });
+    await writeFile(prober, overrides.prober ?? RAW_IP_PROBER, { flag: "wx", mode: 0o600 });
 
     const lookups = posixPolicyLookups(working, existsSync(join(scratch, "W")));
     const floors = [
@@ -218,14 +297,21 @@ async function runSeatbeltCanary(location: ReturnType<typeof mxcShellSupervisorL
         ...(socketAlias === undefined ? [] : [policyGrantRow(socketAlias, "ro", "launch-grant", true)]),
       ],
     });
-    const proxyPort = await listenOnLoopback(proxy);
+    proxy = await openInvocationProxyListener({
+      upstream: () => undefined,
+      onRefused: (destination) => { if (destination === `${nonce}.localhost`) nonceRecorded = true; },
+    });
+    const proxyPort = proxy.port;
     const otherPort = await listenOnLoopback(other);
     await new Promise<void>((resolve, reject) => {
       unix.once("error", reject);
       unix.listen(unixPath, resolve);
     });
+    const hostAddress = primaryIpv4();
+    const tlPort = hostAddress === undefined ? undefined : await closedPortOn(hostAddress);
+    if (hostAddress !== undefined) udp = await openUdpArrival(hostAddress, nonce);
     const config = join(scratch, "canary.json");
-    const commandLine = [
+    const availability = [
       `printf '%s' ${quoteSandboxWrappedWord(CANARY_CONTROL)} > ${quoteSandboxWrappedWord(control)} || exit 11`,
       `/bin/cat ${quoteSandboxWrappedWord(control)} || exit 12`,
       `if /bin/cat ${quoteSandboxWrappedWord(protectedFile)}; then exit 13; fi`,
@@ -237,29 +323,68 @@ async function runSeatbeltCanary(location: ReturnType<typeof mxcShellSupervisorL
       `if /usr/bin/nc -z -U ${quoteSandboxWrappedWord(unixPath)}; then exit 19; fi`,
       "/bin/mkdir later || exit 20",
       `if (printf x > ${quoteSandboxWrappedWord(laterFile)}); then exit 21; fi`,
+    ];
+    // Availability is decided by the checks above alone: their status is taken first, and the raw-IP prober writes
+    // only to its own file, so nothing it does or prints can change it. It runs only after availability passed.
+    const rawIpArgs = [proxyPort, nonce, hostAddress ?? "-", tlPort ?? 0, hostAddress ?? "-", udp?.port ?? 0]
+      .map((value) => quoteSandboxWrappedWord(String(value))).join(" ");
+    const commandLine = [
+      "(", ...availability, ")",
+      "status=$?",
+      // The prober bounds each target itself; this watcher bounds the whole run, so a stalled prober is cut off
+      // before the canary's own deadline and only its missing lines say so.
+      'if [ "$status" -eq 0 ]; then',
+      `  /usr/bin/perl ${quoteSandboxWrappedWord(prober)} ${rawIpArgs} > ${quoteSandboxWrappedWord(rawIpOutput)} 2>/dev/null &`,
+      "  prober=$!",
+      `  ( /bin/sleep ${RAW_IP_PROBE_BUDGET_S + 1}; kill -9 "$prober" ) >/dev/null 2>&1 &`,
+      "  watcher=$!",
+      '  wait "$prober" 2>/dev/null',
+      '  kill "$watcher" 2>/dev/null',
+      "fi",
+      'exit "$status"',
     ].join("\n");
+    const timeoutMs = TOOL_TIMEOUT_POLICY.mxcMacShellProbeMs + TOOL_TIMEOUT_POLICY.mxcRawIpProbeMs;
     const { request } = buildSeatbeltShellRequest({
-      model, lookups, commandLine, cwd: working, timeoutMs: TOOL_TIMEOUT_POLICY.mxcMacShellProbeMs,
-      env: { HOME: working, PATH: "/usr/bin:/bin" }, proxyUrl: `http://127.0.0.1:${proxyPort}`,
+      model, lookups, commandLine, cwd: working, timeoutMs,
+      env: { HOME: working, PATH: "/usr/bin:/bin" }, proxyUrl: proxy.url,
     });
+    if (overrides.editProfile !== undefined) request.seatbelt.profileOverride = overrides.editProfile(request.seatbelt.profileOverride);
     const staged = await stageMxcShellRequest(config, request);
-    const launch = startMxcShellSupervisor(staged, TOOL_TIMEOUT_POLICY.mxcMacShellProbeMs, signal,
-      () => { proxy.close(); }, "macos-shell-canary", location);
+    const launch = startMxcShellSupervisor(staged, timeoutMs, signal,
+      () => { void proxy?.close(); }, "macos-shell-canary", location);
     let stdout = "";
     launch.child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
     launch.child.stderr.resume();
     const start = await launch.completion;
     signal?.throwIfAborted();
-    if (start.failure?.code === "integrity") return "launcher-mismatch";
-    if (start.failure?.code === "start-refused" && start.failure.sdkCode === "malformed_request") return "request-rejected";
-    return seatbeltCanaryPassed({
+    if (start.failure?.code === "integrity") return { verdict: "launcher-mismatch" };
+    if (start.failure?.code === "start-refused" && start.failure.sdkCode === "malformed_request") {
+      return { verdict: "request-rejected" };
+    }
+    const available = seatbeltCanaryPassed({
       status: start.code, timedOut: start.timedOut, stdout,
       control: existsSync(control) ? await readFile(control, "utf8") : null,
       outsideWrite: lstatSync(outsideWrite, { throwIfNoEntry: false }) !== undefined,
       otherPortConnected, unixSocketConnected,
       protectedNewFile: existsSync(laterFile),
       protectedParentInPlace: existsSync(protectedChild) && !existsSync(renamed),
-    }) ? "available" : "shell-start-failed";
+    });
+    if (!available) return { verdict: "shell-start-failed" };
+    const output = existsSync(rawIpOutput) ? parseRawIpProbeOutput(await readFile(rawIpOutput, "utf8")) : undefined;
+    // An arrival counts whatever the prober printed. A datagram that was sent is waited for up to its deadline; a send
+    // refused in the container is `absent`; no send at all is unmeasured.
+    const udpSend = output?.targets.UA;
+    const udpArrival: MxcRawIpUdpArrival = udp === undefined ? "unmeasured" : udp.arrived ? "arrived"
+      : udpSend === "0" ? await udp.settle() ? "arrived" : "absent"
+        : udpSend !== undefined && /^\d+$/u.test(udpSend) ? "absent" : "unmeasured";
+    return {
+      verdict: "available",
+      rawIpProbe: rawIpVerdict({
+        ran: true, ...(output === undefined ? {} : { output }), expectedStatus: INVOCATION_PROXY_REFUSED_STATUS,
+        nonceRecorded, tlRan: hostAddress !== undefined, udpArrival,
+        structuralIpv6: seatbeltProfileAllowsOnlyProxyEgress(request.seatbelt.profileOverride, proxyPort),
+      }),
+    };
   } finally {
     await teardown();
   }

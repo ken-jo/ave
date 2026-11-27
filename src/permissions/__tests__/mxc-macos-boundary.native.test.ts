@@ -204,10 +204,33 @@ describe.runIf(NATIVE)("native macOS shell boundary", () => {
     }
   });
 
-  it("proves the boot canary through the installed sandbox library and cleans its staging", async () => {
-    await expect(_runSeatbeltCanaryForTest(supervisor.location, root)).resolves.toBe("available");
+  it("proves the boot canary through the installed sandbox library, measures raw IP in it and cleans its staging", async () => {
+    const result = await _runSeatbeltCanaryForTest(supervisor.location, root);
+    // The control passed with the nonce on both sides and T4 was refused by Seatbelt itself. With no IPv6 route the
+    // profile's default deny stands in for T6; the evidence kind records which this host gave.
+    expect(result).toMatchObject({ verdict: "available", rawIpProbe: { rawIp: "blocked", reachableTargets: [], udpArrival: "absent" } });
+    expect(["measured", "structural"]).toContain((result as { rawIpProbe: { evidenceKind: string } }).rawIpProbe.evidenceKind);
     expect(readdirSync(root)).toEqual(["work"]);
-  });
+  }, 30_000);
+
+  it("sees an open network when the profile allows all remote outbound traffic", async () => {
+    const result = await _runSeatbeltCanaryForTest(supervisor.location, root, undefined, {
+      // Every remote address opens; loopback stays closed except the proxy, so the availability checks still hold.
+      editProfile: profile => profile.replace(/\(allow network-outbound \(remote ip "localhost:\d+"\)\)/u, proxyAllow =>
+        ['(allow network-outbound (remote ip "*:*"))', "(allow system-socket)", '(deny network-outbound (remote ip "localhost:*"))', proxyAllow].join("\n")),
+    });
+    expect(result).toMatchObject({ verdict: "available", rawIpProbe: { rawIp: "unknown", reason: "raw-ip-reachable" } });
+  }, 30_000);
+
+  it.each([
+    ["prints nothing", "exit 0;"],
+    ["dies before any line", "die 'prober unavailable';"],
+    ["stalls past its budget", "select(undef, undef, undef, 30);"],
+  ])("keeps the shell container available with an unknown raw-IP verdict when the prober %s", async (_name, prober) => {
+    const result = await _runSeatbeltCanaryForTest(supervisor.location, root, undefined, { prober });
+    expect(result).toEqual({ verdict: "available", rawIpProbe: { rawIp: "unknown", reason: "no-evidence", reachableTargets: [], udpArrival: "unmeasured" } });
+    expect(readdirSync(root)).toEqual(["work"]);
+  }, 30_000);
 
   it("cleans the canary staging when boot is cancelled", async () => {
     const controller = new AbortController();

@@ -46,6 +46,8 @@ export const TOOL_TIMEOUT_POLICY = {
   mxcRequestTransportMs: 15_000,
   // The canary uses a short native request deadline before the shell watchdog.
   mxcMacShellProbeMs: 5_000,
+  // The canary's raw-IP measurement: three seconds per target inside this whole-probe budget, added to the canary's deadline.
+  mxcRawIpProbeMs: 12_000,
   mxcMacShellStopMs: 12_000,
   mxcMacShellOutputDrainMs: 1_000,
   // A holder's own start must report its ready-frame evidence inside this bound, from supervisor start, or it is refused.
