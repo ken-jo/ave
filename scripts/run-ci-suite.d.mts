@@ -1,14 +1,10 @@
 import type { GitRawDiffEntry } from "./hooks/pre-push-ref-updates.mjs";
+import type { CiSuitePlan } from "./verify-ci-shard-count.mjs";
+
+export { type CiSuitePlan, readPlanFile } from "./verify-ci-shard-count.mjs";
 
 export const MUST_RUN_TESTS_PATH: string;
 export const AFFECTED_TEST_LIMIT: number;
-export const COVERAGE_EVENTS: readonly string[];
-
-export interface CiSuitePlan {
-  mode: "full" | "affected";
-  reason: string;
-  tests: string[];
-}
 
 export declare function loadsComputedImport(text: string): boolean;
 export declare function namedRepositoryPaths(testPath: string, text: string): string[];
@@ -25,17 +21,7 @@ export declare function selectCiTests(input: {
 }): CiSuitePlan;
 export declare function runsRepoCodeOutOfProcess(text: string): boolean;
 export declare function testRunsRepoCodeOutOfProcess(testPath: string, readText: (path: string) => string | null): boolean;
-export declare function runsCoverage(eventName: string | undefined): boolean;
-export const FULL_RUN_SHARDS: number;
-export declare function ciShardCount(plan: CiSuitePlan, coverage: boolean, nativeChecks?: boolean): number;
-export declare function validateCiShardCount(
-  plan: CiSuitePlan,
-  coverage: boolean,
-  nativeChecks: boolean,
-  reportedCount: string | undefined,
-): void;
 export declare function parseCiShard(value: string | undefined): string | null;
-export declare function readPlanFile(text: string): CiSuitePlan;
 export declare function ciSuiteArguments(plan: CiSuitePlan, coverage: boolean, shard?: string | null): string[];
 export declare function isCategoryMergeToMain(headRef: string | undefined, baseRef: string | undefined): boolean;
 export declare function planCiSuite(

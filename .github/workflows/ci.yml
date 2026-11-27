@@ -894,7 +894,7 @@ jobs:
           AVE_CI_PLAN_FILE: ${{ runner.temp }}/ci-plan/ci-plan.json
           PLATFORM_CHECKS: ${{ needs.build.outputs.platform_checks }}
           VITEST_SHARD_COUNT: ${{ needs.build.outputs.shard_count }}
-        run: node scripts/run-ci-suite.mjs --verify-shard-count
+        run: node scripts/verify-ci-shard-count.mjs
       - name: Report the total runner budget
         if: always() && needs.build.outputs.docs_only != 'true' && hashFiles('ave/scripts/report-ci-budget.mjs') != ''
         # Timing service failures are advisory; product checks above stay required.

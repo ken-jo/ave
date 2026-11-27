@@ -1840,7 +1840,7 @@ describe("installer smoke and packaging discipline", () => {
     const { jobs } = parseYaml(readRepoFile(".github/workflows/ci.yml"));
     const steps = jobs["build-and-test"].steps as { if?: string; run?: string; with?: { name?: string } }[];
     const downloadIndex = steps.findIndex((step) => step.with?.name === "ci-plan");
-    const verifyIndex = steps.findIndex((step) => step.run === "node scripts/run-ci-suite.mjs --verify-shard-count");
+    const verifyIndex = steps.findIndex((step) => step.run === "node scripts/verify-ci-shard-count.mjs");
     const download = steps[downloadIndex];
     const temp = githubExpression("runner.temp");
     expect(download).toMatchObject({

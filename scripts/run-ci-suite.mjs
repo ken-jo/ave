@@ -19,6 +19,9 @@ import {
   selectMessageCatalogChecks,
   selectTriggeredLockSuites,
 } from "./hooks/pre-push-source-policy.mjs";
+import { ciShardCount, readPlanFile, runsCoverage } from "./verify-ci-shard-count.mjs";
+
+export { readPlanFile };
 
 export const MUST_RUN_TESTS_PATH = "config/ci-must-run-tests.json";
 
@@ -132,26 +135,6 @@ export function expandMustRunTests(document, trackedTests, changedPaths) {
   return [...selected].sort();
 }
 
-export const COVERAGE_EVENTS = Object.freeze(["schedule", "workflow_dispatch"]);
-
-export function runsCoverage(eventName) {
-  return COVERAGE_EVENTS.includes(eventName);
-}
-
-export const FULL_RUN_SHARDS = 4;
-
-export function ciShardCount(plan, coverage, nativeChecks = false) {
-  if (plan.mode !== "full" || coverage) return 1;
-  return nativeChecks ? 2 : FULL_RUN_SHARDS;
-}
-
-export function validateCiShardCount(plan, coverage, nativeChecks, reportedCount) {
-  const expected = ciShardCount(plan, coverage, nativeChecks);
-  if (reportedCount !== String(expected)) {
-    throw new Error(`expected ${expected} Vitest shard(s) for the CI plan, got ${JSON.stringify(reportedCount)}`);
-  }
-}
-
 // Reject malformed shard values so the aggregate cannot misreport coverage.
 export function parseCiShard(value) {
   if (value === undefined || value === "") return null;
@@ -160,17 +143,6 @@ export function parseCiShard(value) {
     throw new Error(`AVE_CI_SHARD must be <index>/<count> with 1 <= index <= count, got ${JSON.stringify(value)}`);
   }
   return Number(match[2]) === 1 ? null : `${match[1]}/${match[2]}`;
-}
-
-// Every shard consumes the same written plan rather than recomputing selection.
-export function readPlanFile(text) {
-  const plan = JSON.parse(text);
-  const valid = plan !== null && typeof plan === "object"
-    && (plan.mode === "full" || plan.mode === "affected")
-    && typeof plan.reason === "string"
-    && Array.isArray(plan.tests) && plan.tests.every((test) => typeof test === "string");
-  if (!valid) throw new Error("the CI plan file is not a { mode, reason, tests } plan");
-  return { mode: plan.mode, reason: plan.reason, tests: plan.tests };
 }
 
 function full(reason) {
@@ -484,9 +456,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     // Write the plan once; shards read it without replanning.
     const writePlanAt = process.argv[2] === "--write-plan" ? process.argv[3] : undefined;
     if (process.argv[2] === "--write-plan" && !writePlanAt) throw new Error("--write-plan needs a file path");
-    const verifyShardCount = process.argv[2] === "--verify-shard-count";
     const planFile = process.env.AVE_CI_PLAN_FILE;
-    if (verifyShardCount && !planFile) throw new Error("--verify-shard-count requires AVE_CI_PLAN_FILE");
     const plan = planFile && !writePlanAt
       ? readPlanFile(readFileSync(planFile, "utf8"))
       : planCiSuite(process.env.GITHUB_EVENT_NAME, {
@@ -496,14 +466,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
         before: process.env.AVE_CI_DIFF_BASE,
       });
     const eventName = process.env.GITHUB_EVENT_NAME;
-    const coverage = runsCoverage(eventName);
-    if (coverage && plan.mode !== "full") throw new Error(`${eventName} must plan a full run to enforce coverage`);
-    if (verifyShardCount) {
-      const platforms = process.env.PLATFORM_CHECKS;
-      if (platforms !== "true" && platforms !== "false") throw new Error("native platform selection was not resolved");
-      validateCiShardCount(plan, coverage, platforms === "true", process.env.VITEST_SHARD_COUNT);
-      process.exit(0);
-    }
+    const coverage = runsCoverage(eventName, plan);
     if (writePlanAt) {
       writeFileSync(writePlanAt, `${JSON.stringify(plan)}\n`, "utf8");
       let changes;

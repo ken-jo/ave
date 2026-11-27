@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import childProcess, { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { userInfo } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -36,6 +36,55 @@ function runAggregate(step, env) {
     VITEST_SHARDS: "[1]", VITEST_SHARD_COUNT: "1", SHARD_JOB_EVIDENCE, ...env,
   } });
 }
+
+it("verifies the aggregate shard count with only built-in and local modules", (t) => {
+  const step = parse(workflow).jobs["build-and-test"].steps.find((entry) => entry.name === "Verify the planned shard count");
+  assert.ok(step);
+  const [command, script, ...args] = step.run.split(" ");
+  assert.equal(command, "node");
+  const entry = fileURLToPath(new URL(`../../${script}`, import.meta.url));
+  const importGuard = `
+    import { isBuiltin, registerHooks } from "node:module";
+    registerHooks({ resolve(specifier, context, nextResolve) {
+      if (!isBuiltin(specifier) && !/^(file:|\\.\\.?\\/)/u.test(specifier)) {
+        throw new Error("Non-local module in shard verifier: " + specifier);
+      }
+      return nextResolve(specifier, context);
+    } });`;
+  const dir = mkdtempSync(join(tmpdir(), "ave-ci-shard-count-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const plan = join(dir, "ci-plan.json");
+  writeFileSync(plan, JSON.stringify({ mode: "full", reason: "sample plan", tests: [] }));
+
+  for (const [overrides, expectedError] of [
+    [{}, null],
+    [{ PLATFORM_CHECKS: "false", VITEST_SHARD_COUNT: "4" }, null],
+    [{ GITHUB_EVENT_NAME: "schedule", VITEST_SHARD_COUNT: "1" }, null],
+    [{ AVE_CI_PLAN_FILE: "" }, /requires AVE_CI_PLAN_FILE/u],
+    [{ AVE_CI_PLAN_FILE: join(dir, "missing.json") }, /ENOENT/u],
+    [{ PLATFORM_CHECKS: "" }, /native platform selection was not resolved/u],
+    [{ PLATFORM_CHECKS: "unknown" }, /native platform selection was not resolved/u],
+    [{ VITEST_SHARD_COUNT: "4" }, /expected 2 Vitest shard\(s\)/u],
+  ]) {
+    const result = spawnSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(importGuard)}`, entry, ...args], {
+      cwd: dir,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NODE_OPTIONS: "",
+        NODE_PATH: "",
+        GITHUB_EVENT_NAME: "pull_request",
+        AVE_CI_PLAN_FILE: plan,
+        PLATFORM_CHECKS: "true",
+        VITEST_SHARD_COUNT: "2",
+        ...overrides,
+      },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, expectedError ? 1 : 0, result.stderr);
+    if (expectedError) assert.match(result.stderr, expectedError);
+  }
+});
 
 it("keeps every aggregate dependency and adds the three Windows validations", () => {
   const { jobs } = parse(workflow);
