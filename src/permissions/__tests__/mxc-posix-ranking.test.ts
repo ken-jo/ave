@@ -266,6 +266,15 @@ describe("POSIX container filesystem ranking", () => {
     expect(ranked.denied).toContain("/work/.ave/nested/hooks");
   });
 
+  it("pins each existing folder between nested write roots", () => {
+    const ranked = rankPosixContainerRows(model([protect("/repo/packages/app/.vscode")],
+      write("/repo"), write("/repo/packages/app/nested/inner"), write("/repo/packages/app")), "bubblewrap", lookups);
+    expect(ranked.pins).toEqual(["/repo/packages/app/nested", "/repo/packages"]);
+    expect(ranked.readwrite).toEqual(expect.arrayContaining(["/repo", "/repo/packages/app", "/repo/packages/app/nested/inner"]));
+    const separate = rankPosixContainerRows(model([], write("/repo"), write("/other/deep")), "bubblewrap", lookups);
+    expect(separate.pins).toEqual([]);
+  });
+
   it("keeps and pins a write floor inside a write grant below a read deny", () => {
     const ranked = rankPosixContainerRows(model([
       deny("/work/private"), protect("/work/private/open/.git/hooks"),

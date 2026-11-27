@@ -282,6 +282,24 @@ print('socket-controls')
     expect(exit).toMatchObject({ code: 255, rejected: false });
   });
 
+  it("pins the folders between nested write roots", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const inner = join(work, "outer", "mid", "inner");
+    mkdirSync(inner, { recursive: true });
+    const { launch } = await prepare(
+      "mv -T outer moved && mkdir -p outer/mid/inner/.vscode && printf x > outer/mid/inner/.vscode/tasks.json",
+      { allowWrite: [work, home, inner] });
+    const result = await run(launch);
+    expect(result.code, result.stderr).not.toBe(0);
+    expect(existsSync(join(work, "moved"))).toBe(false);
+    expect(existsSync(join(inner, ".vscode"))).toBe(false);
+    const control = await prepare("printf inner > outer/mid/inner/control && if mv -T outer/mid outer/m2; then exit 42; fi",
+      { allowWrite: [work, home, inner] });
+    const controlResult = await run(control.launch);
+    expect(controlResult.code, controlResult.stderr).toBe(0);
+    expect(readFileSync(join(inner, "control"), "utf8")).toBe("inner");
+  });
+
   it("quarantines Git controls created during a command before releasing the work root", async () => {
     startEgressRelayService({ ask: async () => false });
     const { launch } = await prepare("set -e; git init -q child; printf fixture > child/.git/hooks/pre-commit; printf editable > child/control");

@@ -3415,8 +3415,10 @@ root-owned directories with no group or other write access.
 The most specific row governs each path. Broad reads use readable children
 of `/` and leave `/proc`, `/dev` and `/run` to the container. `/sys` and
 `/tmp` remain read-only. Between a writable root and a protected name, each
-intervening directory gets its own writable bind mount. The kernel refuses to
-rename these mount points and ordinary sibling writes remain possible.
+intervening directory gets its own writable bind mount. The same holds between
+a nested writable root, such as a working directory below an extra allowed
+folder, and the writable root that encloses it. The kernel refuses to rename
+these mount points and ordinary sibling writes remain possible.
 
 For absent protected names under a writable grant, Ave creates any missing
 intervening directories and pins them before launch. An empty directory

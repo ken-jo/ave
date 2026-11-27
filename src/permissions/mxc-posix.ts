@@ -393,6 +393,17 @@ function applyBubblewrapRows(result: PosixFilesystemGrants, lookups: PosixPolicy
   const placeholders: BubblewrapPlaceholder[] = [];
   const projectedReadonly: string[] = [];
   const projectedDenied: string[] = [];
+  // A nested write root is a mount point, but the folders above it inside the enclosing write root are not. Renaming one
+  // of them carries the nested mount, and every row below it, away, so each existing folder between the two is pinned.
+  for (const path of readwrite) {
+    const parent = posix.dirname(path);
+    if (parent === path) continue;
+    const enclosing = nearestEnclosing(parent, enclosingRows, false);
+    if (enclosing === undefined || !writeRows.has(enclosing)) continue;
+    for (let folder = parent; folder !== enclosing; folder = posix.dirname(folder)) {
+      if (lookups.directoryIdentity(folder) !== undefined) pins.add(folder);
+    }
+  }
   for (const [path, isDenied] of [
     ...readonly.map((path) => [path, false] as const),
     ...denied.map((path) => [path, true] as const),
