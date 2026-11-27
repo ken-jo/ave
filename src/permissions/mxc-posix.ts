@@ -29,13 +29,22 @@ export interface PosixPolicyLookups {
 
 export type PosixPolicyRefusal =
   | "backend-unmeasured" | "pattern-row" | "relative-row" | "nested-grant-under-deny" | "deny-without-outcome"
-  | "chain-unreadable" | "grant-limit-exceeded" | "root-write-grant";
+  | "chain-unreadable" | "grant-limit-exceeded" | "root-write-grant" | "placeholder-parent-unproved";
+
+export interface BubblewrapPlaceholder {
+  readonly path: string;
+  readonly ancestor: string;
+  readonly device: bigint;
+  readonly inode: bigint;
+  readonly parents: readonly string[];
+}
 
 export interface PosixFilesystemGrants extends MxcFilesystemGrants {
   readonly chainFolders: readonly string[];
   readonly ungrantedDenies: readonly string[];
   readonly carvedReadLimitedAt?: readonly string[];
   readonly pins?: readonly string[];
+  readonly placeholders?: readonly BubblewrapPlaceholder[];
 }
 
 function isAbsent(error: unknown): boolean {
@@ -381,21 +390,44 @@ function applyBubblewrapRows(result: PosixFilesystemGrants, lookups: PosixPolicy
   const enclosingRows = [...readwrite, ...readonly, ...denied];
   const writeRows = new Set(readwrite);
   const pins = new Set<string>();
-  for (const path of [...readonly, ...denied]) {
+  const placeholders: BubblewrapPlaceholder[] = [];
+  const projectedReadonly: string[] = [];
+  const projectedDenied: string[] = [];
+  for (const [path, isDenied] of [
+    ...readonly.map((path) => [path, false] as const),
+    ...denied.map((path) => [path, true] as const),
+  ]) {
     const parent = posix.dirname(path);
     const enclosing = nearestEnclosing(parent, enclosingRows, false);
+    const exists = lookups.exists(path);
+    if (exists) (isDenied ? projectedDenied : projectedReadonly).push(path);
     if (enclosing === undefined || !writeRows.has(enclosing)) continue;
     for (let folder = parent; folder !== enclosing; folder = posix.dirname(folder)) {
-      if (lookups.directoryIdentity(folder) !== undefined) pins.add(folder);
+      if (!exists || lookups.directoryIdentity(folder) !== undefined) pins.add(folder);
     }
+    if (exists) continue;
+
+    const parents: string[] = [];
+    let ancestor = parent;
+    let identity = lookups.directoryIdentity(ancestor);
+    while (identity === undefined && ancestor !== enclosing && !lookups.exists(ancestor)) {
+      parents.unshift(ancestor);
+      ancestor = posix.dirname(ancestor);
+      identity = lookups.directoryIdentity(ancestor);
+    }
+    if (identity === undefined) {
+      throw new PosixContainerPolicyError("placeholder-parent-unproved", `Container cannot prove a parent of: ${path}`);
+    }
+    placeholders.push({ path, ancestor, ...identity, parents });
+    projectedDenied.push(path);
   }
 
   const writable = [...readwrite, ...pins];
-  const firstExcess = [...writable, ...readonly, ...denied][MAX_CARVE_GRANTS];
+  const firstExcess = [...writable, ...projectedReadonly, ...projectedDenied][MAX_CARVE_GRANTS];
   if (firstExcess !== undefined) {
     throw new PosixContainerPolicyError("grant-limit-exceeded", `Container grant limit (${MAX_CARVE_GRANTS}) exceeded at: ${firstExcess}`);
   }
-  return { ...result, readwrite: writable, readonly, denied, pins: [...pins] };
+  return { ...result, readwrite: writable, readonly: projectedReadonly, denied: projectedDenied, pins: [...pins], placeholders };
 }
 
 /** Rank the literal rows and retain the carve information needed to render the profile. */

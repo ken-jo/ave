@@ -275,6 +275,19 @@ describe("POSIX container filesystem ranking", () => {
     expect(ranked.denied).toEqual(["/work/private"]);
   });
 
+  it("pins missing parents and projects absent protected rows as writable-grant masks", () => {
+    const missing = "/work/missing/deep/control";
+    const ranked = rankPosixContainerRows(model([
+      protect(missing), deny("/views/missing/secret"), protect("/work/view/missing/control"),
+    ], write("/work"), read("/views"), read("/work/view")), "bubblewrap", lookups);
+    expect(ranked.readonly).toEqual(["/views", "/work/view"]);
+    expect(ranked.denied).toEqual([missing]);
+    expect(ranked.readwrite).toEqual(["/work", "/work/missing/deep", "/work/missing"]);
+    expect(ranked.placeholders).toEqual([{
+      path: missing, ancestor: "/work", device: 1n, inode: 2n, parents: ["/work/missing", "/work/missing/deep"],
+    }]);
+  });
+
   it("counts a pin against the container row limit", () => {
     const leaves = Array.from({ length: 398 }, (_, index) => read(`/read/leaf-${index}`));
     const path = "/work/.git/hooks";
