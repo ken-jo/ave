@@ -9,6 +9,7 @@ import { UUID_PATTERN } from "../shared/uuid.js";
 import { isRecord } from "../shared/is-record.js";
 import { attachmentScopeMatches, isTemplateScope, hasTemplateKeys, canonicalTemplateGraph, validateStageForConfirm, isAllReadOnlyVersion, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { WorkDecisionAuthorityError } from "../work-board/work-decision-authority.js";
+import { parseTemplateConfirmInput } from "../work-board/work-decision-input.js";
 import { assertHostDecisionProof, type HostDecisionProof } from "./workflow-template-decision.js";
 import { isWorkflowTemplateProposalId, type ScheduleAttachment, type ScheduleAttachmentInput, type TemplateScope, type TemplateDecisionActor, type TemplateConfirmationOrigin, type TemplateVersion, type TemplateVersionPin, type WorkflowTemplate, type WorkflowTemplateConfirmInput, type WorkflowTemplateDraftInput, type WorkflowTemplateProposal, type WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
 
@@ -115,6 +116,9 @@ export class WorkflowTemplateStore {
   async list(): Promise<WorkflowTemplate[]> {
     return structuredClone((await this.readFile()).templates.filter(r => !r.template.archivedAt).map(r => r.template));
   }
+  async listReviewRecords(): Promise<WorkflowTemplateRecord[]> {
+    return structuredClone((await this.readFile()).templates.filter(record => record.template.archivedAt === undefined));
+  }
   async get(id: string): Promise<WorkflowTemplateRecord> { return structuredClone(this.find(await this.readFile(), id)); }
   /** Read the template, its versions and the referenced attachment together after preceding writes. */
   async readScheduleRunAuthority(templateId: string, attachmentId: string): Promise<ScheduleRunAuthority> {
@@ -168,6 +172,9 @@ export class WorkflowTemplateStore {
     requireTemplate(entry && (conversationId === undefined || entry.sessionId === conversationId), "no-draft");
     return structuredClone(entry.proposal);
   }
+  listProposals(conversationId: string): WorkflowTemplateProposal[] {
+    return [...(this.proposalIdsBySession.get(conversationId) ?? [])].map(id => this.getProposal(id, conversationId));
+  }
   private removeProposal(id: string): void {
     const entry = this.proposals.get(id);
     if (!entry) return;
@@ -194,7 +201,8 @@ export class WorkflowTemplateStore {
     });
   }
   async confirmDraft(id: string, input: WorkflowTemplateConfirmInput, actor: { who: string; origin: TemplateConfirmationOrigin; proof?: HostDecisionProof }): Promise<TemplateVersion> {
-    requireTemplate(hasTemplateKeys(input, ["expectedGraphHash", "expectedDraftRevision"]) && isGraphHash(input.expectedGraphHash) && isTemplateId(input.expectedDraftRevision));
+    const binding = parseTemplateConfirmInput(input);
+    requireTemplate(binding);
     requireTemplate(isDecisionOrigin(actor?.origin) && typeof actor.who === "string" && actor.who.length > 0 && actor.who.length <= maxActorLength(actor.origin));
     const proof = actor.origin === "tailnet-surface" ? actor.proof : undefined;
     if (actor.origin === "tailnet-surface") {
@@ -210,7 +218,7 @@ export class WorkflowTemplateStore {
         : this.find(file, id);
       requireTemplate(!record.template.archivedAt, "template-archived");
       const draft = record.draft; requireTemplate(draft, "no-draft");
-      const graphHash = graphHashOf(draft); requireTemplate(graphHash === input.expectedGraphHash && draft.revision === input.expectedDraftRevision, "stale-draft");
+      const graphHash = graphHashOf(draft); requireTemplate(graphHash === binding.expectedGraphHash && draft.revision === binding.expectedDraftRevision, "stale-draft");
       const refusals = [...new Set(draft.stages.flatMap(stage => validateStageForConfirm(stage, draft)))];
       if (refusals.length) throw new WorkflowTemplateError("envelope-refused", "Stage confirmation refused", refusals);
       const version = record.template.currentVersion + 1;

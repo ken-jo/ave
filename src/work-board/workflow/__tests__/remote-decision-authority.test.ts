@@ -1,4 +1,7 @@
-import { expect, it } from "vitest";
+import { join } from "node:path";
+import { expect, it, vi } from "vitest";
+import { withInProcessFileQueue } from "../../../lib/with-file-lock.js";
+import * as storage from "../../../main/storage/rewrite-keeping-bytes.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { boardRunState } from "../run-state.js";
 import { autoStageOf, stageOf } from "./stage-fixtures.js";
@@ -16,34 +19,55 @@ it.each([
   const release = deferred<void>();
   let armed = false;
   let current = true;
+  let integrations = 0;
+  let blocker: Promise<void> | undefined;
   const authority = {
     refreshCurrent: async () => failure === "commit" || current,
     isCurrent: () => failure === "refresh" || current,
   };
-  async function waitAtWrite() {
-    if (!armed) return;
+  async function queueWrite<T>(write: () => Promise<T>): Promise<T> {
+    if (!armed || failure !== "refresh") return write();
     armed = false;
+    const holding = deferred<void>();
+    blocker = withInProcessFileQueue(runFile, async () => {
+      holding.resolve();
+      await release.promise;
+    });
+    await holding.promise;
+    const pending = write();
     waiting.resolve();
-    await release.promise;
+    return pending;
   }
   const h = await stageRunHarness({
     observeRunWork: true,
-    integrate: () => ({ ok: false, conflict: { conflictHash: "c".repeat(64), reason: "merge-conflict", files: [] } }),
-    wiring: board => {
-      const runs = boardRunState(board);
-      return { runs: {
-        ...runs,
-        begin: async (...args) => { if (kind === "start") await waitAtWrite(); return runs.begin(...args); },
-        update: async (...args) => { if (kind !== "start") await waitAtWrite(); return runs.update(...args); },
-      } };
+    integrate: () => {
+      integrations++;
+      return { ok: false, conflict: { conflictHash: "c".repeat(64), reason: "merge-conflict", files: [] } };
     },
+  });
+  const put = h.board.runs.put.bind(h.board.runs);
+  const settle = h.board.runs.settleRun.bind(h.board.runs);
+  const enqueueWrite = kind === "start"
+    ? vi.spyOn(h.board.runs, "put").mockImplementation((...args) => queueWrite(() => put(...args)))
+    : vi.spyOn(h.board.runs, "settleRun").mockImplementation((...args) => queueWrite(() => settle(...args)));
+  const runFile = join(h.dir, "workflow-runs.json");
+  const rewrite = storage.rewriteKeepingBytes;
+  const spy = vi.spyOn(storage, "rewriteKeepingBytes").mockImplementation(async (...args) => {
+    if (armed && failure === "commit" && args[0] === runFile) {
+      armed = false;
+      waiting.resolve();
+      await release.promise;
+    }
+    return rewrite(...args);
   });
   await h.runThenEnd(async () => {
     try {
-      const version = await h.confirm(kind === "join" ? [autoStageOf("a")] : [stageOf("a")]);
+      const version = await h.confirm([
+        kind === "join" ? autoStageOf("a") : stageOf("a"), stageOf("b", { inputs: ["a"] }),
+      ]);
       const itemId = await h.addItem(version);
       if (kind === "start") {
-        armed = true;
+          armed = true;
         const start = h.engine.runItem(itemId, { templateSource: { kind: "tailnet-create-and-run", pin: h.pinOf(version) }, authority });
         await waiting.promise;
         current = false;
@@ -68,6 +92,7 @@ it.each([
           runId, joinId: parked.stageJoins[0].joinId, conflictHash: parked.stageJoins[0].conflict?.conflictHash ?? "",
           generation: parked.stageJoins[0].conflictGeneration ?? 0, decision: "retry_merge",
         }, authority);
+      const integrationsBefore = integrations;
       armed = true;
       const decision = decide();
       await waiting.promise;
@@ -79,8 +104,12 @@ it.each([
       if (kind === "gate") expect(unchanged.stageRuns[0].gate).toMatchObject({ status: "pending" });
       else expect(unchanged.stageJoins[0]).toMatchObject({ status: "conflict", conflict: parked.stageJoins[0].conflict });
       expect(h.children).toHaveLength(1);
+      expect(integrations).toBe(integrationsBefore);
     } finally {
       release.resolve();
+      await blocker;
+      enqueueWrite.mockRestore();
+      spy.mockRestore();
     }
   });
 });
@@ -107,6 +136,87 @@ it("refuses remote start when authority is revoked before the board names the ad
       expect(h.children).toHaveLength(0);
     } finally {
       stop();
+    }
+  });
+});
+
+it("refuses a remote start revoked during workspace persistence after the board names its run", async () => {
+  const preparing = deferred<void>();
+  const release = deferred<void>();
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    wiring: board => {
+      const runs = boardRunState(board);
+      let firstWrite = true;
+      return { runs: {
+        ...runs,
+        async update(...args) {
+          if (firstWrite) {
+            firstWrite = false;
+            preparing.resolve();
+            await release.promise;
+          }
+          return runs.update(...args);
+        },
+      } };
+    },
+  });
+  await h.runThenEnd(async () => {
+    const version = await h.confirm([stageOf("a")]);
+    const itemId = await h.addItem(version);
+    let current = true;
+    const start = h.engine.runItem(itemId, {
+      templateSource: { kind: "tailnet-create-and-run", pin: h.pinOf(version) },
+      authority: { refreshCurrent: async () => current, isCurrent: () => current },
+    });
+    try {
+      await preparing.promise;
+      expect((await h.item(itemId)).runId).toBeDefined();
+      current = false;
+      release.resolve();
+      const result = await Promise.race([start, h.untilSpawned(1, itemId).then(() => ({ status: "child-started" }))]);
+      expect(result).toMatchObject({ status: "error", reasonCode: "remote-controller-authority-revoked" });
+      expect(h.children).toHaveLength(0);
+      expect((await h.item(itemId)).runStatus).toBe("error");
+    } finally {
+      release.resolve();
+    }
+  });
+});
+
+it("refuses revocation after the board enters executing and before the scheduler commits the start", async () => {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
+    const version = await h.confirm([stageOf("a")]);
+    const itemId = await h.addItem(version);
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const setStatus = h.board.setRunStatus.bind(h.board);
+    const spy = vi.spyOn(h.board, "setRunStatus").mockImplementation(async (...args) => {
+      const written = await setStatus(...args);
+      if (args[1] === "executing") {
+        entered.resolve();
+        await release.promise;
+      }
+      return written;
+    });
+    let current = true;
+    const start = h.engine.runItem(itemId, {
+      templateSource: { kind: "tailnet-create-and-run", pin: h.pinOf(version) },
+      authority: { refreshCurrent: async () => current, isCurrent: () => current },
+    });
+    try {
+      await entered.promise;
+      expect((await h.item(itemId)).runStatus).toBe("executing");
+      current = false;
+      release.resolve();
+      const result = await Promise.race([start, h.untilSpawned(1, itemId).then(() => ({ status: "child-started" }))]);
+      expect(result).toMatchObject({ status: "error", reasonCode: "remote-controller-authority-revoked" });
+      expect(h.children).toHaveLength(0);
+      expect((await h.item(itemId)).runStatus).toBe("error");
+    } finally {
+      release.resolve();
+      spy.mockRestore();
     }
   });
 });

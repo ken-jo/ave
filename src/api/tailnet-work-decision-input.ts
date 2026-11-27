@@ -2,7 +2,7 @@ import { isPositiveSafeInteger } from "../shared/safe-integer.js";
 import type { TailnetWorkDecisionRequest } from "../shared/tailnet-work-decisions.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 import { hasTemplateKeys, isGraphHash, isStageId, isTemplateId } from "../work-board/template-graph.js";
-import { parseDecidePlanInput, parseDecideStageInput, parseJoinBinding, parseTemplateRunTuple, RUN_ID_PATTERN } from "../work-board/work-decision-input.js";
+import { parseDecidePlanInput, parseDecideStageInput, parseJoinBinding, parseTemplateConfirmInput, parseTemplateRunTuple, RUN_ID_PATTERN } from "../work-board/work-decision-input.js";
 import { parseScheduleAttachmentRequest } from "../work-board/schedule-attachment-input.js";
 
 export function parseTailnetWorkDecision(raw: unknown): TailnetWorkDecisionRequest | null {
@@ -29,9 +29,8 @@ export function parseTailnetWorkDecision(raw: unknown): TailnetWorkDecisionReque
   }
   if (itemId !== undefined) return null;
   if (kind === "template-confirmation") {
-    if (!isTemplateId(templateId) || !hasTemplateKeys(input, ["expectedGraphHash", "expectedDraftRevision"])
-      || !isGraphHash(input.expectedGraphHash) || !isTemplateId(input.expectedDraftRevision)) return null;
-    return { ...base, kind, templateId, input: { expectedGraphHash: input.expectedGraphHash, expectedDraftRevision: input.expectedDraftRevision } };
+    const parsed = parseTemplateConfirmInput(input);
+    return parsed && isTemplateId(templateId) ? { ...base, kind, templateId, input: parsed } : null;
   }
   if (templateId !== undefined) return null;
   if (kind === "create-and-run") {
@@ -46,14 +45,14 @@ export function parseTailnetWorkDecision(raw: unknown): TailnetWorkDecisionReque
     return parsed && { ...base, kind, input: parsed };
   }
   if (kind === "requested-output") {
-    if (!hasTemplateKeys(input, ["itemId", "runId", "stageId", "attempt", "outputId", "outputHash", "decision"])
+    if (!hasTemplateKeys(input, ["itemId", "runId", "stageId", "attempt", "outputHash", "decision"])
       || !isPositiveSafeInteger(input.itemId) || typeof input.runId !== "string" || !RUN_ID_PATTERN.test(input.runId)
       || !isStageId(input.stageId) || !isPositiveSafeInteger(input.attempt)
-      || !isTemplateId(input.outputId) || !isGraphHash(input.outputHash)
+      || !isGraphHash(input.outputHash)
       || (input.decision !== "approve" && input.decision !== "reject")) return null;
     return { ...base, kind, input: {
       itemId: input.itemId, runId: input.runId, stageId: input.stageId, attempt: input.attempt,
-      outputId: input.outputId, outputHash: input.outputHash, decision: input.decision,
+      outputHash: input.outputHash, decision: input.decision,
     } };
   }
   return null;

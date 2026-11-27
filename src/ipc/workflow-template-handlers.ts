@@ -1,5 +1,6 @@
 import { attachWorkflowSchedule } from "../main/workflow-schedule-attachment.js";
 import { parseScheduleAttachmentRequest } from "../work-board/schedule-attachment-input.js";
+import { parseTemplateConfirmInput } from "../work-board/work-decision-input.js";
 import { mintHostDecisionProof } from "../main/workflow-template-decision.js";
 import { ipcMain, type IpcMainInvokeEvent } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "./gated.js";
@@ -8,9 +9,9 @@ import type { IpcDeps } from "./types.js";
 import { WORK_BOARD } from "../shared/ipc-channels.js";
 import { securitySettingsGestures } from "./security-settings-gesture.js";
 import { isWorkflowTemplateProposalId } from "../shared/workflow-template-types.js";
-import { hasTemplateKeys, isGraphHash, isTemplateId, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
+import { isTemplateId, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { resolveAuthorizedWorkspaceProject } from "../main/project-root-authorization.js";
-import type { TemplateScope, WorkflowTemplateConfirmInput, WorkflowTemplateIpcResult } from "../shared/workflow-template-types.js";
+import type { TemplateScope, WorkflowTemplateIpcResult } from "../shared/workflow-template-types.js";
 
 export function registerWorkflowTemplateHandlers(
   deps: IpcDeps,
@@ -102,7 +103,8 @@ export function registerWorkflowTemplateHandlers(
     });
   });
   handle(WORK_BOARD.templateConfirm, async (store, event, id, raw, intent, ...args) => {
-    requireTemplate(args.length === 0 && isTemplateId(id) && hasTemplateKeys(raw, ["expectedGraphHash", "expectedDraftRevision"]) && isGraphHash(raw.expectedGraphHash) && isTemplateId(raw.expectedDraftRevision));
+    const input = parseTemplateConfirmInput(raw);
+    requireTemplate(args.length === 0 && isTemplateId(id) && input);
     requireOwnerFrame(event, WORK_BOARD.templateConfirm);
     if (!spendConfirmation(event, WORK_BOARD.templateConfirm, id, raw, intent)) throw new TemplateGestureError();
     const proposalId = isWorkflowTemplateProposalId(id) ? id : undefined;
@@ -111,7 +113,7 @@ export function registerWorkflowTemplateHandlers(
       const { draft } = await load(id);
       if (draft) requireTemplate(authorizedScope(draft.scope), "scope-not-authorised");
     }
-    const result = await store.confirmDraft(id, raw as unknown as WorkflowTemplateConfirmInput, { who: "user", origin: "local-desktop" });
+    const result = await store.confirmDraft(id, input, { who: "user", origin: "local-desktop" });
     deps.auditLogger.log({ timestamp: result.confirmedAt, sessionId: `work-board:${result.templateId}`, type: "approval", output: JSON.stringify({ event: "template_confirmed", proposalId, templateId: result.templateId, version: result.version, graphHash: result.graphHash, origin: "local-desktop" }) });
     return result;
   });

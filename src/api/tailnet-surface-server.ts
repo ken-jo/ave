@@ -1,4 +1,5 @@
-import { TAILNET_WORK_DECISION_CAPABILITY, TAILNET_WORK_DECISION_PATH, type TailnetWorkDecisionRequest, type TailnetWorkDecisionResponse } from "../shared/tailnet-work-decisions.js";
+import { reserveTailnetListenerPort } from "../shared/tailnet-listener-port.js";
+import { TAILNET_WORK_DECISION_CAPABILITY, TAILNET_WORK_DECISION_PATH, type TailnetWorkDecisionRequest, type TailnetWorkDecisionResponse, type TailnetWorkReview, type TailnetWorkReviewSnapshot } from "../shared/tailnet-work-decisions.js";
 import type { RemoteWorkDecisionEvidence } from "../main/workflow-template-decision.js";
 import { parseTailnetWorkDecision } from "./tailnet-work-decision-input.js";
 import { WORK_DECISION_AUTHORITY_REVOKED } from "../work-board/work-decision-authority.js";
@@ -110,6 +111,7 @@ export type TailnetWorkDecisionHandler = (request: TailnetWorkDecisionRequest, e
 
 interface TailnetWebWorkDecisions {
   readonly decide: TailnetWorkDecisionHandler;
+  readonly list?: (evidence: RemoteWorkDecisionEvidence) => Promise<readonly TailnetWorkReview[]>;
   readonly verifyServeTarget: () => Promise<boolean>;
   readonly receipts: TailnetControllerReceiptStore;
 }
@@ -165,14 +167,13 @@ interface TailnetObserverEvent {
   readonly scope: string;
 }
 
-interface TailnetObserverSnapshot {
+interface TailnetObserverSnapshot extends TailnetWorkReviewSnapshot {
   readonly version: typeof SHARED_CONVERSATION_PROTOCOL_VERSION;
   readonly cursor: number;
   readonly updatedAt: number | null;
   readonly busy: boolean;
   readonly awaitingLocalApproval: boolean;
   readonly assistantText: string;
-  readonly scope: string;
 }
 
 interface TailnetObserverScope {
@@ -271,7 +272,7 @@ function authorizedTailnetLogin(
 ): string | undefined {
   const login = singleHeader(headers, "tailscale-user-login");
   if (!isSafeLogin(login)) return undefined;
-  if (authorization.kind === "tailnet-identity") return login;
+  if (authorization.kind === "tailnet-identity") return role === TAILNET_WORK_DECISION_CAPABILITY ? undefined : login;
   const expectedAppCapability = authorization.capability;
   const rawCapabilities = singleHeader(headers, "tailscale-app-capabilities");
   if (
@@ -448,15 +449,26 @@ export function startTailnetSurfaceServer(
   return new Promise<TailnetSurfaceServer>((resolve, reject) => {
     let settled = false;
     let closing: Promise<void> | undefined;
+    let releasePort: (() => void) | undefined;
     const fail = (error: Error) => {
       if (settled) return;
       settled = true;
       server.removeListener("error", onError);
       if (server.listening) server.close();
+      else releasePort?.();
+      unsubscribePairedSharing?.();
+      unsubscribeWebSessions?.();
       reject(error);
     };
     const onError = (error: Error) => fail(error);
     server.on("error", onError);
+    try {
+      releasePort = reserveTailnetListenerPort(options.port);
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error("Tailnet listener port reservation failed"));
+      return;
+    }
+    server.once("close", releasePort);
     server.listen(options.port, host, () => {
       if (settled) return;
       const boundPort = (server.address() as AddressInfo | null)?.port;
@@ -736,7 +748,7 @@ async function routeTailnetWeb(
     return;
   }
   if (path === "/tailnet/v2/web/snapshot") {
-    routeTailnetWebSnapshot(req, res, options, web, currentScope, webReadRequestLimiter);
+    await routeTailnetWebSnapshot(req, res, options, web, currentScope, webReadRequestLimiter);
     return;
   }
   if (path === "/tailnet/v2/web/events") {
@@ -959,14 +971,14 @@ async function resolveTailnetDeviceStatus(
   }
 }
 
-function routeTailnetWebSnapshot(
+async function routeTailnetWebSnapshot(
   req: IncomingMessage,
   res: ServerResponse,
   options: TailnetSurfaceServerOptions,
   web: TailnetWebRuntime,
   currentScope: TailnetObserverScopeReader,
   requestLimiter: TailnetRequestLimiter,
-): void {
+): Promise<void> {
   if ((req.method ?? "GET") !== "GET") {
     req.resume();
     sendTailnetWebJson(res, web, 405, { ok: false, error: "method-not-allowed" });
@@ -989,14 +1001,40 @@ function routeTailnetWebSnapshot(
     true,
   );
   if (authorization === null) return;
+  const work = web.workDecisions;
+  const { login, pairedShare, scope, cookieToken } = authorization;
+  let workReviews: readonly TailnetWorkReview[] | undefined;
+  if (work?.list && pairedShare.permission === "control"
+    && authorizedTailnetLogin(req.headers, options.authorization, TAILNET_WORK_DECISION_CAPABILITY) !== undefined) {
+    const isCurrent = () => {
+      const session = web.sessions.resolve(cookieToken);
+      return session !== null && sameTailnetWebSessionAuthority(session, pairedShare)
+        && isTailnetShareScopeCurrent(pairedShare, currentScope, scope);
+    };
+    const refreshCurrent = async () => isCurrent()
+      && await pairedShare.pairedShareGuard.refreshCurrent(pairedShare.pairedShare) && isCurrent();
+    if (!await refreshCurrent()) {
+      sendTailnetWebJson(res, web, 401, { ok: false, error: "web-session-revoked" }, true);
+      return;
+    }
+    try {
+      workReviews = await work.list({ login, conversationId: scope.conversationId, authority: { isCurrent, refreshCurrent } });
+    } catch {
+      sendTailnetWebJson(res, web, 503, { ok: false, error: "work-review-unavailable" });
+      return;
+    }
+    if (!isCurrent()) {
+      sendTailnetWebJson(res, web, 401, { ok: false, error: "web-session-revoked" }, true);
+      return;
+    }
+  }
+  const snapshot: TailnetObserverSnapshot = {
+    ...toTailnetObserverSnapshot(options.projectionStore.snapshot(scope.conversationId, { busy: options.isConversationBusy() }), scope.value),
+    ...(workReviews === undefined ? {} : { workReviews }),
+  };
   sendTailnetWebJson(res, web, 200, {
     ok: true,
-    snapshot: toTailnetObserverSnapshot(
-      options.projectionStore.snapshot(authorization.scope.conversationId, {
-        busy: options.isConversationBusy(),
-      }),
-      authorization.scope.value,
-    ),
+    snapshot,
   });
 }
 
@@ -1107,6 +1145,7 @@ async function routeTailnetWebWorkDecision(
   const work = web.workDecisions;
   if (!work) return fail(404, "work-decisions-disabled");
   if (req.method !== "POST") return fail(405, "method-not-allowed");
+  if (options.authorization.kind === "tailnet-identity") return fail(403, "work-decision-capability-required");
   const authorize = (consumeRateLimit: boolean) =>
     authorizeTailnetWebRequest(req, res, options, web, currentScope, requestLimiter, TAILNET_WORK_DECISION_CAPABILITY, consumeRateLimit);
   if (authorize(true) === null) return;

@@ -17,8 +17,8 @@ import {
   isTailnetWebOrigin,
   type TailnetPairingDeviceStatus,
   type TailnetSurfaceServer,
-  type TailnetWorkDecisionHandler,
 } from "../api/tailnet-surface-server.js";
+import type { TailnetWorkDecisions } from "./tailnet-work-decisions.js";
 import {
   isTailnetAppCapabilityKey,
   parseTailnetAuthorization,
@@ -146,7 +146,7 @@ export interface StartTailnetObserverServerOptions {
   readonly encryption: SecretEncryption;
   readonly conversationSurfaceRuntime: ConversationSurfaceRuntime;
   readonly getCurrentConversationId: () => string;
-  readonly workDecisionHandler?: TailnetWorkDecisionHandler;
+  readonly workDecisions?: Pick<TailnetWorkDecisions, "decide" | "list">;
   readonly isConversationBusy: () => boolean;
   // Present only in main-process composition; controller stays OFF without it.
   readonly conversationCommandPort?: ConversationCommandPort;
@@ -655,8 +655,8 @@ async function startForBoot(
       : {}),
     ...(webOrigin === undefined ? {} : { web: {
       origin: webOrigin,
-      ...(receiptStore && options.workDecisionHandler ? { workDecisions: {
-        decide: options.workDecisionHandler,
+      ...(receiptStore && options.workDecisions ? { workDecisions: {
+        ...options.workDecisions,
         receipts: receiptStore,
         verifyServeTarget: () => verifyPrivateServeTarget(webOrigin, config.port),
       } } : {}),

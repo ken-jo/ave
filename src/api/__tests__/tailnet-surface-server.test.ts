@@ -22,6 +22,14 @@ import type { TailnetAuthorization } from "../../shared/tailnet-observer-config.
 import { deferred } from "../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
+import { openEgressRelay, startEgressRelayService, stopEgressRelayService } from "../../permissions/egress-relay/relay.js";
+import { openEgressInvocation } from "../../permissions/egress-invocations.js";
+import type { TailnetWorkReview } from "../../shared/tailnet-work-decisions.js";
+import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
+import { resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
+import { spawnWithSandbox } from "../../tools/shell-tools.js";
+import { prepareSandboxFixture } from "../../tools/__tests__/support/prepared-shell.js";
+import { quoteSandboxWrappedWord } from "../../permissions/sandbox-wrapped-command.js";
 
 const CAPABILITY = "ave.example.com/cap/conversation-observer";
 const APP_CAPABILITY = Object.freeze({ kind: "app-capability" as const, capability: CAPABILITY });
@@ -2115,5 +2123,168 @@ it("blocks a duplicate work request in flight and notices a paired share revoked
     expect(await refused.json()).toEqual({ ok: false, error: "remote-controller-authority-revoked" });
   } finally {
     release.resolve();
+  }
+});
+
+it("keeps identity-only Web reads and requires a work-decision capability for mutations", async () => {
+  const decide = vi.fn(async () => ({ ok: true as const, kind: "join" as const }));
+  const { server } = await fixture({
+    authorization: { kind: "tailnet-identity" },
+    pairedSharing: pairedSharing({ observe: true, control: true }).authorizer,
+    web: { origin: WEB_ORIGIN, workDecisions: { decide, verifyServeTarget: async () => true, receipts: createReceiptStore() } },
+  });
+  const session = await openWebSession(server);
+  const headers = webSessionHeaders(session.cookieToken, session.csrfToken, ["observer", "controller", "work-decision"]);
+  const snapshot = await fetch(url(server, "/tailnet/v2/web/snapshot"), { headers });
+  expect(snapshot.status).toBe(200);
+  const { scope } = (await snapshot.json()).snapshot;
+  const result = await fetch(url(server, "/tailnet/v2/web/work-decisions"), {
+    method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ id: crypto.randomUUID(), scope, kind: "plan", itemId: 1,
+      input: { runId: "run", planHash: "a".repeat(64), decision: "approve" } }),
+  });
+  expect(result.status).toBe(403);
+  expect(await result.json()).toMatchObject({ error: "work-decision-capability-required" });
+  expect(decide).not.toHaveBeenCalled();
+});
+
+it("refuses the live listener through an agent egress relay while the paired Web path succeeds", async () => {
+  const { server } = await fixture({
+    pairedSharing: pairedSharing({ observe: true, control: true }).authorizer,
+    web: { origin: WEB_ORIGIN },
+  });
+  const session = await openWebSession(server);
+  const headers = webSessionHeaders(session.cookieToken, session.csrfToken);
+  const target = url(server, "/tailnet/v2/web/snapshot");
+  expect((await fetch(target, { headers })).status).toBe(200);
+
+  startEgressRelayService({ ask: async () => true, allow: [`127.0.0.1:${server.port}`] });
+  const invocation = openEgressInvocation({
+    kind: "shell", toolName: "bash", toolUseId: undefined,
+    context: { sessionId: undefined, workspaceRoot: undefined, approvalSurface: "unavailable" },
+  });
+  try {
+    const relay = await openEgressRelay(invocation.token);
+    const response = await new Promise<{ status: number | undefined; body: string }>((resolve, reject) => {
+      const request = httpRequest({
+        host: "127.0.0.1", port: relay.port, path: target,
+        headers: { ...headers, "Proxy-Authorization": relay.proxyAuthorization },
+      }, result => {
+        let body = "";
+        result.setEncoding("utf8").on("data", chunk => { body += chunk; });
+        result.on("end", () => resolve({ status: result.statusCode, body }));
+      });
+      request.on("error", reject).end();
+    });
+    expect(response).toMatchObject({ status: 403, body: expect.stringContaining("tailnet-loopback-destination") });
+  } finally {
+    invocation.release();
+    await stopEgressRelayService();
+  }
+});
+
+it("carries pending review bindings on the paired snapshot and withholds them after revocation", async () => {
+  const sharing = pairedSharing({ observe: true, control: true });
+  const binding = { itemId: 1, input: { runId: "run", planHash: "a".repeat(64) } };
+  const list = vi.fn(async (): Promise<readonly TailnetWorkReview[]> => [{
+    kind: "plan", deny: "reject", binding,
+    review: {
+      kind: "plan", key: "plan:1", scope: { type: "unscoped" }, title: "Work", arrivedAt: "2026-11-27T00:00:00Z",
+      itemId: 1, runId: "run", planHash: binding.input.planHash, plan: "Current review",
+      revision: 0, planNumber: 1, phase: "pending", stale: false,
+    },
+  }]);
+  const decide = vi.fn(async () => ({ ok: true as const, kind: "plan" as const, status: "rejected" as const }));
+  const { server } = await fixture({
+    pairedSharing: sharing.authorizer,
+    web: { origin: WEB_ORIGIN, workDecisions: { decide, list, verifyServeTarget: async () => true, receipts: createReceiptStore() } },
+  });
+  const snapshot = url(server, "/tailnet/v2/web/snapshot");
+  const session = await openWebSession(server);
+  const headers = webSessionHeaders(session.cookieToken, session.csrfToken, ["observer", "controller", "work-decision"]);
+  const unpaired = await fetch(snapshot, { headers: { ...headers, Cookie: "" } });
+  expect(unpaired.status).toBe(401);
+  expect(await unpaired.text()).not.toContain("Current review");
+  expect(list).not.toHaveBeenCalled();
+
+  const observer = await fetch(snapshot, { headers: webSessionHeaders(session.cookieToken, session.csrfToken) });
+  expect(observer.status).toBe(200);
+  expect(await observer.text()).not.toContain("Current review");
+  expect(list).not.toHaveBeenCalled();
+
+  const read = await fetch(snapshot, { headers });
+  expect(read.status).toBe(200);
+  const { scope, workReviews } = (await read.json()).snapshot;
+  expect(workReviews).toEqual(await list.mock.results[0].value);
+  const [{ kind, binding: reviewed }] = workReviews;
+  const request = { id: crypto.randomUUID(), scope, kind, ...reviewed, input: { ...reviewed.input, decision: "reject" } };
+  const response = await fetch(url(server, "/tailnet/v2/web/work-decisions"), {
+    method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(request),
+  });
+  expect(response.status).toBe(200);
+  expect(decide).toHaveBeenCalledWith(request, expect.objectContaining({ conversationId: CONVERSATION_ID }));
+
+  sharing.revoke();
+  const revoked = await fetch(snapshot, { headers });
+  expect(revoked.status).toBe(401);
+  expect(await revoked.text()).not.toContain("Current review");
+  expect(list).toHaveBeenCalledOnce();
+});
+
+it("drops review payload when the paired share is revoked while projection is pending", async () => {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const sharing = pairedSharing({ observe: true, control: true });
+  const list = vi.fn(async () => {
+    entered.resolve();
+    await release.promise;
+    return [];
+  });
+  const { server } = await fixture({
+    pairedSharing: sharing.authorizer,
+    web: { origin: WEB_ORIGIN, workDecisions: {
+      decide: async () => ({ ok: false, error: "not_pending" }),
+      list, verifyServeTarget: async () => true, receipts: createReceiptStore(),
+    } },
+  });
+  const session = await openWebSession(server);
+  const headers = webSessionHeaders(session.cookieToken, session.csrfToken, ["observer", "controller", "work-decision"]);
+  const request = fetch(url(server, "/tailnet/v2/web/snapshot"), { headers });
+  try {
+    await entered.promise;
+    sharing.revoke();
+    release.resolve();
+    const response = await request;
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ ok: false, error: "web-session-revoked" });
+  } finally {
+    release.resolve();
+  }
+});
+
+it.runIf((process.platform === "darwin" || process.platform === "linux") && !shouldSkipNativeSandboxTests())("blocks the active listener from a confined shell both directly and through its proxy", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "tailnet-shell-"));
+  try {
+    await initializeRequiredSandbox({ allowedDomains: [], strictAllowlist: false }, async () => true);
+    const { server } = await fixture({
+      pairedSharing: pairedSharing({ observe: true, control: true }).authorizer,
+      web: { origin: WEB_ORIGIN },
+    });
+    const session = await openWebSession(server);
+    const headers = webSessionHeaders(session.cookieToken, session.csrfToken);
+    const target = url(server, "/tailnet/v2/web/snapshot");
+    expect((await fetch(target, { headers })).status).toBe(200);
+
+    const curl = (bypass: string) => [
+      "/usr/bin/curl", "-sS", "-w", "%{http_code}", "--noproxy", bypass, target,
+    ].map(quoteSandboxWrappedWord).join(" ");
+    const command = `${curl("127.0.0.1")}; printf '\\n'; ${curl("")}`;
+    const result = await spawnWithSandbox(command, cwd, [cwd], 10, prepareSandboxFixture(command, cwd, { toolUseId: "tailnet-shell" }));
+    expect(result.output).toMatch(/000/u);
+    expect(result.output).toContain("tailnet-loopback-destination");
+    expect(result.output).toMatch(/403/u);
+  } finally {
+    await resetAsrtSandbox();
+    await cleanupTmpDir(cwd);
   }
 });

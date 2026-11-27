@@ -1,14 +1,17 @@
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { redactForLLM } from "../audit/dlp-filter.js";
+import { hasUnsafeDirectiveControlChars } from "../engine/parent-directive.js";
 import type { TailnetWorkDecisionHandler } from "../api/tailnet-surface-server.js";
 import type { WorkBoardEngine } from "../core/work-board-engine.js";
 import type { SettingsService } from "../data/settings-store.js";
-import type { TailnetRequestedOutputDecision, TailnetWorkDecisionRequest, TailnetWorkDecisionResponse } from "../shared/tailnet-work-decisions.js";
+import type { TailnetRequestedOutputDecision, TailnetRequestedOutputReview, TailnetWorkDecisionRequest, TailnetWorkDecisionResponse, TailnetWorkReview } from "../shared/tailnet-work-decisions.js";
 import { MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId } from "../shared/work-board-types.js";
-import { isWorkflowTemplateProposalId, type TemplateScope, type TemplateVersionPin } from "../shared/workflow-template-types.js";
+import { isWorkflowTemplateProposalId, type TemplateScope, type TemplateVersionPin, type WorkflowTemplateDraftInput } from "../shared/workflow-template-types.js";
 import { requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { WORK_DECISION_AUTHORITY_REVOKED, WorkDecisionAuthorityError } from "../work-board/work-decision-authority.js";
-import { isAuthorizedWorkspaceProjectRoot, resolveAuthorizedWorkspaceProject } from "./project-root-authorization.js";
+import { isAuthorizedWorkspaceProjectRoot, listAuthorizedWorkspaceProjects, resolveAuthorizedWorkspaceProject } from "./project-root-authorization.js";
+import { maskWorkflowText } from "../work-board/workflow/run-read-projection.js";
+import { planScope, planView, workflowApprovalViews } from "./work-approval-review.js";
 import type { RoutinesStore } from "./routines-store.js";
 import type { WorkBoardStore } from "./work-board-store.js";
 import { attachWorkflowSchedule } from "./workflow-schedule-attachment.js";
@@ -26,15 +29,18 @@ interface TailnetWorkDecisionServices {
 
 type RequestedOutputDecision = { ok: true } | { ok: false; error: string };
 
-/** The output owner must check the exact pending output and use the supplied authority at its own commit point. */
-type RequestedOutputDecisionHandler = (
-  input: TailnetRequestedOutputDecision,
-  evidence: RemoteWorkDecisionEvidence,
-) => Promise<RequestedOutputDecision>;
+type RequestedOutputBinding = TailnetRequestedOutputReview["binding"]["input"];
+
+/** The owner rechecks the aggregate stage binding and authority at its own commit. Approved executions wait for a local window. */
+interface RequestedOutputDecisions {
+  list(binding: RequestedOutputBinding, evidence: RemoteWorkDecisionEvidence): Promise<TailnetRequestedOutputReview["review"] | null>;
+  decide(input: TailnetRequestedOutputDecision, evidence: RemoteWorkDecisionEvidence, note?: string): Promise<RequestedOutputDecision>;
+}
 
 export interface TailnetWorkDecisions {
   readonly decide: TailnetWorkDecisionHandler;
-  registerRequestedOutputDecision(handler: RequestedOutputDecisionHandler): () => void;
+  list(evidence: RemoteWorkDecisionEvidence): Promise<readonly TailnetWorkReview[]>;
+  registerRequestedOutputDecision(handler: RequestedOutputDecisions): () => void;
 }
 
 type StartRequest = Extract<TailnetWorkDecisionRequest, { kind: "create-and-run" }>["input"];
@@ -59,7 +65,106 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
   const routines = services.routinesStore;
   const auditLogger = services.auditLogger;
   const settingsService = services.settingsService;
-  let outputRegistration: { handler: RequestedOutputDecisionHandler } | undefined;
+  let outputRegistration: RequestedOutputDecisions | undefined;
+
+  function withOutputAuthority(evidence: RemoteWorkDecisionEvidence, registered: RequestedOutputDecisions): RemoteWorkDecisionEvidence {
+    const isCurrent = () => outputRegistration === registered && evidence.authority.isCurrent();
+    return { ...evidence, authority: { isCurrent, refreshCurrent: async () => await evidence.authority.refreshCurrent() && isCurrent() } };
+  }
+
+  async function decideOutputs(input: TailnetRequestedOutputDecision, evidence: RemoteWorkDecisionEvidence, note?: string): Promise<RequestedOutputDecision> {
+    const registered = outputRegistration;
+    if (!registered) return refused("requested-output-unavailable");
+    const scoped = withOutputAuthority(evidence, registered);
+    if (!await scoped.authority.refreshCurrent()) return refused(WORK_DECISION_AUTHORITY_REVOKED);
+    return registered.decide(input, scoped, note);
+  }
+
+  async function list(evidence: RemoteWorkDecisionEvidence): Promise<readonly TailnetWorkReview[]> {
+    if (!evidence.authority.isCurrent()) return [];
+    const [items, records, schedules] = await Promise.all([
+      board.readApprovalItems(), templates.listReviewRecords(), routines.listScheduleDisplay(),
+    ]);
+    if (!items) throw new Error("Work approval rows are unavailable");
+    const projects = listAuthorizedWorkspaceProjects().map(({ projectRoot, projectName, isDefault }) => ({
+      projectRoot, projectName, isDefault: isDefault === true,
+    }));
+    const rows = items.filter(item => planScope(item, projects) !== null);
+    const review: TailnetWorkReview[] = [];
+    for (const item of rows) {
+      const view = planView(item, projects);
+      if (view?.phase === "pending") {
+        const { itemId, runId, planHash } = view;
+        review.push({ kind: "plan", deny: "reject", binding: { itemId, input: { runId, planHash } }, review: view });
+      }
+    }
+    for (const item of await engine.readTemplateRuns(rows.filter(row => row.templateId !== undefined && row.runId !== undefined))) {
+      for (const view of workflowApprovalViews(item, projects)) {
+        if (view.kind === "join-conflict") {
+          review.push({ kind: "join", deny: "reject", binding: { itemId: item.id, input: view.binding }, review: view });
+          continue;
+        }
+        review.push({ kind: "stage", deny: "reject", binding: { itemId: item.id, input: view.binding }, review: view });
+        const registered = outputRegistration;
+        const { outputHash, runId, stageId, attempt } = view.binding;
+        if (!registered || !outputHash || !view.outputs?.length) continue;
+        const scoped = withOutputAuthority(withProjectAuthority(evidence, item.projectRoot), registered);
+        if (!scoped.authority.isCurrent()) continue;
+        const input = { itemId: item.id, runId, stageId, attempt, outputHash };
+        const payload = await registered.list(input, scoped);
+        if (payload && scoped.authority.isCurrent()) {
+          review.push({ kind: "requested-output", deny: "reject", binding: { input }, review: payload });
+        }
+      }
+    }
+    const confirmations = (templateId: string, expectedDraftRevision: string, expectedGraphHash: string, draft: WorkflowTemplateDraftInput) => {
+      if (scopeAuthorised(draft.scope)) review.push({
+        kind: "template-confirmation", deny: "dismiss",
+        binding: { templateId, input: { expectedDraftRevision, expectedGraphHash } }, review: draft,
+      });
+    };
+    for (const proposal of templates.listProposals(evidence.conversationId)) {
+      confirmations(proposal.id, proposal.id, proposal.graphHash, proposal.draft);
+    }
+    const attachments = new Map(records.filter(record => scopeAuthorised(record.template.scope)).flatMap(record => (record.scheduleAttachments ?? [])
+      .filter(attachment => attachment.detachedAt === undefined).map(attachment => [attachment.id, attachment] as const)));
+    for (const { template, versions, draft } of records) {
+      if (!scopeAuthorised(template.scope)) continue;
+      if (draft) {
+        const { revision, graphHash, updatedAt: _updatedAt, ...graph } = draft;
+        confirmations(template.id, revision, graphHash, graph);
+      }
+      const current = versions.find(version => version.version === template.currentVersion);
+      if (!current) continue;
+      const { templateId, version, graphHash, stages, edges, setupCommands } = current;
+      const pin = { templateId, version, graphHash };
+      const { name, scope } = template;
+      const choices = scope.kind === "all" ? projects : projects.filter(project => project.projectRoot === scope.projectRoot);
+      const projectRoot = choices.find(project => project.isDefault)?.projectRoot ?? choices[0]?.projectRoot;
+      review.push({
+        kind: "create-and-run", deny: "dismiss",
+        binding: { input: { ...pin, title: name, ...(projectRoot === undefined ? {} : { projectRoot }) } },
+        review: { name, scope, graph: { stages, edges, setupCommands }, projects: choices },
+      });
+      for (const routine of schedules.routines) {
+        if (routine.execution !== "template-run" || !routine.schedule || routine.templateAttention === "attachment-unavailable"
+          || (routine.projectRoot !== undefined && !isAuthorizedWorkspaceProjectRoot(routine.projectRoot))) continue;
+        const prior = routine.attachmentId === undefined ? undefined : attachments.get(routine.attachmentId);
+        review.push({
+          kind: "schedule-attachment", deny: "dismiss",
+          binding: { input: { ...pin, expectedScope: scope, scheduleId: routine.id } },
+          review: {
+            name, ...(prior ? { existingPin: { templateId: prior.templateId, version: prior.version, graphHash: prior.graphHash } } : {}),
+            routine: {
+              schedule: routine.schedule, title: routine.title && maskWorkflowText(routine.title), templateAttention: routine.templateAttention,
+              pausedAt: routine.pausedAt, lastTemplateSkip: routine.lastTemplateSkip,
+            },
+          },
+        });
+      }
+    }
+    return evidence.authority.isCurrent() ? review : [];
+  }
 
   async function start(input: StartRequest, evidence: RemoteWorkDecisionEvidence): Promise<TailnetWorkDecisionResponse> {
     const { templateId, version, graphHash, projectRoot, title, detail } = input;
@@ -122,28 +227,32 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
     if (item.item.templateRunError) return refused("invalid-template-run");
     evidence = withProjectAuthority(evidence, item.item.projectRoot);
 
-    if (request.kind === "requested-output") {
-      if (item.item.runId !== request.input.runId) return refused("run_mismatch");
-      const registered = outputRegistration;
-      if (!registered) return refused("requested-output-unavailable");
-      if (!await evidence.authority.refreshCurrent() || outputRegistration !== registered) return refused(WORK_DECISION_AUTHORITY_REVOKED);
-      const result = await registered.handler(request.input, {
-        ...evidence,
-        authority: {
-          isCurrent: () => outputRegistration === registered && evidence.authority.isCurrent(),
-          refreshCurrent: async () => await evidence.authority.refreshCurrent() && outputRegistration === registered,
-        },
-      });
-      return result.ok ? { ok: true, kind: request.kind } : refused(result.error);
-    }
     if (request.kind === "join") {
       const result = await engine.decideStageJoin(itemId, request.input, evidence.authority);
       return result.ok ? { ok: true, kind: request.kind } : refused(result.reason);
     }
-    const { note } = request.input;
+    const note = request.kind === "requested-output" ? undefined : request.input.note;
     if (note !== undefined && note.length > MAX_PLAN_NOTE_LENGTH) return refused("note_too_long");
     const effectiveNote = note !== undefined && settingsService.get("privacy")?.piiRedactEnabled ? redactForLLM(note).redacted : note;
-
+    if (request.kind === "requested-output" || (request.kind === "stage" && request.input.decision !== "request_changes")) {
+      const { runId, stageId, attempt, outputHash, decision } = request.input;
+      if (item.item.runId !== runId) return refused("run_mismatch");
+      const [current] = await engine.readTemplateRuns([item.item]);
+      const pending = current?.pendingWorkflowDecisions?.find(entry => entry.kind === "stage-gate" && entry.binding.stageId === stageId);
+      if (pending?.kind === "stage-gate" && pending.outputs?.length) {
+        if (pending.binding.attempt !== attempt) return refused("attempt_mismatch");
+        if (request.kind === "stage" && request.input.resultHash !== pending.binding.resultHash) return refused("result_mismatch");
+        if (outputHash === undefined || outputHash !== pending.binding.outputHash) return refused("output_mismatch");
+        if (effectiveNote !== undefined && hasUnsafeDirectiveControlChars(effectiveNote)) return refused("note_invalid");
+        // The owner commits both the stage gate and the execution records. A remote decision never starts those executions.
+        if (decision === "request_changes") return refused("not_pending");
+        const result = await decideOutputs({ itemId, runId, stageId, attempt, outputHash, decision }, evidence, effectiveNote);
+        if (!result.ok) return refused(result.error);
+        return request.kind === "requested-output" ? { ok: true, kind: request.kind }
+          : { ok: true, kind: request.kind, status: decision === "approve" ? "approved" : "rejected" };
+      }
+      if (request.kind === "requested-output") return refused(outputRegistration ? "not_pending" : "requested-output-unavailable");
+    }
     const result = request.kind === "plan"
       ? (await engine.decidePlan(itemId, { ...request.input, note: effectiveNote }, { authority: evidence.authority })).result
       : await engine.decideStageGate(itemId, { ...request.input, note: effectiveNote }, evidence.authority);
@@ -151,9 +260,10 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
   }
 
   return {
+    list,
     registerRequestedOutputDecision(handler) {
       if (outputRegistration) throw new Error("Requested output decision handler already registered");
-      const registration = { handler };
+      const registration = { ...handler };
       outputRegistration = registration;
       return () => { if (outputRegistration === registration) outputRegistration = undefined; };
     },
@@ -208,8 +318,8 @@ function auditBindingOf(request: TailnetWorkDecisionRequest) {
       return { itemId: request.itemId, runId, joinId, generation, conflictHash, decision };
     }
     case "requested-output": {
-      const { itemId, runId, stageId, attempt, outputId, outputHash, decision } = request.input;
-      return { itemId, runId, stageId, attempt, outputId, outputHash, decision };
+      const { itemId, runId, stageId, attempt, outputHash, decision } = request.input;
+      return { itemId, runId, stageId, attempt, outputHash, decision };
     }
     case "template-confirmation": {
       const { expectedGraphHash, expectedDraftRevision } = request.input;

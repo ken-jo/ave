@@ -1374,6 +1374,7 @@ export class WorkBoardStore {
   async setRunStatus(
     id: number,
     runStatus: WorkItemRunStatus,
+    authority?: WorkDecisionAuthority,
   ): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
@@ -1391,7 +1392,8 @@ export class WorkBoardStore {
         runUpdatedAt: iso,
       };
       board.items[idx] = updated;
-      await this.commit(board);
+      if (authority && !await authority.refreshCurrent()) throw new WorkDecisionAuthorityError();
+      await this.commit(board, {}, authority?.isCurrent);
       await appendActivity(this.activity, {
         kind: runStatusActivityKind(runStatus),
         itemId: updated.id,

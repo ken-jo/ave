@@ -165,6 +165,7 @@ GET  /tailnet/v2/web
 GET  /tailnet/v2/web/snapshot
 GET  /tailnet/v2/web/events?scope=<public-uuid>
 POST /tailnet/v2/web/commands
+POST /tailnet/v2/web/work-decisions
 POST /tailnet/v2/web/logout
 POST /tailnet/v2/web/pairing/claim
 POST /tailnet/v3/web/attachments
@@ -172,6 +173,15 @@ POST /tailnet/v3/web/attachments
 
 The tailnet root is the same document: the `*.ts.net` name is the whole address
 a person is handed, so it must not answer with a 404 they cannot interpret.
+
+Work reviews appear in `snapshot.workReviews` for a current paired controller
+with the work-decision capability. The review carries the desktop projection
+and the binding for the decision POST. The client sends the snapshot scope and
+a submission UUID with that binding. The host rechecks the binding and the
+controller's authority before committing. Template confirmation, Create and run,
+and schedule attachment are dismissed on the client. Plan, stage, join and
+requested-output reviews support server-recorded rejection. An approved output
+remains pending for continuation in a local app window.
 
 The document requires an authorized observer identity plus an active P2 observe
 share. Without that share it serves the invitation-code page rather than raw
@@ -288,9 +298,9 @@ dedicated OS service account. The listener also bounds sockets and requests,
 rejects GET bodies, drops slow SSE clients, and forces bounded renewal: native
 clients reauthorize while the Web adapter receives an explicit reconnect event.
 
-Tailscale Serve protects Tailnet/LAN ingress only. Any local process able to
-reach loopback can forge these headers, so host/OS isolation remains a
-deployment prerequisite.
+Processes launched by the user under the desktop account are trusted to reach
+loopback. The sharing headers are trusted on that local hop. See the
+[agent network boundary](#tailnet-only-remote-sharing-model-and-controller-follow-up).
 
 ## Telegram private-DM adapter
 
@@ -708,10 +718,20 @@ ConversationSurfaceRuntime
 The backend listens only on loopback. Tailscale Serve is the only supported
 network ingress that supplies identity/app-capability headers; use
 deny-by-default grants and explicit groups, not `autogroup:member` or broad
-wildcard access. This protects the LAN/Tailnet boundary, not against an
-untrusted local process able to reach loopback: such a process
-can reach loopback and forge HTTP headers. That threat requires ordinary host
-and OS-account isolation as well.
+wildcard access. Processes the user launches under the same account are
+trusted. The listener accepts identity headers on its local hop without a
+per-request signature.
+
+Agent network isolation blocks direct access to the host listener. The macOS
+profile limits TCP egress to the invocation's proxy and denies the active
+listener port. Linux uses a separate network namespace. Windows containers use
+default-deny egress and an invocation-specific proxy endpoint. For Windows
+workers using a port-range loopback permit, the listener must be outside that
+range for the direct restriction to hold. The host egress proxies refuse the
+live listener's port before applying agent allowlists or resolving the
+destination. Host-mediated plugin fetches enforce the same port restriction
+at admission and handoff, including when the manifest allows loopback. The
+direct restriction requires OS isolation to be active.
 
 | Group | Capabilities |
 | --- | --- |

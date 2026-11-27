@@ -1,7 +1,7 @@
-import { isGraphHash, isStageId, isTemplateId, isTemplateVersion } from "./template-graph.js";
+import { hasTemplateKeys, isGraphHash, isStageId, isTemplateId, isTemplateVersion } from "./template-graph.js";
 import { hasOnlyKeys, isRecord } from "../shared/is-record.js";
 import type { StageGateDecideInput, StageJoinDecideInput, WorkPlanDecideInput, WorkPlanDecision } from "../shared/work-board-types.js";
-import type { TemplateVersionPin } from "../shared/workflow-template-types.js";
+import type { TemplateVersionPin, WorkflowTemplateConfirmInput } from "../shared/workflow-template-types.js";
 
 const PLAN_DECISIONS: readonly WorkPlanDecision[] = ["approve", "reject", "request_changes"];
 export const PLAN_HASH_PATTERN = /^[0-9a-f]{64}$/;
@@ -9,6 +9,12 @@ export const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export function exactRecord(raw: unknown, keys: readonly string[]): Record<string, unknown> | null {
   return isRecord(raw) && hasOnlyKeys(raw, keys) ? raw : null;
+}
+
+export function parseTemplateConfirmInput(raw: unknown): WorkflowTemplateConfirmInput | null {
+  if (!hasTemplateKeys(raw, ["expectedGraphHash", "expectedDraftRevision"])
+    || !isGraphHash(raw.expectedGraphHash) || !isTemplateId(raw.expectedDraftRevision)) return null;
+  return { expectedGraphHash: raw.expectedGraphHash, expectedDraftRevision: raw.expectedDraftRevision };
 }
 
 /** Accept exactly `{ runId, planHash, decision, note? }`; anything else is invalid input, never a partial decision. */

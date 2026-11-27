@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { parseTailnetWorkDecision } from "../../api/tailnet-work-decision-input.js";
+import { outputHashOf } from "../../shared/workflow-template-output.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import type { TailnetRequestedOutputDecision, TailnetWorkDecisionRequest } from "../../shared/tailnet-work-decisions.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
@@ -128,20 +130,44 @@ it("dispatches requested outputs only while their owner is registered", async ()
     await start;
     const { runId } = await h.item(itemId);
     if (!runId) throw new Error("No pending run");
-    const input = { itemId, runId, stageId: "a", attempt: 1, outputId: "output", outputHash: existingOutput, decision: "approve" } as const;
+    const decl = { kind: "external-write", toolName: "publish_note", owner: "plugin", ownerId: "notes" } as const;
+    const outputs = [
+      { id: "first", decl, args: "{}", summary: "First output" },
+      { id: "second", decl, args: "{}", summary: "Second output" },
+    ];
+    const stored = await h.board.updateRun(itemId, runId, run => ({
+      ...run, stageRuns: run.stageRuns.map(stage => ({
+        ...stage, requestedOutputs: outputs, outputHash: outputHashOf(stage.output ?? "", outputs),
+      })),
+    }));
+    if (stored.status !== "stored") throw new Error("Could not store pending outputs");
+    const stage = stored.run.stageRuns[0];
+    const input = { itemId, runId, stageId: "a", attempt: 1, outputHash: stage.outputHash ?? "", decision: "approve" } as const;
     const request = { ...base, kind: "requested-output", input } as const;
+    expect(parseTailnetWorkDecision(request)).toEqual(request);
+    expect(parseTailnetWorkDecision({ ...request, input: { ...input, outputId: "first" } })).toBeNull();
     await expect(decide(request)).resolves.toEqual({ ok: false, error: "requested-output-unavailable" });
-    const handler = vi.fn(async (decision: TailnetRequestedOutputDecision) => decision.outputHash === existingOutput
-      ? { ok: true as const } : { ok: false as const, error: "output_mismatch" });
-    const remove = runtime.registerRequestedOutputDecision(handler);
+    const handler = vi.fn(async (_decision: TailnetRequestedOutputDecision) => ({ ok: true as const }));
+    const list = vi.fn(async () => ({ outputs }));
+    const remove = runtime.registerRequestedOutputDecision({ decide: handler, list });
+    const { decision: _decision, ...binding } = input;
+    const reviews = await runtime.list(evidence);
+    expect(reviews).toContainEqual({ kind: "requested-output", deny: "reject", binding: { input: binding }, review: { outputs } });
+    expect(list).toHaveBeenCalledWith(binding, expect.objectContaining({ login, conversationId: evidence.conversationId }));
     await expect(decide({ ...request, input: { ...input, runId: "stale-run" } })).resolves.toEqual({ ok: false, error: "run_mismatch" });
     await expect(decide({ ...request, input: { ...input, outputHash: staleHash } })).resolves.toEqual({ ok: false, error: "output_mismatch" });
     await expect(decide(request)).resolves.toEqual({ ok: true, kind: "requested-output" });
-    expect(handler).toHaveBeenLastCalledWith(input, expect.objectContaining({ login, conversationId: evidence.conversationId }));
+    const { itemId: _itemId, ...stageBinding } = input;
+    await expect(decide({ ...base, kind: "stage", itemId, input: { ...stageBinding, resultHash: stage.resultHash ?? "" } }))
+      .resolves.toEqual({ ok: true, kind: "stage", status: "approved" });
+    expect(handler).toHaveBeenLastCalledWith(input, expect.objectContaining({ login, conversationId: evidence.conversationId }), undefined);
+    expect((await h.item(itemId)).stageRuns[0].gate).toMatchObject({ status: "pending" });
+    expect(h.children).toHaveLength(1);
     remove();
+    expect(await runtime.list(evidence)).not.toContainEqual(expect.objectContaining({ kind: "requested-output" }));
     await expect(decide(request)).resolves.toEqual({ ok: false, error: "requested-output-unavailable" });
     expect(handler).toHaveBeenCalledTimes(2);
-    expect(log).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -164,5 +190,47 @@ it("leaves a plan pending when authority is lost in its board transaction", asyn
     expect((await h.item(created.itemId)).planApproval).toMatchObject({ status: "pending" });
     expect(h.children).toHaveLength(0);
     expect(log).not.toHaveBeenCalled();
+  });
+});
+
+it("shares the desktop review binding for a conversation proposal and makes owner-initiated denial local", async () => {
+  const { h, runtime, decide } = await fixture();
+  await h.runThenEnd(async () => {
+    const draft = { name: "Review this graph", scope: { kind: "all" as const }, stages: [stageOf("a")], edges: [] };
+    const proposal = h.templates.propose(evidence.conversationId, draft);
+    const hidden = h.templates.propose("other-conversation", { ...draft, name: "Other conversation" });
+    const reviews = await runtime.list(evidence);
+    expect(reviews).not.toContainEqual(expect.objectContaining({ binding: expect.objectContaining({ templateId: hidden.id }) }));
+    const confirmation = reviews.find(review => review.kind === "template-confirmation");
+    if (!confirmation) throw new Error("Missing confirmation review");
+    expect(confirmation).toMatchObject({ deny: "dismiss", review: proposal.draft });
+    const confirmationRequest = { ...base, kind: confirmation.kind, ...confirmation.binding };
+    expect(parseTailnetWorkDecision(confirmationRequest)).toEqual(confirmationRequest);
+    expect(parseTailnetWorkDecision({ ...confirmationRequest, input: { ...confirmation.binding.input, decision: "reject" } })).toBeNull();
+    expect(parseTailnetWorkDecision({ ...confirmationRequest, input: { ...confirmation.binding.input, expectedDraftRevision: "bad revision" } })).toBeNull();
+    await expect(decide(confirmationRequest)).resolves.toMatchObject({ ok: true, kind: "template-confirmation" });
+
+    const run = (await runtime.list(evidence)).find(review => review.kind === "create-and-run");
+    if (!run) throw new Error("Missing run review");
+    expect(run).toMatchObject({ deny: "dismiss", review: { name: draft.name, graph: { stages: draft.stages, edges: [] } } });
+    const runRequest = { ...base, kind: run.kind, ...run.binding };
+    expect(parseTailnetWorkDecision(runRequest)).toMatchObject(runRequest);
+    expect(parseTailnetWorkDecision({ ...runRequest, input: { ...runRequest.input, decision: "reject" } })).toBeNull();
+
+    const scheduleRequest = { ...base, kind: "schedule-attachment", input: {
+      templateId: run.binding.input.templateId, version: run.binding.input.version, graphHash: run.binding.input.graphHash,
+      expectedScope: run.review.scope, schedule: { at: "2026-12-01T00:00:00.000Z" },
+    } } as const;
+    const attachment = await decide(scheduleRequest);
+    if (!attachment.ok || attachment.kind !== "schedule-attachment") throw new Error("Missing schedule attachment");
+    const schedule = (await runtime.list(evidence)).find(review => review.kind === "schedule-attachment");
+    if (!schedule) throw new Error("Missing attachment review");
+    expect(schedule).toMatchObject({ deny: "dismiss", binding: { input: { scheduleId: attachment.scheduleId } }, review: { existingPin: {
+      templateId: run.binding.input.templateId, version: run.binding.input.version, graphHash: run.binding.input.graphHash,
+    } } });
+    const reattach = { ...base, kind: schedule.kind, ...schedule.binding };
+    expect(parseTailnetWorkDecision(reattach)).toEqual(reattach);
+    expect(parseTailnetWorkDecision({ ...reattach, input: { ...reattach.input, decision: "reject" } })).toBeNull();
+    expect(h.children).toHaveLength(0);
   });
 });

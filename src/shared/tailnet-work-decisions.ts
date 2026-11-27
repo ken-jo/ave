@@ -1,5 +1,7 @@
 import type { StageGateDecideInput, StageJoinDecideInput, WorkPlanApprovalStatus, WorkPlanDecideInput } from "./work-board-types.js";
-import type { ScheduleAttachmentRequest, TemplateVersionPin, WorkflowTemplateConfirmInput } from "./workflow-template-types.js";
+import type { RoutineRecord } from "./routines-types.js";
+import type { WorkApprovalProject, WorkPlanApprovalView, WorkflowApprovalView } from "./work-approvals-types.js";
+import type { RequestedOutput, ScheduleAttachmentRequest, TemplateGraph, TemplateScope, TemplateVersionPin, WorkflowTemplateConfirmInput, WorkflowTemplateDraftInput } from "./workflow-template-types.js";
 
 export const TAILNET_WORK_DECISION_PATH = "/tailnet/v2/web/work-decisions";
 export const TAILNET_WORK_DECISION_CAPABILITY = "work-decision";
@@ -9,7 +11,6 @@ export interface TailnetRequestedOutputDecision {
   runId: string;
   stageId: string;
   attempt: number;
-  outputId: string;
   outputHash: string;
   decision: "approve" | "reject";
 }
@@ -29,6 +30,43 @@ export type TailnetWorkDecisionRequest = TailnetWorkObjectDecision & {
   /** Opaque conversation scope from the current Web snapshot. */
   scope: string;
 };
+
+type DecisionBinding<Kind extends TailnetWorkObjectDecision["kind"], Omitted extends string = never> =
+  Omit<Extract<TailnetWorkObjectDecision, { kind: Kind }>, "kind" | "input"> & {
+    input: Omit<Extract<TailnetWorkObjectDecision, { kind: Kind }>["input"], Omitted>;
+  };
+
+export type TailnetRequestedOutputReview = {
+  kind: "requested-output";
+  deny: "reject";
+  binding: DecisionBinding<"requested-output", "decision">;
+  review: { outputs: readonly RequestedOutput[] };
+};
+
+type TailnetTemplateRunReview = {
+  name: string;
+  scope: TemplateScope;
+  graph: TemplateGraph;
+  projects: readonly WorkApprovalProject[];
+};
+
+export type TailnetWorkReview =
+  | { kind: "plan"; deny: "reject"; binding: DecisionBinding<"plan", "decision" | "note">; review: WorkPlanApprovalView }
+  | { kind: "stage"; deny: "reject"; binding: DecisionBinding<"stage", "decision" | "note">; review: Extract<WorkflowApprovalView, { kind: "stage-gate" }> }
+  | { kind: "join"; deny: "reject"; binding: DecisionBinding<"join", "decision">; review: Extract<WorkflowApprovalView, { kind: "join-conflict" }> }
+  | { kind: "template-confirmation"; deny: "dismiss"; binding: DecisionBinding<"template-confirmation">; review: WorkflowTemplateDraftInput }
+  | { kind: "create-and-run"; deny: "dismiss"; binding: DecisionBinding<"create-and-run">; review: TailnetTemplateRunReview }
+  | { kind: "schedule-attachment"; deny: "dismiss"; binding: { input: ScheduleAttachmentRequest }; review: {
+      name: string; existingPin?: TemplateVersionPin;
+      routine?: Pick<RoutineRecord, "schedule" | "title" | "templateAttention" | "pausedAt" | "lastTemplateSkip">;
+    } }
+  | TailnetRequestedOutputReview;
+
+/** Part of the existing Web snapshot. A dismiss action stays on the client. */
+export interface TailnetWorkReviewSnapshot {
+  readonly scope: string;
+  readonly workReviews?: readonly TailnetWorkReview[];
+}
 
 export type TailnetWorkDecisionResponse =
   | { ok: true; kind: "plan" | "stage"; status: Exclude<WorkPlanApprovalStatus, "pending"> }

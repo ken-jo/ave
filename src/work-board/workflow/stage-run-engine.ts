@@ -29,7 +29,7 @@ import type {
   WorkItemStageRun,
 } from "../../shared/workflow-template-types.js";
 import { isUnattendedReadTool } from "../../tools/base.js";
-import { WORK_DECISION_AUTHORITY_REVOKED, type WorkDecisionAuthority } from "../work-decision-authority.js";
+import { WORK_DECISION_AUTHORITY_REVOKED, WorkDecisionAuthorityError, type WorkDecisionAuthority } from "../work-decision-authority.js";
 import { isAllReadOnlyVersion, WorkflowTemplateError } from "../template-graph.js";
 import type { AuthoriseRunSource, RunAuthorityVerdict } from "./run-authority.js";
 import type { LaneBlockCode, OutputExecution, RunPin, StageFailure } from "./shipped-shapes.js";
@@ -1367,6 +1367,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const { runId } = ref;
     const opened = await workspace.open(ref, projectRoot);
     if (!opened.ok) {
+      if (authority && !await authority.refreshCurrent()) return refused(WORK_DECISION_AUTHORITY_REVOKED);
       if (source.kind === "schedule-attachment") {
         const verdict = await verdictFor("start", projectRoot, source, pin);
         if (!verdict.ok) return refused(verdict.code, "tool" in verdict ? verdict.tool : undefined);
@@ -1381,12 +1382,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const begun = await records.begin(itemId, runId, startedAt, { templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash, source, stageRuns }, authority);
       if (begun.status !== "updated") return await abandonStart(ref, false, begun.status === "invalid" ? refused(begun.reason) : { status: "not_found" });
       recorded = true;
-      const placed = await records.update(itemId, runId, current => ({ ...current, runWorkspace: opened.workspace }));
+      const placed = await records.update(itemId, runId, current => ({ ...current, runWorkspace: opened.workspace }), undefined, authority);
       if (!placed.ok) {
+        if (authority && placed.reason === "refused") return await abandonStart(ref, true, refused(WORK_DECISION_AUTHORITY_REVOKED));
         log.warn("the run workspace could not be stored (id=%d): %s", itemId, placed.reason);
         return await abandonStart(ref, true, refused(writeFault(placed.reason)));
       }
-      const shown = await store.setRunStatus(itemId, "executing");
+      const shown = await store.setRunStatus(itemId, "executing", authority);
       if (shown.status !== "updated") {
         log.warn("the run could not be shown on the board (id=%d): %s", itemId, shown.status);
         return await abandonStart(ref, true, refused("template-run-not-shown"));
@@ -1403,11 +1405,25 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           return read.status === "found" ? read.run.settled === undefined : read.status !== "not-found";
         }, () => true);
       }
-      const code = error instanceof WorkflowTemplateError || error instanceof WorkBoardWriteRefusal ? error.code : unreadable ? "invalid-template-run" : undefined;
+      const code = error instanceof WorkflowTemplateError || error instanceof WorkBoardWriteRefusal || error instanceof WorkDecisionAuthorityError ? error.code : unreadable ? "invalid-template-run" : undefined;
       return abandonStart(ref, recorded, refused(code ?? "run-state-unavailable"), unstarted);
     }
     const state = openState(itemId, runId, projectRoot, source);
     if (scheduledRef) state.scheduledStart = {};
+    if (authority) {
+      // The first scheduler write reduces the start into spawn effects. Commit it under the same guard as other decisions.
+      const reason = await enqueue(state, () => handle(state, { type: "started" }, () => null, undefined, undefined, authority))
+        .catch(error => {
+          log.warn("remote template start could not be committed (id=%d): %s", itemId, errorMessage(error));
+          return "run-state-unavailable";
+        });
+      if (reason !== null) {
+        try { return await abandonStart(ref, true, refused(reason)); }
+        finally { closeState(state); }
+      }
+      emit({ itemId, phase: "executing" });
+      return state;
+    }
     emit({ itemId, phase: "executing" });
     post(state, { type: "started" });
     return state;
