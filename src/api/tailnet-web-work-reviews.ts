@@ -140,7 +140,6 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
     const states = new Map();
     const submissions = new Map();
     let reviews = new Map();
-    let ownerAction = 0;
     let scope;
     let revoked = false;
     let latestSnapshot;
@@ -544,18 +543,16 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       for (const [identity, item] of reviews) current.add(currentSubmission(item, identity));
       for (const [key, submission] of submissions) {
         if (submission.result.status === "pending") continue;
-        const mounted = reviews.has(submission.identity);
-        const dismissed = submission.dismissedFor.has(submission.identity);
-        if (!mounted && !dismissed && submission.settledAt === ownerAction) {
+        const item = reviews.get(submission.identity);
+        const onCard = item && key === submissionKey(submission.identity, reviewRevision(item)) && !submission.superseded;
+        if (!onCard && !submission.movedToRecent && !submission.dismissedFor.has(submission.identity)) {
           recordRecent(submission);
-          submission.dismissedFor.add(submission.identity);
+          submission.movedToRecent = true;
         }
-        const keepRefusal = mounted && !dismissed && !submission.superseded && submission.result.status === "refused";
-        if (!current.has(submission) && !keepRefusal) submissions.delete(key);
+        if (!current.has(submission)) submissions.delete(key);
       }
     }
     function beginOwnerAction() {
-      ownerAction += 1;
       recentResults.replaceChildren();
       syncRecentHeading();
     }
@@ -641,7 +638,6 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
         if (isCurrent()) submission.result = { status: "unknown" };
       } finally {
         if (isCurrent()) {
-          submission.settledAt = ownerAction;
           reconcileSubmissions();
           syncCards();
         }
@@ -744,7 +740,8 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
             draft.changeNoteOpen = true;
             note.parentElement.hidden = false;
             note.focus();
-            sync();
+            reconcileSubmissions();
+            syncCards();
           } else if (note.value.trim()) {
             decide("request_changes", note.value.trim());
             note.value = "";
@@ -772,11 +769,8 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
           reopen.disabled = !canReopen;
           reopen.hidden = item.kind !== "schedule-attachment" && !canReopen;
         }
-        // A refusal can explain the previous attempt without affecting this revision's actions.
-        const current = currentSubmission(item, identity);
-        displayedSubmission = current ?? Array.from(submissions.values()).find(submission =>
-          submission.identity === identity && submission.result.status === "refused" && !submission.superseded && !submission.dismissedFor.has(identity));
-        const hiddenResult = displayedSubmission?.dismissedFor.has(identity)
+        displayedSubmission = currentSubmission(item, identity);
+        const hiddenResult = displayedSubmission?.movedToRecent || displayedSubmission?.dismissedFor.has(identity)
           || (displayedSubmission?.identity === identity && displayedSubmission.superseded);
         const result = hiddenResult ? undefined : displayedSubmission?.result;
         dismissResult.hidden = result?.status !== "refused";

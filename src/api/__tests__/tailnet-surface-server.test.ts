@@ -2850,7 +2850,7 @@ describe("phone work reviews", () => {
   const refreshedOutputHash = "5".repeat(64);
   const refreshCases = [
     [views[0], { ...views[0], binding: { ...views[0].binding, input: { runId, planHash: refreshedPlanHash } },
-      review: { ...views[0].review, planHash: refreshedPlanHash, revision: 1, planNumber: 2 } }, refreshedPlanHash, "plan_mismatch", "Decision refused (plan_mismatch)."],
+      review: { ...views[0].review, plan: "A revised plan", planHash: refreshedPlanHash, revision: 1, planNumber: 2 } }, refreshedPlanHash, "plan_mismatch", "Decision refused (plan_mismatch)."],
     [views[1], { ...views[1], binding: { ...views[1].binding, input: refreshedStageBinding },
       review: { ...views[1].review, binding: refreshedStageBinding, outputs: [] } }, refreshedStageBinding.resultHash, "result_mismatch", "The result changed."],
     [views[2], { ...views[2], binding: { ...views[2].binding, input: refreshedJoinBinding },
@@ -2866,7 +2866,10 @@ describe("phone work reviews", () => {
   ] satisfies Array<[TailnetWorkReview, TailnetWorkReview, string, string, string]>;
 
   describe.each(refreshCases.map(([original, ...rest]) => [original.kind, original, ...rest] as const))("%s refresh orderings", (kind, original, revised, marker, error, refusal) => {
-    it.each(["submit then refresh", "refresh then response", "two cards in flight", "revision changes between submit and response", "identity leaves before response"])("%s", async ordering => {
+    it.each([
+      "submit then refresh", "refresh then response", "two cards in flight", "revision changes between submit and response",
+      "identity leaves before response", "editor opened on the new revision before the response",
+    ])("%s", async ordering => {
       const result = deferred<TailnetWorkDecisionResponse>();
       const otherResult = deferred<TailnetWorkDecisionResponse>();
       const secondPlan = { ...views[0], binding: { ...views[0].binding, itemId: 42 },
@@ -2939,6 +2942,28 @@ describe("phone work reviews", () => {
         if (ordering !== "submit then refresh") {
           expect(reviewStatus(browser, kind)).toBe("");
           expectActions(true, true);
+          if (ordering === "editor opened on the new revision before the response") {
+            const card = browser.window.document.querySelector<HTMLDetailsElement>(`[data-work-kind="${kind}"]`);
+            card?.querySelector("summary")?.click();
+            expect(card?.open).toBe(true);
+            if (kind === "plan" || kind === "stage") phoneAction(browser, kind, "request_changes").click();
+            if (kind === "schedule-attachment") phoneAction(browser, kind, "reopen").click();
+
+            result.resolve({ ok: false, error });
+            await vi.waitFor(() => expect(recentPhoneResults(browser)?.textContent).toContain(refusal));
+            const currentCard = browser.window.document.querySelector<HTMLDetailsElement>(`[data-work-kind="${kind}"]`);
+            expect(currentCard?.open).toBe(true);
+            if (kind === "plan" || kind === "stage") {
+              const note = currentCard?.querySelector("textarea");
+              expect(note?.parentElement?.hidden).toBe(false);
+              expect(note?.disabled).toBe(false);
+              expect(note?.value).toBe("");
+            }
+            expect(reviewStatus(browser, kind)).toBe("");
+            expectActions(true, true);
+            expect(received).toHaveLength(1);
+            return;
+          }
           if (ordering === "revision changes between submit and response") {
             const successes = {
               plan: { ok: true, kind: "plan", status: "approved" },
@@ -2952,21 +2977,27 @@ describe("phone work reviews", () => {
             const snapshotRequests = () => requests.filter(request => request.path.endsWith("/snapshot")).length;
             const before = snapshotRequests();
             result.resolve(successes[kind]);
-            await vi.waitFor(() => expect(snapshotRequests()).toBeGreaterThan(before));
+            await vi.waitFor(() => {
+              expect(snapshotRequests()).toBeGreaterThan(before);
+              expect(recentPhoneResults(browser)?.textContent).toContain("Decision submitted.");
+            });
             expect(reviewStatus(browser, kind)).toBe("");
             expectActions(true, true);
             return;
           }
           result.resolve({ ok: false, error });
         }
-        await vi.waitFor(() => expect(reviewStatus(browser, kind)).toContain(refusal));
+        const recent = recentPhoneResults(browser);
+        await vi.waitFor(() => expect(recent?.textContent).toContain(refusal));
+        expect(reviewStatus(browser, kind)).toBe("");
         expectActions(true, true);
         if (ordering === "two cards in flight") {
           expect(reviewStatus(browser, other.kind, otherIndex)).toBe("Decision submitted.");
           expect(phoneAction(browser, other.kind, "reject", otherIndex).disabled).toBe(true);
         }
-        phoneAction(browser, kind, "dismiss-result").click();
-        expect(reviewStatus(browser, kind)).toBe("");
+        expect(recent?.querySelectorAll("button")).toHaveLength(1);
+        recent?.querySelector("button")?.click();
+        expect(recent?.textContent).toBe("");
         expectActions(true, true);
         expect(received).toHaveLength(ordering === "two cards in flight" ? 2 : 1);
       } finally {
