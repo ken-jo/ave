@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 import { type HostGit, HostGitError } from "../host-git.js";
 import { RUN_FILE } from "../workspace-layout.js";
 import { stageOf, writeUnder as write } from "./stage-fixtures.js";
-import { type GitFixture, sealed, stageRoot, seedGitFixtures } from "./stage-git-fixture.js";
+import { type GitFixture, gitFixture, sealed, stageRoot, seedGitFixtures } from "./stage-git-fixture.js";
 
 /** How a git call gives no answer: by its exit, or by throwing as the host's git does for a process that could not run or finish. */
 export type FailureKind = "exit 128" | "exit 1 with stderr" | "thrown";
@@ -83,10 +83,10 @@ const discardAndSweep: Lifecycle = async (fx, git, stop) => {
 
 const LIFECYCLES = { "git run": gitRun, "folder in a repository": folderInRepo, "discard and sweep": discardAndSweep } as const;
 type LifecycleName = keyof typeof LIFECYCLES;
-const createFixture = seedGitFixtures();
+const copyFixture = seedGitFixtures();
 
 /** Runs `name` on a fixture of its own, with git failing the call `fails` names in the way `kind` says. */
-async function lifecycle(name: LifecycleName, fails: (call: string) => boolean, kind: FailureKind, reason: typeof THROWN[number] = "timeout", seen?: string[]): Promise<Outcome> {
+async function lifecycle(createFixture: () => GitFixture, name: LifecycleName, fails: (call: string) => boolean, kind: FailureKind, reason: typeof THROWN[number] = "timeout", seen?: string[]): Promise<Outcome> {
   const fx = createFixture();
   try {
     const real = fx.git;
@@ -121,7 +121,7 @@ export function controlCalls(): Promise<Record<LifecycleName, string[]>> {
   return Object.keys(LIFECYCLES).reduce(async (done, name) => {
     const calls = await done;
     const seen: string[] = [];
-    const outcome = await lifecycle(name as LifecycleName, () => false, "exit 128", undefined, seen);
+    const outcome = await lifecycle(gitFixture, name as LifecycleName, () => false, "exit 128", undefined, seen);
     expect(outcome, name).toMatchObject(name === "folder in a repository" ? { kind: "folder", seeded: true, ignoredSeeded: false } : name === "git run" ? { kind: "git", conflictFiles: 1, recordsGone: true, registrations: 0 } : { recordsGone: true, registrations: 0 });
     return { ...calls, [name]: seen.sort() };
   }, Promise.resolve({} as Record<LifecycleName, string[]>));
@@ -132,7 +132,7 @@ export function replayEach(kind: FailureKind, calls: Record<LifecycleName, reado
   const cases = (Object.entries(calls) as [LifecycleName, readonly string[]][]).flatMap(([name, list]) => list.map(failed => [name, failed] as const))
     .map(([name, failed], index) => ({ name, failed, reason: THROWN[index % THROWN.length] as typeof THROWN[number] }));
   it.each(cases)(`${kind}${kind === "thrown" ? " ($reason)" : ""} at $name, $failed: no repository's run becomes a plain folder's, no conflict one of no file, no ignored file is seeded, and no registration's record is lost`, async ({ name, failed, reason }) => {
-    const outcome = await lifecycle(name, candidate => candidate === failed, kind, reason);
+    const outcome = await lifecycle(copyFixture, name, candidate => candidate === failed, kind, reason);
     if (name !== "folder in a repository") expect.soft(outcome.kind ?? "git").toBe("git");
     // A merge that git itself refused leaves no conflicted file to tell of; any other missing answer may not hide one.
     if (name === "git run" && !failed.startsWith("merge --no-edit")) expect.soft(outcome.conflictFiles ?? 1).toBeGreaterThan(0);
