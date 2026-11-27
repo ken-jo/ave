@@ -2853,7 +2853,9 @@ async function runPosixContainerShell(input: {
     collector.finishObservation(exit.code, exit.cancelled ? "cancelled" : interrupted || exit.rejected ? "failed" : undefined);
     if (exit.rejected) {
       result = {
-        output: process.platform === "linux" ? t("sandboxPolicy.linuxContainerStartRefused") : t("sandboxPolicy.containerStartRefused"), isError: true,
+        output: [process.platform === "linux" ? t("sandboxPolicy.linuxContainerStartRefused") : t("sandboxPolicy.containerStartRefused"),
+          // A launcher that failed after the command began still had its writes quarantined; say so.
+          ...("cleanupNotice" in exit && typeof exit.cleanupNotice === "string" ? [exit.cleanupNotice] : [])].join("\n"), isError: true,
         metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
       };
     } else {

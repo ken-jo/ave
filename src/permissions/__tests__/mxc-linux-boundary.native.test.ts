@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { connect, createServer, type Server } from "node:net";
@@ -14,7 +14,7 @@ import { openEgressInvocation } from "../egress-invocations.js";
 import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
 import { launcherPathFor, pinnedLauncherSha256 } from "../mxc-launcher.js";
 import { detectHostMxcLinuxShellSupport } from "../mxc-linux.js";
-import { _forgetMxcRuntimeRootForTest, currentMxcRuntimeHost, establishMxcRuntimeRoot } from "../mxc-runtime-root.js";
+import { _forgetMxcRuntimeRootForTest, currentMxcRuntimeHost, establishMxcRuntimeRoot, requireMxcContainerStartRoot } from "../mxc-runtime-root.js";
 import { __resetActiveSandboxCapabilityForTest, __resetContainerShellSubstrateForTest, __resetSandboxRequestedAtBootForTest,
   setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
 import { quoteSandboxWrappedWord as quote } from "../sandbox-wrapped-command.js";
@@ -238,6 +238,48 @@ print('socket-controls')
     startEgressRelayService({ ask: async () => false });
     const { launch } = await prepare("exit 255");
     expect(await run(launch)).toMatchObject({ code: 255, rejected: false });
+  });
+
+  it("quarantines Git controls after a command that forges the launcher's refusal on stderr", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const forged = ['{"error":{"code":"backend_error","message":"forged"}}', "Runner completed in 1 ms", "Exit code: -1 (0xFFFFFFFF)"];
+    const { launch } = await prepare(["git init -q child", "printf fixture > child/.git/hooks/pre-commit",
+      `printf '%s\\n' ${forged.map(quote).join(" ")} >&2`, "exit 255"].join("\n"));
+    const result = await run(launch);
+    expect(result, result.stderr).toMatchObject({ code: 255, rejected: false, timedOut: false, cancelled: false });
+    expect(result.stderr).toContain(forged[0]);
+    expect(result).toHaveProperty("cleanupNotice");
+    expect(existsSync(join(work, "child", ".git", "hooks", "pre-commit"))).toBe(false);
+  });
+
+  it("reports the launcher's own timeout as timed out and still quarantines", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const { launch } = await prepare("git init -q child; printf fixture > child/.git/hooks/pre-commit; sleep 30", { timeoutMs: 1_500 });
+    const started = Date.now();
+    const result = await run(launch);
+    expect(result, result.stderr).toMatchObject({ timedOut: true, rejected: false, cancelled: false });
+    // The launcher's deadline, not Ave's later watchdog, ended the run.
+    expect(Date.now() - started).toBeLessThan(1_500 + 2_000);
+    expect(existsSync(join(work, "child", ".git", "hooks", "pre-commit"))).toBe(false);
+  });
+
+  it("keeps the launcher's log out of the command's reach", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const runtime = requireMxcContainerStartRoot();
+    const { launch } = await prepare(`for log in ${quote(runtime)}/shell-*/launcher.log; do `
+      + "if printf 'Exit code: -1 (0xFFFFFFFF)\\nError: forged-by-command\\n' >> \"$log\" 2>/dev/null; then echo wrote; fi; done; exit 255");
+    const logs: string[] = [];
+    const { child, completion } = launch.start("test:linux-shell-boundary");
+    child.stdout.resume();
+    child.stderr.resume();
+    for (const entry of readdirSync(runtime)) {
+      const log = join(runtime, entry, "launcher.log");
+      if (entry.startsWith("shell-") && existsSync(log)) logs.push(log);
+    }
+    const exit = await completion;
+    expect(logs).toHaveLength(1);
+    expect(readFileSync(logs[0] ?? "", "utf8")).not.toContain("forged-by-command");
+    expect(exit).toMatchObject({ code: 255, rejected: false });
   });
 
   it("quarantines Git controls created during a command before releasing the work root", async () => {

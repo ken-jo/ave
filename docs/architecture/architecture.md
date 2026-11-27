@@ -3457,8 +3457,13 @@ its session waiver and exact saved host-command rule when the floor is the only
 reason to ask. Headless runs deny. A failed contained launch is refused.
 
 Cancellation sends TERM to the launcher and escalates to its process group
-after two seconds if necessary. The launcher also enforces the command deadline.
-The request staging and placeholder holds are released after exit. The extra
+after two seconds if necessary. The launcher also enforces the command deadline,
+and a run it ends that way is reported as timed out. Git quarantine runs after
+every launch. The command shares stderr with the launcher, so an error line
+there is never read as the launcher's verdict. A refused start is read only
+from the launcher's own log, which it writes into the request's staging folder
+under the runtime root, out of the container's reach. The request staging and
+placeholder holds are released after exit. The extra
 network setup adds roughly 0.1–0.2 seconds to a typical command on the measured
 arm64 host.
 

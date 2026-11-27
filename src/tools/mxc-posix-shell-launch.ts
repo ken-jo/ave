@@ -173,12 +173,16 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
           revoke();
           return error;
         });
-        const completion = Promise.all([launch.completion, marked]).then(async ([exit, markerError]) => {
-          await held.release();
-          const cleanupNotice = exit.rejected ? undefined : cleanupGit?.();
-          releaseGit?.();
+        const settled = launch.completion.then(exit => ({ exit }), (error: unknown) => ({ error }));
+        const completion = Promise.all([settled, marked]).then(async ([outcome, markerError]) => {
+          // Quarantine runs after every launch: no exit status or stderr line can prove the command did not start.
+          let cleanupNotice: string | undefined;
+          try { await held.release(); } finally {
+            try { cleanupNotice = cleanupGit?.(); } finally { releaseGit?.(); }
+          }
+          if ("error" in outcome) throw outcome.error;
           if (markerError !== undefined) throw markerError;
-          return { ...exit, ...(cleanupNotice === undefined ? {} : { cleanupNotice }) };
+          return { ...outcome.exit, ...(cleanupNotice === undefined ? {} : { cleanupNotice }) };
         });
         lifecycle.jobStarted(completion);
         return { child: launch.child, completion };
