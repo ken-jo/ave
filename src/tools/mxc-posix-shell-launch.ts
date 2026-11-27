@@ -8,7 +8,7 @@ import {
 } from "../permissions/asrt-sandbox.js";
 import { buildSeatbeltShellRequest } from "../permissions/mxc-macos.js";
 import { buildBubblewrapShellRequest, projectLinuxSavedSessionDenies, requireMxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
-import { holdMxcLinuxPlaceholders } from "../permissions/mxc-linux-placeholders.js";
+import { holdMxcLinuxPlaceholders, takeMxcLinuxPlaceholderRecoveryNotice } from "../permissions/mxc-linux-placeholders.js";
 import { atOrUnder, posixPathFoldsCase, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants } from "../permissions/mxc-posix.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
 import { MxcCwdChangedError, stageMxcShellRequest, startMxcShellSupervisor, writeMxcShellRequest, type MxcShellRunAuthorizer } from "../permissions/mxc-shell-supervisor-client.js";
@@ -153,6 +153,9 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
           try { await held.release(); } finally {
             try { cleanupNotice = cleanupGit?.(); } finally { releaseGit?.(); }
           }
+          // A boot that set an unreadable placeholder journal aside tells the user once, with the next command.
+          const recovered = takeMxcLinuxPlaceholderRecoveryNotice();
+          if (recovered !== undefined) cleanupNotice = [recovered, cleanupNotice].filter(Boolean).join("\n");
           if ("error" in outcome) throw outcome.error;
           if (markerError !== undefined) throw markerError;
           return { ...outcome.exit, ...(cleanupNotice === undefined ? {} : { cleanupNotice }) };

@@ -632,16 +632,19 @@ async function recordLinuxShellSupport(startupSignal?: AbortSignal) {
     { sweepMxcLinuxPlaceholders },
     { setContainerShellSubstrate },
     { getHostResources },
+    { isHostInstanceLockHeld },
   ] = await Promise.all([
     import("../../permissions/mxc-linux.js"),
     import("../../permissions/mxc-runtime-root.js"),
     import("../../permissions/mxc-linux-placeholders.js"),
     import("../../permissions/sandbox-capability.js"),
     import("../../main/host-resources.js"),
+    import("../../main/host-instance-lock.js"),
   ]);
   try {
     establishMxcRuntimeRoot();
-    await sweepMxcLinuxPlaceholders();
+    // Boot runs after the host instance lock, so an unreadable journal can be set aside here and nowhere else.
+    await sweepMxcLinuxPlaceholders(undefined, { recoverCorruptJournal: { ownsHostInstance: isHostInstanceLockHeld } });
   } catch (error) {
     log.warn("boot: container runtime root unavailable: %s", errorMessage(error));
   }

@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { t } from "../../i18n/index.js";
 import { launcherPathFor } from "../mxc-launcher.js";
-import { holdMxcLinuxPlaceholders, sweepMxcLinuxPlaceholders } from "../mxc-linux-placeholders.js";
+import { holdMxcLinuxPlaceholders, sweepMxcLinuxPlaceholders, takeMxcLinuxPlaceholderRecoveryNotice } from "../mxc-linux-placeholders.js";
 import { posixPolicyLookups, rankPosixContainerRows, type PosixPolicyLookups } from "../mxc-posix.js";
 import { _forgetMxcRuntimeRootForTest, currentMxcRuntimeHost, establishMxcRuntimeRoot, requireMxcContainerStartRoot, type MxcRuntimeHost } from "../mxc-runtime-root.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-model.js";
@@ -148,6 +149,41 @@ describe.runIf(process.platform === "linux")("Linux placeholder ownership", () =
       leavePending(join(work, "missing"), BigInt(Date.now() - 1_000) * 1_000_000n, { pid: process.pid, start: host.processStart(process.pid) ?? "x" });
       mkdirSync(join(work, "missing"));
       await expect(holdMxcLinuxPlaceholders(lookups, rank, host)).rejects.toThrow("Container placeholder changed");
+    });
+  });
+
+  describe("a journal that cannot be read", () => {
+    beforeEach(() => {
+      takeMxcLinuxPlaceholderRecoveryNotice();
+      writeFileSync(journalPath(), "{");
+    });
+
+    it("refuses a launch by name and asks for a restart", async () => {
+      await expect(holdMxcLinuxPlaceholders(lookups, rank, host)).rejects.toThrow(
+        expect.objectContaining({ name: "ContainerPlaceholderJournalError", message: expect.stringMatching(/shell-placeholders\.json.*restart Ave/su) }));
+      // An ordinary sweep, such as one during a launch, does not touch it either.
+      await expect(sweepMxcLinuxPlaceholders(host)).rejects.toThrow(expect.objectContaining({ name: "ContainerPlaceholderJournalError" }));
+      expect(readFileSync(journalPath(), "utf8")).toBe("{");
+    });
+
+    it("is moved aside at the boot sweep, which starts empty with one notice, and the next launch works", async () => {
+      await sweepMxcLinuxPlaceholders(host, { recoverCorruptJournal: { ownsHostInstance: () => true } });
+      const folder = dirname(journalPath());
+      const aside = readdirSync(folder).filter(name => /^shell-placeholders\.corrupt-\d+\.json$/u.test(name));
+      expect(aside).toHaveLength(1);
+      expect(readFileSync(join(folder, aside[0] ?? ""), "utf8")).toBe("{");
+      expect(takeMxcLinuxPlaceholderRecoveryNotice()).toBe(t("sandboxPolicy.linuxPlaceholderJournalRecovered", { file: join(folder, aside[0] ?? "") }));
+      expect(takeMxcLinuxPlaceholderRecoveryNotice()).toBeUndefined();
+      const hold = await holdMxcLinuxPlaceholders(lookups, rank, host);
+      expect(existsSync(leaf)).toBe(true);
+      await hold.release();
+      expect(journal().directories).toEqual([]);
+    });
+
+    it("is not moved by a boot sweep that does not hold the host instance lock", async () => {
+      await expect(sweepMxcLinuxPlaceholders(host, { recoverCorruptJournal: { ownsHostInstance: () => false } }))
+        .rejects.toThrow("host instance lock");
+      expect(readFileSync(journalPath(), "utf8")).toBe("{");
     });
   });
 

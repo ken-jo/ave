@@ -5241,6 +5241,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "sandboxPolicy.containerStartRefused": "macOS 샌드박스 컨테이너가 셸 명령 시작을 거부했습니다.",
   "sandboxPolicy.linuxContainerStartRefused": "Linux 샌드박스 컨테이너가 셸 명령 시작을 거부했습니다.",
   "sandboxPolicy.linuxContainerRunFailed": "명령이 Linux 샌드박스 컨테이너에서 시작된 뒤 컨테이너 런처가 실패했습니다(container-run-failed). 지금까지의 출력은 위에 있으며, 명령은 일부만 실행되었을 수 있습니다.",
+  "sandboxPolicy.linuxPlaceholderJournalRecovered": "Ave 가 Linux 컨테이너 자리표시 기록을 읽지 못해 새 기록을 시작했습니다. 이전 파일은 {file} 로 보관했습니다. 그 전에 Ave 가 프로젝트에 만든 빈 폴더가 남아 있을 수 있습니다.",
   "sandboxPolicy.linuxContainerShellRefused": "Linux 샌드박스 컨테이너가 셸 명령을 거부했습니다. {reason}",
   "sandboxPolicy.containerShellCleanupUnverified": "셸 명령을 중단했지만 관련 프로세스가 모두 종료되었는지 확인하지 못했습니다.",
   "sandboxPolicy.containerShellRefused": "macOS 샌드박스 컨테이너가 셸 명령을 거부했습니다: {reason}",

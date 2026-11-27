@@ -3,7 +3,10 @@ import { lstatSync, mkdirSync, readFileSync, realpathSync, rmdirSync } from "nod
 import { posix } from "node:path";
 import { z } from "zod";
 import { isMissingPathError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
+import { renameFileOnceSync } from "../lib/transient-fs-lock-retry.js";
 import { withFileLock } from "../lib/with-file-lock.js";
+import { createLogger } from "../lib/logger.js";
+import { t } from "../i18n/index.js";
 import {
   currentMxcRuntimeHost, requireMxcContainerStartRoot, type MxcRuntimeHost,
 } from "./mxc-runtime-root.js";
@@ -44,13 +47,38 @@ function isLive(marker: PidMarker, host: MxcRuntimeHost): boolean {
   return start === null || marker.start === null || marker.start === start;
 }
 
+const log = createLogger("mxc-linux-placeholders");
+
+/** The journal exists and cannot be read or does not hold a registry. No launch can judge what it owns until a restart. */
+class ContainerPlaceholderJournalError extends Error {
+  override readonly name = "ContainerPlaceholderJournalError";
+  constructor(readonly path: string, cause: unknown) {
+    super(`Container placeholder journal ${path} cannot be read; restart Ave to recover it`, { cause });
+  }
+}
+
 function readRegistry(path: string): PlaceholderRegistry {
+  let text: string;
   try {
-    return PlaceholderRegistry.parse(JSON.parse(readFileSync(path, "utf8")));
+    text = readFileSync(path, "utf8");
   } catch (error) {
     if (isMissingPathError(error)) return { runs: [], directories: [] };
-    throw error;
+    throw new ContainerPlaceholderJournalError(path, error);
   }
+  try {
+    return PlaceholderRegistry.parse(JSON.parse(text));
+  } catch (error) {
+    throw new ContainerPlaceholderJournalError(path, error);
+  }
+}
+
+let recoveryNotice: string | undefined;
+
+/** The one notice left by a boot sweep that set an unreadable journal aside, handed out once. */
+export function takeMxcLinuxPlaceholderRecoveryNotice(): string | undefined {
+  const notice = recoveryNotice;
+  recoveryNotice = undefined;
+  return notice;
 }
 
 function saveRegistry(path: string, registry: PlaceholderRegistry): void {
@@ -106,10 +134,32 @@ function registryPath(host: MxcRuntimeHost): string {
   return posix.join(requireMxcContainerStartRoot(host), "shell-placeholders.json");
 }
 
-export async function sweepMxcLinuxPlaceholders(host: MxcRuntimeHost = currentMxcRuntimeHost()): Promise<void> {
+export interface MxcLinuxPlaceholderSweepOptions {
+  /**
+   * Boot only: set an unreadable journal aside and start empty. Another Ave on this account could still be using the
+   * file, so this needs the host instance lock.
+   */
+  readonly recoverCorruptJournal?: { readonly ownsHostInstance: () => boolean };
+}
+
+export async function sweepMxcLinuxPlaceholders(
+  host: MxcRuntimeHost = currentMxcRuntimeHost(), options: MxcLinuxPlaceholderSweepOptions = {},
+): Promise<void> {
   const journal = registryPath(host);
   await withFileLock(journal, async () => {
-    const registry = readRegistry(journal);
+    let registry: PlaceholderRegistry;
+    try {
+      registry = readRegistry(journal);
+    } catch (error) {
+      const recover = options.recoverCorruptJournal;
+      if (!(error instanceof ContainerPlaceholderJournalError) || recover === undefined) throw error;
+      if (!recover.ownsHostInstance()) throw new Error("Container placeholder journal recovery needs the host instance lock", { cause: error });
+      const aside = posix.join(posix.dirname(journal), `shell-placeholders.corrupt-${Date.now()}.json`);
+      renameFileOnceSync(journal, aside);
+      log.warn("Linux container placeholder journal was unreadable; set aside as %s", aside);
+      recoveryNotice = t("sandboxPolicy.linuxPlaceholderJournalRecovered", { file: aside });
+      return;
+    }
     if (sweepDeadRuns(registry, host)) saveRegistry(journal, registry);
   }, { createTarget: false });
 }
