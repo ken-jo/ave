@@ -23,6 +23,8 @@ import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { endUnattendedStage, onUnattendedDenied, registerUnattendedStage } from "../../permissions/unattended-lane-registry.js";
 import * as shellFilesystemPath from "../../shared/shell-filesystem-path.js";
+import { withCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import { WriteFileTool } from "../file-tools.js";
 import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
@@ -227,6 +229,56 @@ it("routes the sealed edit-subject check through the unattended lane", async () 
     });
     expect(execute).not.toHaveBeenCalled();
   } finally {
+    endUnattendedStage(sessionId);
+  }
+});
+
+it.each([
+  { path: "report.txt", allowed: true },
+  { path: "draft.txt", allowed: false },
+])("reports only terminal denials for a proven stage edit of $path", async ({ path, allowed }) => {
+  vi.stubEnv("AVE_HOME", join(directory, "state"));
+  const manager = new PermissionManager(join(directory, "permissions.json"));
+  const check = vi.spyOn(manager, "checkDetailed");
+  const registry = new ToolRegistry();
+  const tool = new WriteFileTool();
+  const execute = vi.spyOn(tool, "execute");
+  registry.register(tool);
+  manager.setUnattendedToolEffectResolver(createToolEffectResolver(registry));
+  const executor = new ToolExecutor(registry, undefined, manager);
+  const sessionId = "proven-edit";
+  registerUnattendedStage(sessionId, {
+    runKey: "run", stageId: "stage", workspaceRoot: directory, isolation: { proven: true },
+    envelope: {
+      tools: [tool.name], readRoots: [], writePaths: ["report.txt"], commands: [], network: [],
+      mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+      outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+    },
+  });
+  const onDenied = vi.fn();
+  const unsubscribe = onUnattendedDenied(onDenied);
+  try {
+    const [result] = await withCodeCheckpoint({ sessionId, messageId: "edit" }, () =>
+      runWithToolExecutionCwd(directory, () => executor.executeAll([
+        { id: "proven-edit", name: tool.name, input: { path, content: "report" } },
+      ], { sessionId, permissionContext: userPermissionContext() })));
+    expect(result?.is_error === true, result?.content).toBe(!allowed);
+    expect(execute).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    if (allowed) {
+      expect(onDenied).not.toHaveBeenCalled();
+    } else {
+      expect(onDenied).toHaveBeenCalledExactlyOnceWith({
+        sessionId, code: "outside-envelope",
+        call: { toolName: tool.name, source: "builtin", inputSummary: expect.stringContaining(path) },
+      });
+    }
+    const editCheck = check.mock.calls.findIndex(call => call[4]?.ruleSubject?.kind === "edit");
+    expect(check.mock.results[editCheck]?.value).toMatchObject({
+      decision: allowed ? "allow" : "deny",
+      pipelineRequest: { unattended: { stageId: "stage" }, fileWrite: { checkpointAvailable: true } },
+    });
+  } finally {
+    unsubscribe();
     endUnattendedStage(sessionId);
   }
 });

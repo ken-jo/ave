@@ -62,7 +62,7 @@ import type {
 } from "./types.js";
 import { ToolUnavailableError, trustFromSource } from "./types.js";
 import { PermissionManager, requiredTier, type PermissionCheckResult } from "../permissions/permission-manager.js";
-import { reportUnattendedDenial, unattendedStageOf } from "../permissions/unattended-lane-registry.js";
+import { registeredUnattendedStageOf, reportUnattendedDenial, unattendedStageOf } from "../permissions/unattended-lane-registry.js";
 import {
   isRemoteControllerBoundToSession,
   remoteControllerOriginOf,
@@ -2572,6 +2572,9 @@ async function runToolInvocationAttempt(
       await services.permissionManager.ensureProjectRulesLoaded(executionCwd);
       const editDecision = services.permissionManager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
         ...invocationPermissionContext, sessionId, ruleSubject: editSubject, projectRulesCwd: executionCwd,
+        ...(registeredUnattendedStageOf(sessionId) !== undefined ? {
+          fileWritePolicy, unattendedInvokedEffect: tool.unattendedEffect ?? "unknown", reportUnattendedDenials: false,
+        } : {}),
       });
       if (editDecision.decision === "allow" && services.permissionManager.checkScopedRules(editSubject, executionCwd).decision === "allow") {
         invocationAllowedScope = { directories: [...invocationAllowedScope.directories, ...canonicalTargets.map((target) => target.canonicalPath)] };

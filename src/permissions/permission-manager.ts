@@ -281,6 +281,8 @@ export interface PermissionCheckContext {
   permissionStoreError?: string;
   unattendedInvokedEffect?: ToolEffectEvidence;
   unattendedCallInput?: unknown;
+  // Preliminary checks can evaluate lane policy without publishing a denial.
+  reportUnattendedDenials?: false;
   unattendedNetwork?: PermissionDecisionRequest["unattendedNetwork"];
   unattendedNetworkRule?: NetworkRuleDecision;
 }
@@ -1634,7 +1636,7 @@ export class PermissionManager {
     return { admissionDenial, floor };
   }
 
-  private pipelineResult(evidence: PermissionDecisionRequest, context?: HostTerminalPermissionContext): PermissionCheckResult {
+  private pipelineResult(evidence: PermissionDecisionRequest, context?: HostTerminalPermissionContext, reportDenial = true): PermissionCheckResult {
     const liveUnattended = unattendedStageOf(evidence.sessionId);
     const unattended = evidence.unattended ?? registeredUnattendedStageOf(evidence.sessionId);
     if (unattended || turnExtensionPolicyContext.getStore()?.unattendedStage === true) {
@@ -1693,7 +1695,7 @@ export class PermissionManager {
       ...(evidence.reviewer ? { reviewer: Object.freeze({ ...evidence.reviewer }) } : {}),
     });
     const decision = decidePermission(request);
-    if (unattended && request.sessionId !== undefined && decision.outcome === "deny" && !decision.reviewRequired) {
+    if (reportDenial && unattended && request.sessionId !== undefined && decision.outcome === "deny" && !decision.reviewRequired) {
       reportUnattendedDenial({
         sessionId: request.sessionId, code: decision.reasonCode,
         call: { toolName: request.tool.name, source: request.tool.source, inputSummary: request.unattendedInputSummary ?? "" },
@@ -2066,7 +2068,7 @@ export class PermissionManager {
       ...(context.fileWritePolicy ? { fileWrite: { ...context.fileWritePolicy, checkpointAvailable: context.fileWritePolicy.checkpointAvailable === true } } : {}),
       ...(category === "shell" ? { shell: { sandboxed: shellExecution.runsSandboxed, readOnlyProven, unproven: shellAnalysisLimited || ruleProofLimited || shellPaths?.unproven != null || powerShellPaths?.unproven === true || !hostBoundWriteTargets && !readOnlyProven && (shellSignals?.outcome === "unproven" || Boolean(shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason)), destructive: shellDestructive, escalated: context.shellEscalated } } : {}),
     };
-    const result = this.pipelineResult(request, context);
+    const result = this.pipelineResult(request, context, context.reportUnattendedDenials);
     if (result.decision === "allow" && result.reasonCode === "floor-session-allow" && requestedRuleSubject?.cwd !== undefined && context.hostShellExecutionPlan !== undefined) {
       issuedFloorSessionDecisions.set(result, Object.freeze({ toolName, dialect: requestedRuleSubject.dialect, command: requestedRuleSubject.command, cwd: requestedRuleSubject.cwd,
         planIdentity: context.hostShellExecutionPlan.identity, issuer: this, policyEpoch: this.getPolicyEpoch() }));
