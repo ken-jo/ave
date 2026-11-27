@@ -339,7 +339,11 @@ function runLauncherWithEnvironment(
   let child: ChildProcess;
   try {
     const stdio: StdioOptions = ["ignore", "pipe", "pipe", ...linuxShellExtraDescriptors(), fd];
-    child = spawn(launcher, args, { env: options.env, stdio, ...(options.signal ? { signal: options.signal } : {}), killSignal: options.killSignal, timeout: options.timeout });
+    // The canary reads the firewall payloads the launcher writes, and takes them as evidence only when nobody else
+    // could write them. The launcher creates them under the inherited umask, which is often 002, so the canary's
+    // launcher runs under 077. `exec` keeps the pid the firewall reader looks under.
+    child = spawn("/bin/sh", ["-c", 'umask 077 && exec "$0" "$@"', launcher, ...args],
+      { env: options.env, stdio, ...(options.signal ? { signal: options.signal } : {}), killSignal: options.killSignal, timeout: options.timeout });
   } finally {
     closeSync(fd);
   }

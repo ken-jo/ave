@@ -1,5 +1,6 @@
 import { createSocket } from "node:dgram";
-import { lstat, readdir, readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir, readFile } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { networkInterfaces } from "node:os";
 import { posix } from "node:path";
@@ -377,9 +378,29 @@ export function linuxFirewallPayloadDrops(payload: string, family: 4 | 6, proxyP
 const SUPERVISOR_NAME = "mxc-bwrap-proxy-supervisor";
 const STATE_DIR = /^mxc-bwrap-proxy-[A-Za-z0-9]+$/u;
 
-async function ownedBy(path: string, kind: "directory" | "file"): Promise<boolean> {
+/** Owned by this account and writable by nobody else: the state the launcher writes for this account's runs. */
+function ownedPrivately(stats: { readonly uid: number; readonly mode: number }): boolean {
+  return stats.uid === process.getuid?.() && (stats.mode & 0o022) === 0;
+}
+
+async function folderOwned(path: string): Promise<boolean> {
   const stats = await lstat(path);
-  return stats.uid === process.getuid?.() && (kind === "directory" ? stats.isDirectory() : stats.isFile());
+  return stats.isDirectory() && ownedPrivately(stats);
+}
+
+/** A payload file's bytes, read through the one descriptor its checks ran on; a link is never followed. */
+async function readOwnedFile(path: string): Promise<string | undefined> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ELOOP") return undefined;
+    throw error;
+  });
+  if (handle === undefined) return undefined;
+  try {
+    const stats = await handle.stat();
+    return stats.isFile() && ownedPrivately(stats) ? await handle.readFile("utf8") : undefined;
+  } finally {
+    await handle.close();
+  }
 }
 
 /** The pinned launcher's network supervisor among `launcherPid`'s children, and the state folder it was handed. */
@@ -399,15 +420,16 @@ async function supervisorStateDir(launcherPid: number): Promise<string | undefin
   return undefined;
 }
 
-/** One family's payload files in transaction order, or undefined when the folder holds none. */
-async function familyPayload(dir: string, family: 4 | 6): Promise<string | undefined> {
+/** One family's payload files in transaction order, or undefined when the folder holds none or any check fails. */
+export async function readLinuxFirewallFamilyPayload(dir: string, family: 4 | 6): Promise<string | undefined> {
+  if (!await folderOwned(dir)) return undefined;
   const names = (await readdir(dir)).filter((name) => new RegExp(`^rules\\.v${family}\\.\\d{3}$`, "u").test(name)).sort();
   if (names.length === 0) return undefined;
   const parts: string[] = [];
   for (const name of names) {
-    const path = posix.join(dir, name);
-    if (!await ownedBy(path, "file")) return undefined;
-    parts.push(await readFile(path, "utf8"));
+    const part = await readOwnedFile(posix.join(dir, name));
+    if (part === undefined) return undefined;
+    parts.push(part);
   }
   return parts.join("\n");
 }
@@ -427,8 +449,8 @@ export async function readLinuxLauncherFirewall(
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     const dir = await supervisorStateDir(launcherPid);
-    if (dir === undefined || !await ownedBy(dir, "directory")) return false;
-    const [v4, v6] = await Promise.all([familyPayload(dir, 4), familyPayload(dir, 6)]);
+    if (dir === undefined) return false;
+    const [v4, v6] = await Promise.all([readLinuxFirewallFamilyPayload(dir, 4), readLinuxFirewallFamilyPayload(dir, 6)]);
     return v4 !== undefined && v6 !== undefined && !ended()
       && linuxFirewallPayloadDrops(v4, 4, proxyPort) && linuxFirewallPayloadDrops(v6, 6, proxyPort);
   } catch (error) {

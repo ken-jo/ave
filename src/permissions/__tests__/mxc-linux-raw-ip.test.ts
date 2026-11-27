@@ -1,10 +1,13 @@
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { acceptMeasuredContainerEgress, containerEgressProtocolCoverage, posixContainerMeasuredEgress, type LinuxRawIpVerdict, type MxcRawIpUdpArrival } from "../../shared/sandbox-capability-info.js";
 import { INVOCATION_PROXY_REFUSED_STATUS } from "../egress-invocation-listener.js";
 import {
   classifyLinuxRawIpTarget, type LinuxRawIpMeasurement, linuxFirewallPayloadDrops, linuxRawIpHostInBackendNetwork, linuxRawIpProberArguments, linuxRawIpTcpArrived,
-  linuxRawIpUdpArrival, linuxRawIpUdpSend, linuxRawIpVerdict,
+  linuxRawIpUdpArrival, linuxRawIpUdpSend, linuxRawIpVerdict, readLinuxFirewallFamilyPayload,
   openLinuxRawIpHostTargets, parseLinuxRawIpProbeOutput,
 } from "../mxc-linux-raw-ip.js";
 
@@ -144,6 +147,45 @@ describe("Linux raw-IP verdict rules", () => {
     for (const payload of variants) expect(linuxFirewallPayloadDrops(payload, 4, 12345), payload).toBe(false);
     // A later transaction appends after the closing DROP; it still reads as drop while it only repeats those rules.
     expect(linuxFirewallPayloadDrops(`${V4_PAYLOAD}\n${V4_PAYLOAD.replace("-A OUTPUT -j MXC_EGRESS\n", "")}`, 4, 12345)).toBe(true);
+  });
+
+  describe("the launcher's firewall payload on disk", () => {
+    let dir: string;
+    const make = () => {
+      dir = mkdtempSync(join(tmpdir(), "mxc-bwrap-proxy-"));
+      chmodSync(dir, 0o700);
+      return dir;
+    };
+
+    it("reads the payload files through one checked descriptor each", async () => {
+      make();
+      try {
+        writeFileSync(join(dir, "rules.v4.000"), V4_PAYLOAD, { mode: 0o600 });
+        await expect(readLinuxFirewallFamilyPayload(dir, 4)).resolves.toBe(V4_PAYLOAD);
+        await expect(readLinuxFirewallFamilyPayload(dir, 6)).resolves.toBeUndefined();
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it("does not follow a link in place of a payload file", async () => {
+      make();
+      try {
+        writeFileSync(join(dir, "elsewhere"), V4_PAYLOAD, { mode: 0o600 });
+        symlinkSync(join(dir, "elsewhere"), join(dir, "rules.v4.000"));
+        await expect(readLinuxFirewallFamilyPayload(dir, 4)).resolves.toBeUndefined();
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it("takes no evidence from a payload or a folder that group or others can write", async () => {
+      make();
+      try {
+        writeFileSync(join(dir, "rules.v4.000"), V4_PAYLOAD, { mode: 0o600 });
+        chmodSync(join(dir, "rules.v4.000"), 0o620);
+        await expect(readLinuxFirewallFamilyPayload(dir, 4)).resolves.toBeUndefined();
+        chmodSync(join(dir, "rules.v4.000"), 0o600);
+        chmodSync(dir, 0o702);
+        await expect(readLinuxFirewallFamilyPayload(dir, 4)).resolves.toBeUndefined();
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
   });
 
   it("is unknown when anything reached a peer, by TCP or by UDP arrival", () => {
