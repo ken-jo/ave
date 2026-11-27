@@ -1,13 +1,14 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createSocket, type Socket as UdpSocket } from "node:dgram";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { connect, createServer, type Server } from "node:net";
 import { networkInterfaces } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { containerTarget } from "../../shared/container-platform.js";
 import { createContainedShellLifecycle } from "../../tools/contained-shell-lifecycle.js";
@@ -181,6 +182,22 @@ describe.runIf(NATIVE)("native Linux shell container boundary", () => {
     expect(readFileSync(join(work, "ordinary", "control"), "utf8")).toBe("ordinary");
     expect(existsSync(join(work, ".vscode"))).toBe(false);
     expect(existsSync(join(work, ".ave", "commands"))).toBe(false);
+  });
+
+  it("names a placeholder the host replaced while the command ran, at exit", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const { launch } = await prepare("touch ready; while test ! -e release; do sleep 0.02; done");
+    const pending = run(launch);
+    await vi.waitFor(() => expect(existsSync(join(work, "ready"))).toBe(true));
+    // Moved aside, so the replacement cannot reuse the inode number a removed folder would free.
+    renameSync(join(work, ".vscode"), join(work, "moved-vscode"));
+    mkdirSync(join(work, ".vscode"));
+    writeFileSync(join(work, "release"), "");
+    const result = await pending;
+    expect(result.code, result.stderr).toBe(0);
+    expect(result).toMatchObject({ cleanupNotice: expect.stringContaining(t("sandboxPolicy.linuxPlaceholderChanged", { path: join(work, ".vscode") })) });
+    rmSync(join(work, ".vscode"), { recursive: true });
+    rmSync(join(work, "moved-vscode"), { recursive: true });
   });
 
   it("keeps overlapping placeholder owners until the final shell exits", async () => {

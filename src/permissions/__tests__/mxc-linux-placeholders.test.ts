@@ -187,6 +187,53 @@ describe.runIf(process.platform === "linux")("Linux placeholder ownership", () =
     });
   });
 
+  describe("two sessions with different protected sets", () => {
+    it("holds a folder another run created when this launch mounts on it, so it outlives that run", async () => {
+      const first = await holdMxcLinuxPlaceholders(lookups, rank, host);
+      const mounted = dirname(leaf);
+      const model = buildPolicyModel({ floors: [], launchGrants: [policyGrantRow(mounted, "rw", "launch-grant", true)], userGrants: [], extensionManifests: [] });
+      const second = await holdMxcLinuxPlaceholders(lookups, (current) => rankPosixContainerRows(model, "bubblewrap", current), host);
+      expect(second.grants.readwrite).toContain(mounted);
+      await first.release();
+      expect(existsSync(mounted)).toBe(true);
+      second.validate();
+      await second.release();
+      expect(existsSync(join(work, "missing"))).toBe(false);
+    });
+
+    it("denies another run's live placeholder under its write roots, and holds it, when its own set lacks the name", async () => {
+      const first = await holdMxcLinuxPlaceholders(lookups, rank, host);
+      const model = buildPolicyModel({ floors: [], launchGrants: [policyGrantRow(work, "rw", "launch-grant", true)], userGrants: [], extensionManifests: [] });
+      const second = await holdMxcLinuxPlaceholders(lookups, (current) => rankPosixContainerRows(model, "bubblewrap", current), host);
+      expect(second.grants.denied).toContain(leaf);
+      await first.release();
+      expect(existsSync(leaf)).toBe(true);
+      await second.release();
+      expect(existsSync(join(work, "missing"))).toBe(false);
+    });
+
+    it("leaves a placeholder outside its write roots alone", async () => {
+      const first = await holdMxcLinuxPlaceholders(lookups, rank, host);
+      const elsewhere = join(root, "elsewhere");
+      mkdirSync(elsewhere);
+      const model = buildPolicyModel({ floors: [], launchGrants: [policyGrantRow(elsewhere, "rw", "launch-grant", true)], userGrants: [], extensionManifests: [] });
+      const second = await holdMxcLinuxPlaceholders(lookups, (current) => rankPosixContainerRows(model, "bubblewrap", current), host);
+      expect(second.grants.denied).not.toContain(leaf);
+      await first.release();
+      expect(existsSync(join(work, "missing"))).toBe(false);
+      await second.release();
+    });
+
+    it("names a placeholder replaced on the host after the start when validated again", async () => {
+      const hold = await holdMxcLinuxPlaceholders(lookups, rank, host);
+      hold.validate();
+      rmSync(leaf, { recursive: true });
+      mkdirSync(leaf);
+      expect(() => hold.validate()).toThrow(`Container placeholder changed before start: ${leaf}`);
+      await hold.release();
+    });
+  });
+
   it("cleans the protected leaf and leaves an ordinary file in a created parent", async () => {
     const hold = await holdMxcLinuxPlaceholders(lookups, rank, host);
     const sibling = join(dirname(leaf), "ordinary");

@@ -5240,6 +5240,7 @@ export const en = {
   "sandboxPolicy.linuxContainerStartRefused": "The Linux sandbox container refused to start the shell command.",
   "sandboxPolicy.linuxContainerRunFailed": "The command started in the Linux sandbox container, then the container launcher failed (container-run-failed). Its output so far is above; it may have run only in part.",
   "sandboxPolicy.linuxPlaceholderJournalRecovered": "Ave could not read its Linux container placeholder journal and started a new one; the old file was kept as {file}. Empty folders Ave made in your projects before this may remain.",
+  "sandboxPolicy.linuxPlaceholderChanged": "A protected placeholder Ave held for this command was replaced on the host while it ran (container-placeholder-changed): {path}. That name was not protected for the whole run.",
   "sandboxPolicy.linuxContainerShellRefused": "The Linux sandbox container refused the shell command. {reason}",
   "sandboxPolicy.containerShellCleanupUnverified": "The shell command was stopped, but its processes could not be confirmed gone.",
   "sandboxPolicy.containerShellRefused": "The macOS sandbox container refused the shell command: {reason}",

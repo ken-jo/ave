@@ -10,7 +10,7 @@ import { t } from "../i18n/index.js";
 import {
   currentMxcRuntimeHost, requireMxcContainerStartRoot, type MxcRuntimeHost,
 } from "./mxc-runtime-root.js";
-import type { PosixFilesystemGrants, PosixPolicyLookups } from "./mxc-posix.js";
+import { atOrUnder, type PosixFilesystemGrants, type PosixPolicyLookups } from "./mxc-posix.js";
 
 const DirectoryIdentity = z.object({ device: z.string().regex(/^\d+$/u), inode: z.string().regex(/^\d+$/u) });
 const AbsolutePath = z.string().refine((path) => path !== "/" && posix.isAbsolute(path) && posix.normalize(path) === path);
@@ -69,6 +69,14 @@ function readRegistry(path: string): PlaceholderRegistry {
     return PlaceholderRegistry.parse(JSON.parse(text));
   } catch (error) {
     throw new ContainerPlaceholderJournalError(path, error);
+  }
+}
+
+/** A folder this run holds was replaced or moved on the host since the run proved it. */
+export class ContainerPlaceholderChangedError extends Error {
+  override readonly name = "ContainerPlaceholderChangedError";
+  constructor(readonly path: string) {
+    super(`Container placeholder changed before start: ${path}`);
   }
 }
 
@@ -184,7 +192,7 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
     const registry = readRegistry(journal);
     if (sweepDeadRuns(registry, host)) saveRegistry(journal, registry);
     const tracked = new Map(registry.directories.map((directory) => [directory.path, directory]));
-    const grants = rank({
+    const ranked = rank({
       ...lookups,
       exists(path) {
         const directory = tracked.get(path);
@@ -192,6 +200,14 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
         return lookups.exists(path);
       },
     });
+    // Another run's live placeholder under this launch's write roots is a protected name in that run's set, perhaps
+    // not in this one's. Deny it here as well, so this container cannot remove it before the other mounts it.
+    const foreignLeaves = registry.directories.filter((directory) => directory.leaf && directory.identity !== undefined
+      && isSameDirectory(directory.path, directory.identity)
+      && ranked.readwrite.some((root) => atOrUnder(directory.path, root, false))
+      && !ranked.denied.includes(directory.path) && !ranked.readonly.includes(directory.path));
+    const grants: Grants = foreignLeaves.length === 0 ? ranked
+      : { ...ranked, denied: [...ranked.denied, ...foreignLeaves.map((directory) => directory.path)] };
     const owned = new Set<PlaceholderRegistry["directories"][number]>();
     const owner = { pid: host.pid, start: host.processStart(host.pid) };
     if (owner.start === null) throw new Error("Container placeholder owner could not be proved");
@@ -234,8 +250,12 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
         for (const parent of placeholder.parents) claim(parent, false);
         claim(placeholder.path, true);
       }
-      for (const pin of grants.pins ?? []) {
-        if (tracked.has(pin)) claim(pin, false);
+      // Every tracked folder a row equals or sits under is a mount source or lies above one: hold it for this run, so
+      // the run that created it cannot remove it while this container uses it.
+      const rows = [...grants.readwrite, ...grants.readonly, ...grants.denied, ...grants.pins ?? []];
+      for (const directory of [...tracked.values()].toSorted((a, b) => a.path.length - b.path.length)) {
+        if (owned.has(directory)) continue;
+        if (rows.some((row) => atOrUnder(row, directory.path, false))) claim(directory.path, directory.leaf);
       }
       if (owned.size > 0) saveRegistry(journal, registry);
     } catch (error) {
@@ -249,7 +269,7 @@ export async function holdMxcLinuxPlaceholders<Grants extends PosixFilesystemGra
       validate() {
         for (const { path, identity, parent } of owned) {
           if (identity === undefined || !isSameDirectory(posix.dirname(path), parent) || !isSameDirectory(path, identity)) {
-            throw new Error(`Container placeholder changed before start: ${path}`);
+            throw new ContainerPlaceholderChangedError(path);
           }
         }
       },
