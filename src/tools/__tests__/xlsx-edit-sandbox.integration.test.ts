@@ -79,7 +79,8 @@ describe("native governed XLSX command", () => {
         establishMxcRuntimeRoot();
         const probe = platform === "darwin" ? detectHostMxcMacShellSupport : detectHostMxcLinuxShellSupport;
         const support = await probe(currentResources);
-        expect(support).toEqual({ state: "available" });
+        // Availability is what this case needs; the Linux canary's raw-IP measurement is proved by its own suite.
+        expect(support).toMatchObject({ state: "available" });
         setContainerShellSubstrate(platform, support);
       };
       let currentResources = hostResources;

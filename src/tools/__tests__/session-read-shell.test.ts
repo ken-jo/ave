@@ -212,7 +212,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
       configureHostResources(resources);
       establishMxcRuntimeRoot();
       const support = await detectHostMxcLinuxShellSupport(resources);
-      expect(support).toEqual({ state: "available" });
+      // Availability is what this case needs; the Linux canary's raw-IP measurement is proved by its own suite.
+      expect(support).toMatchObject({ state: "available" });
       setContainerShellSubstrate("linux", support);
     }
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true }, async () => false);

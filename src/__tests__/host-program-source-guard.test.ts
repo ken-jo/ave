@@ -66,6 +66,7 @@ const LAUNCH_FILES = [
   "permissions/confined-child.ts",
   "permissions/judge/external-judge.ts",
   "permissions/mxc-extension-process.ts",
+  "permissions/mxc-linux.ts", // Linux container probe and canary: the hash-pinned launcher under the absolute resource path
   "permissions/mxc-policy-pipe.ts",
   "permissions/mxc-runtime-root.ts",
   "permissions/mxc-shell-supervisor-client.ts", // macOS shell supervisor: process.execPath as Node, safe env without loader overrides
@@ -78,6 +79,7 @@ const LAUNCH_FILES = [
   "permissions/worker-spawn.ts",
   "plugins/installed-entry-fs.ts",
   "plugins/isolation/child-loopback-link.ts",
+  "sandbox/linux-container-shell.ts", // Linux shell supervisor: the hash-pinned launcher, proved at boot, under the absolute resource path
   "shared/ave-home-configuration.ts",
   "shared/ave-home.ts",
   "shared/host-git.ts",

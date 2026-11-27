@@ -8,6 +8,8 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 
 import {
   __resetActiveSandboxCapabilityForTest,
+  __resetContainerShellSubstrateForTest,
+  setContainerShellSubstrate,
   detectSandboxCapability,
   disposableContainerCapability,
   formatSandboxCapabilityForPrompt,
@@ -586,17 +588,29 @@ describe("sandbox-capability — shell sandbox and plugin-worker confinement are
     setProcessPlatform("linux");
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability(fullAsrt("linux"));
+    // A Linux host shell's sandbox is its container: boot published a live one.
+    setContainerShellSubstrate("linux", { state: "available" });
+    try {
+      expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
+      expect(detectShellSandboxCapability().kind).toBe("asrt");
+      expect(isActiveSandboxShellContained()).toBe(true);
+      expect(getHostShellExecutionPlan()).toMatchObject({ mode: "asrt", requestedSandbox: true, sandboxed: true, substrate: "mxc" });
+      expect(resolveReviewerSandboxCapability("builtin", "bash").kind).toBe("asrt");
+    } finally {
+      __resetContainerShellSubstrateForTest();
+    }
+  });
 
-    expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
-    expect(detectShellSandboxCapability().kind).toBe("asrt");
-    expect(isActiveSandboxShellContained()).toBe(true);
-    // Linux host shells run in the container route; with no live container they take the requested-sandbox floor,
-    // never the disabled-by-setting plan that worker confinement alone would leave.
+  it("takes the requested-sandbox floor for a Linux host shell when no container is live", () => {
+    setProcessPlatform("linux");
+    setShellSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability(fullAsrt("linux"));
+    // The shell scope is still the one requested: never the disabled-by-setting plan.
     expect(getHostShellExecutionPlan()).toMatchObject({
       mode: "plain", requestedSandbox: true, substrate: "none", fallbackReason: "active-sandbox-not-shell-contained",
       requiresExplicitUserApproval: true,
     });
-    // No live container confines the shell, so the reviewer gets no isolation credit for it.
+    // Nothing confines the shell, so the reviewer gets no isolation credit for it.
     expect(resolveReviewerSandboxCapability("builtin", "bash").kind).toBe("none");
   });
 
