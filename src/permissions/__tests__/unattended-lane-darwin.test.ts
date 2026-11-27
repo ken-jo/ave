@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { expect, it, vi } from "vitest";
 import type { PermissionDecisionRequest } from "../decision-pipeline.js";
 import { decideUnattended } from "../unattended-lane.js";
@@ -13,7 +14,8 @@ it.each([
   ["/users/alice/ws/report.txt", "/users/alice/ws/report.txt", "deny"],
   ["/Users/alice/ws/report.txt", "/users/alice/outside/report.txt", "deny"],
 ] as const)("checks both spellings of a darwin read: %s → %s", (lexical, canonical, outcome) => {
-  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  assert.ok(platform, "Expected a process.platform descriptor");
   Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
   try {
     const request: PermissionDecisionRequest = {
