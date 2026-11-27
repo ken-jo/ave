@@ -2,7 +2,7 @@ import type { LLMSettings, SettingsService } from "../data/settings-store.js";
 import type { JudgeModelRef } from "../permissions/judge/judge-settings.js";
 import { judgeModelCatalogFrom } from "../permissions/judge/judge-model-catalog.js";
 import { getLlmVendorSettings, isLLMVendor, llmRouteModel, canUseLlmVendorWithoutApiKey, LLM_VENDORS } from "../shared/llm-vendor-defaults.js";
-import type { SubscriptionChatRuntimeSelection } from "../shared/subscription-runtime.js";
+import type { SubscriptionChatRuntimeSelection, SubscriptionRuntimeId } from "../shared/subscription-runtime.js";
 import { resolveModelRetirement, type LlmRouteProviderPreset } from "../shared/context-budget.js";
 import { llmModelListCacheKey } from "../shared/llm-model-list.js";
 import { sameSystemSubagentModel, sameSystemSubagentRouteIdentity, systemSubagentRouteIdentity, type SystemSubagentRouteIdentity } from "../shared/system-subagent-model.js";
@@ -18,6 +18,7 @@ export interface SystemSubagentRouteDeps {
   llmFetch?: typeof fetch;
   networkFetch: typeof fetch;
   subscriptionProviderFactory?: (selection: SubscriptionChatRuntimeSelection) => LLMProvider | null;
+  subscriptionConnected?: (provider: SubscriptionRuntimeId) => boolean;
 }
 
 export interface SystemSubagentProviderPlan {
@@ -64,7 +65,11 @@ export function createSystemSubagentProviderPlan(
   const activeChatRuntime = llmSettings.activeChatRuntime;
   if (selectedModel === undefined && activeChatRuntime?.kind === "subscription") {
     if (vendor !== `subscription:${activeChatRuntime.provider}`) return null;
-    return { isConnected: () => true, build: () => subscriptionProviderFactory?.(activeChatRuntime) ?? null };
+    const isConnected = () => deps.subscriptionConnected?.(activeChatRuntime.provider) === true;
+    return {
+      isConnected,
+      build: () => isConnected() ? subscriptionProviderFactory?.(activeChatRuntime) ?? null : null,
+    };
   }
   if (selectedModel === undefined && llmSettings.retiredProvider) return null;
   if (!isLLMVendor(vendor) || (selectedModel !== undefined && !selectedRoute)) return null;

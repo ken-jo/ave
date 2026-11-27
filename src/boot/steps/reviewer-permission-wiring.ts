@@ -22,6 +22,7 @@ import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 import { createRecentlyDeniedReplayResolver } from "../../permissions/reviewer/recently-denied-replay.js";
 import { errorMessage } from "../../shared/error-message.js";
+import type { SubscriptionRuntimeId } from "../../shared/subscription-runtime.js";
 
 const log = createLogger("ave");
 
@@ -35,6 +36,7 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
     getMainWindow,
     bootAuditLogger,
     subscriptionProviderFactory,
+    isSubscriptionConnected,
   } = ctx;
 
   const applyOwnerAwayAutoSkip = () => ctx.approvalGate.setOwnerAwayAutoSkipMinutes(
@@ -48,8 +50,9 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
 
   // Bind the classifier, verdict cache, and denial history; streaming providers are adapted to one-shot review calls.
   // Secrets decrypt asynchronously while reviewer wiring is synchronous, so a plan names the credential to pre-read.
-  const reviewerProviderPlan = (vendor: string, selectedModel?: string, route?: SystemSubagentRouteIdentity) => createSystemSubagentProviderPlan({
+  const reviewerProviderPlan = (vendor: string, selectedModel?: string, route?: SystemSubagentRouteIdentity, connectedSubscription?: SubscriptionRuntimeId) => createSystemSubagentProviderPlan({
     settingsService, llmFetch, networkFetch: singleHopNetworkFetch, subscriptionProviderFactory,
+    subscriptionConnected: (provider) => connectedSubscription === provider,
   }, vendor, selectedModel, route);
   const readReviewerSecrets = async (
     targets: ReadonlyArray<{ vendor: string; model?: string; route?: SystemSubagentRouteIdentity }>,
@@ -68,8 +71,9 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
     vendor: string,
     selectedModel?: string,
     route?: SystemSubagentRouteIdentity,
+    connectedSubscription?: SubscriptionRuntimeId,
   ): LLMProvider | null => {
-    const plan = reviewerProviderPlan(vendor, selectedModel, route);
+    const plan = reviewerProviderPlan(vendor, selectedModel, route, connectedSubscription);
     if (!plan) return null;
     if (plan.secretKey === undefined) return plan.build(null);
     // A credential not pre-read means settings changed mid-rewire; stay unconfigured until the queued rewire runs.
@@ -157,6 +161,10 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
     }
     // An unset reviewer model follows chat; resolve again whenever settings change.
     const selectedReviewerModel = judgeSettings.settings.model;
+    const activeRuntime = settingsService.get("llm").activeChatRuntime;
+    const connectedSubscription = !selectedReviewerModel && !judgeSettings.modelRejected
+      && activeRuntime?.kind === "subscription" && await isSubscriptionConnected(activeRuntime.provider)
+      ? activeRuntime.provider : undefined;
     const reviewerModelSelection = judgeSettings.modelRejected === true
       ? { label: "configured in Settings", available: false }
       : selectedReviewerModel
@@ -180,7 +188,7 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
         : readActiveReviewerLlm,
       streamProviderFor: selectedReviewerModel
         ? (vendor) => reviewerStreamProviderFor(secrets, vendor, selectedReviewerModel.model, selectedReviewerModel.route)
-        : (vendor) => reviewerStreamProviderFor(secrets, vendor),
+        : (vendor) => reviewerStreamProviderFor(secrets, vendor, undefined, undefined, connectedSubscription),
       ...(reviewerModelSelection ? { selectedModel: reviewerModelSelection } : {}),
       onRecentlyDeniedChanged: (summary) => {
         for (const window of ctx.host.desktop?.getAppWindows() ?? [getMainWindow()]) {
