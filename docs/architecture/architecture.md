@@ -3697,7 +3697,7 @@ in its directory.
   The resolver remains a potential egress path outside the proxy. MXC shell
   and extension plans report `dns: "host-resolver"`.
 - **Shell TCP egress measurement.** The existing post-boot shell start check
-  runs once in a container with the same network policy as a user shell.
+  measures egress in a container with the same network policy as a user shell.
   The control requires a `403` with the `x-ave-egress-refused` header for a
   random loopback destination and a matching refusal recorded by the host
   invocation proxy. The script attempts direct TCP connections to
@@ -3715,8 +3715,8 @@ in its directory.
   unknown. Shell availability follows the PowerShell exit result. File logs
   record the launcher hash, schema, network section, Windows build, and the
   reachability warning. Coverage stays in memory for the current boot and is
-  reported on Windows MXC shell plans and in the Windows substrate snapshot. The container request
-  and host proxy enforce the network policy. Extension plans retain
+  reported on Windows MXC shell plans and in the Windows substrate snapshot.
+  The container request and host proxy enforce the network policy. Extension plans retain
   `rawIp: "unknown"`. Direct UDP and ICMP remain unverified.
 - **Inbound.** Proxy mode requires `ingress.default: "allow"`, which grants
   the container `privateNetworkClientServer`. The pinned SDK describes

@@ -30,7 +30,7 @@ it("writes only the measurement key and reachability warning to the file sink", 
         const script = Buffer.from(request.process.commandLine.split(" ").at(-1) ?? "", "base64").toString("utf16le");
         const prefix = /'(AVE_MXC_RAW_IP [a-f0-9]{32} )'/.exec(script)?.[1];
         if (!prefix) throw new Error("Missing evidence prefix");
-        return { code: 0, stdout: prefix + '{"control":false,"t4":"connected","t6":10013,"tl":10013}\r\n', stderr: "" };
+        return { code: 0, stdout: `${prefix}{"control":false,"t4":"connected","t6":10013,"tl":10013}\r\n`, stderr: "" };
       },
     }, async () => ({ port: 49153, url: "http://127.0.0.1:49153", close: async () => {} }));
     expect(result).toMatchObject({ state: "available", rawIpProbe: { rawIp: "unknown", reachableTargets: ["t4"] } });

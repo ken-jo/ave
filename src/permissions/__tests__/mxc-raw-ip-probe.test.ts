@@ -37,6 +37,15 @@ describe("Windows raw IP probe classification", () => {
     expect(classifyMxcRawIpProbe({ ...REFUSED, tl: "deadline" }, true).rawIp).toBe("blocked");
   });
 
+  it("only downgrades a blocked verdict when a listener binds after the LAN lookup", () => {
+    const beforeBind = { ...REFUSED, t6: 10013, tl: "deadline" } as const;
+    expect(classifyMxcRawIpProbe(beforeBind, true)).toEqual({ rawIp: "blocked", reason: "blocked", reachableTargets: [] });
+    const afterBind = { ...beforeBind, tl: "connected" } as const;
+    expect(classifyMxcRawIpProbe(afterBind, true)).toEqual({
+      rawIp: "unknown", reason: "raw-ip-reachable", reachableTargets: ["tl"],
+    });
+  });
+
   it("retains a reachable target when the control failed", () => {
     expect(classifyMxcRawIpProbe({ ...REFUSED, t6: "connected" }, false)).toEqual({
       rawIp: "unknown", reason: "control-failed", reachableTargets: ["t6"],
@@ -64,7 +73,7 @@ describe("raw IP evidence frame", () => {
     evidenceFrame("b".repeat(32)), evidenceFrame("").replace("  ", " "),
     EVIDENCE_LINE.replace('"t4":10013', '"t4":"10013"'),
     EVIDENCE_LINE.replace('"t4":10013', '"t4":10013,"t4":10013'),
-    EVIDENCE_LINE + EVIDENCE_LINE, `launcher\r\n${EVIDENCE_LINE}`, EVIDENCE_LINE + "other\r\n",
+    EVIDENCE_LINE.repeat(2), `launcher\r\n${EVIDENCE_LINE}`, `${EVIDENCE_LINE}other\r\n`,
   ])("treats invalid or absent evidence as unknown (%j)", (stdout) => {
     expect(classifyMxcRawIpProbe(parseMxcRawIpProbeEvidence(stdout, PROBE_ID), true).reason).toBe("no-evidence");
   });
@@ -117,7 +126,7 @@ describe("raw IP startup observation", () => {
     ["missing ID", () => `AVE_MXC_RAW_IP ${JSON.stringify(REFUSED)}\r\n`],
     ["missing frame", () => ""],
     ["duplicate frame", (id: string) => evidenceFrame(id).repeat(2)],
-    ["unrelated output", (id: string) => evidenceFrame(id) + "exit 0\r\n"],
+    ["unrelated output", (id: string) => `${evidenceFrame(id)}exit 0\r\n`],
   ] as const)("keeps coverage unknown with a %s after the host refused the control", async (_label, output) => {
     const run = async (_file: string, args: readonly string[]) => {
       if (args[0] !== "--config-base64") return { code: 0, stdout: "", stderr: "" };

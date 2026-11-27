@@ -267,6 +267,7 @@ function Invoke-Tcp([string] $address, [int] $port, [string] $controlHost) {
 }
 try {
   $ErrorActionPreference = 'Stop'
+  $ProgressPreference = 'SilentlyContinue'
   $probeBudget = [Math]::Min([long]${MXC_RAW_IP_PROBE_TIMEOUT_MS}, ${deadline} - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
   if ($probeBudget -le 0) { exit 0 }
   $probeClock = [Diagnostics.Stopwatch]::StartNew()
