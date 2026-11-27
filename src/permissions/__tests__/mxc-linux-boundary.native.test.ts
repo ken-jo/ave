@@ -16,8 +16,12 @@ import { prepareMxcPosixShellLaunch } from "../../tools/mxc-posix-shell-launch.j
 import { openEgressInvocation } from "../egress-invocations.js";
 import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
 import { launcherPathFor, pinnedLauncherSha256 } from "../mxc-launcher.js";
-import { _runLinuxCanaryForTest as runCanary, detectHostMxcLinuxShellSupport, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
+import { _runLinuxCanaryForTest as runCanary, buildBubblewrapShellRequest, detectHostMxcLinuxShellSupport, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
 import { LINUX_RAW_IP_PROBER, primaryIpv4 } from "../mxc-linux-raw-ip.js";
+import { startMxcLinuxShell } from "../../sandbox/linux-container-shell.js";
+import { openInvocationProxyListener } from "../egress-invocation-listener.js";
+import { posixPolicyLookups, rankPosixContainerRows } from "../mxc-posix.js";
+import { buildPolicyModel, policyGrantRow } from "../policy-model.js";
 import { _forgetMxcRuntimeRootForTest, currentMxcRuntimeHost, establishMxcRuntimeRoot, requireMxcContainerStartRoot } from "../mxc-runtime-root.js";
 import { __resetActiveSandboxCapabilityForTest, __resetContainerShellSubstrateForTest, __resetSandboxRequestedAtBootForTest,
   setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
@@ -422,6 +426,54 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     expect(result.stderr).toContain(forged[0]);
     expect(result).toHaveProperty("cleanupNotice");
     expect(existsSync(join(work, "child", ".git", "hooks", "pre-commit"))).toBe(false);
+  });
+
+  it("reports a launcher that failed after the command started as a failed run with its output, never a refused start", async () => {
+    const programs = await requireMxcLinuxShellPrograms(resources);
+    const scratch = mkdtempSync(join(requireMxcContainerStartRoot(), "run-failed-"));
+    const proxy = await openInvocationProxyListener({ upstream: () => undefined });
+    try {
+      const model = buildPolicyModel({ floors: [], launchGrants: [policyGrantRow(work, "rw", "launch-grant", true)], userGrants: [], extensionManifests: [] });
+      const grants = rankPosixContainerRows(model, "bubblewrap", posixPolicyLookups(work, false));
+      const staged = async (commandLine: string, name: string) => {
+        const folder = join(scratch, name);
+        mkdirSync(folder);
+        const { request, environment } = buildBubblewrapShellRequest({ grants, lookups: posixPolicyLookups(work, false), cwd: work,
+          commandLine, timeoutMs: 10_000, env: { PATH: "/usr/bin:/bin" }, proxyUrl: proxy.url, helper: programs.helper });
+        const requestPath = join(folder, "request.json");
+        const environmentPath = join(folder, "environment.sh");
+        writeFileSync(requestPath, JSON.stringify(request), { mode: 0o600 });
+        writeFileSync(environmentPath, environment, { mode: 0o600 });
+        const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
+        return { requestPath, requestSha256: digest(requestPath), environmentPath, environmentSha256: digest(environmentPath) };
+      };
+      // The real launcher runs the command; the stand-in then records a launcher error after it, as a launcher that
+      // failed after the start does. Only the helper inside the container can have written the ready byte.
+      const failing = join(scratch, "failing-launcher");
+      writeFileSync(failing, `#!/bin/sh\n${quote(programs.launcher)} "$@"\nstatus=$?\n`
+        + `printf 'Exit code: -1 (0xFFFFFFFF)\\nError: forced after the start\\n' >> "$2"\nexit "$status"\n`, { mode: 0o755 });
+      const runWith = async (commandLine: string, name: string) => {
+        const { child, completion } = startMxcLinuxShell({ ...programs, launcher: failing }, await staged(commandLine, name), 10_000,
+          new AbortController().signal, () => {}, "test:linux-shell-run-failed");
+        let stdout = "";
+        child.stdout.setEncoding("utf8").on("data", (value: string) => { stdout += value; });
+        child.stderr.resume();
+        return { ...await completion, stdout };
+      };
+      expect(await runWith("printf 'started\\n'", "started")).toMatchObject({ rejected: false, runFailed: true, stdout: "started\n" });
+      // Control: a request the launcher refuses before anything runs (its working directory is gone) stays refused.
+      const gone = await staged("printf never", "refused");
+      writeFileSync(gone.requestPath, readFileSync(gone.requestPath, "utf8").replace(JSON.stringify(work), JSON.stringify(join(work, "absent"))));
+      gone.requestSha256 = createHash("sha256").update(readFileSync(gone.requestPath)).digest("hex");
+      const { child, completion } = startMxcLinuxShell({ ...programs, launcher: failing }, gone, 10_000,
+        new AbortController().signal, () => {}, "test:linux-shell-run-failed");
+      child.stdout.resume();
+      child.stderr.resume();
+      expect(await completion).toMatchObject({ rejected: true, runFailed: false });
+    } finally {
+      await proxy.close();
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 
   it("reports the launcher's own timeout as timed out and still quarantines", async () => {

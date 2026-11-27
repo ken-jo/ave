@@ -42,8 +42,18 @@ const PROXY_VARIABLES = /^(?:https?|all|no|ftp)_proxy$/iu;
  * before anything else runs. It reads a 0600 file in the request's staging folder, under the runtime root the
  * container cannot read by path.
  */
-export const LINUX_SHELL_ENVIRONMENT_FD = 9;
+const LINUX_SHELL_ENVIRONMENT_FD = 9;
+/**
+ * The descriptor the filter helper inside the container writes one byte to once the filter is on, just before the
+ * command runs. Its arrival separates a launcher that refused to start from one that failed after the command began.
+ */
+export const LINUX_SHELL_READY_FD = 4;
 const PORTABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+
+/** Descriptors 3 to 8 of a launcher spawn: the ready pipe at {@link LINUX_SHELL_READY_FD}, nothing else. */
+export function linuxShellExtraDescriptors(): ("pipe" | "ignore")[] {
+  return Array.from({ length: LINUX_SHELL_ENVIRONMENT_FD - 3 }, (_, index) => index + 3 === LINUX_SHELL_READY_FD ? "pipe" : "ignore");
+}
 
 /** The environment as a POSIX `sh` script of single-quoted exports. A name `sh` cannot export is left out, never renamed. */
 function linuxShellEnvironmentScript(env: Readonly<Record<string, string>>): string {
@@ -308,7 +318,7 @@ export function buildBubblewrapShellRequest(input: {
       version: "0.9.0-alpha",
       containment: "bubblewrap",
       // The helper closes every other inherited descriptor (the launcher's proxy mode leaves one to its user namespace).
-      process: { commandLine: `${quote(helper)} --close-other-fds --keep-fd ${fd} -- /bin/sh -c ${quote(bootstrap)}`, cwd, timeout: input.timeoutMs, inheritDefaultEnv: false, env: [] },
+      process: { commandLine: `${quote(helper)} --close-other-fds --keep-fd ${fd} --ready-fd ${LINUX_SHELL_READY_FD} -- /bin/sh -c ${quote(bootstrap)}`, cwd, timeout: input.timeoutMs, inheritDefaultEnv: false, env: [] },
       filesystem: { readwritePaths: grants.readwrite, readonlyPaths, deniedPaths: grants.denied },
       network: { egress: { default: "deny" }, ingress: { default: "deny", hostLoopback: "deny" } },
       runtimeConfig: { networkProxy: input.proxyUrl },
@@ -328,7 +338,7 @@ function runLauncherWithEnvironment(
   const fd = openSync(environmentPath, "r");
   let child: ChildProcess;
   try {
-    const stdio: StdioOptions = ["ignore", "pipe", "pipe", ...Array<"ignore">(LINUX_SHELL_ENVIRONMENT_FD - 3).fill("ignore"), fd];
+    const stdio: StdioOptions = ["ignore", "pipe", "pipe", ...linuxShellExtraDescriptors(), fd];
     child = spawn(launcher, args, { env: options.env, stdio, ...(options.signal ? { signal: options.signal } : {}), killSignal: options.killSignal, timeout: options.timeout });
   } finally {
     closeSync(fd);
@@ -336,6 +346,7 @@ function runLauncherWithEnvironment(
   const stdout: Buffer[] = [];
   child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
   child.stderr?.resume();
+  (child.stdio[LINUX_SHELL_READY_FD] as NodeJS.ReadableStream | null)?.resume();
   const completion = new Promise<{ stdout: string }>((resolve, reject) => {
     child.once("error", reject);
     child.once("close", (code, signal) => {

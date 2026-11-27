@@ -44,7 +44,7 @@ describe.runIf(process.platform !== "win32")("Linux container shell exit classif
 
   // A stand-in launcher: copies its environment descriptor, writes the given log to `--log-file`, the given stderr, and
   // exits with the given status.
-  async function run(log: string, stderr: string, status: number) {
+  async function run(log: string, stderr: string, status: number, options: { readonly started?: boolean; readonly stdout?: string } = {}) {
     const staging = mkdtempSync(join(root, "shell-"));
     lastStaging = staging;
     const launcher = join(staging, "launcher");
@@ -52,18 +52,22 @@ describe.runIf(process.platform !== "win32")("Linux container shell exit classif
     writeFileSync(join(staging, "stderr"), stderr);
     writeFileSync(launcher, `#!/bin/sh\n[ "$1" = --log-file ] || exit 90\n[ "$3" = --config ] || exit 91\n`
       + `cat <&9 > ${JSON.stringify(join(staging, "received-environment"))} || exit 92\n`
+      // A started command: the filter helper inside writes the ready byte, and the command prints.
+      + (options.started === true ? `printf '\\n' >&4 || exit 93\nexec 4>&-\nprintf %s ${JSON.stringify(options.stdout ?? "")}\n` : "")
       + `cat ${JSON.stringify(join(staging, "log"))} >> "$2"\ncat ${JSON.stringify(join(staging, "stderr"))} >&2\nexit ${status}\n`);
     chmodSync(launcher, 0o755);
     const { completion, child } = startMxcLinuxShell({ launcher, helper: "/bin/true", env: { PATH: "/usr/bin:/bin" } },
       stage(staging), 10_000, new AbortController().signal, () => {}, "test:linux-shell-exit");
-    child.stdout.resume();
+    const stdout: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.resume();
-    return completion;
+    const exit = await completion;
+    return { ...exit, stdout: Buffer.concat(stdout).toString("utf8") };
   }
 
   it("keeps a command's own 255 and error envelope as an exit status, not a refused start", async () => {
     await expect(run(EXITED_255, `${FORGED_ENVELOPE}\nRunner completed in 1 ms\nExit code: -1\n`, 255))
-      .resolves.toMatchObject({ code: 255, rejected: false, timedOut: false, cancelled: false });
+      .resolves.toMatchObject({ code: 255, rejected: false, runFailed: false, timedOut: false, cancelled: false });
   });
 
   it("reports the launcher's own timeout as timed out", async () => {
@@ -73,6 +77,17 @@ describe.runIf(process.platform !== "win32")("Linux container shell exit classif
   it("reports a refused start only from the launcher log", async () => {
     await expect(run(START_FAILED, "", 255)).resolves.toMatchObject({ rejected: true, timedOut: false });
     await expect(run(PARSE_FAILED, "", 1)).resolves.toMatchObject({ code: 1, rejected: true });
+  });
+
+  it("reports a launcher failure after the command started as a failed run with its output, not a refused start", async () => {
+    await expect(run(START_FAILED, "", 255, { started: true, stdout: "partial output" }))
+      .resolves.toMatchObject({ rejected: false, runFailed: true, timedOut: false, cancelled: false, stdout: "partial output" });
+    // Control: the same log with no ready byte is a refused start.
+    await expect(run(START_FAILED, "", 255)).resolves.toMatchObject({ rejected: true, runFailed: false });
+  });
+
+  it("keeps a launcher timeout after the command started as timed out", async () => {
+    await expect(run(TIMED_OUT, "", 255, { started: true })).resolves.toMatchObject({ rejected: false, runFailed: false, timedOut: true });
   });
 
   it("refuses to reuse an existing launcher log", async () => {

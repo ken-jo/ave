@@ -31,7 +31,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
 const containerLaunch = vi.hoisted(() => ({
   settle: undefined as undefined | ((outcome: {
     code: number | null; timedOut: boolean; cancelled: boolean; rejected: boolean; cleanupUnverified: boolean;
-    startFailed?: true; transportFailed?: true; cwdChanged?: true; grantWithheld?: true; failure?: { type: "error"; code: string; message: string };
+    startFailed?: true; transportFailed?: true; runFailed?: boolean; cwdChanged?: true; grantWithheld?: true; failure?: { type: "error"; code: string; message: string };
   }) => void),
   // The final check the route handed the supervisor client, called as the client calls it once the workload is ready.
   authorize: undefined as undefined | ((grant: () => boolean) => Promise<boolean>),
@@ -437,6 +437,34 @@ describe.each(["darwin", "linux"] as const)("%s container shell completion", (pl
     expect(result.output).toContain("partial");
     expect(result.output).toContain(t(key, { seconds: 1 }));
     expect(result.output).not.toMatch(/exited with code|terminated by/);
+  });
+});
+
+describe("linux container run that lost its launcher", () => {
+  beforeEach(() => {
+    setProcessPlatform("linux");
+    setShellSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability({
+      kind: "asrt", confidence: "verified", platform: "linux",
+      reason: "Controlled wrapper", confines: { filesystem: true, process: true, network: true },
+    });
+    setContainerShellSubstrate("linux", { state: "available" });
+    containerLaunch.settle = undefined;
+    containerLaunch.child = undefined;
+  });
+  afterEach(() => { setContainerShellSubstrate("linux", { state: "unavailable", reason: "shell-start-failed" }); });
+
+  it("returns the command's output with a named failed run, never the refused-start message", async () => {
+    const pending = new BashTool().execute({ command: "echo ready", timeoutSeconds: 1 }, { cwd: process.cwd(), extraAllowedDirectories: [], metadata: {} });
+    await vi.waitFor(() => expect(containerLaunch.settle).toBeTypeOf("function"));
+    containerLaunch.child?.stdout.write("partial\n");
+    containerLaunch.settle?.({ code: 255, timedOut: false, cancelled: false, rejected: false, runFailed: true, cleanupUnverified: false });
+    const result = await pending;
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: true } });
+    expect(result.output).toContain("partial");
+    expect(result.output).toContain(t("sandboxPolicy.linuxContainerRunFailed"));
+    expect(result.output).not.toContain(t("sandboxPolicy.linuxContainerStartRefused"));
+    expect(result.output).not.toMatch(/exited with code/);
   });
 });
 

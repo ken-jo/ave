@@ -2869,7 +2869,8 @@ async function runPosixContainerShell(input: {
     child.stderr.on("data", collector.collectStderr);
     const exit = await completion;
     const failure = "failure" in exit ? exit.failure : undefined;
-    const interrupted = exit.cancelled || exit.timedOut || exit.cleanupUnverified || failure !== undefined;
+    const runFailed = "runFailed" in exit && exit.runFailed;
+    const interrupted = exit.cancelled || exit.timedOut || exit.cleanupUnverified || runFailed || failure !== undefined;
     const artifact = await collector.finish(interrupted);
     collector.finishObservation(exit.code, exit.cancelled ? "cancelled" : interrupted || exit.rejected ? "failed" : undefined);
     if (("cwdChanged" in exit && exit.cwdChanged) || ("grantWithheld" in exit && exit.grantWithheld)) {
@@ -2897,6 +2898,7 @@ async function runPosixContainerShell(input: {
       const ending = exit.cancelled ? t("sandboxPolicy.containerShellCancelled")
         : exit.timedOut ? t("sandboxPolicy.containerShellTimedOut", { seconds: timeoutMs / 1000 })
           : "startFailed" in exit && exit.startFailed ? t("sandboxPolicy.containerShellStartFailed")
+            : runFailed ? t("sandboxPolicy.linuxContainerRunFailed")
             : exit.cleanupUnverified ? t("sandboxPolicy.containerShellCleanupUnverified")
               : "transportFailed" in exit && exit.transportFailed ? t("sandboxPolicy.containerShellTransportFailed")
                 : failure ? t("sandboxPolicy.containerShellRefused", { reason: failure.code })

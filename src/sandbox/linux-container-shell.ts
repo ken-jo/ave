@@ -4,7 +4,7 @@ import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs"
 import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
 import { trackManagedChildProcess } from "../main/managed-child-processes.js";
-import { LINUX_SHELL_ENVIRONMENT_FD, type MxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
+import { LINUX_SHELL_READY_FD, linuxShellExtraDescriptors, type MxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 export interface LinuxContainerShellExit {
@@ -12,6 +12,8 @@ export interface LinuxContainerShellExit {
   readonly timedOut: boolean;
   readonly cancelled: boolean;
   readonly rejected: boolean;
+  /** The command started (its ready byte arrived) and the launcher then failed: a failed run, never a refused start. */
+  readonly runFailed: boolean;
   readonly cleanupUnverified: boolean;
   readonly cleanupNotice?: string;
 }
@@ -66,7 +68,7 @@ export function startMxcLinuxShell(
     closeSync(openSync(logPath, "wx", 0o600));
     child = spawn(programs.launcher, ["--log-file", logPath, "--config", staged.requestPath], {
       env: programs.env, detached: true,
-      stdio: ["ignore", "pipe", "pipe", ...Array<"ignore">(LINUX_SHELL_ENVIRONMENT_FD - 3).fill("ignore"), environment],
+      stdio: ["ignore", "pipe", "pipe", ...linuxShellExtraDescriptors(), environment],
     }) as ChildProcessByStdio<null, Readable, Readable>;
   } finally {
     closeSync(environment);
@@ -93,6 +95,10 @@ export function startMxcLinuxShell(
   watchdog.unref();
   signal.addEventListener("abort", stop, { once: true });
   let launchError = false;
+  // Only the filter helper, once its filter is on, writes here; it closes the descriptor before the command runs.
+  let started = false;
+  const ready = child.stdio[LINUX_SHELL_READY_FD] as Readable | null;
+  ready?.on("data", () => { started = true; });
   const completion = new Promise<LinuxContainerShellExit>((resolve, reject) => {
     child.on("error", () => { launchError = true; });
     child.once("close", (code) => {
@@ -106,9 +112,9 @@ export function startMxcLinuxShell(
       }
       const timedOut = timeout || outcome === "timed-out";
       // A run that ended by a signal has no launcher verdict, so it is never reported as a refused start.
-      const refused = outcome === "refused" && (launchError || code !== null);
+      const refused = !timedOut && !cancelled && outcome === "refused" && (launchError || code !== null);
       resolve({ code: code ?? -1, timedOut, cancelled: cancelled && !timedOut, cleanupUnverified: false,
-        rejected: !timedOut && !cancelled && refused });
+        rejected: refused && !started, runFailed: refused && started });
     });
   });
   trackManagedChildProcess(child, { label, killProcessGroup: true, cooperativeStop: stop });

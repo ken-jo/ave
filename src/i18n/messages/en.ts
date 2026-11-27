@@ -5238,6 +5238,7 @@ export const en = {
   "sandboxPolicy.containerShellNoExitCode": "The shell ended by a signal or before it started, so it reported no exit code.",
   "sandboxPolicy.containerStartRefused": "The macOS sandbox container refused to start the shell command.",
   "sandboxPolicy.linuxContainerStartRefused": "The Linux sandbox container refused to start the shell command.",
+  "sandboxPolicy.linuxContainerRunFailed": "The command started in the Linux sandbox container, then the container launcher failed (container-run-failed). Its output so far is above; it may have run only in part.",
   "sandboxPolicy.linuxContainerShellRefused": "The Linux sandbox container refused the shell command. {reason}",
   "sandboxPolicy.containerShellCleanupUnverified": "The shell command was stopped, but its processes could not be confirmed gone.",
   "sandboxPolicy.containerShellRefused": "The macOS sandbox container refused the shell command: {reason}",
