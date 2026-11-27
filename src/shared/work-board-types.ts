@@ -1,5 +1,5 @@
 import type { PendingWorkflowDecision, WorkflowRunPinView, WorkflowRunView, WorkflowStageActivityUpdate } from "./workflow-run-view.js";
-import type { TemplateVersionPin } from "./workflow-template-types.js";
+import type { RemoteProvisionalStart, TemplateVersionPin } from "./workflow-template-types.js";
 import type { EnvelopeToolRef, WorkItemStageRun } from "./workflow-template-types.js";
 
 /** Keep board contracts renderer-safe. Overdue is derived on read for incomplete items past due, never persisted. */
@@ -34,6 +34,8 @@ export type WorkItemRunStatus =
 export interface WorkItem {
   /** The template this item was created from. Run state is never stored on the row: a template run is named by `runId` only. */
   templateId?: string;
+  /** Present on disk until first-launch acceptance. Provisional rows are hidden from board lists. */
+  remoteProvisional?: RemoteProvisionalStart;
   id: number;
   title: string;
   detail?: string;
@@ -97,6 +99,7 @@ export interface WorkPlanDecideInput {
  * item changed after the plan was made, so a change request must re-plan it. */
 export type WorkPlanDecideRefusal =
   | "invalid-template-run"
+  | "remote-controller-authority-revoked"
   | "not_found"
   | "not_pending"
   | "plan_mismatch"
@@ -473,7 +476,7 @@ export interface StageGateDecideInput {
 type StageStoreRefusal = WorkBoardRefusalCode | "invalid-template-run";
 /** Decision refusals are snake_case. One with text shows reasonCodes.<the refusal with "-" for "_">, as run reason codes do. */
 type StageGateRefusal = "not_found" | "not_pending" | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "attempt_mismatch" | "result_mismatch" | "output_mismatch" | "attempts_exhausted"
-  | "note_required" | "note_too_long" | "note_invalid" | "version_missing" | "graph_mismatch";
+  | "note_required" | "note_too_long" | "note_invalid" | "version_missing" | "graph_mismatch" | "remote-controller-authority-revoked";
 export type StageGateDecideResult = { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending"> } | { ok: false; reason: StageGateRefusal };
 export type StageGateDecideIpcResult =
   | { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending">; redactedCount?: number }
@@ -484,7 +487,7 @@ export interface StageJoinDecideInput { runId: string; joinId: string; conflictH
 /** run_end_unconfirmed: the run's end is not yet written to the run file. runs_not_adopted: the runs a restart left are not taken over
  * yet. Both are shown by their reasonCodes text. */
 type StageRunRefusal = "not_found" | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "not_pending" | "version_missing" | "graph_mismatch";
-export type StageJoinDecideResult = { ok: true } | { ok: false; reason: StageRunRefusal | "conflict_mismatch" };
+export type StageJoinDecideResult = { ok: true } | { ok: false; reason: StageRunRefusal | "conflict_mismatch" | "remote-controller-authority-revoked" };
 export type OpenJoinResult = StageJoinDecideResult | { ok: false; reason: "join-folder-unavailable" };
 export type OpenJoinIpcResult = OpenJoinResult | { ok: false; reason: "user-gesture-required" | "invalid-input" | StageStoreRefusal };
 export type StageJoinDecideIpcResult = StageJoinDecideResult | { ok: false; reason: "user-gesture-required" | "invalid-input" | StageStoreRefusal };

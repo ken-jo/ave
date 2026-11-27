@@ -18,9 +18,11 @@ import {
   type TailnetPairingDeviceStatus,
   type TailnetSurfaceServer,
 } from "../api/tailnet-surface-server.js";
+import type { TailnetWorkDecisions } from "./tailnet-work-decisions.js";
 import {
   isTailnetAppCapabilityKey,
   parseTailnetAuthorization,
+  TAILNET_PORT_CONFINED_WORKER_RANGE,
   type TailnetAuthorization,
 } from "../shared/tailnet-observer-config.js";
 import type { ConversationSurfaceRuntime } from "../engine/conversation-surface-runtime.js";
@@ -41,7 +43,9 @@ import {
   type TailnetPairingShareStore,
   type TailnetShareActorId,
 } from "./tailnet-pairing-share-store.js";
+import { TAILNET_WORK_DECISION_PATH } from "../shared/tailnet-work-decisions.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
+import { assertTailnetListenerPortAllowed, readTailnetListenerPortPolicy } from "../permissions/tailnet-listener-policy.js";
 
 export const DEFAULT_TAILNET_OBSERVER_PORT = 46_173;
 
@@ -144,6 +148,7 @@ export interface StartTailnetObserverServerOptions {
   readonly encryption: SecretEncryption;
   readonly conversationSurfaceRuntime: ConversationSurfaceRuntime;
   readonly getCurrentConversationId: () => string;
+  readonly workDecisions?: Pick<TailnetWorkDecisions, "decide" | "list">;
   readonly isConversationBusy: () => boolean;
   // Present only in main-process composition; controller stays OFF without it.
   readonly conversationCommandPort?: ConversationCommandPort;
@@ -167,6 +172,11 @@ function envLayer(env: NodeJS.ProcessEnv): RawLayer {
     if (value !== undefined) layer[key] = value;
   }
   return layer;
+}
+
+export function tailnetObserverEnableOverride(env: NodeJS.ProcessEnv = process.env): boolean | undefined {
+  const enabled = env[ENV_KEY.enabled];
+  return enabled === undefined ? undefined : enabled === "1";
 }
 
 // Project the file onto the raw vocabulary. `false` becomes an ABSENT key rather than `"0"`: every boolean below accepts `"1"` or absence and rejects
@@ -320,7 +330,9 @@ export async function writeTailnetObserverConfigFile(
   file: TailnetObserverConfigFile,
   namespace: FeatureNamespaceHandle = openFeatureNamespace(TAILNET_FEATURE_NAMESPACE),
 ): Promise<void> {
-  resolveFromLayers(fileLayer(parseTailnetObserverConfigFile(file)), {});
+  const parsed = parseTailnetObserverConfigFile(file);
+  if (parsed.port !== undefined) parseFixedPort(String(parsed.port));
+  resolveFromLayers(fileLayer(parsed), {});
   await namespace.writeJson(TAILNET_OBSERVER_CONFIG_FILE, file);
 }
 
@@ -393,16 +405,22 @@ function probeLoopbackBind(port: number): Promise<number | null> {
 // Persist the selected port so restart cannot move the serve target.
 // Probe-to-bind races remain explicit start failures, never silent fallback to a different port.
 export async function chooseObserverPort(preferred: number | null): Promise<number | null> {
-  const candidates = preferred === null || preferred === DEFAULT_TAILNET_OBSERVER_PORT
-    ? [DEFAULT_TAILNET_OBSERVER_PORT]
-    : [preferred, DEFAULT_TAILNET_OBSERVER_PORT];
-  for (const candidate of candidates) {
-    // The bound port, not the candidate: they are the same for a fixed number, and reporting what was actually bound is what makes the `0` case mean
-    // "whatever the OS handed out" rather than the literal zero.
-    const bound = await probeLoopbackBind(candidate);
-    if (bound !== null) return bound;
+  const isAllowed = await readTailnetListenerPortPolicy();
+  if (preferred !== null) {
+    if (!isAllowed(preferred)) throw new Error(TAILNET_PORT_CONFINED_WORKER_RANGE);
+    if (await probeLoopbackBind(preferred) !== null) return preferred;
   }
-  return await probeLoopbackBind(0);
+  if (preferred !== DEFAULT_TAILNET_OBSERVER_PORT && isAllowed(DEFAULT_TAILNET_OBSERVER_PORT)) {
+    if (await probeLoopbackBind(DEFAULT_TAILNET_OBSERVER_PORT) !== null) return DEFAULT_TAILNET_OBSERVER_PORT;
+  }
+
+  const bound = await probeLoopbackBind(0);
+  if (bound === null || isAllowed(bound)) return bound;
+  // The ephemeral range may itself be covered by the permit. Try eligible unprivileged ports explicitly.
+  for (let candidate = 1024; candidate <= 65_535; candidate++) {
+    if (isAllowed(candidate) && await probeLoopbackBind(candidate) !== null) return candidate;
+  }
+  return null;
 }
 
 function dependencies(
@@ -597,6 +615,7 @@ async function startForBoot(
     readConfigFile: resolved.readConfigFile,
   });
   if (!config) return null;
+  await assertTailnetListenerPortAllowed(config.port);
   if (config.controllerEnabled && options.conversationCommandPort === undefined) {
     throw new Error("tailnet-controller-command-port-unavailable");
   }
@@ -615,6 +634,7 @@ async function startForBoot(
     : undefined;
 
   const identityPolicy = pairedSharingRuntime?.authorizer ?? createTailnetOwnerIdentityPolicy();
+  const { webOrigin } = config;
   const server = await resolved.startServer({
     host: "127.0.0.1",
     port: config.port,
@@ -649,7 +669,14 @@ async function startForBoot(
           },
         }
       : {}),
-    ...(config.webOrigin === undefined ? {} : { web: { origin: config.webOrigin } }),
+    ...(webOrigin === undefined ? {} : { web: {
+      origin: webOrigin,
+      ...(receiptStore && options.workDecisions ? { workDecisions: {
+        ...options.workDecisions,
+        receipts: receiptStore,
+        verifyServeTarget: () => verifyPrivateServeTarget(webOrigin, config.port),
+      } } : {}),
+    } }),
     log: (message) => options.log?.("[tailnet-observer] " + message),
   });
   if (generation !== lifecycleGeneration) {
@@ -734,6 +761,24 @@ async function restartOnce(): Promise<TailnetObserverServer | null> {
 // the next time the app starts" is gone.
 export function restartTailnetObserverServer(): Promise<TailnetObserverServer | null> {
   const next = lifecycleChain.then(restartOnce, restartOnce);
+  lifecycleChain = next.then(() => undefined, () => undefined);
+  return next;
+}
+
+/** Remove capabilities from the bound listener without admitting or binding a port. */
+export function reduceTailnetObserverCapabilities(config: TailnetObserverConfig): Promise<void> {
+  const reduce = async (): Promise<void> => {
+    if (startPromise) await startPromise.catch(() => undefined);
+    if (!activeServer || !activeConfig) return;
+    const { webOrigin, ...bound } = activeConfig;
+    const pairedSharingEnabled = bound.pairedSharingEnabled && config.pairedSharingEnabled;
+    const controllerEnabled = pairedSharingEnabled && bound.controllerEnabled && config.controllerEnabled;
+    const webEnabled = pairedSharingEnabled && webOrigin !== undefined && webOrigin === config.webOrigin;
+    activeServer.reduceCapabilities({ controllerEnabled, pairedSharingEnabled, webEnabled });
+    activeConfig = { ...bound, pairedSharingEnabled, controllerEnabled, ...(webEnabled ? { webOrigin } : {}) };
+    if (!pairedSharingEnabled) activePairedSharingRuntime = null;
+  };
+  const next = lifecycleChain.then(reduce, reduce);
   lifecycleChain = next.then(() => undefined, () => undefined);
   return next;
 }
@@ -848,21 +893,49 @@ function loopbackProxyPort(proxy: string): number | null {
   return Number.isSafeInteger(port) && port > 0 && port <= 65_535 ? port : null;
 }
 
-// What `tailscale serve status --json` says about the web handlers in place.
+export function isPrivateServeTarget(raw: unknown, origin: string, port: number): boolean {
+  if (!isRecord(raw) || !isRecord(raw.Web) || !isRecord(raw.TCP)) return false;
+  if (raw.AllowFunnel !== undefined && (!isRecord(raw.AllowFunnel) || Object.values(raw.AllowFunnel).some(value => value !== false))) return false;
+  // Additional configurations can expose another route to the same listener.
+  if ([raw.Foreground, raw.Services].some(value => value !== undefined && (!isRecord(value) || Object.keys(value).length > 0))) return false;
+  if (Object.values(raw.TCP).some(entry => !isRecord(entry) || entry.TCPForward !== undefined)) return false;
+  const https = raw.TCP["443"];
+  if (!isTailnetWebOrigin(origin) || !isRecord(https) || https.HTTPS !== true) return false;
+  const hostPort = `${new URL(origin).hostname}:443`;
+  const listeners = serveWebHandlers(raw.Web).filter(handler => handler.hostPort === hostPort);
+  const proxy = `http://127.0.0.1:${port}`;
+  return listeners.some(handler => handler.mount === "/" && handler.proxy === proxy)
+    && listeners.every(handler => handler.mount === "/" || handler.proxy === proxy
+      || (handler.mount !== TAILNET_WORK_DECISION_PATH
+        && !TAILNET_WORK_DECISION_PATH.startsWith(handler.mount.endsWith("/") ? handler.mount : `${handler.mount}/`)));
+}
+
+async function verifyPrivateServeTarget(origin: string, port: number): Promise<boolean> {
+  try {
+    const serve = await runTailscaleCommand(tailscaleCliPath(hostPlatform), ["serve", "status", "--json"]);
+    return serve.kind === "ran" && serve.code === 0 && isPrivateServeTarget(JSON.parse(serve.stdout), origin, port);
+  } catch {
+    return false;
+  }
+}
+
+function serveWebHandlers(web: Record<string, unknown>) {
+  return Object.entries(web).flatMap(([hostPort, listener]) => {
+    if (!isRecord(listener) || !isRecord(listener.Handlers)) return [];
+    return Object.entries(listener.Handlers).flatMap(([mount, handler]) =>
+      isRecord(handler) ? [{ hostPort, mount, proxy: typeof handler.Proxy === "string" ? handler.Proxy : undefined }] : []);
+  });
+}
+
 function readServeStatus(raw: unknown): { configured: boolean; targetPort: number | null } {
   if (!isRecord(raw) || !isRecord(raw.Web)) return { configured: false, targetPort: null };
-  let configured = false;
-  for (const hostPort of Object.values(raw.Web)) {
-    if (!isRecord(hostPort) || !isRecord(hostPort.Handlers)) continue;
-    for (const handler of Object.values(hostPort.Handlers)) {
-      if (!isRecord(handler)) continue;
-      configured = true;
-      if (typeof handler.Proxy !== "string") continue;
-      const port = loopbackProxyPort(handler.Proxy);
-      if (port !== null) return { configured: true, targetPort: port };
-    }
+  const handlers = serveWebHandlers(raw.Web);
+  for (const { proxy } of handlers) {
+    if (proxy === undefined) continue;
+    const port = loopbackProxyPort(proxy);
+    if (port !== null) return { configured: true, targetPort: port };
   }
-  return { configured, targetPort: null };
+  return { configured: handlers.length > 0, targetPort: null };
 }
 
 // Return named observed states only; never invent account, DNS, or port values missing from CLI output.

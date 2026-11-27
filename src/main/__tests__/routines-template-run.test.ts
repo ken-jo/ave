@@ -65,7 +65,7 @@ it("the store refuses the kind without the attach proof", async () => {
     store.bindTemplateAttachments(h.templates);
     await expect(store.add(input())).rejects.toMatchObject({ code: "invalid-input" });
     await expect(store.add(input(), { origin: "local-desktop" } as never)).rejects.toMatchObject({ code: "invalid-input" });
-    await expect(store.add(input(), mintHostDecisionProof("tailnet-surface"))).rejects.toMatchObject({ code: "invalid-input" });
+    await expect(store.add(input(), { origin: "tailnet-surface" } as never)).rejects.toMatchObject({ code: "invalid-input" });
     const routine = await store.add(input(), proof());
     await expect(store.edit(routine.id, { title: "Changed" })).rejects.toMatchObject({ code: "invalid-input" });
     expect(store.list()).toEqual([expect.objectContaining({ title: "Report" })]);

@@ -1,5 +1,6 @@
 import { occupyLoopbackPort as occupy } from "../../__tests__/test-helpers.js";
 import { describe, expect, it, vi } from "vitest";
+import * as sandbox from "../../permissions/asrt-sandbox.js";
 import { createTailnetObserverConfigService } from "../tailnet-observer-config-service.js";
 import type {
   TailnetObserverConfigFile,
@@ -91,6 +92,24 @@ function enabledView(overrides: Partial<TailnetObserverConfigView> = {}): Tailne
 }
 
 describe("Tailnet observer configuration service", () => {
+  it("exposes the named port refusal in guided setup and keeps the saved settings editable", async () => {
+    const port = OFF_VIEW.port;
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const range = vi.spyOn(sandbox, "getWindowsProxyPortRange").mockReturnValue([port, port]);
+    const error = "tailnet-observer-port-confined-worker-range";
+    const writeConfigFile = vi.fn();
+    try {
+      const settings = service({ file: { enabled: true, authorization: TAILNET_IDENTITY, port }, lastStartError: error, writeConfigFile });
+      await expect(settings.guidedSetup()).resolves.toEqual({ ok: false, error, output: null });
+      await expect(settings.apply(enabledView({ port }))).rejects.toThrow(error);
+      expect(writeConfigFile).not.toHaveBeenCalled();
+      await expect(settings.snapshot()).resolves.toMatchObject({ saved: { port }, lastStartError: error });
+    } finally {
+      range.mockRestore();
+      platform.mockRestore();
+    }
+  });
+
   it("reports a never-configured observer as off, not as missing", async () => {
     const snapshot = await service().snapshot();
 

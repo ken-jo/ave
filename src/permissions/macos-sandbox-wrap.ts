@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { SANDBOX_NAMED_ENTRIES } from "./sandbox-write-policy.js";
 import { parseSandboxWrappedWords, quoteSandboxWrappedWord } from "./sandbox-wrapped-command.js";
 import { t } from "../i18n/index.js";
+import { tailnetListenerPorts } from "../shared/tailnet-listener-port.js";
 
 const MAX_SANDBOX_WRAPPER_BYTES = 196_608;
 
@@ -216,7 +217,9 @@ export function hardenMacSandboxGitMetadata<T extends { readonly argv: string[];
   if (!profile?.startsWith("(version 1)") || words[profileIndex + 2]?.value !== "-c" || words.length !== profileIndex + 4) {
     throw new Error("macOS sandbox wrapper has an unexpected profile shape");
   }
-  const argv = words.map((word, index) => index === profileIndex ? `${profile}\n${GIT_METADATA_RULES}${appOwnedRules ? `\n${appOwnedRules}` : ""}` : word.value);
+  const listenerDenies = tailnetListenerPorts().map(port => `(deny network-outbound (remote ip "*:${port}"))`);
+  const hardenedProfile = [profile, GIT_METADATA_RULES, ...listenerDenies, appOwnedRules].filter(Boolean).join("\n");
+  const argv = words.map((word, index) => index === profileIndex ? hardenedProfile : word.value);
   argv[0] = "/usr/bin/env";
   const command = argv.map(quoteSandboxWrappedWord).join(" ");
   const hardened = { ...wrapped, argv: [wrapped.argv[0]!, "-c", command] };
