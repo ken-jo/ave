@@ -5,7 +5,9 @@ import { join, resolve, win32 as winPath } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import * as asrtSandbox from "../../permissions/asrt-sandbox.js";
 import { t } from "../../i18n/index.js";
 import { closed, echoParentProxy, openTunnel, probePort, within } from "../../__tests__/support/proxy-tunnel-probe.js";
 import { deferWatchedReceipt, isWatchedWorkspaceConsumable, listWatchedQuarantine, pruneWatchedRows, WATCHED_ROW_VIOLATION, watchedProtectedRows } from "../../permissions/windows-watched-rows.js";
@@ -937,9 +939,11 @@ describe("prepareMxcShellLaunch", () => {
     expect(h.closeRelay).toHaveBeenCalledOnce();
   });
 
-  it("closes a listener whose bind was still pending when the invocation ended", async () => {
+  it.each([["win32", 1], ["darwin", 2], ["linux", 2]] as const)("closes pending listeners when the invocation ends on %s", async (platform, bindCount) => {
     relay();
+    vi.spyOn(asrtSandbox, "getWindowsProxyPortRange").mockReturnValue([1, 1]);
     const lifecycle = createContainedShellLifecycle();
+    const hostPlatform = process.platform;
     const listen = net.Server.prototype.listen;
     const bind = deferred<void>();
     const binding = deferred<void>();
@@ -950,16 +954,24 @@ describe("prepareMxcShellLaunch", () => {
       void bind.promise.then(() => listen.apply(this, args as Parameters<typeof listen>));
       return this;
     });
+    setProcessPlatform(platform);
     const prepared = prepareMxcShellLaunch(INPUT, lifecycle).then(() => "prepared", (error: unknown) => error);
-    await binding.promise;
-    expect(servers).toHaveLength(1);
-    lifecycle.revoke();
-    bind.resolve();
-    expect(await prepared).toBeInstanceOf(Error);
-    expect(servers).toHaveLength(1);
-    expect(await lifecycle.dispose()).toEqual([]);
-    expect(servers.every((server) => !server.listening)).toBe(true);
-    expect(h.closeRelay).toHaveBeenCalledOnce();
+    try {
+      await Promise.race([binding.promise, prepared]);
+      expect(servers).toHaveLength(1);
+      lifecycle.revoke();
+      bind.resolve();
+      expect(await prepared).toBeInstanceOf(Error);
+      expect(servers).toHaveLength(bindCount);
+      expect(h.registerPort).not.toHaveBeenCalled();
+      expect(await lifecycle.dispose()).toEqual([]);
+      expect(servers.every((server) => !server.listening)).toBe(true);
+      expect(h.closeRelay).toHaveBeenCalledOnce();
+    } finally {
+      bind.resolve();
+      await lifecycle.dispose();
+      setProcessPlatform(hostPlatform);
+    }
   });
 
   it("withdraws policy delivery immediately when a running invocation is revoked", async () => {
