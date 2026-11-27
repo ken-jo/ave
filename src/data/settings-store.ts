@@ -812,6 +812,7 @@ function mainLayoutAsStored(holdsSettings: boolean, storedSystem: unknown, norma
 
 export class SettingsService {
   private readonly changeListeners = new Map<keyof AppSettings, Set<() => void>>();
+  private beforeFeaturesSaved: ((features: AppSettings["features"]) => Promise<void> | undefined) | undefined;
   private providerConfigRevision = 0;
   private readonly secretGenerations = new Map<string, number>();
   private observedSecretFingerprint: string | null | "unreadable" | undefined;
@@ -959,6 +960,10 @@ export class SettingsService {
     return structuredClone(this.settings[key]);
   }
 
+  getSaved<K extends keyof AppSettings>(key: K): AppSettings[K] {
+    return structuredClone(this.saved[key]);
+  }
+
   async set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void> {
     const persist = async () => {
       this.settings[key] = value;
@@ -971,12 +976,16 @@ export class SettingsService {
     return key === "marketplace" ? withInstalledStateMutation(persist) : persist();
   }
 
-  /** Observes writes after they reach disk. Callbacks must not block the writer. */
+  /** Observes writes after they reach disk. Feature callbacks finish before the next snapshot is saved. */
   onChanged(key: keyof AppSettings, listener: () => void): () => void {
     let listeners = this.changeListeners.get(key);
     if (!listeners) this.changeListeners.set(key, (listeners = new Set()));
     listeners.add(listener);
     return () => { listeners.delete(listener); };
+  }
+
+  setBeforeFeaturesSaved(prepare: (features: AppSettings["features"]) => Promise<void> | undefined): void {
+    this.beforeFeaturesSaved = prepare;
   }
 
   async patch(
@@ -1884,25 +1893,29 @@ export class SettingsService {
       while (this.unsaved.length > 0) {
         const batch = this.unsaved.splice(0);
         const snapshot = this.getAll();
+        const featuresChanged = !isDeepStrictEqual(this.saved.features, snapshot.features);
         try {
+          if (featuresChanged) await this.beforeFeaturesSaved?.(snapshot.features);
           await this.saveSettings(snapshot);
-          const featuresChanged = !isDeepStrictEqual(this.saved.features, snapshot.features);
           this.saved = snapshot;
-          if (featuresChanged) {
-            for (const listener of this.changeListeners.get("features") ?? []) {
-              try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
-            }
-          }
+          if (featuresChanged) await this.notifyFeaturesSaved();
           if (this.withheldSecretKeys.size > 0) void this.deleteWithheldSecrets();
           for (const write of batch) write.resolve();
         } catch (err) {
           this.settings = structuredClone(this.saved);
           this.providerConfigChanged();
           for (const write of [...batch, ...this.unsaved.splice(0)]) write.reject(err);
+          if (featuresChanged && this.beforeFeaturesSaved) await this.notifyFeaturesSaved();
         }
       }
     } finally {
       this.saving = false;
+    }
+  }
+
+  private async notifyFeaturesSaved(): Promise<void> {
+    for (const listener of this.changeListeners.get("features") ?? []) {
+      try { await listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
     }
   }
 

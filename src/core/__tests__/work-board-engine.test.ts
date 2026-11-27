@@ -447,7 +447,7 @@ describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)",
       expect((await run).status).toBe("completed");
       expect(skillMemory.unlinkWorkBoardSession).toHaveBeenCalledWith(child);
       await vi.waitFor(() => expect(skillMemory.queueWorkBoard)
-        .toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: created.itemId }), expect.any(String), [child]));
+        .toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: created.itemId }), expect.any(String), [child], expect.any(Function)));
     } finally {
       await cleanupTmpDir(dir);
     }

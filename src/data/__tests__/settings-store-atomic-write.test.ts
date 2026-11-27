@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { directHostFetchTransport } from "../../__tests__/support/host-fetch-transport.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { SettingsService, settingsFilePath } from "../settings-store.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { evaluateHostFetch, runHostFetchHops } from "../../main/host-fetch-guard.js";
@@ -282,4 +283,50 @@ it("does not publish a settings change before its write succeeds", async () => {
   fail(new Error("disk full"));
   await expect(writing).rejects.toThrow("disk full");
   expect(observer).not.toHaveBeenCalled();
+});
+
+it("delivers a committed feature change before saving a concurrent feature update", async () => {
+  const offObserved = deferred<void>();
+  const finishOff = deferred<void>();
+  const observed: (boolean | undefined)[] = [];
+  service.onChanged("features", async () => {
+    const enabled = service.getSaved("features")?.automaticSkillMemory;
+    observed.push(enabled);
+    if (enabled === false) {
+      offObserved.resolve();
+      await finishOff.promise;
+    }
+  });
+  const off = service.patch({ features: { automaticSkillMemory: false } });
+  const on = service.patch({ features: { automaticSkillMemory: true } });
+  try {
+    await offObserved.promise;
+    expect(service.get("features")?.automaticSkillMemory).toBe(true);
+    expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8")).features.automaticSkillMemory).toBe(false);
+    expect(observed).toEqual([false]);
+  } finally {
+    finishOff.resolve();
+    await Promise.all([off, on]);
+  }
+  expect(observed).toEqual([false, true]);
+});
+
+it("refuses to save OFF and a queued ON when preparing the OFF snapshot fails", async () => {
+  const prepareOff = deferred<void>();
+  service.setBeforeFeaturesSaved(async features => {
+    if (features?.automaticSkillMemory === false) {
+      await prepareOff.promise;
+      throw new Error("Could not clear pending evidence");
+    }
+  });
+  await service.patch({ features: { automaticSkillMemory: true } });
+  const off = service.patch({ features: { automaticSkillMemory: false } });
+  const on = service.patch({ features: { automaticSkillMemory: true } });
+  const results = Promise.allSettled([off, on]);
+  prepareOff.resolve();
+  expect(await results).toEqual([
+    { status: "rejected", reason: expect.any(Error) },
+    { status: "rejected", reason: expect.any(Error) },
+  ]);
+  expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8")).features.automaticSkillMemory).toBe(true);
 });

@@ -1671,7 +1671,9 @@ export function registerChatHandlers(deps: IpcDeps): void {
     await memoryManager.sessions.updateSessionRowFields(sessionId, fields);
     if (archiveAuthority && projectRoot && fields.archivedAt
       && memoryManager.sessions.loadSessionMetadata(sessionId)?.archivedAt === fields.archivedAt) {
-      await skillMemory?.queueArchive(sessionId, projectRoot, `archive:${randomUUID()}`);
+      const { sender, senderFrame } = e;
+      await skillMemory?.queueArchive(sessionId, projectRoot, `archive:${randomUUID()}`,
+        () => !sender.isDestroyed() && senderFrame === sender.mainFrame);
     }
     return { ok: true };
   });

@@ -206,11 +206,12 @@ export class SkillMemoryStore {
       || group.history.some(change => change.after?.origin.completionId === completionId));
   }
 
-  record(candidates: readonly NewLesson[], canCommit: () => boolean): Promise<boolean> {
+  record(candidates: readonly NewLesson[], canCommit: () => boolean, action: "activate" | "stage"): Promise<boolean> {
     const [first] = candidates;
     if (!first || candidates.length > SKILL_MEMORY_COMPLETION_LIMIT) return Promise.resolve(false);
     const origin = first.lesson.origin;
     const { completionId, runKind, sessionId } = origin;
+    if (action === "activate" && runKind !== "attended") return Promise.resolve(false);
     return this.mutate(document => {
       if (document.groups.some(group => group.history.some(change => change.after?.origin.completionId === completionId))) return false;
       for (const { binding, lesson } of candidates) {
@@ -224,7 +225,7 @@ export class SkillMemoryStore {
           ...group.staged.filter(row => !isCurrent(row))].slice(-SKILL_MEMORY_SCOPE_LIMIT);
         group.active = group.active.filter(isCurrent);
         group.staged = group.staged.filter(isCurrent);
-        const rows = runKind === "attended" ? group.active : group.staged;
+        const rows = action === "activate" ? group.active : group.staged;
         const existing = rows.find(row => row.description === clean.description && row.fingerprint === binding.fingerprint);
         if (existing?.body === clean.body) continue;
         if (!existing && rows.length >= SKILL_MEMORY_SCOPE_LIMIT) return false;
@@ -232,7 +233,7 @@ export class SkillMemoryStore {
         const next = { ...version, digest: digestLesson(version) };
         if (existing) rows.splice(rows.indexOf(existing), 1, next);
         else rows.push(next);
-        addChange(group, runKind === "attended" ? "activate" : "stage", existing ?? null, next);
+        addChange(group, action, existing ?? null, next);
       }
       return true;
     }, canCommit);

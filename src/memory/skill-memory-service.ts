@@ -23,6 +23,8 @@ const RECALL_BYTES = 8_000;
 const REVIEW_INPUT_BYTES = 12_000;
 const SESSION_EVIDENCE_LIMIT = 8;
 const RETAINED_SESSIONS = 128;
+// Allow one review interval for queueing and one for inference. Older completions need owner review.
+const ATTENDED_AUTHORITY_MS = 2 * TOOL_TIMEOUT_POLICY.skillMemoryReviewMs;
 
 interface SkillMemoryTurn {
   sessionId: string;
@@ -144,11 +146,15 @@ export function bindSkillMemoryInvocation(sessionId: string, skill: string, file
 
 export class SkillMemoryService {
   private reviewer: Pick<MemoryReviewerService, "review"> | undefined;
-  private readonly sessions = new Map<string, ReviewedTurn[]>();
+  private readonly sessions = new Map<string, { rows: ReviewedTurn[]; generation: string | undefined }>();
   private readonly admittedSkills = new Map<string, SkillMemoryBinding[]>();
   private readonly reviewing = new Set<string>();
   private readonly reviewed = new Set<string>();
   private readonly pending = new SkillMemoryPending();
+  private readonly attendedAuthority = new Map<string, () => boolean>();
+  private evidenceRevision = 0;
+  private setting: boolean | undefined;
+  private settingChange: Promise<void> | undefined;
   private drainage: Promise<void> | undefined;
   private drainRequested = false;
 
@@ -162,8 +168,34 @@ export class SkillMemoryService {
 
   setReviewer(reviewer: Pick<MemoryReviewerService, "review">): void { this.reviewer = reviewer; }
 
+  onSettingChanged(enabled: boolean): Promise<void> | undefined {
+    if (this.setting === enabled) return this.settingChange;
+    this.setting = enabled;
+    if (!enabled) {
+      this.evidenceRevision++;
+      this.sessions.clear();
+      this.attendedAuthority.clear();
+    }
+    const prior = this.settingChange?.catch(() => undefined) ?? Promise.resolve();
+    const change = prior.then(() => enabled ? this.pending.enable() : this.pending.discard());
+    this.settingChange = change;
+    void change.then(() => {
+      if (enabled && this.settingChange === change) this.resumePending();
+    }, () => {
+      if (this.settingChange === change) this.setting = undefined;
+    });
+    return change;
+  }
+
+  private canReview(): boolean {
+    return this.setting !== false && this.deps.enabled();
+  }
+
   trackTurn(scope: Omit<SkillMemoryTurn, "bindings"> | null) {
     const turn = scope && { ...scope, bindings: new Map<string, SkillMemoryBinding>() };
+    const evidenceRevision = this.evidenceRevision;
+    const eligible = this.canReview();
+    const unattended = eligible && turn && turn.runKind !== "attended" ? this.readUnattendedGeneration() : undefined;
     if (turn?.runKind === "attended" && turn.activeSkills) {
       const active = turn.activeSkills();
       for (const binding of this.admittedSkills.get(turn.sessionId) ?? []) {
@@ -185,7 +217,7 @@ export class SkillMemoryService {
           if (this.admittedSkills.size > RETAINED_SESSIONS && oldest !== undefined) this.admittedSkills.delete(oldest);
         }
         const admitted = skillCommand ? bindings.filter(binding => binding.skill === skillCommand) : bindings;
-        if (!anchor || admitted.length === 0 || !this.deps.enabled()) return;
+        if (!anchor || admitted.length === 0 || !eligible || evidenceRevision !== this.evidenceRevision || !this.canReview()) return;
         const { sessionId, projectRoot, runKind } = turn;
         if (runKind === "attended") {
           // One real tool call distinguishes completed agent work from a conversational acknowledgment.
@@ -196,10 +228,10 @@ export class SkillMemoryService {
             const held = journal.rows.filter(row => row.sessionId === sessionId && row.completionId === undefined);
             for (const expired of held.slice(0, -SESSION_EVIDENCE_LIMIT)) journal.rows.splice(journal.rows.indexOf(expired), 1);
             return true;
-          }, usedTool);
-        } else {
+          }, usedTool, completionId ? { completionId, isCurrent: turn.isCurrent } : undefined);
+        } else if (unattended) {
           const key = this.sessionKey(sessionId, runKind, turn.scheduled?.completionId);
-          this.remember(key, turn, anchor);
+          this.remember(key, turn, anchor, unattended.generation);
           if (turn.scheduled) turn.scheduled.finished = true;
         }
       },
@@ -233,14 +265,15 @@ export class SkillMemoryService {
     }
   }
 
-  async complete(input: Completion, persisted?: readonly PendingSkillEvidence[]): Promise<boolean> {
+  async complete(input: Completion, persisted?: { rows: readonly PendingSkillEvidence[]; generation: string | undefined; revision: number }): Promise<boolean> {
     const { sessionId, projectRoot, completionId, runKind, isCurrent, signal } = input;
     if (this.reviewing.has(completionId) || this.reviewed.has(completionId)) return false;
     const key = this.sessionKey(sessionId, runKind, runKind === "scheduled" ? completionId : undefined);
-    const held = persisted?.map(row => ({ binding: row.bindings, anchor: row.anchor, runKind: row.runKind })) ?? this.sessions.get(key);
+    const held = persisted?.rows.map(row => ({ binding: row.bindings, anchor: row.anchor, runKind: row.runKind })) ?? this.sessions.get(key)?.rows;
     if (!persisted) this.sessions.delete(key);
     const reviewer = this.reviewer;
-    const canCommit = () => this.deps.enabled() && this.deps.authorizedProject(projectRoot)
+    const evidenceRevision = persisted?.revision ?? this.evidenceRevision;
+    const canCommit = () => this.canReview() && evidenceRevision === this.evidenceRevision && this.deps.authorizedProject(projectRoot)
       && (runKind !== "attended" || this.deps.canReviewAttended())
       && signal?.aborted !== true && isCurrent();
     if (!held || !reviewer || !canCommit()) return false;
@@ -274,7 +307,8 @@ export class SkillMemoryService {
       const review = await runWithAbortableDeadline(
         signal => reviewer.review("skill-improvement", prompt, {
           signal,
-          canStart: () => canCommit() && [...candidates.values()].every(({ binding }) => this.isCurrent(binding)),
+          canStart: () => canCommit() && (!persisted || this.pending.isEnabledGeneration(persisted.generation))
+            && [...candidates.values()].every(({ binding }) => this.isCurrent(binding)),
         }),
         { deadlineMs: TOOL_TIMEOUT_POLICY.skillMemoryReviewMs, callerAbortSignal: signal },
       );
@@ -293,7 +327,16 @@ export class SkillMemoryService {
           },
         });
       }
-      return await this.store.record(records, () => canCommit() && records.every(({ binding }) => this.isCurrent(binding)));
+      const eligible = () => canCommit() && records.every(({ binding }) => this.isCurrent(binding));
+      const canActivate = () => runKind === "attended" && this.attendedAuthority.get(completionId)?.() === true;
+      const record = async () => {
+        if (canActivate()) {
+          if (await this.store.record(records, () => eligible() && canActivate(), "activate")) return true;
+          if (canActivate() || !eligible()) return false;
+        }
+        return this.store.record(records, eligible, "stage");
+      };
+      return await (persisted ? this.pending.withGeneration(persisted.generation, record) : record());
     } catch {
       log.warn("Skill memory review did not commit");
       return false;
@@ -309,9 +352,10 @@ export class SkillMemoryService {
     const key = this.sessionKey(sessionId, runKind, runKind === "scheduled" ? completionId : undefined);
     const held = this.sessions.get(key);
     this.sessions.delete(key);
-    if (!held?.length) return;
+    if (!held?.rows.length) return;
     const saved = await this.savePending(journal => {
-      journal.rows.push(...held.map(row => ({
+      if (journal.generation !== held.generation) return false;
+      journal.rows.push(...held.rows.map(row => ({
         sessionId, projectRoot, runKind, completionId, routineId, routineDigest, anchor: row.anchor, bindings: row.binding,
       })));
       return true;
@@ -323,13 +367,13 @@ export class SkillMemoryService {
     }
   }
 
-  async queueArchive(sessionId: string, projectRoot: string, completionId: string): Promise<void> {
+  async queueArchive(sessionId: string, projectRoot: string, completionId: string, isCurrent: () => boolean): Promise<void> {
     await this.savePending(journal => {
       const rows = journal.rows.filter(row => row.sessionId === sessionId && row.runKind === "attended"
         && row.completionId === undefined && projectRootEquals(row.projectRoot, projectRoot));
       for (const row of rows) row.completionId = completionId;
       return rows.length > 0;
-    }, true);
+    }, true, { completionId, isCurrent });
   }
 
   async recordWorkBoardOwnerInput(item: WorkItem): Promise<void> {
@@ -345,10 +389,12 @@ export class SkillMemoryService {
   }
 
   linkWorkBoardSession(itemId: number, sessionId: string, projectRoot: string): void {
-    if (!this.deps.enabled()) return;
+    if (!this.canReview()) return;
+    const revision = this.evidenceRevision;
     boardSkillAdmissions.set(sessionId, {
       projectRoot,
       admit: async binding => { await this.savePending(journal => {
+        if (revision !== this.evidenceRevision) return false;
         const owner = journal.board.find(row => row.itemId === itemId && projectRootEquals(row.projectRoot, projectRoot));
         if (!owner) return false;
         const row = journal.rows.find(row => row.workBoardItemId === itemId && row.sessionId === sessionId && row.completionId === undefined);
@@ -369,7 +415,7 @@ export class SkillMemoryService {
     boardSkillAdmissions.delete(sessionId);
   }
 
-  async queueWorkBoard(item: WorkItem, runId: string, sessionIds: readonly string[]): Promise<void> {
+  async queueWorkBoard(item: WorkItem, runId: string, sessionIds: readonly string[], isCurrent: () => boolean): Promise<void> {
     const { id, projectRoot, detail } = item;
     if (!projectRoot || !detail || sessionIds.length === 0) return;
     const completionId = `board:${sha256Hex(JSON.stringify([id, runId]))}`;
@@ -385,22 +431,22 @@ export class SkillMemoryService {
         row.completionId = completionId;
       }
       return rows.length > 0;
-    }, true);
+    }, true, { completionId, isCurrent });
   }
 
   resumePending(): void {
-    if (!this.reviewer) return;
+    if (!this.reviewer || !this.canReview()) return;
     this.drainRequested = true;
     if (this.drainage) return;
     const active = new Promise<void>(resolve => setImmediate(resolve)).then(async () => {
       this.drainRequested = false;
-      for (let count = 0; count < RETAINED_SESSIONS; count++) {
+      for (let count = 0; count < RETAINED_SESSIONS && this.canReview(); count++) {
         const completionId = this.pending.read().rows.find(row => row.completionId !== undefined
           && (row.runKind !== "attended" || this.deps.canReviewAttended()))?.completionId;
         if (!completionId) return;
         await this.reviewPending(completionId);
       }
-      this.drainRequested = true;
+      this.drainRequested = this.canReview();
     }).catch(() => log.warn("Pending skill memory reviews could not be drained"));
     this.drainage = active;
     void active.then(() => {
@@ -415,7 +461,10 @@ export class SkillMemoryService {
 
   private async reviewPending(completionId: string): Promise<void> {
     let claimed: PendingSkillEvidence[] = [];
+    let generation: string | undefined;
+    const revision = this.evidenceRevision;
     await this.pending.update(journal => {
+      if (journal.disabled || !this.canReview() || revision !== this.evidenceRevision) return false;
       const rows = journal.rows.filter(row => row.completionId === completionId);
       if (rows.length === 0) return false;
       if (rows.some(row => row.started)) {
@@ -424,26 +473,43 @@ export class SkillMemoryService {
       } else {
         for (const row of rows) row.started = true;
         claimed = rows;
+        generation = journal.generation;
       }
       return true;
     });
     const [first] = claimed;
-    if (!first) return;
+    if (!first) {
+      this.attendedAuthority.delete(completionId);
+      return;
+    }
     const { sessionId, projectRoot, runKind, routineId, routineDigest } = first;
     const rows = claimed.filter(row => row.sessionId === sessionId && row.runKind === runKind && projectRootEquals(row.projectRoot, projectRoot));
     await this.complete({ sessionId, projectRoot, completionId, runKind, isCurrent: () =>
       runKind !== "scheduled" || (!!routineId && !!routineDigest && this.deps.isScheduledCurrent?.(routineId, routineDigest, projectRoot) === true),
-    }, rows);
+    }, { rows, generation, revision });
+    this.attendedAuthority.delete(completionId);
     await this.pending.update(journal => {
+      if (journal.generation !== generation) return false;
       journal.rows = journal.rows.filter(row => row.completionId !== completionId);
       return true;
     });
   }
 
-  private async savePending(change: Parameters<SkillMemoryPending["update"]>[0], review: boolean): Promise<boolean> {
-    if (!this.deps.enabled()) return false;
+  private async savePending(change: Parameters<SkillMemoryPending["update"]>[0], review: boolean,
+    authority?: { completionId: string; isCurrent: () => boolean }): Promise<boolean> {
+    if (!this.canReview()) return false;
+    const revision = this.evidenceRevision;
+    const admittedAt = performance.now();
+    const admit = authority?.isCurrent() ? () => {
+      if (this.evidenceRevision !== revision) return;
+      this.attendedAuthority.set(authority.completionId, () =>
+        performance.now() - admittedAt < ATTENDED_AUTHORITY_MS && authority.isCurrent());
+      const oldest = this.attendedAuthority.keys().next().value;
+      if (this.attendedAuthority.size > RETAINED_SESSIONS && oldest !== undefined) this.attendedAuthority.delete(oldest);
+    } : undefined;
     try {
-      const saved = await this.pending.update(journal => this.deps.enabled() && change(journal));
+      const saved = await this.pending.update(journal =>
+        !journal.disabled && this.canReview() && this.evidenceRevision === revision && change(journal), admit);
       if (saved && review) this.resumePending();
       return saved;
     } catch {
@@ -456,10 +522,21 @@ export class SkillMemoryService {
     return JSON.stringify([sessionId, runKind, completionId]);
   }
 
-  private remember(key: string, turn: SkillMemoryTurn, anchor: SkillMemoryEvidence): void {
-    const rows = this.sessions.get(key) ?? [];
+  private readUnattendedGeneration(): { generation: string | undefined } | undefined {
+    try {
+      const journal = this.pending.read();
+      return journal.disabled ? undefined : { generation: journal.generation };
+    } catch {
+      log.warn("Pending skill memory evidence could not be read");
+      return undefined;
+    }
+  }
+
+  private remember(key: string, turn: SkillMemoryTurn, anchor: SkillMemoryEvidence, generation: string | undefined): void {
+    const held = this.sessions.get(key);
+    const rows = held?.generation === generation ? held?.rows ?? [] : [];
     this.sessions.delete(key);
-    this.sessions.set(key, [...rows, { anchor, runKind: turn.runKind, binding: [...turn.bindings.values()] }].slice(-SESSION_EVIDENCE_LIMIT));
+    this.sessions.set(key, { generation, rows: [...rows, { anchor, runKind: turn.runKind, binding: [...turn.bindings.values()] }].slice(-SESSION_EVIDENCE_LIMIT) });
     const oldestSession = this.sessions.keys().next().value;
     if (this.sessions.size > RETAINED_SESSIONS && oldestSession !== undefined) this.sessions.delete(oldestSession);
   }

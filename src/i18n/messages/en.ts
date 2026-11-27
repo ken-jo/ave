@@ -1925,7 +1925,7 @@ export const en = {
   "chatTab.idleMemoryConsolidationLabel": "Consolidate long-term memory while idle",
   "chatTab.idleMemoryConsolidationHint": "When idle, sends eligible global and current-project memories to the configured model to update their overviews. Manual consolidation in Roles stays available.",
   "chatTab.automaticSkillMemoryLabel": "Automatically improve skill memory",
-  "chatTab.automaticSkillMemoryHint": "Review verified owner input for skills used in a successful attended turn with a tool call, a locally authorized Work Board run that reaches Done, or a chat you archive. Reviews run in the background. Eligible headless and scheduled runs stage lessons for approval. Existing active lessons still apply when automatic improvement is off.",
+  "chatTab.automaticSkillMemoryHint": "Review verified owner input for skills used in a successful attended turn with a tool call, a locally authorized Work Board run that reaches Done, or a chat you archive. Reviews run in the background. Eligible headless and scheduled runs stage lessons for approval, as do resumed reviews whose owner authority has expired. Turning automatic improvement off discards unreviewed evidence. Active lessons still apply, and proposals in Needs review remain available.",
   "chatTab.subAgentWakeLabel": "Autonomously wake parent for sub-agent messages",
   "chatTab.subAgentMaxRoundsLabel": "Sub-agent round budget",
   "chatTab.subAgentMaxRoundsHint": "Maximum tool rounds for one sub-agent run. Enter a whole number from {min} to {max}.",

@@ -325,7 +325,7 @@ describe("ave:chat:* with chat groups", () => {
       expect(await archive(true)).toEqual({ ok: true });
     }
     expect(queueArchive).toHaveBeenCalledTimes(2);
-    expect(queueArchive).toHaveBeenCalledWith(id, projectRoot, expect.stringMatching(/^archive:/));
+    expect(queueArchive).toHaveBeenCalledWith(id, projectRoot, expect.stringMatching(/^archive:/), expect.any(Function));
     expect(queueArchive.mock.calls[0]).not.toEqual(queueArchive.mock.calls[1]);
   });
 

@@ -140,7 +140,7 @@ describe("skill memory through the host turn", () => {
     if (kind === "withheld") await turnExtensionPolicyContext.run({ withholdSessionAuthority: true, allowExternalHooks: true }, send);
     else await send();
     if (kind === "remote" || kind === "subagent" || kind === "withheld") expect(track).toHaveBeenLastCalledWith(null);
-    await service.queueArchive(loop.getSessionId(), home, "archive");
+    await service.queueArchive(loop.getSessionId(), home, "archive", () => true);
     await service.waitForPending();
     expect(review).not.toHaveBeenCalled();
   });

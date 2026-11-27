@@ -1927,7 +1927,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "chatTab.idleMemoryConsolidationLabel": "유휴 상태에서 장기 기억 통합",
   "chatTab.idleMemoryConsolidationHint": "유휴 상태일 때 전역·현재 프로젝트 기억을 설정한 모델에 보내 개요를 갱신합니다. Roles의 수동 통합은 계속 사용할 수 있습니다.",
   "chatTab.automaticSkillMemoryLabel": "스킬 메모리 자동 개선",
-  "chatTab.automaticSkillMemoryHint": "도구를 사용한 참석 턴이 정상 종료되거나, 이 앱에서 승인한 작업 보드 실행이 완료되거나, 채팅을 직접 보관하면 사용한 스킬에 대해 확인된 소유자 입력을 백그라운드에서 검토합니다. 조건을 충족한 헤드리스·예약 실행의 교훈은 승인 대기에 둡니다. 자동 개선을 꺼도 이미 적용 중인 교훈은 계속 사용합니다.",
+  "chatTab.automaticSkillMemoryHint": "도구를 사용한 참석 턴이 정상 종료되거나, 이 앱에서 승인한 작업 보드 실행이 완료되거나, 채팅을 직접 보관하면 사용한 스킬에 대해 확인된 소유자 입력을 백그라운드에서 검토합니다. 조건을 충족한 헤드리스·예약 실행이나 소유자 권한이 만료된 뒤 검토를 재개한 경우에는 교훈을 승인 대기에 둡니다. 자동 개선을 끄면 검토되지 않은 증거를 삭제합니다. 이미 적용 중인 교훈은 계속 사용하며 승인 대기 중인 제안도 남아 있습니다.",
   "chatTab.subAgentWakeLabel": "서브에이전트 메시지로 부모 자동 깨우기",
   "chatTab.subAgentMaxRoundsLabel": "서브에이전트 라운드 예산",
   "chatTab.subAgentMaxRoundsHint": "서브에이전트 한 번 실행의 최대 도구 라운드 수입니다. {min}~{max} 사이의 정수를 입력하세요.",

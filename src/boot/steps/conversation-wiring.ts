@@ -504,7 +504,14 @@ export async function wireConversation(
 
   lateBinding.conversationLoopRef.fn = conversationLoop;
   lateBinding.llmCallerRef.fn = createCallLlm(conversationLoop);
-  if (ctx.host.desktop) skillMemory.resumePending();
+  if (ctx.host.desktop) {
+    const syncSkillMemorySetting = () => skillMemory.onSettingChanged(settingsService.getSaved("features")?.automaticSkillMemory === true);
+    // The OFF snapshot reaches disk only after the journal has been durably cleared.
+    settingsService.setBeforeFeaturesSaved(features =>
+      features?.automaticSkillMemory === true ? undefined : skillMemory.onSettingChanged(false));
+    settingsService.onChanged("features", syncSkillMemorySetting);
+    void syncSkillMemorySetting()?.catch(() => log.warn("Pending skill memory setting could not be synchronized"));
+  }
   memoryCaptureService.setMemoryReviewer(memoryReviewer);
   lateBinding.pluginCallLlmRef.fn = createCallLlmForPlugin(conversationLoop, bootAuditLogger,
   );
@@ -642,14 +649,14 @@ export async function wireConversation(
     skillMemory,
     getRunner: () => subAgentRunnerRef.fn,
     getAgentProfile: (name) => agentProfileStore.load(name),
-    emitProgress: (event, project) => {
+    emitProgress: (event, project, isOwnerCurrent) => {
       const deliver = (root: string | undefined) =>
         deliverWorkBoardProgress(ctx.host.desktop?.getAppWindows() ?? [], event, root, { logger: log });
       if (project) deliver(project.projectRoot);
       else void workBoardStore.get(event.itemId).then(result => {
         if (result.status === "found") deliver(result.item.projectRoot);
       }).catch((error: unknown) => log.warn("Work board progress scope could not be read: %s", errorMessage(error)));
-      observeWorkflowSkills?.(event, project?.projectRoot);
+      observeWorkflowSkills?.(event, project, isOwnerCurrent);
     },
     // Append bounded project learnings best-effort; memory failures must not fail a run.
     onRunComplete: ({ itemId, title, projectRoot }) =>

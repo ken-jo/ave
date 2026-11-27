@@ -42,7 +42,7 @@ describe("managed skill memory", () => {
     mkdirSync(target.projectRoot);
     mkdirSync(join(home, "skills", target.skill), { recursive: true });
     writeFileSync(target.filePath, "owner skill");
-    expect(await store.record([record(target)], allow)).toBe(true);
+    expect(await store.record([record(target)], allow, "activate")).toBe(true);
     expect(readFileSync(target.filePath, "utf8")).toBe("owner skill");
     expect(existsSync(join(target.projectRoot, "lessons.json"))).toBe(false);
     const path = join(home, "skill-memory", "lessons.json");
@@ -50,13 +50,13 @@ describe("managed skill memory", () => {
     const group = requiredFixture(store.list()[0]);
     expect(group.history).toEqual([expect.objectContaining({ action: "activate", before: null, after: group.active[0] })]);
     expect(group.active[0]?.digest).toMatch(/^[a-f0-9]{64}$/);
-    expect(await store.record([record(target)], allow)).toBe(false);
+    expect(await store.record([record(target)], allow, "activate")).toBe(false);
   });
 
   it("restores the before version and rejects replayed or stale undo", async () => {
     const scope = binding();
-    await store.record([record(scope)], allow);
-    await store.record([record(scope, "attended", "later", "Check the type report", "Check the type report on all supported platforms.")], allow);
+    await store.record([record(scope)], allow, "activate");
+    await store.record([record(scope, "attended", "later", "Check the type report", "Check the type report on all supported platforms.")], allow, "activate");
     const group = requiredFixture(store.list()[0]);
     const [original, update] = group.history;
     expect(update?.before?.digest).toBe(original?.after?.digest);
@@ -74,7 +74,7 @@ describe("managed skill memory", () => {
 
   it.each(["headless", "scheduled"] as const)("stages %s without active recall and binds apply or reject to the shown digest", async runKind => {
     const scope = binding();
-    expect(await store.record([record(scope, runKind)], allow)).toBe(true);
+    expect(await store.record([record(scope, runKind)], allow, "stage")).toBe(true);
     const group = requiredFixture(store.list()[0]);
     const lesson = requiredFixture(group.staged[0]);
     expect(store.recall(scope)).toEqual([]);
@@ -83,7 +83,7 @@ describe("managed skill memory", () => {
     expect(await store.decide({ ...select, action: "apply" }, () => false)).toBe(false);
     expect(await store.decide({ ...select, action: "reject" }, allow)).toBe(true);
     expect(await store.decide({ ...select, action: "apply" }, allow)).toBe(false);
-    expect(await store.record([record(scope, runKind, "next")], allow)).toBe(true);
+    expect(await store.record([record(scope, runKind, "next")], allow, "stage")).toBe(true);
     const staged = requiredFixture(requiredFixture(store.list()[0]).staged[0]);
     expect(await store.decide({ scopeId: scope.id, lessonId: staged.id, digest: staged.digest, action: "apply" }, allow)).toBe(true);
     expect(store.recall(scope).map(row => row.body)).toEqual([staged.body]);
@@ -91,7 +91,7 @@ describe("managed skill memory", () => {
 
   it("keeps recall isolated by skill, project and source revision", async () => {
     const scope = binding();
-    await store.record([record(scope)], allow);
+    await store.record([record(scope)], allow, "activate");
     expect(store.recall(scope)).toHaveLength(1);
     expect(store.recall(binding("another"))).toEqual([]);
     expect(store.recall(binding("review", "another"))).toEqual([]);
@@ -100,8 +100,8 @@ describe("managed skill memory", () => {
 
   it("refuses a linked store and isolates tampered persisted text and ledger actions", async () => {
     const scope = binding();
-    await store.record([record(scope)], allow);
-    await store.record([record(scope, "attended", "later", "Valid lesson", "Valid lesson stays available.")], allow);
+    await store.record([record(scope)], allow, "activate");
+    await store.record([record(scope, "attended", "later", "Valid lesson", "Valid lesson stays available.")], allow, "activate");
     const path = join(home, "skill-memory", "lessons.json");
     const snapshot = readFileSync(path, "utf8");
     writeFileSync(path, snapshot.replaceAll("Check the type report before packaging.", "<ave-skill>").replace('"action":"activate"', '"action":"undo"'));
@@ -113,7 +113,7 @@ describe("managed skill memory", () => {
     mkdirSync(alternate);
     symlinkSync(outside, join(alternate, "skill-memory"), "junction");
     vi.stubEnv("AVE_HOME", alternate);
-    expect(await store.record([record(scope)], allow)).toBe(false);
+    expect(await store.record([record(scope)], allow, "activate")).toBe(false);
     expect(existsSync(join(outside, "lessons.json"))).toBe(false);
   });
 
@@ -124,9 +124,9 @@ describe("managed skill memory", () => {
         const id = `${runKind}-${count}`;
         const lessons = Array.from({ length: Math.min(3, 100 - count) }, (_, offset) =>
           record(scope, runKind, id, `Lesson ${count + offset}`));
-        expect(await store.record(lessons, allow)).toBe(true);
+        expect(await store.record(lessons, allow, runKind === "attended" ? "activate" : "stage")).toBe(true);
       }
-      expect(await store.record([record(scope, runKind, `${runKind}-overflow`, "Overflow")], allow)).toBe(false);
+      expect(await store.record([record(scope, runKind, `${runKind}-overflow`, "Overflow")], allow, runKind === "attended" ? "activate" : "stage")).toBe(false);
     };
     await writes("attended");
     await writes("headless");
@@ -136,7 +136,7 @@ describe("managed skill memory", () => {
     expect(store.list()[0]?.history).toHaveLength(200);
     const original = requiredFixture(store.list()[0]?.active[0]);
     for (let count = 0; count < 3; count++) {
-      await store.record([record(scope, "attended", `revision-${count}`, "Lesson 1", `Lesson 1 revision ${count}.`)], allow);
+      await store.record([record(scope, "attended", `revision-${count}`, "Lesson 1", `Lesson 1 revision ${count}.`)], allow, "activate");
     }
     const history = requiredFixture(store.list()[0]?.history);
     expect(history).toHaveLength(200);
@@ -144,7 +144,7 @@ describe("managed skill memory", () => {
     expect(history.slice(1).map(row => row.prevDigest)).toEqual(history.slice(0, -1).map(row => row.digest));
 
     const next = { ...scope, fingerprint: sha256Hex("changed content") };
-    await expect(store.record([record(next, "attended", "changed")], allow)).resolves.toBe(true);
+    await expect(store.record([record(next, "attended", "changed")], allow, "activate")).resolves.toBe(true);
     const display = await store.listCurrent(async (_scope, fingerprint) => fingerprint === next.fingerprint);
     expect(display[0]?.active).toHaveLength(1);
     expect(display[0]?.staged).toHaveLength(0);

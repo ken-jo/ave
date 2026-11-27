@@ -1,10 +1,11 @@
 import { isAbsolute, join } from "node:path";
 import { lstatSync } from "node:fs";
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { SHA256_HEX } from "../lib/hex-digest-equal.js";
-import { withInProcessFileQueue } from "../lib/with-file-lock.js";
-import { openFeatureNamespace } from "../main/storage/feature-namespace.js";
+import { withFileLock } from "../lib/with-file-lock.js";
+import { openFeatureNamespace, preparePrivateFileDirectory } from "../main/storage/feature-namespace.js";
 import { assertAveHomeInputWritable, readAveHomeInputSync } from "../shared/ave-home-trust.js";
 import { approveSkillMemoryEvidence } from "./skill-memory-policy.js";
 
@@ -36,13 +37,15 @@ const Evidence = z.object({
 }).strict();
 const Pending = z.object({
   version: z.literal(1),
+  generation: z.uuid().optional(),
+  disabled: z.literal(true).optional(),
   rows: z.array(z.unknown()).max(RETAINED_ROWS),
   board: z.array(z.unknown()).max(RETAINED_ROWS),
 }).strict();
 
 export type PendingSkillEvidence = z.infer<typeof Evidence>;
 type WorkBoardSkillOwnerInput = z.infer<typeof WorkBoardOwnerInput>;
-type Journal = { version: 1; rows: PendingSkillEvidence[]; board: WorkBoardSkillOwnerInput[] };
+type Journal = { version: 1; generation?: string; disabled?: true; rows: PendingSkillEvidence[]; board: WorkBoardSkillOwnerInput[] };
 
 function verifiedText(anchor: PendingSkillEvidence["anchor"]): boolean {
   return approveSkillMemoryEvidence({ id: anchor.id, input: anchor.text, verified: true, tainted: false })?.text === anchor.text;
@@ -61,6 +64,8 @@ export class SkillMemoryPending {
     const parsed = Pending.parse(JSON.parse(input.bytes.toString("utf8")));
     return {
       version: 1,
+      generation: parsed.generation,
+      disabled: parsed.disabled,
       rows: parsed.rows.flatMap(row => {
         const result = Evidence.safeParse(row);
         return result.success && verifiedText(result.data.anchor) ? [result.data] : [];
@@ -72,12 +77,34 @@ export class SkillMemoryPending {
     };
   }
 
-  update(change: (journal: Journal) => boolean): Promise<boolean> {
-    const file = join(this.namespace.dir, FILENAME);
-    return withInProcessFileQueue(file, async () => {
+  discard(): Promise<void> {
+    return this.locked(() => this.namespace.writeJson<Journal>(FILENAME, {
+      version: 1, generation: randomUUID(), disabled: true, rows: [], board: [],
+    }));
+  }
+
+  async enable(): Promise<void> {
+    if (!this.read().disabled) return;
+    await this.update(journal => {
+      if (!journal.disabled) return false;
+      delete journal.disabled;
+      return true;
+    });
+  }
+
+  withGeneration(generation: string | undefined, commit: () => Promise<boolean>): Promise<boolean> {
+    return this.locked(async () => this.isEnabledGeneration(generation) && await commit());
+  }
+
+  isEnabledGeneration(generation: string | undefined): boolean {
+    const journal = this.read();
+    return !journal.disabled && journal.generation === generation;
+  }
+
+  update(change: (journal: Journal) => boolean, didCommit?: () => void): Promise<boolean> {
+    return this.locked(async () => {
       const journal = this.read();
       if (!change(journal)) return false;
-      assertAveHomeInputWritable(file, "update pending skill evidence");
       journal.board = journal.board.slice(-RETAINED_ROWS);
       while (journal.rows.length > RETAINED_ROWS || Buffer.byteLength(JSON.stringify(journal, null, 2)) >= JOURNAL_BYTES) {
         const parked = journal.rows.findIndex(row => row.completionId === undefined);
@@ -85,7 +112,15 @@ export class SkillMemoryPending {
         else journal.board.shift();
       }
       await this.namespace.writeJson(FILENAME, journal);
+      didCommit?.();
       return true;
     });
+  }
+
+  private async locked<T>(work: () => Promise<T>): Promise<T> {
+    const file = join(this.namespace.dir, FILENAME);
+    assertAveHomeInputWritable(file, "update pending skill evidence");
+    await preparePrivateFileDirectory(file);
+    return withFileLock(file, work, { createTarget: false });
   }
 }

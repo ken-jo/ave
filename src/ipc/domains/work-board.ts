@@ -289,7 +289,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     try {
       const result: WorkItemRunResult = await engine.runItem(
         id,
-        { ...(agentName ? { agentName } : {}), ...(templateSource ? { templateSource } : { approvalSurface: sender }) },
+        { ...(agentName ? { agentName } : {}), ...(templateSource ? { templateSource } : {}), approvalSurface: sender },
       );
       broadcastToAppWindows(deps, WORK_BOARD.runFinished, {
         itemId: id,

@@ -1,7 +1,7 @@
 import { createLogger } from "../../lib/logger.js";
 import type { WorkBoardStore } from "../../main/work-board-store.js";
 import type { SkillMemoryService } from "../../memory/skill-memory-service.js";
-import type { WorkBoardRunEvent } from "../../shared/work-board-types.js";
+import type { WorkBoardEngineDeps } from "../../core/work-board-engine.js";
 
 const log = createLogger("skill-memory");
 const LINKED_ITEM_LIMIT = 128;
@@ -10,9 +10,11 @@ const LINKED_ITEM_LIMIT = 128;
 export function observeWorkflowSkillMemory(
   store: Pick<WorkBoardStore, "get" | "getRun">,
   skillMemory: Pick<SkillMemoryService, "linkWorkBoardSession" | "unlinkWorkBoardSession" | "queueWorkBoard">,
-): (event: WorkBoardRunEvent, projectRoot?: string) => void {
+): WorkBoardEngineDeps["emitProgress"] {
   const children = new Map<number, Map<string, string>>();
-  return (event, projectRoot) => {
+  return (event, project, isOwnerCurrent) => {
+    if (!isOwnerCurrent || !project?.runId) return;
+    const { projectRoot, runId } = project;
     const { itemId, phase, stageId, runSessionId } = event;
     if (phase === "executing" && stageId && runSessionId && projectRoot && !event.subAgentSessionId) {
       const stages = children.get(itemId) ?? new Map<string, string>();
@@ -45,9 +47,9 @@ export function observeWorkflowSkillMemory(
       if (item.status !== "found" || committed.status !== "found") return;
       const { run } = committed;
       if (run.settled?.status !== "completed" || run.runStartedBy.kind !== "local-create-and-run"
-        || item.item.runId !== run.runId) return;
+        || item.item.runId !== runId || run.runId !== runId) return;
       const sessions = run.stageRuns.flatMap(stage => stage.status === "passed" && stage.childSessionId ? [stage.childSessionId] : []);
-      await skillMemory.queueWorkBoard(item.item, run.runId, sessions);
+      await skillMemory.queueWorkBoard(item.item, runId, sessions, isOwnerCurrent);
     })().catch(() => log.warn("Workflow skill memory evidence was unavailable"));
   };
 }

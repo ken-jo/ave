@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -106,7 +106,7 @@ describe("host completion and invocation recall", () => {
 
   const complete = async (runKind: SkillMemoryRunKind, completionId = "end") => {
     if (runKind !== "attended") return service.complete({ sessionId: "session", projectRoot: root, completionId, runKind, isCurrent });
-    await service.queueArchive("session", root, completionId);
+    await service.queueArchive("session", root, completionId, isCurrent);
     await service.waitForPending();
     return store.hasCompletion(completionId);
   };
@@ -124,7 +124,7 @@ describe("host completion and invocation recall", () => {
     expect(review).not.toHaveBeenCalled();
     expect(await complete("attended")).toBe(true);
     expect(review).toHaveBeenCalledOnce();
-    await service.queueArchive("session", root, "end");
+    await service.queueArchive("session", root, "end", isCurrent);
     await service.waitForPending();
     expect(review).toHaveBeenCalledOnce();
     expect(await invoke("attended")).toContain(body);
@@ -167,7 +167,7 @@ describe("host completion and invocation recall", () => {
     expect(store.list()).toEqual([]);
   });
 
-  it("resumes a queued terminal after restart and preserves a byte-identical atomic skill save", async () => {
+  it("stages a replayed attended completion for explicit owner apply", async () => {
     service = makeService();
     await invoke("attended", true, root, "session", true);
     expect(review).not.toHaveBeenCalled();
@@ -181,10 +181,109 @@ describe("host completion and invocation recall", () => {
     restarted.resumePending();
     await restarted.waitForPending();
     expect(review).toHaveBeenCalledOnce();
+    const [group] = store.list();
+    const staged = group?.staged[0];
+    if (!group || !staged) throw new Error("Expected a staged lesson");
+    expect(staged.origin).toMatchObject({ completionId: "turn:owner", runKind: "attended" });
+    expect(group.active).toEqual([]);
+    expect(group.history.map(row => row.action)).toEqual(["stage"]);
+    expect(await invoke("attended")).toBe("");
+    expect(await store.decide({ scopeId: group.scope.id, action: "apply", lessonId: staged.id, digest: staged.digest }, isCurrent)).toBe(true);
+    expect(await invoke("attended")).toContain(body);
+  });
+
+  it("auto-applies a current same-process completion and preserves a byte-identical atomic skill save", async () => {
+    await invoke("attended", true, root, "session", true);
+    await service.waitForPending();
     expect(store.list()[0]?.active[0]?.origin.completionId).toBe("turn:owner");
     writeFileSync(`${skill}.new`, source);
     renameSync(`${skill}.new`, skill);
     expect(await invoke("attended")).toContain(body);
+  });
+
+  it("stages a same-process completion whose authority expires while the reviewer is running", async () => {
+    const clock = vi.spyOn(performance, "now");
+    try {
+      clock.mockReturnValue(0);
+      const respond = review.getMockImplementation();
+      if (!respond) throw new Error("Expected a reviewer");
+      review.mockImplementationOnce(async (task, prompt) => {
+        clock.mockReturnValue(120_001);
+        return respond(task, prompt);
+      });
+      await invoke("attended", true, root, "session", true);
+      await service.waitForPending();
+      expect(review).toHaveBeenCalledOnce();
+      expect(store.list()[0]?.staged[0]?.origin.completionId).toBe("turn:owner");
+      expect(store.list()[0]?.active).toEqual([]);
+      expect(await invoke("attended")).toBe("");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("discards queued and in-flight evidence across OFF and ON while keeping saved lessons", async () => {
+    await invoke("headless");
+    expect(await complete("headless", "saved-stage")).toBe(true);
+    await invoke("attended", true, root, "saved", true);
+    await service.waitForPending();
+    const saved = store.list();
+    expect(saved[0]?.active).toHaveLength(1);
+    expect(saved[0]?.staged).toHaveLength(1);
+
+    review.mockClear();
+    service = makeService();
+    await invoke("attended", true, root, "queued", true);
+    await invoke("attended", true, root, "parked");
+    const journal = join(home, "skill-memory", "pending.json");
+    expect(JSON.parse(readFileSync(journal, "utf8")).rows).toHaveLength(2);
+
+    enabled = false;
+    const discarded = service.onSettingChanged(false);
+    enabled = true;
+    service.setReviewer({ review });
+    await service.onSettingChanged(true);
+    await discarded;
+    await service.queueArchive("parked", root, "archive:old", isCurrent);
+    await service.waitForPending();
+    expect(review).not.toHaveBeenCalled();
+    expect(JSON.parse(readFileSync(journal, "utf8")).rows).toEqual([]);
+    expect(store.list()).toEqual(saved);
+
+    const respond = review.getMockImplementation();
+    if (!respond) throw new Error("Expected a reviewer");
+    review.mockImplementationOnce(async (task, prompt) => {
+      enabled = false;
+      await service.onSettingChanged(false);
+      enabled = true;
+      await service.onSettingChanged(true);
+      return respond(task, prompt);
+    });
+    await invoke("attended", true, root, "in-flight");
+    await service.queueArchive("in-flight", root, "archive:in-flight", isCurrent);
+    await service.waitForPending();
+    expect(review).toHaveBeenCalledOnce();
+    expect(store.list()).toEqual(saved);
+    await invoke("attended", true, root, "new");
+    await service.queueArchive("new", root, "archive:new", isCurrent);
+    await service.waitForPending();
+    expect(review).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses old evidence from an exec instance that did not observe the desktop setting change", async () => {
+    const desktop = service;
+    const exec = makeService(false);
+    exec.setReviewer({ review });
+    service = exec;
+    await invoke("headless");
+    await desktop.onSettingChanged(false);
+    // A retained exec still sees its startup setting, including for new turns while the desktop is OFF.
+    await invoke("headless", true, root, "during-off");
+    await desktop.onSettingChanged(true);
+    await exec.queueUnattended({ sessionId: "session", projectRoot: root, completionId: "exec:old", runKind: "headless", flushBeforeExit: true });
+    await exec.queueUnattended({ sessionId: "during-off", projectRoot: root, completionId: "exec:off", runKind: "headless", flushBeforeExit: true });
+    expect(review).not.toHaveBeenCalled();
+    expect(store.list()).toEqual([]);
   });
 
   it("keeps earlier evidence through a failed turn and recovers it for explicit archive", async () => {
@@ -193,7 +292,7 @@ describe("host completion and invocation recall", () => {
     await failed.finish(null, false);
     const restarted = makeService();
     restarted.setReviewer({ review });
-    await restarted.queueArchive("session", root, "archive:one");
+    await restarted.queueArchive("session", root, "archive:one", isCurrent);
     await restarted.waitForPending();
     expect(review).toHaveBeenCalledOnce();
     expect(store.list()[0]?.active[0]?.origin.completionId).toBe("archive:one");
@@ -208,7 +307,7 @@ describe("host completion and invocation recall", () => {
       await turn.run(async () => bindSkillMemoryInvocation("session", "review", stale, sha256Hex(source), sha256Hex(source)));
       await turn.finish({ id: `stale-${index}`, text: "x".repeat(4_000) }, true);
     }
-    await service.queueArchive("session", root, "archive:budget");
+    await service.queueArchive("session", root, "archive:budget", isCurrent);
     await service.waitForPending();
     expect(review).toHaveBeenCalledOnce();
     expect(review.mock.calls[0]?.[1]).not.toContain("x".repeat(20));
@@ -223,10 +322,10 @@ describe("host completion and invocation recall", () => {
     await bindSkillMemoryInvocation("unrelated-child", "review", skill, sha256Hex(source), sha256Hex(source));
     await bindSkillMemoryInvocation("child", "review", skill, sha256Hex(source), sha256Hex(source));
     service.unlinkWorkBoardSession("child");
-    await service.queueWorkBoard(item, "workflow-run", ["unrelated-child"]);
-    await service.queueWorkBoard({ ...item, detail: "Foreign instructions" }, "workflow-run", ["child"]);
+    await service.queueWorkBoard(item, "workflow-run", ["unrelated-child"], isCurrent);
+    await service.queueWorkBoard({ ...item, detail: "Foreign instructions" }, "workflow-run", ["child"], isCurrent);
     expect(review).not.toHaveBeenCalled();
-    await service.queueWorkBoard(item, "workflow-run", ["child"]);
+    await service.queueWorkBoard(item, "workflow-run", ["child"], isCurrent);
     await service.waitForPending();
     expect(review).toHaveBeenCalledOnce();
     expect(store.list()[0]?.active[0]?.body).toBe(body);
