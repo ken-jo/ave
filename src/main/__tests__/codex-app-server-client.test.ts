@@ -605,6 +605,26 @@ describe("CodexAppServerClient", () => {
     });
   });
 
+  it("keeps overlapping account reads behind the owned initialize response", async () => {
+    const harness = await createHarness((request) => {
+      if (request.method === "initialize") return DEFER_RESPONSE;
+      if (request.method === "account/read") return { account: null };
+      throw new Error("Unexpected request");
+    });
+    const first = harness.client.getStatus();
+    void first.catch(() => undefined);
+    await vi.waitFor(() => expect(harness.server.requests).toHaveLength(2), NATIVE_LOCATION_WAIT);
+    const second = harness.client.getStatus();
+    void second.catch(() => undefined);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(harness.server.requests.map(({ method }) => method)).toEqual(["initialize", "initialized"]);
+    const initialize = harness.server.requests[0];
+    harness.server.stdout.write(`${JSON.stringify({ id: initialize?.id, result: {} })}\n`);
+    await expect(first).resolves.toMatchObject({ connection: "signed-out" });
+    await expect(second).resolves.toMatchObject({ connection: "signed-out" });
+    expect(harness.spawnCalls).toHaveLength(1);
+  });
+
   it("opens only a trusted browser login URL and returns a URL-free pending status", async () => {
     const authUrl = "https://auth.openai.com/authorize?state=browser-only-state";
     const harness = await createHarness((request) => {

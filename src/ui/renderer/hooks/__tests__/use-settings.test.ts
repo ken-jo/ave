@@ -592,19 +592,20 @@ describe("useSettings", () => {
     act(() => emitSubscriptionRuntimeStatusUpdated({ provider: selection.provider, revision: 1 }));
     await waitFor(() => expect(api.subscriptionRuntimeStatus).toHaveBeenCalledTimes(2));
     act(() => {
-      emitSubscriptionRuntimeStatusUpdated({ provider: selection.provider, revision: 2 });
-      push({ ...settings, activeChatModel: { kind: "none", reason: "no-connected-provider" } });
+      emitSubscriptionRuntimeStatusUpdated({ provider: selection.provider, revision: 2, connected: false });
+      push({ ...settings, subscriptionRevision: 2, activeChatModel: { kind: "none", reason: "no-connected-provider" } });
     });
     await waitFor(() => expect(result.current.subscriptionChatReady).toBe(false));
     await act(async () => oldReply.resolve(status));
+    act(() => push({ ...settings, subscriptionRevision: 1 }));
     expect(result.current.subscriptionChatReady).toBe(false);
     expect(result.current.activeChatModel).toEqual({ kind: "none", reason: "no-connected-provider" });
 
     act(() => window.dispatchEvent(new Event("focus")));
     expect(api.subscriptionRuntimeStatus).toHaveBeenLastCalledWith(selection.provider, { refresh: true });
     act(() => {
-      emitSubscriptionRuntimeStatusUpdated({ provider: selection.provider, revision: 3 });
-      push(settings);
+      emitSubscriptionRuntimeStatusUpdated({ provider: selection.provider, revision: 3, connected: true });
+      push({ ...settings, subscriptionRevision: 3 });
     });
     await waitFor(() => expect(result.current.subscriptionChatReady).toBe(true));
     expect(result.current.activeChatModel).toEqual(selection);

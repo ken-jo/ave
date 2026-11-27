@@ -1,3 +1,4 @@
+import { subscriptionAccountFixture } from "../../../__tests__/support/subscription-account-fixture.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolve } from "node:path";
 import type {
@@ -14,6 +15,8 @@ import { makeAppIpcInvoker } from "./test-helpers.js";
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const runtimeServiceMock = vi.hoisted(() => ({
   get: vi.fn(),
+  connectionProjection: vi.fn(),
+  hostRevision: vi.fn(() => 0),
   onAutoVerified: vi.fn((_listener: (provider: SubscriptionRuntimeId, connected?: boolean) => void) => vi.fn()),
   errorCode: vi.fn((error: unknown) => {
     if (
@@ -53,9 +56,12 @@ vi.mock("electron", () => ({
   shell: { openExternal: shellOpenExternal },
 }));
 
-vi.mock("../../../main/subscription-runtime-service.js", () => ({
+vi.mock("../../../main/subscription-runtime-service.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../main/subscription-runtime-service.js")>(),
   getSubscriptionRuntimeService: runtimeServiceMock.get,
   onSubscriptionRuntimeStatusChanged: runtimeServiceMock.onAutoVerified,
+  subscriptionConnectionProjection: runtimeServiceMock.connectionProjection,
+  subscriptionHostRevision: runtimeServiceMock.hostRevision,
   subscriptionRuntimeErrorCode: runtimeServiceMock.errorCode,
   SubscriptionRuntimeServiceError: runtimeServiceMock.RuntimeError,
 }));
@@ -476,11 +482,13 @@ describe("common subscription runtime IPC", () => {
       namespace: createSubscriptionRuntimeNamespace(),
       claimRuntimeDirectories: claimFakeRuntimeDirectories,
       claudeCodeClient: { stop: vi.fn() } as never,
-      codexClient: { getStatus, stop: vi.fn() } as never,
+      codexClient: subscriptionAccountFixture({ getStatus, stop: vi.fn() }) as never,
       acpRegistry: { stopAll: vi.fn() } as never,
       createCodexConversationRuntime: () => ({ verifyIsolation, stop: vi.fn() }) as never,
     });
     runtimeServiceMock.get.mockResolvedValue(service);
+    runtimeServiceMock.connectionProjection.mockImplementation(actual.subscriptionConnectionProjection);
+    runtimeServiceMock.hostRevision.mockImplementation(actual.subscriptionHostRevision);
     runtimeServiceMock.onAutoVerified.mockImplementationOnce((listener) => vi.fn(actual.onSubscriptionRuntimeStatusChanged(listener)));
     const { deps, currentLlm } = makeStatefulSelectionDeps({
       provider: "openai", vendors: { openai: { model: "unused", baseUrl: null } }, activeChatRuntime: selection,
@@ -539,10 +547,12 @@ describe("common subscription runtime IPC", () => {
       namespace: createSubscriptionRuntimeNamespace(),
       claimRuntimeDirectories: claimFakeRuntimeDirectories,
       claudeCodeClient: { stop: vi.fn() } as never,
-      codexClient: { getStatus, getCachedStatus: () => ready, stop: vi.fn() } as never,
+      codexClient: subscriptionAccountFixture({ getStatus, getCachedStatus: () => ready, stop: vi.fn() }) as never,
       acpRegistry: { stopAll: vi.fn() } as never,
     });
     runtimeServiceMock.get.mockResolvedValue(service);
+    runtimeServiceMock.connectionProjection.mockImplementation(actual.subscriptionConnectionProjection);
+    runtimeServiceMock.hostRevision.mockImplementation(actual.subscriptionHostRevision);
     runtimeServiceMock.onAutoVerified.mockImplementationOnce((listener) => vi.fn(actual.onSubscriptionRuntimeStatusChanged(listener)));
     const { deps, currentLlm } = makeStatefulSelectionDeps({
       provider: "openai", vendors: { openai: { model: "unused", baseUrl: null } }, activeChatRuntime: selection,
@@ -555,7 +565,11 @@ describe("common subscription runtime IPC", () => {
     } as never);
     const focusProbe = () => invoke("ave:settings:subscription:status", selection.provider, { refresh: true });
     try {
-      if (previouslyConnected) await focusProbe();
+      if (previouslyConnected) {
+        await focusProbe();
+        await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({ activeChatModel: selection })));
+        send.mockClear();
+      }
       getStatus.mockRejectedValueOnce(new actual.SubscriptionRuntimeServiceError("subscription-runtime-incompatible"));
       await expect(focusProbe()).resolves.toMatchObject({
         ok: false, error: "subscription-runtime-incompatible",
@@ -994,7 +1008,7 @@ describe("common subscription runtime IPC", () => {
     await firstApplied.promise;
     await expect(invoke("ave:settings:subscription:use-api-for-chat")).resolves.toEqual({ ok: true });
     releaseFirstPersist.resolve();
-    await expect(older).resolves.toMatchObject({ ok: true, status: { provider: "codex" } });
+    await expect(older).resolves.toMatchObject({ ok: false, error: "subscription-status-superseded" });
 
     expect(state.currentLlm().activeChatRuntime).toEqual({ kind: "api" });
     expect(rewire).toHaveBeenCalledTimes(2);
@@ -1072,7 +1086,7 @@ describe("common subscription runtime IPC", () => {
     await firstLocaleRequested.promise;
     await expect(invoke("ave:settings:subscription:use-api-for-chat")).resolves.toEqual({ ok: true });
     releaseFirstLocale.resolve(true);
-    await expect(older).resolves.toMatchObject({ ok: true, status: { provider: "codex" } });
+    await expect(older).resolves.toMatchObject({ ok: false, error: "subscription-status-superseded" });
 
     expect(localeMock.setLocale).toHaveBeenCalledTimes(1);
     expect(localeMock.setLocale).toHaveBeenCalledWith("en");

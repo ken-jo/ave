@@ -23,6 +23,7 @@ export function fakeAppSettings(overrides: DeepPartial<AppSettings> = {}): AppSe
   const merged = mergeDeep(stored, storedOverrides as DeepPartial<typeof stored>);
   return {
     ...merged,
+    subscriptionRevision: overrides.subscriptionRevision ?? 0,
     vertexProjectConfigured: overrides.vertexProjectConfigured ?? Boolean(merged.llm.vendors["vertex-ai"]?.vertexProject),
     activeChatModel: (activeOverride as AppSettings["activeChatModel"] | undefined)
       ?? resolveActiveChatModel(merged.llm, true),

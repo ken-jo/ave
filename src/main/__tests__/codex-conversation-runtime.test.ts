@@ -1,3 +1,4 @@
+import { subscriptionAccountFixture } from "../../__tests__/support/subscription-account-fixture.js";
 import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
@@ -204,10 +205,10 @@ async function createServiceForRuntimes(harness: Harness, runtimes: CodexConvers
       writeJson: async () => { throw new Error("Unexpected profile write"); },
       createFile: refuseNamespaceFileCreation,
     },
-    codexClient: {
-      getStatus: async () => ({ runtime: "ready", connection: "connected", planType: "plus", pendingLogin: null, pendingDeviceCode: null }),
+    codexClient: subscriptionAccountFixture({
+      getStatus: async () => ({ runtime: "ready", connection: "connected", planType: "plus", pendingLogin: null, pendingDeviceCode: null, version: "fixture" }),
       stop: vi.fn(),
-    } as unknown as CodexAppServerClient,
+    }) as unknown as CodexAppServerClient,
     acpRegistry: { stopAll: async () => undefined } as unknown as AcpSubscriptionRuntimeRegistry,
     createCodexConversationRuntime: () => {
       const runtime = runtimes.shift();

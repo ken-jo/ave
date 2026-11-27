@@ -1,3 +1,4 @@
+import { subscriptionAccountFixture } from "../../__tests__/support/subscription-account-fixture.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
 import type { AcpSubscriptionStatus } from "../../shared/acp-subscription.js";
@@ -69,9 +70,9 @@ async function service(options: {
   return SubscriptionRuntimeService.create(async () => undefined, {
     namespace: namespace(),
     claimRuntimeDirectories: claimFakeRuntimeDirectories,
-    codexClient: (options.codex ?? codexClient()) as unknown as CodexAppServerClient,
+    codexClient: subscriptionAccountFixture(options.codex ?? codexClient()) as unknown as CodexAppServerClient,
     acpRegistry: { stopAll: vi.fn(async () => undefined), ...options.acpRegistry } as unknown as AcpSubscriptionRuntimeRegistry,
-    claudeCodeClient: (options.claude ?? claudeClient().client) as unknown as ClaudeCodeSubscriptionClient,
+    claudeCodeClient: subscriptionAccountFixture(options.claude ?? claudeClient().client) as unknown as ClaudeCodeSubscriptionClient,
   });
 }
 
@@ -111,7 +112,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     try {
       const logout = runtime.logout("claude-code");
       // The raw CLI still reads as connected, so the outstanding mutation must prevent that reply from reaching the caller.
-      await expect(runtime.getStatus("claude-code", { allowCached: true })).rejects.toMatchObject({ code: "subscription-status-superseded" });
+      await expect(runtime.getStatus("claude-code", { allowCached: true })).resolves.toMatchObject({ connection: "unknown", capabilities: { chat: false } });
       gate.resolve();
       await logout;
       expect((await runtime.getStatus("claude-code", { allowCached: true })).connection).toBe("signed-out");
@@ -168,17 +169,19 @@ describe("SubscriptionRuntimeService settings read cache", () => {
         reconnected.resolve(signedIn);
         await expect(later).resolves.toMatchObject({ connection: "connected" });
         disconnected.resolve(signedOut);
-        await expect(earlier).resolves.toMatchObject({ connection: "connected", version: "2.2.0" });
-        expect(changed).not.toHaveBeenCalled();
+        await expect(earlier).resolves.toMatchObject({ connection: "signed-out", capabilities: { chat: false } });
+        expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false]]);
+        setStatus(signedIn);
+        await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "connected", capabilities: { chat: false } });
       } else {
         disconnected.resolve(signedOut);
         await expect(earlier).resolves.toMatchObject({ connection: "signed-out", capabilities: { chat: false } });
         reconnected.resolve(signedIn);
         await expect(later).resolves.toMatchObject({ connection: "signed-out", capabilities: { chat: false } });
-        expect(changed.mock.calls).toEqual([["claude-code", false]]);
+        expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false]]);
         setStatus(signedIn);
         await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "connected", capabilities: { chat: false } });
-        expect(changed.mock.calls).toEqual([["claude-code", false], ["claude-code", true]]);
+        expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false], ["claude-code", true]]);
       }
       const sampleCount = client.getStatus.mock.calls.length;
       expect(await runtime.getStatus("claude-code", { allowCached: true })).toMatchObject({ connection: "connected", version: "2.2.0" });
@@ -196,13 +199,14 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
     try {
       await runtime.getStatus("claude-code");
+      changed.mockClear();
       await runtime.logout("claude-code");
       setStatus(claudeCodeSubscriptionStatus("ready", "connected", "2.1.0"));
       await expect(runtime.cancelLogin("claude-code")).resolves.toMatchObject({ connection: "signed-out" });
       await expect(runtime.getCachedStatus("claude-code")).resolves.toMatchObject({ connection: "signed-out" });
-      expect(changed.mock.calls).toEqual([["claude-code", false]]);
+      expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false], ["claude-code", false]]);
       await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "connected" });
-      expect(changed.mock.calls).toEqual([["claude-code", false], ["claude-code", true]]);
+      expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false], ["claude-code", false], ["claude-code", true]]);
     } finally {
       unsubscribe();
       await runtime.stop();
@@ -236,7 +240,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
       const stale = await later;
       expect(disconnect.connection).toBe("signed-out");
       expect(stale.connection).toBe("signed-out");
-      expect(changed.mock.calls).toEqual([["claude-code", false]]);
+      expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false]]);
       await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "connected" });
     } finally {
       unsubscribe();
@@ -271,14 +275,14 @@ describe("SubscriptionRuntimeService settings read cache", () => {
       changed.mockClear();
       client.getStatus.mockRejectedValueOnce(new Error("Probe failed"));
       await expect(runtime.getStatus("claude-code")).rejects.toMatchObject({ code: "subscription-operation-failed" });
-      expect(changed.mock.calls).toEqual([["claude-code", false]]);
+      expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false]]);
       await expect(runtime.getCachedStatus("claude-code")).resolves.toMatchObject({
         runtime: "unavailable", connection: "unknown", capabilities: { chat: false },
       });
       await expect(runtime.getStatus("claude-code", { allowCached: true })).resolves.toMatchObject({
         connection: "connected", capabilities: { chat: false },
       });
-      expect(changed.mock.calls).toEqual([["claude-code", false], ["claude-code", true]]);
+      expect(changed.mock.calls.map(([provider, connected]) => [provider, connected])).toEqual([["claude-code", false], ["claude-code", true]]);
     } finally {
       unsubscribe();
       await runtime.stop();

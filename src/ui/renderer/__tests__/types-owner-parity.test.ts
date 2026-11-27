@@ -54,6 +54,7 @@ describe("renderer types are the owner types", () => {
     expectTypeOf<AppSettings>().toEqualTypeOf<
       Omit<HostAppSettings, "a2aRemote" | "upstreamProxy" | "memoryEmbedding"> & {
         readonly activeChatModel: ActiveChatModel;
+        readonly subscriptionRevision: number;
         readonly vertexProjectConfigured: boolean;
       }
     >();

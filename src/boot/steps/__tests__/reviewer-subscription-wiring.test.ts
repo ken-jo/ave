@@ -1,3 +1,4 @@
+import { subscriptionAccountFixture } from "../../../__tests__/support/subscription-account-fixture.js";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { ChildProcess } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -23,6 +24,7 @@ import { RuntimeProcessFixture } from "../../../main/__tests__/support/runtime-p
 import { codexExecutableArtifactFixture, normalizeFixtureAncestorPermissions } from "../../../__tests__/support/native-executable.js";
 import { createPrivateDirectory } from "../../../main/codex-executable-location.js";
 import { CodexAppServerClient } from "../../../main/codex-app-server-client.js";
+import { ClaudeCodeSubscriptionClient } from "../../../main/claude-code-subscription-client.js";
 import { claudeCodeSubscriptionStatus } from "../../../shared/claude-code-subscription.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
@@ -191,7 +193,10 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
 
 it.each([
   "live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog",
-  "logout during failed login", "account notification confirmation", "account notification overtaken by logout",
+  "logout during failed login", "cancel detects sign-out during failed login",
+  "account notification confirmation", "account notification overtaken by logout", "account notification retries after rejection",
+  "account notification retries after supersession", "account notification retry withdrawn by sign-out",
+  "account notification retry withdrawn by shutdown", "matching login completion",
 ] as const)("invalidates a cached windowless reviewer verdict on %s and restores the saved route", async (scenario) => {
   const tempDir = mkdtempSync(join(tmpdir(), "windowless-reviewer-"));
   vi.resetModules();
@@ -216,8 +221,13 @@ it.each([
   const { SubscriptionRuntimeService, onSubscriptionRuntimeStatusChanged } = await import("../../../main/subscription-runtime-service.js");
   const connected = claudeCodeSubscriptionStatus("ready", "connected", "test");
   let status = connected;
+  let authReadCount = 0;
+  let holdCancelRead = false;
+  let holdLoginPreparation = false;
   const getClaudeStatus = vi.fn(async () => status);
-  const provider = scenario === "live disconnect" || scenario === "logout during failed login" ? "claude-code" : "codex";
+  const cancelStarted = deferred<void>();
+  const cancelReply = deferred<void>();
+  const provider = scenario === "live disconnect" || scenario === "logout during failed login" || scenario === "cancel detects sign-out during failed login" ? "claude-code" : "codex";
   const heldLogout = deferred<void>();
   const logoutStarted = deferred<void>();
   const heldLogin = deferred<void>();
@@ -231,23 +241,70 @@ it.each([
     request, stop: vi.fn(),
   };
   const holdsCatalog = scenario === "sign-out during catalog" || scenario === "process exit during catalog";
-  const usesAccountNotification = scenario === "account notification confirmation" || scenario === "account notification overtaken by logout";
+  const usesAccountNotification = scenario.startsWith("account notification") || scenario === "matching login completion";
+  const realCancelRace = scenario === "cancel detects sign-out during failed login";
   const accountReads: number[] = [];
   let holdAccountReads = false;
   const catalogStarted = deferred<number>();
   let child: RuntimeProcessFixture | undefined;
   let accountConnected = true;
   let runtimeHome = tempDir;
-  if (holdsCatalog || usesAccountNotification) {
+  if (holdsCatalog || usesAccountNotification || realCancelRace) {
     if (process.platform !== "win32") normalizeFixtureAncestorPermissions(tempDir);
     runtimeHome = join(tempDir, "runtime");
     await createPrivateDirectory(runtimeHome);
   }
   const artifact = holdsCatalog || usesAccountNotification ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
+  const cliArtifact = realCancelRace ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
+  const realCli = cliArtifact && new ClaudeCodeSubscriptionClient({
+    runtimeHome, workspaceDir: runtimeHome, runtimeTempDir: runtimeHome,
+    releaseFetch: async () => { throw new Error("Unexpected release request"); },
+    candidates: () => [cliArtifact.executable],
+    resolveExecutable: async (candidate) => {
+      if (holdLoginPreparation) {
+        loginStarted.resolve();
+        await heldLogin.promise;
+        throw loginError;
+      }
+      return candidate;
+    },
+    _pinExecutableForTest: async () => ({
+      executable: cliArtifact.executable, identity: cliArtifact.contentHash,
+      verify: async () => undefined, discard: async () => undefined,
+    }),
+    spawn: (_command, args) => {
+      const process = new RuntimeProcessFixture();
+      const reply = (body: string, code = 0) => {
+        process.stdout.write(body);
+        process.exitCode = code;
+        process.emit("close", code, null);
+      };
+      setImmediate(() => {
+        if (args.includes("--version")) return reply("2.1.311 (Claude Code)\n");
+        if (args.includes("--help")) return reply("Commands:\n  login [options]   Sign in\n  logout            Log out\n  status [options]  Show status\n");
+        authReadCount += 1;
+        const authReply = () => {
+          const loggedIn = status.connection === "connected";
+          reply(JSON.stringify(loggedIn
+            ? { loggedIn, authMethod: "claude.ai", apiProvider: "firstParty", subscriptionType: "pro" }
+            : { loggedIn }), loggedIn ? 0 : 1);
+        };
+        if (holdCancelRead) {
+          holdCancelRead = false;
+          cancelStarted.resolve();
+          void cancelReply.promise.then(authReply);
+        } else {
+          authReply();
+        }
+      });
+      return process as unknown as ChildProcess;
+    },
+  });
+
   const runtime = await SubscriptionRuntimeService.create(async () => {}, {
     namespace: createSubscriptionRuntimeNamespace(),
     claimRuntimeDirectories: claimFakeRuntimeDirectories,
-    claudeCodeClient: {
+    claudeCodeClient: realCli ?? subscriptionAccountFixture({
       getStatus: getClaudeStatus,
       logout: async () => {
         logoutStarted.resolve();
@@ -261,7 +318,7 @@ it.each([
         throw loginError;
       },
       stop: vi.fn(),
-    } as never,
+    }) as never,
     ...(artifact ? {
       createCodexAppServerClient: (options) => new CodexAppServerClient({
         ...options, runtimeHome, sqliteHome: runtimeHome, workspaceDir: runtimeHome, runtimeTempDir: runtimeHome,
@@ -274,23 +331,31 @@ it.each([
               const { method, id } = JSON.parse(line);
               if (method === "model/list") catalogStarted.resolve(id);
               else if (method === "account/read" && holdAccountReads) accountReads.push(id);
-              else if (id !== undefined) server.stdout.write(`${JSON.stringify({
-                id, result: method === "account/read" && accountConnected
-                  ? { account: { type: "chatgpt", planType: "plus" } } : {},
+              else if (method === "account/login/start" && scenario === "matching login completion") {
+                server.stdout.write(`${JSON.stringify({ id, result: { type: "chatgpt", loginId: "fixture-login", authUrl: "https://auth.openai.com/authorize" } })}\n`);
+              } else if (id !== undefined) server.stdout.write(`${JSON.stringify({
+                id, result: method === "account/read"
+                  ? { account: accountConnected ? { type: "chatgpt", planType: "plus" } : null } : {},
               })}\n`);
             }
           });
           return server as unknown as ChildProcess;
         },
       }),
-    } : { codexClient: accountClient as never }),
+    } : { codexClient: subscriptionAccountFixture(accountClient) as never }),
     createCodexConversationRuntime: () => ({ verifyIsolation: async () => {}, stop: vi.fn() }) as never,
     acpRegistry: { stopAll: vi.fn() } as never,
   });
   const manager = new PermissionManager(join(tempDir, "permissions.json"));
   manager.setMode("auto");
   const selection = { kind: "subscription", provider, ...(provider === "codex" ? { model: "fixture-model" } : {}) } as const;
+  const reviewStarted = deferred<void>();
+  const releaseReview = deferred<void>();
   const streamTurn = vi.fn(async function* (): ReturnType<LLMProvider["streamTurn"]> {
+    if (scenario === "account notification retries after rejection" && streamTurn.mock.calls.length === 2) {
+      reviewStarted.resolve();
+      await releaseReview.promise;
+    }
     yield { type: "text_delta", text: '{"level":"low","reason":"The request is consistent."}' };
     yield { type: "message_complete", stopReason: "end_turn" };
   });
@@ -310,11 +375,11 @@ it.each([
     getMainWindow: () => null, bootAuditLogger: { log: vi.fn(), appendPermissionAuditEntry: vi.fn() }, subscriptionProviderFactory,
     isSubscriptionConnected: async () => (await runtime.getStatus(selection.provider, { allowCached: true })).connection === "connected",
   };
-  const dispatch = async (headless: boolean) => {
+  const dispatch = async (headless: boolean, path = "") => {
     const permission = manager.checkDetailed("network_probe", "builtin", "network", undefined, { sessionId: "windowless", headless });
     const review = await manager.dispatchReviewer("network_probe", {
       invocationId: "windowless-review", sessionId: "windowless", source: "builtin", category: "network",
-      pathFields: [], finalInput: { url: "http://localhost:3456" }, executionCwd: tempDir, allowedDirectories: [tempDir],
+      pathFields: [], finalInput: { url: `http://localhost:3456${path}` }, executionCwd: tempDir, allowedDirectories: [tempDir],
       sensitivePathsAdjacent: [], trustOrigin: "llm-tool-arg", permissionDecision: permission,
     }, undefined, { lane: headless ? "headless" : "foreground-auto" });
     return { review, result: manager.resolveReviewedPermission(permission, review) };
@@ -356,6 +421,30 @@ it.each([
     } else if (usesAccountNotification) {
       const server = requiredFixture(child);
       holdAccountReads = true;
+      if (scenario === "matching login completion") {
+        const reply = (id: number, connected: boolean) => {
+          server.stdout.write(`${JSON.stringify({ id, result: { account: connected ? { type: "chatgpt", planType: "plus" } : null } })}\n`);
+        };
+        const complete = (loginId: string) => {
+          server.stdout.write(`${JSON.stringify({ method: "account/login/completed", params: { loginId, success: true } })}\n`);
+        };
+        await expect(runtime.startLogin(provider, "browser")).resolves.toMatchObject({ pendingLogin: "browser" });
+        await vi.waitFor(() => expect(accountReads).toHaveLength(1));
+        reply(requiredFixture(accountReads[0]), false);
+        await vi.waitFor(async () => expect(await runtime.getCachedStatus(provider)).toMatchObject({ connection: "signed-out" }));
+        complete("retired-login");
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(accountReads).toHaveLength(1);
+        complete("fixture-login");
+        await vi.waitFor(() => expect(accountReads).toHaveLength(2));
+        expect((await dispatch(true)).result.decision).toBe("deny");
+        reply(requiredFixture(accountReads[1]), true);
+        await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
+        expect((await dispatch(true)).result.decision).toBe("allow");
+        return;
+      }
+      const pendingReview = scenario === "account notification retries after rejection" ? dispatch(true, "/pending") : undefined;
+      if (pendingReview) await reviewStarted.promise;
       const oldRead = runtime.getStatus(provider);
       await vi.waitFor(() => expect(accountReads).toHaveLength(1));
       const replyConnected = (id: number) => server.stdout.write(`${JSON.stringify({
@@ -374,6 +463,30 @@ it.each([
         expect(accountReads).toHaveLength(2);
         return;
       }
+      if (scenario.includes("retries") || scenario.includes("retry withdrawn")) {
+        if (scenario === "account notification retries after supersession") {
+          await expect(runtime.startLogin(provider, "browser")).rejects.toMatchObject({ code: "subscription-operation-failed" });
+          replyConnected(requiredFixture(accountReads[1]));
+        } else {
+          server.stdout.write(`${JSON.stringify({ id: requiredFixture(accountReads[1]), error: { code: -32603, message: "Account read temporarily unavailable" } })}\n`);
+        }
+        if (scenario.includes("retry withdrawn")) {
+          if (scenario.endsWith("shutdown")) await runtime.stop();
+          else server.stdout.write(`${JSON.stringify({ method: "account/updated", params: { authMode: null } })}\n`);
+          await new Promise<void>((resolve) => setTimeout(resolve, 350));
+          expect(accountReads).toHaveLength(2);
+          expect((await dispatch(true)).result.decision).toBe("deny");
+          return;
+        }
+        await vi.waitFor(() => expect(accountReads).toHaveLength(3), { timeout: 2500 });
+        expect((await dispatch(true)).result.decision).toBe("deny");
+        replyConnected(requiredFixture(accountReads[2]));
+        await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
+        releaseReview.resolve();
+        if (pendingReview) expect((await pendingReview).result.decision).toBe("deny");
+        expect(await dispatch(true)).toMatchObject({ review: { outcome: "fresh" }, result: { decision: "allow" } });
+        return;
+      }
       await expect(runtime.logout(provider)).resolves.toMatchObject({ connection: "signed-out" });
       replyConnected(requiredFixture(accountReads[1]));
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -389,6 +502,27 @@ it.each([
       getAccountStatus.mockResolvedValueOnce(accountStatus).mockRejectedValueOnce(new Error("Account probe unavailable"));
       await expect(runtime.openTextSession(selection)).rejects.toThrow();
       expect(request).toHaveBeenCalledOnce();
+    } else if (scenario === "cancel detects sign-out during failed login") {
+      const readsBeforeCancel = authReadCount;
+      holdCancelRead = true;
+      const cancel = runtime.cancelLogin(provider);
+      const outcome = cancel.then((value) => value.connection, (error: unknown) => error);
+      await cancelStarted.promise;
+      holdLoginPreparation = true;
+      const login = runtime.startLogin(provider, "browser");
+      const loginFailure = expect(login).rejects.toMatchObject({ code: "subscription-operation-failed" });
+      await loginStarted.promise;
+      status = claudeCodeSubscriptionStatus("unverified", "signed-out", "test");
+      cancelReply.resolve();
+      await outcome;
+      const afterCancel = await runtime.getCachedStatus(provider);
+      heldLogin.resolve();
+      await loginFailure;
+      expect((await dispatch(true)).result.decision).toBe("deny");
+      expect(afterCancel).toMatchObject({ connection: "signed-out" });
+      holdLoginPreparation = false;
+      expect(immediate).toBeDefined();
+      expect(authReadCount).toBe(readsBeforeCancel + 1);
     } else if (scenario === "logout during failed login") {
       const readsBeforeLogout = getClaudeStatus.mock.calls.length;
       const logout = runtime.logout(provider);
@@ -425,6 +559,7 @@ it.each([
   } finally {
     dispose?.();
     stopListening?.();
+    releaseReview.resolve();
     for (const result of wired) await result.cache.flush();
     await runtime.stop();
     vi.doUnmock("electron");
@@ -457,10 +592,10 @@ it.each(["reconnect", "disconnect", "verification", "logout during verification"
   const runtime = await SubscriptionRuntimeService.create(async () => {}, {
     namespace: createSubscriptionRuntimeNamespace(),
     claimRuntimeDirectories: claimFakeRuntimeDirectories,
-    claudeCodeClient: {
+    claudeCodeClient: subscriptionAccountFixture({
       getStatus, stop: vi.fn(), logout: async () => signedOut,
       verify: () => { isolationStarted.resolve(); return isolation.promise; },
-    } as never,
+    }) as never,
     codexClient: { stop: vi.fn() } as never,
     acpRegistry: { stopAll: vi.fn() } as never,
   });
@@ -537,7 +672,7 @@ it.each(["reconnect", "disconnect", "verification", "logout during verification"
     if (superseded) await superseded;
     else if (verification) {
       await expect(verification).resolves.toMatchObject({ capabilities: { chat: true } });
-      expect(changed).toHaveBeenCalledWith(selection.provider, true);
+      expect(changed).toHaveBeenCalledWith(selection.provider, true, expect.any(Number));
     }
   } finally {
     stopListening();

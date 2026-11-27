@@ -1,3 +1,4 @@
+import { subscriptionAccountFixture } from "../../__tests__/support/subscription-account-fixture.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { describe, expect, it, vi } from "vitest";
 import type { StreamEvent, ToolSchema } from "../../engine/llm/types.js";
@@ -95,12 +96,12 @@ it("projects account quota updates through cached status and clears them at sign
     expect((await service.getStatus("codex", { allowCached: true })).planUsage).toBeUndefined();
     publish([{ id: "codex:primary", usedPercent: 20, resetsAt: start + 3_600_000 }]);
     await service.getStatus("codex", { allowCached: true });
-    expect(client.getStatus).toHaveBeenLastCalledWith(false);
+    expect(Object.getPrototypeOf(client).getStatus).toHaveBeenLastCalledWith(false);
     clock.mockReturnValue(start + 60_000);
     publish([{ id: "codex:primary", usedPercent: 40, resetsAt: start + 3_600_000 }]);
     expect((await service.getStatus("codex", { allowCached: true })).planUsage?.windows[0])
       .toMatchObject({ usedPercent: 40, projectedLimitAt: start + 240_000 });
-    expect(announcements).toEqual(["codex", "codex"]);
+    expect(announcements).toEqual(["codex", "codex", "codex"]);
     publish([{ id: "codex:secondary", usedPercent: 20, resetsAt: start + 3_600_000 }]);
     clock.mockReturnValue(start + 120_000);
     publish([{ id: "codex:secondary", usedPercent: 40, resetsAt: start + 3_600_000 }]);
@@ -121,7 +122,7 @@ it("projects account quota updates through cached status and clears them at sign
 });
 
 function fakeCodexClient(): CodexAppServerClient {
-  return {
+  return subscriptionAccountFixture({
     invalidatePlanUsageReads: vi.fn(),
     getStatus: vi.fn(async () => CODEX_CONNECTED),
     getCachedStatus: vi.fn(() => CODEX_CONNECTED),
@@ -130,7 +131,7 @@ function fakeCodexClient(): CodexAppServerClient {
       models: [],
     })),
     stop: vi.fn(),
-  } as unknown as CodexAppServerClient;
+  }) as unknown as CodexAppServerClient;
 }
 
 function isolationRuntime(): CodexConversationRuntime {
@@ -533,12 +534,12 @@ describe("SubscriptionRuntimeService", () => {
       status: CODEX_CONNECTED,
       models: [{ id: "current-model", displayName: "Current model", isDefault: true }],
     }));
-    const codexClient = {
+    const codexClient = subscriptionAccountFixture({
       getStatus: vi.fn(async () => CODEX_CONNECTED),
       getCachedStatus: vi.fn(() => CODEX_CONNECTED),
       listModels,
       stop: vi.fn(),
-    } as unknown as CodexAppServerClient;
+    }) as unknown as CodexAppServerClient;
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, { claudeCodeReleaseFetch: RELEASE_FETCH,
       namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
@@ -585,12 +586,12 @@ describe("SubscriptionRuntimeService", () => {
         { id: "profile-model", displayName: "Profile", isDefault: false },
       ],
     }));
-    const codexClient = {
+    const codexClient = subscriptionAccountFixture({
       getStatus: vi.fn(async () => CODEX_CONNECTED),
       getCachedStatus: vi.fn(() => CODEX_CONNECTED),
       listModels,
       stop: vi.fn(),
-    } as unknown as CodexAppServerClient;
+    }) as unknown as CodexAppServerClient;
     const verificationRuntime = isolationRuntime();
     const createTextRuntime = (): CodexConversationRuntime => ({
       startTurn: vi.fn(async (input: StartTurnInput, callbacks: TurnCallbacks) => {

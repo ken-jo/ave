@@ -1,3 +1,4 @@
+import { subscriptionAccountFixture } from "../../__tests__/support/subscription-account-fixture.js";
 import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -943,10 +944,10 @@ describe("Claude service integration", () => {
     };
     const status = claudeCodeSubscriptionStatus("ready", "connected", "2.1.311");
     const verify = vi.fn(async () => status);
-    const client = {
+    const client = subscriptionAccountFixture({
       getStatus: vi.fn(async () => status), verify, verifiedRuntime: async () => ({ executable: "/approved/claude", identity: "approved", verify: async () => undefined }),
       getRuntimePaths: () => directories, stop: vi.fn(async () => undefined),
-    } as unknown as ClaudeCodeSubscriptionClient;
+    }) as unknown as ClaudeCodeSubscriptionClient;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
       namespace, audit, claudeCodeClient: client,
       codexClient: { stop: vi.fn() } as unknown as CodexAppServerClient,
