@@ -25,6 +25,10 @@ import { __setProvenSeatbeltHolderRouteForTest } from "../seatbelt-holder-boot.j
 import { closeHeldHolderLeases, measureSeatbeltHolderLaunchers } from "../seatbelt-holder-launch.js";
 
 const NATIVE = process.platform === "darwin" && process.arch === "arm64";
+// The macOS permission job requires its cases: a macOS runner this suite cannot use fails here instead of skipping all of them.
+if (process.platform === "darwin" && !NATIVE && process.env.AVE_REQUIRE_SANDBOX_CASES === "1") {
+  throw new Error(`AVE_REQUIRE_SANDBOX_CASES=1 but this macOS host is ${process.arch}: the holder boundary suite runs only on arm64`);
+}
 const RESOURCES = resolve("resources");
 const READY = { platform: "darwin", requestedBackend: "mxc", selectedBackend: "mxc", readiness: "ready", reason: "ready", egressIdentity: "shared" } as const;
 const PATH = "/usr/bin:/bin";
