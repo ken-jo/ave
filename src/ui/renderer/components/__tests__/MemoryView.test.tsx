@@ -255,13 +255,13 @@ describe('memory map view', () => {
 });
 
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
-import type { SkillMemoryGroup, SkillMemoryLesson } from "../../../../shared/skill-memory-types.js";
+import type { SkillMemoryDecision, SkillMemoryGroup, SkillMemoryLesson } from "../../../../shared/skill-memory-types.js";
 
 describe("skill memory control room", () => {
   it.each([
-    { locale: "en", tab: "Skills", deleteLesson: "Delete lesson", cancel: "Cancel", history: "History", undo: "Undo" },
-    { locale: "ko", tab: "스킬", deleteLesson: "교훈 삭제", cancel: "취소", history: "이력", undo: "되돌리기" },
-  ] as const)("confirms active and retired deletion and offers deletion undo in $locale", async labels => {
+    { locale: "en", tab: "Skills", deleteLesson: "Delete lesson", deleted: "Deleted", undo: "Undo" },
+    { locale: "ko", tab: "스킬", deleteLesson: "교훈 삭제", deleted: "삭제됨", undo: "되돌리기" },
+  ] as const)("deletes in one click and restores the lesson from the group notice in $locale", async labels => {
     const previous = getLocale();
     setLocale(labels.locale);
     try {
@@ -270,39 +270,37 @@ describe("skill memory control room", () => {
         id: "active", digest: "active-digest", description: "Active example", body: "Check the report.",
         fingerprint: "source", origin: { sessionId: "session", messageId: "message", completionId: "completion", runKind: "attended" },
       };
-      const retired = { ...active, id: "retired", digest: "retired-digest", description: "Retired example" };
-      const deleted = { ...active, id: "deleted", digest: "deleted-digest", description: "Deleted example" };
-      const groups: SkillMemoryGroup[] = [{
+      const group: SkillMemoryGroup = {
         scope: { id: "scope", skill: "review", projectRoot: "/project" },
-        staged: [], active: [active], retired: [retired],
-        history: [{ id: "deleted-change", action: "delete", actor: "owner", prevDigest: null,
-          digest: "change-digest", before: deleted, after: null, at: "2026-11-27T00:00:00Z" }],
-        undo: { [deleted.digest]: "deleted-change" },
-      }];
-      const decide = vi.fn(async () => ({ ok: true }));
-      props.api.skillMemory = { list: async () => ({ ok: true, groups, review: "off" }), decide };
+        staged: [], active: [active], retired: [], history: [], undo: {},
+      };
+      const decide = vi.fn(async (decision: SkillMemoryDecision) => {
+        if (decision.action === "delete") {
+          group.active = [];
+          group.history = [{ id: "deleted-change", action: "delete", actor: "owner", prevDigest: null,
+            digest: "change-digest", before: active, after: null, at: "2026-11-27T00:00:00Z" }];
+          group.undo = { [active.digest]: "deleted-change" };
+        } else if (decision.action === "undo") {
+          group.active = [active];
+          group.undo = {};
+        }
+        return { ok: true };
+      });
+      props.api.skillMemory = { list: async () => ({ ok: true, groups: [group], review: "off" }), decide };
       render(<MemoryView {...props} />);
       selectTab(labels.tab);
-      const cardButton = async (lesson: SkillMemoryLesson) => {
-        const heading = await screen.findByRole("heading", { name: lesson.description });
-        return within(requiredFixture(heading.closest("article"))).getByRole("button", { name: labels.deleteLesson });
-      };
-      fireEvent.click(await cardButton(active));
-      let dialog = within(await screen.findByRole("dialog", { name: labels.deleteLesson }));
-      expect(dialog.getByText(new RegExp(active.description))).toBeTruthy();
-      expect(decide).not.toHaveBeenCalled();
-      fireEvent.click(dialog.getByRole("button", { name: labels.cancel }));
-      expect(decide).not.toHaveBeenCalled();
-      for (const lesson of [active, retired]) {
-        if (lesson === retired) requiredFixture(screen.getByText(retired.description).closest("details")).open = true;
-        fireEvent.click(await cardButton(lesson));
-        dialog = within(await screen.findByRole("dialog", { name: labels.deleteLesson }));
-        await act(async () => { fireEvent.click(dialog.getByRole("button", { name: labels.deleteLesson })); });
-        expect(decide).toHaveBeenLastCalledWith({ action: "delete", scopeId: "scope", lessonId: lesson.id, digest: lesson.digest });
-      }
-      requiredFixture(screen.getByText(labels.history).closest("details")).open = true;
-      await act(async () => { fireEvent.click(screen.getByRole("button", { name: labels.undo })); });
-      expect(decide).toHaveBeenLastCalledWith({ action: "undo", scopeId: "scope", changeId: "deleted-change", digest: deleted.digest });
+      fireEvent.click(await screen.findByRole("button", { name: labels.deleteLesson }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(decide).toHaveBeenCalledExactlyOnceWith({ action: "delete", scopeId: "scope", lessonId: active.id, digest: active.digest });
+      const deleted = await screen.findByText(labels.deleted, { selector: "[role=status]" });
+      const notice = requiredFixture(deleted.parentElement);
+      expect(notice.closest("section")?.querySelector("h2")?.textContent).toBe(group.scope.skill);
+      expect(screen.queryByRole("button", { name: labels.deleteLesson })).toBeNull();
+      fireEvent.click(within(notice).getByRole("button", { name: labels.undo }));
+      expect(decide).toHaveBeenLastCalledWith({ action: "undo", scopeId: "scope", changeId: "deleted-change", digest: active.digest });
+      const restored = await screen.findByRole("button", { name: labels.deleteLesson });
+      expect(within(requiredFixture(restored.closest("article"))).getByRole("heading", { name: active.description })).toBeVisible();
+      expect(screen.queryByText(labels.deleted, { selector: "[role=status]" })).toBeNull();
     } finally {
       setLocale(previous);
     }

@@ -24,7 +24,6 @@ export const en = {
   "skillMemory.reject": "Reject",
   "skillMemory.undo": "Undo",
   "skillMemory.delete": "Delete lesson",
-  "skillMemory.deleteDescription": "Remove “{lesson}” from saved lessons?",
   "skillMemory.deleted": "Deleted",
   "skillMemory.activated": "Saved automatically",
   "skillMemory.staged": "Staged",

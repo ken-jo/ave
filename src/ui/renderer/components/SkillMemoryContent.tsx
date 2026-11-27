@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../components/ui/dialog.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatMediumDateTime } from "../../../shared/format-time.js";
-import type { SkillMemoryApi, SkillMemoryDecision, SkillMemoryLesson } from "../../../shared/skill-memory-types.js";
+import type { SkillMemoryApi, SkillMemoryDecision, SkillMemoryGroup, SkillMemoryLesson } from "../../../shared/skill-memory-types.js";
 
 type SkillMemorySnapshot = Extract<Awaited<ReturnType<SkillMemoryApi["list"]>>, { ok: true }>;
 
@@ -26,7 +25,7 @@ export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
   const [snapshot, setSnapshot] = useState<SkillMemorySnapshot | null>();
   const [decisionFailed, setDecisionFailed] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [deleting, setDeleting] = useState<{ scopeId: string; lesson: SkillMemoryLesson } | null>(null);
+  const [deletedDigests, setDeletedDigests] = useState<Record<string, string | undefined>>({});
   const requests = useRef(0);
   const refresh = useCallback(async () => {
     const request = ++requests.current;
@@ -46,15 +45,22 @@ export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
   const handleDecision = async (decision: SkillMemoryDecision) => {
     setBusy(true);
     setDecisionFailed(false);
+    let succeeded: boolean;
     try {
-      const result = await api.decide(decision);
-      setDecisionFailed(!result.ok);
+      succeeded = (await api.decide(decision)).ok;
     } catch {
-      setDecisionFailed(true);
-    } finally {
-      await refresh();
-      setBusy(false);
+      succeeded = false;
     }
+    setDecisionFailed(!succeeded);
+    await refresh();
+    const { scopeId, digest } = decision;
+    if (succeeded && decision.action === "delete") {
+      setDeletedDigests(current => ({ ...current, [scopeId]: digest }));
+    }
+    if (succeeded && decision.action === "undo") {
+      setDeletedDigests(current => current[scopeId] === digest ? { ...current, [scopeId]: undefined } : current);
+    }
+    setBusy(false);
   };
 
   const actions = {
@@ -75,9 +81,23 @@ export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
     disabled={busy}
     onClick={() => void handleDecision({ scopeId, action: "undo", changeId, digest })}
   >{t("skillMemory.undo")}</Button>;
+  const renderDeleteNotice = (scopeId: string, history: SkillMemoryGroup["history"], undo: SkillMemoryGroup["undo"]) => {
+    const digest = deletedDigests[scopeId];
+    if (!digest) return null;
+    const change = history.findLast(row => row.action === "delete" && row.before?.digest === digest);
+    return <div className="flex items-center gap-2 text-sm">
+      <span role="status">{t("skillMemory.deleted")}</span>
+      {change && undo[digest] === change.id && <>
+        <span aria-hidden="true">·</span>
+        {renderUndo(scopeId, change.id, digest)}
+      </>}
+    </div>;
+  };
   const renderLessonActions = (scopeId: string, lesson: SkillMemoryLesson, changeId: string | undefined) => <div className="flex flex-wrap gap-2">
     {renderUndo(scopeId, changeId, lesson.digest)}
-    <Button size="sm" variant="outline" disabled={busy} onClick={() => setDeleting({ scopeId, lesson })}>
+    <Button size="sm" variant="outline" disabled={busy} onClick={() => void handleDecision({
+      scopeId, action: "delete", lessonId: lesson.id, digest: lesson.digest,
+    })}>
       {t("skillMemory.delete")}
     </Button>
   </div>;
@@ -103,6 +123,7 @@ export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
         <h2 className="break-words font-semibold">{scope.skill}</h2>
         <p className="break-all text-xs text-muted-foreground">{scope.projectRoot}</p>
       </header>
+      {renderDeleteNotice(scope.id, history, undo)}
       {staged.length > 0 && <section className="space-y-2">
         <h3 className="text-sm font-semibold">{t("skillMemory.needsReview")}</h3>
         {staged.map(lesson => <article key={lesson.id} className="space-y-2 rounded-md border p-3">
@@ -147,22 +168,5 @@ export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
         </ul>
       </details>
     </section>)}
-    <Dialog open={deleting !== null} onOpenChange={open => { if (!open) setDeleting(null); }}>
-      <DialogContent size="sm">
-        <DialogHeader>
-          <DialogTitle>{t("skillMemory.delete")}</DialogTitle>
-          <DialogDescription>{t("skillMemory.deleteDescription", { lesson: deleting?.lesson.description ?? "" })}</DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button autoFocus variant="secondary" onClick={() => setDeleting(null)}>{t("common.cancel")}</Button>
-          <Button variant="destructive" disabled={busy} onClick={() => {
-            if (!deleting) return;
-            const { scopeId, lesson } = deleting;
-            setDeleting(null);
-            void handleDecision({ scopeId, action: "delete", lessonId: lesson.id, digest: lesson.digest });
-          }}>{t("skillMemory.delete")}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   </div>;
 }
