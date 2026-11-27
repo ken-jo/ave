@@ -13,6 +13,42 @@ async function provisionalItem(h: Awaited<ReturnType<typeof stageRunHarness>>, t
   return { itemId: created.itemId, remoteProvisional: created.item.remoteProvisional };
 }
 
+it("links descendants of a remotely started stage after the provisional launch commits", async () => {
+  const bound = new Map<string, string>();
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    workflow: {
+      workspaceBinding: { bind: (id, root) => { bound.set(id, root); }, unbind: id => { bound.delete(id); } },
+    },
+  });
+  await h.runThenEnd(async () => {
+    const version = await h.confirm([autoStageOf("a", { allowSubAgents: true })]);
+    const authority = { refreshCurrent: async () => true, isCurrent: () => true };
+    const { itemId, remoteProvisional } = await provisionalItem(h, version.templateId, authority);
+    const accepted = deferred<string>();
+    const run = h.engine.runItem(itemId, {
+      templateSource: { kind: "tailnet-create-and-run", pin: h.pinOf(version) },
+      authority, remoteProvisional, onTemplateStarted: accepted.resolve,
+    });
+    const [stage] = await h.untilLive(1, itemId);
+    const item = await h.item(itemId);
+    expect(item.remoteProvisional).toBeUndefined();
+    expect(await accepted.promise).toBe(item.runId);
+    expect(stage.input.stageSubAgents).toMatchObject({ runKey: `work-board:${itemId}#${item.runId}`, stageName: "Stage a" });
+    const link = stage.callbacks?.onStageSubAgentLinked;
+    if (!link) throw new Error("No sub-agent link for the opted-in stage");
+    const release = link("grandchild", "Extract");
+    expect(bound.get("grandchild")).toBe(stage.input.projectRoot);
+    expect(h.events).toContainEqual(expect.objectContaining({ itemId, stageId: "a", runSessionId: stage.sessionId, subAgentSessionId: "grandchild" }));
+    release();
+    expect(bound.has("grandchild")).toBe(false);
+    stage.finish();
+    expect(await run).toMatchObject({ status: "completed" });
+    expect(bound.size).toBe(0);
+    expect(h.children).toHaveLength(1);
+  });
+});
+
 it.each([
   { kind: "gate", failure: "refresh" },
   { kind: "gate", failure: "commit" },

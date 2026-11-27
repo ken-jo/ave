@@ -5,7 +5,7 @@ import { access } from "node:fs/promises";
 import { isAbsolute, relative } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { hasUnsafeDirectiveControlChars } from "../../engine/parent-directive.js";
-import { exactToolScope, PARENT_ALL_TOOL_SCOPE, type SubAgentRunner, type SubAgentSpawnResult } from "../../engine/subagent-runner.js";
+import { exactToolScope, MAX_STAGE_SUB_AGENTS, PARENT_ALL_TOOL_SCOPE, type SubAgentRunner, type SubAgentSpawnResult } from "../../engine/subagent-runner.js";
 import { createLogger } from "../../lib/logger.js";
 import type { LoadedAgentProfile } from "../../main/agent-profile-store.js";
 import type { RunClass } from "../../main/run-classification.js";
@@ -15,6 +15,7 @@ import type { WorkflowTemplateStore } from "../../main/workflow-template-store.j
 import type { RunEnd, RunEndCause, RunRemovalCause } from "../../main/workflow-run-store.js";
 import { requiredTier } from "../../permissions/permission-manager.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
+import type { RunScopeHooks } from "../../permissions/run-scope.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
 import { errorMessage } from "../../shared/error-message.js";
 import {
@@ -29,8 +30,8 @@ import type {
   WorkItemStageRun,
 } from "../../shared/workflow-template-types.js";
 import { isUnattendedReadTool } from "../../tools/base.js";
-import { WORK_DECISION_AUTHORITY_REVOKED, WorkDecisionAuthorityError, type WorkDecisionAuthority } from "../work-decision-authority.js";
 import { isAllReadOnlyVersion, WorkflowTemplateError } from "../template-graph.js";
+import { WORK_DECISION_AUTHORITY_REVOKED, WorkDecisionAuthorityError, type WorkDecisionAuthority } from "../work-decision-authority.js";
 import type { AuthoriseRunSource, RunAuthorityVerdict } from "./run-authority.js";
 import type { LaneBlockCode, OutputExecution, RunPin, StageFailure } from "./shipped-shapes.js";
 import type { PassConditionRegistry } from "./stage-gates.js";
@@ -52,13 +53,6 @@ const STAGE_OUTPUT_MAX_CHARS = 48_000;
 
 const runKeyOf = (itemId: number, runId: string): string => `work-board:${itemId}#${runId}`;
 
-/** The run's permission scope: its "Allow for this run" grants and each stage session's own reviewer breaker. `sessionLinked` names the
- * stage and the lane the run authority gave the run, and throws when it refuses the link; `runEnded` revokes every grant of the run. */
-interface RunScopeHooks {
-  sessionLinked(runKey: string, sessionId: string, member: { stageId: string; stageName: string; lane: "attended" | "unattended" }): void;
-  sessionEnded(sessionId: string): void;
-  runEnded(runKey: string): void;
-}
 interface LaneHooks {
   admit(a: { runKey: string; stageId: string; envelope: StageEnvelope | undefined; workspaceRoot: string }): Promise<{ ok: true } | { ok: false; code: LaneBlockCode }>;
   sessionLinked(a: { runKey: string; stageId: string; sessionId: string; envelope: StageEnvelope; workspaceRoot: string }): void;
@@ -1058,11 +1052,53 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         throw stored.reason === "row-gone" ? new WorkflowInvariantError("run-stopped") : new WorkflowInvariantError("run-state-failed", writeFault(stored.reason));
       }
 
-      // Refresh the source and the live remote authority after preparing the child.
+      // Recheck the run source after preparing the child. The provisional write separately checks the live remote authority at launch.
       if ((await authorise()).lane !== lane) throw new WorkflowInvariantError("run-not-authorised", "source-not-authorised");
       let linked: string | undefined;
-      let scoped = false;
+      let releaseStageSession: (() => void) | undefined;
       let activitySignature = "";
+      const member = { stageId, stageName: stage.name, lane };
+      const unattended = lane === "unattended" && stage.envelope
+        ? { runKey, stageId, envelope: stage.envelope, workspaceRoot: stageRoot }
+        : undefined;
+      const linkStageSession = (sessionId: string, agentTitle?: string): (() => void) => {
+        let scoped = false;
+        let laneLinkStarted = false;
+        const release = () => {
+          try {
+            deps.workspaceBinding?.unbind(sessionId);
+          } finally {
+            try {
+              if (scoped) deps.runScope?.sessionEnded(sessionId);
+            } finally {
+              if (laneLinkStarted) deps.lane?.sessionEnded(sessionId);
+            }
+          }
+        };
+        try {
+          let bound = true;
+          try {
+            deps.workspaceBinding?.bind(sessionId, stageRoot);
+          } catch (error) {
+            if (agentTitle !== undefined) throw error;
+            bound = false;
+          }
+          // The stage is already tracked, so let its runner report a workspace refusal as an interruption.
+          if (agentTitle === undefined && (!bound || halted(state, stageId))) runner.interruptRun(sessionId, workBoardOriginSessionId(state.itemId));
+          if (deps.runScope) {
+            deps.runScope.sessionLinked(runKey, sessionId, agentTitle === undefined ? member : { ...member, agentTitle });
+            scoped = true;
+          }
+          if (unattended) {
+            laneLinkStarted = true;
+            deps.lane?.sessionLinked({ ...unattended, sessionId });
+          }
+        } catch (error) {
+          release();
+          throw error;
+        }
+        return release;
+      };
       try {
         const launchChild = () => runner.spawn(
           {
@@ -1077,6 +1113,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
             ...(readOnly ? { maxRounds: READ_STAGE_ROUND_BUDGET } : {}),
             ...(prompt.taint ? { hostInputTaint: prompt.taint } : {}),
             ...(lane === "unattended" ? { unattendedStage: { runKey, stageId } } : {}),
+            ...(stage.allowSubAgents ? { stageSubAgents: { stageName: stage.name, runKey, max: MAX_STAGE_SUB_AGENTS } } : {}),
           },
           {
             onLinked: ({ childSessionId }) => {
@@ -1087,20 +1124,17 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
               linked = childSessionId;
               state.live.set(stageId, childSessionId);
               state.starting.delete(stageId);
-              // A child whose folder cannot be bound does not work in it.
-              let bound = true;
-              try { deps.workspaceBinding?.bind(childSessionId, stageRoot); } catch { bound = false; }
-              // A stop, a rejection or a revocation that arrived while the child was starting reaches it here.
-              if (!bound || state.stopping || state.faulted !== null || state.interruptAsked.has(stageId) || state.revoked.has(stageId)) runner.interruptRun(childSessionId, workBoardOriginSessionId(state.itemId));
-              // The run's permission scope takes the session with its stage and the lane the authority gave the run. A refused link (the
-              // run has ended, or the session belongs to another run) throws and fails the launch.
-              deps.runScope?.sessionLinked(runKey, childSessionId, { stageId, stageName: stage.name, lane });
-              scoped = true;
-              if (lane === "unattended" && stage.envelope) deps.lane?.sessionLinked({ runKey, stageId, sessionId: childSessionId, envelope: stage.envelope, workspaceRoot: stageRoot });
+              releaseStageSession = linkStageSession(childSessionId);
               state.scheduledStart = undefined;
               emit({ itemId: state.itemId, phase: "executing", stageId, attempt, runSessionId: childSessionId });
               post(state, { type: "stage_linked", stageId, childSessionId }, attempt);
             },
+            ...(stage.allowSubAgents ? { onStageSubAgentLinked: (sessionId: string, agentTitle: string) => {
+              if (!linked || state.live.get(stageId) !== linked || halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");
+              const release = linkStageSession(sessionId, agentTitle);
+              emit({ itemId: state.itemId, phase: "executing", stageId, attempt, runSessionId: linked, subAgentSessionId: sessionId });
+              return release;
+            } } : {}),
             onActivity: ({ entries }) => {
               if (linked === undefined || !canShowRun(state)) return;
               const stageActivity: WorkflowStageActivityUpdate = {
@@ -1144,11 +1178,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         return { result, inputTaint: prompt.taint !== undefined };
       } finally {
         state.live.delete(stageId);
-        if (linked !== undefined) {
-          deps.workspaceBinding?.unbind(linked);
-          if (scoped) deps.runScope?.sessionEnded(linked);
-          if (lane === "unattended") deps.lane?.sessionEnded(linked);
-        }
+        releaseStageSession?.();
       }
     } finally {
       state.starting.delete(stageId);

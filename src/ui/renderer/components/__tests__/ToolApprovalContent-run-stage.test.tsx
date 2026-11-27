@@ -100,3 +100,11 @@ describe("a template-run stage card", () => {
     expect(screen.getByTestId("approval-choice-allow-run-reason")).toHaveTextContent(t("toolApprovalDialog.runAllowUnavailable"));
   });
 });
+
+it.each(["en", "ko"] as const)("names the stage and its requesting sub-agent in %s", (locale) => {
+  setLocale(locale);
+  renderCard(exactRequest({ runStage: STAGE, requestingAgentTitle: "Extract" }));
+  const stage = screen.getByTestId("approval-run-stage");
+  expect(stage).toHaveTextContent(t("toolApprovalDialog.runStage", { stage: STAGE.stageName }));
+  expect(stage).toHaveTextContent(t("toolApprovalDialog.requestingAgent", { title: "Extract" }));
+});
