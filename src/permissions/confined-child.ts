@@ -475,7 +475,6 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     const assertPreparation = () => {
       assertHolder();
       assertManagedChildProcessAdmissionOpen(spec.label);
-      assertNesting();
     };
     let spent = false;
     let child!: OwnedMxcExtensionProcess;
@@ -488,11 +487,13 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
         paths: [...footprintPaths.keys(), ...[...footprintPaths.values()].map(path => path.target)],
         beforeSupervisor: () => withLocalityDecision(() => {
           assertPreparation();
+          assertNesting();
           assertMxcExtensionAdmission(admission, currentIdentity());
         }),
         beforeSpawn: () => {
           const assertBeforeSpawn = () => {
             assertPreparation();
+            assertNesting();
             assertHomeOutsideState();
             consumeMxcExtensionAdmission(admission, currentIdentity());
           };
@@ -505,6 +506,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
             try {
               withLocalityDecision(() => {
                 assertPreparation();
+                assertNesting();
                 assertMxcExtensionAdmission(admission, currentIdentity(), spent);
               });
             } catch { revoke(); }
