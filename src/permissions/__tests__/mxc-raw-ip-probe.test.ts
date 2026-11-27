@@ -13,14 +13,17 @@ import {
   type DetectMxcSupportDeps,
 } from "../mxc-windows.js";
 
+const wrapUdpClose = vi.hoisted(() => vi.fn((close: () => Promise<void>) => close));
+
 vi.mock("../mxc-raw-ip-udp.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../mxc-raw-ip-udp.js")>();
   return {
     ...actual,
-    openMxcRawIpUdpListener: async (address: string, probeId: string, deadline: number) => {
-      const listener = await actual.openMxcRawIpUdpListener("127.0.0.1", probeId, deadline);
-      return listener === undefined ? undefined : { ...listener, address };
-    },
+    openMxcRawIpUdpListener: (async (address, probeId, deadline, adopt) => {
+      const listener = await actual.openMxcRawIpUdpListener("127.0.0.1", probeId, deadline, adopt);
+      if (listener === undefined) return undefined;
+      return { ...listener, address, close: wrapUdpClose(listener.close) };
+    }) satisfies typeof actual.openMxcRawIpUdpListener,
   };
 });
 
@@ -159,6 +162,17 @@ async function expectUdpPortReleased(port: number | undefined): Promise<void> {
   try {
     const listening = once(replacement, "listening");
     replacement.bind(port, "127.0.0.1");
+    await listening;
+  } finally {
+    replacement.close();
+  }
+}
+
+async function expectTcpPortReleased(port: number): Promise<void> {
+  const replacement = createServer();
+  try {
+    const listening = once(replacement, "listening");
+    replacement.listen(port, "127.0.0.1");
     await listening;
   } finally {
     replacement.close();
@@ -317,7 +331,7 @@ describe("raw IP startup observation", () => {
       void starting.then(settled);
       await vi.advanceTimersByTimeAsync(60_000);
       expect(close).toHaveBeenCalledOnce();
-      expect(settled).toHaveBeenCalledWith(expect.objectContaining({ state: "available" }));
+      expect(settled).toHaveBeenCalledWith(expect.objectContaining({ state: "available", rawIpProbe: expect.objectContaining({ reason: "cleanup-failed" }) }));
     } finally {
       vi.useRealTimers();
     }
@@ -349,20 +363,50 @@ describe("raw IP startup observation", () => {
       await expect(probeMxcPowerShellStart(makeDeps(run), open)).resolves.toMatchObject({ state });
       const listener = await open.mock.results[0]?.value;
       if (!listener) throw new Error("Missing proxy listener");
-      const replacement = createServer();
-      try {
-        const listening = once(replacement, "listening");
-        replacement.listen(listener.port, "127.0.0.1");
-        await listening;
-      } finally {
-        replacement.close();
-      }
+      await expectTcpPortReleased(listener.port);
       expect(close).toHaveBeenCalledTimes(closeCount);
       await expectUdpPortReleased(udpPort);
     } finally {
       // Release the fixture even when a regression leaves the port bound.
       const listener = await open.mock.results[0]?.value;
       await listener?.close();
+    }
+  });
+
+  it.each(["TCP", "UDP"] as const)("keeps owning the %s listener after both startup close attempts fail", async (protocol) => {
+    const close = vi.fn<() => Promise<void>>();
+    const releases: (() => Promise<void>)[] = [];
+    const failTwice = (release: () => Promise<void>) => {
+      releases.push(release);
+      return close.mockRejectedValueOnce(new Error("Close failed"))
+        .mockRejectedValueOnce(new Error("Close still failed"))
+        .mockImplementation(release);
+    };
+    if (protocol === "UDP") wrapUdpClose.mockImplementationOnce(failTwice);
+    let tcpPort = 0;
+    let udpPort: number | undefined;
+    try {
+      const result = await probeMxcPowerShellStart(makeDeps(async (_file, args) => {
+        if (args[0] !== "--config-base64") return { code: 0, stdout: "192.0.2.2:49152", stderr: "" };
+        const { id, controlHost, proxyUrl, udp } = probeScriptInputs(args);
+        udpPort = Number(udp?.[1]);
+        expect(await requestProxyRefusal(proxyUrl, controlHost)).toBe(403);
+        return { code: 0, stdout: evidenceFrame(id), stderr: "" };
+      }), async (options) => {
+        const listener = await openInvocationProxyListener(options);
+        tcpPort = listener.port;
+        return protocol === "TCP" ? { ...listener, close: failTwice(listener.close) } : listener;
+      });
+      expect(result).toMatchObject({ state: "available", rawIpProbe: { rawIp: "unknown", reason: "cleanup-failed" } });
+      expect(close).toHaveBeenCalledTimes(2);
+      await vi.waitFor(async () => {
+        expect(close).toHaveBeenCalledTimes(3);
+        await expectTcpPortReleased(tcpPort);
+        await expectUdpPortReleased(udpPort);
+      }, { timeout: 3_000 });
+    } finally {
+      await Promise.all(releases.map(release => release()));
+      wrapUdpClose.mockReset();
     }
   });
 

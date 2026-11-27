@@ -150,6 +150,7 @@ const MXC_PROBE_TIMEOUT_MS = 20_000;
 const MXC_START_PROBE_TIMEOUT_MS = 60_000;
 const MXC_START_LAUNCHER_GRACE_MS = 5_000;
 const MXC_START_EXIT_RESERVE_MS = 1_000;
+const MXC_START_CLEANUP_RETRY_MS = 1_000;
 const MXC_RAW_IP_TARGET_TIMEOUT_MS = 3_000;
 const MXC_RAW_IP_PROBE_TIMEOUT_MS = 12_000;
 const MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS = 6_000;
@@ -164,7 +165,7 @@ type MxcRawIpProbeEvidence = Readonly<Record<MxcRawIpTarget, MxcRawIpTargetResul
   readonly udp: MxcRawIpUdpSend;
 };
 type MxcRawIpUnknownReason = "listener-unavailable" | "no-evidence" | "control-failed" | "raw-ip-reachable"
-  | "ipv6-unmeasured" | "udp-unmeasured" | "no-route" | "timeout" | "unclassified";
+  | "ipv6-unmeasured" | "udp-unmeasured" | "no-route" | "timeout" | "unclassified" | "cleanup-failed";
 type MxcRawIpProbeVerdict = {
   readonly reachableTargets: readonly (MxcRawIpTarget | "udp")[];
   readonly udpArrival: MxcRawIpUdpArrival;
@@ -499,6 +500,22 @@ export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promis
   return { state: "available", windowsBuild: deps.windowsBuild };
 }
 
+async function closeMxcStartupListener(release: () => Promise<void>): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await release();
+      return true;
+    } catch {
+      // Keep ownership until release is confirmed.
+    }
+  }
+  const retry = () => {
+    setTimeout(() => { void Promise.resolve().then(release).catch(retry); }, MXC_START_CLEANUP_RETRY_MS).unref();
+  };
+  retry();
+  return false;
+}
+
 // The slow half of detectMxcSupport (a cold container start; up to a minute): run after detectMxcPrerequisites passed, off the boot path.
 export async function probeMxcPowerShellStart(
   deps: DetectMxcSupportDeps, openListener?: typeof openInvocationProxyListener,
@@ -543,20 +560,12 @@ export async function probeMxcPowerShellStart(
       const expiry = setTimeout(() => controller.abort(), MXC_START_PROBE_TIMEOUT_MS);
       const expired = () => signal.aborted || Date.now() >= deadline;
       let closeTcp: (() => Promise<void>) | undefined;
-      let udp: Awaited<ReturnType<typeof openMxcRawIpUdpListener>>;
-      let closing: Promise<unknown> | undefined;
-      const close = async (release: () => void | Promise<void>, protocol: "TCP" | "UDP") => {
-        try {
-          await release();
-        } catch {
-          try {
-            await release();
-          } catch {
-            log.warn(`MXC startup ${protocol} listener cleanup failed`);
-          }
-        }
-      };
-      const cleanup = () => closing ??= Promise.all([closeTcp && close(closeTcp, "TCP"), udp && close(udp.close, "UDP")]);
+      let closeUdp: (() => Promise<void>) | undefined;
+      let closing: Promise<boolean> | undefined;
+      const cleanup = () => closing ??= Promise.all([
+        closeTcp && closeMxcStartupListener(closeTcp),
+        closeUdp && closeMxcStartupListener(closeUdp),
+      ]).then(results => results.every(result => result !== false));
       const handleExpiry = () => { void cleanup(); };
       signal.addEventListener("abort", handleExpiry, { once: true });
       try {
@@ -574,7 +583,7 @@ export async function probeMxcPowerShellStart(
           },
         }).then((bound) => {
           if (signal.aborted) {
-            if (closeTcp === undefined) void close(bound.close, "TCP");
+            if (closeTcp === undefined) void closeMxcStartupListener(bound.close);
           } else {
             closeTcp = bound.close;
           }
@@ -589,9 +598,15 @@ export async function probeMxcPowerShellStart(
         } else {
           const lookupBudget = Math.min(MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS, measurementDeadline - Date.now());
           const lan = lookupBudget > 0 ? await raceWithAbort(findMxcLanProbeTarget(deps, lookupBudget), signal) : undefined;
+          let udp: Awaited<ReturnType<typeof openMxcRawIpUdpListener>>;
           if (lan !== undefined) {
-            const binding = openMxcRawIpUdpListener(lan.address, probeId, measurementDeadline).then((bound) => {
-              if (signal.aborted && bound !== undefined) void close(bound.close, "UDP");
+            const binding = openMxcRawIpUdpListener(lan.address, probeId, measurementDeadline, release => { closeUdp = release; }).then((bound) => {
+              if (bound === undefined) return undefined;
+              if (signal.aborted) {
+                if (closeUdp === undefined) void closeMxcStartupListener(bound.close);
+              } else {
+                closeUdp = bound.close;
+              }
               return bound;
             });
             udp = await raceWithAbort(binding, signal);
@@ -611,9 +626,10 @@ export async function probeMxcPowerShellStart(
         }
       } finally {
         try {
-          await raceWithAbort(cleanup(), signal);
-        } catch {
-          if (rawIpProbe.rawIp === "blocked") rawIpProbe = classifyMxcRawIpProbe(undefined, false, rawIpProbe.udpArrival);
+          const closed = await raceWithAbort(cleanup(), signal).catch(() => false);
+          if (!closed) {
+            rawIpProbe = { rawIp: "unknown", reason: "cleanup-failed", reachableTargets: rawIpProbe.reachableTargets, udpArrival: rawIpProbe.udpArrival };
+          }
         } finally {
           clearTimeout(expiry);
           signal.removeEventListener("abort", handleExpiry);

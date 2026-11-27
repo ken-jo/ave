@@ -25,7 +25,7 @@ it.each([
     const sink = initFileLogSink({ dir });
     if (!sink) throw new Error("Missing file log sink");
     vi.mocked(openMxcRawIpUdpListener).mockResolvedValue({
-      address: "192.0.2.2", port: 49154, observe: async () => udpArrival, close: () => {},
+      address: "192.0.2.2", port: 49154, observe: async () => udpArrival, close: async () => {},
     });
 
     let network: MxcContainerRequest["network"] | undefined;

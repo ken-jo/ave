@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 export type MxcRawIpUdpSend = "sent" | "refused-local" | "unmeasured";
 export type MxcRawIpUdpArrival = "arrived" | "absent" | "unmeasured";
 
-export async function openMxcRawIpUdpListener(address: string, probeId: string, deadline: number) {
+export async function openMxcRawIpUdpListener(address: string, probeId: string, deadline: number, adopt: (close: () => Promise<void>) => void) {
   const bindBudget = deadline - Date.now();
   if (bindBudget <= 0) return undefined;
 
@@ -26,13 +26,22 @@ export async function openMxcRawIpUdpListener(address: string, probeId: string, 
       }
     });
   });
-  const close = () => {
-    try {
-      socket.close();
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ERR_SOCKET_DGRAM_NOT_RUNNING") throw error;
-    }
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    closing ??= new Promise<void>((resolve, reject) => {
+      try {
+        socket.close(resolve);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ERR_SOCKET_DGRAM_NOT_RUNNING") resolve();
+        else reject(error);
+      }
+    }).catch((error: unknown) => {
+      closing = undefined;
+      throw error;
+    });
+    return closing;
   };
+  adopt(close);
 
   try {
     await Promise.all([
@@ -58,7 +67,6 @@ export async function openMxcRawIpUdpListener(address: string, probeId: string, 
       close,
     };
   } catch {
-    close();
     return undefined;
   }
 }

@@ -3723,6 +3723,8 @@ in its directory.
   `raw-ip-reachable (udp)`. A UDP timeout or local send refusal leaves the TCP
   verdict standing. An unavailable UDP observation leaves coverage unknown
   when TCP would otherwise support a blocked verdict.
+  Unconfirmed TCP or UDP listener cleanup leaves coverage unknown while the
+  host continues cleanup.
   The host accepts a single complete evidence frame with its launch identifier.
   Missing evidence or a failed control leaves coverage unknown. Shell
   availability follows the PowerShell exit result. The measurement file record
