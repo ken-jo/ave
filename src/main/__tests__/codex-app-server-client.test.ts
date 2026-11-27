@@ -17,6 +17,7 @@ import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, normalizeFixtureA
 import { createPrivateDirectory } from "../codex-executable-location.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { requiredFixture } from "../../__tests__/support/required-fixture.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
   (await import("../../__tests__/support/native-executable.js")).fakeFixtureAcl(await importOriginal()));
@@ -842,24 +843,24 @@ describe("CodexAppServerClient", () => {
       await expect(service.startLogin("codex", "device-code")).resolves.toMatchObject({ pendingLogin: "device-code" });
       await vi.waitFor(() => expect(harness.server.requests.some(({ method }) => method === "account/read")).toBe(true));
       connected = true;
-      harness.server.stdout.write(JSON.stringify({
+      harness.server.stdout.write(`${JSON.stringify({
         method: "account/login/completed", params: { loginId: "device-login", success: true },
-      }) + "\n");
+      })}\n`);
       holdReads = true;
-      const replyConnected = (request: RpcRequest) => harness.server.stdout.write(JSON.stringify({
+      const replyConnected = (request: RpcRequest) => harness.server.stdout.write(`${JSON.stringify({
         id: request.id, result: { account: { type: "chatgpt", planType: "plus" } },
-      }) + "\n");
+      })}\n`);
       const cancelled = expect(service.cancelLogin("codex")).resolves.toMatchObject({
         connection: "unknown", pendingLogin: null, pendingDeviceCode: null, capabilities: { chat: false },
       });
       void cancelled.catch(() => undefined);
       await vi.waitFor(() => expect(accountReads).toHaveLength(1));
-      replyConnected(accountReads[0]!);
+      replyConnected(requiredFixture(accountReads[0]));
       await cancelled;
       expect(harness.server.requests.some(({ method }) => method === "account/login/cancel")).toBe(false);
       await vi.waitFor(() => expect(accountReads).toHaveLength(2));
       await expect(service.getCachedStatus("codex")).resolves.toMatchObject({ connection: "unknown" });
-      replyConnected(accountReads[1]!);
+      replyConnected(requiredFixture(accountReads[1]));
       await vi.waitFor(async () => expect(await service.getCachedStatus("codex")).toMatchObject({ connection: "connected" }));
     } finally {
       await service.stop();

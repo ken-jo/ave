@@ -531,7 +531,10 @@ describe("common subscription runtime IPC", () => {
       expect(await isSubscriptionConnected()).toBe(false);
 
       if (failsSelection) {
-        const project = (snapshot: unknown) => fakeAppSettings(snapshot as AppSettings);
+        const project = (snapshot: unknown) => {
+          const { activeChatModel, subscriptionRevision, llm } = snapshot as AppSettings;
+          return fakeAppSettings({ activeChatModel, subscriptionRevision, llm: { activeChatRuntime: llm.activeChatRuntime } });
+        };
         const { api, emitSubscriptionRuntimeStatusUpdated } = makeMockAveApi({
           getSettings: async () => project(await invoke("ave:settings:get")),
         });

@@ -351,7 +351,7 @@ it.each([
               else if (method === "account/read" && holdAccountReads) accountReads.push(id);
               else if (method === "account/read" && replacementDuringProof) {
                 primaryReadEmails.push(accountEmail);
-                server.stdout.write(JSON.stringify({ id, result: { account: { type: "chatgpt", email: accountEmail } } }) + "\n");
+                server.stdout.write(`${JSON.stringify({ id, result: { account: { type: "chatgpt", email: accountEmail } } })}\n`);
               } else if (method === "account/login/start" && scenario === "matching login completion") {
                 server.stdout.write(`${JSON.stringify({ id, result: { type: "chatgpt", loginId: "fixture-login", authUrl: "https://auth.openai.com/authorize" } })}\n`);
               } else if (id !== undefined) server.stdout.write(`${JSON.stringify({
@@ -378,11 +378,11 @@ it.each([
                 JSON.stringify({ method: "account/updated", params: { authMode: null } }), ""].join("\n"));
             } else if (method === "account/read" && replacementDuringProof) {
               accountEmail = "bob@example.test";
-              server.stdout.write(JSON.stringify({ id, result: { account: { type: "chatgpt", email: accountEmail } } }) + "\n");
+              server.stdout.write(`${JSON.stringify({ id, result: { account: { type: "chatgpt", email: accountEmail } } })}\n`);
             } else if (method === "thread/start") {
               threadStarted.resolve({ child: server, id });
             } else if (id !== undefined) {
-              server.stdout.write(JSON.stringify({ id, result: { status: "ready" } }) + "\n");
+              server.stdout.write(`${JSON.stringify({ id, result: { status: "ready" } })}\n`);
             }
           }
         });
@@ -457,7 +457,7 @@ it.each([
         expect(immediate).toBeDefined();
         expect(await immediate).toMatchObject({ result: { decision: "deny", reasonCode: "no-approver" } });
       } finally {
-        request.child.stdout.write(JSON.stringify({ id: request.id, error: { code: -32603, message: "Turn ended" } }) + "\n");
+        request.child.stdout.write(`${JSON.stringify({ id: request.id, error: { code: -32603, message: "Turn ended" } })}\n`);
         await settled;
         await session.stop();
       }
