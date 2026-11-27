@@ -132,6 +132,7 @@ export const en = {
   "tailnetWorkReviews.version": "Version",
   "tailnetWorkReviews.scheduleId": "Schedule ID",
   "tailnetWorkReviews.newSchedule": "Attach a new schedule",
+  "tailnetWorkReviews.newDecision": "Open a new review",
   "tailnetWorkReviews.existingPin": "Currently attached version",
   "tailnetWorkReviews.basedOn": "Based on version",
   "tailnetWorkReviews.schedulePaused": "Schedule paused.",

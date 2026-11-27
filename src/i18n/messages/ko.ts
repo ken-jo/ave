@@ -134,6 +134,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "tailnetWorkReviews.version": "버전",
   "tailnetWorkReviews.scheduleId": "예약 ID",
   "tailnetWorkReviews.newSchedule": "새 예약 연결",
+  "tailnetWorkReviews.newDecision": "새 검토 열기",
   "tailnetWorkReviews.existingPin": "현재 연결된 버전",
   "tailnetWorkReviews.basedOn": "기준 버전",
   "tailnetWorkReviews.schedulePaused": "예약이 일시 중지되었습니다.",

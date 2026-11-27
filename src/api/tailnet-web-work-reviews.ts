@@ -110,8 +110,8 @@ export const TAILNET_WORK_REVIEW_STYLE = `
   .work-review-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-block-start: .8rem; }
   #work-reviews button { min-block-size: 44px; padding: .45rem .7rem; }
   #work-reviews button[data-work-action="approve"]:enabled { background: var(--accent); color: var(--on-accent); border-color: transparent; }
-  #work-review-feedback:empty { margin: 0; }
-  #work-review-feedback[data-error] { color: var(--danger); }
+  :is(#work-review-feedback, .work-review-feedback):empty { margin: 0; }
+  :is(#work-review-feedback, .work-review-feedback)[data-error] { color: var(--danger); }
   @media (max-width: 30rem) {
     .work-review-actions > button { flex: 1 1 auto; }
     .work-review-body dl { grid-template-columns: minmax(0, 1fr); }
@@ -134,7 +134,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
     const empty = document.getElementById("work-review-empty");
     const reload = document.getElementById("work-review-refresh");
     const cards = new Map();
-    const closed = new Set();
+    const submissions = new Map();
     let scope;
     let revoked = false;
     let latestSnapshot;
@@ -201,6 +201,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
         [workText("joinId"), binding.joinId],
         [workText("generation"), binding.generation],
         [workText("conflictHash"), binding.conflictHash],
+        [message("workflowSchedule.template"), item.kind === "schedule-attachment" ? item.review.name : undefined],
         [workText("templateId"), item.binding.templateId ?? binding.templateId],
         [workText("draftRevision"), binding.expectedDraftRevision],
         [workText("version"), binding.version],
@@ -407,9 +408,11 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       return JSON.stringify([scope, "output-gate", item.binding.itemId ?? binding.itemId,
         binding.runId, binding.stageId, binding.attempt, binding.outputHash]);
     }
-    function showFeedback(text, error = false) {
-      feedback.toggleAttribute("data-error", error);
-      feedback.textContent = text;
+    function setSubmission(actionKey, submission) {
+      submissions.set(actionKey, submission);
+      for (const card of cards.values()) {
+        if (card.actionKey === actionKey) card.showSubmission(submission);
+      }
     }
     function refusal(code) {
       if (code === "plan_stale") return message("workBoard.planDecisionStale");
@@ -428,7 +431,8 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       if (!text) section.hidden = true;
       reload.disabled = revoked;
       empty.hidden = true;
-      showFeedback(text ?? "", Boolean(text));
+      feedback.toggleAttribute("data-error", Boolean(text));
+      feedback.textContent = text ?? "";
     }
     function revoke(text) {
       revoked = true;
@@ -436,10 +440,11 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       clear(section.hidden ? undefined : text);
     }
     async function submit(card, item, reviewedScope, decision, read, note) {
-      if (card.node.isConnected === false || scope !== reviewedScope || revoked || closed.has(card.actionKey)) return;
-      closed.add(card.actionKey);
-      for (const related of cards.values()) if (related.actionKey === card.actionKey) related.disable();
-      showFeedback(workText("submitting"));
+      const { actionKey } = card;
+      if (!card.node.isConnected || scope !== reviewedScope || revoked || submissions.has(actionKey)) return;
+      const pending = { text: workText("submitting") };
+      setSubmission(actionKey, pending);
+      const isCurrent = () => scope === reviewedScope && !revoked && submissions.get(actionKey) === pending;
       try {
         const response = await request(boot.workDecisionPath, {
           method: "POST",
@@ -450,19 +455,19 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
           }),
         });
         const body = await response.json();
-        if (scope !== reviewedScope || revoked || section.hidden) return;
+        if (!isCurrent()) return;
         if (!response.ok || body.ok !== true) {
           const code = typeof body.error === "string" ? body.error : "work-decision-unavailable";
           const text = refusal(code);
           if (["remote-controller-authority-revoked", "web-session-revoked", "web-session-required", "pairing-share-required"].includes(code)) revoke(text);
           else if (code === "work-decision-scope-mismatch") clear(text);
-          else showFeedback(text, true);
+          else setSubmission(actionKey, { text, error: true, canReopen: true });
           return;
         }
-        showFeedback(workText("submitted"));
+        setSubmission(actionKey, { text: workText("submitted"), canReopen: true });
         scheduleRefresh(false);
       } catch {
-        if (scope === reviewedScope && !revoked && !section.hidden) showFeedback(workText("submissionUnknown"), true);
+        if (isCurrent()) setSubmission(actionKey, { text: workText("submissionUnknown"), error: true });
       }
     }
     const headings = {
@@ -493,7 +498,8 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       node.className = "work-review-card";
       node.dataset.workKind = item.kind;
       const summary = element("summary", formSchedule ? workText("newSchedule") : message(headings[item.kind]));
-      const title = view.routine?.title ?? view.title ?? view.name ?? view.outputs?.map(output => output.summary).join(" · ");
+      const title = view.title ?? view.name ?? view.outputs?.map(output => output.summary).join(" · ");
+      if (view.routine?.title && view.routine.title !== title) summary.append(element("span", view.routine.title));
       if (title) summary.append(element("span", title));
       const body = element("div");
       body.className = "work-review-body";
@@ -502,12 +508,34 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       const fields = actionInput(item, body, formSchedule);
       const actions = element("div");
       actions.className = "work-review-actions";
+      const status = element("p");
+      status.className = "work-review-feedback";
+      status.setAttribute("role", "status");
+      status.setAttribute("aria-atomic", "true");
       const reviewedScope = scope;
       const actionKey = outputKey(item) ?? key;
+      let reopen;
       const card = {
         node, actionKey,
-        disable: () => body.querySelectorAll("button, input, select, textarea").forEach(control => { control.disabled = true; }),
+        showSubmission(submission) {
+          body.querySelectorAll("button, input, select, textarea").forEach(control => { control.disabled = control !== reopen; });
+          if (reopen) reopen.hidden = !submission.canReopen;
+          status.toggleAttribute("data-error", Boolean(submission.error));
+          status.textContent = submission.text;
+        },
       };
+      function resetCard(open) {
+        if (cards.get(key)?.node !== node) return;
+        submissions.delete(actionKey);
+        cards.delete(key);
+        node.remove();
+        update(latestSnapshot);
+        const replacement = cards.get(key)?.node;
+        if (replacement) {
+          replacement.open = open;
+          (open ? replacement.querySelector("input") : replacement.querySelector("summary"))?.focus();
+        }
+      }
       function button(action, label, onClick) {
         const control = element("button", message(label));
         control.type = "button";
@@ -524,7 +552,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
           item.kind === "join" ? "retry_merge" : item.deny === "reject" ? "approve" : undefined, fields.read);
       });
       approve.disabled = !canApprove();
-      body.addEventListener("input", () => { approve.disabled = closed.has(actionKey) || !canApprove(); });
+      body.addEventListener("input", () => { approve.disabled = submissions.has(actionKey) || !canApprove(); });
       if (item.kind === "plan" || item.kind === "stage") {
         const note = field(body, message("workflowTemplates.changeNote"), element("textarea"));
         note.maxLength = boot.maxNoteLength;
@@ -541,13 +569,17 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       if (item.deny === "reject") button("reject", rejectLabels[item.kind], () => {
         void submit(card, item, reviewedScope, "reject", fields.read);
       });
-      else button("dismiss", "common.cancel", () => {
-        closed.add(key);
-        update(latestSnapshot);
-      });
-      body.append(actions);
+      else button("dismiss", "common.cancel", () => { if (!submissions.has(actionKey)) resetCard(false); });
+      if (item.kind === "create-and-run" || formSchedule) {
+        reopen = button("reopen", "tailnetWorkReviews.newDecision", () => {
+          if (submissions.get(actionKey)?.canReopen) resetCard(true);
+        });
+        reopen.hidden = true;
+      }
+      body.append(actions, status);
       node.append(summary, body);
-      if (closed.has(actionKey)) card.disable();
+      const submission = submissions.get(actionKey);
+      if (submission) card.showSubmission(submission);
       return card;
     }
     function update(snapshot) {
@@ -558,7 +590,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       }
       if (scope !== snapshot.scope) {
         clear();
-        closed.clear();
+        submissions.clear();
         scope = snapshot.scope;
       }
       latestSnapshot = snapshot;
@@ -568,7 +600,6 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       let position = list.firstElementChild;
       function show(item, formSchedule = false) {
         const key = reviewKey(item);
-        if (item.deny === "dismiss" && closed.has(key)) return;
         next.add(key);
         const linkedOutput = item.kind === "stage" ? outputs.get(outputKey(item)) : undefined;
         const content = JSON.stringify([item.review, linkedOutput?.review]);
