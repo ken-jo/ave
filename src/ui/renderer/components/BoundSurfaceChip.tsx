@@ -1,10 +1,9 @@
 import { Globe, Terminal, X } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
+import type { PaneChatSurface } from "../../../shared/browser-surface.js";
 
 /** The pane tab a pane chat is bound to, as its chip names it. */
-export interface BoundSurface {
-  kind: "browser" | "terminal";
-  tabId: string;
+export interface BoundSurface extends PaneChatSurface {
   /** A page's title or host; a terminal's label. */
   name: string;
   /** A page's host, a terminal's directory — when it adds to the name. */

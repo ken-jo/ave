@@ -321,6 +321,9 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       await authorizeSite(url.url, openingSignal);
       openingSignal?.throwIfAborted();
       beforeOpen();
+      if (opening.inTabId !== undefined && deps.tabs.emptyBrowserPaneTab(scope.windowId, scope.hostSessionId) !== opening.inTabId) {
+        return failure("this chat's browser pane is no longer empty; nothing was done");
+      }
       const outcome = await deps.tabs.requestTabOp(
         scope.windowId,
         { op: "new", url: url.url, sessionId: scope.hostSessionId, ...(opening.inTabId === undefined ? {} : { inTabId: opening.inTabId }),

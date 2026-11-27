@@ -769,7 +769,7 @@ describe("browser tools", () => {
 
   it("loads browser_tab_new into the empty page a pane chat is bound to, and binds only that page", async () => {
     const h = harness({ noTabOpener: true });
-    h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId: "browser:pane", browserSlotEmpty: true } });
     expect((await h.run(BROWSER_TOOL.tabs, {})).output).toContain("This chat's page is empty");
     const opening = h.run(BROWSER_TOOL.tabNew, { url: "https://a.example/start" });
     await vi.waitFor(() => expect(h.ops.at(-1)).toMatchObject({ op: "new", inTabId: "browser:pane" }));
@@ -1280,7 +1280,7 @@ describe("browser tools", () => {
 
   it.each([false, true])("opens an agent tab for navigate without a shown tab, including an empty bound pane: %s", async (pane) => {
     const h = harness({ noTabOpener: pane });
-    if (pane) h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId: "renderer-610" } });
+    if (pane) h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId: "renderer-610", browserSlotEmpty: true } });
     const opening = h.run(BROWSER_TOOL.navigate, { url: "https://a.example/start" });
     await vi.waitFor(() => expect(h.ops.at(-1)?.op).toBe("new"));
     const guest = new FakeGuest(610, "about:blank", "Start");
@@ -1298,6 +1298,19 @@ describe("browser tools", () => {
     const h = harness();
     expect((await h.run(BROWSER_TOOL.navigate, { tabId: "tab-99", url: "https://a.example/" })).isError).toBe(true);
     expect(h.ops).toHaveLength(0);
+  });
+
+  it("refuses an in-pane navigation when the user takes over while site approval is pending", async () => {
+    const h = harness({ noTabOpener: true, onCard: (card) => {
+      if (card.browserSite) h.tabs.stop(1, "browser:pane");
+    } });
+    const sendTabOp = vi.fn(() => false);
+    h.tabs.setRendererLink({ sendTabOp, sendControl: () => {} });
+    h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId: "browser:pane", browserSlotEmpty: true } });
+    expect(await h.run(BROWSER_TOOL.navigate, { url: "https://a.example/start" }))
+      .toMatchObject({ isError: true, output: expect.stringContaining("browser pane is no longer empty") });
+    expect(h.cards).toHaveLength(1);
+    expect(sendTabOp).not.toHaveBeenCalled();
   });
 
   it("defaults to an owned background tab when none is shown", async () => {

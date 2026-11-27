@@ -269,7 +269,7 @@ export function SurfacePane({
   const host = surface.kind === "browser" ? hostOf(navigation.url ?? surface.url) : null;
   const boundSurface = useMemo<BoundSurface>(() => (surface.kind === "terminal"
     ? { kind: "terminal", tabId: surface.tabId, name: label, detail: cwd ? directoryName(cwd) : null, detailTitle: cwd }
-    : { kind: "browser", tabId: surface.tabId, name: title, detail: host && host !== title ? host : null, detailTitle: navigation.url ?? surface.url }),
+    : { kind: "browser", tabId: surface.tabId, browserSlotEmpty: surface.url === null, name: title, detail: host && host !== title ? host : null, detailTitle: navigation.url ?? surface.url }),
   [surface.kind, surface.tabId, cwd, surface.url, label, title, host, navigation.url]);
   return (
     <PaneFrame

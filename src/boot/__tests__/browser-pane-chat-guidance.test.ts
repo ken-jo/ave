@@ -4,6 +4,7 @@ import { makeBasicConversationLoopDeps } from "../../engine/__tests__/support/co
 import type { ToolScope } from "../../engine/turn/types.js";
 import { getLocale, setLocale } from "../../i18n/index.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
+import { BROWSER_TOOL } from "../../shared/browser-tools.js";
 import { createBrowserTools } from "../../tools/browser-tools.js";
 import { createSideChatConversationLoop } from "../conversation.js";
 
@@ -24,7 +25,7 @@ afterEach(() => {
   setLocale(previousLocale);
 });
 
-function createLoop(windowId?: number) {
+function createLoop(windowId?: number, onNavigate?: (tool: ReturnType<typeof createBrowserTools>[number]) => void) {
   const deps = makeBasicConversationLoopDeps({
     pluginRuntime: { listPluginCards: () => [] },
     memoryManager: makeConversationLoopMemoryManager(),
@@ -35,8 +36,11 @@ function createLoop(windowId?: number) {
     liveOriginSessionId: () => undefined,
     opensAgentTabs: () => false,
     pickUploadFiles: async () => null,
-    loadActions: async () => { throw new Error("prompt build does not load page actions"); },
-  })) deps.toolRegistry.register(tool);
+    loadActions: async () => ({ prepare: async () => {} }) as never,
+  })) {
+    deps.toolRegistry.register(tool);
+    if (tool.name === BROWSER_TOOL.navigate) onNavigate?.(tool);
+  }
   return createSideChatConversationLoop({
     ...deps,
     sideChatMemoryManager: deps.memoryManager,
@@ -100,20 +104,36 @@ describe("browser pane turn guidance", () => {
     expect(createLoop().buildSystemPromptForScope(SCOPE)).not.toContain(BOUND_URL);
   });
 
-  it("refreshes the pane guidance from empty to live to unavailable across builds", () => {
-    const loop = createLoop(WINDOW_ID);
-    browserTabRegistry.bindConversationSurface(loop.getSessionId(), { windowId: WINDOW_ID, surface: PANE });
+  it("agrees with navigation approval for empty, loading, destroyed and replacement pages", async () => {
+    let navigation: ReturnType<typeof createBrowserTools>[number] | undefined;
+    const loop = createLoop(WINDOW_ID, (tool) => { navigation = tool; });
+    const sessionId = loop.getSessionId();
+    const approval = () => navigation!.approvalMemoryScope!({ url: OTHER_URL }, { sessionId });
+    const binding = { windowId: WINDOW_ID, surface: { ...PANE, browserSlotEmpty: true } };
+    browserTabRegistry.bindConversationSurface(sessionId, binding);
     const empty = loop.buildSystemPromptForScope(SCOPE);
     expect(empty).toContain("If the pane is empty, use browser_navigate and omit tabId to load a URL into it.");
     expect(empty).not.toContain(BOUND_URL);
+    expect(await approval()).toMatchObject({ tabOpener: "agent", origin: "https://other.example:443" });
 
+    // The address bar uses this host operation before submitting a URL to an empty slot.
+    expect(browserTabRegistry.stop(WINDOW_ID, PANE.tabId)).toBe(true);
+    expect.soft(loop.buildSystemPromptForScope(SCOPE)).toContain("This chat's bound browser page is closed or unavailable.");
+    expect.soft(await approval()).toBeUndefined();
     bindPage(1, PANE.tabId, BOUND_URL);
-    expect(loop.buildSystemPromptForScope(SCOPE)).toContain(BOUND_URL);
+    const tab = browserTabRegistry.liveRendererTab(WINDOW_ID, PANE.tabId)!;
+    expect(loop.buildSystemPromptForScope(SCOPE)).toContain(tab.handle);
+    expect(await approval()).toMatchObject({ tabOpener: "user", tabId: tab.handle });
 
     browserTabRegistry.guestDestroyed(1);
     const unavailable = loop.buildSystemPromptForScope(SCOPE);
     expect(unavailable).toContain("This chat's bound browser page is closed or unavailable.");
     expect(unavailable).not.toContain(BOUND_URL);
     expect(unavailable).not.toContain("If the pane is empty");
+    expect.soft(await approval()).toBeUndefined();
+
+    bindPage(2, PANE.tabId, OTHER_URL);
+    expect(loop.buildSystemPromptForScope(SCOPE)).toContain(tab.handle);
+    expect(await approval()).toMatchObject({ tabOpener: "user", tabId: tab.handle });
   });
 });

@@ -39,6 +39,7 @@ interface BrowserTabsAccess<G extends BrowserGuest = BrowserGuest> {
   defaultBrowserTab(windowId: number, sessionId: string, ownerSessionId?: string): DefaultBrowserTab;
   /** The pane a pane chat is bound to, if any. */
   conversationSurface(windowId: number, sessionId: string): { kind: "browser" | "terminal"; tabId: string } | undefined;
+  emptyBrowserPaneTab(windowId: number, sessionId: string): string | undefined;
   requestTabOp(
     windowId: number,
     op: { op: "new"; url: string; sessionId?: string; inTabId?: string; actor: BrowserSessionActor; active?: boolean } | { op: "select" | "close"; tabId: string; actor: BrowserSessionActor },
@@ -175,11 +176,8 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
         return { ok: false, reason: `this chat cannot open browser tabs; it works in ${attached.handle}${url ? ` (${url})` : ""}. `
           + "Load a URL there with browser_navigate and omit tabId." };
       }
-      const bound = deps.tabs.conversationSurface(scope.windowId, scope.hostSessionId);
-      // Only a page that never loaded is empty; one that closed or crashed is gone.
-      if (bound?.kind === "browser" && !deps.tabs.listTabs(scope.windowId).some((tab) => tab.rendererTabId === bound.tabId)) {
-        return { ok: true, inTabId: bound.tabId };
-      }
+      const inTabId = deps.tabs.emptyBrowserPaneTab(scope.windowId, scope.hostSessionId);
+      if (inTabId !== undefined) return { ok: true, inTabId };
       return { ok: false, reason: `this chat cannot open browser tabs: ${attached.error}` };
     },
   };

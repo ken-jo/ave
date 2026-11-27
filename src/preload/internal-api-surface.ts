@@ -50,6 +50,7 @@ import type {
 } from "../shared/permissions-events.js";
 import {
   type ActiveWorkspaceSurface,
+  type PaneChatSurface,
 } from "../shared/browser-surface.js";
 import type { MarketplaceAnnouncementPayload } from "../shared/marketplace-announcements.js";
 import { isMemorySaveResultEvent, type MemorySaveResultEvent } from "../shared/memory-save-result.js";
@@ -266,7 +267,7 @@ export function buildInternalApiSurface() {
       attachments?: unknown[],
       originSessionId?: string,
       sendRequestId?: string,
-      surface?: ActiveWorkspaceSurface,
+      surface?: PaneChatSurface,
       sessionId?: string,
       origin?: { inputOrigin: "queue-auto" } | { inputOrigin: "user-keyboard"; userIntent?: UserKeyboardIntentSnapshot },
     ) =>

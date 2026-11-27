@@ -401,6 +401,7 @@ function SideChatSession({
   // Named on every turn: a pane chat's tools act on its pane's tab.
   const boundKind = boundSurface?.kind;
   const boundTabId = boundSurface?.tabId;
+  const browserSlotEmpty = boundSurface?.browserSlotEmpty;
   const handleAsk = useCallback(
     (
       text: string,
@@ -409,7 +410,11 @@ function SideChatSession({
     ) => {
       const origin = {
         ...(originSessionId ? { originSessionId } : {}),
-        ...(boundKind !== undefined && boundTabId !== undefined ? { surface: { kind: boundKind, tabId: boundTabId } } : {}),
+        ...(boundKind !== undefined && boundTabId !== undefined ? { surface: {
+          kind: boundKind,
+          tabId: boundTabId,
+          ...(browserSlotEmpty !== undefined ? { browserSlotEmpty } : {}),
+        } } : {}),
       };
       const settle = (turn: Promise<void>) => turn.finally(() => void onSessionsChanged?.());
       if (opts?.inputOrigin === "queue-auto") {
@@ -435,7 +440,7 @@ function SideChatSession({
         ...origin,
       }));
     },
-    [send, attachments, originSessionId, boundKind, boundTabId, onSessionsChanged],
+    [send, attachments, originSessionId, boundKind, boundTabId, browserSlotEmpty, onSessionsChanged],
   );
 
   const {
