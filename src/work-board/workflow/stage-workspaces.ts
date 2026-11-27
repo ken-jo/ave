@@ -1040,7 +1040,14 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
           const destination = out.ensurePath(segments);
           try {
             destination.replaceFileFrom(leaf, source.directory, leaf, source.id, () => {
-              const there = destination.hashFile(leaf);
+              let there: ReturnType<OwnedDir["hashFile"]>;
+              try { there = destination.hashFile(leaf); }
+              catch (error) {
+                if (!(error instanceof OwnedFsError) || error.reason !== "changed") throw error;
+                // Preserve the edit without recording a digest for bytes we could not read consistently.
+                next.delete(copy.path);
+                throw keptUserOutput;
+              }
               if (there !== undefined && keepUserOutput(copy, there)) throw keptUserOutput;
               assertAuthority();
             });
