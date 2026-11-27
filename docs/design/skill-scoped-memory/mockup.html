@@ -18,8 +18,6 @@
       --ring: light-dark(#0969da, #79b8ff);
       --primary: var(--foreground);
       --primary-foreground: var(--background);
-      --warning: light-dark(#805400, #ecb448);
-      --success: light-dark(#1a6834, #62bc79);
       --destructive: light-dark(#a42922, #ff8880);
       --chart-1: light-dark(#0969da, #58a6ff);
       --chart-2: light-dark(#1a7f37, #56b76a);
@@ -48,7 +46,6 @@
     }
     .top, .toolbar, .workspace-heading, .panel-heading { justify-content: space-between; }
     .top { align-items: end; gap: 16px; }
-    .kicker { color: var(--muted-foreground); font-size: 13px; font-weight: 650; margin-bottom: 6px; }
     .toolbar { margin: 16px 0 14px; }
     .control, .segmented button {
       min-height: 34px; border: 1px solid var(--border); border-radius: 7px;
@@ -58,7 +55,6 @@
     .segmented { display: flex; flex-wrap: wrap; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--card); }
     .segmented button { min-height: 31px; border-color: transparent; background: transparent; }
     .segmented button[aria-pressed="true"] { background: var(--accent); border-color: var(--border); }
-    .variant-key { margin-inline-end: 5px; font-variant-numeric: tabular-nums; }
     .muted { color: var(--muted-foreground); }
     .small, .meta { font-size: 12px; }
     .window { border: 1px solid var(--border); border-radius: var(--shell-card-radius); overflow: hidden; background: var(--background); box-shadow: 0 12px 35px #0002; }
@@ -72,7 +68,8 @@
     .rail button:hover { background: var(--accent); }
     .rail-icon { display: block; width: 17px; height: 16px; border: 1.5px solid; border-radius: 3px; position: relative; }
     .rail-icon::after { content: ''; position: absolute; inset: 3px 4px; border-block: 1px solid; }
-    .rail-icon.board::after { inset: 2px 5px; border-block: 0; border-inline: 1px solid; }
+    .rail-icon.settings { border-radius: 50%; }
+    .rail-icon.settings::after { inset: 4px; border: 1px solid; border-radius: 50%; }
     .sidebar { padding: 16px 12px; background: var(--card); border-inline-end: 1px solid var(--border); }
     .sidebar select { width: 100%; margin: 5px 0 19px; }
     .sidebar h3 { margin: 0 3px 7px; }
@@ -81,7 +78,6 @@
     .skill[aria-pressed="true"] { border-color: var(--border); }
     .skill-name { display: flex; align-items: center; gap: 7px; }
     .mark { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--mark, var(--muted-foreground)); }
-    .count { min-width: 22px; text-align: center; color: var(--muted-foreground); font-size: 12px; font-variant-numeric: tabular-nums; }
     .workspace { min-width: 0; display: flex; flex-direction: column; }
     .workspace-heading { min-height: 78px; padding: 13px 16px; border-bottom: 1px solid var(--border); }
     .workspace-heading .small { margin-top: 3px; }
@@ -96,12 +92,6 @@
     }
     .entry strong { font-size: 14px; }
     .meta { color: var(--muted-foreground); gap: 6px; }
-    .pill { width: fit-content; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); font-size: 11px; font-weight: 650; }
-    .pending { color: var(--warning); }
-    .saved { color: var(--success); }
-    .lane-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-    .lane { min-width: 0; padding: 7px; border-radius: 8px; background: var(--muted); }
-    .lane .panel-heading { padding: 2px 3px; }
     .inspector { display: flex; flex-direction: column; }
     .inspect-section { padding: 13px; }
     .inspect-section + .inspect-section, .inspector > .actions { border-top: 1px solid var(--border); }
@@ -115,265 +105,344 @@
     .primary, .primary:hover { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
     .danger { color: var(--destructive); }
     .empty { padding: 12px 8px; color: var(--muted-foreground); }
-    .caption { padding-top: 12px; }
+    .settings-workspace { grid-column: 2 / -1; }
+    .settings-body { padding: 16px; }
+    .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
+    .setting-row p { margin-top: 4px; max-width: 48ch; }
+    .settings-icon { margin-top: auto; }
+    .details dd { overflow-wrap: anywhere; }
+    .status:empty { display: none; }
     .status { min-height: 24px; padding-top: 10px; }
     dialog { width: min(440px, calc(100% - 32px)); max-height: calc(100% - 32px); color: var(--foreground); background: var(--background); border: 1px solid var(--border); border-radius: var(--shell-card-radius); padding: 19px; box-shadow: 0 12px 35px #0004; }
     dialog::backdrop { background: #0008; }
     dialog p, dialog .actions { margin-top: 12px; }
     .dialog-preview { padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
-    @media (max-width: 1120px) { .lane-grid { grid-template-columns: 1fr; } }
     @media (max-width: 930px) {
       .shell { grid-template-columns: 44px 166px minmax(0, 1fr); }
       .panes { grid-template-columns: 1fr; }
-      .lane-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 620px) {
       .page { padding-top: 16px; }
       .shell { grid-template-columns: minmax(0, 1fr); }
       .rail { flex-direction: row; border-inline-end: 0; padding: 4px 12px; }
+      .settings-workspace { grid-column: 1; }
+      .settings-icon { margin: 0 0 0 auto; }
       .sidebar { border-inline-end: 0; border-block: 1px solid var(--border); padding: 10px; }
       .sidebar select { margin: 3px 0 8px; }
       .skills { display: flex; flex-wrap: wrap; }
       .skill { width: auto; }
       .workspace-heading { min-height: 0; padding: 10px; }
-      .lane-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
   <main class="page">
     <header class="top">
-      <div><p class="kicker" id="kicker"></p><h1 id="title"></h1></div>
+      <h1 id="title"></h1>
       <div class="actions">
         <select class="control" id="locale"><option value="en" lang="en">English</option><option value="ko" lang="ko">한국어</option></select>
         <select class="control" id="theme"><option value="system"></option><option value="light"></option><option value="dark"></option></select>
       </div>
     </header>
     <div class="toolbar">
-      <div class="segmented" id="variants" role="group"></div>
       <p class="muted small" id="sample"></p>
+      <div class="actions">
+        <select class="control" id="run-type"><option value="attended"></option><option value="headless"></option><option value="scheduled"></option></select>
+        <button type="button" class="control" id="finish" data-action="finish"></button>
+      </div>
     </div>
     <div class="window" id="window"></div>
-    <div class="status" id="status" role="status"></div>
-    <p class="caption small muted" id="caption"></p>
+    <p class="status" id="status" role="status"></p>
   </main>
   <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
   <script>
     const copy = {
       en: {
         title: 'Skill-scoped memory', room: 'Control room', language: 'Language', theme: 'Theme', system: 'System theme',
-        light: 'Light', dark: 'Dark', layouts: 'Layout variants', sample: 'Interactive mockup · fictional records',
-        a: 'Skill library', b: 'Review board', memory: 'Memory', board: 'Work board', skills: 'Skills',
-        queue: 'Memory review', project: 'Project', all: 'All', pending: 'Pending review', saved: 'Saved',
-        filters: 'Filter entries', filterSaved: 'Saved only', filterPending: 'Pending only',
-        entries: 'Entries', noEntries: 'No entries in this view.', choose: 'Select an entry to inspect it.',
-        owner: 'Owning skill', source: 'Source', local: 'Local skill', scope: 'Scope', skillProject: 'Skill in this project',
-        access: 'Skill access', read: 'Read', write: 'Write', ownSaved: 'Own saved entries in this project, when invoked.',
-        propose: 'Propose additions after tool permission passes. The account owner approves each entry.',
-        blocked: 'Other skills and projects are outside this scope. Global and project memory keep their own rules.',
-        actionCheck: 'Tool permission passed in this example. Content review is pending.',
-        savedCheck: 'The account owner approved this entry. It can appear in later invocations of this skill in this project.',
-        review: 'Review proposal', approve: 'Approve and save', reject: 'Reject proposal', forget: 'Forget entry',
-        cancel: 'Cancel', undo: 'Undo', approveMessage: 'Entry approved and saved.',
-        rejectMessage: 'Proposal rejected.', forgetMessage: 'Entry forgotten.', undoMessage: 'Entry restored.',
-        reviewQuestion: 'Save this text for this skill in the shown project? Rejecting discards the proposal.',
-        forgetQuestion: 'Remove this saved entry from future skill invocations? You can undo this in the preview.',
-        captionA: 'Start in Control room → Memory → Skills. Pick a skill to see its saved entries and proposals together.',
-        captionB: 'Start in Control room → Work board → Memory review. Compare proposals across skills in the selected project.',
+        light: 'Light', dark: 'Dark', sample: 'Interactive mockup · fictional records', complete: 'Complete sample run',
+        runType: 'Sample run type', attended: 'Attended', headless: 'Headless', scheduled: 'Scheduled',
+        memory: 'Memory', skills: 'Skills', settings: 'Settings', project: 'Project', active: 'Active',
+        pending: 'Needs review', history: 'History', filters: 'Skill memory views', noEntries: 'No entries in this view.',
+        choose: 'Select a lesson to see its content and source.', scope: 'Skill and project', source: 'Source',
+        applied: 'Applied automatically', staged: 'Staged for review', approved: 'Applied after review',
+        rejected: 'Rejected', undone: 'Undone', owner: 'Account owner', provenance: 'Provenance',
+        before: 'Before hash', after: 'After hash', noVersion: 'None',
+        activeHelp: 'Available the next time this skill runs in this project.',
+        pendingHelp: 'Held in the review list until you apply or reject it.',
+        toggle: 'Automatically improve skill memory', on: 'On', off: 'Off',
+        settingsHelp: 'After a task or session ends, Ave can save lessons to its managed skill memory. Headless and scheduled runs only stage lessons for review.',
+        review: 'Review proposal', approve: 'Apply lesson', reject: 'Reject proposal',
+        cancel: 'Cancel', undo: 'Undo change', reviewQuestion: 'Apply this lesson to the displayed skill and project?',
+        undoQuestion: 'Restore the previous version of this lesson?',
+        messageOn: 'Automatic skill improvement is on.', messageOff: 'Automatic skill improvement is off.',
+        skipped: 'Automatic skill improvement is off. The review was skipped.',
+        duplicate: 'This lesson is already in skill memory or awaiting review.',
+        appliedMessage: 'Lesson saved automatically. View the change in History.',
+        stagedMessage: 'Lesson added to Needs review.', approvedMessage: 'Lesson applied. View the change in History.',
+        rejectedMessage: 'Proposal rejected.', undoneMessage: 'Change undone and recorded in History.',
         north: 'Northstar', harbor: 'Harbor', release: 'Release checklist', changes: 'Change review', research: 'Research digest',
-        sourceRelease: 'Release planning', sourceChanges: 'Pull request review', sourceResearch: 'Research handoff',
-        freeze: 'Keep release freeze dates visible', freezeText: 'During the release freeze, place the next eligible deployment date at the top of the handoff.',
-        receipts: 'Record the rollout evidence', receiptsText: 'Keep the rollout receipt and the smoke-check result together in each release handoff.',
-        focus: 'Lead with the affected behavior', focusText: 'Start review summaries with the behavior a user can observe and name the check that exercised it.',
-        evidence: 'Link raw measurements', evidenceText: 'Include the measurement file and its collection date alongside the summary.',
-        compare: 'Keep the comparison window fixed', compareText: 'Use the same time window for every dataset in a comparison.',
-        backup: 'Confirm the rollback owner', backupText: 'Name the person responsible for rollback before the release handoff.'
+        freeze: 'Keep release freeze dates visible', freezeText: 'During the release freeze, include the next eligible deployment date in the handoff.',
+        receipts: 'Record the rollout evidence', receiptsText: 'Each release handoff pairs the rollout receipt with the smoke-check result.',
+        receiptsPreviousText: 'Each release handoff includes the rollout receipt.',
+        focus: 'Lead with the affected behavior', focusText: 'Review summaries open with the behavior a user can observe and the check that exercised it.',
+        evidence: 'Link raw measurements', evidenceText: 'Measurement summaries include the source file and its collection date.',
+        backup: 'Confirm the rollback owner', backupText: 'The rollback owner is named before release handoff.',
+        compare: 'Keep the comparison window fixed', compareText: 'Every dataset in a comparison uses the same time window.'
       },
       ko: {
         title: '스킬별 메모리', room: '관제실', language: '언어', theme: '테마', system: '시스템 테마',
-        light: '라이트', dark: '다크', layouts: '레이아웃 시안', sample: '인터랙티브 목업 · 예시 데이터',
-        a: '스킬 목록', b: '검토 보드', memory: '메모리', board: '작업 보드', skills: '스킬',
-        queue: '메모리 검토', project: '프로젝트', all: '전체', pending: '검토 대기', saved: '저장됨',
-        filters: '항목 필터', filterSaved: '저장됨만', filterPending: '검토 대기만',
-        entries: '메모리 항목', noEntries: '이 화면에 표시할 항목이 없습니다.', choose: '상세를 확인할 항목을 선택하세요.',
-        owner: '소유 스킬', source: '출처', local: '로컬 스킬', scope: '범위', skillProject: '이 프로젝트의 해당 스킬',
-        access: '스킬 접근 권한', read: '읽기', write: '쓰기', ownSaved: '스킬 실행 중 이 프로젝트에 저장된 자신의 메모리를 읽습니다.',
-        propose: '도구 권한 확인을 통과하면 새 항목을 제안할 수 있습니다. 계정 소유자가 항목마다 승인합니다.',
-        blocked: '다른 스킬·프로젝트는 접근 범위 밖입니다. 전역·프로젝트 메모리에는 기존 규칙이 적용됩니다.',
-        actionCheck: '이 예시에서는 도구 권한 확인을 통과했습니다. 내용 검토가 대기 중입니다.',
-        savedCheck: '계정 소유자가 승인했습니다. 이 프로젝트에서 해당 스킬을 다시 실행할 때 사용할 수 있습니다.',
-        review: '제안 검토', approve: '승인하고 저장', reject: '제안 거절', forget: '메모리 잊기',
-        cancel: '취소', undo: '실행 취소', approveMessage: '메모리를 승인하고 저장했습니다.',
-        rejectMessage: '제안을 거절했습니다.', forgetMessage: '메모리를 잊었습니다.', undoMessage: '메모리를 복원했습니다.',
-        reviewQuestion: '이 내용을 표시된 프로젝트의 해당 스킬 메모리로 저장할까요? 거절하면 제안이 삭제됩니다.',
-        forgetQuestion: '이 메모리를 삭제해 이후 스킬 실행에서 제외할까요? 목업에서 실행 취소할 수 있습니다.',
-        captionA: '관제실 → 메모리 → 스킬에서 시작합니다. 스킬을 선택하면 저장된 항목과 제안을 함께 볼 수 있습니다.',
-        captionB: '관제실 → 작업 보드 → 메모리 검토에서 시작합니다. 선택한 프로젝트의 여러 스킬이 올린 제안을 비교할 수 있습니다.',
+        light: '라이트', dark: '다크', sample: '인터랙티브 목업 · 예시 데이터', complete: '예시 실행 완료',
+        runType: '예시 실행 유형', attended: '사용자 참석', headless: '헤드리스', scheduled: '예약 실행',
+        memory: '메모리', skills: '스킬', settings: '설정', project: '프로젝트', active: '사용 중',
+        pending: '검토 대기', history: '변경 이력', filters: '스킬 메모리 보기', noEntries: '표시할 항목이 없습니다.',
+        choose: '항목을 선택하면 내용과 출처를 볼 수 있습니다.', scope: '스킬 및 프로젝트', source: '출처',
+        applied: '자동 적용', staged: '검토 대기에 추가', approved: '검토 후 적용',
+        rejected: '거절', undone: '되돌림', owner: '계정 소유자', provenance: '변경 근거',
+        before: '변경 전 해시', after: '변경 후 해시', noVersion: '없음',
+        activeHelp: '이 프로젝트에서 해당 스킬을 다음에 실행할 때 사용합니다.',
+        pendingHelp: '사용자가 적용하거나 거절할 때까지 검토 대기에 남습니다.',
+        toggle: '스킬 메모리 자동 개선', on: '켜짐', off: '꺼짐',
+        settingsHelp: '작업이나 세션이 끝나면 Ave 관리 스킬 메모리에 배운 내용을 저장합니다. 헤드리스와 예약 실행에서 만든 제안은 검토 대기에 쌓입니다.',
+        review: '제안 검토', approve: '메모리 적용', reject: '제안 거절',
+        cancel: '취소', undo: '변경 되돌리기', reviewQuestion: '표시된 프로젝트의 스킬 메모리에 이 내용을 적용할까요?',
+        undoQuestion: '이 메모리를 변경 전 상태로 되돌릴까요?',
+        messageOn: '스킬 메모리 자동 개선을 켰습니다.', messageOff: '스킬 메모리 자동 개선을 껐습니다.',
+        skipped: '스킬 메모리 자동 개선이 꺼져 있어 검토를 건너뛰었습니다.',
+        duplicate: '이미 저장되어 있거나 검토 중인 메모리입니다.',
+        appliedMessage: '메모리를 자동 저장했습니다. 변경 이력에서 확인할 수 있습니다.',
+        stagedMessage: '제안을 검토 대기에 추가했습니다.', approvedMessage: '메모리를 적용했습니다. 변경 이력에서 확인할 수 있습니다.',
+        rejectedMessage: '제안을 거절했습니다.', undoneMessage: '변경을 되돌리고 이력에 남겼습니다.',
         north: '노스스타', harbor: '하버', release: '릴리스 체크리스트', changes: '변경 검토', research: '리서치 요약',
-        sourceRelease: '릴리스 계획', sourceChanges: '변경 요청 검토', sourceResearch: '리서치 인수인계',
-        freeze: '배포 동결 뒤 첫 배포일 표시', freezeText: '릴리스 동결 기간에는 다음 배포 가능일을 인수인계 문서 맨 위에 적습니다.',
+        freeze: '배포 동결 뒤 첫 배포일 표시', freezeText: '릴리스 동결 기간에는 인수인계 문서에 다음 배포 가능일을 적습니다.',
         receipts: '롤아웃 근거 기록', receiptsText: '릴리스 인수인계마다 롤아웃 확인 기록과 스모크 테스트 결과를 함께 남깁니다.',
+        receiptsPreviousText: '릴리스 인수인계에 롤아웃 확인 기록을 남깁니다.',
         focus: '사용자에게 보이는 변경부터 설명', focusText: '검토 요약 첫머리에 사용자가 확인할 수 있는 동작과 그 동작을 검증한 체크를 적습니다.',
-        evidence: '원본 측정값 연결', evidenceText: '요약과 함께 측정값 파일과 수집일을 표시합니다.',
-        compare: '동일한 기간으로 비교', compareText: '비교에 포함된 모든 데이터에 동일한 시간 범위를 적용합니다.',
-        backup: '롤백 담당자 확인', backupText: '릴리스 인수인계 전에 롤백 담당자를 정합니다.'
+        evidence: '원본 측정값 연결', evidenceText: '측정 요약에 원본 파일과 수집일을 적습니다.',
+        backup: '롤백 담당자 확인', backupText: '릴리스 인수인계 전에 롤백 담당자를 정합니다.',
+        compare: '동일한 기간으로 비교', compareText: '비교에 포함된 모든 데이터에 동일한 시간 범위를 적용합니다.'
       }
     };
 
     const projects = ['north', 'harbor'];
-    const skills = { release: ['--chart-1', 'sourceRelease'], changes: ['--chart-2', 'sourceChanges'], research: ['--chart-3', 'sourceResearch'] };
-    const entries = [
-      { id: 'freeze', project: 'north', skill: 'release', state: 'pending' },
-      { id: 'receipts', project: 'north', skill: 'release', state: 'saved' },
-      { id: 'focus', project: 'north', skill: 'changes', state: 'saved' },
-      { id: 'evidence', project: 'north', skill: 'research', state: 'pending' },
-      { id: 'compare', project: 'north', skill: 'research', state: 'saved' },
-      { id: 'backup', project: 'harbor', skill: 'release', state: 'pending' }
-    ];
-    const state = { locale: 'en', layout: 'a', project: 'north', skill: 'release', filter: 'all', selected: 'freeze', message: '', undo: null };
+    const skills = { release: '--chart-1', changes: '--chart-2', research: '--chart-3' };
+    const exampleLessons = {
+      release: { attended: 'backup', headless: 'freeze', scheduled: 'receipts' },
+      changes: { attended: 'focus', headless: 'evidence', scheduled: 'compare' },
+      research: { attended: 'compare', headless: 'evidence', scheduled: 'focus' }
+    };
+    const views = ['active', 'pending', 'history'];
+    const state = {
+      locale: 'en', page: 'skills', project: 'north', skill: 'release', view: 'active',
+      selected: null, enabled: true, message: ''
+    };
+    const ledger = [];
     const byId = id => document.getElementById(id);
     const t = key => copy[state.locale][key];
-    const pressed = (active) => `aria-pressed="${active}"`;
-    const projectEntries = () => entries.filter(entry => entry.project === state.project && ['pending', 'saved'].includes(entry.state));
-    const visibleEntries = () => projectEntries().filter(entry => state.layout === 'b'
-      || (entry.skill === state.skill && (state.filter === 'all' || entry.state === state.filter)));
+    const pressed = active => `aria-pressed="${active}"`;
+    const inScope = (project, skill) => ledger.filter(row => row.project === project && row.skill === skill);
+    const latest = rows => [...new Map(rows.map(row => [row.lesson, row])).values()];
+    const recordsForView = rows => state.view === 'history' ? rows : latest(rows).filter(row => row.state === state.view);
+
+    function record({ project, skill, lesson, version = lesson, runType, run, event, state: nextState, before = null, after = null }) {
+      const row = { id: ledger.length + 1, project, skill, lesson, version, runType, run, event, state: nextState, before, after };
+      ledger.push(row);
+      return row;
+    }
+
+    const hashes = {
+      receiptsPrevious: '2273cb8c507e5e75ff3f22e293a6ad64c932deb6675feba77831ade092e7ab16',
+      freeze: '6811666560cfcac61894305ef1468a268badf21bbf8342b0557672a1743232f3', receipts: 'ba886ae163c988e8ea13d70dee7d9a376088e00ce6330f86abe3a93bc1354858', focus: '5da7d70d0965621620087c25abdbbe44e7b05d2203f2ac2347d0b2aebf24c0f0',
+      evidence: 'a22bb25e9e0d1b031df4f5fd5faaeec383bf761a88b0b8054f4a13834cfcb034', backup: '3faf1e638fbaa7b2e46416827bef85cf42bb381cad3ea2a28165f8e103b6dfa4', compare: 'acb3c6e4da9a81edd199a93eea3176f02e9ec3a685efd2fe227766507efbd569'
+    };
+
+    function recordCompletion(project, skill, lesson, runType, run, version = lesson, before = null) {
+      const attended = runType === 'attended';
+      return record({ project, skill, lesson, version, runType, run, event: attended ? 'applied' : 'staged',
+        state: attended ? 'active' : 'pending', before, after: attended ? version : null });
+    }
+
+    recordCompletion('north', 'release', 'receipts', 'attended', 'T-101', 'receiptsPrevious');
+    recordCompletion('north', 'release', 'receipts', 'attended', 'T-104', 'receipts', 'receiptsPrevious');
+    recordCompletion('north', 'release', 'freeze', 'scheduled', 'T-109');
+    recordCompletion('north', 'changes', 'focus', 'attended', 'T-111');
+    recordCompletion('north', 'research', 'evidence', 'headless', 'T-115');
+    recordCompletion('harbor', 'release', 'backup', 'headless', 'T-117');
+    let runNumber = 117;
 
     function action(id, label, style = '') {
       return `<button type="button" class="control ${style}" data-action="${id}">${t(label)}</button>`;
     }
 
-    function accessSection() {
-      return `<section class="inspect-section">
-        <h3>${t('access')}</h3>
-        <dl class="details small">
-          <div><dt>${t('read')}</dt><dd>${t('ownSaved')}</dd></div>
-          <div><dt>${t('write')}</dt><dd>${t('propose')}</dd></div>
-        </dl>
-        <p class="policy-note small muted">${t('blocked')}</p>
-      </section>`;
+    function selectedRow() {
+      const rows = recordsForView(inScope(state.project, state.skill));
+      return rows.find(row => row.id === state.selected) ?? rows.at(-1);
     }
 
-    function inspector(entry) {
-      if (!entry) return `<aside class="inspector"><p class="inspect-section muted">${t('choose')}</p>${state.layout === 'a' ? accessSection() : ''}</aside>`;
-      const waiting = entry.state === 'pending';
-      return `<aside class="inspector" aria-label="${t('entries')}">
+    function canUndo(row) {
+      if (!row?.after || row.state !== 'active') return false;
+      return latest(inScope(row.project, row.skill)).find(current => current.lesson === row.lesson)?.id === row.id;
+    }
+
+    function inspector(row) {
+      if (!row) return `<aside class="inspector"><p class="inspect-section muted">${t('choose')}</p></aside>`;
+      const history = state.view === 'history';
+      const actor = ['approved', 'rejected', 'undone'].includes(row.event) ? t('owner') : 'Ave';
+      return `<aside class="inspector" aria-label="${t('provenance')}">
         <section class="inspect-section">
-          <span class="pill ${entry.state}">${t(entry.state)}</span>
-          <h3 style="margin-top: 8px">${t(entry.id)}</h3>
-          <p>${t(entry.id + 'Text')}</p>
-          <p class="policy-note small muted">${t(waiting ? 'actionCheck' : 'savedCheck')}</p>
+          <h3>${t(row.lesson)}</h3>
+          <p>${t(row.version + 'Text')}</p>
+          ${history ? '' : `<p class="policy-note small muted">${t(row.state === 'active' ? 'activeHelp' : 'pendingHelp')}</p>`}
         </section>
         <section class="inspect-section">
           <dl class="details small">
-            <div><dt>${t('owner')}</dt><dd>${t(entry.skill)} · ${t('local')}</dd></div>
-            <div><dt>${t('scope')}</dt><dd>${t('skillProject')} · ${t(entry.project)}</dd></div>
-            <div><dt>${t('source')}</dt><dd>${t(skills[entry.skill][1])}</dd></div>
+            <div><dt>${t('scope')}</dt><dd>${t(row.skill)} · ${t(row.project)}</dd></div>
+            <div><dt>${t('source')}</dt><dd>${t(row.runType)} · ${row.run}</dd></div>
+            ${history ? `<div><dt>${t('provenance')}</dt><dd>${t(row.event)} · ${actor}</dd></div>
+              <div><dt>${t('before')}</dt><dd>${row.before ? `<code>${hashes[row.before]}</code>` : t('noVersion')}</dd></div>
+              <div><dt>${t('after')}</dt><dd>${row.after ? `<code>${hashes[row.after]}</code>` : t('noVersion')}</dd></div>` : ''}
           </dl>
         </section>
-        ${accessSection()}
-        <div class="actions">
-          ${waiting ? action('review', 'review', 'primary') : action('forget', 'forget', 'danger')}
-        </div>
+        ${row.state === 'pending' && !history ? `<div class="actions">${action('review', 'review', 'primary')}</div>` : ''}
+        ${history && canUndo(row) ? `<div class="actions">${action('undo', 'undo')}</div>` : ''}
       </aside>`;
     }
 
     function rows(records) {
       if (!records.length) return `<p class="empty small">${t('noEntries')}</p>`;
-      return `<div class="entry-list">${records.map(entry => `
-        <button type="button" class="entry" data-action="entry:${entry.id}" aria-current="${entry.id === state.selected}">
-          <strong>${t(entry.id)}</strong>
-          <span class="meta"><span class="mark" style="--mark:var(${skills[entry.skill][0]})"></span>${t(entry.skill)}${state.layout === 'a' ? ` <span class="pill ${entry.state}">${t(entry.state)}</span>` : ''}</span>
+      return `<div class="entry-list">${[...records].reverse().map(row => `
+        <button type="button" class="entry" data-action="entry:${row.id}" aria-current="${row.id === state.selected}">
+          <strong>${t(row.lesson)}</strong>
+          <span class="meta">${state.view === 'history' ? t(row.event) + ' · ' : ''}${t(row.runType)} · ${row.run}</span>
         </button>`).join('')}</div>`;
     }
 
-    function render() {
-      const focused = document.activeElement;
-      const lastFocus = focused?.dataset.action;
-      const board = state.layout === 'b';
-      const records = visibleEntries();
-      const entry = records.find(record => record.id === state.selected) ?? records[0];
-      state.selected = entry?.id;
+    function skillSidebar() {
+      return `<aside class="sidebar">
+        <label class="small muted" for="project">${t('project')}</label>
+        <select id="project" class="control">${projects.map(project => `<option value="${project}" ${project === state.project ? 'selected' : ''}>${t(project)}</option>`).join('')}</select>
+        <h3>${t('skills')}</h3>
+        <div class="skills">${Object.entries(skills).map(([skill, color]) => `
+          <button type="button" class="skill" data-action="skill:${skill}" ${pressed(skill === state.skill)}>
+            <span class="skill-name"><span class="mark" style="--mark:var(${color})"></span>${t(skill)}</span>
+          </button>`).join('')}</div>
+      </aside>`;
+    }
 
+    function skillWorkspace() {
+      const scope = inScope(state.project, state.skill);
+      const pendingCount = latest(scope).filter(row => row.state === 'pending').length;
+      return `<section class="workspace">
+        <header class="workspace-heading">
+          <div><h2>${t(state.skill)}</h2><p class="small muted">${t(state.project)}</p></div>
+          <div class="segmented" role="group" aria-label="${t('filters')}">${views.map(view => `
+            <button type="button" data-action="view:${view}" ${pressed(view === state.view)}>${t(view)}${view === 'pending' && pendingCount ? ` (${pendingCount})` : ''}</button>`).join('')}</div>
+        </header>
+        <div class="panes">
+          <section class="collection" aria-label="${t(state.view)}">${rows(recordsForView(scope))}</section>
+          ${inspector(selectedRow())}
+        </div>
+      </section>`;
+    }
+
+    function settingsWorkspace() {
+      return `<section class="workspace settings-workspace">
+        <header class="workspace-heading"><h2>${t('settings')}</h2></header>
+        <div class="settings-body">
+          <div class="setting-row">
+            <div><h3 id="toggle-label">${t('toggle')}</h3><p class="small muted" id="toggle-help">${t('settingsHelp')}</p></div>
+            <button type="button" class="control" role="switch" aria-checked="${state.enabled}" aria-labelledby="toggle-label" aria-describedby="toggle-help" data-action="toggle">${t(state.enabled ? 'on' : 'off')}</button>
+          </div>
+        </div>
+      </section>`;
+    }
+
+    function render() {
+      const lastFocus = document.activeElement?.dataset.action;
+      const settings = state.page === 'settings';
+      state.selected = selectedRow()?.id;
       document.documentElement.lang = state.locale;
       document.title = `${t('title')} · Ave`;
       for (const key of ['title', 'sample']) byId(key).textContent = t(key);
-      byId('kicker').textContent = `Ave / ${t('room')}`;
+      byId('finish').textContent = t('complete');
       byId('locale').setAttribute('aria-label', t('language'));
       byId('theme').setAttribute('aria-label', t('theme'));
-      for (const option of byId('theme').options) option.textContent = t(option.value);
-      byId('variants').setAttribute('aria-label', t('layouts'));
-      byId('variants').innerHTML = ['a', 'b'].map(key => `<button type="button" data-action="variant:${key}" ${pressed(state.layout === key)}><b class="variant-key">${key.toUpperCase()}</b>${t(key)}</button>`).join('');
-      byId('caption').textContent = t(board ? 'captionB' : 'captionA');
-      byId('status').replaceChildren(document.createTextNode(state.message ? t(state.message) + ' ' : ''));
-      if (state.undo) byId('status').insertAdjacentHTML('beforeend', action('undo', 'undo'));
-
+      byId('run-type').setAttribute('aria-label', t('runType'));
+      for (const id of ['theme', 'run-type']) {
+        for (const option of byId(id).options) option.textContent = t(option.value);
+      }
+      byId('status').textContent = state.message ? t(state.message) : '';
       byId('window').innerHTML = `
         <div class="chrome">
           <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
           <b>Ave</b>
-          <div class="crumbs small muted"><span>${t('room')}</span><span>${t(board ? 'board' : 'memory')}</span><span>${t(board ? 'queue' : 'skills')}</span></div>
+          <div class="crumbs small muted"><span>${t('room')}</span>${settings ? `<span>${t('settings')}</span>` : `<span>${t('memory')}</span><span>${t('skills')}</span>`}</div>
         </div>
         <div class="shell">
           <nav class="rail" aria-label="${t('room')}">
-            <button type="button" data-action="variant:a" data-rail ${pressed(!board)} aria-label="${t('memory')}" title="${t('memory')}"><span class="rail-icon" aria-hidden="true"></span></button>
-            <button type="button" data-action="variant:b" data-rail ${pressed(board)} aria-label="${t('board')}" title="${t('board')}"><span class="rail-icon board" aria-hidden="true"></span></button>
+            <button type="button" data-action="page:skills" ${pressed(!settings)} aria-label="${t('memory')} · ${t('skills')}" title="${t('memory')} · ${t('skills')}"><span class="rail-icon" aria-hidden="true"></span></button>
+            <button type="button" class="settings-icon" data-action="page:settings" ${pressed(settings)} aria-label="${t('settings')}" title="${t('settings')}"><span class="rail-icon settings" aria-hidden="true"></span></button>
           </nav>
-          <aside class="sidebar">
-            <label class="small muted" for="project">${t('project')}</label>
-            <select id="project" class="control">${projects.map(project => `<option value="${project}" ${project === state.project ? 'selected' : ''}>${t(project)}</option>`).join('')}</select>
-            <h3>${t('skills')}</h3>
-            <div class="skills">${Object.keys(skills).map(skill => {
-              const marker = `<span class="skill-name"><span class="mark" style="--mark:var(${skills[skill][0]})"></span>${t(skill)}</span>`;
-              const count = projectEntries().filter(record => record.skill === skill).length;
-              return board
-                ? `<div class="skill">${marker}<span class="count">${count}</span></div>`
-                : `<button type="button" class="skill" data-action="skill:${skill}" ${pressed(skill === state.skill)}>${marker}<span class="count">${count}</span></button>`;
-            }).join('')}</div>
-          </aside>
-          <section class="workspace">
-            <header class="workspace-heading">
-              <div><h2>${t(board ? 'queue' : state.skill)}</h2><p class="small muted">${t(state.project)} · ${t(board ? 'skills' : 'skillProject')}</p></div>
-              ${board ? '' : `<div class="segmented" role="group" aria-label="${t('filters')}">${['all', 'pending', 'saved'].map(key => `<button type="button" data-action="filter:${key}" ${pressed(state.filter === key)}>${t(key === 'all' ? 'all' : key === 'pending' ? 'filterPending' : 'filterSaved')}</button>`).join('')}</div>`}
-            </header>
-            <div class="panes">
-              <section class="collection" aria-label="${t('entries')}">
-                ${board ? `<div class="lane-grid">${['pending', 'saved'].map(key => {
-                  const lane = records.filter(record => record.state === key);
-                  return `<section class="lane"><div class="panel-heading"><h3 class="${key}">${t(key)}</h3><span class="count">${lane.length}</span></div>${rows(lane)}</section>`;
-                }).join('')}</div>` : `<div class="panel-heading"><h3>${t('entries')}</h3><span class="count">${records.length}</span></div>${rows(records)}`}
-              </section>
-              ${inspector(entry)}
-            </div>
-          </section>
+          ${settings ? settingsWorkspace() : skillSidebar() + skillWorkspace()}
         </div>`;
+      if (lastFocus) document.querySelector(`[data-action="${lastFocus}"]`)?.focus();
+    }
 
-      if (lastFocus) {
-        const selector = `[data-action="${lastFocus}"]`;
-        const scope = focused.hasAttribute('data-rail') ? byId('window') : document;
-        const nextFocus = scope.querySelector(selector);
-        if (nextFocus) nextFocus.focus();
+    function finishRun() {
+      if (!state.enabled) {
+        state.message = 'skipped';
+        return;
       }
+      const runType = byId('run-type').value;
+      const lesson = exampleLessons[state.skill][runType];
+      const existing = latest(inScope(state.project, state.skill)).find(row => row.lesson === lesson);
+      if (existing?.state === 'pending' || existing?.state === 'active') {
+        state.message = 'duplicate';
+        return;
+      }
+      const row = recordCompletion(state.project, state.skill, lesson, runType, `T-${++runNumber}`);
+      state.page = 'skills';
+      state.view = row.state;
+      state.selected = row.id;
+      state.message = row.state === 'active' ? 'appliedMessage' : 'stagedMessage';
     }
 
     const dialog = byId('dialog');
-    let dialogAction = '';
-    let dialogEntry;
+    let dialogRow;
+
     function openDialog(command) {
-      dialogEntry = visibleEntries().find(entry => entry.id === state.selected);
-      if (!dialogEntry) return;
-      dialogAction = command;
+      const row = selectedRow();
       const reviewing = command === 'review';
+      if (!row || (reviewing ? state.view !== 'pending' || row.state !== 'pending' : !canUndo(row))) return;
+      dialogRow = row;
       dialog.innerHTML = `<h2 id="dialog-title">${t(command)}</h2>
-        <p>${t(reviewing ? 'reviewQuestion' : 'forgetQuestion')}</p>
+        <p>${t(reviewing ? 'reviewQuestion' : 'undoQuestion')}</p>
         <div class="dialog-preview">
-          <strong>${t(dialogEntry.id)}</strong>
-          <div class="meta">${t(dialogEntry.skill)} · ${t(dialogEntry.project)}</div>
-          ${reviewing ? `<p>${t(dialogEntry.id + 'Text')}</p>` : ''}
+          <strong>${t(row.lesson)}</strong>
+          <div class="meta">${t(row.skill)} · ${t(row.project)} · ${row.run}</div>
+          <p>${t(row.version + 'Text')}</p>
         </div>
         <div class="actions">${action('cancel', 'cancel')}
-          ${reviewing ? action('reject', 'reject', 'danger') + action('approve', 'approve', 'primary') : action('confirm-forget', 'forget', 'danger')}
+          ${reviewing ? action('reject', 'reject', 'danger') + action('approve', 'approve', 'primary') : action('confirm-undo', 'undo', 'primary')}
         </div>`;
       dialog.showModal();
+    }
+
+    function decide(command) {
+      if (!dialog.open || dialogRow !== selectedRow()) return;
+      const row = dialogRow;
+      const undo = command === 'confirm-undo';
+      if (undo ? !canUndo(row) : row.state !== 'pending' || state.view !== 'pending') return;
+      const approve = command === 'approve';
+      const next = record({ ...row, event: undo ? 'undone' : approve ? 'approved' : 'rejected',
+        state: approve || (undo && row.before) ? 'active' : 'inactive',
+        version: undo && row.before ? row.before : row.version,
+        before: undo ? row.after : null, after: undo ? row.before : approve ? row.version : null });
+      state.view = 'history';
+      state.selected = next.id;
+      state.message = undo ? 'undoneMessage' : approve ? 'approvedMessage' : 'rejectedMessage';
+      dialog.close();
+      render();
+      byId('window').querySelector('[aria-current="true"]')?.focus();
     }
 
     document.addEventListener('click', event => {
@@ -381,23 +450,29 @@
       if (!button) return;
       const [command, value] = button.dataset.action.split(':');
       switch (command) {
-        case 'variant':
-          state.layout = value;
-          state.filter = 'all';
-          if (value === 'a') state.skill = entries.find(entry => entry.id === state.selected)?.skill ?? state.skill;
+        case 'page':
+          state.page = value;
+          break;
+        case 'toggle':
+          state.enabled = !state.enabled;
+          state.message = state.enabled ? 'messageOn' : 'messageOff';
+          break;
+        case 'finish':
+          finishRun();
           break;
         case 'skill':
           state.skill = value;
-          state.filter = 'all';
+          state.selected = null;
           break;
-        case 'filter':
-          state.filter = value;
+        case 'view':
+          state.view = value;
+          state.selected = null;
           break;
         case 'entry':
-          state.selected = value;
+          state.selected = Number(value);
           break;
         case 'review':
-        case 'forget':
+        case 'undo':
           openDialog(command);
           return;
         case 'cancel':
@@ -405,39 +480,13 @@
           return;
         case 'approve':
         case 'reject':
-        case 'confirm-forget': {
-          const reviewing = dialogAction === 'review' && dialogEntry?.state === 'pending';
-          const forgetting = dialogAction === 'forget' && dialogEntry?.state === 'saved';
-          if (!dialog.open || (command === 'confirm-forget' ? !forgetting : !reviewing)) return;
-          const nextState = { approve: 'saved', reject: 'rejected', 'confirm-forget': 'forgotten' };
-          const message = { approve: 'approveMessage', reject: 'rejectMessage', 'confirm-forget': 'forgetMessage' };
-          dialogEntry.state = nextState[command];
-          if (forgetting) state.undo = dialogEntry;
-          state.message = message[command];
-          if (command === 'approve' && state.filter === 'pending') state.filter = 'all';
-          dialog.close();
-          render();
-          const selected = byId('window').querySelector('[aria-current="true"]');
-          const focusTarget = selected ?? byId('project');
-          focusTarget.focus();
+        case 'confirm-undo':
+          decide(command);
           return;
-        }
-        case 'undo':
-          if (!state.undo) return;
-          state.undo.state = 'saved';
-          if (state.undo.project === state.project) {
-            state.skill = state.undo.skill;
-            state.selected = state.undo.id;
-            state.filter = 'all';
-          }
-          state.undo = null;
-          state.message = 'undoMessage';
-          break;
         default:
           return;
       }
       render();
-      if (command === 'undo') (byId('window').querySelector('[aria-current="true"]') ?? byId('project')).focus();
     });
 
     document.addEventListener('change', event => {
@@ -448,6 +497,7 @@
       }
       if (id === 'locale' || id === 'project') {
         state[id] = value;
+        if (id === 'project') state.selected = null;
         render();
         byId(id).focus();
       }
