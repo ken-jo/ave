@@ -8,7 +8,7 @@ import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeImageRuntimePackage } from "../../src/__tests__/support/image-runtime-package.js";
 import { writeCanvasRuntimePackage, writePageRuntimeResources } from "../../src/__tests__/support/page-runtime-package.js";
-import { writeMxcRuntimePackage } from "../../src/__tests__/support/mxc-runtime-package.js";
+import { writeMxcMacRuntimePackage, writeMxcRuntimePackage } from "../../src/__tests__/support/mxc-runtime-package.js";
 import { upstreamSrtWinReceiptFixtures } from "../../src/__tests__/support/srt-win-build-receipts.js";
 import PINS from "../../src/permissions/mxc-launcher-pins.json" with { type: "json" };
 
@@ -23,21 +23,24 @@ const packageHook = require("../../scripts/electron-after-pack.cjs") as (
   context: Awaited<ReturnType<typeof createPackage>>["context"],
 ) => Promise<void>;
 
-function posixLauncher(platform: "darwin" | "linux", appOutDir: string) {
-  const target = platform === "darwin" ? "darwin-arm64" : "linux-x64";
-  const { launcher } = PINS.targets[target];
-  const resources = platform === "darwin" ? join(appOutDir, "Client.app", "Contents", "Resources") : join(appOutDir, "resources");
+function linuxLauncher(appOutDir: string) {
+  const { launcher } = PINS.targets["linux-x64"];
   return {
     installed: join("node_modules", PINS.package, launcher.member),
-    packaged: join(resources, "mxc", basename(dirname(launcher.member)), basename(launcher.member)),
+    packaged: join(appOutDir, "resources", "mxc", basename(dirname(launcher.member)), basename(launcher.member)),
   };
 }
 
+// macOS packages whose fixture re-pinned an absent darwin addon, keyed by output directory, with that pin file.
+const substitutedMacPins = new Map<string, string>();
+
 async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["context"]): Promise<void> {
-  if (context.electronPlatformName !== "win32") {
+  const macPins = substitutedMacPins.get(context.appOutDir);
+  if (context.electronPlatformName === "darwin" && macPins === undefined) return packageHook(context);
+  if (context.electronPlatformName === "linux") {
     if (process.platform !== "win32") return packageHook(context);
     // Simulated POSIX packages on Windows need their POSIX file mode represented in the fixture.
-    const { packaged } = posixLauncher(context.electronPlatformName, context.appOutDir);
+    const { packaged } = linuxLauncher(context.appOutDir);
     const fs = require("node:fs") as typeof import("node:fs");
     const lstat = fs.lstatSync;
     fs.lstatSync = ((file: Parameters<typeof lstat>[0], options: Parameters<typeof lstat>[1]) => {
@@ -78,7 +81,7 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
     }
   `;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, JSON.stringify(context),
-    join(context.appOutDir, "resources", "fixture-sdk-pins.json"), require.resolve("../../scripts/electron-after-pack.cjs"),
+    macPins ?? join(context.appOutDir, "resources", "fixture-sdk-pins.json"), require.resolve("../../scripts/electron-after-pack.cjs"),
     require.resolve("../../scripts/lib/srt-win-integrity.cjs")], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", AVE_TEST_SRT_RECEIPTS: JSON.stringify(SRT_WIN_BUILD_RECEIPTS) }, encoding: "utf8",
   });
@@ -161,8 +164,11 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
   }
   for (const file of RUNTIME_FILES[platform]) putFile(join(libraryDirectory, file), file);
   if (platform === "win32") writeMxcRuntimePackage(resources, join(root, "Client.exe"));
-  else {
-    const { installed, packaged } = posixLauncher(platform, root);
+  else if (platform === "darwin") {
+    const { pinFile, substituted } = writeMxcMacRuntimePackage(resources);
+    if (substituted) substitutedMacPins.set(root, pinFile);
+  } else {
+    const { installed, packaged } = linuxLauncher(root);
     mkdirSync(dirname(packaged), { recursive: true });
     copyFileSync(installed, packaged);
     chmodSync(packaged, 0o755);
@@ -182,6 +188,7 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
 }
 
 afterEach(() => {
+  substitutedMacPins.clear();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
