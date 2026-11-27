@@ -260,13 +260,16 @@ describe("native governed XLSX command", () => {
         const attributes = ffi.struct("DirectorySecurityAttributes", { length: "uint32_t", descriptor: "void *", inherit: "int" });
         const create = kernel.func("int __stdcall CreateDirectoryW(str16, DirectorySecurityAttributes *)");
         const free = kernel.func("void * __stdcall LocalFree(void *)");
-        const descriptor = [null];
-        expect(convert("S:(ML;OI;NW;;;LW)", 1, descriptor, null)).toBe(1);
-        try {
-          expect(create(labelledParent, { length: ffi.sizeof(attributes), descriptor: descriptor[0], inherit: 0 })).toBe(1);
-        } finally {
-          free(descriptor[0]);
-        }
+        const createWithDescriptor = (parent: string, sddl: string) => {
+          const descriptor = [null];
+          expect(convert(sddl, 1, descriptor, null)).toBe(1);
+          try {
+            expect(create(parent, { length: ffi.sizeof(attributes), descriptor: descriptor[0], inherit: 0 })).toBe(1);
+          } finally {
+            free(descriptor[0]);
+          }
+        };
+        createWithDescriptor(labelledParent, "S:(ML;OI;NW;;;LW)");
         const unlabelled = join(labelledParent, "unlabelled.xlsx");
         renameSync(target, unlabelled);
         const labelledSibling = join(labelledParent, "new-file");
@@ -287,6 +290,28 @@ describe("native governed XLSX command", () => {
         rmSync(unlabelled);
         rmSync(`${unlabelled}.ave-bak`, { force: true });
         rmSync(labelledParent, { recursive: true });
+        writeFileSync(target, originalWorkbook);
+
+        const dacParent = join(directory, "dac-parent");
+        createWithDescriptor(dacParent, 'S:(RA;OI;;;;WD;("Fixture",TS,0,"example"))');
+        const dacWorkbook = join(dacParent, "moved.xlsx");
+        renameSync(target, dacWorkbook);
+        const dacSibling = join(dacParent, "new-file");
+        writeFileSync(dacSibling, "");
+        expect(readDacls([dacSibling], { access: true })[0]?.dacl?.sacl?.dynamicAccessControl).toBe(true);
+        rmSync(dacSibling);
+        const [dacFacts] = readDacls([dacWorkbook], { parent: true, access: true });
+        expect(dacFacts?.dacl?.sacl?.dynamicAccessControl).toBe(false);
+        expect(dacFacts?.parent?.sacl?.dynamicAccessControl).toBe(true);
+        const dacNames = readdirSync(dacParent);
+        prepare.mockClear();
+        const dac = await tool.execute({ command: commandFor(dacWorkbook), timeoutSeconds }, context);
+        expect.soft(dac.output).toContain("[workbook-acl-differs]");
+        expect.soft(dac.isError).toBe(true);
+        expect.soft(prepare).toHaveBeenCalledTimes(1);
+        expect.soft(readdirSync(dacParent)).toEqual(dacNames);
+        expect.soft(readFileSync(dacWorkbook).equals(originalWorkbook)).toBe(true);
+        rmSync(dacParent, { recursive: true });
         writeFileSync(target, originalWorkbook);
 
         const redirectParent = join(directory, "redirect-parent");

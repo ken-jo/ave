@@ -129,7 +129,7 @@ export function checkWindowsWorkbookAccess(path: string): { identity: string } |
     const leafAccess = facts.dacl.sacl;
     if (facts.directory || (facts.attributes & ENCRYPTED_FILE) !== 0
       || facts.elevated || dacl.owner !== facts.currentUserSid || dacl.protected || dacl.nullDacl || parent.nullDacl
-      || leafAccess.integrityLabel !== null || leafAccess.dynamicAccessControl
+      || leafAccess.integrityLabel !== null || leafAccess.dynamicAccessControl || facts.parent.sacl.dynamicAccessControl
       || ((facts.parent.sacl.integrityLabel?.flags ?? 0) & OBJECT_INHERIT_ACE) !== 0) {
       return { reason: WORKBOOK_ACL_DIFFERS };
     }
