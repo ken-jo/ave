@@ -223,6 +223,7 @@ it("records an interrupted stage when the workspace bind fails with sub-agents d
 
 it("links a scheduled grandchild with the same lane, workspace and envelope as its stage", async () => {
   const manager = runScopePermissions();
+  const budget = { rounds: 2, minutes: 1, costUsd: 0 };
   const links: Parameters<NonNullable<StageRunEngineDeps["lane"]>["sessionLinked"]>[0][] = [];
   const tornDown: string[] = [];
   const h = await stageRunHarness({ workflow: {
@@ -241,7 +242,7 @@ it("links a scheduled grandchild with the same lane, workspace and envelope as i
   } });
   try {
     const version = await h.confirm([autoStageOf("a", { allowSubAgents: true, envelope: {
-      budget: { rounds: 2, minutes: 1, costUsd: 0 }, tools: ["read_file"], commands: [], readRoots: [], writePaths: [],
+      budget, tools: ["read_file"], commands: [], readRoots: [], writePaths: [],
       network: [], outputs: [], mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
     } })]);
     const id = await h.addItem(version);
@@ -258,7 +259,7 @@ it("links a scheduled grandchild with the same lane, workspace and envelope as i
     vi.spyOn(h.templates, "readScheduleRunAuthority").mockResolvedValue({ record, attachment });
     const run = h.start(id, { kind: "schedule-attachment", attachmentId: attachment.id, pin, firedAt: attachment.at });
     const [stage] = await h.untilLive(1);
-    expect(stage.input.maxRounds).toBe(20);
+    expect(stage.input.maxRounds).toBe(budget.rounds);
     const bind = stage.callbacks?.onStageSubAgentLinked;
     if (!bind) throw new Error("No sub-agent link for the opted-in scheduled stage");
     const release = bind("grandchild", "Extract");
