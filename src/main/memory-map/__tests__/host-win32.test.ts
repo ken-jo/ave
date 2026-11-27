@@ -2,8 +2,7 @@ import * as atomicFile from '../../../lib/atomic-file.js';
 import { deferred } from '../../../__tests__/support/deferred.js';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { lstat, mkdtemp, mkdir, open, readFile, realpath, writeFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { lstat, mkdir, readFile, realpath, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryMapHost } from '../host-win32.js';
@@ -12,9 +11,8 @@ import { buildGraph, catalogRevision, LOCAL_NAMESPACE, vectorKey } from '../grap
 import { checkedInferenceFrameBytes, INFERENCE_FILES, MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
 import { LocalModelManager } from '../model-manager-win32.js';
 import { LOCAL_MODEL_REVISION } from '../model-manifest.js';
-import type { MemoryMapCatalog } from '../catalog.js';
 import type { MemoryWorkerRunner } from '../worker-client-win32.js';
-import type { FeatureNamespaceHandle } from '../../storage/feature-namespace.js';
+import { createHostFixture } from './host-fixtures.js';
 
 const inferenceBudget = vi.hoisted(() => ({ bytes: undefined as number | undefined }));
 vi.mock(import('../inference-request.js'), async importOriginal => {
@@ -35,24 +33,7 @@ afterEach(async () => {
   inferenceBudget.bytes = undefined;
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
-async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), 'memory-host-')); roots.push(root);
-  const namespace: FeatureNamespaceHandle = { dir: root,
-    readJson: async (_, fallback) => { try { return JSON.parse(await readFile(join(root, 'snapshot.json'), 'utf8')); } catch { return fallback; } },
-    writeJson: async (name, value) => { await writeFile(join(root, name), JSON.stringify(value)); },
-    childDir: async name => { const path = join(root, name); await mkdir(path, { recursive: true }); return path; },
-    createFile: name => open(join(root, name), 'wx'),
-  };
-  const catalog: MemoryMapCatalog = { authorizationScopeId: 'scope', excluded: 0, records: [{ memoryId: 'id', contentRevision: 'hash', title: 'Title', text: 'Private body', sourceKind: 'user' }] };
-  const runWorker: MemoryWorkerRunner = async <T>(_folder: string, task: Parameters<MemoryWorkerRunner>[1]) => {
-    if (task.kind === 'embed-batch') return task.texts.map(() => [1, ...Array<number>(383).fill(0)]) as T;
-    if (task.kind !== 'project') throw new Error('Unexpected task');
-    return await buildGraph(task.input, {
-      embed: async () => { throw new Error('Projection requires cached vectors'); }, dispose: async () => {},
-    }, () => {}) as T;
-  };
-  return { root, namespace, catalog, runWorker };
-}
+const fixture = createHostFixture(roots);
 describe('memory graph publication', () => {
   it.each(['embed-batch', 'project'] as const)('refuses publication when the catalog changes during %s progress', async phase => {
     const f = await fixture();

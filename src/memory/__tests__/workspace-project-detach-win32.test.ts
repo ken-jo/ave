@@ -8,6 +8,7 @@ import type { SessionMetadata } from "../session-repository.js";
 import { WindowsSessionRepository } from "../session-repository-win32.js";
 import { SessionSearchIndex } from "../session-search-index.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { seedSession } from "./workspace-project-detach-fixtures.js";
 
 vi.mock("node:fs", { spy: true });
 
@@ -29,27 +30,11 @@ afterEach(async () => {
   await cleanupTmpDir(dir);
 });
 
-async function seed(
-  sessionId: string,
-  projectRoot: string,
-  title: string,
-): Promise<string> {
-  await memory.sessions.saveSession(sessionId, [{ role: "user", content: `message-${sessionId}` }]);
-  await memory.sessions.saveSessionMetadata(sessionId, {
-    sessionKind: "main",
-    projectRoot,
-    projectName: "Alpha",
-    title,
-    customFutureField: { preserved: true },
-  } as SessionMetadata);
-  return readFileSync(join(dir, "sessions", `${sessionId}.jsonl`), "utf-8");
-}
-
 describe("MemoryManager workspace project detachment", () => {
   it("counts, writing nothing, exactly the conversations the detach then unlinks (removal preview)", async () => {
-    await seed(SESSION_A, ROOT, "alpha-a");
-    await seed(SESSION_B, "c:/work/alpha/", "alpha-b");
-    await seed(SESSION_OTHER, "C:\\Work\\Alpha\\child", "alpha-child");
+    await seedSession(memory, dir, SESSION_A, ROOT, "alpha-a");
+    await seedSession(memory, dir, SESSION_B, "c:/work/alpha/", "alpha-b");
+    await seedSession(memory, dir, SESSION_OTHER, "C:\\Work\\Alpha\\child", "alpha-child");
     const before = readFileSync(join(dir, "sessions", `${SESSION_A}.meta.json`), "utf-8");
 
     const counted = memory.sessions.countSessionsInProject(ROOT);
@@ -61,9 +46,9 @@ describe("MemoryManager workspace project detachment", () => {
   });
 
   it("preserves JSONL and unrelated metadata while detaching matching path variants", async () => {
-    const originalA = await seed(SESSION_A, ROOT, "alpha-a");
-    const originalB = await seed(SESSION_B, "c:/work/alpha/", "alpha-b");
-    await seed(SESSION_OTHER, "C:\\Work\\Beta", "beta");
+    const originalA = await seedSession(memory, dir, SESSION_A, ROOT, "alpha-a");
+    const originalB = await seedSession(memory, dir, SESSION_B, "c:/work/alpha/", "alpha-b");
+    await seedSession(memory, dir, SESSION_OTHER, "C:\\Work\\Beta", "beta");
 
     expect(memory.sessions.searchSessions(`message-${SESSION_A}`, { projectRoot: ROOT })).toHaveLength(1);
     await expect(memory.sessions.detachSessionsFromProject(ROOT)).resolves.toBe(2);
@@ -88,7 +73,7 @@ describe("MemoryManager workspace project detachment", () => {
   });
 
   it("keeps old sessions detached after re-add while allowing new sessions to use the root", async () => {
-    await seed(SESSION_A, ROOT, "alpha");
+    await seedSession(memory, dir, SESSION_A, ROOT, "alpha");
     const stale = memory.sessions.loadSessionMetadata(SESSION_A);
     expect.assert(stale);
 
@@ -306,7 +291,7 @@ describe("MemoryManager workspace project detachment", () => {
   });
 
   it("fails closed when matching metadata has a partial wire identity", async () => {
-    await seed(SESSION_A, ROOT, "partial-wire");
+    await seedSession(memory, dir, SESSION_A, ROOT, "partial-wire");
     const metadataPath = join(dir, "sessions", `${SESSION_A}.meta.json`);
     const raw = JSON.parse(readFileSync(metadataPath, "utf-8")) as Record<string, unknown>;
     writeFileSync(
@@ -328,8 +313,8 @@ describe("MemoryManager workspace project detachment", () => {
   });
 
   it("preflights every metadata file before rewriting any matching session", async () => {
-    await seed(SESSION_A, ROOT, "valid-first");
-    await seed(SESSION_B, ROOT, "malformed-second");
+    await seedSession(memory, dir, SESSION_A, ROOT, "valid-first");
+    await seedSession(memory, dir, SESSION_B, ROOT, "malformed-second");
     writeFileSync(
       join(dir, "sessions", `${SESSION_B}.meta.json`),
       `{"projectRoot":${JSON.stringify(ROOT)},`,
@@ -346,7 +331,7 @@ describe("MemoryManager workspace project detachment", () => {
   });
 
   it("repairs every FTS row on a zero-change detach retry", async () => {
-    await seed(SESSION_A, ROOT, "stale-index");
+    await seedSession(memory, dir, SESSION_A, ROOT, "stale-index");
     await expect(memory.sessions.detachSessionsFromProject(ROOT)).resolves.toBe(1);
     const searchIndex = (memory.sessions as unknown as {
       searchIndex: {
@@ -383,7 +368,7 @@ describe("MemoryManager workspace project detachment", () => {
   });
 
   it("preserves a retryable error when full FTS repair cannot open", async () => {
-    await seed(SESSION_A, ROOT, "repair-retry");
+    await seedSession(memory, dir, SESSION_A, ROOT, "repair-retry");
     const searchIndex = (memory.sessions as unknown as {
       searchIndex: { open(): boolean };
     }).searchIndex;
@@ -400,7 +385,7 @@ describe("MemoryManager workspace project detachment", () => {
   });
 
   it("keeps the previous projection and repair intent when the rebuild transaction fails", async () => {
-    await seed(SESSION_A, ROOT, "repair-retry");
+    await seedSession(memory, dir, SESSION_A, ROOT, "repair-retry");
     const content = `message-${SESSION_A}`;
     const countRows = vi.spyOn(SessionSearchIndex.prototype, "rowCount").mockReturnValueOnce(-1);
     try {
@@ -426,8 +411,8 @@ describe("MemoryManager workspace project detachment", () => {
 
   it.each(["EIO", "ENOENT"])("rolls back a rebuild when scoped metadata is temporarily unreadable (%s) and repairs it on retry", async (code) => {
     const otherRoot = "C:\\Work\\Beta";
-    await seed(SESSION_A, ROOT, "detached session");
-    await seed(SESSION_OTHER, otherRoot, "scoped session");
+    await seedSession(memory, dir, SESSION_A, ROOT, "detached session");
+    await seedSession(memory, dir, SESSION_OTHER, otherRoot, "scoped session");
     await memory.sessions.saveSession(SESSION_B, [{ role: "user", content: "session without metadata" }]);
     const deferred = new WindowsSessionRepository({ aveDir: dir, getSearchIndexPolicy: () => "inactive" });
     await expect(deferred.detachSessionsFromProject(ROOT)).resolves.toBe(1);
@@ -473,8 +458,8 @@ describe("MemoryManager workspace project detachment", () => {
     { routineId: null },
   ])("rolls back a rebuild when supplied search metadata is invalid (%j)", async (invalidMetadata) => {
     const otherRoot = "C:\\Work\\Beta";
-    await seed(SESSION_A, ROOT, "detached session");
-    await seed(SESSION_OTHER, otherRoot, "scoped session");
+    await seedSession(memory, dir, SESSION_A, ROOT, "detached session");
+    await seedSession(memory, dir, SESSION_OTHER, otherRoot, "scoped session");
     const deferred = new WindowsSessionRepository({ aveDir: dir, getSearchIndexPolicy: () => "inactive" });
     await expect(deferred.detachSessionsFromProject(ROOT)).resolves.toBe(1);
     const marker = join(dir, "sessions", ".search-repair.json");
@@ -509,8 +494,8 @@ describe("MemoryManager workspace project detachment", () => {
   ] as const)("rejects duplicate decoded scope in detach preflight and pending repair (%s)", async (key, escaped, value) => {
     const otherRoot = "C:\\Work\\Beta";
     const replacementRoot = "C:\\Work\\Gamma";
-    await seed(SESSION_A, ROOT, "detached session");
-    await seed(SESSION_OTHER, otherRoot, "scoped session");
+    await seedSession(memory, dir, SESSION_A, ROOT, "detached session");
+    await seedSession(memory, dir, SESSION_OTHER, otherRoot, "scoped session");
     const deferred = new WindowsSessionRepository({ aveDir: dir, getSearchIndexPolicy: () => "inactive" });
     await expect(deferred.detachSessionsFromProject(ROOT)).resolves.toBe(1);
     const marker = join(dir, "sessions", ".search-repair.json");
@@ -545,7 +530,7 @@ describe("MemoryManager workspace project detachment", () => {
   });
 
   it("preserves incremental index rows when session metadata has duplicate decoded scope", async () => {
-    await seed(SESSION_A, ROOT, "original content");
+    await seedSession(memory, dir, SESSION_A, ROOT, "original content");
     const metadata = join(dir, "sessions", `${SESSION_A}.meta.json`);
     const marker = join(dir, "sessions", ".search-repair.json");
     const indexPath = join(dir, "search", "index.db");
@@ -562,7 +547,7 @@ describe("MemoryManager workspace project detachment", () => {
   });
 
   it("clears a deferred projection repair after authorized discard", async () => {
-    await seed(SESSION_A, ROOT, "discard-repair");
+    await seedSession(memory, dir, SESSION_A, ROOT, "discard-repair");
     const deferred = new WindowsSessionRepository({ aveDir: dir, getSearchIndexPolicy: () => "inactive" });
     await expect(deferred.detachSessionsFromProject(ROOT)).resolves.toBe(1);
     const repairIntent = join(dir, "sessions", ".search-repair.json");
@@ -578,7 +563,7 @@ describe("MemoryManager workspace project detachment", () => {
   });
 
   it("removes an orphaned FTS row when project metadata exists without JSONL", async () => {
-    await seed(SESSION_A, ROOT, "orphaned-index-row");
+    await seedSession(memory, dir, SESSION_A, ROOT, "orphaned-index-row");
     rmSync(join(dir, "sessions", `${SESSION_A}.jsonl`));
 
     expect(memory.sessions.searchSessions(`message-${SESSION_A}`).map((entry) => entry.sessionId)).toEqual([
@@ -592,7 +577,7 @@ describe("MemoryManager workspace project detachment", () => {
   });
 
   it("is idempotent under concurrent detach calls", async () => {
-    await seed(SESSION_A, ROOT, "alpha");
+    await seedSession(memory, dir, SESSION_A, ROOT, "alpha");
     const counts = await Promise.all([
       memory.sessions.detachSessionsFromProject(ROOT),
       memory.sessions.detachSessionsFromProject(ROOT),
@@ -602,7 +587,7 @@ describe("MemoryManager workspace project detachment", () => {
   });
 
   it("reports malformed metadata instead of declaring detach success", async () => {
-    await seed(SESSION_A, ROOT, "alpha");
+    await seedSession(memory, dir, SESSION_A, ROOT, "alpha");
     writeFileSync(
       join(dir, "sessions", `${SESSION_A}.meta.json`),
       `{"projectRoot":${JSON.stringify(ROOT)},`,

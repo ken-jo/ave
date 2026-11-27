@@ -38,18 +38,9 @@ vi.mock('../../main/memory-map/local-runtime-win32.js', async importOriginal => 
   };
 });
 import { registerWindowsMemoryMapHandlers } from '../domains/memory-map-win32.js';
+import { createMemoryMapInvoker } from './memory-map-fixtures.js';
 const hostEvent = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
-const invoke = (key: keyof typeof CHANNELS.memoryMap, raw?: unknown, event = hostEvent) => {
-  const handler = state.handles.get(CHANNELS.memoryMap[key]);
-  assert.ok(handler);
-  return handler(event, ...(raw === undefined ? [] : [raw]));
-};
-async function providerEndpointId() {
-  const result = await invoke('settingsGet') as Awaited<ReturnType<MemoryMapApi['settingsGet']>>;
-  const endpointId = result.ok && result.value.providers.find(entry => entry.id === 'openai')?.route?.endpointId;
-  if (!endpointId) throw new Error('Missing provider route');
-  return endpointId;
-}
+const { invoke, providerEndpointId } = createMemoryMapInvoker(state.handles, hostEvent);
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 if (!originalPlatform) throw new Error('Missing platform descriptor');
 beforeEach(() => {
