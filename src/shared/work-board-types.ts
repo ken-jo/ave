@@ -1,5 +1,5 @@
 import type { PendingWorkflowDecision, WorkflowRunPinView, WorkflowRunView, WorkflowStageActivityUpdate } from "./workflow-run-view.js";
-import type { TemplateVersionPin } from "./workflow-template-types.js";
+import type { RemoteProvisionalStart, TemplateVersionPin } from "./workflow-template-types.js";
 import type { EnvelopeToolRef, WorkItemStageRun } from "./workflow-template-types.js";
 
 /** Keep board contracts renderer-safe. Overdue is derived on read for incomplete items past due, never persisted. */
@@ -34,6 +34,8 @@ export type WorkItemRunStatus =
 export interface WorkItem {
   /** The template this item was created from. Run state is never stored on the row: a template run is named by `runId` only. */
   templateId?: string;
+  /** Present on disk until first-launch acceptance. Provisional rows are hidden from board lists. */
+  remoteProvisional?: RemoteProvisionalStart;
   id: number;
   title: string;
   detail?: string;

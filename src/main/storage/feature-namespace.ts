@@ -208,10 +208,12 @@ export function preparePrivateFileDirectory(filePath: string): Promise<void> {
   return ensureDir(dirname(filePath));
 }
 
-/** Finish directory preparation, then check authority and commit without yielding. */
-export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean): Promise<boolean> {
+/** Finish directory preparation, then check authority, commit and deliver the commit receipt without yielding. */
+export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean, didCommit?: () => void): Promise<boolean> {
   await preparePrivateFileDirectory(filePath);
-  return replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
+  const committed = replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
+  if (committed) didCommit?.();
+  return committed;
 }
 
 export interface FeatureNamespaceHandle {

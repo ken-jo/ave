@@ -7,6 +7,12 @@ import { boardRunState } from "../run-state.js";
 import { autoStageOf, stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
+async function provisionalItem(h: Awaited<ReturnType<typeof stageRunHarness>>, templateId: string, authority: { refreshCurrent(): Promise<boolean>; isCurrent(): boolean }) {
+  const created = await h.board.create({ title: "Work", templateId }, authority);
+  if (created.status !== "created" || !created.item.remoteProvisional) throw new Error("Provisional item not created");
+  return { itemId: created.itemId, remoteProvisional: created.item.remoteProvisional };
+}
+
 it.each([
   { kind: "gate", failure: "refresh" },
   { kind: "gate", failure: "commit" },
@@ -65,10 +71,10 @@ it.each([
       const version = await h.confirm([
         kind === "join" ? autoStageOf("a") : stageOf("a"), stageOf("b", { inputs: ["a"] }),
       ]);
-      const itemId = await h.addItem(version);
       if (kind === "start") {
-          armed = true;
-        const start = h.engine.runItem(itemId, { templateSource: { kind: "tailnet-create-and-run", pin: h.pinOf(version) }, authority });
+        const { itemId, remoteProvisional } = await provisionalItem(h, version.templateId, authority);
+        armed = true;
+        const start = h.engine.runItem(itemId, { templateSource: { kind: "tailnet-create-and-run", pin: h.pinOf(version) }, authority, remoteProvisional });
         await waiting.promise;
         current = false;
         release.resolve();
@@ -79,6 +85,7 @@ it.each([
         return;
       }
 
+      const itemId = await h.addItem(version);
       const start = h.start(itemId, h.local(version));
       (await h.untilLive(1, itemId))[0].finish();
       await start;
@@ -118,14 +125,15 @@ it("refuses remote start when authority is revoked before the board names the ad
   const h = await stageRunHarness({ observeRunWork: true });
   await h.runThenEnd(async () => {
     const version = await h.confirm([stageOf("a")]);
-    const itemId = await h.addItem(version);
     let current = true;
+    const authority = { refreshCurrent: async () => current, isCurrent: () => current };
+    const { itemId, remoteProvisional } = await provisionalItem(h, version.templateId, authority);
     let runId: string | undefined;
     const stop = h.board.runs.runChanged.subscribe(id => { runId ??= id; current = false; });
     try {
       const start = h.engine.runItem(itemId, {
         templateSource: { kind: "tailnet-create-and-run", pin: h.pinOf(version) },
-        authority: { refreshCurrent: async () => current, isCurrent: () => current },
+        authority, remoteProvisional,
       });
       const result = await Promise.race([start, h.untilSpawned(1, itemId).then(() => ({ status: "child-started" }))]);
       expect(result).toMatchObject({ status: "error", reasonCode: "remote-controller-authority-revoked" });
@@ -163,11 +171,12 @@ it("refuses a remote start revoked during workspace persistence after the board 
   });
   await h.runThenEnd(async () => {
     const version = await h.confirm([stageOf("a")]);
-    const itemId = await h.addItem(version);
     let current = true;
+    const authority = { refreshCurrent: async () => current, isCurrent: () => current };
+    const { itemId, remoteProvisional } = await provisionalItem(h, version.templateId, authority);
     const start = h.engine.runItem(itemId, {
       templateSource: { kind: "tailnet-create-and-run", pin: h.pinOf(version) },
-      authority: { refreshCurrent: async () => current, isCurrent: () => current },
+      authority, remoteProvisional,
     });
     try {
       await preparing.promise;
@@ -188,7 +197,9 @@ it("refuses revocation after the board enters executing and before the scheduler
   const h = await stageRunHarness({ observeRunWork: true });
   await h.runThenEnd(async () => {
     const version = await h.confirm([stageOf("a")]);
-    const itemId = await h.addItem(version);
+    let current = true;
+    const authority = { refreshCurrent: async () => current, isCurrent: () => current };
+    const { itemId, remoteProvisional } = await provisionalItem(h, version.templateId, authority);
     const entered = deferred<void>();
     const release = deferred<void>();
     const setStatus = h.board.setRunStatus.bind(h.board);
@@ -200,10 +211,9 @@ it("refuses revocation after the board enters executing and before the scheduler
       }
       return written;
     });
-    let current = true;
     const start = h.engine.runItem(itemId, {
       templateSource: { kind: "tailnet-create-and-run", pin: h.pinOf(version) },
-      authority: { refreshCurrent: async () => current, isCurrent: () => current },
+      authority, remoteProvisional,
     });
     try {
       await entered.promise;

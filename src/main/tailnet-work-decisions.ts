@@ -190,11 +190,12 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
     if (!await authority.refreshCurrent()) return refused(WORK_DECISION_AUTHORITY_REVOKED);
     const created = await board.create({
       templateId, title, detail, ...(project?.project ? { projectRoot: root, projectName: project.project.projectName } : {}),
-    }, authority.isCurrent);
+    }, authority);
     if (created.status !== "created") return refused(created.reason === WORK_DECISION_AUTHORITY_REVOKED ? created.reason : "work-item-create-refused");
 
     const { itemId } = created;
-    const remoteProvisional = { createdAt: created.item.created_at, mutationRevision: created.item.mutationRevision };
+    const { remoteProvisional } = created.item;
+    requireTemplate(remoteProvisional !== undefined, "invalid-template-run");
     let provisionalRunId: string | undefined;
     let launched = false;
     try {
@@ -204,12 +205,9 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
           authority,
           remoteProvisional,
           onTemplateRunAllocated: runId => { provisionalRunId = runId; },
-          onTemplateStarted: (runId, handoffStored) => {
+          onTemplateStarted: runId => {
             launched = true;
-            void Promise.resolve(handoffStored).then(
-              () => resolve({ ok: true, kind: "create-and-run", itemId, runId }),
-              reject,
-            );
+            resolve({ ok: true, kind: "create-and-run", itemId, runId });
           },
         }).then(outcome => {
           if (!launched) resolve(refused(outcome.reasonCode ?? outcome.status));

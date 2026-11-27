@@ -2,7 +2,7 @@ import type { WorkDecisionAuthority } from "../work-decision-authority.js";
 import type { RunClass } from "../../main/run-classification.js";
 import type { WorkBoardStore } from "../../main/work-board-store.js";
 import type { DeleteIntent, HeldEvent, HeldIdentity, RunEnd, RunRemovalCause } from "../../main/workflow-run-store.js";
-import type { WorkItemResolved, WorkItemUpdateResult } from "../../shared/work-board-types.js";
+import type { WorkItem, WorkItemResolved, WorkItemUpdateResult } from "../../shared/work-board-types.js";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
 import type { StageJoin, TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkItemStageRun } from "../../shared/workflow-template-types.js";
 import { issueJoinConflict } from "./stage-machine.js";
@@ -24,6 +24,7 @@ type RunAdoption = {
   ok: true;
   /** Every board row that names a template run, with that run: null when the run file holds no readable run of that row under that id. */
   named: { item: WorkItemResolved; run: RunRecord | null }[];
+  provisional: readonly WorkItem[];
   /** Workspace identities that must survive sweeping; undefined defers the sweep. */
   keepWorkspaces: readonly string[] | undefined;
   /** Every readable run of the run file, over or not. */
@@ -133,7 +134,7 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       const adopted = new Set(named.flatMap(({ run }) => run ? [run.runId] : []));
       const rest = stored.runs.filter(run => !adopted.has(run.runId) && run.settled === undefined);
       const of = (...allowed: RunClass[]) => rest.filter(run => allowed.includes(classes.get(run.runId) as RunClass));
-      return { ok: true, named, keepWorkspaces, runs: stored.runs, orphans: of("orphan"), lost: of("lost"), kept: of("waiting-delete", "unreadable", "live"), removed: of("due-delete") };
+      return { ok: true, named, provisional: snapshot.board.items.filter(item => item.remoteProvisional !== undefined), keepWorkspaces, runs: stored.runs, orphans: of("orphan"), lost: of("lost"), kept: of("waiting-delete", "unreadable", "live"), removed: of("due-delete") };
     },
     deleted: () => store.deleteIntentsOnDisk(),
     pruneSettled: () => store.pruneSettledRuns(),

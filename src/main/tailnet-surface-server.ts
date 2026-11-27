@@ -765,6 +765,24 @@ export function restartTailnetObserverServer(): Promise<TailnetObserverServer | 
   return next;
 }
 
+/** Remove capabilities from the bound listener without admitting or binding a port. */
+export function reduceTailnetObserverCapabilities(config: TailnetObserverConfig): Promise<void> {
+  const reduce = async (): Promise<void> => {
+    if (startPromise) await startPromise.catch(() => undefined);
+    if (!activeServer || !activeConfig) return;
+    const { webOrigin, ...bound } = activeConfig;
+    const pairedSharingEnabled = bound.pairedSharingEnabled && config.pairedSharingEnabled;
+    const controllerEnabled = pairedSharingEnabled && bound.controllerEnabled && config.controllerEnabled;
+    const webEnabled = pairedSharingEnabled && webOrigin !== undefined && webOrigin === config.webOrigin;
+    activeServer.reduceCapabilities({ controllerEnabled, pairedSharingEnabled, webEnabled });
+    activeConfig = { ...bound, pairedSharingEnabled, controllerEnabled, ...(webEnabled ? { webOrigin } : {}) };
+    if (!pairedSharingEnabled) activePairedSharingRuntime = null;
+  };
+  const next = lifecycleChain.then(reduce, reduce);
+  lifecycleChain = next.then(() => undefined, () => undefined);
+  return next;
+}
+
 async function stopForShutdown(): Promise<void> {
   stopped = true;
   lifecycleGeneration += 1;

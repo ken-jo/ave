@@ -40,7 +40,7 @@ import { readAveHomeInput } from "../shared/ave-home-trust.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
 import { copyLegacyPluginBoard } from "../boot/steps/work-board-migration.js";
 import { WORK_DECISION_AUTHORITY_REVOKED, WorkDecisionAuthorityError, type WorkDecisionAuthority } from "../work-board/work-decision-authority.js";
-import { isTemplateId, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
+import { hasTemplateKeys, isGraphHash, isTemplateId, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import type { RemoteProvisionalStart, TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
 
 const log = createLogger("ave");
@@ -271,6 +271,11 @@ function isValidRecord(r: unknown): r is WorkItem {
   if (typeof x.created_at !== "string") return false;
   if (typeof x.updated_at !== "string") return false;
   if (x.completed_at !== undefined && typeof x.completed_at !== "string") return false;
+  if (x.remoteProvisional !== undefined) {
+    const marker = x.remoteProvisional;
+    if (!isTemplateId(x.templateId) || !hasTemplateKeys(marker, ["createdAt", "mutationRevision"])
+      || marker.createdAt !== x.created_at || !isGraphHash(marker.mutationRevision)) return false;
+  }
   // Agent-orchestration run fields — all optional (absent on pre-P2 rows).
   if (x.runStatus !== undefined && !isRunStatus(x.runStatus)) return false;
   if (x.plan !== undefined && typeof x.plan !== "string") return false;
@@ -659,7 +664,7 @@ function fileOf({ version, nextId, unknownBelow, items, unreadable, extra }: Boa
 
 // Deep clone a WorkItem so callers cannot mutate shared cache refs.
 function cloneItem(it: WorkItem): WorkItem {
-  return { ...it };
+  return { ...it, ...(it.remoteProvisional === undefined ? {} : { remoteProvisional: { ...it.remoteProvisional } }) };
 }
 
 function mutationRevision(item: WorkItem): string {
@@ -671,11 +676,10 @@ function mutationRevision(item: WorkItem): string {
 // are never marked.
 // What a settled run keeps once its row names a newer run: how it ended and each stage's status, times, result hash and output hash.
 function runSummary(run: WorkflowRunRecord): WorkflowRunRecord {
-  const { runId, itemId, pin, runStartedBy, startedAt, settled, remoteProvisional } = run;
+  const { runId, itemId, pin, runStartedBy, startedAt, settled } = run;
   const stageRuns = run.stageRuns.map(({ stageId, attempt, status, startedAt, endedAt, resultHash, outputHash }) =>
     ({ stageId, attempt, status, ...(startedAt === undefined ? {} : { startedAt }), ...(endedAt === undefined ? {} : { endedAt }), ...(resultHash === undefined ? {} : { resultHash }), ...(outputHash === undefined ? {} : { outputHash }) }));
-  return { runId, itemId, pin, runStartedBy, startedAt, stageRuns, ...(settled === undefined ? {} : { settled }),
-    ...(remoteProvisional === undefined ? {} : { remoteProvisional }) };
+  return { runId, itemId, pin, runStartedBy, startedAt, stageRuns, ...(settled === undefined ? {} : { settled }) };
 }
 
 const namesTemplateRun = (item: WorkItem): boolean => item.templateId !== undefined && item.runId !== undefined;
@@ -763,6 +767,8 @@ export class WorkBoardStore {
   // Activity-log storage rooted in the same directory as `board.json`.
   private readonly activity: WorkBoardStorage;
   private readonly now: () => number;
+  private readonly activeProvisionalStarts = new Set<number>();
+
   /** Template-run state, keyed by runId, in the covered run file beside `board.json`. */
   readonly runs: WorkflowRunStore;
   /** Told that a row left the board, once that write is on disk and the run file was pruned for it: what a run without a record kept
@@ -788,7 +794,7 @@ export class WorkBoardStore {
   // and when it would take out of the board file the id of a run that is not settled, unless it is the user's delete of that run's row
   // (`deleted`) with its intent stored; one that removes an entry or the user's text (`drops`) is refused while the run file cannot be
   // read (see assertKeepsRunIds).
-  private async commit(board: BoardRead, change: BoardChange = {}, canCommit?: () => boolean): Promise<void> {
+  private async commit(board: BoardRead, change: BoardChange = {}, canCommit?: () => boolean, didCommit?: () => void): Promise<void> {
     if (board.unread) throw new WorkBoardWriteRefusal("work-board-unread");
     if (await this.legacyCopyHolds(false)) throw new WorkBoardWriteRefusal("work-board-legacy-copy-unfinished");
     const file = cacheOf(board);
@@ -798,6 +804,7 @@ export class WorkBoardStore {
       const committed = await rewriteKeepingBytes(this.filePath, text, {
         tag: "invalid-rows",
         canCommit,
+        didCommit,
         unchanged: board.unchanged,
         check: (prior) => {
           if (prior !== undefined && repeatsKey(prior.toString("utf8"))) {
@@ -1036,7 +1043,7 @@ export class WorkBoardStore {
     const parsed = parseBoard(input.bytes);
     if (!readableBoard(parsed)) return undefined;
     const now = this.now();
-    return hydrateBoard(parsed).items.map(item => decorate(cloneItem(item), now));
+    return hydrateBoard(parsed).items.filter(item => item.remoteProvisional === undefined).map(item => decorate(cloneItem(item), now));
   }
 
   // List items, newest-id first, with `status_resolved` computed + filter applied.
@@ -1057,6 +1064,7 @@ export class WorkBoardStore {
     const projectRoot = normalizeOptionalString(filter.projectRoot, MAX_PROJECT_ROOT_LENGTH);
     const nowMs = this.now();
     let rows = cache.items
+      .filter(item => item.remoteProvisional === undefined)
       .map((item) => decorate(cloneItem(item), nowMs, templateRunError(item, runs)))
       .sort((a, b) => b.id - a.id);
     if (projectRoot) {
@@ -1144,7 +1152,7 @@ export class WorkBoardStore {
     });
   }
 
-  async create(input: WorkItemCreateInput, canCommit?: () => boolean): Promise<
+  async create(input: WorkItemCreateInput, remoteAuthority?: WorkDecisionAuthority): Promise<
     Extract<WorkItemCreateResult, { status: "invalid" }> | { status: "created"; itemId: number; item: ReturnType<typeof decorate> }
   > {
     await this.ensureLoaded();
@@ -1208,10 +1216,16 @@ export class WorkBoardStore {
         updated_at: iso,
         ...(status === "completed" ? { completed_at: iso } : {}),
       };
+      if (remoteAuthority) {
+        requireTemplate(item.templateId !== undefined, "invalid-template-run");
+        item.remoteProvisional = { createdAt: iso, mutationRevision: mutationRevision(item) };
+        this.activeProvisionalStarts.add(id);
+      }
       board.nextId = id + 1;
       board.items.push(item);
-      try { await this.commit(board, {}, canCommit); }
+      try { await this.commit(board, {}, remoteAuthority?.isCurrent); }
       catch (error) {
+        this.activeProvisionalStarts.delete(id);
         if (error instanceof WorkDecisionAuthorityError) return { status: "invalid" as const, reason: error.code };
         if (error instanceof WorkBoardWriteRefusal) return { status: "invalid" as const, reason: error.code };
         throw error;
@@ -1428,6 +1442,10 @@ export class WorkBoardStore {
         this.cache = cacheOf(board);
         return { status: "invalid" as const, itemId: id, reason: "template-run-unavailable" };
       }
+      const remoteStart = pin?.source?.kind === "tailnet-create-and-run";
+      if (remoteStart ? !prior.remoteProvisional || prior.runId !== undefined || !authority : prior.remoteProvisional !== undefined) {
+        return { status: "invalid" as const, itemId: id, reason: "template-run-unavailable" };
+      }
       if (pin) requireTemplate(prior.templateId === pin.templateId && pin.source !== undefined, "invalid-template-run");
       if (pin && pin.source.kind !== "schedule-attachment") requireTemplate(projectRootKey(pin.source.projectRoot) === projectRootKey(prior.projectRoot), "project-mismatch");
       if (prior.status === "completed") {
@@ -1440,7 +1458,6 @@ export class WorkBoardStore {
         const stored = await this.runs.put(structuredClone({
           runId, itemId: id, pin: { templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash },
           runStartedBy: pin.source, startedAt, stageRuns: pin.stageRuns,
-          ...(pin.remoteProvisional === undefined ? {} : { remoteProvisional: pin.remoteProvisional }),
         }), retain, authority);
         if (stored.status !== "stored") {
           this.cache = cacheOf(board);
@@ -1744,14 +1761,35 @@ export class WorkBoardStore {
     });
   }
 
+  /** An adoption pass in this process may race an in-flight Create and run. */
+  hasActiveProvisionalStart(itemId: number): boolean {
+    return this.activeProvisionalStarts.has(itemId);
+  }
+
+  /** Accept the first launch of the run named by the provisional row. */
+  async acceptProvisionalTemplateStart(itemId: number, runId: string, authority: WorkDecisionAuthority, canLaunch: () => boolean, launch: () => void): Promise<void> {
+    await this.ensureLoaded();
+    await withInProcessFileQueue(this.filePath, async () => {
+      const board = await this.readBoard();
+      const current = board.items.find(item => item.id === itemId);
+      if (!current?.remoteProvisional || current.runId !== runId) throw new WorkflowTemplateError("invalid-template-run");
+      if (!await authority.refreshCurrent()) throw new WorkDecisionAuthorityError();
+      delete current.remoteProvisional;
+      await this.commit(board, {}, () => authority.isCurrent() && canLaunch(), launch);
+      this.activeProvisionalStarts.delete(itemId);
+    });
+  }
+
   /** Retract only the run allocated for this remote create. Any independent edit keeps the row. */
   async rollbackProvisionalTemplateStart(itemId: number, created: RemoteProvisionalStart, runId?: string): Promise<void> {
+    this.activeProvisionalStarts.delete(itemId);
     await this.ensureLoaded();
     await withInProcessFileQueue(this.filePath, async () => {
       const board = await this.readBoard();
       const index = board.items.findIndex(item => item.id === itemId);
       const current = board.items[index];
-      if (!current || current.created_at !== created.createdAt
+      if (!current || current.remoteProvisional?.createdAt !== created.createdAt
+        || current.remoteProvisional.mutationRevision !== created.mutationRevision
         || (current.runId !== undefined && current.runId !== runId)
         || current.runHistory?.some(entry => entry.runId !== runId)) {
         this.cache = cacheOf(board);
@@ -1759,11 +1797,11 @@ export class WorkBoardStore {
       }
 
       const retained = { ...current };
+      delete retained.remoteProvisional;
       if (current.runId !== undefined) {
         const run = await this.runs.get(current.runId);
-        if (run.status !== "found" || run.run.itemId !== current.id
-          || run.run.remoteProvisional?.createdAt !== created.createdAt
-          || run.run.remoteProvisional.mutationRevision !== created.mutationRevision || run.run.settled === undefined) {
+        if (run.status !== "found" || run.run.itemId !== itemId
+          || run.run.runStartedBy.kind !== "tailnet-create-and-run" || run.run.settled === undefined) {
           throw new Error("run-state-unavailable");
         }
         delete retained.runId;
@@ -1780,12 +1818,10 @@ export class WorkBoardStore {
       if (mutationRevision(retained) === created.mutationRevision) {
         const removed = await this.removeFromBoard(board, current);
         if (removed.status === "invalid") throw new Error(removed.reason);
-      } else if (current.runId !== undefined) {
+      } else {
         board.items[index] = retained;
         await this.commit(board, { drops: true });
         await this.pruneAfterWrite(this.retention(boardStanding(board)));
-      } else {
-        this.cache = cacheOf(board);
       }
     });
   }

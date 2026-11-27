@@ -220,7 +220,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     if (!workBoardStore) return { status: "not_found", itemId: id };
     const result = await workBoardStore.get(id);
     if (result.status !== "found") return result;
-    if (!isAuthorizedStoredWorkItem(result.item)) return { status: "not_found", itemId: id };
+    if (result.item.remoteProvisional || !isAuthorizedStoredWorkItem(result.item)) return { status: "not_found", itemId: id };
     return result;
   };
 

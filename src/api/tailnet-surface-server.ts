@@ -130,6 +130,7 @@ export interface TailnetSurfaceServerOptions {
   readonly ownerIdentityError: (login: string, evidence: TailnetOwnerIdentityEvidence) => TailnetOwnerIdentityErrorCode | null;
   readonly refreshOwnerIdentity?: () => Promise<boolean>;
   readonly assertOwnerIdentity?: () => void;
+  readonly isControllerCurrent?: () => boolean;
   readonly requestOwnerEvidence?: TailnetOwnerIdentityEvidence;
   /** Must be the literal 127.0.0.1; a Tailnet IP is never a direct bind. */
   readonly host?: string;
@@ -154,9 +155,17 @@ export interface TailnetSurfaceServerOptions {
 
 }
 
+interface TailnetListenerCapabilities {
+  controllerEnabled: boolean;
+  pairedSharingEnabled: boolean;
+  webEnabled: boolean;
+}
+
 export interface TailnetSurfaceServer {
   readonly host: "127.0.0.1";
   readonly port: number;
+  /** Applies a reduction to this bound listener and invalidates authority issued by removed routes. */
+  reduceCapabilities(next: TailnetListenerCapabilities): void;
   close(): Promise<void>;
 }
 
@@ -417,6 +426,23 @@ export async function startTailnetSurfaceServer(
     for (const check of [...pairedShareStreamChecks]) check();
   });
 
+  let capabilities: TailnetListenerCapabilities = {
+    controllerEnabled: controllerBroker !== undefined || webRuntime?.workDecisions !== undefined,
+    pairedSharingEnabled: options.pairedSharing !== undefined,
+    webEnabled: webRuntime !== undefined,
+  };
+  function reduceCapabilities(next: TailnetListenerCapabilities): void {
+    const pairedSharingEnabled = capabilities.pairedSharingEnabled && next.pairedSharingEnabled;
+    const controllerEnabled = pairedSharingEnabled && capabilities.controllerEnabled && next.controllerEnabled;
+    const webEnabled = pairedSharingEnabled && capabilities.webEnabled && next.webEnabled;
+    if (pairedSharingEnabled === capabilities.pairedSharingEnabled && controllerEnabled === capabilities.controllerEnabled && webEnabled === capabilities.webEnabled) return;
+    capabilities = { pairedSharingEnabled, controllerEnabled, webEnabled };
+    if (!webEnabled) webRuntime?.sessions.clear();
+    if (!controllerEnabled) attachmentStore?.clear();
+    controllerBroker?.revalidatePairedTurns();
+    for (const check of [...pairedShareStreamChecks]) check();
+  }
+
   const server: Server = createServer((req, res) => {
     void route(
       req,
@@ -433,6 +459,7 @@ export async function startTailnetSurfaceServer(
       requestLimiter,
       webReadRequestLimiter,
       webRuntime,
+      () => capabilities,
     ).catch((error) => {
       if (error instanceof TailnetOwnerIdentityError && !res.headersSent) { sendJson(res, 403, { ok: false, error: error.code }); return; }
       options.log?.(`tailnet observer routing error: ${errorMessage(error)}`);
@@ -484,8 +511,10 @@ export async function startTailnetSurfaceServer(
       resolve({
         host: LOOPBACK_HOST,
         port: boundPort,
+        reduceCapabilities,
         close: () => {
           closing ??= new Promise<void>((resolveClose, rejectClose) => {
+            reduceCapabilities({ controllerEnabled: false, pairedSharingEnabled: false, webEnabled: false });
             for (const endStream of [...liveStreams]) endStream();
             unsubscribePairedSharing?.();
             unsubscribeWebSessions?.();
@@ -520,6 +549,7 @@ async function route(
   requestLimiter: TailnetRequestLimiter,
   webReadRequestLimiter: TailnetRequestLimiter,
   web: TailnetWebRuntime | undefined,
+  capabilities: () => TailnetListenerCapabilities,
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://tailnet-observer.invalid");
   const path = url.pathname;
@@ -530,7 +560,7 @@ async function route(
   const controllerRoute = path === "/tailnet/v1/commands";
   const attachmentRoute = path === "/tailnet/v3/attachments";
   const pairingRoute = path === "/tailnet/v2/pairing/claim";
-  const pairingEnabled = pairingRoute && options.pairing !== undefined && options.pairedSharing !== undefined;
+  const pairingEnabled = pairingRoute && capabilities().pairedSharingEnabled && options.pairing !== undefined && options.pairedSharing !== undefined;
   const webDocumentRoute = path === "/tailnet/v2/web" || path === "/";
   const webSnapshotRoute = path === "/tailnet/v2/web/snapshot";
   const webEventsRoute = path === "/tailnet/v2/web/events";
@@ -541,6 +571,17 @@ async function route(
   const webPairingClaimRoute = path === "/tailnet/v2/web/pairing/claim";
   const webRoute = webDocumentRoute || webSnapshotRoute || webEventsRoute || webCommandRoute
     || webAttachmentRoute || webLogoutRoute || webPairingClaimRoute || webWorkDecisionRoute;
+  const isControllerCurrent = () => capabilities().controllerEnabled && (!webRoute || capabilities().webEnabled);
+  const controllerRequest = controllerRoute || attachmentRoute || webCommandRoute || webAttachmentRoute || webWorkDecisionRoute;
+  const isCurrent = () => (!webRoute || capabilities().webEnabled)
+    && (!controllerRequest || isControllerCurrent())
+    && (options.pairedSharing === undefined || capabilities().pairedSharingEnabled);
+  if (!capabilities().controllerEnabled) {
+    controllerBroker = undefined;
+    attachmentStore = undefined;
+    if (web?.workDecisions) web = { ...web, workDecisions: undefined };
+  }
+  if (!capabilities().webEnabled) web = undefined;
   if (
     !observerRoute
     && !(controllerRoute && controllerBroker)
@@ -562,7 +603,7 @@ async function route(
     : controllerRoute || attachmentRoute || webCommandRoute || webAttachmentRoute ? "controller"
     : pairingRoute || webPairingClaimRoute ? "pairing" : "observer";
   const authenticatedLogin = authorizedTailnetLogin(req.headers, options.authorization, role) ?? (webDocumentRoute ? authorizedTailnetLogin(req.headers, options.authorization, "pairing") : undefined);
-  if (authenticatedLogin !== undefined) {
+  if (authenticatedLogin !== undefined && (!controllerRequest || isControllerCurrent())) {
     const admissionLimiter = webSnapshotRoute || webEventsRoute ? webReadRequestLimiter : requestLimiter;
     if (!admissionLimiter.accept(authenticatedLogin, req.socket)) {
       if (method !== "GET") req.resume();
@@ -571,23 +612,36 @@ async function route(
     }
     const policy = options;
     const evidence = await policy.probeOwnerIdentity();
-    const error = policy.ownerIdentityError(authenticatedLogin, evidence);
+    const identityError = (observation: TailnetOwnerIdentityEvidence) => isCurrent()
+      ? policy.ownerIdentityError(authenticatedLogin, observation) : "tailnet-owner-identity-unavailable";
+    const error = identityError(evidence);
     if (error !== null) {
       if (method !== "GET") req.resume();
       sendJson(res, 403, { ok: false, error, message: error === "tailnet-owner-identity-unavailable" ? "This desktop cannot verify its local account. Remote access is suspended." : "Remote access is limited to the account signed in on this desktop." });
       return;
     }
     ownerAdmittedRequests.add(req);
-    const assertIdentity = (): void => { const error = policy.ownerIdentityError(authenticatedLogin, evidence); if (error !== null) throw new TailnetOwnerIdentityError(error); };
+    const assertIdentity = (): void => { const error = identityError(evidence); if (error !== null) throw new TailnetOwnerIdentityError(error); };
     const authorizer = options.pairedSharing;
     const pairing = options.pairing;
-    options = { ...options, assertOwnerIdentity: assertIdentity, requestOwnerEvidence: evidence,
-      ...(authorizer === undefined ? {} : { pairedSharing: { ...authorizer, actorIdFor: login => { assertIdentity(); return authorizer.actorIdFor(login); }, authorize: (login, conversationId, required) => authorizer.authorize(login, conversationId, required, evidence) } }),
+    options = { ...options, assertOwnerIdentity: assertIdentity, requestOwnerEvidence: evidence, isControllerCurrent,
+      ...(authorizer === undefined ? {} : { pairedSharing: {
+        ...authorizer,
+        actorIdFor: login => { assertIdentity(); return authorizer.actorIdFor(login); },
+        authorize: (login, conversationId, required) => {
+          const live = () => isCurrent() && (required !== "control" || isControllerCurrent());
+          const share = live() ? authorizer.authorize(login, conversationId, required, evidence) : null;
+          return share === null ? null : { ...share, pairedShareGuard: {
+            isCurrent: binding => live() && share.pairedShareGuard.isCurrent(binding),
+            refreshCurrent: async binding => live() && await share.pairedShareGuard.refreshCurrent(binding) && live(),
+          } };
+        },
+      } }),
       ...(pairing === undefined ? {} : { pairing: { ...pairing,
         claimInvitation: async (code, actorId) => { assertIdentity(); const result = await pairing.claimInvitation(code, actorId, assertIdentity); assertIdentity(); return result; },
         ...(pairing.deviceStatus === undefined ? {} : { deviceStatus: async (login: string, actorId: TailnetShareActorId) => { assertIdentity(); const result = await pairing.deviceStatus!(login, actorId, assertIdentity); assertIdentity(); return result; } }),
       } }),
-      refreshOwnerIdentity: async () => policy.ownerIdentityError(authenticatedLogin, await policy.probeOwnerIdentity()) === null,
+      refreshOwnerIdentity: async () => isCurrent() && identityError(await policy.probeOwnerIdentity()) === null,
     };
   }
   if (webRoute && web !== undefined) {
@@ -1009,6 +1063,7 @@ async function routeTailnetWebSnapshot(
   if (work?.list && pairedShare.permission === "control"
     && authorizedTailnetLogin(req.headers, options.authorization, TAILNET_WORK_DECISION_CAPABILITY) !== undefined) {
     const isCurrent = () => {
+      if (options.isControllerCurrent?.() !== true) return false;
       const session = web.sessions.resolve(cookieToken);
       return session !== null && sameTailnetWebSessionAuthority(session, pairedShare)
         && isTailnetShareScopeCurrent(pairedShare, currentScope, scope);

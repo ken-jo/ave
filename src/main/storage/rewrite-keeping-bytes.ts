@@ -54,7 +54,7 @@ async function copyHolds(copy: string, filePath: string, hash: string, size: num
 export async function rewriteKeepingBytes(
   filePath: string,
   body: string,
-  keep: { tag: string; unchanged?: string; check?: (prior: Buffer | undefined) => void; canCommit?: () => boolean },
+  keep: { tag: string; unchanged?: string; check?: (prior: Buffer | undefined) => void; canCommit?: () => boolean; didCommit?: () => void },
 ): Promise<boolean> {
   const input = await readAveHomeInput(filePath);
   const prior = input.status === "absent" || input.bytes.length === 0 ? undefined : input.bytes;
@@ -75,7 +75,7 @@ export async function rewriteKeepingBytes(
       throw new WorkBoardWriteRefusal("work-board-backup-conflict", copy);
     }
   }
-  if (keep.canCommit) return writeFileAtomicAtPathIf(filePath, body, keep.canCommit);
+  if (keep.canCommit) return writeFileAtomicAtPathIf(filePath, body, keep.canCommit, keep.didCommit);
   await writeFileAtomicAtPath(filePath, body);
   return true;
 }

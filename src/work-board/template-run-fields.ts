@@ -71,16 +71,13 @@ function authority(value: unknown, pin: Record<string, unknown>): boolean {
 /** One entry of the covered run file. Unknown keys are refused, so an entry is either fully understood or left untouched. */
 export function assertWorkflowRunRecord(raw: unknown): asserts raw is WorkflowRunRecord {
   const check = (condition: unknown): void => requireTemplate(condition, "invalid-template-run");
-  check(hasTemplateKeys(raw, ["runId", "itemId", "pin", "runStartedBy", "remoteProvisional", "startedAt", "stageRuns", "stageJoins", "runWorkspace", "settled"]));
+  check(hasTemplateKeys(raw, ["runId", "itemId", "pin", "runStartedBy", "startedAt", "stageRuns", "stageJoins", "runWorkspace", "settled"]));
   const run = raw as Record<string, unknown>;
   check(text(run.runId, 256) && Number.isSafeInteger(run.itemId) && (run.itemId as number) > 0 && timestamp(run.startedAt));
   const pin = run.pin;
   check(hasTemplateKeys(pin, ["templateId", "version", "graphHash"]) && isTemplateId(pin.templateId) && isTemplateVersion(pin.version) && isGraphHash(pin.graphHash));
   check(stages(run.stageRuns));
   check(authority(run.runStartedBy, pin as Record<string, unknown>));
-  check(optional(run, "remoteProvisional", value =>
-    isRecord(run.runStartedBy) && run.runStartedBy.kind === "tailnet-create-and-run"
-    && hasTemplateKeys(value, ["createdAt", "mutationRevision"]) && timestamp(value.createdAt) && isGraphHash(value.mutationRevision)));
   check(optional(run, "runWorkspace", value => workspace(value, true)));
   check(optional(run, "settled", value => hasTemplateKeys(value, ["status", "at"]) && ["completed", "denied", "error", "cancelled"].includes(value.status as string) && timestamp(value.at)));
   if (run.stageJoins !== undefined) {
@@ -90,7 +87,7 @@ export function assertWorkflowRunRecord(raw: unknown): asserts raw is WorkflowRu
   }
 }
 
-const BOARD_RUN_FIELDS = ["runTemplateVersion", "runTemplateGraphHash", "runStartedBy", "remoteProvisional", "pin", "stageRuns", "stageJoins", "runWorkspace", "gate", "resultHash", "outputHash", "templateRunError"];
+const BOARD_RUN_FIELDS = ["runTemplateVersion", "runTemplateGraphHash", "runStartedBy", "pin", "stageRuns", "stageJoins", "runWorkspace", "gate", "resultHash", "outputHash", "templateRunError"];
 function without(value: unknown, fields: readonly string[]): unknown {
   if (!isRecord(value)) return value;
   const clean = { ...value };

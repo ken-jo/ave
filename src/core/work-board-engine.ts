@@ -137,7 +137,7 @@ interface RunItemOptions {
   authority?: WorkDecisionAuthority;
   remoteProvisional?: RemoteProvisionalStart;
   onTemplateRunAllocated?: (runId: string) => void;
-  onTemplateStarted?: (runId: string, handoffStored?: Promise<void>) => void;
+  onTemplateStarted?: (runId: string) => void;
   agentName?: string;
   /** Set by the host entrypoint, never copied from a renderer payload. */
   approvalSurface?: WebContents | null;
@@ -559,6 +559,7 @@ export function createWorkBoardEngine(
     const got = await store.get(itemId);
     if (got.status !== "found") return refuse({ status: "not_found" });
     const item = got.item;
+    if (item.remoteProvisional && !opts.remoteProvisional) return { status: "not_found" };
     if (item.status === "completed") return refuse({ status: "error", reason: "work-item-completed" });
 
     // A template run is busy as its run record says, read once boot adoption has run; its row's runStatus only shows it.

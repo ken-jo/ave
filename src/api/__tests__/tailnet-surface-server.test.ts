@@ -19,6 +19,7 @@ import { createSharedConversationProjectionStore } from "../../engine/shared-con
 import type { ConversationCommandPort } from "../../main/conversation-command-port.js";
 import type { TailnetPairedShareAuthorizer } from "../../main/tailnet-paired-share-authorizer.js";
 import type { TailnetAuthorization } from "../../shared/tailnet-observer-config.js";
+import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
@@ -26,12 +27,17 @@ import { openEgressRelay, startEgressRelayService, stopEgressRelayService } from
 import { openEgressInvocation } from "../../permissions/egress-invocations.js";
 import type { TailnetWorkDecisionRequest, TailnetWorkReviewSnapshot } from "../../shared/tailnet-work-decisions.js";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
+import * as tailnetListenerPolicy from "../../permissions/tailnet-listener-policy.js";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
 import { spawnWithSandbox } from "../../tools/shell-tools.js";
 import { prepareSandboxFixture } from "../../tools/__tests__/support/prepared-shell.js";
 import { quoteSandboxWrappedWord } from "../../permissions/sandbox-wrapped-command.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import { RoutinesStore } from "../../main/routines-store.js";
+import { createTailnetObserverConfigService } from "../../main/tailnet-observer-config-service.js";
+import { maybeStartTailnetObserverServer, resetTailnetObserverServerForTests, stopTailnetObserverServer, type TailnetObserverConfigFile } from "../../main/tailnet-surface-server.js";
+import type { TailnetPairedSharingRuntime } from "../../main/tailnet-paired-sharing-runtime.js";
+import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import { createTailnetWorkDecisions } from "../../main/tailnet-work-decisions.js";
 import { itemDigestOf } from "../../main/work-board-store.js";
 import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
@@ -2354,6 +2360,129 @@ it.each(["revocation", "prepare failure", "prepare failure with a desktop edit"]
   },
 );
 
+it("retracts an unaccepted item after restart during workspace opening", async () => {
+  const entered = deferred<{ itemId: number; runId: string }>();
+  const release = deferred<void>();
+  const spawn = vi.fn();
+  const h = await stageRunHarness({ onSpawn: spawn, workspace: {
+    async open(ref) {
+      entered.resolve(ref);
+      await release.promise;
+      return { ok: false, code: "workspace-unavailable" };
+    },
+  } });
+  await h.runThenEnd(async () => {
+    await h.confirm([stageOf("a")]);
+    const { sharing, log, readReviews, postDecision } = await pairedWorkFixture(h);
+    const { scope, workReviews } = await readReviews();
+    const offered = workReviews?.find(review => review.kind === "create-and-run");
+    if (!offered) throw new Error("Missing start review");
+    const pending = postDecision({ id: crypto.randomUUID(), scope, kind: offered.kind, ...offered.binding });
+    try {
+      const { itemId, runId } = await Promise.race([entered.promise, pending.then(response => {
+        throw new Error(`Start completed before workspace opening: ${response.status}`);
+      })]);
+      expect.soft(JSON.parse(readFileSync(h.boardPath, "utf8")).items[0]).toHaveProperty("remoteProvisional");
+      expect.soft(await h.board.list()).toMatchObject({ items: [] });
+      sharing.revoke();
+      const recovered = h.makeEngine();
+      await recovered.adoptParkedTemplateRuns();
+      expect.soft(JSON.parse(readFileSync(h.boardPath, "utf8")).items).toEqual([]);
+      expect.soft(await h.runOf(runId)).toBeNull();
+      expect.soft(await recovered.continueRun(itemId, { runId })).toMatchObject({ ok: false });
+      expect.soft(await recovered.retryStage(itemId, { runId, stageId: "a", attempt: 1 })).toMatchObject({ ok: false });
+      expect.soft(spawn).not.toHaveBeenCalled();
+      expect.soft(log).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await pending;
+    }
+  });
+});
+
+it.each(["controller", "pairing", "web"] as const)("applies a saved %s reduction to the paired forced-on listener", async reduction => {
+  const env = { AVE_TAILNET_OBSERVER: "1" };
+  const port = await reservePort();
+  let saved: TailnetObserverConfigFile = {
+    enabled: true, authorization: APP_CAPABILITY, port, controllerEnabled: true, pairedSharingEnabled: true, webEnabled: true, webOrigin: WEB_ORIGIN,
+  };
+  const readConfigFile = async () => saved;
+  const projection = createSharedConversationProjectionStore(createPlatformConversationTimeline());
+  stores.push(projection);
+  const sharing = pairedSharing({ observe: true, control: true });
+  const invoked = vi.fn(async () => ({ ok: false, error: "not_pending" } as const));
+  const submit = vi.fn<NonNullable<ConversationCommandPort["submit"]>>(() => ({ completion: Promise.resolve({
+    text: "done", toolCalls: [], route: "default", stopReason: "end_turn",
+  }) }));
+  const startServer = vi.fn(startTailnetSurfaceServer);
+  const admission = vi.spyOn(tailnetListenerPolicy, "assertTailnetListenerPortAllowed");
+  try {
+    await maybeStartTailnetObserverServer({
+      env,
+      encryption: unavailableSecretEncryption,
+      conversationSurfaceRuntime: { sharedProjection: projection } as ConversationSurfaceRuntime,
+      getCurrentConversationId: () => CONVERSATION_ID,
+      isConversationBusy: () => false,
+      conversationCommandPort: { submit, execute: vi.fn() },
+      tailnetPairedSharingRuntime: { authorizer: sharing.authorizer } as TailnetPairedSharingRuntime,
+      tailnetControllerReceiptStore: createReceiptStore(),
+      workDecisions: { decide: invoked, list: async () => [] },
+      dependencies: { readConfigFile, startServer },
+    });
+    const server = await startServer.mock.results[0].value;
+    const roles = tailnetRoleHeaders(["observer", "controller", "work-decision"]);
+    const session = await openWebSession(server, roles);
+    const headers = webSessionHeaders(session.cookieToken, session.csrfToken, ["observer", "controller", "work-decision"]);
+    const snapshot = () => fetch(url(server, "/tailnet/v2/web/snapshot"), { headers });
+    const { snapshot: { scope } } = await (await snapshot()).json();
+    const command = (browser = true) => fetch(url(server, browser ? "/tailnet/v2/web/commands" : "/tailnet/v1/commands"), {
+      method: "POST", headers: { ...(browser ? headers : controllerHeaders()), "Content-Type": "application/json" },
+      body: JSON.stringify({ id: crypto.randomUUID(), type: "conversation.send", scope, input: "Remote message" }),
+    });
+    const work = () => fetch(url(server, "/tailnet/v2/web/work-decisions"), {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: "{}",
+    });
+    expect((await command()).status).toBe(202);
+    expect(submit).toHaveBeenCalledOnce();
+    const actor = submit.mock.calls[0][0];
+    if (!("pairedShareGuard" in actor) || !actor.pairedShareGuard || !actor.pairedShare) throw new Error("Controller was unpaired");
+    expect(actor.pairedShareGuard.isCurrent(actor.pairedShare)).toBe(true);
+    admission.mockClear();
+    admission.mockRejectedValue(new Error("Listener admission must not run during reduction"));
+    expect((await work()).status).toBe(400);
+    const service = createTailnetObserverConfigService({
+      env, readConfigFile,
+      writeConfigFile: async file => { saved = file; },
+      pairedSharingBootstrapFailed: () => false,
+      readOwnDeviceAdmission: async () => false,
+      probeEnvironment: async () => ({
+        state: "ready", cliPath: null, login: "owner@example.com", dnsName: new URL(WEB_ORIGIN).hostname,
+        tailnetName: null, serveConfigured: true, serveTargetPort: port, detail: null,
+      }),
+    });
+    const before = (await service.snapshot()).saved;
+    await service.apply({
+      ...before, enabled: false,
+      controllerEnabled: reduction === "web",
+      pairedSharingEnabled: reduction !== "pairing",
+      webEnabled: reduction === "controller",
+    });
+    expect.soft((await command()).status).toBe(404);
+    expect.soft((await work()).status).toBe(404);
+    expect.soft((await service.snapshot()).listeningPort).toBe(port);
+    expect.soft(startServer).toHaveBeenCalledOnce();
+    expect.soft(admission).not.toHaveBeenCalled();
+    expect.soft(actor.pairedShareGuard.isCurrent(actor.pairedShare)).toBe(false);
+    expect.soft(submit).toHaveBeenCalledOnce();
+    if (reduction === "controller") expect((await snapshot()).status).toBe(200);
+    expect((await command(false)).status).toBe(reduction === "web" ? 202 : 404);
+  } finally {
+    admission.mockRestore();
+    await stopTailnetObserverServer();
+    resetTailnetObserverServerForTests();
+  }
+});
+
 it.each([false, true])("retracts an unlaunched remote run after restart (desktop edit: %s)", async edited => {
   const entered = deferred<{ itemId: number; runId: string }>();
   const release = deferred<void>();
@@ -2384,9 +2513,9 @@ it.each([false, true])("retracts an unlaunched remote run after restart (desktop
         throw new Error(`Start completed before preparation: ${response.status}`);
       })]);
       expect(await h.runOf(runId)).toMatchObject({
-        remoteProvisional: { createdAt: (await h.item(itemId)).created_at, mutationRevision: expect.stringMatching(/^[a-f0-9]{64}$/) },
         stageRuns: [{ stageId: "a", status: "running", attempt: 1 }],
       });
+      expect((await h.item(itemId)).remoteProvisional).toMatchObject({ mutationRevision: expect.stringMatching(/^[a-f0-9]{64}$/) });
       if (edited) {
         expect(await h.board.update(itemId, { title: "Desktop edit", priority: "high" })).toMatchObject({ status: "updated" });
       }

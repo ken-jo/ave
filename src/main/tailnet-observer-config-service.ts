@@ -9,6 +9,7 @@ import {
   loadTailnetObserverConfig,
   probeTailscaleEnvironment,
   readTailnetObserverConfigFile,
+  reduceTailnetObserverCapabilities,
   restartTailnetObserverServer,
   setTailnetOwnDeviceAdmission,
   tailnetObserverEnableOverride,
@@ -178,13 +179,14 @@ export function createTailnetObserverConfigService(
 
   async function saveAndRestart(file: TailnetObserverConfigFile): Promise<void> {
     const enableOverride = tailnetObserverEnableOverride(options.env);
-    if (file.enabled && enableOverride !== false) {
-      const { config } = await loadTailnetObserverConfig({ env: options.env, readConfigFile: async () => file });
-      if (config) await assertTailnetListenerPortAllowed(config.port);
-    }
+    const forceOn = !file.enabled && enableOverride === true;
+    const { config } = (file.enabled && enableOverride !== false) || forceOn
+      ? await loadTailnetObserverConfig({ env: options.env, readConfigFile: async () => file })
+      : { config: null };
+    if (file.enabled && config) await assertTailnetListenerPortAllowed(config.port);
     await writeConfigFile(file);
-    // A forced-on observer keeps its current listener when the file is turned off.
-    if (file.enabled || enableOverride !== true) await restartListener();
+    if (forceOn && config) await reduceTailnetObserverCapabilities(config);
+    else await restartListener();
   }
 
   const service: TailnetObserverConfigService = Object.freeze({

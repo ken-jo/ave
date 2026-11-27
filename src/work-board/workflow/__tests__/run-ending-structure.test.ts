@@ -155,7 +155,7 @@ it("never adopts an unsettled named candidate without classifying it", async () 
     runs: { list: async () => ({ status: "found", runs }), view: async () => ({ keepWorkspaces: runs.map(run => run.runId) }) },
     list: async () => ({ status: "ok", items: runs.map(run => ({ id: run.itemId, runId: run.runId, templateId: "template" })) }),
     runClasses: async () => classified,
-    runBoardSnapshot: async () => ({}),
+    runBoardSnapshot: async () => ({ board: { items: [] } }),
   } as unknown as Parameters<typeof boardRunState>[0];
   const adoption = await boardRunState(store).adoption();
   expect(classified.mock.calls.map(([run]) => run.runId)).toEqual(runs.map(run => run.runId));

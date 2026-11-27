@@ -152,11 +152,10 @@ interface OutputExecution { id: string; status: "pending" | "done" | "failed" | 
 interface JoinConflict { conflictHash: string; reason: "merge-conflict" | "same-path" | "identity-missing" | "interrupted"; files: { path: string; stageIds: string[] }[]; excerpt?: string }
 export interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflictGeneration?: number; conflict?: JoinConflict; decidedAt?: string }
 /** The identity and revision of the item as remote Create and run created it. */
-export interface RemoteProvisionalStart { createdAt: string; mutationRevision: string }
+export interface RemoteProvisionalStart { readonly createdAt: string; readonly mutationRevision: string }
 export interface TemplateRunStart extends RunPin {
   source: RunAuthoritySource;
   stageRuns: WorkItemStageRun[];
-  remoteProvisional?: RemoteProvisionalStart;
 }
 /** The first envelope entry that fails the unattended qualification: stages in graph order, then the collections in this order, then entry order. */
 export interface EnvelopeToolRef { stageId: string; collection: "tools" | "mcpReadOnlyTools" | "mcpGenerationTools" | "pluginGenerationTools"; name: string }
@@ -172,8 +171,6 @@ export interface WorkflowRunRecord {
   itemId: number;
   pin: TemplateVersionPin;
   runStartedBy: RunAuthoritySource;
-  /** Present until the remote start crosses first runner handoff. */
-  remoteProvisional?: RemoteProvisionalStart;
   startedAt: string;
   stageRuns: WorkItemStageRun[];
   stageJoins?: StageJoin[];
