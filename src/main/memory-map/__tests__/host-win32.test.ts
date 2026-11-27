@@ -137,7 +137,12 @@ describe('memory graph publication', () => {
     expect(await replacement).toMatchObject({ value: { status: 'ready' } });
   });
 
-  it.each(['cancelled', 'failed'] as const)('restores the graph seen by a cold view after a %s rebuild', async outcome => {
+  it.each([
+    { outcome: 'cancelled', invalidate: false },
+    { outcome: 'failed', invalidate: false },
+    { outcome: 'cancelled', invalidate: true },
+    { outcome: 'failed', invalidate: true },
+  ])('shows the correct cold fallback after a $outcome rebuild (invalidate: $invalidate)', async ({ outcome, invalidate }) => {
     const f = await fixture();
     const readCatalog = () => f.catalog;
     const options = { namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: f.runWorker };
@@ -165,15 +170,32 @@ describe('memory graph publication', () => {
     expect(initialView.snapshot).toEqual(original);
     expect(await cold.buildView(readCatalog)).toEqual(initialView);
 
-    const owner = registry.register(buildId, { scopeId: f.catalog.authorizationScopeId, assertAdmitted: () => {} });
-    const rebuild = cold.build(readCatalog, owner);
-    const settled = rebuild.catch((error: unknown) => error);
+    const clearing = deferred<void>();
+    const resumeClear = deferred<void>();
+    let invalidating: Promise<unknown> | undefined;
+    let settled: Promise<unknown> | undefined;
     try {
+      if (invalidate) {
+        const childDir = f.namespace.childDir;
+        vi.spyOn(f.namespace, 'childDir').mockImplementationOnce(async (name, options) => {
+          clearing.resolve();
+          await resumeClear.promise;
+          return childDir(name, options);
+        });
+        invalidating = cold.invalidate().catch((error: unknown) => error);
+        await clearing.promise;
+        expect.soft((await cold.buildView(readCatalog)).snapshot).toBeNull();
+        expect(await readFile(path)).toEqual(originalBytes);
+      }
+
+      const owner = registry.register(buildId, { scopeId: f.catalog.authorizationScopeId, assertAdmitted: () => {} });
+      const rebuild = cold.build(readCatalog, owner);
+      settled = rebuild.catch((error: unknown) => error);
       const signal = await Promise.race([projecting.promise, settled.then(() => { throw new Error('Projection did not start'); })]);
       expect((await cold.buildView(readCatalog)).snapshot).toMatchObject({ snapshotId: owner.id, status: 'building' });
       const cancelled = outcome === 'cancelled' ? registry.cancel(owner.id) : undefined;
       expect(signal.aborted).toBe(outcome === 'cancelled');
-      expect(await readFile(path)).toEqual(originalBytes);
+      if (!invalidate) expect(await readFile(path)).toEqual(originalBytes);
       exit.resolve();
       if (cancelled) {
         expect(await cancelled).toBeNull();
@@ -181,12 +203,18 @@ describe('memory graph publication', () => {
       } else {
         expect(await settled).toMatchObject({ message: 'Projection failed' });
       }
-      const restored = await cold.buildView(readCatalog);
-      expect.soft(restored.snapshot).toEqual(original);
-      expect(restored.builds).toMatchObject([{ id: owner.id, outcome: { kind: outcome } }]);
-      expect(await readFile(path)).toEqual(originalBytes);
-      expect.soft((await cold.buildView(readCatalog)).snapshot).toEqual(original);
-      expect((await new MemoryMapHost(options).buildView(readCatalog)).snapshot).toEqual(original);
+      const view = await cold.buildView(readCatalog);
+      const expectedSnapshot = invalidate ? null : original;
+      expect.soft(view.snapshot).toEqual(expectedSnapshot);
+      expect(view.builds).toMatchObject([{ id: owner.id, outcome: { kind: outcome } }]);
+      expect.soft((await cold.buildView(readCatalog)).snapshot).toEqual(expectedSnapshot);
+      expect.soft((await new MemoryMapHost(options).buildView(readCatalog)).snapshot).toEqual(expectedSnapshot);
+      if (invalidate) {
+        expect.soft(await cold.get(readCatalog)).toBeNull();
+        expect.soft(JSON.parse(await readFile(path, 'utf8'))).toEqual({ cache: {}, snapshot: null });
+      } else {
+        expect(await readFile(path)).toEqual(originalBytes);
+      }
 
       const readOtherScope = () => ({ ...f.catalog, authorizationScopeId: 'other' });
       const readUpdatedCatalog = () => ({
@@ -196,13 +224,20 @@ describe('memory graph publication', () => {
       expect((await cold.buildView(readUpdatedCatalog)).snapshot).toBeNull();
       const replacement = await cold.build(readUpdatedCatalog);
       expect(replacement.snapshotId).not.toBe(original.snapshotId);
+      if (invalidating) {
+        resumeClear.resolve();
+        expect(await invalidating).toMatchObject({ code: 'request-stale' });
+      }
       const replacementBytes = await readFile(path);
       expect(replacementBytes).not.toEqual(originalBytes);
       expect(JSON.parse(replacementBytes.toString()).snapshot).toEqual(replacement);
       expect((await cold.buildView(readUpdatedCatalog)).snapshot).toEqual(replacement);
+      expect((await new MemoryMapHost(options).buildView(readUpdatedCatalog)).snapshot).toEqual(replacement);
     } finally {
       exit.resolve();
+      resumeClear.resolve();
       await settled;
+      await invalidating;
     }
   });
 

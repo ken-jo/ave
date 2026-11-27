@@ -39,6 +39,7 @@ export class MemoryMapHost {
   protected cache: VectorCache = {};
   private graphScope: { id?: string; hydrated: boolean } = { hydrated: false };
   private graphClearGeneration = 0;
+  private pendingInvalidation?: symbol;
   private queryGeneration = 0;
   private queryController?: AbortController;
   constructor(protected readonly options: HostOptions) {
@@ -50,10 +51,16 @@ export class MemoryMapHost {
   async invalidate(): Promise<void> {
     this.registry.stopAll('invalidate');
     this.cancel();
+    const invalidation = Symbol();
+    this.pendingInvalidation = invalidation;
     this.clearGraph(this.graphScope.id, true);
-    const scope = this.graphScope;
-    await this.clearSaved(() => {
-      if (this.graphScope !== scope) throw new MemoryMapHostError('request-stale');
+    await this.clearInvalidation(invalidation);
+  }
+  private clearInvalidation(invalidation: symbol): Promise<void> {
+    return this.clearSaved(() => {
+      if (this.pendingInvalidation !== invalidation) throw new MemoryMapHostError('request-stale');
+    }, () => {
+      if (this.pendingInvalidation === invalidation) this.pendingInvalidation = undefined;
     });
   }
   private clearGraph(id: string | undefined, hydrated: boolean): void {
@@ -62,7 +69,7 @@ export class MemoryMapHost {
     this.graphScope = { id, hydrated };
     this.registry.changed();
   }
-  private async clearSaved(assertCurrent: () => void): Promise<void> {
+  private async clearSaved(assertCurrent: () => void, onCommitted?: () => void): Promise<void> {
     const generation = this.graphClearGeneration;
     const assertCanClear = () => {
       if (generation !== this.graphClearGeneration) throw new MemoryMapHostError('request-stale');
@@ -72,9 +79,9 @@ export class MemoryMapHost {
     const cleared = await writeFileAtomicAtPathAdmitted(join(this.namespace.dir, 'snapshot.json'), JSON.stringify({ cache: {}, snapshot: null }), () => {
       assertCanClear();
       return true;
-    });
+    }, onCommitted);
     if (!cleared) throw new MemoryMapHostError('request-stale');
-    assertCanClear();
+    if (!onCommitted) assertCanClear();
   }
   private selectedNamespace(): EmbeddingNamespace { return this.options.provider?.namespace() ?? LOCAL_NAMESPACE; }
   protected activate(catalog: MemoryMapCatalog): void {
@@ -85,6 +92,7 @@ export class MemoryMapHost {
   }
   private async readSaved() {
     const absent = { cache: {}, snapshot: null };
+    if (this.pendingInvalidation !== undefined) return absent;
     const raw = await this.namespace.readJson<unknown>('snapshot.json', absent);
     if (raw === absent) {
       try { await lstat(join(this.namespace.dir, 'snapshot.json')); }
@@ -287,6 +295,11 @@ export class MemoryMapHost {
     };
     let outcome: MemoryBuildOutcome = { kind: 'cancelled' };
     try {
+      // Takeover fences the old write, so finish any explicit invalidation under the new generation.
+      if (this.pendingInvalidation !== undefined) {
+        await this.clearInvalidation(this.pendingInvalidation);
+        assertCurrent();
+      }
       let folder = '';
       let assertModelAdmission: (() => void) | undefined;
       if (selected.source === 'local') {
