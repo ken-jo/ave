@@ -35,6 +35,7 @@ function claudeClient(initial = claudeCodeSubscriptionStatus("ready", "connected
   const client = {
     getStatus: vi.fn(async () => status),
     getCachedStatus: vi.fn(() => status),
+    cancelLogin: vi.fn(async () => status),
     verify: vi.fn(async () => status),
     logout: vi.fn(async () => {
       status = claudeCodeSubscriptionStatus("unverified", "signed-out", "2.1.0");
@@ -148,8 +149,8 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     }
   });
 
-  it.each([false, true])("orders a disconnect and reconnect by sample start with newest completion first=%s", async (newestFirst) => {
-    const { client } = claudeClient();
+  it.each([false, true])("orders overlapping account reads with newest completion first=%s", async (newestFirst) => {
+    const { client, setStatus } = claudeClient();
     const runtime = await service({ claude: client });
     const changed = vi.fn();
     const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
@@ -173,12 +174,35 @@ describe("SubscriptionRuntimeService settings read cache", () => {
         disconnected.resolve(signedOut);
         await expect(earlier).resolves.toMatchObject({ connection: "signed-out", capabilities: { chat: false } });
         reconnected.resolve(signedIn);
-        await expect(later).resolves.toMatchObject({ connection: "connected", capabilities: { chat: false } });
+        await expect(later).resolves.toMatchObject({ connection: "signed-out", capabilities: { chat: false } });
+        expect(changed.mock.calls).toEqual([["claude-code", false]]);
+        setStatus(signedIn);
+        await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "connected", capabilities: { chat: false } });
         expect(changed.mock.calls).toEqual([["claude-code", false], ["claude-code", true]]);
       }
       const sampleCount = client.getStatus.mock.calls.length;
       expect(await runtime.getStatus("claude-code", { allowCached: true })).toMatchObject({ connection: "connected", version: "2.2.0" });
       expect(client.getStatus).toHaveBeenCalledTimes(sampleCount);
+    } finally {
+      unsubscribe();
+      await runtime.stop();
+    }
+  });
+
+  it("keeps the disconnect latched through login cleanup", async () => {
+    const { client, setStatus } = claudeClient();
+    const runtime = await service({ claude: client });
+    const changed = vi.fn();
+    const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
+    try {
+      await runtime.getStatus("claude-code");
+      await runtime.logout("claude-code");
+      setStatus(claudeCodeSubscriptionStatus("ready", "connected", "2.1.0"));
+      await expect(runtime.cancelLogin("claude-code")).resolves.toMatchObject({ connection: "signed-out" });
+      await expect(runtime.getCachedStatus("claude-code")).resolves.toMatchObject({ connection: "signed-out" });
+      expect(changed.mock.calls).toEqual([["claude-code", false]]);
+      await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "connected" });
+      expect(changed.mock.calls).toEqual([["claude-code", false], ["claude-code", true]]);
     } finally {
       unsubscribe();
       await runtime.stop();

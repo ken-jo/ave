@@ -189,7 +189,10 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
   });
 });
 
-it.each(["live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog"] as const)("invalidates a cached windowless reviewer verdict on %s and restores the saved route", async (scenario) => {
+it.each([
+  "live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog",
+  "logout during failed login",
+] as const)("invalidates a cached windowless reviewer verdict on %s and restores the saved route", async (scenario) => {
   const tempDir = mkdtempSync(join(tmpdir(), "windowless-reviewer-"));
   vi.resetModules();
   const resources = await import("../../../main/host-resources.js");
@@ -213,7 +216,13 @@ it.each(["live disconnect", "model discovery account probe failure", "sign-out d
   const { SubscriptionRuntimeService, onSubscriptionRuntimeStatusChanged } = await import("../../../main/subscription-runtime-service.js");
   const connected = claudeCodeSubscriptionStatus("ready", "connected", "test");
   let status = connected;
-  const provider = scenario === "live disconnect" ? "claude-code" : "codex";
+  const getClaudeStatus = vi.fn(async () => status);
+  const provider = scenario === "live disconnect" || scenario === "logout during failed login" ? "claude-code" : "codex";
+  const heldLogout = deferred<void>();
+  const logoutStarted = deferred<void>();
+  const heldLogin = deferred<void>();
+  const loginStarted = deferred<void>();
+  const loginError = new Error("Executable preparation failed");
   const accountStatus = { ...connected, planType: null, pendingDeviceCode: null };
   const getAccountStatus = vi.fn(async () => accountStatus);
   const request = vi.fn(async () => ({ data: [] }));
@@ -235,7 +244,21 @@ it.each(["live disconnect", "model discovery account probe failure", "sign-out d
   const runtime = await SubscriptionRuntimeService.create(async () => {}, {
     namespace: createSubscriptionRuntimeNamespace(),
     claimRuntimeDirectories: claimFakeRuntimeDirectories,
-    claudeCodeClient: { getStatus: async () => status, stop: vi.fn() } as never,
+    claudeCodeClient: {
+      getStatus: getClaudeStatus,
+      logout: async () => {
+        logoutStarted.resolve();
+        await heldLogout.promise;
+        status = claudeCodeSubscriptionStatus("unverified", "signed-out", "test");
+        return status;
+      },
+      startBrowserLogin: async () => {
+        loginStarted.resolve();
+        await heldLogin.promise;
+        throw loginError;
+      },
+      stop: vi.fn(),
+    } as never,
     ...(artifact ? {
       createCodexAppServerClient: (options) => new CodexAppServerClient({
         ...options, runtimeHome, sqliteHome: runtimeHome, workspaceDir: runtimeHome, runtimeTempDir: runtimeHome,
@@ -335,6 +358,22 @@ it.each(["live disconnect", "model discovery account probe failure", "sign-out d
       getAccountStatus.mockResolvedValueOnce(accountStatus).mockRejectedValueOnce(new Error("Account probe unavailable"));
       await expect(runtime.openTextSession(selection)).rejects.toThrow();
       expect(request).toHaveBeenCalledOnce();
+    } else if (scenario === "logout during failed login") {
+      const readsBeforeLogout = getClaudeStatus.mock.calls.length;
+      const logout = runtime.logout(provider);
+      const outcome = logout.then((value) => value.connection, (error: unknown) => error);
+      await logoutStarted.promise;
+      const login = runtime.startLogin(provider, "browser");
+      const loginFailure = expect(login).rejects.toMatchObject({ code: "subscription-operation-failed" });
+      await loginStarted.promise;
+      heldLogout.resolve();
+      const logoutOutcome = await outcome;
+      const whileLoginPending = await dispatch(true);
+      heldLogin.resolve();
+      await loginFailure;
+      expect(whileLoginPending).toMatchObject({ review: { outcome: expect.not.stringMatching(/^cache$/) }, result: { decision: "deny", reasonCode: "no-approver" } });
+      expect(logoutOutcome).toBe("signed-out");
+      expect(getClaudeStatus).toHaveBeenCalledTimes(readsBeforeLogout);
     } else {
       status = claudeCodeSubscriptionStatus("unverified", "signed-out", "test");
       await runtime.getStatus(provider);
