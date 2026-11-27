@@ -889,7 +889,14 @@ export function App() {
   const { updates: marketplaceUpdates, skip: skipMarketplaceUpdates } = useMarketplaceUpdates(api);
   const { announcements: marketplaceAnnouncements, dismiss: dismissMarketplaceAnnouncement } = useMarketplaceAnnouncements(api);
   const { status: bootstrapStatus, dismiss: dismissBootstrapStatus, retry: retryBootstrap } = useBootstrapStatus(api);
-  const approvals = useApproval();
+  const notifyOutputResolution = useCallback((requestId: string, by: "tailnet-surface" | "expired") => {
+    statusUpsertToast(`output-approval:${requestId}`, {
+      severity: "info",
+      message: by === "expired" ? t("tailnetWorkReviews.outputApprovalExpired")
+        : t("tailnetWorkReviews.outputResolvedBy", { surface: t("tailnetWorkReviews.phoneSurface") }),
+    });
+  }, [statusUpsertToast, t]);
+  const approvals = useApproval(notifyOutputResolution);
   const { queue: approvalQueue, decide: handleApprovalDecide, claims: approvalClaims } = approvals;
   // Conversation cards stay with their owning surface; unowned host/plugin cards use the focused pane. One selector drives
   // both cards and attention dots.

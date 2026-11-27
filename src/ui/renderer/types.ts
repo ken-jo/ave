@@ -1378,7 +1378,7 @@ type ApprovalSentenceSelectResult =
    * The queue reconciles against it: a card the surface that asked can no
    * longer take down (its tile closed, a navigation let go of it) goes here.
    */
-  onSettled: (cb: (payload: { requestId: string }) => void) => () => void;
+  onSettled: (cb: (payload: { requestId: string; resolvedBy?: import("../../shared/requested-output-card.js").RequestedOutputCardResolution }) => void) => () => void;
   respond: (decision: ApprovalDecision) => Promise<unknown>;
   /**
    * Requests the host is still waiting on, in the order they were asked.

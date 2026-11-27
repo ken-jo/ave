@@ -2640,7 +2640,7 @@ describe("phone work reviews", () => {
       },
     },
     {
-      kind: "stage", deny: "reject", binding: { itemId: 2, input: stageBinding },
+      kind: "stage", deny: "reject", binding: { itemId: 2, input: stageBinding }, reviewHandle: "140922fd-aab0-44b8-8fdd-559c4ed13a21",
       review: {
         kind: "stage-gate", key: "stage:2", itemId: 2, binding: stageBinding, title: "Stage review",
         result: "The stage result", outputs: [{
@@ -2675,11 +2675,11 @@ describe("phone work reviews", () => {
       },
     },
     {
-      kind: "requested-output", deny: "reject",
+      kind: "requested-output", deny: "reject", reviewHandle: "140922fd-aab0-44b8-8fdd-559c4ed13a21",
       binding: { input: { itemId: 2, runId, stageId: stageBinding.stageId, attempt: stageBinding.attempt, outputHash: stageBinding.outputHash } },
       review: { outputs: [{
         id: "output", decl: outputDecl,
-        summary: "Send the report", args: JSON.stringify(outputArgs), files: [{ path: "reports/output.txt", sha256: "b".repeat(64), size: 43 }],
+        summary: "Send the report", files: [{ path: "reports/output.txt", sha256: "b".repeat(64), size: 43 }],
       }] },
     },
   ] satisfies [TailnetWorkReview, ...TailnetWorkReview[]];
@@ -2694,6 +2694,7 @@ describe("phone work reviews", () => {
     response: (decision: TailnetWorkDecisionRequest) => TailnetWorkDecisionResponse | Promise<TailnetWorkDecisionResponse>,
     language = "en-US",
     grantedRoles: readonly ("observer" | "controller" | "work-decision")[] = roles,
+    outputSnapshot?: NonNullable<TailnetWebOptions["workDecisions"]>["outputSnapshot"],
   ) {
     const sharing = pairedSharing({ observe: true, control: true });
     const received: TailnetWorkDecisionRequest[] = [];
@@ -2707,6 +2708,7 @@ describe("phone work reviews", () => {
           return response(decision);
         },
         list: async () => reviews,
+        outputSnapshot,
         verifyServeTarget: async () => true,
         receipts: createReceiptStore(),
       } },
@@ -2785,10 +2787,11 @@ describe("phone work reviews", () => {
         for (const evidence of [
           '<img src="review-content">', "A complete plan", "The stage result", stageBinding.resultHash, stageBinding.outputHash,
           "reports/join.txt", "Conflict excerpt", joinBinding.conflictHash, "draft-revision", "Draft description", "prepare report",
-          pin.graphHash, "Existing schedule", "f".repeat(64), "send_report", "report-review", "reports/output.txt",
+          pin.graphHash, "Existing schedule", "f".repeat(64), "send_report", "reports/output.txt",
         ]) expect(section?.textContent).toContain(evidence);
         expect(section?.querySelector("textarea[maxlength=\"16384\"]")).toHaveProperty("value", "Run details");
         expect(section?.querySelector("img")).toBeNull();
+        expect(section?.textContent).not.toContain("report-review");
       } finally {
         browser.window.close();
       }
@@ -2804,6 +2807,36 @@ describe("phone work reviews", () => {
     } finally {
       browser.window.close();
     }
+  });
+
+  it("shows full execution arguments as text and closes the phone card on settlement", async () => {
+    const requestId = "140922fd-aab0-44b8-8fdd-559c4ed13a21";
+    const handle = `${requestId}.${Date.now() + 30_000}.${"a".repeat(64)}`;
+    const argsText = JSON.stringify({ body: `<img src="not-a-node"> ${"자료".repeat(500)}` }, null, 2);
+    let settled = false;
+    const projection = vi.fn(async (): Promise<Pick<TailnetWorkReviewSnapshot, "outputCards">> => ({ outputCards: settled
+      ? [{ requestId, resolvedBy: "tailnet-surface" }]
+      : [{ requestId, handle, content: { toolName: "send_report", ownerId: "reports", argsText, serviceEndpoint: "https://reports.example.test/tool" } }] }));
+    const { browser, received, waitForDecisions } = await openPhoneReviews([], () => {
+      settled = true;
+      return { ok: true, kind: "output-execution-card" };
+    }, "en", roles, projection);
+    try {
+      const card = browser.window.document.querySelector("#output-execution-cards article");
+      expect(card?.querySelector("pre")?.textContent).toBe(argsText);
+      expect(card?.querySelector("pre")?.tabIndex).toBe(0);
+      expect(card?.textContent).toContain("https://reports.example.test/tool");
+      expect(card?.querySelector("img")).toBeNull();
+      const allow = card?.querySelector<HTMLButtonElement>("button[data-work-action=approve]");
+      expect(allow?.textContent).toBe("Allow once");
+      allow?.click();
+      allow?.click();
+      await waitForDecisions(1);
+      expect(received[0]).toMatchObject({ kind: "output-execution-card", input: { handle, choice: "allow-once" } });
+      expect(projection).toHaveBeenCalledWith(expect.objectContaining({ outputPage: expect.objectContaining({ id: expect.any(String) }) }));
+      await waitForPhoneDom(browser, () => expect(card?.textContent).toContain("Resolved by phone"));
+      expect(card?.querySelector("button, pre")).toBeNull();
+    } finally { browser.window.close(); }
   });
 
   it("renders the destination template, active pin and failure from the paired schedule snapshot", async () => {
@@ -3014,7 +3047,8 @@ describe("phone work reviews", () => {
             result.resolve(successes[kind]);
             await refreshed;
             expect(snapshotRequests()).toBeGreaterThan(before);
-            expect(recentPhoneResults(browser)?.textContent).toContain("Decision submitted.");
+            expect(recentPhoneResults(browser)?.textContent).toContain("reviewHandle" in original
+              ? "The gate was approved. Requested outputs may still need approval." : "Decision submitted.");
             expect(reviewStatus(browser, kind)).toBe("");
             expectActions(true, true);
             return;
@@ -3361,6 +3395,7 @@ describe("phone work reviews", () => {
         case "plan":
         case "stage": return { ok: true, kind: decision.kind, status: action === "reject" ? "rejected" : "approved" };
         case "join":
+        case "output-execution-card":
         case "requested-output": return { ok: true, kind: decision.kind };
         case "template-confirmation": return { ok: true, kind: decision.kind, pin };
         case "create-and-run": return { ok: true, kind: decision.kind, itemId: 5, runId };
@@ -3378,11 +3413,13 @@ describe("phone work reviews", () => {
       expect(received[0]).toEqual({
         id: expect.stringMatching(/^[a-f0-9-]{36}$/), scope: snapshotScope, kind: view.kind,
         ...view.binding, input: { ...view.binding.input, ...extraInput },
+        ...(action === "approve" && "reviewHandle" in view ? { reviewHandle: view.reviewHandle } : {}),
       });
       expect(requests.filter(request => request.method === "POST")).toEqual([{
         path: "/tailnet/v2/web/work-decisions", method: "POST", csrf: session.csrfToken, credentials: "same-origin",
       }]);
-      await waitForPhoneDom(browser, () => expect(button.closest(".work-review-card")?.querySelector('[role="status"]')?.textContent).toBe("Decision submitted."));
+      const expected = action === "approve" && "reviewHandle" in view ? "The gate was approved. Requested outputs may still need approval." : "Decision submitted.";
+      await waitForPhoneDom(browser, () => expect(button.closest(".work-review-card")?.querySelector('[role="status"]')?.textContent).toBe(expected));
       expect(button.disabled).toBe(true);
       if (index === 1) expect(phoneAction(browser, "requested-output", "approve").disabled).toBe(true);
     } finally {
@@ -3480,7 +3517,7 @@ describe("phone work reviews", () => {
       await waitForPhoneDom(browser, () => expect(document.querySelector('[data-work-kind="plan"] summary')?.textContent).toContain("Updated plan review"));
       expect(status("plan")).toBe(staleMessage);
       expect(status("join")).toBe("This work decision was already submitted.");
-      expect(status("requested-output")).toBe("Decision submitted.");
+      expect(status("requested-output")).toBe("The gate was approved. Requested outputs may still need approval.");
       expect(document.getElementById("work-review-feedback")?.textContent).toBe("");
       expect(requests.filter(request => request.method === "POST")).toHaveLength(3);
     } finally {

@@ -30,6 +30,7 @@ import { UserOwnedSurfaceApprovalCard, type HostTerminalCommandFacts } from "./p
 import type { ReviewerSuggestion } from "../hooks/use-permission-signals.js";
 import type { ApprovalChoice, ApprovalRequest } from "../types.js";
 import { canonicalStringify as canonicalStringifyForRenderer } from "../../../shared/canonical-json.js";
+import { formatApprovalArgs } from "../../../shared/approval-args-display.js";
 import { isNonUserTrustOrigin, trustOriginLabel } from "../utils/trust-origin-label.js";
 import { getActiveSurface } from "../preview/active-surface.js";
 import {
@@ -983,18 +984,19 @@ export function ToolApprovalContent({
 
   // NOTE: argsStr uses JSON.stringify for human-readable display (pretty-printed, insertion-order keys). The IPC approval record uses canonicalStringify
   // which sorts object keys; key ordering may differ between what is shown here and the canonical form used for cache-key lookups in dispatchReviewer.
-  const argsStr = JSON.stringify(request.args, null, 2) ?? "";
+  const outputCard = request.requestedOutputCard;
+  const argsStr = outputCard?.argsText ?? formatApprovalArgs(request.args);
   const explicitHostExecution = request.executionPlan !== undefined
     && "executionRequest" in request.executionPlan
     && request.executionPlan.executionRequest === "host";
   const requiresHostConsent = request.executionPlan?.mode === "plain"
     && request.executionPlan.requiresExplicitUserApproval;
   const isShellAnalysisLimit = request.shellAnalysisLimited === true;
-  const showFullArgsByDefault = requiresHostConsent || isShellAnalysisLimit;
+  const showFullArgsByDefault = requiresHostConsent || isShellAnalysisLimit || outputCard !== undefined;
   const canToggleArgs = !showFullArgsByDefault && argsStr.length > 500;
   const argsTruncated = canToggleArgs && !expanded;
   // JSON escapes C0 controls only; bidi overrides and other invisibles would still reorder the shown input.
-  const argsDisplay = revealHiddenCharacters(argsTruncated ? argsStr.slice(0, 500) + "\n…" : argsStr, { lineBreaks: false });
+  const argsDisplay = outputCard?.argsText ?? revealHiddenCharacters(argsTruncated ? argsStr.slice(0, 500) + "\n…" : argsStr, { lineBreaks: false });
   const shownCandidatePath = revealHiddenCharacters(outOfDirCandidatePath, { lineBreaks: true });
   const shownSuggestedParent = outOfDirSuggestedParent === null ? null : revealHiddenCharacters(outOfDirSuggestedParent, { lineBreaks: true });
   const requestArgs = isRecord(request.args) ? request.args : {};
@@ -1300,7 +1302,7 @@ export function ToolApprovalContent({
                     <p className="border-b px-3 py-2 text-xs font-semibold">
                       {tHook("toolApprovalDialog.showFullInput")}
                     </p>
-                    <pre className="max-h-56 max-w-full overflow-auto px-3 py-2 whitespace-pre-wrap break-all font-mono text-dense leading-relaxed">
+                    <pre tabIndex={outputCard ? 0 : undefined} className="max-h-56 max-w-full overflow-auto px-3 py-2 whitespace-pre-wrap break-all font-mono text-dense leading-relaxed">
                       {argsDisplay}
                     </pre>
                     {canToggleArgs && (
@@ -1695,7 +1697,15 @@ function approvalReviewRows(
   const kept = (...rs: (ReviewBasisRow | null)[]): ReviewBasisRow[] =>
     rs.filter((r): r is ReviewBasisRow => r !== null);
 
-  if (category === "read") {
+  if (request.requestedOutputCard) {
+    const { ownerId, target, canonicalTarget, serviceEndpoint } = request.requestedOutputCard;
+    rows.push(
+      { label: t("tailnetWorkReviews.outputOwner"), value: ownerId, monospace: true },
+      ...(serviceEndpoint === undefined ? [] : [{ label: t("tailnetWorkReviews.outputServiceEndpoint"), value: serviceEndpoint, monospace: true }]),
+      { label: t("tailnetWorkReviews.outputTarget"), value: target ?? t("tailnetWorkReviews.outputTargetUnknown"), monospace: true },
+      ...(canonicalTarget === undefined ? [] : [{ label: t("tailnetWorkReviews.outputCanonicalTarget"), value: canonicalTarget, monospace: true }]),
+    );
+  } else if (category === "read") {
     rows.push(
       { label: t("toolApprovalDialog.rowTarget"), value: targetRowText(request.target?.filePath, pickSummary(parsed, ["path", "paths", "target", "targets", "file", "directory", "resource", "query", "url", "uri"], inputSummary)), monospace: true, testId: "tool-approval-input" },
       { label: t("toolApprovalDialog.rowSensitivity"), value: sensitivityLabel(parsed) },

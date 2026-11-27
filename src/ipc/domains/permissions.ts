@@ -854,6 +854,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const decision = body as unknown as ApprovalDecision;
     const snapshot = approvalGate?.getRequestSnapshot?.(decision.requestId);
     const honoredDecision = await approvalGate?.resolveFromDesktopRendererWithFreshIdentity(decision.requestId, decision, e.sender);
+    if (!honoredDecision && !snapshot) return { ok: false, error: "approval-already-resolved" };
     if (honoredDecision && snapshot) {
       try {
         const answer = admitApprovalAnswer(honoredDecision, { requestId: decision.requestId, toolName: snapshot.toolName, toolUseId: snapshot.toolUseId });

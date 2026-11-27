@@ -180,8 +180,28 @@ and the binding for the decision POST. The client sends the snapshot scope and
 a submission UUID with that binding. The host rechecks the binding and the
 controller's authority before committing. Template confirmation, Create and run,
 and schedule attachment are dismissed on the client. Plan, stage, join and
-requested-output reviews support server-recorded rejection. An approved output
-remains pending for continuation in a local app window.
+requested-output reviews support server-recorded rejection. A phone page must
+review the current output hash before approving an output-bearing gate. The
+host acknowledges the committed gate and its output reservations before any
+execution card receives an answer. A push review shows the bound remote, URL,
+ref and commit. The approved push still checks its binding and the run and
+controller authority at launch.
+
+Plugin and server outputs use the ordinary one-time execution approval on the
+eligible desktop and every current paired owner controller that has opened
+Work reviews. This applies regardless of which surface approved the gate. The
+card shows the resolved owner, known destination facts and the full prepared
+arguments. If any required value cannot be displayed losslessly, both surfaces
+refuse the output. An execution card cannot answer native-only secondary asks.
+
+The host verifies private Serve, pairing and controller authority before
+offering cards. An answer handle belongs to the exact pending request and the
+page's cookie and CSRF binding. The first valid answer consumes the request.
+Other surfaces close their copy and show the answering surface, which is also
+audited. A new request or a fresh page cannot reuse another page's handle.
+The winning surface, the originating authority for a remote gate, and the run
+must still be current when the exact invocation reaches the handler. The host
+does not replay pending execution after restart.
 
 The document requires an authorized observer identity plus an active P2 observe
 share. Without that share it serves the invitation-code page rather than raw

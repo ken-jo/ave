@@ -1,6 +1,6 @@
 import { reserveTailnetListenerPort } from "../shared/tailnet-listener-port.js";
 import { assertTailnetListenerPortAllowed } from "../permissions/tailnet-listener-policy.js";
-import { TAILNET_WORK_DECISION_CAPABILITY, TAILNET_WORK_DECISION_PATH, type TailnetWorkDecisionRequest, type TailnetWorkDecisionResponse, type TailnetWorkReview, type TailnetWorkReviewSnapshot } from "../shared/tailnet-work-decisions.js";
+import { TAILNET_OUTPUT_CARD_HEADER, TAILNET_WORK_DECISION_CAPABILITY, TAILNET_WORK_DECISION_PATH, type TailnetWorkDecisionRequest, type TailnetWorkDecisionResponse, type TailnetWorkReview, type TailnetWorkReviewSnapshot } from "../shared/tailnet-work-decisions.js";
 import type { RemoteWorkDecisionEvidence } from "../main/workflow-template-decision.js";
 import { parseTailnetWorkDecision } from "./tailnet-work-decision-input.js";
 import { WORK_DECISION_AUTHORITY_REVOKED } from "../work-board/work-decision-authority.js";
@@ -116,6 +116,7 @@ export type TailnetWorkDecisionHandler = (request: TailnetWorkDecisionRequest, e
 interface TailnetWebWorkDecisions {
   readonly decide: TailnetWorkDecisionHandler;
   readonly list?: (evidence: RemoteWorkDecisionEvidence) => Promise<readonly TailnetWorkReview[]>;
+  readonly outputSnapshot?: (evidence: RemoteWorkDecisionEvidence) => Promise<Pick<TailnetWorkReviewSnapshot, "outputCards">>;
   readonly verifyServeTarget: () => Promise<boolean>;
   readonly receipts: TailnetControllerReceiptStore;
 }
@@ -1067,24 +1068,21 @@ async function routeTailnetWebSnapshot(
   );
   if (authorization === null) return;
   const work = web.workDecisions;
-  const { login, pairedShare, scope, cookieToken } = authorization;
+  const { pairedShare, scope } = authorization;
   let workReviews: readonly TailnetWorkReview[] | undefined;
+  let outputSnapshot: Pick<TailnetWorkReviewSnapshot, "outputCards"> = {};
   if (work?.list && pairedShare.permission === "control"
     && authorizedTailnetLogin(req.headers, options.authorization, TAILNET_WORK_DECISION_CAPABILITY) !== undefined) {
-    const isCurrent = () => {
-      if (options.isControllerCurrent?.() !== true) return false;
-      const session = web.sessions.resolve(cookieToken);
-      return session !== null && sameTailnetWebSessionAuthority(session, pairedShare)
-        && isTailnetShareScopeCurrent(pairedShare, currentScope, scope);
-    };
-    const refreshCurrent = async () => isCurrent()
-      && await pairedShare.pairedShareGuard.refreshCurrent(pairedShare.pairedShare) && isCurrent();
+    const supportsOutput = work.outputSnapshot !== undefined && singleHeader(req.headers, TAILNET_OUTPUT_CARD_HEADER) === "1";
+    const evidence = webWorkEvidence(authorization, options, web, currentScope, work, supportsOutput, supportsOutput);
+    const { isCurrent, refreshCurrent } = evidence.authority;
     if (!await refreshCurrent()) {
       sendTailnetWebJson(res, web, 401, { ok: false, error: "web-session-revoked" }, true);
       return;
     }
     try {
-      workReviews = await work.list({ login, conversationId: scope.conversationId, authority: { isCurrent, refreshCurrent } });
+      if (evidence.outputPage && work.outputSnapshot) outputSnapshot = await work.outputSnapshot(evidence);
+      workReviews = await work.list(evidence);
     } catch {
       sendTailnetWebJson(res, web, 503, { ok: false, error: "work-review-unavailable" });
       return;
@@ -1097,6 +1095,7 @@ async function routeTailnetWebSnapshot(
   const snapshot: TailnetObserverSnapshot = {
     ...toTailnetObserverSnapshot(options.projectionStore.snapshot(scope.conversationId, { busy: options.isConversationBusy() }), scope.value),
     ...(workReviews === undefined ? {} : { workReviews }),
+    ...outputSnapshot,
   };
   sendTailnetWebJson(res, web, 200, {
     ok: true,
@@ -1222,23 +1221,12 @@ async function routeTailnetWebWorkDecision(
   if (!await work.verifyServeTarget()) return fail(403, "work-decision-serve-required");
   const authorized = authorize(false);
   if (authorized === null) return;
-  const { login, pairedShare, scope, cookieToken, csrfToken } = authorized;
+  const { pairedShare, scope } = authorized;
   if (decision.scope !== scope.value) return fail(409, "work-decision-scope-mismatch");
 
-  const isCurrent = () => {
-    const session = web.sessions.resolveMutation(cookieToken, csrfToken);
-    return session !== null && sameTailnetWebSessionAuthority(session, pairedShare)
-      && isTailnetShareScopeCurrent(pairedShare, currentScope, scope);
-  };
-  const evidence: RemoteWorkDecisionEvidence = {
-    login, conversationId: scope.conversationId,
-    authority: {
-      isCurrent,
-      refreshCurrent: async () => isCurrent() && await work.verifyServeTarget()
-        && await pairedShare.pairedShareGuard.refreshCurrent(pairedShare.pairedShare) && isCurrent(),
-    },
-  };
-  if (!isCurrent()) return fail(403, WORK_DECISION_AUTHORITY_REVOKED);
+  const evidence = webWorkEvidence(authorized, options, web, currentScope, work, true,
+    work.outputSnapshot !== undefined && singleHeader(req.headers, TAILNET_OUTPUT_CARD_HEADER) === "1");
+  if (!evidence.authority.isCurrent()) return fail(403, WORK_DECISION_AUTHORITY_REVOKED);
 
   const keyDigest = sha256Hex(`work-decision\u0000${pairedShare.actorId}\u0000${decision.id}`);
   const ownerId = web.receiptOwnerId;
@@ -1251,7 +1239,7 @@ async function routeTailnetWebWorkDecision(
     });
     if (receipt.kind === "capacity-exhausted") return fail(503, "receipt-unavailable");
     if (receipt.kind === "conflict") return fail(409, "idempotency-conflict");
-    if (receipt.kind !== "reserved") return fail(409, "work-decision-replayed");
+    if (receipt.kind !== "reserved") return fail(409, decision.kind === "output-execution-card" ? "approval-already-resolved" : "work-decision-replayed");
     reserved = true;
     const result = await work.decide(decision, evidence);
     sendTailnetWebJson(res, web, result.ok ? 200 : result.error === WORK_DECISION_AUTHORITY_REVOKED ? 403 : 409, result);
@@ -1266,6 +1254,36 @@ async function routeTailnetWebWorkDecision(
       }
     }
   }
+}
+
+function webWorkEvidence(
+  authorization: TailnetWebRequestAuthorization,
+  options: TailnetSurfaceServerOptions,
+  web: TailnetWebRuntime,
+  currentScope: TailnetObserverScopeReader,
+  work: TailnetWebWorkDecisions,
+  requireServe: boolean,
+  supportsOutput: boolean,
+): RemoteWorkDecisionEvidence {
+  const { login, scope, pairedShare, cookieToken, csrfToken } = authorization;
+  const { pairedShare: binding, actorId, pairedShareGuard } = pairedShare;
+  const isSessionCurrent = () => {
+    if (options.isControllerCurrent?.() !== true) return false;
+    const session = web.sessions.resolve(cookieToken);
+    return session !== null && sameTailnetWebSessionAuthority(session, pairedShare) && isTailnetShareScopeCurrent(pairedShare, currentScope, scope);
+  };
+  const isCurrent = () => isSessionCurrent() && web.sessions.resolveMutation(cookieToken, csrfToken) !== null;
+  const refresh = async (current: () => boolean) => current() && (!requireServe || await work.verifyServeTarget())
+    && await pairedShareGuard.refreshCurrent(binding) && current();
+  return {
+    login, conversationId: scope.conversationId,
+    authority: { isCurrent, refreshCurrent: () => refresh(isCurrent) },
+    ...(supportsOutput ? { outputPage: {
+      id: sha256Hex(JSON.stringify([actorId, binding, cookieToken, csrfToken])),
+      controller: { kind: "tailnet-controller", actorId, pairedShare: binding,
+        pairedShareGuard: { isCurrent: () => isSessionCurrent(), refreshCurrent: () => refresh(isSessionCurrent) } },
+    } } : {}),
+  };
 }
 
 async function routeTailnetWebCommand(
@@ -1742,6 +1760,7 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
   const bootstrap = JSON.stringify({
     ...state,
     workDecisionPath: TAILNET_WORK_DECISION_PATH,
+    outputCardHeader: TAILNET_OUTPUT_CARD_HEADER,
     maxNoteLength: MAX_PLAN_NOTE_LENGTH,
   }).replaceAll("<", "\\u003c");
   return [
@@ -1779,6 +1798,7 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "<div id=\"work-review-recent-results\" role=\"status\" aria-atomic=\"true\"></div></div>",
     "<p id=\"work-review-empty\" data-web-message=\"empty\" hidden></p>",
     "<div id=\"work-review-list\"></div>",
+    "<div id=\"output-execution-cards\"></div>",
     "</section>",
     "<section aria-labelledby=\"assistant-heading\">",
     "<h2 id=\"assistant-heading\" data-web-message=\"assistant\"></h2>",
@@ -1813,6 +1833,7 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "  let refreshPending = false;",
     "  let refreshRestart = false;",
     "  let refreshTimer = null;",
+    "  let outputPollTimer = null;",
     "  let lastSnapshotRefreshAt = 0;",
     "  let pageEnded = false;",
     "  const MIN_SNAPSHOT_REFRESH_MS = 1000;",
@@ -1820,6 +1841,7 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "  function request(path, init) {",
     "    const headers = new Headers((init && init.headers) || undefined);",
     "    headers.set(\"x-ave-tailnet-csrf\", boot.csrfToken);",
+    "    if (boot.outputCardHeader) headers.set(boot.outputCardHeader, \"1\");",
     "    return fetch(path, Object.assign({ cache: \"no-store\", credentials: \"same-origin\" }, init || {}, { headers }));",
     "  }",
     TAILNET_WORK_REVIEW_SCRIPT,
@@ -1892,7 +1914,11 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "      lastSnapshotRefreshAt = Date.now();",
     "      void refresh(restartNow).finally(() => {",
     "        refreshInFlight = false;",
+    "        clearTimeout(outputPollTimer);",
     "        if (refreshPending) scheduleRefresh(false);",
+    "        else if (snapshot?.outputCards && document.visibilityState === \"visible\") outputPollTimer = window.setTimeout(() => {",
+    "          if (document.visibilityState === \"visible\") scheduleRefresh(false, 0);",
+    "        }, 2500);",
     "      });",
     "    }, wait);",
     "  }",

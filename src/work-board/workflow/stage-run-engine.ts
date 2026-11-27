@@ -1,6 +1,5 @@
 /** Runs a template run's stages: one serial event queue per item, the pure reducer for every state change, and the only spawn site of a
  * stage child. Each child's tool calls still enter the ordinary permission tree; nothing here decides a permission. */
-import type { WebContents } from "electron";
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { isAbsolute, relative } from "node:path";
@@ -75,7 +74,7 @@ interface LaneHooks {
 export interface StageRunEngineDeps {
   /** The board: the row of a run carries its id, its shown status and its final output. Nothing a run is decided from is read here. */
   store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "revokedRowKept" | "clearMissingRun" | "runAuthority" | "revokeRun" | "admitsRunEffect"
-    | "settledOutputAuthority" | "runBoardSnapshot" | "hasActiveProvisionalStart" | "acceptProvisionalTemplateStart" | "rollbackProvisionalTemplateStart" | "finishProvisionalWorkspaceRecovery">;
+    | "settledOutputAuthority" | "runBoardSnapshot" | "runRowStillNamed" | "hasActiveProvisionalStart" | "acceptProvisionalTemplateStart" | "rollbackProvisionalTemplateStart" | "finishProvisionalWorkspaceRecovery">;
   /** Every run-authority field: the pin, the source, the stage runs, the joins, the gates and how the run ended. */
   runs: WorkflowRunState;
   /** The authorised registry root of a project path, or null when the registry does not hold it. */
@@ -120,8 +119,10 @@ export type ScheduledTemplateStart =
   | { ok: false; code: string; tool?: EnvelopeToolRef };
 
 export type StageGateDecider = { kind: "local-desktop"; receipt: SecuritySettingsDecision }
-  | { kind: "tailnet"; authority: WorkDecisionAuthority };
-
+  | { kind: "tailnet"; authority: WorkDecisionAuthority; outputs?: {
+    controller: import("../../shared/chat-origin.js").TailnetControllerAuthority;
+    canDeliver: () => boolean;
+  } };
 interface StageRunStart {
   source: RunAuthoritySource;
   authority?: WorkDecisionAuthority;
@@ -340,9 +341,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   // A read of the run's authority (store.runAuthority) and its committed row, made right before an output handler or integration starts.
   const canAdmitRunEffect = ({ itemId, runId }: RunRef, authority?: AbortSignal): boolean => store.admitsRunEffect(itemId, runId, authority);
   const runAuthority = ({ itemId, runId }: RunRef): AbortSignal => store.runAuthority(itemId, runId);
-  const outputApprovalSurfaces = new WeakMap<RunState, Map<string, WebContents>>();
+  const outputApprovalSurfaces = new WeakMap<RunState, Map<string, import("./requested-outputs.js").OutputApprovalSurface>>();
   const outputEffects = createRecordedOutputEffects({ records, outputs: deps.outputs, resolvePinned, resolveProjectRoot: deps.resolveProjectRoot, notifyItemChanged,
     canAdmitRunEffect, runAuthority, settledOutputAuthority: ({ itemId, runId }) => store.settledOutputAuthority(itemId, runId),
+    rowStillNamed: run => store.runRowStillNamed(run),
     scheduledProject: async source => {
       const approved = (await deps.attachments.getAttachment(source.attachmentId))?.approvedScope;
       return approved?.kind === "project" ? approved.projectRoot : approved?.kind === "all" ? undefined : null;
@@ -1238,7 +1240,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           const surface = outputApprovalSurfaces.get(state)?.get(effect.stageId);
           if (!stage || !requestedOutputs?.length || !definition || !surface) break;
           const canExecute = () => runs.get(state.itemId) === state && !state.rowGone && !state.lost
-            && !halted(state, effect.stageId) && canShowRun(state) && !surface.isDestroyed();
+            && !halted(state, effect.stageId) && canShowRun(state);
           const previous = state.outputTail;
           state.outputAbort ??= new AbortController();
           const { outputAbort } = state;
@@ -2108,9 +2110,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** A user action on an unsettled run: refused before any write unless `precheck` passes and the pin still resolves. */
   function decide<R extends string>(itemId: number, runId: string, event: RunEvent, precheck: Precheck<R>):
   Promise<R | DecisionRefusal | null>;
-  function decide<R extends string>(itemId: number, runId: string, event: RunEvent, precheck: Precheck<R>, authority: WorkDecisionAuthority | undefined):
+  function decide<R extends string>(itemId: number, runId: string, event: RunEvent, precheck: Precheck<R>, authority: WorkDecisionAuthority | undefined, waitForEffects?: boolean):
   Promise<R | DecisionRefusal | typeof WORK_DECISION_AUTHORITY_REVOKED | null>;
-  async function decide<R extends string>(itemId: number, runId: string, event: RunEvent, precheck: Precheck<R>, authority?: WorkDecisionAuthority):
+  async function decide<R extends string>(itemId: number, runId: string, event: RunEvent, precheck: Precheck<R>, authority?: WorkDecisionAuthority, waitForEffects = true):
   Promise<R | DecisionRefusal | typeof WORK_DECISION_AUTHORITY_REVOKED | null> {
     // An end the run file did not confirm, or a deleted row's run not taken over yet, holds back only its own run's decisions, once the
     // boot takeover has succeeded.
@@ -2128,7 +2130,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const decision = { precheck, effects: [] as Promise<unknown>[], authority };
     const result = await enqueue(state, () => handle(state, event, decision));
     // The caller sees its decision's effects complete without occupying the write chain.
-    if (result === null) await Promise.all([...decision.effects, state.finishing]);
+    if (result === null && waitForEffects) await Promise.all([...decision.effects, state.finishing]);
     return result;
   }
 
@@ -2156,7 +2158,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const surface = decider?.kind === "local-desktop" && i.decision === "approve" && i.outputHash !== undefined ? securitySettingsGestures.redeem(decider.receipt, {
       channel: WORK_BOARD.decideStage, payload: workBoardDecisionKey(WORK_BOARD.decideStage, itemId, i),
     }) : null;
-    let outputSurfaces: Map<string, WebContents> | undefined;
+    let outputSurfaces: Map<string, import("./requested-outputs.js").OutputApprovalSurface> | undefined;
     const reason = await decide(itemId, i.runId, event, (record) => {
       const run = record.stageRuns.find(candidate => candidate.stageId === i.stageId);
       if (!run) return "not_found";
@@ -2165,17 +2167,19 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (run.output === undefined || run.resultHash === undefined || resultHashOf(run.output) !== run.resultHash || i.resultHash !== run.resultHash) return "result_mismatch";
       if (requestedOutputHash(run) !== i.outputHash) return "output_mismatch";
       if (run.requestedOutputs?.length && i.decision === "approve") {
-        if (decider?.kind === "tailnet") return "outputs-need-local-approver";
+        if (decider?.kind === "tailnet" && !decider.outputs?.canDeliver()) return "requested-output-card-unavailable";
         const state = runs.get(itemId);
-        if (!surface || !state) return "user-gesture-required";
+        const controller = decider?.kind === "tailnet" ? decider.outputs?.controller : undefined;
+        if ((!surface && !controller) || !state) return "user-gesture-required";
         outputSurfaces = outputApprovalSurfaces.get(state) ?? new Map();
         outputApprovalSurfaces.set(state, outputSurfaces);
-        outputSurfaces.set(i.stageId, surface);
+        outputSurfaces.set(i.stageId, { desktop: surface, controller });
       }
       const note = noteRefusal(i);
       if (note) return note;
       return i.decision === "request_changes" && run.attempt >= MAX_STAGE_ATTEMPTS ? "attempts_exhausted" : null;
-    }, decider?.kind === "tailnet" ? decider.authority : undefined).finally(() => outputSurfaces?.delete(i.stageId));
+    }, decider?.kind === "tailnet" ? decider.authority : undefined, decider?.kind !== "tailnet" || i.outputHash === undefined || i.decision !== "approve")
+      .finally(() => outputSurfaces?.delete(i.stageId));
     if (reason !== null) return { ok: false, reason };
     return { ok: true, status: i.decision === "approve" ? "approved" : i.decision === "reject" ? "rejected" : "changes_requested" };
   }

@@ -1362,6 +1362,10 @@ export class McpManager {
     return undefined;
   }
 
+  transportEndpoint(serverId: string): string | undefined {
+    return this.clients.get(serverId)?.transportEndpoint();
+  }
+
   /** Read card HTML with resource-owned CSP and permissions, never tool-result policy. */
   async readUiResource(serverId: string, uri: string): Promise<McpUiResourceRead> {
     const client = this.clients.get(serverId);

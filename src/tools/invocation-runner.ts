@@ -3103,6 +3103,7 @@ async function runToolInvocationAttempt(
       checkCurrentPermission: authorization.checkCurrentPermission,
       replayRootBinding: opts.replayRootBinding,
       approvedInvocation: opts.approvedInvocation,
+      refreshApprovedInvocation: opts.refreshApprovedInvocation,
       fileTargetSeal,
       imageTargetPath: isWindows && tool.name === "view_image" ? canonicalTargets[0]?.runtimePath : undefined,
       abortSignal,

@@ -1146,6 +1146,10 @@ export class McpClient {
   }
 
   /** 서버 상태 조회 */
+  transportEndpoint(): string | undefined {
+    return this.config.transport === "http" ? this.config.url : undefined;
+  }
+
   getState(): McpServerState {
     // A server id quarantined by an unverified contained termination stays refused until restart; the row says so before
     // any reconnect attempt surfaces the refusal.

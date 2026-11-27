@@ -85,7 +85,8 @@ export async function loadTailnetWebMessages(locale: Locale): Promise<Record<str
   const messages = await loadLocaleMessages(locale);
   return Object.fromEntries(Object.entries(messages).filter(([key]) => REVIEW_MESSAGE_KEYS.has(key)
     || key.startsWith("tailnetWorkReviews.") || key.startsWith("reasonCodes.")
-    || key.startsWith("workflowSchedule.") || key.startsWith("workflowTemplates.joinReason.")));
+    || key.startsWith("workflowSchedule.") || key.startsWith("workflowTemplates.joinReason.")
+    || key === "toolApprovalDialog.allowOnce" || key === "toolApprovalDialog.decisionDeny"));
 }
 
 export const TAILNET_WORK_REVIEW_STYLE = `
@@ -104,6 +105,9 @@ export const TAILNET_WORK_REVIEW_STYLE = `
   .work-review-body dt { color: var(--muted); }
   .work-review-body dd { margin: 0; min-inline-size: 0; white-space: pre-wrap; }
   .work-review-body pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface); padding: .6rem; border-radius: .4rem; }
+  #output-execution-cards { display: grid; gap: .75rem; margin-block: .75rem; }
+  #output-execution-cards .work-review-card { padding: .85rem; }
+  #output-execution-cards pre { max-block-size: min(45vh, 25rem); overflow: auto; }
   .work-review-body label { display: grid; gap: .25rem; margin-block: .65rem; }
   .work-review-body :is(input, select, textarea) { box-sizing: border-box; inline-size: 100%; min-inline-size: 0; color: inherit; }
   .work-review-body textarea { min-block-size: 4rem; }
@@ -137,6 +141,8 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
     const reload = document.getElementById("work-review-refresh");
     const recentHeading = document.getElementById("work-review-recent-heading");
     const recentResults = document.getElementById("work-review-recent-results");
+    const outputList = document.getElementById("output-execution-cards");
+    const executionCards = new Map();
     const states = new Map();
     const submissions = new Map();
     let submissionOrder = 0;
@@ -165,6 +171,72 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
     function evidence(parent, label, value) {
       if (value === undefined) return;
       parent.append(element("h4", label), element("pre", value));
+    }
+    function updateExecutionCards(snapshot) {
+      if (!outputList) return;
+      const visible = new Set();
+      for (const card of snapshot.outputCards ?? []) {
+        const id = card.requestId;
+        let held = executionCards.get(id);
+        if (!card.content) {
+          if (!held) continue;
+          visible.add(id);
+          const text = card.resolvedBy === "expired" ? workText("outputApprovalExpired")
+            : workText("outputResolvedBy", { surface: workText(card.resolvedBy === "desk" ? "desktopSurface" : "phoneSurface") });
+          held.node.replaceChildren(held.title, element("p", text));
+          held.handle = undefined;
+          continue;
+        }
+        visible.add(id);
+        if (held) { held.handle = card.handle; continue; }
+        const { toolName, ownerId, argsText, target, canonicalTarget, serviceEndpoint } = card.content;
+        const node = element("article");
+        node.className = "work-review-card work-review-body";
+        const title = element("h3", toolName);
+        node.append(title);
+        facts(node, [[workText("outputOwner"), ownerId], [workText("outputServiceEndpoint"), serviceEndpoint], [workText("outputTarget"), target ?? workText("outputTargetUnknown")],
+          [workText("outputCanonicalTarget"), canonicalTarget]]);
+        const args = element("pre");
+        args.textContent = argsText;
+        args.tabIndex = 0;
+        args.setAttribute("aria-label", workText("arguments"));
+        node.append(element("h4", workText("arguments")), args);
+        const actions = element("div");
+        actions.className = "work-review-actions";
+        const status = element("p");
+        status.setAttribute("role", "status");
+        const controls = [];
+        held = { node, title, handle: card.handle };
+        for (const [choice, label] of [["allow-once", "toolApprovalDialog.allowOnce"], ["deny-once", "toolApprovalDialog.decisionDeny"]]) {
+          const button = element("button", message(label));
+          button.type = "button";
+          button.dataset.workAction = choice === "allow-once" ? "approve" : "deny";
+          button.addEventListener("click", async () => {
+            if (!held.handle || button.disabled || revoked || scope !== snapshot.scope || !node.isConnected) return;
+            for (const control of controls) control.disabled = true;
+            status.textContent = workText("submitting");
+            try {
+              const response = await request(boot.workDecisionPath, {
+                method: "POST", headers: { "content-type": "application/json" },
+                body: JSON.stringify({ id: crypto.randomUUID(), scope, kind: "output-execution-card", input: { handle: held.handle, choice } }),
+              });
+              const result = await response.json();
+              status.textContent = response.ok && result.ok ? workText("submitted") : refusal(result.error);
+            } catch { status.textContent = workText("submissionUnknown"); }
+            finally { scheduleRefresh(false, 0); }
+          });
+          controls.push(button);
+          actions.append(button);
+        }
+        node.append(actions, status);
+        executionCards.set(id, held);
+        outputList.append(node);
+      }
+      for (const [id, held] of executionCards) {
+        if (visible.has(id)) continue;
+        held.node.remove();
+        executionCards.delete(id);
+      }
     }
     function detail(parent, label) {
       const details = element("details");
@@ -271,7 +343,10 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
           [workText("outputOwner"), workText("owner." + output.decl.owner) + " · " + output.decl.ownerId],
           [workText("tool"), output.decl.toolName],
         ]);
-        evidence(card, workText("arguments"), output.args);
+        if (output.push) facts(card, [
+          [workText("pushRemote"), output.push.remote], [workText("outputTarget"), output.push.url],
+          [workText("pushRef"), output.push.ref], [workText("pushCommit"), output.push.sha],
+        ]);
         for (const file of output.files ?? []) {
           facts(card, [
             [workText("file"), file.path], [workText("fileHash"), file.sha256], [workText("fileSize"), file.size],
@@ -491,7 +566,8 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       const locked = pending || sameBinding || (repeatable && Boolean(result) && !refused);
       const mismatch = refused && /[-_]mismatch$/.test(result.code);
       const alternative = !pending && (!locked || mismatch || result?.code === "plan_stale");
-      const missingOutput = item.kind === "stage" && item.review.outputs?.length && item.binding.input.outputHash && !linked;
+      const missingOutput = item.kind === "stage" && item.binding.input.outputHash && (!linked || !item.reviewHandle)
+        || item.kind === "requested-output" && !item.reviewHandle;
       return {
         approve: !locked && valid && !missingOutput && !(item.kind === "plan" && item.review.stale),
         alternative,
@@ -514,7 +590,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
     }
     function resultText(result) {
       return result.status === "refused" ? refusal(result.code)
-        : workText({ pending: "submitting", success: "submitted", unknown: "submissionUnknown" }[result.status]);
+        : workText({ pending: "submitting", success: result.outputGate ? "outputGateAccepted" : "submitted", unknown: "submissionUnknown" }[result.status]);
     }
     function resultIsError(result) {
       return result.status === "refused" || result.status === "unknown";
@@ -569,6 +645,8 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       reconcileSubmissions(replacedKey);
     }
     function clear(text) {
+      outputList?.replaceChildren();
+      executionCards.clear();
       for (const state of states.values()) {
         state.card?.node.remove();
         state.card = undefined;
@@ -623,6 +701,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             id: crypto.randomUUID(), scope: reviewedScope, kind: item.kind, ...submittedBinding,
+            ...(decision === "approve" && item.reviewHandle ? { reviewHandle: item.reviewHandle } : {}),
             input: { ...submittedBinding.input, ...(decision === undefined ? {} : { decision }), ...(note ? { note } : {}) },
           }),
         });
@@ -640,7 +719,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
           }
           return;
         }
-        submission.result = { status: "success" };
+        submission.result = { status: "success", outputGate: decision === "approve" && Boolean(item.reviewHandle) };
         scheduleRefresh(false);
       } catch {
         if (isCurrent()) submission.result = { status: "unknown" };
@@ -693,6 +772,9 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       body.className = "work-review-body";
       facts(body, bindingRows(item));
       renderPayload(body, item, linkedOutput);
+      if (item.kind === "stage" && item.binding.input.outputHash && !item.reviewHandle || item.kind === "requested-output" && !item.reviewHandle) {
+        body.append(element("p", message("reasonCodes.requested-output-card-unavailable")));
+      }
       const draft = state.draft;
       const fields = actionInput(item, body, formSchedule, draft);
       const inputs = body.querySelectorAll("input, select, textarea");
@@ -803,6 +885,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
         scope = snapshot.scope;
       }
       latestSnapshot = snapshot;
+      updateExecutionCards(snapshot);
       reviews = new Map();
       for (const item of snapshot.workReviews) {
         reviews.set(reviewIdentity(item), item);
@@ -846,7 +929,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
           states.delete(identity);
         }
       }
-      empty.hidden = reviews.size !== 0;
+      empty.hidden = reviews.size !== 0 || executionCards.size !== 0;
       section.hidden = false;
       recentResults.hidden = false;
       syncRecentHeading();
