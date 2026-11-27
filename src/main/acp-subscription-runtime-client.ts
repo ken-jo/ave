@@ -139,11 +139,15 @@ class AcpRpcError extends Error {
   }
 }
 
-function isAuthenticationError(value: unknown): boolean {
+export type AcpConnectionLoss = "signed-out" | "unknown";
+
+export function isAcpAuthenticationError(value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (value.code === -32_000) return true;
   const message = typeof value.message === "string" ? value.message.toLocaleLowerCase() : "";
-  return /auth|login|credential|token/.test(message);
+  return /\b(?:unauthenticated|unauthorized|not authenticated|not logged in|invalid_client)\b/.test(message)
+    || /\b(?:authentication|login|sign[ -]in) (?:is )?required\b/.test(message)
+    || /\b(?:invalid|expired|missing|revoked) (?:access token|credentials?|client registration)\b/.test(message);
 }
 
 function safeVersion(value: string): string | null {
@@ -468,7 +472,7 @@ class AcpAuthProbe {
       const request = this.pending.take(message.id);
       if (!request) return;
       if (message.error !== undefined) {
-        request.reject(new AcpRpcError(isAuthenticationError(message.error)));
+        request.reject(new AcpRpcError(isAcpAuthenticationError(message.error)));
       } else {
         request.resolve(message.result);
       }
@@ -543,6 +547,11 @@ export class AcpSubscriptionRuntimeClient {
 
   getCachedStatus(): AcpSubscriptionStatus {
     return this.currentStatus();
+  }
+
+  recordConnectionLoss(connection: AcpConnectionLoss): void {
+    this.verifiedExecutable = null;
+    this.status = acpSubscriptionStatus(this.options.provider, "unverified", connection);
   }
 
   // Main-only canonical path for the config store; never crosses IPC.

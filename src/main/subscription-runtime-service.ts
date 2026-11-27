@@ -61,6 +61,7 @@ import { SubscriptionToolBridge } from "./subscription-tool-bridge.js";
 import { catalogChatModelIds } from "../shared/model-catalog/vendor-models.js";
 import {
   AcpSubscriptionRuntimeClient,
+  type AcpConnectionLoss,
   AcpSubscriptionRuntimeError,
 } from "./acp-subscription-runtime-client.js";
 import {
@@ -116,6 +117,7 @@ export interface AcpSubscriptionTextSession {
 }
 
 export interface AcpSubscriptionTextSessionOptions {
+  readonly onConnectionLost?: (connection: AcpConnectionLoss) => boolean;
   readonly onPlanUsage?: (windows: readonly SubscriptionPlanUsageWindow[]) => void;
   readonly onHostRequest?: (
     request: AcpSubscriptionHostRequestObservation,
@@ -257,6 +259,9 @@ export class AcpSubscriptionRuntimeRegistry {
       workspaceDir: directories.workspaceDir,
       runtimeTempDir: directories.runtimeTempDir,
       onHostRequest: options.onHostRequest,
+      onConnectionLost: (connection) => {
+        if (options.onConnectionLost?.(connection)) this.clients[provider].recordConnectionLoss(connection);
+      },
       onPlanUsage: options.onPlanUsage,
       mcpServers,
     });
@@ -1639,6 +1644,11 @@ export class SubscriptionRuntimeService {
         this.assertSafetyEpoch(effectiveSelection.provider, safetyEpoch);
         let unsafeHostRequest = false;
         const session = await this.acpRegistry.openTextSession(acpProvider, {
+          onConnectionLost: (connection) => {
+            if (this.stopped || !this.safetyEpochIsCurrent(acpProvider, safetyEpoch)) return false;
+            this.disconnect(acpProvider, connection);
+            return true;
+          },
           onPlanUsage: (windows) => {
             if (this.safetyEpochIsCurrent(acpProvider, safetyEpoch)) this.recordPlanUsage(acpProvider, windows);
           },
@@ -1849,8 +1859,8 @@ export class SubscriptionRuntimeService {
     return state;
   }
 
-  private disconnect(provider: SubscriptionRuntimeId): void {
-    if (!this.stopped) this.latchConnection(provider, this.connection(provider), "unknown");
+  private disconnect(provider: SubscriptionRuntimeId, connection: AcpConnectionLoss = "unknown"): void {
+    if (!this.stopped) this.latchConnection(provider, this.connection(provider), connection);
   }
 
   private observeIndependentStatus(
@@ -2150,7 +2160,8 @@ export class SubscriptionRuntimeService {
   }
 
   private rejectUnsafeRequest(provider: SubscriptionRuntimeId, requestKind: string): void {
-    this.invalidateSessionProof(provider);
+    if (isAcpRuntime(provider)) this.disconnect(provider);
+    else this.invalidateSessionProof(provider);
     this.emitAudit({ provider, outcome: "host-request-rejected", requestKind });
   }
 

@@ -33,6 +33,7 @@ import { ClaudeCodeSubscriptionClient } from "../../../main/claude-code-subscrip
 import { ChatGptPlanRuntime } from "../../../main/chatgpt-plan/runtime.js";
 import type { ChatGptPlanSession } from "../../../main/chatgpt-plan/session.js";
 import { acpSubscriptionStatus } from "../../../shared/acp-subscription.js";
+import type { AcpSubscriptionSessionClientOptions } from "../../../main/acp-subscription-session-client.js";
 import { claudeCodeSubscriptionStatus } from "../../../shared/claude-code-subscription.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
@@ -215,6 +216,8 @@ const confirmationCases = new Map<string, {
 it.each([
   ...confirmationCases.keys(),
   "direct plan logout", "managed ACP logout", "ACP executable removal", "initialized runtime withdrawal",
+  "kimi-code ACP startup loss", "grok-build ACP startup loss",
+  "kimi-code ACP idle loss", "grok-build ACP idle loss",
   "sign-out batched with initialization", "prompt pipe loss", "account replacement during isolation proof", "live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog",
   "logout during failed login", "cancel detects sign-out during failed login",
   "account notification confirmation", "account notification overtaken by logout", "account notification retries after rejection",
@@ -247,6 +250,7 @@ it.each([
     };
   });
   const { SubscriptionRuntimeService, onSubscriptionRuntimeStatusChanged } = await import("../../../main/subscription-runtime-service.js");
+  const { AcpSubscriptionSessionClient } = await import("../../../main/acp-subscription-session-client.js");
   const connected = claudeCodeSubscriptionStatus("ready", "connected", "test");
   let status = connected;
   let authReadCount = 0;
@@ -261,14 +265,41 @@ it.each([
   let runtimeMissing = false;
   const managedAcp = scenario === "managed ACP logout";
   const removesExecutable = scenario === "ACP executable removal";
-  const acpProvider = removesExecutable ? "kimi-code" : "grok-build";
+  const acpLoss = scenario.endsWith("ACP startup loss") || scenario.endsWith("ACP idle loss");
+  const acpProvider = removesExecutable || scenario.startsWith("kimi-code") ? "kimi-code" : "grok-build";
+  const acpRoute = managedAcp || removesExecutable || acpLoss;
   let independentConnected = true;
   const revokeIndependent = () => { independentConnected = false; };
   const getAcpStatus = async () => acpSubscriptionStatus(
     acpProvider, independentConnected || managedAcp ? "ready" : "not-configured", independentConnected ? "connected" : "signed-out",
   );
   const disconnectAcp = async () => { revokeIndependent(); return getAcpStatus(); };
-  const provider = directPlan ? "chatgpt-plan" : managedAcp || removesExecutable ? acpProvider : promptPipeLoss || scenario === "live disconnect" || scenario === "logout during failed login" || scenario === "cancel detects sign-out during failed login" ? "claude-code" : "codex";
+  const provider = directPlan ? "chatgpt-plan" : acpRoute ? acpProvider : promptPipeLoss || scenario === "live disconnect" || scenario === "logout during failed login" || scenario === "cancel detects sign-out during failed login" ? "claude-code" : "codex";
+  const acpChild = new RuntimeProcessFixture();
+  const acpAuthenticate = deferred<number>();
+  const acpReply = (message: object) => acpChild.stdout.write(`${JSON.stringify(message)}\n`);
+  acpChild.stdin.on("data", (chunk) => {
+    const { id, method } = JSON.parse(String(chunk));
+    if (method === "authenticate" && scenario.endsWith("ACP startup loss")) acpAuthenticate.resolve(id);
+    else if (method === "initialize") acpReply({ id, result: { authMethods: [{ id: "login" }, { id: "cached_token" }] } });
+    else acpReply({ id, result: { sessionId: "fixture-session" } });
+  });
+  let acpClient: InstanceType<typeof AcpSubscriptionSessionClient> | undefined;
+  const openAcpSession = async (_provider: typeof acpProvider, options: Partial<AcpSubscriptionSessionClientOptions>) => {
+    const client = new AcpSubscriptionSessionClient({
+      ...options, provider: acpProvider, executablePath: join(tempDir, "runtime"), runtimeHome: tempDir,
+      workspaceDir: tempDir, runtimeTempDir: tempDir, resolveExecutable: async (candidate) => candidate,
+      spawn: () => acpChild as unknown as ChildProcess,
+    });
+    acpClient = client;
+    try {
+      await client.start();
+    } catch (error) {
+      await client.stop();
+      throw error;
+    }
+    return { provider: acpProvider, stop: () => client.stop() };
+  };
   const heldLogout = deferred<void>();
   const logoutStarted = deferred<void>();
   const heldLogin = deferred<void>();
@@ -451,7 +482,11 @@ it.each([
         return server as unknown as ChildProcess;
       },
     }) : ({ verifyIsolation: async () => {}, stop: vi.fn() }) as never,
-    acpRegistry: { stopAll: vi.fn(), getStatus: getAcpStatus, verify: getAcpStatus, logout: disconnectAcp, forgetExecutable: disconnectAcp } as never,
+    acpRegistry: {
+      stopAll: async () => acpClient?.stop(),
+      getStatus: getAcpStatus, verify: getAcpStatus,
+      logout: disconnectAcp, forgetExecutable: disconnectAcp, openTextSession: openAcpSession,
+    } as never,
     ...(directPlan ? { chatGptPlanRuntime: new ChatGptPlanRuntime({
       status: async () => ({ connection: independentConnected ? "connected" : "signed-out", planUsage: independentConnected ? "enabled" : null }),
       signOut: async () => revokeIndependent(), cancelSignIn: vi.fn(),
@@ -499,9 +534,9 @@ it.each([
   let stopListening: (() => void) | undefined;
   try {
     const { wireReviewerAndPermissions } = await import("../reviewer-permission-wiring.js");
-    if (promptPipeLoss || managedAcp || removesExecutable) await runtime.verify(provider);
+    if (promptPipeLoss || acpRoute) await runtime.verify(provider);
     dispose = await wireReviewerAndPermissions(context as never);
-    const independentRoute = directPlan || managedAcp || removesExecutable;
+    const independentRoute = directPlan || acpRoute;
     expect((await dispatch(independentRoute)).review.outcome).toBe("fresh");
     expect((await dispatch(independentRoute)).review.outcome).toBe("cache");
     expect(streamTurn).toHaveBeenCalledOnce();
@@ -515,7 +550,20 @@ it.each([
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     const wiringsBeforeDisconnect = subscriptionProviderFactory.mock.calls.length;
-    if (independentRoute) {
+    if (acpLoss) {
+      const opening = runtime.openTextSession(selection);
+      if (scenario.endsWith("ACP startup loss")) {
+        const outcome = opening.catch((error: unknown) => error);
+        const id = await acpAuthenticate.promise;
+        acpReply({ id, error: { code: -32000, message: "Authentication required" } });
+        expect(await dispatch(true)).toMatchObject({ result: { decision: "deny" } });
+        await expect(outcome).resolves.toMatchObject({ code: "subscription-chat-unavailable" });
+      } else {
+        await opening;
+        acpChild.emit("exit", 1, null);
+        expect(await dispatch(true)).toMatchObject({ result: { decision: "deny" } });
+      }
+    } else if (independentRoute) {
       const mutation = removesExecutable ? runtime.forgetExecutable(provider) : runtime.logout(provider);
       const immediately = dispatch(true);
       await mutation;
@@ -1012,7 +1060,7 @@ it.each([
     status = connected;
     accountConnected = true;
     independentConnected = true;
-    if (managedAcp || removesExecutable) await runtime.verify(provider);
+    if (acpRoute) await runtime.verify(provider);
     else await runtime.getStatus(selection.provider);
     await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
     expect((await dispatch(true)).result.decision).toBe("allow");
