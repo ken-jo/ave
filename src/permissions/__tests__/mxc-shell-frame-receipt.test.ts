@@ -64,7 +64,7 @@ describe("macOS shell receipts", () => {
     const { header, key, finish, revoke } = launchShell();
     const packet = encodeMxcFrame({ ...header, ...BACKEND_LOSS }, key, "supervisor", "windows-extension");
     const result = await finish(packet);
-    expect(result).toEqual({ code: null, timedOut: false, cancelled: false, rejected: false, cleanupUnverified: true });
+    expect(result).toEqual({ code: null, timedOut: false, cancelled: false, rejected: false, cleanupUnverified: true, startFailed: true });
     expect(revoke).toHaveBeenCalled();
   });
 
