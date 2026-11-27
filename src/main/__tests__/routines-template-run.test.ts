@@ -473,7 +473,9 @@ it("rolls back a fire revoked between the board write and beginStart", () => fix
 }));
 
 it.each(["scope-not-authorised", "scope-changed", "attachment-detached"] as const)(
-  "rolls back the prepared workspace and run on %s before the first child links", async code => {
+  "rolls back a pre-link %s refusal without a breaker outcome", async code => {
+    const tool = { stageId: "first", collection: "mcpReadOnlyTools", name: "lookup" } as const;
+    let available = false;
     await fixture(async f => {
       const projectRoot = join(f.h.dir, "project");
       await mkdir(projectRoot);
@@ -481,6 +483,9 @@ it.each(["scope-not-authorised", "scope-changed", "attachment-detached"] as cons
       const scope = project(projectRoot);
       const version = await f.h.confirm([autoStageOf("first")], { scope });
       const attachment = await f.attach(routine.id, version, scope);
+      await (await f.dispatch(routine.id)).result;
+      expect(f.store.list()[0].lastTemplateSkip).toEqual({ code: "tool-effect-unknown", tool });
+      available = true;
       let runRoot: string | undefined;
       const updateRun = f.h.board.updateRun.bind(f.h.board);
       const interleave = vi.spyOn(f.h.board, "updateRun").mockImplementation(async (...args) => {
@@ -505,12 +510,15 @@ it.each(["scope-not-authorised", "scope-changed", "attachment-detached"] as cons
         expect(await f.rows()).toEqual([]);
         expect(await f.h.board.runs.list()).toEqual({ status: "found", runs: [] });
         expect(f.h.children).toEqual([]);
+        expect(f.h.audits.at(-1)).toMatchObject({ code });
+        expect(f.store.list()[0].pausedAt).toBeUndefined();
         if (!runRoot) throw new Error("Expected a prepared workspace");
         await expect(access(runRoot)).rejects.toMatchObject({ code: "ENOENT" });
       } finally {
         interleave.mockRestore();
       }
     }, {
+      workflow: { unattendedAllowed: () => available ? { ok: true } : { ok: false, code: "tool-effect-unknown", tool } },
       wiring: store => ({ workspace: createStageWorkspaceProvider({ plainCeiling: tmpdir(), removable: () => store.runsWithoutItem() }) }),
     });
   },

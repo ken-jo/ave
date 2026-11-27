@@ -1,7 +1,10 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { clearTimeout, setTimeout } from "node:timers";
 import { expect, it, vi } from "vitest";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
+import { within } from "../../../__tests__/support/signal-wait.js";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 import { makeConversationLoopSettings } from "../../../engine/__tests__/conversation-loop-test-helpers.js";
 import { makeSubagentLoopDeps, patchLoopProvider } from "../../../engine/__tests__/support/subagent-loop-fixtures.js";
@@ -14,6 +17,7 @@ import { checkStageBudget, MAX_LANE_DENIALS_PER_STAGE, type StageUsage } from ".
 import type { StageEnvelope, TemplateStage } from "../../../shared/workflow-template-types.js";
 import * as templateGraph from "../../template-graph.js";
 import type { StageRunEngineDeps } from "../stage-run-engine.js";
+import * as stageMachine from "../stage-machine.js";
 import { autoStageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
@@ -219,6 +223,73 @@ it("interrupts the child when its unattended deadline expires", async () => {
       await started.result;
       expect(await h.stageRun(started.itemId, "report")).toMatchObject({ status: "failed", failure: "budget" });
     } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+it("ends the stage at its deadline while preparation is still pending", async () => {
+  const preparing = deferred<void>();
+  const release = deferred<void>();
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    workspace: {
+      prepare: async () => {
+        preparing.resolve();
+        await release.promise;
+        throw new Error("Preparation failed after the deadline");
+      },
+    },
+  });
+  await h.runThenEnd(async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const started = await startScheduled(h);
+      await preparing.promise;
+      const running = await h.stageRun(started.itemId, "report");
+      expect(running.status).toBe("running");
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect((await h.stageRun(started.itemId, "report")).status).toBe("running");
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(within(started.result, "the budget failure before preparation returns", expire => {
+        const timer = setTimeout(expire, 2_000);
+        return () => clearTimeout(timer);
+      })).resolves.toMatchObject({ status: "awaiting_approval", reasonCode: "stage-failed" });
+      const failed = await h.stageRun(started.itemId, "report");
+      expect(failed).toMatchObject({ status: "failed", failure: "budget", usage: { rounds: 0, startedAt: running.startedAt } });
+      release.resolve();
+      await h.drainRunWork();
+      expect(await h.stageRun(started.itemId, "report")).toEqual(failed);
+      expect(h.children).toEqual([]);
+    } finally {
+      release.resolve();
+      vi.useRealTimers();
+    }
+  });
+});
+
+it("interrupts a live child at the deadline after refusing a round and keeps the round failure", async () => {
+  const reduce = vi.spyOn(stageMachine, "reduceRun");
+  const h = await stageRunHarness();
+  await h.runThenEnd(async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const envelope = { ...ENVELOPE, budget: { ...LIMITS, rounds: 1 } };
+      const started = await startScheduled(h, [autoStageOf("report", { envelope })]);
+      const [child] = await h.untilLive(1);
+      expect(child.input.claimRound?.()).toBe(true);
+      expect(child.input.claimRound?.()).toBe(false);
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(h.interrupts).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(h.interrupts).toEqual([child.sessionId]);
+      await started.result;
+      expect(await h.stageRun(started.itemId, "report")).toMatchObject({ status: "failed", failure: "budget", usage: { rounds: 1 } });
+      expect(reduce.mock.calls.map(([, event]) => event)).toContainEqual(expect.objectContaining({
+        type: "stage_ended", stageId: "report", failure: "budget", reason: "rounds",
+      }));
+    } finally {
+      reduce.mockRestore();
       vi.useRealTimers();
     }
   });

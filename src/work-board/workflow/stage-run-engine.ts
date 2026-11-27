@@ -15,8 +15,10 @@ import type { WorkflowTemplateStore } from "../../main/workflow-template-store.j
 import type { RunEnd, RunEndCause, RunRemovalCause } from "../../main/workflow-run-store.js";
 import { requiredTier } from "../../permissions/permission-manager.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
+import { raceWithAbort } from "../../shared/abortable-deadline.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { MAX_TIMER_DELAY_MS } from "../../shared/tool-timeout-policy.js";
 import {
   MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId,
   type StageRetryInput, type StageGateDecideInput, type StageGateDecideResult, type StageJoinDecideInput, type StageJoinDecideResult, type OpenJoinResult, type StageRetryResult,
@@ -50,7 +52,6 @@ const log = createLogger("work-board-stage-run");
 /** The host bounds a read-scope stage's rounds, as it does for the plan child of an ordinary run. */
 const READ_STAGE_ROUND_BUDGET = 20;
 const STAGE_OUTPUT_MAX_CHARS = 48_000;
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 const runKeyOf = (itemId: number, runId: string): string => `work-board:${itemId}#${runId}`;
 
@@ -672,7 +673,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const provisional = settled && byAuthority && state.scheduledStart;
     // Retire the provisional row while this run still holds it. Finish discarding its workspace before reporting the refusal.
     if (provisional && state.refused) {
-      provisional.refusal = refusedStart(state.refused.code, state.refused.tool);
+      provisional.refusal = { ...refusedStart(state.refused.code, state.refused.tool), status: "cancelled" };
       try {
         await workspace.release(state.ref, "all");
         await rollbackScheduledStart(state.ref);
@@ -851,7 +852,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const about = { itemId: state.itemId, stageId: run.stageId, attempt: run.attempt, ...(run.gate?.judgedBy === "model" ? { judgedBy: run.gate.judgedBy } : {}) };
       if (run.status === "awaiting_gate") emit({ ...about, phase: "stage_gate" });
       else if (run.status === "passed") emit({ ...about, phase: "stage_passed" });
-      else if (run.status === "failed") emit({ ...about, phase: "stage_failed", ...(run.failure ? { message: run.failure } : {}) });
+      else if (run.status === "failed") {
+        if (event.type === "stage_ended" && event.stageId === run.stageId && event.failure === "budget") {
+          log.info("stage budget exhausted (id=%d, stage=%s, attempt=%d): %s", state.itemId, run.stageId, run.attempt, event.reason);
+        }
+        emit({ ...about, phase: "stage_failed", ...(run.failure ? { message: run.failure } : {}) });
+      }
     }
     const joinChanged = event.type === "join_conflict" || event.type === "join_decided" || event.type === "join_integrated";
     if ((shown || joinChanged || event.type === "stage_linked" || event.type === "stage_ended" || event.type === "gate_decided")
@@ -914,11 +920,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (replay?.effects.has(key)) continue;
       if (effect.type !== "evaluate_gate" && !claimReplay(replay?.effects, key)) continue;
       switch (effect.type) {
-        case "spawn":
+        case "spawn": {
+          const budget = record.runStartedBy.kind === "schedule-attachment"
+            ? version.stages.find(stage => stage.id === effect.stageId)?.envelope?.budget : undefined;
+          const startedAt = record.stageRuns.find(run => run.stageId === effect.stageId)?.startedAt;
           state.due.add(`${effect.stageId}#${effect.attempt}`);
           state.busy += 1;
-          detach(() => launch(state, effect.stageId, effect.attempt), "launch");
+          detach(() => launch(state, effect.stageId, effect.attempt, budget, startedAt), "launch");
           break;
+        }
         case "evaluate_gate": {
           const stage = version.stages.find(candidate => candidate.id === effect.stageId);
           const result = state.results.get(effect.stageId);
@@ -975,7 +985,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     state.stopping || state.faulted !== null || state.refused !== null || state.interruptAsked.has(stageId) || state.revoked.has(stageId);
 
   /** The only `runner.spawn` call for a template run. Throws `WorkflowInvariantError` unless every check of the plan's table holds. */
-  async function spawnStageChild(state: RunState, stageId: string, attempt: number): Promise<{
+  async function spawnStageChild(state: RunState, stageId: string, attempt: number, budget: StageEnvelope["budget"] | undefined, startedAt: string | undefined): Promise<{
     result: SubAgentSpawnResult;
     inputTaint: boolean;
     usage?: WorkItemStageRun["usage"];
@@ -993,10 +1003,49 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (state.stopping) throw new WorkflowInvariantError("run-stopped");
     if (!state.due.delete(key)) throw new WorkflowInvariantError("stage-not-ready");
     if (state.live.has(stageId) || state.starting.has(stageId)) throw new WorkflowInvariantError("duplicate-stage-child");
+
+    const usage: StageUsage = { rounds: 0, startedAt: Date.parse(startedAt ?? ""), denials: 0 };
+    if (budget && !Number.isFinite(usage.startedAt)) throw new WorkflowInvariantError("stage-not-ready");
+    const snapshotUsage = () => ({ ...usage, startedAt: new Date(usage.startedAt).toISOString() });
+    let budgetFailure: Extract<BudgetVerdict, { ok: false }>["code"] | undefined;
+    const deadline = budget ? new AbortController() : undefined;
+    const deadlineAt = budget ? usage.startedAt + budget.minutes * 60_000 : Infinity;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let interruptChild: (() => void) | undefined;
+    function expireDeadline(): void {
+      if (!deadline || deadline.signal.aborted) return;
+      budgetFailure ??= "minutes";
+      deadline.abort(new Error("Stage deadline exceeded"));
+      interruptChild?.();
+    }
+    function armDeadline(): void {
+      const remaining = deadlineAt - Date.now();
+      if (remaining <= 0) expireDeadline();
+      else {
+        timer = setTimeout(armDeadline, Math.min(remaining, MAX_TIMER_DELAY_MS));
+        timer.unref();
+      }
+    }
+    function checkDeadline(): void {
+      if (Date.now() >= deadlineAt) expireDeadline();
+      deadline?.signal.throwIfAborted();
+    }
+    // Bound each wait so a late operation cannot proceed to the next admission step or to spawn.
+    async function beforeDeadline<T>(work: () => Promise<T>): Promise<T> {
+      if (!deadline) return work();
+      checkDeadline();
+      try {
+        return await raceWithAbort(work(), deadline.signal);
+      } finally {
+        checkDeadline();
+      }
+    }
+
     state.starting.add(stageId);
     try {
-      const record = await records.get(state.itemId, state.runId);
-      const got = await store.get(state.itemId);
+      if (deadline) armDeadline();
+      const record = await beforeDeadline(() => records.get(state.itemId, state.runId));
+      const got = await beforeDeadline(() => store.get(state.itemId));
       // The board row gives the title and the detail the prompt quotes; the pin, the source and the stage runs come from the run file.
       const item = got.status === "found" ? got.item : null;
       if (!item || item.runId !== state.runId) throw new WorkflowInvariantError("run-stopped");
@@ -1005,7 +1054,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const source = record.runStartedBy;
       let version: TemplateVersion;
       try {
-        version = await resolvePinned(pin);
+        version = await beforeDeadline(() => resolvePinned(pin));
       } catch (error) {
         const fault = pinFault(error);
         if (fault === null) throw error;
@@ -1017,7 +1066,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (run?.status !== "running" || run.attempt !== attempt) throw new WorkflowInvariantError("stage-not-ready");
 
       const authorise = async (): Promise<Extract<RunAuthorityVerdict, { ok: true }>> => {
-        const verdict = await verdictFor("spawn", state.projectRoot, source, pin);
+        const verdict = await beforeDeadline(() => verdictFor("spawn", state.projectRoot, source, pin));
         if (!verdict.ok) throw new WorkflowInvariantError("run-not-authorised", verdict.code, "tool" in verdict ? verdict.tool : undefined);
         return verdict;
       };
@@ -1029,11 +1078,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const revising = run.gate?.type === "human" && run.gate.status === "changes_requested";
       if (attempt > 1 && !revising) {
         // A folder that is no longer the run's own is not removed, and the stage is not started in it.
-        try { await workspace.release(state.ref, [stageId]); } catch (error) {
+        await beforeDeadline(() => workspace.release(state.ref, [stageId]).catch((error: unknown) => {
           throw new WorkflowInvariantError("workspace-missing", error instanceof OwnedFsError ? "workspace-identity-changed" : "workspace-unavailable");
-        }
+        }));
       }
-      const prepared = await workspace.prepare(state.ref, stage, attempt);
+      const prepared = await beforeDeadline(() => workspace.prepare(state.ref, stage, attempt));
       const runRoot = record.runWorkspace?.runRoot;
       if (!prepared.ok) {
         if (state.scheduledStart) await authorise();
@@ -1044,15 +1093,17 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
       const runKey = state.ref.runKey;
       if (lane === "unattended") {
-        const admitted = deps.lane
-          ? await deps.lane.admit({ runKey, stageId, envelope: stage.envelope, workspaceRoot: stageRoot })
+        const laneHooks = deps.lane;
+        const admitted = laneHooks
+          ? await beforeDeadline(() => laneHooks.admit({ runKey, stageId, envelope: stage.envelope, workspaceRoot: stageRoot }))
           : isAllReadOnlyVersion(version) ? { ok: true as const } : { ok: false as const, code: "lane-unavailable" as const };
         if (!admitted.ok) throw new WorkflowInvariantError("lane-blocked", admitted.code);
       }
 
       const runner = deps.getRunner();
       if (!runner) throw new Error("sub-agent runner not available");
-      const profile = stage.agentName ? (await deps.getAgentProfile?.(stage.agentName)) ?? null : null;
+      const agentName = stage.agentName;
+      const profile = agentName ? await beforeDeadline(async () => await deps.getAgentProfile?.(agentName) ?? null) : null;
       if (stage.agentName && !profile) throw new Error(`agent profile not found: ${stage.agentName}`);
       const readOnly = stage.toolScope === "read";
       const readTools = readOnly ? runner.parentToolRegistry().listAll()
@@ -1066,10 +1117,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         item, stage, inputs: stageInputsOf(version, stage, record.stageRuns),
         ...(revision ? { revision } : {}), ...(version.setupCommands ? { setupCommands: version.setupCommands } : {}), ...(gateSuffix ? { gateSuffix } : {}),
       });
-      const stored = await writeRun(state, current => ({
+      const stored = await beforeDeadline(() => writeRun(state, current => deadline?.signal.aborted ? null : ({
         ...current,
         stageRuns: current.stageRuns.map(candidate => candidate.stageId === stageId && candidate.attempt === attempt ? { ...candidate, workspace: { ...prepared.workspace } } : candidate),
-      }));
+      })));
       if (stored.run === null) {
         if (holdsWrite(state, stored.reason)) throw new WorkflowInvariantError("run-write-held");
         throw stored.reason === "row-gone" ? new WorkflowInvariantError("run-stopped") : new WorkflowInvariantError("run-state-failed", writeFault(stored.reason));
@@ -1083,22 +1134,21 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       let linked: string | undefined;
       let scoped = false;
       let activitySignature = "";
-      const budget = lane === "unattended" ? stage.envelope?.budget : undefined;
-      const usage: StageUsage = { rounds: 0, startedAt: Date.parse(run.startedAt ?? ""), denials: 0 };
-      if (budget && !Number.isFinite(usage.startedAt)) throw new WorkflowInvariantError("stage-not-ready");
       const deniedCalls: NonNullable<WorkItemStageRun["deniedCalls"]> = [];
-      const snapshotUsage = () => ({ ...usage, startedAt: new Date(usage.startedAt).toISOString() });
-      let budgetFailure: Extract<BudgetVerdict, { ok: false }>["code"] | undefined;
       let attemptOpen = true;
-      let timer: ReturnType<typeof setTimeout> | undefined;
       const origin = workBoardOriginSessionId(state.itemId);
       const interrupt = () => {
         if (linked !== undefined) runner.interruptRun(linked, origin);
       };
+      interruptChild = interrupt;
       const check = () => {
         if (!budget || budgetFailure !== undefined) return;
         const verdict = checkStageBudget(usage, budget, Date.now());
         if (!verdict.ok) {
+          if (verdict.code === "minutes") {
+            expireDeadline();
+            return;
+          }
           budgetFailure = verdict.code;
           if (verdict.code === "denials") state.endingOnDenials.add(stageId);
           interrupt();
@@ -1115,15 +1165,6 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         usage.rounds += 1;
         return true;
       });
-      const armDeadline = () => {
-        if (!budget) return;
-        const remaining = budget.minutes * 60_000 - (Date.now() - usage.startedAt);
-        if (remaining <= 0) check();
-        else {
-          timer = setTimeout(armDeadline, Math.min(remaining, MAX_TIMER_DELAY_MS));
-          timer.unref();
-        }
-      };
       const unsubscribe = budget && deps.lane?.onDenied(({ sessionId, code, call }) => {
         if (linked === undefined || budgetFailure !== undefined || (code !== "outside-envelope" && code !== "no-approver")) return;
         if (sessionId !== linked && !runner.listRunStatuses(linked).some(child => child.childSessionId === sessionId)) return;
@@ -1132,8 +1173,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         check();
       });
       try {
-        armDeadline();
-        if (budgetFailure === "minutes") return { budgetFailure, usage: snapshotUsage() };
+        checkDeadline();
         const result = await runner.spawn(
           {
             title: `${stage.name}: ${item.title}`,
@@ -1200,7 +1240,6 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         };
       } finally {
         attemptOpen = false;
-        clearTimeout(timer);
         unsubscribe?.();
         state.live.delete(stageId);
         if (linked !== undefined) {
@@ -1209,7 +1248,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           if (lane === "unattended") deps.lane?.sessionEnded(linked);
         }
       }
+    } catch (error) {
+      if (deadline?.signal.aborted && error === deadline.signal.reason) return { budgetFailure: "minutes", usage: snapshotUsage() };
+      throw error;
     } finally {
+      clearTimeout(timer);
       state.starting.delete(stageId);
     }
   }
@@ -1221,12 +1264,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return result.stopReason === "authorization-required" || result.authorizationRequired !== undefined ? "denied-tool" : "error";
   }
 
-  async function launch(state: RunState, stageId: string, attempt: number): Promise<void> {
+  async function launch(state: RunState, stageId: string, attempt: number, budget: StageEnvelope["budget"] | undefined, startedAt: string | undefined): Promise<void> {
     const done = trackStageWork(state, stageId, attempt);
     let next: RunEvent | null = null;
     let faultCause: string | null = null;
     try {
-      const { result, inputTaint, usage, deniedCalls, budgetFailure } = await spawnStageChild(state, stageId, attempt);
+      const { result, inputTaint, usage, deniedCalls, budgetFailure } = await spawnStageChild(state, stageId, attempt, budget, startedAt);
       if (!result) {
         next = { type: "stage_ended", stageId, attempt, ok: false, reason: budgetFailure, failure: "budget", usage };
         return;
