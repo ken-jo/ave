@@ -1,4 +1,4 @@
-import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
+import { logPermissionEvent, permissionLogCorrelationId, permissionLogId } from "../lib/permission-log.js";
 import type { AuditDenyKind, PermissionAuditEntryInput } from "./pipeline/permission-decision.js";
 import { createLogger } from "../lib/logger.js";
 import { answeredApprovalProvenance, isAnsweredApprovalDenial, type ApprovalDecision } from "../permissions/approval-gate.js";
@@ -478,7 +478,7 @@ export function emitToolDecision(
     source: entry.source,
     category: entry.category,
     decision: entry.decision,
-    toolUseId: permissionLogId(entry.toolUseId),
+    correlationId: permissionLogCorrelationId(entry.toolUseId),
     operation: permissionLogId(entry.pluginOperation?.operation) ?? fields.operation,
     pluginId: permissionLogId(entry.pluginOperation?.pluginId),
     operationOutcome: entry.pluginOperation?.outcome,

@@ -1,4 +1,4 @@
-import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
+import { logPermissionEvent, permissionLogCorrelationId, permissionLogId } from "../../lib/permission-log.js";
 import { canonicalJsonEqual } from "../../shared/canonical-json.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import type { DecisionProvenance } from "../../permissions/approval-gate.js";
@@ -295,12 +295,12 @@ export async function startRationaleResume(
     logPermissionEvent("rationale_invocation", {
       state: "authorized",
       ticketId: permissionLogId(authorized.request.control.ticketId),
-      toolUseId: permissionLogId(authorized.request.control.sealedAction.toolUseId),
+      correlationId: permissionLogCorrelationId(authorized.request.control.sealedAction.toolUseId),
     });
     logPermissionEvent("rationale_invocation", {
       state: "started",
       ticketId: permissionLogId(authorized.request.control.ticketId),
-      toolUseId: permissionLogId(authorized.request.control.sealedAction.toolUseId),
+      correlationId: permissionLogCorrelationId(authorized.request.control.sealedAction.toolUseId),
     });
     return { ok: true, value: { ...authorized, authorityEntry } };
   } catch (error) {
@@ -335,7 +335,7 @@ export async function finishRationaleResume(
     logPermissionEvent("rationale_invocation", {
       state: terminal.state,
       ticketId: permissionLogId(terminal.ticketId),
-      toolUseId: permissionLogId(terminal.toolUseId),
+      correlationId: permissionLogCorrelationId(terminal.toolUseId),
     });
     return true;
   } catch {

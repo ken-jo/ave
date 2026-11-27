@@ -1,4 +1,4 @@
-import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
+import { logPermissionEvent, permissionLogCorrelationId, permissionLogId } from "../lib/permission-log.js";
 import { isHostRefusal, markHostRefusal } from "./host-refusal.js";
 import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { appendToolInvocationAudit, trackDetachedToolInvocation } from "./invocation-ledger.js";
@@ -1820,7 +1820,7 @@ export async function executeAuthorizedToolInvocation(
   const dlpResult = maskExecutionOutput(content, settledToolDetail, pii);
   if (dlpResult.detections.length > 0) {
     displayContent = dlpResult.masked;
-    logPermissionEvent("dlp_masked", { sessionId: permissionLogId(sessionId ?? "unknown"), tool: permissionLogId(toolUse.name), toolUseId: permissionLogId(toolUse.id), detectionCount: dlpResult.detections.length });
+    logPermissionEvent("dlp_masked", { sessionId: permissionLogId(sessionId ?? "unknown"), tool: permissionLogId(toolUse.name), correlationId: permissionLogCorrelationId(toolUse.id), detectionCount: dlpResult.detections.length });
   }
 
   // ── Step 8: Audit + Result (항상 실행) ──────────

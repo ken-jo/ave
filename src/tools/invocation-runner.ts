@@ -1,4 +1,4 @@
-import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
+import { logPermissionEvent, permissionLogCorrelationId, permissionLogId } from "../lib/permission-log.js";
 import { commitTerminalRow, type TerminalDenialLifecycle, type TerminalDenyKind } from "./invocation-ledger.js";
 import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, spendStandingAnswer, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
@@ -417,7 +417,7 @@ export async function runToolInvocation(
           decision: result.decision, reason: result.reason, results: [result],
         }) ?? []);
         if (!denied) {
-          logPermissionEvent("hook_input_reclassified", { sessionId: permissionLogId(opts.sessionId ?? "unknown"), toolUseId: permissionLogId(toolUse.id), tool: permissionLogId(toolUse.name), hookCount: hookChain.length });
+          logPermissionEvent("hook_input_reclassified", { sessionId: permissionLogId(opts.sessionId ?? "unknown"), correlationId: permissionLogCorrelationId(toolUse.id), tool: permissionLogId(toolUse.name), hookCount: hookChain.length });
         } else {
           const common = { auditId: randomUUID(), ts: new Date().toISOString(), toolUseId: toolUse.id,
             trustOrigin: provenanceTrustOrigin(RULE_PROVENANCE, "deny", opts.permissionContext?.trustOrigin ?? "unknown" as const), tool: toolUse.name,

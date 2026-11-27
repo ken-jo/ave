@@ -17,7 +17,7 @@ import { ToolRegistry } from "../registry.js";
 import { createDynamicTool } from "../base.js";
 
 const CANARY = "NESTED_SECRET_CANARY_ba5c1a";
-const CREDENTIAL_SHAPED_ID = "ghp_" + "aB1cD2eF3gH4jK5mN6pQ7rS8tU9vW0xY1zA2";
+const OPAQUE_PROVIDER_ID = "w2PF7wccx74scqBRnkT4aDzj7Gm-fV_e";
 const roots: string[] = [];
 
 afterEach(async () => {
@@ -59,8 +59,8 @@ it("logs one decision per attempt without recording nested arguments, output, or
   expect(execute).toHaveBeenCalledOnce();
   expect(records).toHaveLength(2);
   expect(records).toEqual(expect.arrayContaining([
-    expect.objectContaining({ toolUseId: "allow-1", decision: "allow", category: "read", reasonCode: "rule-allow", sessionId: "permission-session", attempt: 1 }),
-    expect.objectContaining({ toolUseId: "deny-1", decision: "deny", terminalKind: "denied", reasonCode: "rule-deny", denialSource: "rule", sessionId: "permission-session", attempt: 1 }),
+    expect.objectContaining({ decision: "allow", category: "read", reasonCode: "rule-allow", sessionId: "permission-session", attempt: 1 }),
+    expect.objectContaining({ decision: "deny", terminalKind: "denied", reasonCode: "rule-deny", denialSource: "rule", sessionId: "permission-session", attempt: 1 }),
   ]));
   expect(JSON.stringify(records)).not.toContain(CANARY);
 });
@@ -74,7 +74,7 @@ it("correlates an ask without recording its rule pattern", async () => {
     "", opts.permissionContext, undefined, { toolUseId: "ask-1", attempt: 2 }, opts.sessionId,
   );
   expect(observed).toHaveBeenCalledWith(expect.objectContaining({
-    decision: "ask", reasonCode: "rule-ask", sessionId: "permission-session", toolUseId: "ask-1", attempt: 2,
+    decision: "ask", reasonCode: "rule-ask", sessionId: "permission-session", correlationId: expect.stringMatching(/^[a-f0-9]{32}$/), attempt: 2,
   }));
   expect(JSON.stringify(observed.mock.calls)).not.toContain(CANARY);
 });
@@ -153,7 +153,7 @@ it.each(["normal", "slow"])("logs safely to production console, file and support
     "}",
   ].join("\n");
   const { stdout, stderr } = await promisify(execFile)(process.execPath, [
-    "--import", "tsx", "--input-type=module", "-e", script, "--", root, logsDir, CANARY, CREDENTIAL_SHAPED_ID, storage,
+    "--import", "tsx", "--input-type=module", "-e", script, "--", root, logsDir, CANARY, OPAQUE_PROVIDER_ID, storage,
   ], { env: { ...inherited, AVE_HOME: root, ELECTRON_RUN_AS_NODE: "1", NODE_ENV: "production", LOG_LEVEL: "info" }, windowsHide: true, timeout: 10_000 });
   const file = readdirSync(logsDir).map((name) => readFileSync(join(logsDir, name), "utf8")).join("\n");
   const bundle = new AdmZip(await buildDiagnosticsBundle({
@@ -161,16 +161,20 @@ it.each(["normal", "slow"])("logs safely to production console, file and support
   }));
   const bundleLogs = bundle.getEntries().filter((entry) => entry.entryName.startsWith("logs/"))
     .map((entry) => entry.getData().toString("utf8")).join("\n");
+  const correlationIds = [];
   for (const output of [stdout, file, bundleLogs]) {
     const decisions = output.split("\n").filter((line) => line.includes("\"event\":\"permission_decision\""));
     expect(decisions).toHaveLength(1);
-    expect(output).not.toContain(CREDENTIAL_SHAPED_ID);
+    expect(output).not.toContain(OPAQUE_PROVIDER_ID);
     expect(output).not.toContain(CANARY);
+    correlationIds.push(JSON.parse(decisions[0] ?? "{}").correlationId);
   }
+  expect(correlationIds[0]).toMatch(/^[a-f0-9]{32}$/);
+  expect(new Set(correlationIds).size).toBe(1);
   if (storage === "slow") {
     const overflow = stdout.split("\n").find((line) => line.includes('"event":"permission_log_overflow"'));
     expect(JSON.parse(overflow ?? "{}")).toMatchObject({ dropped: 44 });
   }
   expect(stderr).not.toContain(CANARY);
-  expect(stderr).not.toContain(CREDENTIAL_SHAPED_ID);
+  expect(stderr).not.toContain(OPAQUE_PROVIDER_ID);
 });
