@@ -815,6 +815,57 @@ describe("CodexAppServerClient", () => {
     }));
   });
 
+  it("treats cancel after successful login as cleanup and waits for a settled account read", async () => {
+    let connected = false;
+    let holdReads = false;
+    const accountReads: RpcRequest[] = [];
+    const harness = await createHarness((request) => {
+      if (request.method === "account/read") {
+        if (holdReads) {
+          accountReads.push(request);
+          return DEFER_RESPONSE;
+        }
+        return { account: connected ? { type: "chatgpt", planType: "plus" } : null };
+      }
+      if (request.method === "account/login/start") return {
+        type: "chatgptDeviceCode", loginId: "device-login", verificationUrl: "https://chatgpt.com/device", userCode: "ABCD-EFGH",
+      };
+      return standardInitialize(request);
+    });
+    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: createSubscriptionRuntimeNamespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
+      claudeCodeReleaseFetch: async () => { throw new Error("Unexpected release request"); },
+      acpRegistry: { stopAll: async () => {} } as unknown as AcpSubscriptionRuntimeRegistry,
+      codexClient: harness.client,
+    });
+    try {
+      await expect(service.startLogin("codex", "device-code")).resolves.toMatchObject({ pendingLogin: "device-code" });
+      await vi.waitFor(() => expect(harness.server.requests.some(({ method }) => method === "account/read")).toBe(true));
+      connected = true;
+      harness.server.stdout.write(JSON.stringify({
+        method: "account/login/completed", params: { loginId: "device-login", success: true },
+      }) + "\n");
+      holdReads = true;
+      const replyConnected = (request: RpcRequest) => harness.server.stdout.write(JSON.stringify({
+        id: request.id, result: { account: { type: "chatgpt", planType: "plus" } },
+      }) + "\n");
+      const cancelled = expect(service.cancelLogin("codex")).resolves.toMatchObject({
+        connection: "unknown", pendingLogin: null, pendingDeviceCode: null, capabilities: { chat: false },
+      });
+      void cancelled.catch(() => undefined);
+      await vi.waitFor(() => expect(accountReads).toHaveLength(1));
+      replyConnected(accountReads[0]!);
+      await cancelled;
+      expect(harness.server.requests.some(({ method }) => method === "account/login/cancel")).toBe(false);
+      await vi.waitFor(() => expect(accountReads).toHaveLength(2));
+      await expect(service.getCachedStatus("codex")).resolves.toMatchObject({ connection: "unknown" });
+      replyConnected(accountReads[1]!);
+      await vi.waitFor(async () => expect(await service.getCachedStatus("codex")).toMatchObject({ connection: "connected" }));
+    } finally {
+      await service.stop();
+    }
+  });
+
   it("reports an asynchronous login failure without leaking App Server detail", async () => {
     const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);

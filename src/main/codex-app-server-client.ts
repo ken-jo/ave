@@ -176,7 +176,11 @@ export class CodexAppServerClient {
     this.runtimeTempDir = options.runtimeTempDir ?? options.runtimeHome;
   }
 
-  async getStatus(refreshPlanUsage = true): Promise<CodexSubscriptionStatus> {
+  getStatus(refreshPlanUsage = true): Promise<CodexSubscriptionStatus> {
+    return this.readStatus(refreshPlanUsage);
+  }
+
+  private async readStatus(refreshPlanUsage: boolean, purpose: "status" | "cancel-cleanup" = "status"): Promise<CodexSubscriptionStatus> {
     const preparation = this.connectionEvidence?.({ kind: "read", source: this, artifact: this.artifact, version: this.lastKnownVersion() });
     try {
       await this.ensureAccountRuntime();
@@ -192,6 +196,7 @@ export class CodexAppServerClient {
     const pendingLogin = this.pendingLogin;
     const result = await this.request("account/read", { refreshToken: false });
     if (accountRevision !== this.accountRevisionValue || ((!isCodexJsonRecord(result) || !this.acceptedAccountReplies.has(result)) && this.connectionEvidence)) {
+      if (purpose === "cancel-cleanup" && codexAccountVerdict(result).kind !== "unavailable") return this.currentStatus();
       throw new CodexAppServerError("codex-operation-failed");
     }
     this.accountStatus = this.projectAccountStatus(result);
@@ -274,7 +279,7 @@ export class CodexAppServerClient {
     return this.withLoginLock(async () => {
       await this.ensureStarted();
       const pending = this.pendingLogin;
-      if (!pending) return this.getStatus();
+      if (!pending) return this.readStatus(true, "cancel-cleanup");
       try {
         await this.request("account/login/cancel", { loginId: pending.loginId });
       } finally {
