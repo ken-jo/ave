@@ -174,7 +174,7 @@ export async function flushLogDestinations(): Promise<void> {
       })]),
       deadline,
     ]);
-    // Pending counts are records accepted since the last confirmed drain.
+    // Pending records still have unwritten bytes.
     if (reportLogLoss(permissionConsole?.pending, fileSink?.pending)) {
       await Promise.race([flush(), deadline]);
     }

@@ -2,24 +2,43 @@ import sonicBoom, { type SonicBoom as SonicBoomInstance, type SonicBoomOpts } fr
 
 const SonicBoom = sonicBoom as unknown as new (options: SonicBoomOpts) => SonicBoomInstance;
 
-export function createAsyncLogDestination(options: SonicBoomOpts, onDrain?: () => void) {
-  const stream = new SonicBoom(options);
-  let pending = 0;
+export function createAsyncLogDestination(options: SonicBoomOpts, onProgress?: () => void) {
+  const stream = new SonicBoom({ ...options, maxWriteRetries: 3 });
+  const pending = new Map<number, { bytes: number; counted: boolean }>();
+  let sequence = 0;
   let dropped = 0;
-  let countDrop = true;
-  stream.on("error", () => {});
+  let failed = false;
+  stream.on("error", () => {
+    if (failed) return;
+    failed = true;
+    for (const record of pending.values()) {
+      if (record.counted) dropped += 1;
+    }
+    pending.clear();
+    onProgress?.();
+    stream.destroy();
+  });
   const recordDrop = () => {
-    pending -= 1;
-    if (countDrop) dropped += 1;
+    if (pending.get(sequence)?.counted) dropped += 1;
+    pending.delete(sequence);
   };
   stream.on("drop", recordDrop);
+  stream.on("write", (bytes: number) => {
+    for (const [id, record] of pending) {
+      if (bytes < record.bytes) {
+        record.bytes -= bytes;
+        break;
+      }
+      bytes -= record.bytes;
+      pending.delete(id);
+    }
+  });
   stream.on("drain", () => {
-    pending = 0;
-    onDrain?.();
+    onProgress?.();
   });
   return {
     stream,
-    get pending() { return pending; },
+    get pending() { return pending.size; },
     get dropped() { return dropped; },
     takeDropped(): number {
       const count = dropped;
@@ -27,13 +46,19 @@ export function createAsyncLogDestination(options: SonicBoomOpts, onDrain?: () =
       return count;
     },
     write(chunk: string, countDrops = true): void {
-      countDrop = countDrops;
-      pending += 1;
+      if (failed) {
+        if (countDrops) {
+          dropped += 1;
+          onProgress?.();
+        }
+        return;
+      }
+      pending.set(++sequence, { bytes: Buffer.byteLength(chunk), counted: countDrops });
       try { stream.write(chunk); } catch { recordDrop(); }
     },
     flush(): Promise<void> {
       return new Promise<void>((resolve) => {
-        if (pending === 0) {
+        if (pending.size === 0) {
           resolve();
           return;
         }

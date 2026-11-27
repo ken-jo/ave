@@ -112,7 +112,7 @@ it("does not change execution or repeat an effect when the logger throws", async
   expect(failing).toHaveBeenCalledWith(expect.objectContaining({ event: "permission_decision", decision: "allow" }));
 });
 
-it.each(["normal", "slow", "blocked", "sync-race", "unavailable"])("logs safely to production console, file and support bundle with %s storage", async (storage) => {
+it.each(["normal", "slow", "blocked", "sync-race", "unavailable", "open-error", "write-error"])("logs safely to production console, file and support bundle with %s storage", async (storage) => {
   const root = mkdtempSync(join(tmpdir(), "ave-permission-log-sink-"));
   roots.push(root);
   const logsDir = join(root, "logs");
@@ -137,6 +137,18 @@ it.each(["normal", "slow", "blocked", "sync-race", "unavailable"])("logs safely 
     "configureHostResources({ resourcePath: join(process.cwd(), \"resources\"), isPackaged: false });",
     "const [root, logs, canary, toolUseId, storage] = process.argv.slice(1);",
     'if (storage === "unavailable") fs.writeFileSync(logs, "blocked path");',
+    'if (storage === "open-error") fs.mkdirSync(join(logs, "ave-" + new Date().toISOString().slice(0, 10) + ".log"), { recursive: true });',
+    'let writeAttempts = 0, liveLoss = false;',
+    'if (storage === "open-error" || storage === "write-error") {',
+    '  const write = fs.write;',
+    '  fs.write = (...args) => {',
+    '    if (args[0] === 1 && String(args[1]).includes(\'"event":"app_log_loss"\')) liveLoss = true;',
+    '    if (args[0] <= 2 || storage !== "write-error") return write(...args);',
+    '    writeAttempts++;',
+    '    const code = writeAttempts <= 6 ? "EAGAIN" : "EIO";',
+    '    queueMicrotask(() => args.at(-1)(Object.assign(new Error(code), { code })));',
+    '  };',
+    '}',
     'const sink = initFileLogSink({ dir: logs, ...(storage === "slow" ? { maxBytes: 1 } : {}) });',
     'if (Boolean(sink) === (storage === "unavailable")) throw new Error("Unexpected file sink state");',
     "let asyncReads = 0, syncReads = 0, release;",
@@ -196,6 +208,11 @@ it.each(["normal", "slow", "blocked", "sync-race", "unavailable"])("logs safely 
     "    return write(...args);",
     "  };",
     "}",
+    'if (storage === "open-error" || storage === "write-error") {',
+    '  for (let i = 0; i < 50 && !liveLoss; i++) await new Promise((resolve) => setTimeout(resolve, 10));',
+    '  if (storage === "write-error" && !(writeAttempts > 1 && writeAttempts <= 6)) throw new Error("Unexpected retry count: " + writeAttempts);',
+    '  if (!liveLoss) throw new Error("No live loss report reached the console");',
+    '}',
     "logPermissionEvent(\"shutdown_probe\", {});",
     "const started = performance.now();",
     "const shutdownFlush = flushLogDestinations();",
@@ -212,7 +229,7 @@ it.each(["normal", "slow", "blocked", "sync-race", "unavailable"])("logs safely 
   const { stdout, stderr } = await promisify(execFile)(process.execPath, [
     "--import", "tsx", "--input-type=module", "-e", script, "--", root, logsDir, CANARY, OPAQUE_PROVIDER_ID, storage,
   ], { env: { ...inherited, AVE_HOME: root, ELECTRON_RUN_AS_NODE: "1", NODE_ENV: "production", LOG_LEVEL: "info" }, windowsHide: true, timeout: 10_000 });
-  if (storage === "unavailable") {
+  if (storage === "unavailable" || storage === "open-error" || storage === "write-error") {
     expect(stdout).toContain('"event":"permission_decision"');
     expect(stdout).toContain('"event":"shutdown_probe"');
     const losses = stdout.split("\n").filter((line) => line.includes('"event":"app_log_loss"'));

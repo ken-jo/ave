@@ -252,7 +252,7 @@ export interface LogFileSink extends Omit<ReturnType<typeof createAsyncLogDestin
 }
 
 /** Set private modes during creation; unrecoverable directory failure is handled by boot. */
-export function createLogFileSink(options: LogFileSinkOptions = {}, onDrain?: () => void): LogFileSink {
+export function createLogFileSink(options: LogFileSinkOptions = {}, onProgress?: () => void): LogFileSink {
   const dir = options.dir ?? join(aveHome(), "logs");
   const retentionDays = options.retentionDays ?? LOG_RETENTION_DAYS;
   const maxBytes = options.maxBytes ?? LOG_MAX_BYTES;
@@ -271,7 +271,7 @@ export function createLogFileSink(options: LogFileSinkOptions = {}, onDrain?: ()
   let nextFile: string | undefined;
   const destination = createAsyncLogDestination({
     dest: currentFile, sync: false, mode: PRIVATE_FILE_MODE, maxLength: LOG_MAX_BYTES,
-  }, onDrain);
+  }, onProgress);
   const { stream: boom } = destination;
 
   let pruning = false;
