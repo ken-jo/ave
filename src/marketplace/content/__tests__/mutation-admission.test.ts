@@ -37,7 +37,7 @@ const SETTINGS_INTERNALS = ["changeListeners", "providerConfigRevision", "secret
   "secretStore", "settings", "saved", "unsaved", "saving", "withheldSecretKeys", "restoringSecretKeys", "invalidatingSecretKeys",
   "reenteredSecretKeys", "writtenReentries", "patchSettings", "replaceMarketplaceProviderPresets", "commitPresetKeyInvalidation",
   "deleteMarketplaceProviderPresetSecretsAtomically", "enteredForApplied", "deleteMarketplaceProviderPresetSecrets",
-  "isRetiredLlmCredential", "secretReadable", "deleteWithheldSecrets", "loadSettings", "commit", "drain", "saveSettings", "mainLayoutAsLoaded"];
+  "isRetiredLlmCredential", "secretReadable", "deleteWithheldSecrets", "loadSettings", "commit", "drain", "applyAdmittedWrites", "saveSettings", "mainLayoutAsLoaded"];
 
 const PROVIDER_PRESET = {
   providerId: "fixture-router", label: "Fixture Router", baseUrl: "https://router.example.test/v1",

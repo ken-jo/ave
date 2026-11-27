@@ -127,6 +127,7 @@ unsafe extern "system" {
     ) -> i32;
     pub fn GetFileInformationByHandleEx(handle: Raw, class: i32, value: Raw, len: u32) -> i32;
     pub fn GetFileInformationByHandle(handle: Raw, value: *mut Legacy) -> i32;
+    pub fn GetFileAttributesW(path: *const u16) -> u32;
     pub fn CreateFileW(
         path: *const u16,
         access: u32,
@@ -197,6 +198,12 @@ unsafe extern "system" {
     pub fn ConnectNamedPipe(pipe: Raw, overlapped: Raw) -> i32;
     pub fn DisconnectNamedPipe(pipe: Raw) -> i32;
     pub fn GetNamedPipeClientProcessId(pipe: Raw, pid: *mut u32) -> i32;
+    pub fn SetNamedPipeHandleState(
+        pipe: Raw,
+        mode: *const u32,
+        max: *const u32,
+        timeout: *const u32,
+    ) -> i32;
 }
 
 #[link(name = "ntdll")]

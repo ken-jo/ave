@@ -205,6 +205,20 @@ afterEach(async () => {
 });
 
 describe("native confined holder admission", () => {
+  it("withdraws the pending receiver gate when the install evidence changes", async () => {
+    const revoke = vi.fn();
+    state.spawn.mockImplementationOnce(async (request, options) => {
+      const unwatch = options.watchRelease?.(revoke);
+      try {
+        options.beforeSpawn();
+        unregisterReleaseGate?.();
+        return { startEvidence: started(request), dispose: vi.fn().mockResolvedValue(undefined) };
+      } finally { unwatch?.(); }
+    });
+    await expect(spawnMxcConfinedChild(spec())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+    expect(revoke).toHaveBeenCalledOnce();
+  });
+
   it("revalidates the caller's and the admitted filesystem in one decision per launch pass", async () => {
     const owner = {};
     const seen: Array<[string, unknown]> = [];
@@ -455,6 +469,36 @@ describe("native confined holder admission", () => {
     const parent = { confinement: "windows-mxc", release: vi.fn() } as unknown as Awaited<ReturnType<typeof spawnMxcConfinedChild>>;
     await expect(spawnMxcConfinedChild({ ...spec(), parent })).rejects.toThrow("parent backend");
     expect(state.spawn).not.toHaveBeenCalled();
+  });
+
+  it("revokes descendant authorization while its receiver frame is held", async () => {
+    const parent = await spawnMxcConfinedChild(spec());
+    let authorized!: () => void;
+    let receive!: () => void;
+    const authorization = new Promise<void>(resolve => { authorized = resolve; });
+    const delivery = new Promise<void>(resolve => { receive = resolve; });
+    const spawnSdk = vi.fn();
+    state.spawn.mockImplementationOnce(async (request, options) => {
+      let released = true;
+      const unwatch = options.watchRelease(() => { released = false; });
+      try {
+        options.beforeSpawn();
+        authorized();
+        await delivery;
+        if (!released) throw new Error("Receiver authorization revoked");
+        spawnSdk();
+        return { startEvidence: started(request), dispose: vi.fn().mockResolvedValue(undefined) };
+      } finally { unwatch(); }
+    });
+    admitWrites("D:\\child");
+    const pending = spawnMxcConfinedChild(siblingChild(parent)).catch((error: unknown) => error);
+    await authorization;
+    const release = parent.release();
+    await Promise.resolve();
+    receive();
+    await pending;
+    await release;
+    expect(spawnSdk).not.toHaveBeenCalled();
   });
 
   it("awaits an authorized but unpublished descendant before reporting parent termination", async () => {

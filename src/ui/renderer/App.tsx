@@ -27,6 +27,7 @@ import type { ChatEntry } from "../../lib/chat-stream-state.js";
 import { McpAppPipPanel } from "./components/McpAppPipPanel.js";
 import { McpAppFullscreenPanel } from "./components/McpAppFullscreenPanel.js";
 import { MemoryView } from "./components/MemoryView.js";
+import { MemoryViewWin32 } from "./components/MemoryViewWin32.js";
 import { SchedulePanel } from "./components/schedule/SchedulePanel.js";
 import { WorkBoardPanel } from "./components/WorkBoardPanel.js";
 import { ProjectHomeView } from "./components/ProjectHomeView.js";
@@ -2114,8 +2115,9 @@ export function App() {
     };
 
     if (view === "memory") {
+      const MemoryMapView = /Windows/i.test(navigator.userAgent) ? MemoryViewWin32 : MemoryView;
       return viewPane("memory", (
-        <MemoryView
+        <MemoryMapView
           onOpenEmbeddingSettings={() => navigateToSettingsPath({ tab: "chat", section: "memory-embeddings" })}
           api={api}
           project={activeProject ?? defaultWorkspaceProject}

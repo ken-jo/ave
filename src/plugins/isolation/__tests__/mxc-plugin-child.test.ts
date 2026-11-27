@@ -50,6 +50,7 @@ function fixture() {
     id: 42, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), completion,
     diagnostics: { nodeVersion: "", nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "" },
     startEvidence: undefined,
+    fenceInput: () => {},
     dispose: vi.fn(async () => { resolve({ exitCode: 0, timedOut: false }); }),
   };
   const controller = new AbortController();

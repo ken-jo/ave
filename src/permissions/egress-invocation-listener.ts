@@ -342,6 +342,10 @@ export async function openInvocationProxyListener(
       if (candidate === undefined) throw new Error("invocation proxy listener could not bind outside shared proxy port range");
       const held = candidate;
       let failure: string | undefined;
+      if (process.platform === "win32") {
+        options.admission?.assertCanBind();
+        if (closeRequested) throw new Error("invocation proxy listener closed while binding");
+      }
       binding = new Promise<void>((resolve) => {
         const failed = (error: NodeJS.ErrnoException): void => {
           failure = error.code ?? "bind failed";

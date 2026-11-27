@@ -1,8 +1,6 @@
-import assert from 'node:assert/strict';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { IpcMainInvokeEvent } from 'electron';
 import type { IpcDeps } from '../types.js';
-import type { MemoryMapApi } from '../../shared/memory-map.js';
 import type { MemoryEmbeddingConfig } from '../../shared/memory-embedding-config.js';
 import { CHANNELS } from '../../contract/app-contract.js';
 import { graphMemoryRevision, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
@@ -21,18 +19,9 @@ vi.mock('../../main/memory-map/local-runtime.js', async () => {
   return { assertLocalEmbeddingRuntime: () => { if (!state.localConfined) throw new MemoryMapHostError('local-runtime-unavailable'); } };
 });
 import { registerMemoryMapHandlers } from '../domains/memory-map.js';
+import { createMemoryMapInvoker } from './memory-map-fixtures.js';
 const hostEvent = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
-const invoke = (key: keyof typeof CHANNELS.memoryMap, raw?: unknown, event = hostEvent) => {
-  const handler = state.handles.get(CHANNELS.memoryMap[key]);
-  assert.ok(handler);
-  return handler(event, ...(raw === undefined ? [] : [raw]));
-};
-async function providerEndpointId() {
-  const result = await invoke('settingsGet') as Awaited<ReturnType<MemoryMapApi['settingsGet']>>;
-  const endpointId = result.ok && result.value.providers.find(entry => entry.id === 'openai')?.route?.endpointId;
-  if (!endpointId) throw new Error('Missing provider route');
-  return endpointId;
-}
+const { invoke, providerEndpointId } = createMemoryMapInvoker(state.handles, hostEvent);
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 if (!originalPlatform) throw new Error('Missing platform descriptor');
 beforeEach(() => {
@@ -186,7 +175,10 @@ describe('memory map host boundary', () => {
     expect(set).not.toHaveBeenCalled();
     expect(transport).not.toHaveBeenCalled();
   });
-  it.each(Object.keys(CHANNELS.memoryMap).filter(key => !['progress','modelProgress'].includes(key)) as (keyof typeof CHANNELS.memoryMap)[])('rejects an untrusted frame before parsing %s', async key => {
+  it('does not register the Windows build view on the POSIX host', () => {
+    expect(state.handles.has(CHANNELS.memoryMap.buildView)).toBe(false);
+  });
+  it.each(Object.keys(CHANNELS.memoryMap).filter(key => !['progress','modelProgress','buildView'].includes(key)) as (keyof typeof CHANNELS.memoryMap)[])('rejects an untrusted frame before parsing %s', async key => {
     const event = { ...hostEvent, senderFrame: { url: 'ave-mcp-app://isolated/index.html' } } as unknown as IpcMainInvokeEvent;
     expect(await invoke(key, {}, event)).toEqual({ ok: false, error: 'unauthorized-frame' });
     expect(state.audit).toHaveBeenCalledOnce(); expect(state.download).not.toHaveBeenCalled(); expect(state.build).not.toHaveBeenCalled();

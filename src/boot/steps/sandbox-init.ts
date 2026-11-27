@@ -18,6 +18,8 @@ import {
   windowsSubstrateWithoutAsrt,
   type WindowsSandboxPlanInputs,
 } from "./windows-sandbox-plan.js";
+import type { checkAsrtDependencies as checkSandboxDependencies } from "../../permissions/asrt-sandbox.js";
+import type { MxcSupport } from "../../permissions/mxc-windows.js";
 import type { EgressProtocolCoverage, SandboxStartFailureCause, SandboxWindowsSubstrateInfo } from "../../shared/sandbox-capability-info.js";
 import type { WindowsMxcShellEgressMeasurement } from "../../permissions/sandbox-capability.js";
 import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start-failure.js";
@@ -30,6 +32,8 @@ import { AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, aveHomeBoundaryFailure, getAve
 import { isAveHomeTrustPendingAtBoot } from "../../shared/ave-home-trust.js";
 import type { ProcessRunStateProbe } from "../../permissions/windows-process-start-time.js";
 import type { AsrtSandboxInitialization } from "../../permissions/asrt-sandbox.js";
+import { isWindowsBackgroundFeatureReleaseEnabled } from "../../permissions/windows-background-features.js";
+import { isWindowsAccountBackendAbsent } from "../../permissions/windows-confinement-evidence.js";
 
 const log = createLogger("ave");
 
@@ -154,15 +158,20 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
 
     // Interlock warnings use actual activation so requested-but-degraded confinement cannot suppress them.
     let sandboxActive = false;
+    const checkWindowsBootDependencies = (): ReturnType<typeof checkSandboxDependencies> => checkAsrtDependencies().catch((error: unknown) => ({
+      errors: [errorMessage(error)], warnings: [], dependencyFailure: error,
+    }));
 
     if (sandboxOptIn) {
-      const deps = await checkAsrtDependencies();
+      const deps = process.platform === "win32"
+        ? await checkWindowsBootDependencies()
+        : await checkAsrtDependencies();
       const dependencyCauses = deps.errors.length > 0
         ? classifySandboxDependencyErrors(process.platform, deps.errors, deps.dependencyFailure)
         : [];
       // Record every Windows substrate branch for Settings; available containers carry agent shells independently of the other runtime.
       const windowsInputs = process.platform === "win32"
-        ? await detectWindowsBootInputs(shellRequested, workerRequested, deps.errors.length === 0)
+        ? await detectWindowsBootInputs(shellRequested, workerRequested, deps)
         : undefined;
       const windowsPlan = windowsInputs === undefined ? undefined : planWindowsSandbox(windowsInputs);
       // Track proxy-only startup separately from the requested runtime plan.
@@ -193,19 +202,20 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
         // The probe only settles the shell route; skip it when no shell will take that route.
         if (windowsMxc?.state !== "checking" || failed || started === "none" || !windowsInputs.shellRequested) return;
         const recordedMxc = getWindowsSandboxSubstrate()?.mxc;
-        shellStartProbe ??= settleWindowsMxcStartProbe();
+        shellStartProbe ??= settleWindowsMxcStartProbe(windowsInputs.launcherIdentity);
         void shellStartProbe.then(({ mxc, egress }) => {
           if (getWindowsSandboxSubstrate()?.mxc !== recordedMxc) return;
-          windowsMxc = mxc;
-          windowsShellEgress = egress;
-          const settled = at(mxc);
+          windowsMxc = mxc.state === "available" && !windowsInputs.isLauncherCurrent()
+            ? { state: "unavailable", reason: "launcher-mismatch" } : mxc;
+          windowsShellEgress = windowsMxc.state === "available" ? egress : undefined;
+          const settled = at(windowsMxc);
           publishWindows(settled);
           if (started === "proxy-only") {
             setActiveSandboxCapability(windowsProxyOnlyCapability(settled));
           }
           log.info(
             "boot: Windows sandbox settled — MXC %s, shells: %s, shell egress identity: %s",
-            mxc.state === "unavailable" ? `unavailable (${mxc.reason})` : mxc.state,
+            windowsMxc.state === "unavailable" ? `unavailable (${windowsMxc.reason})` : windowsMxc.state,
             settled.shells,
             settled.shellEgressIdentity,
           );
@@ -219,7 +229,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
               settingOn,
               explicitEnv,
               platform: process.platform,
-              depsOk: deps.errors.length === 0,
+              depsOk: windowsInputs?.srtWinReady ?? deps.errors.length === 0,
             });
 
       const privacyFailure = getAveHomePrivacyFailure();
@@ -529,6 +539,11 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
         }
       }
     } else {
+      if (isWindowsBackgroundFeatureReleaseEnabled()) {
+        const dependencies = await checkWindowsBootDependencies();
+        const windowsInputs = await detectWindowsBootInputs(false, false, dependencies);
+        setWindowsSandboxSubstrate(windowsSubstrateFor(windowsInputs, "none"));
+      }
       if (process.platform === "darwin") {
         log.info(
     "boot: OS tool sandbox gated off (enable via Settings → Permissions, or AVE_SANDBOX_ENABLED=1 for shells / " +
@@ -700,10 +715,20 @@ export async function sweepStaleWindowsSandboxHomes(
 async function detectWindowsBootInputs(
   shellRequested: boolean,
   workerRequested: boolean,
-  srtWinReady: boolean,
-): Promise<WindowsSandboxPlanInputs> {
-  const { detectHostMxcPrerequisites } = await import("../../permissions/mxc-windows.js");
-  const mxc = await detectHostMxcPrerequisites();
+  dependencies: Awaited<ReturnType<typeof checkSandboxDependencies>>,
+): Promise<WindowsSandboxPlanInputs & { launcherIdentity: string | undefined; isLauncherCurrent: () => boolean }> {
+  const { detectHostMxcPrerequisites, getHostWxcExecIdentity } = await import("../../permissions/mxc-windows.js");
+  let launcherIdentity: string | undefined;
+  try { launcherIdentity = getHostWxcExecIdentity(); } catch { /* Prerequisites determine the refusal. */ }
+  const isLauncherCurrent = () => {
+    try { return launcherIdentity !== undefined && getHostWxcExecIdentity() === launcherIdentity; }
+    catch { return false; }
+  };
+  const mxc = await detectHostMxcPrerequisites(launcherIdentity).catch((error: unknown): MxcSupport => ({
+    state: "unavailable", reason: "probe-failed", windowsBuild: null, detail: errorMessage(error),
+  }));
+  const accountProbeSucceeded = dependencies.errors.length === 0 && dependencies.dependencyFailure === undefined;
+  const accountBackendAbsent = isWindowsAccountBackendAbsent(dependencies);
   if (mxc.state === "unavailable") {
     log.warn({ mxcHostState: mxc.state, mxcHostReason: mxc.reason },
       "boot: MXC host prerequisites unavailable (build %s): %s", mxc.windowsBuild ?? "unknown", mxc.detail);
@@ -713,24 +738,30 @@ async function detectWindowsBootInputs(
   return {
     shellRequested,
     workerRequested,
+    launcherIdentity,
+    isLauncherCurrent,
     mxc: runtimeRootFailure !== undefined ? { state: "unavailable", reason: "runtime-root-unproved" }
-      : mxc.state === "available" ? { state: "checking" } : { state: "unavailable", reason: mxc.reason },
+      : mxc.state === "available" ? (isLauncherCurrent() ? { state: "checking" } : { state: "unavailable", reason: "launcher-mismatch" }) : { state: "unavailable", reason: mxc.reason,
+        ...(mxc.containerBackendAbsent === true && mxc.baseContainerApiPresent === false
+          ? { containerBackendAbsent: true } : {}) },
     // Pinned until this installation carries a release-gate record (contract fields 8-13, gathered on the packaged build).
     // Neither shell startup nor a holder's own start evidence (fields 1-5, known only after a start) certifies that gate.
     extensionMxc: { state: "unavailable", reason: "native-validation-required" },
     windowsBuild: mxc.windowsBuild,
-    srtWinReady,
+    srtWinReady: accountProbeSucceeded && dependencies.accountBackendAbsent !== true,
+    ...(accountBackendAbsent ? { accountBackendAbsent: true } : {}),
   };
 }
 
 type WindowsMxcShellEgressProbe = WindowsMxcShellEgressMeasurement | { coverage: EgressProtocolCoverage };
 
 /** Probe a real shell start after boot. */
-async function settleWindowsMxcStartProbe(): Promise<{ mxc: WindowsSandboxPlanInputs["mxc"]; egress?: WindowsMxcShellEgressProbe }> {
+async function settleWindowsMxcStartProbe(launcherIdentity: string | undefined): Promise<{ mxc: WindowsSandboxPlanInputs["mxc"]; egress?: WindowsMxcShellEgressProbe }> {
+  if (launcherIdentity === undefined) return { mxc: { state: "unavailable", reason: "launcher-mismatch" } };
   const started = Date.now();
   try {
     const { probeHostMxcPowerShellStart } = await import("../../permissions/mxc-windows.js");
-    const mxc = await probeHostMxcPowerShellStart();
+    const mxc = await probeHostMxcPowerShellStart(launcherIdentity);
     if (mxc.state === "available") {
       log.info({ mxcShellState: mxc.state }, "boot: MXC shell start probe succeeded in %d ms", Date.now() - started);
       const rawIpProbe = mxc.rawIpProbe;

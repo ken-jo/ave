@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { createServer, connect, type Socket } from "node:net";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { PassThrough, type Readable, type Writable } from "node:stream";
+import { commitUnderAdmission } from "../../shared/admission-commit.js";
 
 /** Selects the loopback channel in `plugin-child-main.ts`. Absent: stdio. */
 export const CHILD_LOOPBACK_TRANSPORT_ARG = "--ave-child-transport=loopback";
@@ -254,6 +255,7 @@ export function connectToAnnouncedChild(opts: {
   readonly stdout: Readable;
   readonly exited: Promise<string>;
   readonly timeoutMs: number;
+  readonly assertStillValid?: () => void;
 }): Promise<Socket> {
   return new Promise<Socket>((resolve, reject) => {
     let settled = false;
@@ -325,7 +327,7 @@ export function connectToAnnouncedChild(opts: {
           }
           const rest = received.subarray(newline + 1);
           if (rest.length > 0) connected.unshift(rest);
-          finish(undefined);
+          commit(() => finish(undefined));
           return;
         }
       };
@@ -337,9 +339,13 @@ export function connectToAnnouncedChild(opts: {
       );
       connected.on("readable", onReadable);
       connected.on("end", onEnd);
-      connected.write(`${loopbackProof(nonce, "host", ends.local, ends.remote).toString("hex")}\n`);
+      commit(() => { connected.write(`${loopbackProof(nonce, "host", ends.local, ends.remote).toString("hex")}\n`); });
     };
-    const dial = (port: number, nonce: string): void => {
+    const commit = (effect: () => void): void => {
+      try { commitUnderAdmission(() => opts.assertStillValid?.(), effect); }
+      catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
+    };
+    const dial = (port: number, nonce: string): void => commit(() => {
       attempts += 1;
       let established = false;
       const connected = connect({ host: LOOPBACK_ADDRESS, port, localAddress: LOOPBACK_ADDRESS }, () => {
@@ -352,7 +358,7 @@ export function connectToAnnouncedChild(opts: {
         if (established) dropped(connected, error, port, nonce);
         else if (connected === socket) finish(error);
       });
-    };
+    });
     const onData = (chunk: Buffer): void => {
       if (announced) return;
       scanned += chunk.toString("utf-8");

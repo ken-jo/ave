@@ -3,20 +3,25 @@ import { PassThrough, Writable } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 import type { ContainerRequest, MxcProcess, ProbeOutput } from "@microsoft/mxc-sdk/v1";
 import { describe, expect, it, vi } from "vitest";
+import * as backendEvidence from "../windows-confinement-evidence.js";
 import { createMxcExtensionRequest, createMxcNativeProcess } from "../../__tests__/support/mxc-supervisor.js";
 import { _spawnMxcExtensionProcessForTest, spawnMxcExtensionProcess, spawnMxcExtensionProcessForDiagnostics, type OwnedMxcExtensionProcess, type MxcProcessLifecycleEvent } from "../mxc-extension-process.js";
 import { MxcExtensionChannel } from "../mxc-extension-channel.js";
-import { mxcRequestDigest } from "../mxc-extension-protocol.js";
+import { MXC_STREAM_CHUNK_BYTES, mxcRequestDigest } from "../mxc-extension-protocol.js";
 import { serveMxcSupervisor } from "../mxc-supervisor-service.js";
 import { MxcIntegrityError } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "../mxc-extension-errors.js";
 import type { MxcSupervisorRuntime } from "../mxc-supervisor-bootstrap.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createMxcReleaseGate } from "../mxc-release-gate.js";
 
 vi.mock("../../main/host-resources.js", () => ({ getHostResources: () => ({ resourcePath: "unit-resources", isPackaged: false }) }));
 vi.mock("../../main/managed-child-processes.js", () => ({ spawnManaged: vi.fn() }));
 
-function transportFixture(request = createMxcExtensionRequest()) {
+function transportFixture(request = createMxcExtensionRequest(), holdStartWrite?: (complete: () => void) => void) {
   const fixture = createMxcNativeProcess();
   const probe = vi.fn(() => ({ tier: "base-container", needsDaclAugmentation: false, probes: { baseContainerSupportsEnumeratePaths: true } } as ProbeOutput));
   const spawn = vi.fn(async () => fixture.native as unknown as MxcProcess);
@@ -29,18 +34,25 @@ function transportFixture(request = createMxcExtensionRequest()) {
   const fatal = vi.fn();
   const spawnSupervisor = vi.fn((_entry: string, _modules: string, generation: string) => {
     const controls = new PassThrough(); events = new PassThrough(); liveness = new PassThrough();
+    if (holdStartWrite) {
+      vi.spyOn(controls, "_write").mockImplementationOnce((chunk, _encoding, callback) => {
+        controls.push(chunk);
+        holdStartWrite(() => callback());
+      });
+    }
     const diagnostics = new PassThrough();
     child = Object.assign(new EventEmitter(), {
       pid: 314159, stdin: controls, stdout: events, stderr: diagnostics, stdio: [controls, events, diagnostics, liveness],
       kill: vi.fn(() => { liveness.end(); events.destroy(); child.emit("close", 1, null); return true; }),
     }) as unknown as ChildProcess;
     service = new Promise<Buffer>((resolve) => liveness.once("data", resolve))
-      .then((key) => serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor"), liveness, bootstrap, fatal));
+      .then((key) => serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor", "windows-extension"), liveness, bootstrap, fatal));
     void service.then(() => child.emit("close", 0, null), () => child.emit("close", 1, null));
     return child;
   });
-  const launch = (signal?: AbortSignal, onLifecycle?: (event: MxcProcessLifecycleEvent) => void, beforeSpawn?: () => void, onOwned?: (owned: OwnedMxcExtensionProcess) => void) => _spawnMxcExtensionProcessForTest(request, "unit-modules", "unit-entry", spawnSupervisor, signal, onLifecycle, beforeSpawn, onOwned);
-  return { fixture, probe, spawn, bootstrap, runtime, launch, fatal, get child() { return child; }, get liveness() { return liveness; }, get service() { return service; } };
+  const launch = (signal?: AbortSignal, onLifecycle?: (event: MxcProcessLifecycleEvent) => void, beforeSpawn?: () => void, onOwned?: (owned: OwnedMxcExtensionProcess) => void,
+    preparation?: Parameters<typeof _spawnMxcExtensionProcessForTest>[8]) => _spawnMxcExtensionProcessForTest(request, "unit-modules", "unit-entry", spawnSupervisor, signal, onLifecycle, beforeSpawn, onOwned, preparation);
+  return { fixture, probe, spawn, bootstrap, runtime, launch, spawnSupervisor, fatal, get child() { return child; }, get liveness() { return liveness; }, get service() { return service; } };
 }
 
 async function collect(stream: PassThrough): Promise<Buffer> {
@@ -50,14 +62,103 @@ async function collect(stream: PassThrough): Promise<Buffer> {
 }
 
 describe("supervisor transport and lifecycle with an injected SDK (unit only)", () => {
+  it("refuses an expired preparation before starting a supervisor", async () => {
+    const f = transportFixture();
+    const child = await f.launch(undefined, undefined, undefined, undefined, {
+      beforeSupervisor: () => { throw new MxcProcessContractError("Holder withdrew admission"); },
+    }).catch(() => undefined);
+    await child?.dispose();
+    expect(f.spawnSupervisor).not.toHaveBeenCalled();
+  });
+
+  it.each(["revoked authorization", "replaced filesystem identity", "current authorization"])("checks %s at the SDK call after authenticated delivery", async (change) => {
+    const root = mkdtempSync(join(tmpdir(), "mxc-release-"));
+    try {
+      const granted = join(root, "grant");
+      writeFileSync(granted, "granted");
+      const release = createMxcReleaseGate(root, [granted]);
+      const f = transportFixture();
+      const child = await f.launch(undefined, event => {
+        if (event.type !== "creating") return;
+        const controls = f.child.stdin as PassThrough;
+        vi.spyOn(controls, "_write").mockImplementationOnce((bytes, _encoding, callback) => {
+          controls.push(bytes);
+          if (change === "revoked authorization") release.revoke();
+          if (change === "replaced filesystem identity") {
+            renameSync(granted, join(root, "retired-grant"));
+            writeFileSync(granted, "granted");
+          }
+          callback();
+        });
+      }, undefined, undefined, { release }).catch(() => undefined);
+      await child?.dispose();
+      expect(f.spawn).toHaveBeenCalledTimes(change === "current authorization" ? 1 : 0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("requires the supported platform and a packaged installation on the public path", async () => {
-    await expect(spawnMxcExtensionProcess(createMxcExtensionRequest(), { beforeSpawn: () => {} })).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+    await expect(spawnMxcExtensionProcess(createMxcExtensionRequest(), {
+      beforeSpawn: () => {}, beforeSupervisor: () => {}, paths: [], watchRelease: () => () => {},
+    })).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
     await expect(spawnMxcExtensionProcessForDiagnostics(createMxcExtensionRequest())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
   });
 
   it("refuses a production native spawn that carries no row-2 admission at the spawn boundary", async () => {
     const unadmitted = { signal: new AbortController().signal } as unknown as Parameters<typeof spawnMxcExtensionProcess>[1];
     await expect(spawnMxcExtensionProcess(createMxcExtensionRequest(), unadmitted)).rejects.toThrow(/requires row-2 admission/);
+  });
+
+  it.each([
+    ["request refusal", "none", true, true, true],
+    ["denied base containment fallback", "base-container", true, true, true],
+    ["extension-only path queries", "base-container", false, false, true],
+    ["a missing common backend", "none", false, true, false],
+  ] as const)("reports shared backend loss for %s only on measured platform absence", async (_name, tier, enumerate, needsDaclAugmentation, baseContainerApiPresent) => {
+    const reportLoss = vi.spyOn(backendEvidence, "reportWindowsBackendLoss");
+    try {
+      const f = transportFixture();
+      f.probe.mockReturnValue({ tier, needsDaclAugmentation, probes: { baseContainerSupportsEnumeratePaths: enumerate, baseContainerApiPresent } } as ProbeOutput);
+      await expect(f.launch()).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+      expect(f.spawn).not.toHaveBeenCalled();
+      expect(reportLoss).toHaveBeenCalledTimes(baseContainerApiPresent ? 0 : 1);
+    } finally { reportLoss.mockRestore(); }
+  });
+
+  it("does not revoke receipts when native creation fails with an ambiguous backend error", async () => {
+    const reportLoss = vi.spyOn(backendEvidence, "reportWindowsBackendLoss");
+    try {
+      const f = transportFixture();
+      f.spawn.mockRejectedValue(Object.assign(new Error("Base containment was withdrawn"), { code: "backend_unavailable" }));
+      await expect(f.launch()).rejects.toBeInstanceOf(MxcProcessCleanupError);
+      expect(reportLoss).not.toHaveBeenCalled();
+    } finally { reportLoss.mockRestore(); }
+  });
+
+  it.each([
+    ["shell", true, false], ["extension", false, true], ["common", true, true],
+  ] as const)("revokes only the evidence measured by a %s loss", async (scope, shellLost, extensionLost) => {
+    const shell = backendEvidence.WINDOWS_BACKEND_EVIDENCE.container;
+    const shellObservation = shell.observe();
+    const loss = backendEvidence.observeWindowsBackend("container", scope);
+    const lossEpoch = backendEvidence.getWindowsContainerBackendLossEpoch();
+    expect(backendEvidence.reportWindowsBackendLoss(loss)).toBe(true);
+    expect(shell.isObserved(shellObservation)).toBe(!shellLost);
+    expect(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch + Number(extensionLost));
+  });
+
+  it("checks the input fence at every frame and still stops after a refusal", async () => {
+    const f = transportFixture();
+    let received = 0;
+    f.fixture.stdin.on("data", (bytes: Buffer) => { received += bytes.length; });
+    const owned = await f.launch();
+    let checks = 0;
+    owned.fenceInput(() => { if (++checks > 2) throw new Error("superseded"); });
+    const refused = new Promise<Error | null | undefined>((resolve) => owned.stdin.write(Buffer.alloc(4 * MXC_STREAM_CHUNK_BYTES, 7), resolve));
+    expect((await refused)?.message).toBe("superseded");
+    await owned.dispose();
+    expect(checks).toBe(3);
+    expect(received).toBe(2 * MXC_STREAM_CHUNK_BYTES);
+    expect(f.fixture.native.kill).toHaveBeenCalledOnce();
   });
 
   it("forwards binary stdin, stdout, stderr and terminal status, omitting telemetry", async () => {
@@ -81,6 +182,22 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     await owned.dispose();
     expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
     expect(f.fatal).not.toHaveBeenCalled();
+  });
+
+  it("checks fenced application EOF independently of teardown", async () => {
+    const f = transportFixture();
+    const owned = await f.launch();
+    const ended = vi.fn();
+    f.fixture.stdin.once("finish", ended);
+    let live = true;
+    owned.fenceInput(() => { if (!live) throw new Error("admission expired"); });
+    try {
+      const eof = new Promise<Error | null | undefined>(resolve => owned.stdin.end(resolve));
+      live = false;
+      expect((await eof)?.message).toBe("admission expired");
+      expect(ended).not.toHaveBeenCalled();
+    } finally { await owned.dispose(); }
+    expect(f.fixture.native.kill).toHaveBeenCalledOnce();
   });
 
   it("revalidates admission after bootstrap and native probing before authorizing spawn", async () => {
@@ -111,6 +228,24 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     expect(f.fatal).not.toHaveBeenCalled();
   });
 
+  it("refuses superseded admission while authorization waits for the start write", async () => {
+    let completeStart!: () => void;
+    let current = true;
+    const f = transportFixture(createMxcExtensionRequest(), (complete) => { completeStart = complete; });
+    const beforeSpawn = vi.fn(() => { if (!current) throw new Error("Admission superseded"); });
+    const outcome = f.launch(undefined, (event) => {
+      if (event.type === "creating") queueMicrotask(() => {
+        current = false;
+        completeStart();
+      });
+    }, beforeSpawn).then(async (owned) => { await owned.dispose(); return undefined; }, (error: unknown) => error);
+    expect(await outcome).toMatchObject({ message: "Extension admission revalidation failed" });
+    expect(beforeSpawn).toHaveBeenCalledOnce();
+    expect(f.spawn).not.toHaveBeenCalled();
+    await f.service;
+    expect(f.child.kill).not.toHaveBeenCalled();
+    expect(f.fatal).not.toHaveBeenCalled();
+  });
   it("refuses asynchronous admission checks without creating a container", async () => {
     const f = transportFixture();
     await expect(f.launch(undefined, undefined, async () => {})).rejects.toBeInstanceOf(MxcProcessContractError);
@@ -157,13 +292,13 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     const f = transportFixture();
     const controls = new PassThrough(), events = new PassThrough(), liveness = new PassThrough();
     const key = Buffer.alloc(32, 7), generation = "a".repeat(64);
-    const host = new MxcExtensionChannel(events, controls, generation, key, "host");
+    const host = new MxcExtensionChannel(events, controls, generation, key, "host", "windows-extension");
     const closePin = vi.fn();
     f.runtime.pinProcess = vi.fn(() => ({ value: "161803", close: closePin }));
     let arrive!: (native: MxcProcess) => void;
     const delayed = action === "channel-eof-before-native" || action === "owner-eof-before-native";
     if (delayed) f.spawn.mockImplementation(() => new Promise((resolve) => { arrive = resolve; }));
-    const service = serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor"), liveness, f.bootstrap, f.fatal);
+    const service = serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor", "windows-extension"), liveness, f.bootstrap, f.fatal);
     void service.catch(() => {});
     const frames = host.frames();
     try {
@@ -203,8 +338,8 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     const f = transportFixture();
     const controls = new PassThrough(), events = new PassThrough(), liveness = new PassThrough();
     const key = Buffer.alloc(32, 7), generation = "a".repeat(64);
-    const host = new MxcExtensionChannel(events, controls, generation, key, "host");
-    const service = serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor"), liveness, f.bootstrap, f.fatal);
+    const host = new MxcExtensionChannel(events, controls, generation, key, "host", "windows-extension");
+    const service = serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor", "windows-extension"), liveness, f.bootstrap, f.fatal);
     const frames = host.frames();
     try {
       await host.send({ type: "start", request: createMxcExtensionRequest() });
@@ -225,10 +360,10 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     const f = transportFixture();
     const controls = new PassThrough(), events = new PassThrough(), liveness = new PassThrough();
     const key = Buffer.alloc(32, 7), generation = "a".repeat(64);
-    const host = new MxcExtensionChannel(events, controls, generation, key, "host");
+    const host = new MxcExtensionChannel(events, controls, generation, key, "host", "windows-extension");
     const closePin = vi.fn();
     f.runtime.pinProcess = vi.fn(() => ({ value: "161803", close: closePin }));
-    const service = serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor"), liveness, f.bootstrap, f.fatal);
+    const service = serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor", "windows-extension"), liveness, f.bootstrap, f.fatal);
     void service.catch(() => {});
     const frames = host.frames();
     try {
@@ -404,9 +539,9 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     f.fixture.native.kill.mockImplementation(() => {});
     const owned = await f.launch();
     const send = MxcExtensionChannel.prototype.send;
-    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame) {
+    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame, admit) {
       if (frame.type === "stop") return Promise.reject(new Error("Control pipe closed"));
-      return send.call(this, frame);
+      return send.call(this, frame, admit);
     });
     try {
       const disposed = owned.dispose();
@@ -500,13 +635,13 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     f.fixture.native.wait.mockImplementation(() => wait().then((result) => { nativeTerminated = true; return result; }));
     let release: (() => Promise<void>) | undefined;
     const send = MxcExtensionChannel.prototype.send;
-    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame) {
+    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame, admit) {
       if (frame.type === heldType) {
-        release = () => { order.push(`${heldType}-delivered`); return send.call(this, frame); };
+        release = () => { order.push(`${heldType}-delivered`); return send.call(this, frame, admit); };
         // Model a pipe write completing before the peer reads its bytes.
         return Promise.resolve();
       }
-      return send.call(this, frame);
+      return send.call(this, frame, admit);
     });
     const launched = f.launch(controller.signal, (event) => {
       order.push(event.type);
@@ -558,9 +693,9 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     let arrive!: (native: MxcProcess) => void;
     f.spawn.mockImplementation(() => new Promise((resolve) => { arrive = resolve; }));
     const send = MxcExtensionChannel.prototype.send;
-    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame) {
+    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame, admit) {
       if (frame.type === "spawning") return Promise.reject(new Error("Spawning notification failed"));
-      return send.call(this, frame);
+      return send.call(this, frame, admit);
     });
     try {
       const launched = f.launch().catch((error: unknown) => error);
@@ -586,7 +721,7 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
       const child = Object.assign(new EventEmitter(), { pid: 314159, stdin: controls, stdout: events, stderr: diagnostics,
         stdio: [controls, events, diagnostics, liveness], kill: vi.fn(() => true) }) as unknown as ChildProcess;
       liveness.once("data", (key: Buffer) => {
-        const channel = new MxcExtensionChannel(controls, events, generation, key, "supervisor");
+        const channel = new MxcExtensionChannel(controls, events, generation, key, "supervisor", "windows-extension");
         controls.once("data", () => {
           void (async () => {
             for (const type of types) {

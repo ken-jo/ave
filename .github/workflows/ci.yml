@@ -1256,6 +1256,12 @@ jobs:
           persist-credentials: false
       - *windows-node
       - *windows-docs-impact
+      - &fetch-memory-main-baseline
+        name: Fetch the memory-map comparison baseline
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        shell: bash
+        working-directory: ave
+        run: git fetch --depth=2 --no-tags origin +refs/heads/main:refs/remotes/origin/main
       - *windows-bun
       - *windows-home
       - *windows-modules
@@ -1631,6 +1637,7 @@ jobs:
           if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
             echo 'docs_only=false' >> "$GITHUB_OUTPUT"
           fi
+      - *fetch-memory-main-baseline
       # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
       # user's bun home; on Windows it is a checksum-verified release download
       # (see the action).
@@ -1767,6 +1774,9 @@ jobs:
           src/permissions/__tests__/egress-deny-native.test.ts
           src/permissions/__tests__/egress-token-isolation-native.test.ts
           src/main/terminal/__tests__/terminal-egress-native.test.ts
+          src/__tests__/windows-memory-class-a.test.ts
+          src/__tests__/windows-memory-import-graph.test.ts
+          src/main/memory-map/__tests__/local-runtime-release-gate.test.ts
           src/main/memory-map/__tests__/inference-child-native.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
           src/permissions/__tests__/permission-manager-meta-override.test.ts

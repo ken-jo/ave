@@ -80,6 +80,66 @@ function currentSettingsJson(settings: Record<string, unknown>): string {
   return JSON.stringify({ ...settings, appliedMigrations: currentMigrations });
 }
 
+it("persists a POSIX profile without introducing Windows-only preferences", async () => {
+  const original = Object.getOwnPropertyDescriptor(process, "platform");
+  const userDataPath = mkdtempSync(join(tmpdir(), "posix-settings-profile-"));
+  const file = join(userDataPath, "ave-settings.json");
+  try {
+    Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+    writeFileSync(file, currentSettingsJson({ features: { idlePreferenceRefresh: true } }));
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect.soft(service.get("memoryEmbedding")).toBeUndefined();
+    await service.patch({ features: { idlePreferenceRefresh: false } });
+    const saved = JSON.parse(readFileSync(file, "utf8"));
+    expect.soft(saved).not.toHaveProperty("memoryEmbedding");
+    expect.soft(saved.features).not.toHaveProperty("sessionIndexingWithoutContainment");
+    expect(saved.features.idlePreferenceRefresh).toBe(false);
+  } finally {
+    if (original) Object.defineProperty(process, "platform", original);
+    await cleanupTmpDir(userDataPath);
+  }
+});
+
+describe.runIf(process.platform === "win32")("local memory inference preference", () => {
+  it.each([undefined, false, true] as const)("preserves the stored choice %s across an unrelated save", async (choice) => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "local-inference-settings-"));
+    const file = join(userDataPath, "ave-settings.json");
+    try {
+      const config = {
+        source: "local",
+        localModelPath: join(userDataPath, "model"),
+        ...(choice === undefined ? {} : { localInferenceWithoutSandbox: choice }),
+      };
+      writeFileSync(file, currentSettingsJson({ memoryEmbedding: config }));
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      expect.soft(service.get("memoryEmbedding")).toStrictEqual(config);
+      await service.patch({ features: { idlePreferenceRefresh: false } });
+      expect(JSON.parse(readFileSync(file, "utf8")).memoryEmbedding).toEqual(config);
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+});
+
+describe.runIf(process.platform === "win32")("session search indexing preference", () => {
+  it.each(["new", "existing"] as const)("persists an off choice for a %s profile", async (profile) => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "session-index-settings-"));
+    const load = () => new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    try {
+      if (profile === "existing") {
+        writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ features: { idlePreferenceRefresh: true } }));
+      }
+      const settings = load();
+      expect(settings.get("features")?.sessionIndexingWithoutContainment).toBeUndefined();
+      await settings.patch({ features: { sessionIndexingWithoutContainment: false } });
+      expect(load().get("features")?.sessionIndexingWithoutContainment).toBe(false);
+      if (profile === "existing") expect(load().get("features")?.idlePreferenceRefresh).toBe(true);
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+});
+
 describe("bundled provider settings", () => {
   it("reports malformed legacy installation state", () => {
     expect(() => normalizeMarketplace({ installedProviderIds: "groq" })).toThrow(/installedProviderIds/);

@@ -212,6 +212,7 @@ for (const leaf of [".agents", ".ave/commands", ".ave/hooks"]) {
             installedPayloadVerified: true, baseContainerReady: true, exactRequestAccepted: true,
             uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true,
           } },
+          fenceInput: vi.fn(),
           dispose: async () => {},
         };
         options.onOwned?.(owned);
