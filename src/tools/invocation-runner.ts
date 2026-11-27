@@ -2437,7 +2437,7 @@ async function runToolInvocationAttempt(
         emitToolStart(callbacks, toolUse.name, finalInput, meta);
         callbacks?.onToolEnd?.(toolUse.name, reason, true, meta, undefined, durationMs);
         await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true, startTime, blocked, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-        if (sessionId !== undefined && invocationCategory === "write" && unattendedStageOf(sessionId)?.isolation.proven) {
+        if (sessionId !== undefined && (invocationCategory === "read" || invocationCategory === "write") && unattendedStageOf(sessionId)?.isolation.proven) {
           reportUnattendedDenial({
             sessionId, code: "outside-envelope",
             call: { toolName: toolUse.name, source, inputSummary: JSON.stringify(auditInput) },

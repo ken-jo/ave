@@ -25,7 +25,8 @@ import { endUnattendedStage, onUnattendedDenied, registerUnattendedStage } from 
 import * as shellFilesystemPath from "../../shared/shell-filesystem-path.js";
 import { withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
-import { WriteFileTool } from "../file-tools.js";
+import * as sensitivePaths from "../../permissions/sensitive-paths.js";
+import { ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
@@ -283,14 +284,17 @@ it.each([
   }
 });
 
-it.each(["proven", "unproven", "interim"] as const)("reports an unresolved write only for a linked stage with proven isolation (%s)", async state => {
+it.each([
+  ["write", "proven"], ["write", "unproven"], ["write", "interim"],
+  ["read", "proven"], ["read", "unproven"], ["read", "interim"],
+] as const)("reports an unresolved %s only for a linked stage with proven isolation (%s)", async (effect, state) => {
   const manager = new PermissionManager(join(directory, "permissions.json"));
   const registry = new ToolRegistry();
-  const tool = new WriteFileTool();
+  const tool = effect === "write" ? new WriteFileTool() : new ReadFileTool();
   const execute = vi.spyOn(tool, "execute");
   registry.register(tool);
   const executor = new ToolExecutor(registry, undefined, manager);
-  const sessionId = "unresolved-write";
+  const sessionId = "unresolved-target";
   if (state !== "interim") registerUnattendedStage(sessionId, {
     runKey: "run", stageId: "stage", workspaceRoot: directory, isolation: { proven: state === "proven" },
     envelope: {
@@ -301,18 +305,19 @@ it.each(["proven", "unproven", "interim"] as const)("reports an unresolved write
   });
   const onDenied = vi.fn();
   const unsubscribe = onUnattendedDenied(onDenied);
-  const resolveTarget = vi.spyOn(shellFilesystemPath, "resolveShellFilesystemPath").mockImplementationOnce(() => {
-    throw new Error("Target identity unavailable");
-  });
+  const resolveTarget = effect === "write"
+    ? vi.spyOn(shellFilesystemPath, "resolveShellFilesystemPath")
+    : vi.spyOn(sensitivePaths, "resolvePathForPolicy");
+  resolveTarget.mockImplementationOnce(() => { throw new Error("Target identity unavailable"); });
   try {
     const [result] = await runWithToolExecutionCwd(directory, () => executor.executeAll([
-      { id: "unresolved", name: tool.name, input: { path: "report.txt", content: "report" } },
+      { id: "unresolved", name: tool.name, input: { path: "report.txt", ...(effect === "write" ? { content: "report" } : {}) } },
     ], { sessionId, permissionContext: userPermissionContext() }));
-    expect(result).toMatchObject({ is_error: true, content: "Cannot resolve write target" });
+    expect(result?.is_error).toBe(true);
     expect(execute).not.toHaveBeenCalled();
     if (state === "proven") {
       expect(onDenied).toHaveBeenCalledExactlyOnceWith({
-        sessionId, code: "outside-envelope", call: { toolName: tool.name, source: "builtin", inputSummary: expect.any(String) },
+        sessionId, code: "outside-envelope", call: { toolName: tool.name, source: "builtin", inputSummary: expect.stringContaining("report.txt") },
       });
     } else {
       expect(onDenied).not.toHaveBeenCalled();
