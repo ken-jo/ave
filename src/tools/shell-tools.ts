@@ -2806,6 +2806,7 @@ async function runPosixContainerShell(input: {
   readonly outputCaptureFactory: BoundOutputCaptureFactory | undefined;
   readonly progress: ToolOutputProgressSink | undefined;
   readonly cwdProbe?: ShellCwdProbe;
+  readonly spawnAuthorization: HostShellSpawnAuthorization | undefined;
 }): Promise<SpawnResult> {
   const lifecycle = createContainedShellLifecycle();
   const label = `tool:${input.toolName}:mxc-posix`;
@@ -2836,6 +2837,7 @@ async function runPosixContainerShell(input: {
       { mode: "isolated", detail: "filesystem/process confinement" }, egress.token);
     assertShellRemoteAuthority();
     assertManagedChildProcessAdmissionOpen(label);
+    assertHostShellSpawnDirectory(input.spawnAuthorization);
     const { child, completion } = launch.start(label);
     // Own the spawned supervisor even when output setup throws.
     void completion.catch(() => {});
@@ -2926,7 +2928,7 @@ export async function spawnWithSandbox(
       command, commandLine: `exec ${[shell.cmd, ...argv].map(shellQuote).join(" ")}`, cwd: resolvedCwd,
       writePaths, readPaths: [...preparedShellExecutableReadPaths(prepared), shell.cmd], homePath, env: environment,
       timeoutSeconds, toolName: "bash", toolUseId: preparedShellToolUseId(prepared), sessionId,
-      signal, outputCaptureFactory, progress, ...(probe === undefined ? {} : { cwdProbe: probe }),
+      signal, outputCaptureFactory, progress, ...(probe === undefined ? {} : { cwdProbe: probe }), spawnAuthorization,
     });
   }
   // Compose broad reads while retaining protected paths and private sessions.
@@ -4358,7 +4360,7 @@ async function spawnPowerShellWithSandbox(
         command, commandLine: `exec ${sandboxCommand}`, cwd, writePaths,
         readPaths: [executable, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])],
         homePath: sandboxHome.path, env: powerShellExecutionEnvironment(verified, powerShellLaunch.env),
-        timeoutSeconds, toolName: "powershell", toolUseId, sessionId, signal, outputCaptureFactory, progress,
+        timeoutSeconds, toolName: "powershell", toolUseId, sessionId, signal, outputCaptureFactory, progress, spawnAuthorization,
       });
     } finally {
       sandboxHome.cleanup();

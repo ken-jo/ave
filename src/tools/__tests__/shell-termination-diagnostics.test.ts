@@ -1,9 +1,9 @@
 import "../../__tests__/support/trusted-powershell.js";
 import type { ToolOutputCapture } from "../../shared/tool-output-artifact.js";
 import { ChildProcess, spawn } from "node:child_process";
-import { readdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, dirname, resolve } from "node:path";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../../i18n/index.js";
@@ -34,24 +34,34 @@ const containerLaunch = vi.hoisted(() => ({
     failure?: { type: "error"; code: string; message: string };
   }) => void),
   child: undefined as undefined | import("node:child_process").ChildProcess & { stdout: import("node:stream").PassThrough; stderr: import("node:stream").PassThrough },
+  // Runs once the launch is prepared: after the permit is consumed, before the supervisor starts.
+  prepared: undefined as undefined | (() => void),
 }));
 vi.mock("../mxc-posix-shell-launch.js", async () => {
   const { ChildProcess } = await import("node:child_process");
   const { PassThrough } = await import("node:stream");
   return {
-    prepareMxcPosixShellLaunch: vi.fn(async (_input: unknown, lifecycle: import("../contained-shell-lifecycle.js").ContainedShellLifecycle) => ({
-      carvedReadLimitedAt: undefined, proxyPort: 1, narrowedWriteRoots: [],
-      start() {
-        const child = Object.assign(new ChildProcess(), { stdout: new PassThrough(), stderr: new PassThrough(), stdin: null });
-        const completion = new Promise<Parameters<NonNullable<typeof containerLaunch.settle>>[0]>((resolve) => {
-          containerLaunch.settle = (outcome) => { child.stdout.end(); child.stderr.end(); resolve(outcome); };
-        });
-        containerLaunch.child = child;
-        lifecycle.jobStarted(completion);
-        return { child, completion };
-      },
-    })),
+    prepareMxcPosixShellLaunch: vi.fn(async (_input: unknown, lifecycle: import("../contained-shell-lifecycle.js").ContainedShellLifecycle) => {
+      containerLaunch.prepared?.();
+      return {
+        carvedReadLimitedAt: undefined, proxyPort: 1, narrowedWriteRoots: [],
+        start() {
+          const child = Object.assign(new ChildProcess(), { stdout: new PassThrough(), stderr: new PassThrough(), stdin: null });
+          const completion = new Promise<Parameters<NonNullable<typeof containerLaunch.settle>>[0]>((resolve) => {
+            containerLaunch.settle = (outcome) => { child.stdout.end(); child.stderr.end(); resolve(outcome); };
+          });
+          containerLaunch.child = child;
+          lifecycle.jobStarted(completion);
+          return { child, completion };
+        },
+      };
+    }),
   };
+});
+// The real spawn-directory check runs; the spy shows which authorization reached it.
+vi.mock("../../permissions/host-shell-execution-permit.js", async (original) => {
+  const actual = await original<typeof import("../../permissions/host-shell-execution-permit.js")>();
+  return { ...actual, assertHostShellSpawnDirectory: vi.fn(actual.assertHostShellSpawnDirectory) };
 });
 // Real helper image verification has native tests.
 vi.mock("../../permissions/srt-win-integrity.js", async (original) => ({
@@ -61,7 +71,12 @@ vi.mock("../../permissions/srt-win-integrity.js", async (original) => ({
 
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
-import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import {
+  assertHostShellSpawnDirectory, buildHostShellExecutionPermitBinding, HOST_SHELL_AUTHORIZATION_REVOKED_ERROR,
+  mintHostShellExecutionPermit, recordHostShellPolicyAuthorization,
+} from "../../permissions/host-shell-execution-permit.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { getLocale, setLocale } from "../../i18n/index.js";
 import { en } from "../../i18n/messages/en.js";
 import { ko } from "../../i18n/messages/ko.js";
@@ -385,6 +400,74 @@ describe("macOS container shell completion", () => {
     expect(result.output).toContain("partial");
     expect(result.output).toContain(t(key, { seconds: 1 }));
     expect(result.output).not.toMatch(/exited with code|terminated by/);
+  });
+});
+
+// The tree's final check before spawn: a permit-bearing launch must still match its directory. The macOS container
+// returns before either wrap, so its own runner makes that check just before the supervisor starts.
+describe.runIf(HOST_PLATFORM !== "win32")("macOS container shell spawn directory", () => {
+  let directory: string;
+  beforeEach(() => {
+    setProcessPlatform("darwin");
+    setShellSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability({
+      kind: "asrt", confidence: "verified", platform: "darwin",
+      reason: "Controlled wrapper", confines: { filesystem: true, process: true, network: true },
+    });
+    setContainerShellSubstrate({ state: "available" });
+    containerLaunch.settle = undefined;
+    containerLaunch.child = undefined;
+    containerLaunch.prepared = undefined;
+    directory = realpathSync(mkdtempSync(join(tmpdir(), "ave-mxc-spawn-dir-")));
+  });
+  afterEach(async () => {
+    containerLaunch.prepared = undefined;
+    setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+    await cleanupTmpDir(directory);
+  });
+
+  function permitted(cwd: string, toolUseId: string) {
+    const plan = getHostShellExecutionPlan();
+    expect(plan).toMatchObject({ platform: "darwin", substrate: "mxc" });
+    const input = { command: "echo ready", timeoutSeconds: 1 };
+    const binding = buildHostShellExecutionPermitBinding({
+      plan, toolName: "bash", toolUseId, rawInput: input, executionCwd: cwd, extraAllowedDirectories: [],
+    });
+    if (binding === undefined) throw new Error("no permit binding");
+    recordHostShellPolicyAuthorization(binding, undefined);
+    const permit = mintHostShellExecutionPermit({ plan, binding, answer: undefined });
+    expect(permit).toBeDefined();
+    return { input, context: { cwd, extraAllowedDirectories: [], metadata: { toolUseId }, hostShellExecutionPlan: plan, hostShellExecutionPermit: permit } };
+  }
+
+  it("refuses an approved command whose directory was replaced before launch, and starts no supervisor", async () => {
+    const approved = join(directory, "work");
+    mkdirSync(approved);
+    const { input, context } = permitted(approved, "mxc-replaced-cwd");
+    containerLaunch.prepared = () => {
+      renameSync(approved, join(directory, "former-work"));
+      mkdirSync(approved);
+    };
+    const result = await new BashTool().execute(input, context);
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } });
+    expect(result.output).toContain(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
+    expect(vi.mocked(assertHostShellSpawnDirectory)).toHaveBeenCalledOnce();
+    expect(vi.mocked(assertHostShellSpawnDirectory).mock.calls[0]?.[0]).toMatchObject({ cwdIdentity: { realpath: approved } });
+    expect(containerLaunch.child).toBeUndefined();
+    expect(containerLaunch.settle).toBeUndefined();
+  });
+
+  it("launches an approved command whose directory still matches", async () => {
+    const approved = join(directory, "work");
+    mkdirSync(approved);
+    const { input, context } = permitted(approved, "mxc-matching-cwd");
+    const pending = new BashTool().execute(input, context);
+    await vi.waitFor(() => expect(containerLaunch.settle).toBeTypeOf("function"));
+    containerLaunch.child?.stdout.write("ready\n");
+    containerLaunch.settle?.({ code: 0, timedOut: false, cancelled: false, rejected: false, cleanupUnverified: false });
+    expect(await pending).toMatchObject({ output: "ready", isError: false, metadata: { returncode: 0, sandboxed: true } });
+    expect(vi.mocked(assertHostShellSpawnDirectory)).toHaveBeenCalledOnce();
+    expect(vi.mocked(assertHostShellSpawnDirectory).mock.calls[0]?.[0]).toMatchObject({ cwdIdentity: { realpath: approved } });
   });
 });
 
