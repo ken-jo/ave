@@ -150,10 +150,12 @@ export interface BrowserToolPolicy<G extends BrowserGuest> {
   /** The tab an input names (or the window's shown tab), within the session's window. */
   resolveTab(input: BrowserToolInput, sessionId: string | undefined): ResolvedBrowserTab<G> | undefined;
   /** Where browser_tab_new opens a page: a new tab, the empty page a pane chat is bound to (`inTabId`), or nowhere (why). */
-  tabNewTarget(scope: { windowId: number; hostSessionId: string }): { ok: true; inTabId?: string } | { ok: false; reason: string };
+  tabNewTarget(scope: { windowId: number; hostSessionId: string }, sessionId: string | undefined): { ok: true; inTabId?: string } | { ok: false; reason: string };
 }
 
 export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps<G>): Tool[] {
+  const tabAccess = (windowId: number, handle: string, sessionId: string) =>
+    deps.tabs.tabActionAccess(windowId, handle, { sessionId, directParentSessionId: deps.liveOriginSessionId(sessionId) });
   const policy: BrowserToolPolicy<G> = {
     windowOf: (sessionId) => resolveSessionWindow(sessionId, deps),
     resolveTab: (input, sessionId) => {
@@ -163,18 +165,20 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       const fallback = input.tabId === undefined ? deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId, sessionId) : undefined;
       const handle = (input.tabId as string | undefined) ?? (fallback?.ok ? fallback.handle : undefined);
       if (handle === undefined || !sessionId) return undefined;
-      const access = deps.tabs.tabActionAccess(scope.windowId, handle, { sessionId, directParentSessionId: deps.liveOriginSessionId(sessionId) });
+      const access = tabAccess(scope.windowId, handle, sessionId);
       if (!access?.tab.guest) return undefined;
       return { ...access, origin: browserOrigin(access.tab.guest.getURL()), opener: access.tab.opener };
     },
     // Only a main chat view opens new tabs. A side or pane chat acts in its attached page, or loads one into its empty pane.
-    tabNewTarget: (scope) => {
+    tabNewTarget: (scope, sessionId) => {
       if (deps.opensAgentTabs(scope.hostSessionId)) return { ok: true };
       const attached = deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId);
       if (attached.ok) {
-        const url = deps.tabs.liveTabInWindow(attached.handle, scope.windowId)?.guest?.getURL();
-        return { ok: false, reason: `this chat cannot open browser tabs; it works in ${attached.handle}${url ? ` (${url})` : ""}. `
-          + "Load a URL there with browser_navigate and omit tabId." };
+        const access = sessionId === undefined ? undefined : tabAccess(scope.windowId, attached.handle, sessionId);
+        if (!access) return { ok: false, reason: "this chat cannot open browser tabs. It cannot access its attached page." };
+        if (access.paused) return { ok: false, reason: "this chat cannot open browser tabs. Ask the user to resume browser control before navigating." };
+        const target = sessionId === scope.hostSessionId ? "omit tabId" : `pass tabId ${attached.handle}`;
+        return { ok: false, reason: `this chat cannot open browser tabs; it works in ${attached.handle}. Load a URL there with browser_navigate and ${target}.` };
       }
       const inTabId = deps.tabs.emptyBrowserPaneTab(scope.windowId, scope.hostSessionId);
       if (inTabId !== undefined) return { ok: true, inTabId };
@@ -352,7 +356,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
         const input = asInput(raw);
         const scope = policy.windowOf(ctx?.sessionId);
         if (input.tabId === undefined && scope && !deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId, ctx?.sessionId).ok) {
-          const opening = policy.tabNewTarget(scope);
+          const opening = policy.tabNewTarget(scope, ctx?.sessionId);
           if (opening.ok && (deps.tabs.conversationSurface(scope.windowId, scope.hostSessionId) === undefined || opening.inTabId !== undefined)) return urlScope(raw, "agent");
         }
         return undefined;

@@ -760,12 +760,42 @@ describe("browser tools", () => {
     h.tabs.setActiveSurface(1, { kind: "browser", tabId: `renderer-${attached.guest.id}` });
     const result = await h.run(BROWSER_TOOL.tabNew, { url: "https://a.example/start" });
     expect(result.isError).toBe(true);
-    expect(result.output).toContain(`it works in ${attached.handle} (https://www.google.com/)`);
+    expect(result.output).toContain(`it works in ${attached.handle}`);
+    expect(result.output).not.toContain(attached.guest.url);
     expect(result.output).toContain("browser_navigate");
     expect(h.ops.filter((op) => op.op === "new")).toHaveLength(0);
     // The category never follows pane state, so the call is asked like any network open before it is refused.
     expect(h.cards).toHaveLength(0);
-    expect((await h.run(BROWSER_TOOL.tabs, {})).output).toContain(`it works in ${attached.handle}`);
+    const note = browserHeader((await h.run(BROWSER_TOOL.tabs, {})).output).note;
+    expect(note).toContain(`it works in ${attached.handle}`);
+    expect(note).not.toContain(attached.guest.url);
+  });
+
+  it.each(["foreign lease", "paused"] as const)("keeps pane opening guidance within tab access during a %s", async (state) => {
+    const h = harness({ noTabOpener: true });
+    const url = "https://private.example/page?query=private#private-location";
+    const tab = h.userTab(url);
+    tab.guest.title = "Private page title";
+    const tabId = `renderer-${tab.guest.id}`;
+    h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId } });
+    const lease = h.tabs.acquireControl(h.tabs.liveTab(tab.handle)!, { sessionId: state === "foreign lease" ? CHILD_SESSION : HOST_SESSION });
+    expect(lease.lifetime).toBe("borrowed");
+    if (state === "paused") expect(h.tabs.pause(1, tabId)).toBe(true);
+
+    const inventory = await h.run(BROWSER_TOOL.tabs, { scope: "conversation" });
+    expect(inventory.isError).toBe(false);
+    const header = browserHeader(inventory.output);
+    if (state === "foreign lease") expect(header.tabs).toEqual([]);
+    const refused = await h.run(BROWSER_TOOL.tabNew, { url: "https://a.example/start" });
+    expect(refused.isError).toBe(true);
+    expect(typeof header.note).toBe("string");
+    expect(refused.output).toContain(String(header.note));
+    for (const text of [tab.handle, url, "private.example", "Private page title", "browser_navigate"]) {
+      expect.soft(header.note).not.toContain(text);
+      expect.soft(refused.output).not.toContain(text);
+    }
+    expect(header.note).toContain(state === "paused" ? "resume" : "cannot access");
+    expect(h.ops).toEqual([]);
   });
 
   it("loads browser_tab_new into the empty page a pane chat is bound to, and binds only that page", async () => {

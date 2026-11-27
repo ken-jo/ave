@@ -311,9 +311,10 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
   };
 
   const openAgentTab = async (url: { url: string; origin: string }, ctx: ToolExecutionContext, beforeOpen: () => void = () => {}, lifecycleSignal?: AbortSignal): Promise<ToolExecutionResult> => {
-      const scope = policy.windowOf(toolSessionId(ctx));
+      const sessionId = toolSessionId(ctx);
+      const scope = policy.windowOf(sessionId);
       if (!scope) return failure(NO_WINDOW);
-      const opening = policy.tabNewTarget(scope);
+      const opening = policy.tabNewTarget(scope, sessionId);
       if (!opening.ok) return failure(opening.reason);
       const authorizeSite = ctx.authorizeBrowserSite;
       if (!authorizeSite) return failure("Missing browser site authorization");
@@ -423,7 +424,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         if (result.isError) return result;
       }
       const tabs = input.scope === "conversation" ? deps.tabs.listSessionTabs(scope.windowId, actor, input.includeDirectChildren === true) : deps.tabs.listTabs(scope.windowId);
-      const opening = policy.tabNewTarget(scope);
+      const opening = policy.tabNewTarget(scope, actor.sessionId);
       const note = !opening.ok ? opening.reason
         : opening.inTabId !== undefined ? "This chat's page is empty; browser_tab_new loads a URL into it."
           : tabs.length === 0 ? t("be_browserTools.noTabs") : undefined;
