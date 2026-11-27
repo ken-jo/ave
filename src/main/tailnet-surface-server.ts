@@ -720,11 +720,8 @@ async function startForBoot(
     } else {
       throw error;
     }
-    if (mode !== "apply") throw failure;
-    if (generation === lifecycleGeneration) recordTailnetObserverStartError(failure);
-    return null;
+    throw failure;
   });
-  if (server === null) return null;
   if (generation !== lifecycleGeneration) {
     await server.close();
     return null;
@@ -793,6 +790,7 @@ async function restartOnce(mode?: "apply"): Promise<TailnetObserverServer | null
     return await startForBoot(options, generation, mode);
   } catch (error) {
     if (generation === lifecycleGeneration) recordTailnetObserverStartError(error);
+    if (mode === "apply") return null;
     throw error;
   }
 }

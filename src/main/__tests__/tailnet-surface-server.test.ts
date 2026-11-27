@@ -1269,6 +1269,42 @@ describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer Apply on 
     },
   );
 
+  it("reports restart needed when startup refuses the saved configuration before listening", async () => {
+    const env = {};
+    let file: TailnetObserverConfigFile = {
+      enabled: true, authorization: APP_CAPABILITY, port: OTHER_PORT, pairedSharingEnabled: true,
+    };
+    const readConfigFile = async () => file;
+    const { input, startServer } = options(env);
+    input.dependencies.readConfigFile = readConfigFile;
+    const host = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+    const policy = vi.spyOn(listenerPortPolicy, "assertTailnetListenerPortAllowed").mockResolvedValue(undefined);
+    const settings = createTailnetObserverConfigService({
+      env, readConfigFile,
+      writeConfigFile: async next => { file = next; },
+      pairedSharingBootstrapFailed: () => true,
+      readOwnDeviceAdmission: async () => false,
+      probeEnvironment: async () => tailscaleEnvironment(null),
+    });
+    const error = "tailnet-paired-sharing-runtime-unavailable";
+    try {
+      await expect(maybeStartTailnetObserverServer({ ...input, tailnetPairedSharingRuntime: null })).rejects.toThrow(error);
+      const { saved } = await settings.snapshot();
+      await expect.soft(settings.apply({ ...saved, port: APPLY_PORT })).resolves.toEqual({
+        outcome: "restart-needed", restartNeeded: true,
+      });
+      await expect.soft(settings.snapshot()).resolves.toMatchObject({
+        saved: { enabled: true, pairedSharingEnabled: true, port: APPLY_PORT },
+        listeningPort: null, lastStartError: error, pairedSharingBootstrapFailed: true,
+      });
+      await expect(restartTailnetObserverServer()).rejects.toThrow(error);
+      expect(startServer).not.toHaveBeenCalled();
+    } finally {
+      policy.mockRestore();
+      host.mockRestore();
+    }
+  });
+
   it("preserves a failed bind through save-only overrides and clears it when the observer is saved off", async () => {
     const env: NodeJS.ProcessEnv = {};
     let file: TailnetObserverConfigFile | null = null;
