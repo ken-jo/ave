@@ -280,11 +280,14 @@ export class CodexAppServerClient {
       return this.currentStatus();
     });
   }
-  async listModels(): Promise<{
+  async listModels(onAccountProbeFailure?: () => void): Promise<{
     status: CodexSubscriptionStatus;
     models: CodexSubscriptionModel[];
   }> {
-    const status = await this.getStatus();
+    const status = await this.getStatus().catch((error) => {
+      onAccountProbeFailure?.();
+      throw error;
+    });
     if (status.connection !== "connected") return { status, models: [] };
     const result = await this.request("model/list", {
       limit: MAX_MODEL_COUNT,

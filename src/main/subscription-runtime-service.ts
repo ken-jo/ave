@@ -1241,7 +1241,7 @@ export class SubscriptionRuntimeService {
       }
       const status = await this.acpRegistry.getStatus(runtimeId);
       return () => this.projectAcpStatus(status);
-    }, (status) => status, (revision) => this.recordFailedProbe(runtimeId, revision)));
+    }, (status) => status, true));
   }
 
   /** Drop settled reads kept for settings surfaces, e.g. after a settings change for this provider. */
@@ -1469,8 +1469,8 @@ export class SubscriptionRuntimeService {
         }, (catalog) => catalog.status);
       }
       if (runtimeId !== "codex") return { status: await this.getStatus(runtimeId, options), models: [] };
-      return this.readThrough(this.cachedCatalogs, runtimeId, options, async () => {
-        const result = await this.codexClient.listModels();
+      return this.readThrough(this.cachedCatalogs, runtimeId, options, async (markProbeFailed) => {
+        const result = await this.codexClient.listModels(markProbeFailed);
         return () => ({
           status: this.projectCodexStatus(result.status),
           models: result.models.map((model) => ({
@@ -1734,9 +1734,9 @@ export class SubscriptionRuntimeService {
     cache: Map<SubscriptionRuntimeId, CachedRead<T>>,
     runtimeId: SubscriptionRuntimeId,
     options: SubscriptionReadOptions,
-    read: () => Promise<() => T>,
+    read: (markProbeFailed: () => void) => Promise<() => T>,
     statusOf: (value: T) => SubscriptionRuntimeStatus,
-    onProbeFailure?: (revision: number) => void,
+    probeFailedOnError = false,
   ): Promise<T> {
     const cacheEnabled = runtimeId !== "chatgpt-plan";
     if (cacheEnabled && options.allowCached === true) {
@@ -1746,9 +1746,10 @@ export class SubscriptionRuntimeService {
     const generation = this.readGeneration(runtimeId);
     const revision = ++this.statusReadRevision;
     this.assertCurrentObservation(runtimeId, revision);
-    const project = await read().catch((error) => {
+    let probeFailed = probeFailedOnError;
+    const project = await read(() => { probeFailed = true; }).catch((error) => {
       this.assertCurrentObservation(runtimeId, revision);
-      onProbeFailure?.(revision);
+      if (probeFailed) this.recordFailedProbe(runtimeId, revision);
       throw error;
     });
     this.assertCurrentObservation(runtimeId, revision);

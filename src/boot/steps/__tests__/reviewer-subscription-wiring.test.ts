@@ -16,6 +16,7 @@ import { UnavailableRationaleScopeReviewer } from "../../../permissions/reviewer
 import { UnavailableApprovalSentenceSelector } from "../../../permissions/reviewer/approval-sentence-selector.js";
 import type { WireReviewerResult } from "../reviewer-wiring.js";
 import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace } from "../../../__tests__/support/subscription-runtime-namespace.js";
+import { CodexAppServerClient } from "../../../main/codex-app-server-client.js";
 import { claudeCodeSubscriptionStatus } from "../../../shared/claude-code-subscription.js";
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
@@ -179,7 +180,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
   });
 });
 
-it("invalidates a cached windowless reviewer verdict on a live disconnect and restores the saved route", async () => {
+it.each(["live disconnect", "model discovery account probe failure"] as const)("invalidates a cached windowless reviewer verdict on %s and restores the saved route", async (scenario) => {
   const tempDir = mkdtempSync(join(tmpdir(), "windowless-reviewer-"));
   vi.resetModules();
   const resources = await import("../../../main/host-resources.js");
@@ -203,16 +204,25 @@ it("invalidates a cached windowless reviewer verdict on a live disconnect and re
   const { SubscriptionRuntimeService, onSubscriptionRuntimeStatusChanged } = await import("../../../main/subscription-runtime-service.js");
   const connected = claudeCodeSubscriptionStatus("ready", "connected", "test");
   let status = connected;
+  const provider = scenario === "live disconnect" ? "claude-code" : "codex";
+  const accountStatus = { ...connected, planType: null, pendingDeviceCode: null };
+  const getAccountStatus = vi.fn(async () => accountStatus);
+  const request = vi.fn(async () => ({ data: [] }));
+  const accountClient = {
+    getStatus: getAccountStatus, listModels: CodexAppServerClient.prototype.listModels,
+    request, stop: vi.fn(),
+  };
   const runtime = await SubscriptionRuntimeService.create(async () => {}, {
     namespace: createSubscriptionRuntimeNamespace(),
     claimRuntimeDirectories: claimFakeRuntimeDirectories,
     claudeCodeClient: { getStatus: async () => status, stop: vi.fn() } as never,
-    codexClient: { stop: vi.fn() } as never,
+    codexClient: accountClient as never,
+    createCodexConversationRuntime: () => ({ verifyIsolation: async () => {}, stop: vi.fn() }) as never,
     acpRegistry: { stopAll: vi.fn() } as never,
   });
   const manager = new PermissionManager(join(tempDir, "permissions.json"));
   manager.setMode("auto");
-  const selection = { kind: "subscription", provider: "claude-code" } as const;
+  const selection = { kind: "subscription", provider, ...(provider === "codex" ? { model: "fixture-model" } : {}) } as const;
   const streamTurn = vi.fn(async function* (): ReturnType<LLMProvider["streamTurn"]> {
     yield { type: "text_delta", text: '{"level":"low","reason":"The request is consistent."}' };
     yield { type: "message_complete", stopReason: "end_turn" };
@@ -255,9 +265,22 @@ it("invalidates a cached windowless reviewer verdict on a live disconnect and re
     stopListening = onSubscriptionRuntimeStatusChanged((_provider, isConnected) => {
       if (isConnected === false) immediate = dispatch(true);
     });
-    status = claudeCodeSubscriptionStatus("unverified", "signed-out", "test");
-    await runtime.getStatus(selection.provider);
-    expect(await immediate).toMatchObject({ result: { decision: "deny", reasonCode: "no-approver" } });
+    if (provider === "codex") {
+      await runtime.verify(provider);
+      const catalogError = new Error("Catalog unavailable");
+      request.mockRejectedValueOnce(catalogError);
+      await expect(runtime.openTextSession(selection)).rejects.toThrow();
+      expect(immediate).toBeUndefined();
+      expect((await dispatch(false)).review.outcome).toBe("cache");
+      getAccountStatus.mockResolvedValueOnce(accountStatus).mockRejectedValueOnce(new Error("Account probe unavailable"));
+      await expect(runtime.openTextSession(selection)).rejects.toThrow();
+      expect(request).toHaveBeenCalledOnce();
+    } else {
+      status = claudeCodeSubscriptionStatus("unverified", "signed-out", "test");
+      await runtime.getStatus(provider);
+    }
+    expect(await (immediate ?? dispatch(true))).toMatchObject({ review: { outcome: expect.not.stringMatching(/^cache$/) }, result: { decision: "deny", reasonCode: "no-approver" } });
+    expect(immediate).toBeDefined();
     await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm-degraded-to-rule"));
     expect((await dispatch(true)).review.outcome).toBe("unavailable");
     expect(streamTurn).toHaveBeenCalledOnce();
