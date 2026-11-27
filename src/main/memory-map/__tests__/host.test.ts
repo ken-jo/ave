@@ -54,7 +54,7 @@ async function fixture() {
   return { root, namespace, catalog, runWorker };
 }
 describe('memory graph publication', () => {
-  it.each(['embed-batch', 'project'] as const)('drops %s progress when the catalog changes without a replacement build', async phase => {
+  it.each(['embed-batch', 'project'] as const)('refuses publication when the catalog changes during %s progress', async phase => {
     const f = await fixture();
     const reached = deferred<void>();
     const resume = deferred<void>();
@@ -75,7 +75,44 @@ describe('memory graph publication', () => {
     catalog = { ...catalog, records: [] };
     resume.resolve();
     await expect(result).rejects.toMatchObject({ code: 'request-stale' });
-    expect(onProgress).not.toHaveBeenCalled();
+    if (process.platform === 'win32') expect(onProgress).not.toHaveBeenCalled();
+    else expect(onProgress).toHaveBeenCalledOnce();
+  });
+
+  it.skipIf(process.platform === 'win32')('reports every embedding update without reading the POSIX catalog inside a batch', async () => {
+    const f = await fixture();
+    f.catalog.records = Array.from({ length: 6 }, (_, index) => ({
+      ...f.catalog.records[0], memoryId: `note-${index}`,
+    }));
+    inferenceBudget.bytes = 120;
+    let catalog = f.catalog;
+    const readCatalog = vi.fn(() => catalog);
+    const batchReads: number[] = [];
+    let previousReads = 2; // Initial catalog capture and the check after model lookup.
+    const onProgress = vi.fn();
+    const runWorker: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
+      const [, task, , report] = args;
+      if (task.kind === 'embed-batch') {
+        for (const index of task.texts.keys()) {
+          report?.({ jobId: task.jobId, phase: 'embedding', completed: index + 1, total: task.texts.length });
+        }
+        batchReads.push(readCatalog.mock.calls.length - previousReads);
+        previousReads = readCatalog.mock.calls.length;
+      } else if (task.kind === 'project') {
+        catalog = { ...catalog, authorizationScopeId: 'replacement' };
+        report?.({ jobId: task.input.jobId, phase: 'projection', completed: 1, total: 1 });
+      }
+      return f.runWorker<T>(...args);
+    };
+    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker, onProgress });
+    await expect(host.build(readCatalog)).rejects.toMatchObject({ code: 'request-stale' });
+    // The pre-batch check reads the full catalog once. Progress performs zero reads.
+    expect(batchReads.length).toBeGreaterThan(1);
+    expect(batchReads).toEqual(batchReads.map(() => 1));
+    expect(onProgress.mock.calls.map(([event]) => [event.phase, event.completed])).toEqual([
+      ['embedding', 1], ['embedding', 2], ['embedding', 3], ['embedding', 4], ['embedding', 5], ['embedding', 6], ['projection', 1],
+    ]);
+    await expect(lstat(join(f.root, 'snapshot.json'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it.runIf(process.platform === 'win32').each([false, true])('bounds cold embedding catalog reads and suppresses stale progress (stale: %s)', async stale => {

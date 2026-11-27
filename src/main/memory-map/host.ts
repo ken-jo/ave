@@ -131,10 +131,14 @@ export class MemoryMapHost {
       else missing.push({ record, key });
     }
     const cached = total - missing.length;
-    const progressStride = process.platform === "win32" ? Math.max(1, Math.ceil(total / 64)) : 1;
+    const windows = process.platform === 'win32';
+    const progressStride = windows ? Math.max(1, Math.ceil(total / 64)) : 1;
     if (cached) {
-      assertCurrent();
-      commitUnderAdmission(assertModelAdmission, () => report({ jobId, phase: 'embedding', completed: cached, total }));
+      const progress: MemoryMapProgress = { jobId, phase: 'embedding', completed: cached, total };
+      if (windows) {
+        assertCurrent();
+        commitUnderAdmission(assertModelAdmission, () => report(progress));
+      } else report(progress);
     }
     for (let offset = 0; offset < missing.length;) {
       const start = offset;
@@ -158,9 +162,10 @@ export class MemoryMapHost {
         if (progress.phase === 'embedding' && texts[completed - 1] !== undefined
           && (overall === cached + 1 || overall === total || overall % progressStride === 0)) {
           const { record } = missing[start + completed - 1];
-          try {
-            report({ jobId, phase: 'embedding', completed: overall, total, memoryId: record.memoryId });
-          } catch { /* Refused. */ }
+          const update: MemoryMapProgress = { jobId, phase: 'embedding', completed: overall, total, memoryId: record.memoryId };
+          if (windows) {
+            try { report(update); } catch { /* Refused. */ }
+          } else report(update);
         }
       });
       if (vectors.length !== texts.length) throw new Error('Memory and vector counts differ');
@@ -214,10 +219,15 @@ export class MemoryMapHost {
         if (!/^[a-f0-9]{64}$/.test(key) || !Array.isArray(vector) || vector.length !== saved.snapshot?.model.namespace.dimensions || vector.some(n => typeof n !== 'number' || !Number.isFinite(n))) throw new Error('Invalid stored vector cache');
         cache[key] = vector;
       }
-      const report = (progress: MemoryMapProgress) => commitUnderAdmission(assertCurrent, () => {
+      const windows = process.platform === 'win32';
+      const publishProgress = (progress: MemoryMapProgress) => {
         if (this.pending && progress.phase === 'embedding') this.pending.coverage = { ...this.pending.coverage, embedded: progress.completed, pending: progress.total - progress.completed };
         this.options.onProgress?.(progress);
-      });
+      };
+      const report = (progress: MemoryMapProgress) => {
+        if (windows) commitUnderAdmission(assertCurrent, () => publishProgress(progress));
+        else if (generation === this.generation) publishProgress(progress);
+      };
       let assertBuildAdmission: (() => void) | undefined;
       let result: GraphBuildResult;
       if (selected.source === 'provider') {
@@ -238,8 +248,9 @@ export class MemoryMapHost {
           kind: 'project', input: { ...catalog, cache: vectors, namespace: LOCAL_NAMESPACE, jobId },
         }, controller.signal, progress => {
           if (progress.phase === 'embedding') return;
-          // A superseded projection reports nothing; its result is refused below.
-          try { commitUnderAdmission(assertProjection, () => report(progress)); } catch { /* Refused. */ }
+          if (windows) {
+            try { commitUnderAdmission(assertProjection, () => report(progress)); } catch { /* Refused. */ }
+          } else report(progress);
         }); });
         result = await projecting;
         assertCurrent();
