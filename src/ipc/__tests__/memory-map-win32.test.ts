@@ -556,7 +556,7 @@ describe('memory map host boundary', () => {
     authorized = false;
     expect(readSource(note.id, options, graphMemoryRevision(note))).toBeUndefined();
     expect(readManagedMemoryAt).toHaveBeenCalledTimes(2);
-    expect(readMemoryPanelCatalog).toHaveBeenCalledOnce();
+    expect(readMemoryPanelCatalog).toHaveBeenCalledTimes(3);
   });
   it('persists only host-versioned consent and clears it when returning to local', async () => {
     let config: unknown;

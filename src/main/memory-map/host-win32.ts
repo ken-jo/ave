@@ -72,7 +72,6 @@ export class MemoryMapHost {
   private selectedNamespace(): EmbeddingNamespace { return this.options.provider?.namespace() ?? LOCAL_NAMESPACE; }
   protected activate(catalog: MemoryMapCatalog): void {
     if (this.graphScope.id !== catalog.authorizationScopeId) {
-      this.registry.stopCurrent('scope-switch');
       this.cancel();
       this.clearGraph(catalog.authorizationScopeId, false);
     }
@@ -108,10 +107,46 @@ export class MemoryMapHost {
     }
   }
   async get(readCatalog: ReadMemoryMapCatalog): Promise<GraphSnapshot | null> {
-    return this.readView(readCatalog, (_catalog, snapshot) => snapshot);
+    const catalog = readCatalog();
+    if (this.graphScope.id !== undefined && this.graphScope.id !== catalog.authorizationScopeId) {
+      return this.readStatus(catalog, readCatalog, snapshot => snapshot);
+    }
+    return this.refreshSnapshot(catalog, readCatalog);
   }
   async buildView(readCatalog: ReadMemoryMapCatalog): Promise<MemoryBuildView> {
-    return this.readView(readCatalog, (catalog, snapshot) => this.registry.view(catalog.authorizationScopeId, snapshot));
+    const catalog = readCatalog();
+    return this.readStatus(catalog, readCatalog, snapshot => this.registry.view(catalog.authorizationScopeId, snapshot));
+  }
+
+  private async readStatus<T>(catalog: MemoryMapCatalog, readCatalog: ReadMemoryMapCatalog, read: (snapshot: GraphSnapshot | null) => T): Promise<T> {
+    const building = this.buildingSnapshot(catalog);
+    if (building) return read(building);
+
+    const scope = this.graphScope;
+    if (scope.id === catalog.authorizationScopeId && scope.hydrated) {
+      return read(this.statusSnapshot(this.snapshot, catalog));
+    }
+
+    const revision = catalogRevision(catalog.records);
+    const saved = await this.readSaved();
+    const latest = readCatalog();
+    if (latest.authorizationScopeId !== catalog.authorizationScopeId || catalogRevision(latest.records) !== revision) {
+      throw new MemoryMapHostError('request-stale');
+    }
+    const snapshot = scope === this.graphScope ? saved.snapshot : this.snapshot;
+    return read(this.buildingSnapshot(latest) ?? this.statusSnapshot(snapshot, latest));
+  }
+
+  private buildingSnapshot(catalog: MemoryMapCatalog): GraphSnapshot | null {
+    const building = this.registry.current?.snapshot;
+    return building && this.matchesCatalog(building, catalog) ? building : null;
+  }
+
+  private statusSnapshot(snapshot: GraphSnapshot | null, catalog: MemoryMapCatalog): GraphSnapshot | null {
+    if (!snapshot || !this.matchesCatalog(snapshot, catalog)) return null;
+    const view = { ...snapshot, points: snapshot.points.map(point => ({ ...point })) };
+    this.validateSnapshot(view, catalog);
+    return view;
   }
   private matchesCatalog(snapshot: GraphSnapshot, catalog: MemoryMapCatalog): boolean {
     return snapshot.authorizationScopeId === catalog.authorizationScopeId
@@ -122,8 +157,8 @@ export class MemoryMapHost {
     this.validateSnapshot(this.snapshot, catalog);
     return this.snapshot;
   }
-  private async readView<T>(readCatalog: ReadMemoryMapCatalog, read: (catalog: MemoryMapCatalog, snapshot: GraphSnapshot | null) => T): Promise<T> {
-    const catalog = readCatalog(); this.activate(catalog);
+  private async refreshSnapshot(catalog: MemoryMapCatalog, readCatalog: ReadMemoryMapCatalog): Promise<GraphSnapshot | null> {
+    this.activate(catalog);
     const revision = catalogRevision(catalog.records);
     const selected = this.selectedNamespace();
     const assertCurrent = (scope: typeof this.graphScope) => {
@@ -136,21 +171,20 @@ export class MemoryMapHost {
       const saved = await this.readSaved();
       commitUnderAdmission(() => assertCurrent(scope), () => {
         scope.hydrated = true;
-        if (saved.snapshot) { this.snapshot = saved.snapshot; this.cache = saved.cache; }
+        if (saved.snapshot && saved.snapshot.authorizationScopeId === scope.id) { this.snapshot = saved.snapshot; this.cache = saved.cache; }
         this.registry.changed();
       });
     }
-    const building = this.registry.current?.snapshot;
-    if (building && this.matchesCatalog(building, catalog)) return read(catalog, building);
-    if ((this.snapshot && !this.matchesCatalog(this.snapshot, catalog)) || building) {
-      this.registry.stopCurrent('catalog-changed');
+    const building = this.buildingSnapshot(catalog);
+    if (building) return building;
+    if (!this.registry.current && this.snapshot && !this.matchesCatalog(this.snapshot, catalog)) {
       this.cancel();
       this.clearGraph(catalog.authorizationScopeId, true);
       const scope = this.graphScope;
       await this.clearSaved(() => assertCurrent(scope));
       assertCurrent(scope);
     }
-    return read(catalog, this.readySnapshot(catalog));
+    return this.readySnapshot(catalog);
   }
   private async embedLocal(catalog: MemoryMapCatalog, folder: string, savedCache: VectorCache, signal: AbortSignal, jobId: string, report: (progress: MemoryMapProgress) => void, assertCurrent: () => void, assertModelAdmission: () => void, runWorker: MemoryWorkerRunner): Promise<VectorCache> {
     const total = catalog.records.length;
@@ -314,6 +348,8 @@ export class MemoryMapHost {
       const canPublish = () => { assertCanPublish(); return true; };
       // The ready state is published in the step that replaces the file, under the same check.
       const committed = await writeFileAtomicAtPathAdmitted(join(this.namespace.dir, 'snapshot.json'), JSON.stringify(result), canPublish, () => {
+        this.activate(catalog);
+        this.graphScope = scope;
         this.cache = result.cache; this.snapshot = result.snapshot; owner.snapshot = null;
         this.registry.changed();
       });

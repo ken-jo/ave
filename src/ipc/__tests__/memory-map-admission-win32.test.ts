@@ -30,6 +30,8 @@ const state = vi.hoisted(() => ({
   substrate: null as Partial<SandboxWindowsSubstrateInfo> | null,
   handle: undefined as ((event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>) | undefined,
   get: undefined as ((event: IpcMainInvokeEvent) => Promise<unknown>) | undefined,
+  buildView: undefined as ((event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>) | undefined,
+  facets: undefined as ((event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>) | undefined,
   cancel: undefined as ((event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>) | undefined,
   runWorker: vi.fn<(folder: string, task: MemoryWorkerTask, signal: AbortSignal, progress?: unknown, admission?: unknown, beginWorker?: BeginMemoryWorker) => Promise<unknown>>(),
   beforeCommit: undefined as (() => Promise<unknown>) | undefined,
@@ -38,6 +40,8 @@ const state = vi.hoisted(() => ({
 vi.mock('electron', () => ({ dialog: {}, ipcMain: { handle: (channel: string, handler: typeof state.handle) => {
   if (channel === CHANNELS.memoryMap.build) state.handle = handler;
   if (channel === CHANNELS.memoryMap.get) state.get = handler && (event => handler(event, undefined));
+  if (channel === CHANNELS.memoryMap.buildView) state.buildView = handler;
+  if (channel === CHANNELS.memoryMap.facets) state.facets = handler;
   if (channel === CHANNELS.memoryMap.cancel) state.cancel = handler;
 } } }));
 vi.mock('../../permissions/asrt-sandbox.js', async importOriginal => ({
@@ -303,6 +307,77 @@ it.each(['catalog scan fails', 'scope options change before takeover'] as const)
   } finally {
     finishTeardown.resolve();
     await build;
+  }
+});
+
+it('keeps the replacement running while a superseded scope polls status and facets', async () => {
+  state.root = roots.track(await mkdtemp(join(tmpdir(), 'memory-map-admission-')));
+  setProcessPlatform('win32');
+  state.account = true;
+  state.operational = true;
+  state.beforeCommit = state.afterRead = undefined;
+  state.plan = { selectedBackend: 'none', readiness: 'off' };
+  state.substrate = { srtWinReady: true, shells: 'approved-host' };
+
+  const a = { scope: { projectRoot: 'D:/example/a' }, buildId: randomUUID() };
+  const b = { scope: { projectRoot: 'D:/example/b' }, buildId: randomUUID() };
+  const projectingA = deferred<AbortSignal>();
+  const projectingB = deferred<AbortSignal>();
+  const exitA = deferred<void>();
+  const exitB = deferred<void>();
+  state.runWorker.mockReset().mockImplementation(async (_folder, task, signal, _progress, _admission, beginWorker) => {
+    if (task.kind !== 'project') throw new Error('Expected empty-catalog projection');
+    const receipt = beginWorker?.('projection');
+    const first = task.input.jobId === a.buildId;
+    (first ? projectingA : projectingB).resolve(signal);
+    await (first ? exitA : exitB).promise;
+    receipt?.confirmed();
+    signal.throwIfAborted();
+    return buildGraph(task.input, { embed: async () => [], dispose: async () => {} }, () => {});
+  });
+  registerWindowsMemoryMapHandlers({
+    auditLogger: { log: vi.fn() },
+    settingsService: { get: (key: string) => key === 'memoryEmbedding' ? { localModelPath: state.root } : undefined },
+    memoryManager: { readMemoryPanelCatalog: () => ({ notes: [] }) },
+  } as unknown as IpcDeps, raw => ({ ok: true, options: raw as typeof a.scope }));
+  const makeEvent = () => ({ senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } }) as unknown as IpcMainInvokeEvent;
+  const eventA = makeEvent();
+  const eventB = makeEvent();
+  const { handle, buildView, facets } = state;
+  if (!handle || !buildView || !facets) throw new Error('Memory-map IPC is not registered');
+
+  const first = handle(eventA, a);
+  let replacement: Promise<unknown> | undefined;
+  try {
+    const signalA = await Promise.race([projectingA.promise, first.then(() => { throw new Error('A did not start'); })]);
+    replacement = handle(eventB, b);
+    const signalB = await Promise.race([projectingB.promise, replacement.then(() => { throw new Error('B did not start'); })]);
+    expect(signalA.aborted).toBe(true);
+
+    for (let poll = 0; poll < 2; poll++) {
+      expect.soft(await buildView(eventA, a.scope)).toMatchObject({
+        ok: true, value: { snapshot: null, builds: [{ id: a.buildId, phase: 'stopping' }] },
+      });
+      expect.soft(await facets(eventA, a.scope)).toMatchObject({ ok: true });
+      expect.soft(await buildView(eventB, b.scope)).toMatchObject({
+        ok: true, value: { snapshot: { snapshotId: b.buildId, status: 'building' }, builds: [{ id: b.buildId, phase: 'running' }] },
+      });
+      expect.soft(signalB.aborted).toBe(false);
+    }
+    exitB.resolve();
+    const committed = await replacement;
+    expect.soft(committed).toMatchObject({ ok: true, value: { status: 'ready' } });
+    expect.soft(await buildView(eventA, a.scope)).toMatchObject({ ok: true, value: { snapshot: null } });
+    exitA.resolve();
+    await first;
+    expect.soft(await buildView(eventA, a.scope)).toMatchObject({ ok: true, value: { builds: [{ id: a.buildId, phase: 'stopped' }] } });
+    expect(await buildView(eventB, b.scope)).toMatchObject({
+      ok: true, value: { snapshot: (committed as { value?: unknown }).value, builds: [{ id: b.buildId, outcome: { kind: 'ready' } }] },
+    });
+  } finally {
+    exitA.resolve();
+    exitB.resolve();
+    await Promise.all([first, replacement]);
   }
 });
 

@@ -152,16 +152,13 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
       if (validateHostRendererSender(event)) sendToWebContents(event.sender, CHANNELS.memoryMap.modelProgress, status);
     });
   };
-  let sourceIndex: { scopeId: string; filenames: Map<string, string> } | undefined;
   const catalog = (scope?: MemoryMapScope, onDenied?: () => void): ReadMemoryMapCatalog => {
     const filenames = new Map<string, string>();
     const read: ReadMemoryMapCatalog = () => {
       const result = resolveScope(scope);
       if (!result.ok) { onDenied?.(); throw new MemoryMapHostError('project-not-allowed'); }
       filenames.clear();
-      const current = readGraphCatalog(deps.memoryManager, result.options, defaultWorkspaceProject().projectRoot, filenames);
-      sourceIndex = { scopeId: current.authorizationScopeId, filenames };
-      return current;
+      return readGraphCatalog(deps.memoryManager, result.options, defaultWorkspaceProject().projectRoot, filenames);
     };
     read.recordsAreCurrent = (scopeId, records) => {
       const result = resolveScope(scope);
@@ -209,7 +206,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
       }
     },
     cancel: buildId => registry.cancel(buildId),
-    facets: async scope => { await host.get(catalog(scope)); return memoryFacets(catalog(scope)().records); },
+    facets: scope => memoryFacets(catalog(scope)().records),
     retrieve: (request, onAdmission) => host.retrieve(catalog(request.scope), request, onAdmission),
     modelStatus: async onAdmission => {
       const assertStillValid = await refreshLocalAdmission();
@@ -301,8 +298,9 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     },
     readSource: (id, rawScope, contentRevision) => {
       const result = resolveScope(rawScope);
-      if (!result.ok || sourceIndex?.scopeId !== memoryMapScopeId(result.options)) return undefined;
-      const filename = sourceIndex.filenames.get(id);
+      if (!result.ok) return undefined;
+      const { notes } = deps.memoryManager.readMemoryPanelCatalog(result.options, defaultWorkspaceProject().projectRoot);
+      const filename = notes.find(note => isGraphMemory(note) && note.id === id)?.filename;
       if (!filename) return undefined;
       const note = deps.memoryManager.readManagedMemoryAt(filename, id, result.options);
       return isGraphMemory(note) && graphMemoryRevision(note) === contentRevision ? note : undefined;

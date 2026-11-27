@@ -544,14 +544,14 @@ describe('memory graph publication', () => {
     deliver.resolve();
     await expect(pending).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
   });
-  it('drops a completed old build on cancellation or scope change', async () => {
+  it('lets a build finish after a graph read in another scope', async () => {
     const f = await fixture(); let release!: () => void; const wait = new Promise<void>(resolve => { release = resolve; });
     let started!: () => void; const start = new Promise<void>(resolve => { started = resolve; });
     const runner: MemoryWorkerRunner = async <T>(folder: string, task: Parameters<MemoryWorkerRunner>[1], signal: AbortSignal) => { started(); await wait; return f.runWorker<T>(folder, task, signal); };
     const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: runner });
     const build = host.build(() => f.catalog); await start;
     await host.get(() => ({ ...f.catalog, authorizationScopeId: 'other' })); release();
-    await expect(build).rejects.toThrow('request-stale');
-    expect(await host.get(() => f.catalog)).toBeNull();
+    const snapshot = await build;
+    expect(await host.get(() => f.catalog)).toEqual(snapshot);
   });
 });

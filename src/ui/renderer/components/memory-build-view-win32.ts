@@ -7,8 +7,8 @@ interface ViewState {
 }
 
 export function reduceView(previous: ViewState | null, frame: MemoryBuildView): ViewState {
-  if (previous && (previous.retiredInstances.has(frame.instance)
-    || (previous.frame.instance === frame.instance && previous.frame.revision >= frame.revision))) return previous;
+  if (previous && (previous.frame === frame || previous.retiredInstances.has(frame.instance)
+    || (previous.frame.instance === frame.instance && previous.frame.revision > frame.revision))) return previous;
 
   const retiredInstances = new Set(previous?.retiredInstances);
   if (previous && previous.frame.instance !== frame.instance) retiredInstances.add(previous.frame.instance);
