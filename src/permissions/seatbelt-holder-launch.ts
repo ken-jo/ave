@@ -6,7 +6,7 @@ import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { posix } from "node:path";
-import type { Readable, Writable } from "node:stream";
+import { PassThrough, type Readable, type Writable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   observeManagedProcessGroup, spawnGatedManagedProcess, terminateManagedProcessGroup, type ConfirmedExit, type ManagedResources,
@@ -363,6 +363,10 @@ export async function startSeatbeltHolderNow(launch: SeatbeltHolderLaunch, optio
   const onDiagnostic = (chunk: Buffer): void => {
     if (diagnostic.length < DIAGNOSTIC_BYTES) diagnostic += chunk.toString("utf8").slice(0, DIAGNOSTIC_BYTES - diagnostic.length);
   };
+  // The start reads stderr for its refusal diagnostic, which puts the stream in flowing mode. The holder's consumer reads
+  // this buffer instead, so nothing the holder writes between the ready byte and the consumer's first read is dropped.
+  const stderr = new PassThrough();
+  child.stderr?.pipe(stderr);
   child.stderr?.on("data", onDiagnostic);
   const ready = child.stdio[4] as Readable;
   const observation = await new Promise<StartObservation>((resolve) => {
@@ -382,7 +386,7 @@ export async function startSeatbeltHolderNow(launch: SeatbeltHolderLaunch, optio
     // A process that left the group may still hold the holder's stdout; the group check must not wait on it. The tail
     // of the output gets a bounded drain, then Ave lets go of the streams.
     await Promise.race([streamsClosed, sleep(TOOL_TIMEOUT_POLICY.mxcMacHolderOutputDrainMs, undefined, { ref: false })]);
-    for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.destroy();
+    for (const stream of [child.stdin, child.stdout, child.stderr, stderr]) stream?.destroy();
     const receipt = await exit.confirmExit(reason);
     const sweep = await runHolderSweep(options.helper, "sweep", launch.labels.holder, TOOL_TIMEOUT_POLICY.mxcMacHolderSweepMs);
     if (receipt !== undefined && sweep.verified) {
@@ -404,7 +408,7 @@ export async function startSeatbeltHolderNow(launch: SeatbeltHolderLaunch, optio
     pid: child.pid as number,
     stdin: child.stdin as Writable,
     stdout: child.stdout as Readable,
-    stderr: child.stderr as Readable,
+    stderr,
     completion: closed,
   });
   return Object.freeze({ process: holderProcess, confinement: "macos-seatbelt" as const, labels: launch.labels, dispose });

@@ -138,6 +138,8 @@ export async function runHolderSweep(helper: HolderSweepHelper, mode: "sweep" | 
   return new Promise((resolve) => {
     let output = "";
     let settled = false;
+    // Declared before the spawn: a synchronous spawn failure settles before any timer exists.
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = (outcome: HolderSweepOutcome): void => {
       if (settled) return;
       settled = true;
@@ -151,7 +153,7 @@ export async function runHolderSweep(helper: HolderSweepHelper, mode: "sweep" | 
       finish({ verified: false, reason: `the helper did not start: ${errorMessage(error)}` });
       return;
     }
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       child.kill("SIGKILL");
       finish({ verified: false, reason: `the helper did not finish within ${timeoutMs} ms` });
     }, timeoutMs);

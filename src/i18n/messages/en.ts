@@ -5240,6 +5240,7 @@ export const en = {
   "sandboxPolicy.linuxContainerStartRefused": "The Linux sandbox container refused to start the shell command.",
   "sandboxPolicy.linuxContainerShellRefused": "The Linux sandbox container refused the shell command. {reason}",
   "sandboxPolicy.containerShellCleanupUnverified": "The shell command was stopped, but its processes could not be confirmed gone.",
+  "sandboxPolicy.containerShellProfileTooLarge": "The macOS sandbox container did not start the shell command: its folder grants make the sandbox policy larger than macOS can load. Remove some granted folders, or grant a common parent folder instead, and run it again.",
   "sandboxPolicy.containerShellRefused": "The macOS sandbox container refused the shell command: {reason}",
   "sandboxPolicy.containerShellStartFailed": "The macOS sandbox container failed to start the shell command, and Ave could not confirm that nothing started.",
   "sandboxPolicy.containerShellNotStarted": "The shell command was not started: its working directory or permission state changed before it could run. Run it again.",
