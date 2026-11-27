@@ -317,8 +317,9 @@ superseded attempt is dropped before any new preparation.
   (`run_mismatch`) while its run holds events, and while its write cannot be
   stored, as before.
   The chain advances after each covered write. Workspace effects run
-  separately and reserve each stage they touch. A join waits for its input
-  seals. Winding settles after the last observed child exit, and pending
+  separately and reserve each stage they touch. The board must still name the
+  live run before a join queues its input seals. The join waits for those seals
+  and checks the run again before integration. Winding settles after the last observed child exit, and pending
   seals can record attempt-bound results after settlement. If the board
   temporarily refuses a seal result, the host retains it in the original
   run's queue through settlement and replays it on a permitted read. The

@@ -1100,6 +1100,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const pending = state.sealOutcomes.get(key);
     if (pending) return pending;
     const seal = queueEffect(state, async () => {
+      const authority = runAuthority(state.ref);
+      if (!authority.aborted && !canAdmitRunEffect(state.ref, authority)) await store.runBoardSnapshot();
+      if (!canAdmitRunEffect(state.ref, authority)) {
+        state.sealOutcomes.delete(key);
+        return false;
+      }
       const sealed = await workspace.seal(state.ref, stageId).catch((): { ok: false } => ({ ok: false }));
       if (!sealed.ok) {
         await enqueue(state, () => handle(state, { type: "seal_failed", stageId }, undefined, undefined, stage.attempt))
@@ -1120,27 +1126,30 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const authority = runAuthority(state.ref);
     if (state.integrating.has(joinId) || authority.aborted) return;
     state.integrating.add(joinId);
-    const seals = stageIds.map(stageId => sealStage(state, record, stageId));
+    const admitted = () => !state.finishing && !isWinding(state, state.committed?.record ?? record) && canAdmitRunEffect(state.ref, authority);
+    const integrate = () => {
+      const seals = stageIds.map(stageId => sealStage(state, record, stageId));
+      return queueEffect(state, async () => {
+        if (!(await Promise.all(seals)).every(Boolean) || !admitted()) {
+          state.integrating.delete(joinId);
+          return;
+        }
+        try {
+          const merged = await workspace.integrate(state.ref, joinId, stageIds, authority);
+          post(state, merged.ok ? { type: "join_integrated", joinId } : { type: "join_conflict", joinId, conflict: merged.conflict });
+        } catch (error) {
+          if (authority.aborted) return;
+          log.warn("stage join failed (id=%d): %s", state.itemId, errorMessage(error));
+          fault(state, "join-failed");
+        }
+      }, stageIds);
+    };
+    if (admitted()) return integrate();
     return queueEffect(state, async () => {
-      if (!(await Promise.all(seals)).every(Boolean) || state.finishing || isWinding(state, state.committed?.record ?? record)) {
-        state.integrating.delete(joinId);
-        return;
-      }
-      const admitted = () => !state.finishing && !isWinding(state, state.committed?.record ?? record) && canAdmitRunEffect(state.ref, authority);
       if (!authority.aborted && !admitted()) await store.runBoardSnapshot();
-      if (!admitted()) {
-        state.integrating.delete(joinId);
-        return;
-      }
-      try {
-        const merged = await workspace.integrate(state.ref, joinId, stageIds, authority);
-        post(state, merged.ok ? { type: "join_integrated", joinId } : { type: "join_conflict", joinId, conflict: merged.conflict });
-      } catch (error) {
-        if (authority.aborted) return;
-        log.warn("stage join failed (id=%d): %s", state.itemId, errorMessage(error));
-        fault(state, "join-failed");
-      }
-    }, stageIds);
+      if (admitted()) await integrate();
+      else state.integrating.delete(joinId);
+    });
   }
 
   function releaseAfter(state: RunState, release: readonly string[] | "all", stages: readonly string[], finished?: Promise<void>): void {
