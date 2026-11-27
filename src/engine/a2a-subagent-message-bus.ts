@@ -1,4 +1,4 @@
-import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
+import { logPermissionEvent, permissionLogId, permissionLogReasonCode } from "../lib/permission-log.js";
 import { randomUUID } from "node:crypto";
 import type { SettingsService } from "../data/settings-store.js";
 import type { A2AMessage } from "../shared/a2a.js";
@@ -33,7 +33,7 @@ export interface DeliverToParentInput {
 interface DeliveryAuditInput {
   parentSessionId: unknown;
   childSessionId: unknown;
-  message?: unknown;
+  messageId?: string;
 }
 
 export type DeliverToParentResult =
@@ -103,7 +103,7 @@ export class A2ASubAgentMessageBus {
     for (const diagnostic of mailboxResult.diagnostics) {
       this.auditPersistedDiagnostic(
         diagnostic,
-        "dropped:" + diagnostic.reason,
+        "dropped", diagnostic.reason,
       );
       if (!mailboxResult.cleanupFailed) {
         this.releaseEphemeralAddress(diagnostic);
@@ -135,12 +135,12 @@ export class A2ASubAgentMessageBus {
         );
       } catch {
         // Lookup failures may be transient; retain the durable entry without injecting it.
-        this.audit("warn", input, "dropped:storage-failed");
+        this.audit("warn", input, "dropped", "storage-failed");
         continue;
       }
 
       if (!address) {
-        this.audit("warn", input, "dropped:unknown-child");
+        this.audit("warn", input, "dropped", "unknown-child");
         rejected.push(entry);
         continue;
       }
@@ -148,7 +148,7 @@ export class A2ASubAgentMessageBus {
         entry.parentSessionId !== parentSessionId
         || address.parentSessionId !== parentSessionId
       ) {
-        this.audit("warn", input, "dropped:cross-origin");
+        this.audit("warn", input, "dropped", "cross-origin");
         rejected.push(entry);
         continue;
       }
@@ -173,7 +173,7 @@ export class A2ASubAgentMessageBus {
         || canonical.formattedText !== entry.formattedText
         || canonical.approvalLabel !== entry.approvalLabel
       ) {
-        this.audit("warn", input, "dropped:invalid-message");
+        this.audit("warn", input, "dropped", "invalid-message");
         rejected.push(entry);
         continue;
       }
@@ -200,7 +200,6 @@ export class A2ASubAgentMessageBus {
           this.audit("warn", {
             parentSessionId,
             childSessionId: entry.childSessionId,
-            message: entry.message,
           }, "drop-ack-failed");
         }
         return [];
@@ -308,7 +307,7 @@ export class A2ASubAgentMessageBus {
           : "budget-exhausted";
       return this.drop(input, reason);
     }
-    this.audit("info", deliveryInput, `stored:detections=${canonical.detectionCount}`);
+    this.audit("info", deliveryInput, "stored");
     if (canonical.emptyBody) {
       // Audit empty producer reports even when the codec supplies a host-composed body.
       this.audit("warn", deliveryInput, "empty-body-fallback");
@@ -354,7 +353,7 @@ export class A2ASubAgentMessageBus {
             })
             .catch(() => this.audit("warn", deliveryInput, "ack-failed")),
           onDropped: (reason) => {
-            this.audit("warn", deliveryInput, `deferred:${reason}`);
+            this.audit("warn", deliveryInput, "deferred", reason);
             // Turn cleanup will drain this token through its settlement notification.
             if (reason === "joined-limit") {
               // Undeliverable queued guidance must spend its token through the lease-aware wake handler.
@@ -366,7 +365,7 @@ export class A2ASubAgentMessageBus {
       if (queued === "queued") {
         return { ok: true, disposition: "queued", messageId: canonical.message.messageId };
       }
-      this.audit("warn", deliveryInput, `deferred:${queued}`);
+      this.audit("warn", deliveryInput, "deferred", queued);
     }
 
     return this.drain(input.parentSessionId)
@@ -393,7 +392,7 @@ export class A2ASubAgentMessageBus {
       this.audit(
         blocking.every((reason) => SOFT_WAKE_REFUSALS.has(reason)) ? "info" : "warn",
         input,
-        `mailbox-no-wake:${refusals.join(",")}`,
+        "refused", refusals.join(":"), "wake",
       );
       return false;
     }
@@ -405,8 +404,8 @@ export class A2ASubAgentMessageBus {
     this.wakeInFlight.add(parentSessionId);
     try {
       void handler(parentSessionId)
-        .then(() => this.audit("info", input, "wake-finished"))
-        .catch(() => this.audit("warn", input, "wake-failed"))
+        .then(() => this.audit("info", input, "finished", undefined, "wake"))
+        .catch(() => this.audit("warn", input, "failed", undefined, "wake"))
         .finally(() => {
           this.wakeInFlight.delete(parentSessionId);
           this.drain(parentSessionId);
@@ -415,7 +414,7 @@ export class A2ASubAgentMessageBus {
       // Synchronous handler throws must clear in-flight state or every future drain is blocked.
       this.wakeInFlight.delete(parentSessionId);
       this.wakeDirty.set(parentSessionId, input);
-      this.audit("warn", input, "wake-failed");
+      this.audit("warn", input, "failed", undefined, "wake");
       return false;
     }
     return true;
@@ -469,26 +468,31 @@ export class A2ASubAgentMessageBus {
     input: DeliverToParentInput,
     reason: Exclude<DeliverToParentResult, { ok: true }>["reason"],
   ): DeliverToParentResult {
-    this.audit("warn", input, `dropped:${reason}`);
+    this.audit("warn", input, "dropped", reason);
     return { ok: false, disposition: "dropped", reason };
   }
 
   private auditPersistedDiagnostic(
     diagnostic: ParentMailboxLoadDiagnostic | undefined,
     outcome: string,
+    reasonCode?: string,
   ): void {
     this.audit("warn", {
       parentSessionId: diagnostic?.parentSessionId ?? "unknown",
       childSessionId: diagnostic?.childSessionId,
-      message: { messageId: diagnostic?.messageId },
-    }, outcome);
+      ...(diagnostic?.messageId === undefined ? {} : { messageId: diagnostic.messageId }),
+    }, outcome, reasonCode);
   }
 
-  private audit(type: "info" | "warn", input: DeliveryAuditInput, outcome: string): void {
+  private audit(
+    type: "info" | "warn", input: DeliveryAuditInput, outcome: string, reasonCode?: string, operation: "delivery" | "wake" = "delivery",
+  ): void {
     logPermissionEvent("subagent_message_delivery", {
       sessionId: permissionLogId(input.parentSessionId),
       childSessionId: permissionLogId(input.childSessionId),
-      outcome: permissionLogId(outcome),
+      operation, outcome,
+      ...(input.messageId === undefined ? {} : { messageId: permissionLogId(input.messageId) }),
+      ...(reasonCode === undefined ? {} : { reasonCode: permissionLogReasonCode(reasonCode) }),
     }, type);
   }
 

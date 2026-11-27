@@ -1,4 +1,4 @@
-import { logPermissionEvent, permissionLogId } from "./lib/permission-log.js";
+import { logPermissionEvent, permissionLogId, permissionLogReasonCode } from "./lib/permission-log.js";
 import type { MainWindow } from "./main/main-window-host.js";
 import { readPluginRegistry, vouchedInstalledPluginIds } from "./plugins/registry.js";
 import { requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
@@ -341,8 +341,8 @@ export async function bootstrap(
   );
   if (!remoteA2AAgentActionApprover)
     throw new Error("a2a-remote-approval-unavailable");
-  const auditRemoteA2A = (_code: string) =>
-    logPermissionEvent("remote_approval_refused", { sessionId: permissionLogId("a2a-remote") }, "warn");
+  const auditRemoteA2A = (code: string) =>
+    logPermissionEvent("remote_agent_runtime_warning", { reasonCode: permissionLogReasonCode(code) }, "warn");
   // Read once, and handed to the runtime rather than re-read by it, so what
   // the status channel later compares against is exactly what this run used.
   const remoteA2ABootGates = snapshotA2ARemoteGates(settingsService);

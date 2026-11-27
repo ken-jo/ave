@@ -25,3 +25,9 @@ export function permissionLogId(value: unknown): string | undefined {
     ? value
     : undefined;
 }
+
+export function permissionLogReasonCode(value: string): string | undefined {
+  return value.length <= 128 && /^[a-zA-Z0-9][a-zA-Z0-9_-]*(?::[a-zA-Z0-9][a-zA-Z0-9_-]*)*$/.test(value)
+    ? value
+    : undefined;
+}

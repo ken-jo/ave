@@ -1,4 +1,4 @@
-import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
+import { logPermissionEvent, permissionLogId, permissionLogReasonCode } from "../lib/permission-log.js";
 import { randomUUID } from "node:crypto";
 import {
   A2A_ROLE_AGENT,
@@ -139,7 +139,7 @@ export class A2AAgentMessageBus {
       senderChildSessionId: input.senderChildSessionId,
       recipient: input.recipient,
       messageId: input.messageId,
-    }, "dropped:" + input.reason);
+    }, "dropped", input.reason);
   }
 
   async peekRecipientMailbox(
@@ -166,11 +166,11 @@ export class A2AAgentMessageBus {
           recipientChildSessionId,
         );
       } catch {
-        this.auditEntry("warn", entry, "dropped:storage-failed");
+        this.auditEntry("warn", entry, "dropped", "storage-failed");
         continue;
       }
       if (!route.ok) {
-        this.auditEntry("warn", entry, "dropped:" + route.reason);
+        this.auditEntry("warn", entry, "dropped", route.reason);
         rejected.push(entry);
         continue;
       }
@@ -179,7 +179,7 @@ export class A2AAgentMessageBus {
         || route.sender.childSessionId !== entry.envelope.senderChildSessionId
         || route.recipient.childSessionId !== recipientChildSessionId
       ) {
-        this.auditEntry("warn", entry, "dropped:cross-origin");
+        this.auditEntry("warn", entry, "dropped", "cross-origin");
         rejected.push(entry);
         continue;
       }
@@ -187,9 +187,9 @@ export class A2AAgentMessageBus {
         this.auditEntry(
           "warn",
           entry,
+          "dropped",
           isA2ATerminalTaskState(route.recipient.taskState)
-            ? "dropped:terminal-recipient"
-            : "dropped:recipient-unavailable",
+            ? "terminal-recipient" : "recipient-unavailable",
         );
         rejected.push(entry);
         continue;
@@ -207,7 +207,7 @@ export class A2AAgentMessageBus {
         || canonical.approvalLabel !== entry.approvalLabel
         || sanitizeA2ALabel(route.recipient.title) !== entry.recipientTitle
       ) {
-        this.auditEntry("warn", entry, "dropped:invalid-message");
+        this.auditEntry("warn", entry, "dropped", "invalid-message");
         rejected.push(entry);
         continue;
       }
@@ -512,8 +512,7 @@ export class A2AAgentMessageBus {
         senderChildSessionId: stage.sender.childSessionId,
         recipient: A2A_PARENT_RECIPIENT,
         messageId: message.messageId,
-      }, "delivered:parent:hop=" + stage.envelope.hopCount
-        + ":sequence=" + stage.envelope.treeSequence);
+      }, "delivered", "parent");
       return {
         ok: true,
         disposition: "parent",
@@ -528,8 +527,7 @@ export class A2AAgentMessageBus {
       senderChildSessionId: stage.sender.childSessionId,
       recipient: A2A_PARENT_RECIPIENT,
       messageId: message.messageId,
-    }, "delivered:foreground-return:hop=" + stage.envelope.hopCount
-      + ":sequence=" + stage.envelope.treeSequence);
+    }, "delivered", "foreground-return");
     return {
       ok: true,
       disposition: "foreground-return",
@@ -569,7 +567,7 @@ export class A2AAgentMessageBus {
     for (const diagnostic of loaded.diagnostics) this.auditDiagnostic(diagnostic);
     if (loaded.cleanupFailed) return { ok: false, reason: "storage-failed" };
 
-    const removable: Array<{ entry: A2AAgentMailboxEntry; outcome: string }> = [];
+    const removable: Array<{ entry: A2AAgentMailboxEntry; reasonCode: string }> = [];
     let retained = 0;
     for (const entry of loaded.entries) {
       let route: ResolveSubAgentPeerResult;
@@ -579,12 +577,12 @@ export class A2AAgentMessageBus {
           recipientChildSessionId,
         );
       } catch {
-        this.auditEntry("warn", entry, "cleanup-deferred:storage-failed");
+        this.auditEntry("warn", entry, "cleanup-deferred", "storage-failed");
         retained += 1;
         continue;
       }
       if (!route.ok) {
-        removable.push({ entry, outcome: "dropped:" + route.reason });
+        removable.push({ entry, reasonCode: route.reason });
         continue;
       }
       if (
@@ -592,11 +590,11 @@ export class A2AAgentMessageBus {
         || route.sender.childSessionId !== entry.envelope.senderChildSessionId
         || route.recipient.childSessionId !== recipientChildSessionId
       ) {
-        removable.push({ entry, outcome: "dropped:cross-origin" });
+        removable.push({ entry, reasonCode: "cross-origin" });
         continue;
       }
       if (isA2ATerminalTaskState(route.recipient.taskState)) {
-        removable.push({ entry, outcome: "dropped:terminal-recipient" });
+        removable.push({ entry, reasonCode: "terminal-recipient" });
       } else {
         retained += 1;
       }
@@ -613,7 +611,7 @@ export class A2AAgentMessageBus {
       return { ok: false, reason: "storage-failed" };
     }
     if (removed !== removable.length) return { ok: false, reason: "storage-failed" };
-    for (const { entry, outcome } of removable) this.auditEntry("warn", entry, outcome);
+    for (const { entry, reasonCode } of removable) this.auditEntry("warn", entry, "dropped", reasonCode);
     return { ok: true, removed, retained };
   }
 
@@ -658,7 +656,7 @@ export class A2AAgentMessageBus {
       senderChildSessionId: sender.childSessionId,
       recipient: A2A_PARENT_RECIPIENT,
       messageId: message.messageId,
-    }, "delivered:parent:hop=" + hopCount + ":sequence=" + allocated.envelope.treeSequence);
+    }, "delivered", "parent");
     return {
       ok: true,
       disposition: "parent",
@@ -779,7 +777,7 @@ export class A2AAgentMessageBus {
           ))
           .catch(() => this.auditEntry("warn", entry, "ack-failed"));
       },
-      onDropped: (reason) => this.auditEntry("warn", entry, "deferred:" + reason),
+      onDropped: (reason) => this.auditEntry("warn", entry, "deferred", reason),
     };
     const queued = loop.queueGuidanceWithDisposition(entry.formattedText, disposition);
     if (queued === "queued") {
@@ -813,7 +811,7 @@ export class A2AAgentMessageBus {
       refreshed = { ok: false, reason: "unknown-recipient" };
     }
     if (refreshed.ok && refreshed.recipient.taskState === A2ATaskState.INPUT_REQUIRED) {
-      this.auditEntry("warn", entry, "deferred:" + queued);
+      this.auditEntry("warn", entry, "deferred", queued);
       return {
         ok: true,
         disposition: "mailbox",
@@ -908,7 +906,7 @@ export class A2AAgentMessageBus {
       senderChildSessionId: input.senderChildSessionId,
       recipient: input.recipient,
       messageId: input.messageId,
-    }, "dropped:" + reason);
+    }, "dropped", reason);
     return { ok: false, disposition: "dropped", reason };
   }
 
@@ -918,33 +916,38 @@ export class A2AAgentMessageBus {
       senderChildSessionId: diagnostic.senderChildSessionId ?? "unknown",
       recipient: diagnostic.recipientChildSessionId ?? "unknown",
       messageId: diagnostic.messageId,
-    }, "dropped:" + diagnostic.reason);
+    }, "dropped", diagnostic.reason);
   }
 
   private auditEntry(
     type: "info" | "warn",
     entry: A2AAgentMailboxEntry,
     outcome: string,
+    reasonCode?: string,
   ): void {
     this.audit(type, {
       originSessionId: entry.envelope.originSessionId,
       senderChildSessionId: entry.envelope.senderChildSessionId,
       recipient: entry.envelope.recipientChildSessionId,
       messageId: entry.message.messageId,
-    }, outcome + ":hop=" + entry.envelope.hopCount
-      + ":sequence=" + entry.envelope.treeSequence);
+    }, outcome, reasonCode);
   }
 
   private audit(
-    _type: "info" | "warn",
+    type: "info" | "warn",
     input: {
       originSessionId: string;
       senderChildSessionId: string;
       recipient: string;
       messageId?: string;
     },
-    _outcome: string,
+    outcome: string,
+    reasonCode?: string,
   ): void {
-    logPermissionEvent("agent_message_delivery", { sessionId: permissionLogId(input.originSessionId || "unknown") });
+    logPermissionEvent("agent_message_delivery", {
+      sessionId: permissionLogId(input.originSessionId || "unknown"),
+      operation: "delivery", outcome,
+      ...(reasonCode === undefined ? {} : { reasonCode: permissionLogReasonCode(reasonCode) }),
+    }, type);
   }
 }

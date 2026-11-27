@@ -188,7 +188,6 @@ export async function createA2ARemoteRuntime(options: CreateA2ARemoteRuntimeOpti
     secretResolver: { prepare: async ({ credentialBindingId, credentialRevisionId }) => { const value = await options.settings.getEncryptedSecret(a2aRemoteDataSecretKey(credentialBindingId, credentialRevisionId)); if (!value) throw new Error("a2a-remote-data-secret-missing"); return secretHandle(value); } },
     controlPlane: new A2ARouteControlClient({ baseUrl: config.routeControlBaseUrl, authResolver: { prepare: async () => { const value = await options.settings.getEncryptedSecret(A2A_REMOTE_ROUTE_CONTROL_SECRET_KEY); if (!value) throw new Error("a2a-remote-route-control-secret-missing"); return secretHandle(value); } } }),
     transport,
-    audit: (event) => options.audit?.(`${event.operation}:${event.outcome}:${event.code}`),
   }) : null;
   const receiverSecret = receiverValue ? Buffer.from(receiverValue, "utf8") : null;
   const receiverStore = gates.receiverProfile ? new A2AExactReplayStore({ namespace, encryption, maxKeysPerGeneration: config.receiverMaxKeysPerGeneration }) : null;
