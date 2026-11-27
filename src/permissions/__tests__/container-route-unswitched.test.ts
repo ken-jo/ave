@@ -41,11 +41,20 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
     });
     expect(getHostShellExecutionPlan("default", "hook").identity).toBe("host-shell-execution-plan/v4:darwin:asrt");
     expect(getMacContainerShellInfo()).toEqual({ state: "available", egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } });
+    // An explicit host request on a host whose backend is ready keeps ordinary rules and modes (tree: host-shell row).
+    expect(getHostShellExecutionPlan("host")).toMatchObject({
+      mode: "plain", executionRequest: "host", identity: "host-shell-execution-plan/v4:darwin:explicit-host",
+    });
     setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
     expect(getMacContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "shell-start-failed" });
     expect(getHostShellExecutionPlan()).toMatchObject({
       mode: "plain", substrate: "none", requiresExplicitUserApproval: true, fallbackReason: "active-sandbox-not-shell-contained",
     });
+    // An unproved container shell puts explicit host requests on the no-confinement floor too; the wrap does not stand in for it.
+    const unprovedHost = getHostShellExecutionPlan("host");
+    expect(unprovedHost).toMatchObject({ mode: "plain", executionRequest: "host" });
+    expect(unprovedHost.identity.startsWith("host-shell-execution-plan/v4:darwin:explicit-host")).toBe(true);
+    expect(unprovedHost.identity).not.toBe("host-shell-execution-plan/v4:darwin:explicit-host");
     expect(getHostShellExecutionPlan("default", "hook").identity).toBe("host-shell-execution-plan/v4:darwin:asrt");
     __resetActiveSandboxCapabilityForTest();
     expect(getHostShellExecutionPlan().fallbackReason).toBe("requested-sandbox-unavailable");
