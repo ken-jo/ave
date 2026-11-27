@@ -399,6 +399,27 @@ describe.each(["darwin", "linux"] as const)("%s container shell completion", (pl
     expect(Buffer.concat(chunks).toString()).toBe(output);
   });
 
+  it("completes a sandboxed PowerShell command from the container's outcome, with its output and literal exit", async () => {
+    vi.mocked(spawn).mockImplementation((_command, args) => {
+      if (!args?.some((arg) => arg.endsWith(POWER_SHELL_AST_PARSER))) throw new Error("only the AST parser runs on the host");
+      const parser = childProcess();
+      queueMicrotask(() => {
+        parser.stdout.write(JSON.stringify({ errors: [], commands: [], redirections: [], unsupported: [] }));
+        close(parser, 0, null);
+      });
+      return parser;
+    });
+    const pending = new PowerShellTool().execute({ command: "Write-Output ready", timeoutSeconds: 1 }, {
+      cwd: process.cwd(), extraAllowedDirectories: [], metadata: {},
+    });
+    await vi.waitFor(() => expect(containerLaunch.settle).toBeTypeOf("function"));
+    containerLaunch.child?.stdout.write("partial\n");
+    containerLaunch.settle?.({ ...exited, code: 7 });
+    expect(await pending).toMatchObject({
+      output: "Shell command exited with code 7.\npartial", isError: true, metadata: { returncode: 7, sandboxed: true },
+    });
+  });
+
   it("reports the SDK's -1 as a shell that left no exit code, never as exit code -1", async () => {
     const locale = getLocale();
     try {
