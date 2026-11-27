@@ -1,3 +1,4 @@
+import { createSocket } from "node:dgram";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,6 +64,53 @@ it.each([
         { msg: "MXC raw IP startup measurement", launcherSha256: pinnedWxcExecSha256("x64"), schema: "1.0.0", network, windowsBuild },
         ...warnings,
       ]);
+    });
+  } finally {
+    closeFileLogSink();
+    await cleanupTmpDir(dir);
+  }
+});
+
+it("logs one UDP reachability warning after a matching arrival and a failed start", async () => {
+  const actual = await vi.importActual<typeof import("../mxc-raw-ip-udp.js")>("../mxc-raw-ip-udp.js");
+  let udp: Awaited<ReturnType<typeof actual.openMxcRawIpUdpListener>>;
+  vi.mocked(openMxcRawIpUdpListener).mockImplementationOnce(async (address, probeId, deadline, adopt) => {
+    udp = await actual.openMxcRawIpUdpListener("127.0.0.1", probeId, deadline, adopt);
+    return udp === undefined ? undefined : { ...udp, address };
+  });
+  const dir = await mkdtemp(join(tmpdir(), "mxc-probe-log-"));
+  try {
+    const sink = initFileLogSink({ dir });
+    if (!sink) throw new Error("Missing file log sink");
+    const result = await probeMxcPowerShellStart({
+      platform: "win32", arch: "x64", resourcePath: "C:\\example\\resources", windowsBuild: "10.0.26300",
+      probeDirectory: "C:\\example\\scratch", systemRoot: "C:\\Windows", exists: () => true, sha256: async () => "",
+      run: async (_file, args) => {
+        if (args[0] !== "--config-base64") return { code: 0, stdout: "192.0.2.2:49152", stderr: "" };
+        const request: MxcContainerRequest = JSON.parse(Buffer.from(args[1] ?? "", "base64").toString("utf8"));
+        const script = readMxcRawIpProbeScript(request.process.commandLine);
+        const nonce = /'AVE_MXC_RAW_IP ([a-f0-9]{32}) '/.exec(script)?.[1];
+        if (!nonce || !udp) throw new Error("Missing UDP target");
+        const { port } = udp;
+        const sender = createSocket("udp4");
+        try {
+          await new Promise<void>((resolve, reject) => {
+            sender.send(nonce, port, "127.0.0.1", error => { if (error) reject(error); else resolve(); });
+          });
+          expect(await udp.observe("sent", 1_000)).toBe("arrived");
+        } finally {
+          sender.close();
+        }
+        throw new Error("Launcher failed after UDP arrival");
+      },
+    }, async () => ({ port: 49153, url: "http://127.0.0.1:49153", close: async () => {} }));
+
+    expect(result).toMatchObject({ state: "unavailable", reason: "powershell-start-failed" });
+    expect(result).not.toHaveProperty("rawIpProbe");
+    await vi.waitFor(async () => {
+      const log = (await readFile(sink.currentFile, "utf8")).trim();
+      const messages = log === "" ? [] : log.split("\n").map(line => JSON.parse(line).msg);
+      expect(messages).toEqual(["raw-ip-reachable (udp)"]);
     });
   } finally {
     closeFileLogSink();

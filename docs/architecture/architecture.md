@@ -3720,7 +3720,8 @@ in its directory.
   capability or a failed or unparseable read leaves IPv6 unmeasured.
   A successful TCP connection or remote refusal yields `rawIp: "unknown"`
   with a `raw-ip-reachable` warning. A matching datagram yields unknown with
-  `raw-ip-reachable (udp)`. A UDP timeout or local send refusal leaves the TCP
+  `raw-ip-reachable (udp)` even if the contained start fails. A UDP timeout or
+  local send refusal leaves the TCP
   verdict standing. An unavailable UDP observation leaves coverage unknown
   when TCP would otherwise support a blocked verdict.
   Unconfirmed TCP or UDP listener cleanup leaves coverage unknown while the

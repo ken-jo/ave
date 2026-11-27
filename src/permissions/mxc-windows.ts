@@ -644,11 +644,12 @@ export async function probeMxcPowerShellStart(
     if (!measure) return available;
     log.info({ launcherSha256: pinnedWxcExecSha256(deps.arch), schema: request.version,
       network: request.network, windowsBuild: deps.windowsBuild }, "MXC raw IP startup measurement");
-    if (rawIpProbe.udpArrival === "arrived") log.warn("raw-ip-reachable (udp)");
-    else if (rawIpProbe.reachableTargets.length > 0) log.warn("raw-ip-reachable");
+    if (rawIpProbe.udpArrival !== "arrived" && rawIpProbe.reachableTargets.length > 0) log.warn("raw-ip-reachable");
     return { ...available, rawIpProbe };
   } catch {
     return unavailable("powershell-start-failed", "launch-rejected");
+  } finally {
+    if (rawIpProbe.udpArrival === "arrived") log.warn("raw-ip-reachable (udp)");
   }
 }
 
