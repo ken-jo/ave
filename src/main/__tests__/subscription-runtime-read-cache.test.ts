@@ -201,6 +201,55 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     }
   });
 
+  it("revokes proof and cached availability on a failed live probe", async () => {
+    const { client } = claudeClient();
+    const runtime = await service({ claude: client });
+    const changed = vi.fn();
+    const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
+    try {
+      await runtime.verify("claude-code");
+      client.getStatus.mockRejectedValueOnce(new Error("Probe failed"));
+      await expect(runtime.getStatus("claude-code")).rejects.toMatchObject({ code: "subscription-operation-failed" });
+      expect(changed.mock.calls).toEqual([["claude-code", false]]);
+      await expect(runtime.getCachedStatus("claude-code")).resolves.toMatchObject({
+        runtime: "unavailable", connection: "unknown", capabilities: { chat: false },
+      });
+      await expect(runtime.getStatus("claude-code", { allowCached: true })).resolves.toMatchObject({
+        connection: "connected", capabilities: { chat: false },
+      });
+      expect(changed.mock.calls).toEqual([["claude-code", false], ["claude-code", true]]);
+    } finally {
+      unsubscribe();
+      await runtime.stop();
+    }
+  });
+
+  it("ignores a failed older probe after a newer live sample was accepted", async () => {
+    const { client } = claudeClient();
+    const runtime = await service({ claude: client });
+    const changed = vi.fn();
+    const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
+    try {
+      await runtime.verify("claude-code");
+      const held = deferred<void>();
+      client.getStatus.mockImplementationOnce(async () => {
+        await held.promise;
+        throw new Error("Earlier probe failed");
+      });
+      const earlier = runtime.getStatus("claude-code");
+      await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ capabilities: { chat: true } });
+      held.resolve();
+      await expect(earlier).rejects.toMatchObject({ code: "subscription-status-superseded" });
+      expect(changed).not.toHaveBeenCalled();
+      await expect(runtime.getStatus("claude-code", { allowCached: true })).resolves.toMatchObject({
+        capabilities: { chat: true },
+      });
+    } finally {
+      unsubscribe();
+      await runtime.stop();
+    }
+  });
+
   it("reuses a cached status until it expires, while uncached reads stay live", async () => {
     const { client } = claudeClient();
     const runtime = await service({ claude: client });

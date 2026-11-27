@@ -437,6 +437,13 @@ function isConnectedAndReady(status: {
   return status.runtime === "ready" && status.connection === "connected";
 }
 
+function observedConnection(status: {
+  readonly runtime: SubscriptionRuntimeState;
+  readonly connection: SubscriptionConnectionState;
+}): SubscriptionConnectionState {
+  return status.runtime === "unavailable" && status.connection === "connected" ? "unknown" : status.connection;
+}
+
 // The same native prompt budget governs capabilities and request construction.
 export function getSubscriptionImageAttachmentLimits(runtimeId: SubscriptionRuntimeId) {
   return runtimeId === "codex" || runtimeId === "chatgpt-plan"
@@ -481,7 +488,7 @@ function codexStatus(
   return {
     provider: "codex",
     runtime: status.runtime,
-    connection: status.connection,
+    connection: observedConnection(status),
     planType: status.planType,
     pendingLogin: status.pendingLogin,
     pendingDeviceCode: status.pendingDeviceCode,
@@ -496,10 +503,6 @@ function acpRuntimeState(status: AcpSubscriptionStatus): SubscriptionRuntimeStat
   return status.runtime;
 }
 
-function acpConnectionState(status: AcpSubscriptionStatus): SubscriptionConnectionState {
-  return status.connection;
-}
-
 function acpStatus(
   status: AcpSubscriptionStatus,
   safelyVerified: boolean,
@@ -507,7 +510,7 @@ function acpStatus(
   return {
     provider: status.provider,
     runtime: acpRuntimeState(status),
-    connection: acpConnectionState(status),
+    connection: observedConnection(status),
     planType: null,
     pendingLogin: status.pendingLogin,
     pendingDeviceCode: status.pendingDeviceCode,
@@ -1093,7 +1096,7 @@ export class SubscriptionRuntimeService {
   private readonly readGenerationByProvider = new Map<SubscriptionRuntimeId, number>();
   private readonly authChangeRevisionByProvider = new Map<SubscriptionRuntimeId, number>();
   private readonly mutationsInFlight = new Map<SubscriptionRuntimeId, number>();
-  private readonly observedConnections = new Map<SubscriptionRuntimeId, { connected: boolean; revision: number }>();
+  private readonly observedConnections = new Map<SubscriptionRuntimeId, { connected: boolean; revision: number; probeFailed: boolean }>();
   private statusReadRevision = 0;
   // Terminal per-instance guard for callers that retained a service reference during shutdown.
   private stopped = false;
@@ -1238,7 +1241,7 @@ export class SubscriptionRuntimeService {
       }
       const status = await this.acpRegistry.getStatus(runtimeId);
       return () => this.projectAcpStatus(status);
-    }, (status) => status));
+    }, (status) => status, (revision) => this.recordFailedProbe(runtimeId, revision)));
   }
 
   /** Drop settled reads kept for settings surfaces, e.g. after a settings change for this provider. */
@@ -1251,14 +1254,28 @@ export class SubscriptionRuntimeService {
   // Error projection without forcing a new runtime start or credential refresh.
   async getCachedStatus(runtimeId: SubscriptionRuntimeId): Promise<SubscriptionRuntimeStatus | undefined> {
     if (this.stopped) return undefined;
+    const probeFailed = this.observedConnections.get(runtimeId)?.probeFailed === true;
+    let status: SubscriptionRuntimeStatus | undefined;
     // A projection of the stored record only; reading it makes no request.
-    if (runtimeId === "chatgpt-plan") return this.chatGptPlanStatus();
+    if (runtimeId === "chatgpt-plan" && !probeFailed) return this.chatGptPlanStatus();
     if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
       // A projection only: an error response must not also revoke a proof.
-      return this.claudeCodeStatusProjection(this.claudeCodeClient.getCachedStatus());
+      status = this.claudeCodeStatusProjection(this.claudeCodeClient.getCachedStatus());
+    } else if (runtimeId === "codex") {
+      status = this.projectCodexStatus(this.codexClient.getCachedStatus(), false);
     }
-    if (runtimeId !== "codex") return undefined;
-    return this.projectCodexStatus(this.codexClient.getCachedStatus(), false);
+    if (!probeFailed) return status;
+    return {
+      provider: runtimeId,
+      runtime: "unavailable",
+      connection: "unknown",
+      planType: null,
+      pendingLogin: null,
+      pendingDeviceCode: null,
+      canOpenVerificationUrl: false,
+      version: status?.version ?? null,
+      capabilities: DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES,
+    };
   }
 
   // Point a runtime at an executable the user picked. Only the ACP runtimes take one: Ave finds the `codex` and `claude` CLIs itself, and those runtimes
@@ -1295,7 +1312,11 @@ export class SubscriptionRuntimeService {
     };
     await this.stopSessionsFor(runtimeId);
     assertCurrent();
-    const project = await this.verifyRuntime(runtimeId, assertCurrent);
+    const project = await this.verifyRuntime(runtimeId, assertCurrent).catch((error) => {
+      assertCurrent();
+      this.recordFailedProbe(runtimeId, revision);
+      throw error;
+    });
     assertCurrent();
     const status = project();
     this.invalidateCachedReads(runtimeId);
@@ -1652,7 +1673,7 @@ export class SubscriptionRuntimeService {
     return this.withPlanUsage({
       provider: status.provider,
       runtime: status.runtime,
-      connection: status.connection,
+      connection: observedConnection(status),
       planType: null,
       pendingLogin: status.pendingLogin,
       pendingDeviceCode: null,
@@ -1715,6 +1736,7 @@ export class SubscriptionRuntimeService {
     options: SubscriptionReadOptions,
     read: () => Promise<() => T>,
     statusOf: (value: T) => SubscriptionRuntimeStatus,
+    onProbeFailure?: (revision: number) => void,
   ): Promise<T> {
     const cacheEnabled = runtimeId !== "chatgpt-plan";
     if (cacheEnabled && options.allowCached === true) {
@@ -1726,6 +1748,7 @@ export class SubscriptionRuntimeService {
     this.assertCurrentObservation(runtimeId, revision);
     const project = await read().catch((error) => {
       this.assertCurrentObservation(runtimeId, revision);
+      onProbeFailure?.(revision);
       throw error;
     });
     this.assertCurrentObservation(runtimeId, revision);
@@ -1752,11 +1775,22 @@ export class SubscriptionRuntimeService {
     }
   }
 
-  private rememberConnection(status: SubscriptionRuntimeStatus, revision: number): boolean {
+  private recordFailedProbe(provider: SubscriptionRuntimeId, revision: number): void {
+    this.invalidateSafety(provider);
+    if (this.rememberConnection({ provider, runtime: "unavailable", connection: "unknown" }, revision, true)) {
+      notifyStatusChanged(provider, false);
+    }
+  }
+
+  private rememberConnection(
+    status: Pick<SubscriptionRuntimeStatus, "provider" | "runtime" | "connection">,
+    revision: number,
+    probeFailed = false,
+  ): boolean {
     const connected = status.connection === "connected";
     const previous = this.observedConnections.get(status.provider);
-    this.observedConnections.set(status.provider, { connected, revision });
-    return previous !== undefined && previous.connected !== connected;
+    this.observedConnections.set(status.provider, { connected, revision, probeFailed });
+    return previous === undefined ? status.runtime === "unavailable" : previous.connected !== connected;
   }
 
   private cachedRead<T>(value: T): CachedRead<T> {

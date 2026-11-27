@@ -524,6 +524,58 @@ describe("common subscription runtime IPC", () => {
     }
   });
 
+  it.each([false, true])("publishes a failed focus probe and its recovery with Settings closed, previously connected=%s", async (previouslyConnected) => {
+    const actual = await vi.importActual<typeof import("../../../main/subscription-runtime-service.js")>(
+      "../../../main/subscription-runtime-service.js",
+    );
+    const selection = { kind: "subscription", provider: "codex", model: "saved-model" } as const;
+    const ready: CodexSubscriptionStatus = {
+      runtime: "ready", connection: "connected", planType: "plus", pendingLogin: null, pendingDeviceCode: null, version: "test",
+    };
+    const getStatus = vi.fn(async () => ready);
+    const service = await actual.SubscriptionRuntimeService.create(async () => {}, {
+      namespace: createSubscriptionRuntimeNamespace(),
+      claimRuntimeDirectories: claimFakeRuntimeDirectories,
+      claudeCodeClient: { stop: vi.fn() } as never,
+      codexClient: { getStatus, getCachedStatus: () => ready, stop: vi.fn() } as never,
+      acpRegistry: { stopAll: vi.fn() } as never,
+    });
+    runtimeServiceMock.get.mockResolvedValue(service);
+    runtimeServiceMock.onAutoVerified.mockImplementationOnce((listener) => vi.fn(actual.onSubscriptionRuntimeStatusChanged(listener)));
+    const { deps, currentLlm } = makeStatefulSelectionDeps({
+      provider: "openai", vendors: { openai: { model: "unused", baseUrl: null } }, activeChatRuntime: selection,
+    });
+    const send = vi.fn();
+    deps.getAppWindows = vi.fn(() => [{ isDestroyed: () => false, webContents: { isDestroyed: () => false, send } }]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    const dispose = registerSettingsHandlers({
+      ...deps, isSubscriptionConnected: async () => (await service.getStatus(selection.provider)).connection === "connected",
+    } as never);
+    const focusProbe = () => invoke("ave:settings:subscription:status", selection.provider, { refresh: true });
+    try {
+      if (previouslyConnected) await focusProbe();
+      getStatus.mockRejectedValueOnce(new actual.SubscriptionRuntimeServiceError("subscription-runtime-incompatible"));
+      await expect(focusProbe()).resolves.toMatchObject({
+        ok: false, error: "subscription-runtime-incompatible",
+        status: { runtime: "unavailable", connection: "unknown", capabilities: { chat: false } },
+      });
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({
+        activeChatModel: { kind: "none", reason: "no-connected-provider" },
+      })));
+      await expect(focusProbe()).resolves.toMatchObject({ ok: true, status: { connection: "connected" } });
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({
+        activeChatModel: selection,
+      })));
+      expect(send.mock.calls.filter(([channel]) => channel === SETTINGS.updated)).toHaveLength(2);
+      expect(send.mock.calls.filter(([channel]) => channel === "ave:settings:subscription:status-updated")).toHaveLength(2);
+      expect(currentLlm().activeChatRuntime).toEqual(selection);
+      expect(deps.settingsService.patch).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+      await service.stop();
+    }
+  });
+
   it("announces the subscription restored when overlapping switches fail to save", async () => {
     const saved = { kind: "subscription", provider: "kimi-code" } as const;
     const state = makeStatefulSelectionDeps({
