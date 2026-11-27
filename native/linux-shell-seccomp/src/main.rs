@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::error::Error;
+use std::ffi::OsString;
 use std::io;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitCode};
@@ -84,20 +86,118 @@ fn clone3_filter() -> Result<BpfProgram, Box<dyn Error>> {
     .try_into()?)
 }
 
+/// What the helper does before it applies the filter and executes its command.
+#[derive(Default)]
+struct Launch {
+    /// Close every descriptor above 2, except `ready` until it is written and those in `keep`.
+    close_other_fds: bool,
+    /// A descriptor that receives one `\n` once the filter is on, and is then closed.
+    ready: Option<libc::c_int>,
+    /// Descriptors `close_other_fds` leaves open for the command, such as an environment it reads.
+    keep: Vec<libc::c_int>,
+    /// Variables set for the command.
+    env: Vec<(OsString, OsString)>,
+}
+
+fn descriptor(value: Option<OsString>, option: &str) -> Result<libc::c_int, Box<dyn Error>> {
+    let value = value.ok_or_else(|| format!("{option} needs a descriptor"))?;
+    let fd: libc::c_int = value
+        .to_str()
+        .and_then(|text| text.parse().ok())
+        .filter(|fd| *fd > 2)
+        .ok_or_else(|| format!("{option} needs a descriptor above 2"))?;
+    // SAFETY: F_GETFD only reads the descriptor table.
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+        return Err(format!("{option} {fd} is not open").into());
+    }
+    Ok(fd)
+}
+
+/// Options come first and end at `--`. Without options the first word is the command, as before.
+fn parse(first: OsString, args: &mut impl Iterator<Item = OsString>) -> Result<(Launch, OsString), Box<dyn Error>> {
+    let mut launch = Launch::default();
+    if !first.as_bytes().starts_with(b"--") {
+        return Ok((launch, first));
+    }
+    let mut option = first;
+    loop {
+        match option.to_str() {
+            Some("--") => return Ok((launch, args.next().ok_or("missing command")?)),
+            Some("--close-other-fds") => launch.close_other_fds = true,
+            Some("--ready-fd") if launch.ready.is_none() => {
+                launch.ready = Some(descriptor(args.next(), "--ready-fd")?)
+            }
+            Some("--keep-fd") => launch.keep.push(descriptor(args.next(), "--keep-fd")?),
+            Some("--env") => {
+                let pair = args.next().ok_or("--env needs NAME=VALUE")?;
+                let bytes = pair.as_bytes();
+                let split = bytes
+                    .iter()
+                    .position(|byte| *byte == b'=')
+                    .filter(|index| *index > 0)
+                    .ok_or("--env needs NAME=VALUE")?;
+                launch.env.push((
+                    OsString::from_vec(bytes[..split].to_vec()),
+                    OsString::from_vec(bytes[split + 1..].to_vec()),
+                ));
+            }
+            _ => return Err(format!("unknown option {}", option.to_string_lossy()).into()),
+        }
+        option = args.next().ok_or("options must end with --")?;
+    }
+}
+
+fn close_other_fds(open: &[libc::c_int]) -> Result<(), Box<dyn Error>> {
+    let mut open = open.to_vec();
+    open.sort_unstable();
+    open.dedup();
+    let mut first: libc::c_uint = 3;
+    for fd in open.iter().map(|fd| *fd as libc::c_uint).chain([libc::c_uint::MAX]) {
+        if fd > first {
+            // SAFETY: close_range only closes descriptors this process owns; no Rust object holds one above 2.
+            if unsafe { libc::syscall(libc::SYS_close_range, first, fd - 1, 0) } != 0 {
+                return Err(io::Error::last_os_error().into());
+            }
+        }
+        if fd == libc::c_uint::MAX {
+            break;
+        }
+        first = fd + 1;
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
-    let program = args.next().ok_or("missing command")?;
-    if program == "--check-unix-socket" {
+    let first = args.next().ok_or("missing command")?;
+    if first == "--check-unix-socket" {
         let path = args.next().ok_or("missing Unix socket path")?;
         return match UnixStream::connect(path) {
             Err(error) if error.raw_os_error() == Some(libc::EPERM) => Ok(()),
             _ => Err("Unix socket creation was not refused".into()),
         };
     }
+    let (launch, program) = parse(first, &mut args)?;
+    for (name, value) in &launch.env {
+        // SAFETY: the helper is single-threaded until it executes its command.
+        unsafe { env::set_var(name, value) };
+    }
+    if launch.close_other_fds {
+        let open: Vec<libc::c_int> = launch.keep.iter().copied().chain(launch.ready).collect();
+        close_other_fds(&open)?;
+    }
     let policy = filter()?;
     let clone3 = clone3_filter()?;
     apply_filter(&policy)?;
     apply_filter(&clone3)?;
+    if let Some(ready) = launch.ready {
+        // SAFETY: the descriptor was checked open; it is written once and closed before the command runs.
+        let written = unsafe { libc::write(ready, b"\n".as_ptr().cast(), 1) };
+        unsafe { libc::close(ready) };
+        if written != 1 {
+            return Err("cannot signal readiness".into());
+        }
+    }
     Err(Command::new(program).args(args).exec().into())
 }
 

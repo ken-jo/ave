@@ -307,7 +307,8 @@ export function buildBubblewrapShellRequest(input: {
     request: {
       version: "0.9.0-alpha",
       containment: "bubblewrap",
-      process: { commandLine: `${quote(helper)} /bin/sh -c ${quote(bootstrap)}`, cwd, timeout: input.timeoutMs, inheritDefaultEnv: false, env: [] },
+      // The helper closes every other inherited descriptor (the launcher's proxy mode leaves one to its user namespace).
+      process: { commandLine: `${quote(helper)} --close-other-fds --keep-fd ${fd} -- /bin/sh -c ${quote(bootstrap)}`, cwd, timeout: input.timeoutMs, inheritDefaultEnv: false, env: [] },
       filesystem: { readwritePaths: grants.readwrite, readonlyPaths, deniedPaths: grants.denied },
       network: { egress: { default: "deny" }, ingress: { default: "deny", hostLoopback: "deny" } },
       runtimeConfig: { networkProxy: input.proxyUrl },
