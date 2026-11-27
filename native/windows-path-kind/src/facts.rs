@@ -214,8 +214,17 @@ fn file_access_row(path: &[u16]) -> Option<String> {
     if info.attributes & (DIRECTORY | REPARSE) != 0 || info.links != 1 {
         return None;
     }
-    let descriptor = Descriptor::read(file.raw())?;
+    let (descriptor, label) = Descriptor::read_file_access(file.raw())?;
     let owner = json(&security::sid_text(descriptor.owner).ok()?);
+    let label = match label {
+        Some(label) => format!(
+            r#"{{"sid":{},"policy":{},"flags":{}}}"#,
+            json(&label.sid),
+            label.policy,
+            label.flags
+        ),
+        None => "null".into(),
+    };
     let mut count = 0;
     let acl = if let Some(revision) = descriptor.dacl_revision() {
         let mut bytes = vec![revision];
@@ -228,7 +237,7 @@ fn file_access_row(path: &[u16]) -> Option<String> {
         "null".into()
     };
     Some(format!(
-        r#"{{"volumeSerialNumber":"0x{:016x}","fileIndex":"0x{:016x}","ownerSid":{owner},"control":{},"aceCount":{count},"aclHex":{acl}}}"#,
+        r#"{{"volumeSerialNumber":"0x{:016x}","fileIndex":"0x{:016x}","ownerSid":{owner},"control":{},"aceCount":{count},"aclHex":{acl},"integrityLabel":{label}}}"#,
         info.volume,
         info.index(),
         descriptor.control & FILE_DACL_CONTROL_MASK

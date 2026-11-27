@@ -289,7 +289,7 @@ describe("workbook file transaction", () => {
         Buffer.from(JSON.stringify(args?.slice(2).map((file) => {
           const { dev, ino } = lstatSync(file, { bigint: true });
           return { volumeSerialNumber: `0x${dev.toString(16).padStart(16, "0")}`,
-            fileIndex: `0x${ino.toString(16).padStart(16, "0")}`, ownerSid: "S-1-5-18", control: 4, aceCount, aclHex };
+            fileIndex: `0x${ino.toString(16).padStart(16, "0")}`, ownerSid: "S-1-5-18", control: 4, aceCount, aclHex, integrityLabel: null };
         }))));
 
       expect(() => publishWorkbookEdit(path, snapshot, output, 1, { write }))
@@ -340,14 +340,17 @@ describe("workbook file transaction", () => {
     const auditCallback = (tail: string) => `0d00180089001200${everyone}${tail}`;
     const auditObject = (guid: string) => `0700280089001200${"01000000"}${guid.repeat(16)}${everyone}`;
     const auditCallbackObject = `0f003c0089001200${"03000000"}${"11".repeat(16)}${"22".repeat(16)}${everyone}61727478`;
-    function nativeFileDacls(aclFor: (file: string) => { aceCount: number; aclHex: string; ownerSid?: string | undefined }) {
+    function nativeFileDacls(aclFor: (file: string) => {
+      aceCount: number; aclHex: string; ownerSid?: string | undefined;
+      integrityLabel?: { sid: string; policy: number; flags: number } | null | undefined;
+    }) {
       const passthrough = vi.mocked(execFileSync).getMockImplementation();
       vi.mocked(execFileSync).mockImplementation(((helper: string, args: readonly string[] | undefined, options: unknown) => {
         if (args?.[0] !== "--dacl" || args[1] !== "--file-access") return passthrough?.(helper, args, options as never);
         return Buffer.from(JSON.stringify(args.slice(2).map((file) => {
           const { dev, ino } = lstatSync(file, { bigint: true });
           return { volumeSerialNumber: `0x${dev.toString(16).padStart(16, "0")}`,
-            fileIndex: `0x${ino.toString(16).padStart(16, "0")}`, control: 4, ownerSid: "S-1-5-18", ...aclFor(file) };
+            fileIndex: `0x${ino.toString(16).padStart(16, "0")}`, control: 4, ownerSid: "S-1-5-18", integrityLabel: null, ...aclFor(file) };
         })));
       }) as typeof execFileSync);
       return () => { vi.mocked(execFileSync).mockImplementation(passthrough as typeof execFileSync); };
@@ -379,6 +382,37 @@ describe("workbook file transaction", () => {
       const snapshot = readWorkbookSnapshot(path);
       const restore = nativeFileDacls(file => ({
         aceCount: 1, aclHex: `02${allow}`, ownerSid: file === path ? "S-1-5-18" : ownerSid,
+      }));
+      const write = vi.fn((descriptor: number, bytes: Buffer, offset: number, length: number) => writeSync(descriptor, bytes, offset, length));
+      try {
+        expect(() => publishWorkbookEdit(path, snapshot, Buffer.from("validated output"), 1, { write }))
+          .toThrow(expect.objectContaining({ code: `${scope}-acl-${reason}` }));
+        expect(write).not.toHaveBeenCalled();
+        expect(existsSync(`${path}.ave-bak`)).toBe(false);
+        expect(readFileSync(path)).toEqual(before);
+        expect(temporaryNames()).toEqual([]);
+      } finally {
+        restore();
+      }
+    });
+
+    it.each([
+      { scope: "backup", large: true, label: null, reason: "differs" },
+      { scope: "workbook", large: false, label: null, reason: "differs" },
+      { scope: "backup", large: true, label: { sid: "S-1-16-8192", policy: 1, flags: 0 }, reason: "differs" },
+      { scope: "workbook", large: false, label: { sid: "S-1-16-8192", policy: 1, flags: 0 }, reason: "differs" },
+      { scope: "backup", large: true, label: { sid: "S-1-16-4096", policy: 3, flags: 0 }, reason: "differs" },
+      { scope: "workbook", large: false, label: { sid: "S-1-16-4096", policy: 3, flags: 0 }, reason: "differs" },
+      { scope: "backup", large: true, label: undefined, reason: "unreadable" },
+      { scope: "workbook", large: false, label: undefined, reason: "unreadable" },
+    ])("refuses a $scope with $reason mandatory integrity evidence ($label)", ({ scope, large, label, reason }) => {
+      const path = join(directory, "book.xlsx");
+      const before = Buffer.alloc(large ? 8 * 1024 * 1024 + 1 : 1, 0x61);
+      writeFileSync(path, before);
+      const snapshot = readWorkbookSnapshot(path);
+      const restore = nativeFileDacls(file => ({
+        aceCount: 1, aclHex: `02${allow}`,
+        integrityLabel: file === path && label !== undefined ? { sid: "S-1-16-8192", policy: 3, flags: 0 } : label,
       }));
       const write = vi.fn((descriptor: number, bytes: Buffer, offset: number, length: number) => writeSync(descriptor, bytes, offset, length));
       try {

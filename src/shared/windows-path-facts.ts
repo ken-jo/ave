@@ -527,6 +527,12 @@ export function readWindowsDacls(paths: readonly string[], options: { parent?: b
   return request(paths, "--dacl", [...(options.parent ? ["--parent"] : []), ...(options.content ? ["--content"] : [])]) as WindowsDaclFacts[];
 }
 
+interface WindowsIntegrityLabel {
+  readonly sid: string;
+  readonly policy: number;
+  readonly flags: number;
+}
+
 interface WindowsFileDacl {
   readonly volumeSerialNumber: string;
   readonly fileIndex: string;
@@ -534,6 +540,7 @@ interface WindowsFileDacl {
   readonly control: number;
   readonly aceCount: number;
   readonly aclHex: string | null;
+  readonly integrityLabel: WindowsIntegrityLabel | null;
 }
 
 const DACL_PRESENT = 0x0004;
@@ -593,13 +600,23 @@ function isFileOwnerSid(value: unknown): value is string {
   return BigInt(authority!) <= 0xffffffffffffn && parts.every(part => Number(part) <= 0xffffffff);
 }
 
+function isIntegrityLabel(value: unknown): value is WindowsIntegrityLabel | null {
+  if (value === null) return true;
+  if (typeof value !== "object" || Object.keys(value).length !== 3) return false;
+  const { sid, policy, flags } = value as WindowsIntegrityLabel;
+  return typeof sid === "string" && /^S-1-16-(?:0|[1-9][0-9]{0,9})$/u.test(sid)
+    && Number(sid.slice("S-1-16-".length)) <= 0xffffffff
+    && isUint(policy, 0x07) && isUint(flags, 0x1f);
+}
+
 function isFileDacl(value: unknown): value is WindowsFileDacl {
-  if (value === null || typeof value !== "object" || Object.keys(value).length !== 6) return false;
+  if (value === null || typeof value !== "object" || Object.keys(value).length !== 7) return false;
   const row = value as WindowsFileDacl;
   return typeof row.volumeSerialNumber === "string" && HEX_64_PATTERN.test(row.volumeSerialNumber)
     && BigInt(row.volumeSerialNumber) <= 0xffffffffn
     && typeof row.fileIndex === "string" && HEX_64_PATTERN.test(row.fileIndex)
     && isFileOwnerSid(row.ownerSid)
+    && isIntegrityLabel(row.integrityLabel)
     && isUint(row.control, FILE_DACL_CONTROL_MASK) && (row.control & ~FILE_DACL_CONTROL_MASK) === 0 && (row.control & DACL_PRESENT) !== 0
     && isUint(row.aceCount, 0xffff) && isCompleteFileAcl(row.aclHex, row.aceCount);
 }

@@ -62,7 +62,7 @@ the final recovery name exclusively and removes a failed copy if the path still
 names the file created by this edit. An interrupted Windows write can
 leave a partial `.ave-bak` under the final name. Treat only verified backups
 as valid copies. On Windows both the backup and the edited file must keep the
-workbook's owner and access list. A workbook with its own
+workbook's owner, access list, and mandatory integrity rules. A workbook with its own
 access rules, or one whose rules cannot be read, is refused with "The workbook
 has its own access rules; Ave cannot keep them on its backup." or "... on the
 edited file." and a reason code (`backup-acl-differs`, `backup-acl-unreadable`,

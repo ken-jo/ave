@@ -33,6 +33,12 @@ unsafe extern "system" {
     ) -> u32;
     fn IsValidSecurityDescriptor(descriptor: Raw) -> i32;
     fn GetSecurityDescriptorControl(descriptor: Raw, control: *mut u16, revision: *mut u32) -> i32;
+    fn GetSecurityDescriptorSacl(
+        descriptor: Raw,
+        present: *mut i32,
+        sacl: *mut *mut Acl,
+        defaulted: *mut i32,
+    ) -> i32;
     fn IsValidAcl(acl: *const Acl) -> i32;
     fn GetAce(acl: *const Acl, index: u32, ace: *mut Raw) -> i32;
     fn IsValidSid(sid: Raw) -> i32;
@@ -75,8 +81,32 @@ pub struct Descriptor {
     _allocation: Local,
 }
 
+const OWNER_GROUP_DACL_SECURITY_INFORMATION: u32 = 7;
+const LABEL_SECURITY_INFORMATION: u32 = 0x10;
+const SYSTEM_MANDATORY_LABEL_ACE_TYPE: u8 = 0x11;
+const SYSTEM_MANDATORY_LABEL_VALID_MASK: u32 = 0x07;
+
+pub struct IntegrityLabel {
+    pub sid: Vec<u16>,
+    pub policy: u32,
+    pub flags: u8,
+}
+
 impl Descriptor {
     pub fn read(handle: Raw) -> Option<Self> {
+        Self::read_security(handle, OWNER_GROUP_DACL_SECURITY_INFORMATION)
+    }
+
+    pub fn read_file_access(handle: Raw) -> Option<(Self, Option<IntegrityLabel>)> {
+        let descriptor = Self::read_security(
+            handle,
+            OWNER_GROUP_DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
+        )?;
+        let label = descriptor.integrity_label()?;
+        Some((descriptor, label))
+    }
+
+    fn read_security(handle: Raw, security_information: u32) -> Option<Self> {
         let mut owner = null_mut();
         let mut group = null_mut();
         let mut acl = null_mut();
@@ -87,7 +117,7 @@ impl Descriptor {
             GetSecurityInfo(
                 handle,
                 1,
-                7,
+                security_information,
                 &mut owner,
                 &mut group,
                 &mut acl,
@@ -123,18 +153,58 @@ impl Descriptor {
     }
 
     pub fn aces(&self) -> impl Iterator<Item = Option<Ace<'_>>> {
-        let count = if self.null_dacl() {
+        self.aces_in(self.acl)
+    }
+
+    fn aces_in(&self, acl: *const Acl) -> impl Iterator<Item = Option<Ace<'_>>> {
+        let count = if acl.is_null() {
             0
         } else {
-            unsafe { (*self.acl).count }
+            unsafe { (*acl).count }
         };
-        (0..u32::from(count)).map(|index| {
+        (0..u32::from(count)).map(move |index| {
             let mut raw = null_mut();
-            check(unsafe { GetAce(self.acl, index, &mut raw) }).ok()?;
+            check(unsafe { GetAce(acl, index, &mut raw) }).ok()?;
             // GetAce returns an aligned ACE within the validated descriptor.
             let len = unsafe { *raw.cast::<u16>().add(1) } as usize;
+            if len < 4 {
+                return None;
+            }
             Some(Ace(unsafe { std::slice::from_raw_parts(raw.cast(), len) }))
         })
+    }
+
+    fn integrity_label(&self) -> Option<Option<IntegrityLabel>> {
+        let mut present = 0;
+        let mut acl = null_mut();
+        let mut defaulted = 0;
+        if unsafe { GetSecurityDescriptorSacl(self._allocation.0, &mut present, &mut acl, &mut defaulted) } == 0 {
+            return None;
+        }
+        if present == 0 || acl.is_null() {
+            return Some(None);
+        }
+        if unsafe { IsValidAcl(acl) } == 0 {
+            return None;
+        }
+        let mut label = None;
+        for ace in self.aces_in(acl) {
+            let ace = ace?;
+            if ace.kind() != SYSTEM_MANDATORY_LABEL_ACE_TYPE {
+                continue;
+            }
+            let policy = ace.mask()?;
+            let flags = ace.flags();
+            // A mandatory label carries precisely one RID under the mandatory label authority.
+            if label.is_some() || ace.bytes().len() != 20
+                || ace.bytes()[8..16] != [1, 1, 0, 0, 0, 0, 0, 16]
+                || policy & !SYSTEM_MANDATORY_LABEL_VALID_MASK != 0 || flags & !0x1f != 0
+            {
+                return None;
+            }
+            label = Some(IntegrityLabel { sid: sid_text(ace.sid(8)?).ok()?, policy, flags });
+        }
+        Some(label)
     }
 }
 

@@ -298,12 +298,15 @@ Relative paths, device namespace paths and alternate streams are refused.
 `ave-path-kind.exe --dacl --file-access <absolute-file-path>...` opens only the
 requested files with metadata access. It returns ordered rows with
 `volumeSerialNumber`, `fileIndex`, `ownerSid`, `control` (DACL presence, protection and
-auto-inheritance bits), `aceCount`, and `aclHex` (ACL revision followed by ordered,
-complete ACE bytes). A missing or null ACL reports a zero count and `null`
+auto-inheritance bits), `aceCount`, `aclHex` (ACL revision followed by ordered,
+complete ACE bytes), and `integrityLabel`. The label contains its SID, policy
+mask, and ACE flags, or `null` when the descriptor has no explicit label.
+Owner, DACL, and label come from one descriptor read on the opened file.
+A missing or null ACL reports a zero count and `null`
 bytes. The control bits distinguish missing and null ACLs. The caller checks
 the revision and ACE sizes against the count and each identity against its file
 snapshot or descriptor. An unreadable file, reparse point, directory or
-multiply linked file, or a file without a valid owner SID, fails the whole request.
+multiply linked file, invalid owner SID, or unreadable label fails the whole request.
 
 `ave-path-kind.exe --dacl --parent --stdin` reads the parent DACL request
 from a binary stdin frame. A little-endian u32 payload size precedes a u32

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { closeSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -275,6 +276,34 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     expect(() => readWindowsFileDacls([join(parent, "file"), parent])).toThrow(expect.objectContaining({ status: 4 }));
   });
 
+  it("reads the mandatory label and policy from the same file as the owner and DACL", () => {
+    const file = join(fixture, "directory", "mandatory-label");
+    const ffi = createRequire(import.meta.url)("koffi") as typeof import("koffi");
+    const advapi = ffi.load("advapi32.dll");
+    const kernel = ffi.load("kernel32.dll");
+    const convert = advapi.func("int __stdcall ConvertStringSecurityDescriptorToSecurityDescriptorW(str16, uint32_t, _Out_ void **, void *)");
+    const attributes = ffi.struct("FixtureSecurityAttributes", { length: "uint32_t", descriptor: "void *", inherit: "int" });
+    const create = kernel.func("intptr_t __stdcall CreateFileW(str16, uint32_t, uint32_t, FixtureSecurityAttributes *, uint32_t, uint32_t, void *)");
+    const close = kernel.func("int __stdcall CloseHandle(intptr_t)");
+    const free = kernel.func("void * __stdcall LocalFree(void *)");
+    const descriptor = [null];
+    expect(convert("S:(ML;;NWNR;;;LW)", 1, descriptor, null)).toBe(1);
+    try {
+      const handle = create(file, 0x80000000, 7, { length: ffi.sizeof(attributes), descriptor: descriptor[0], inherit: 0 }, 1, 0, null);
+      expect(Number(handle)).not.toBe(-1);
+      expect(close(handle)).toBe(1);
+    } finally {
+      free(descriptor[0]);
+    }
+    const [ordinary, labelled] = readWindowsFileDacls([join(fixture, "directory", "file"), file]);
+    const stat = lstatSync(file, { bigint: true });
+    expect(ordinary).toHaveProperty("integrityLabel", null);
+    expect(labelled).toEqual({
+      ...ordinary, fileIndex: `0x${stat.ino.toString(16).padStart(16, "0")}`,
+      integrityLabel: { sid: "S-1-16-4096", policy: 3, flags: 0 },
+    });
+  });
+
   it("refuses a file DACL batch when a file has a second hard link", () => {
     const file = join(fixture, "directory", "linked file");
     const alias = join(fixture, "directory", "hard link");
@@ -292,7 +321,7 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
   it("rejects incomplete or malformed file DACL replies", () => {
     const file = join(fixture, "directory", "file");
     const identity = { volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex };
-    const row = { ...identity, ownerSid: "S-1-5-18", control: 4, aceCount: 0, aclHex: "02" };
+    const row = { ...identity, ownerSid: "S-1-5-18", control: 4, aceCount: 0, aclHex: "02", integrityLabel: null };
     for (const rows of [[], [identity], [{ ...row, aclHex: "abc" }], [{ ...row, control: 2, aclHex: null }],
       [{ ...row, aclHex: "05" }], [{ ...row, aclHex: "0200" }], [{ ...row, aceCount: 1, aclHex: null }],
       [{ ...row, aceCount: 1, aclHex: "0200000000" }], [{ ...row, aceCount: 1, aclHex: "020000050000" }]]) {
@@ -304,7 +333,10 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
   const mask = "89001200";
   const everyone = "010100000000000100000000";
   const ace = (type: number, body: string) => `${type.toString(16).padStart(2, "0")}00${(4 + body.length / 2).toString(16).padStart(2, "0")}00${body}`;
-  const fileDacl = (aclHex: string, aceCount = 1) => ({ volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex, ownerSid: "S-1-5-18", control: 4, aceCount, aclHex });
+  const fileDacl = (aclHex: string | null, aceCount = 1) => ({
+    volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex,
+    ownerSid: "S-1-5-18", control: 4, aceCount, aclHex, integrityLabel: null,
+  });
 
   it.each([
     ["a header-only ACE", "0200000400"],
@@ -382,6 +414,22 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     expect(() => readWindowsFileDacls([join(fixture, "directory", "file")])).toThrow("Invalid Windows file DACL response");
   });
 
+  it.each([
+    undefined, "null", {}, { sid: "S-1-5-18", policy: 1, flags: 0 },
+    { sid: "S-1-16-4294967296", policy: 1, flags: 0 },
+    { sid: "S-1-16-08192", policy: 1, flags: 0 },
+    { sid: "S-1-16-8192", policy: 8, flags: 0 },
+    { sid: "S-1-16-8192", policy: 1 },
+    { sid: "S-1-16-8192", policy: 1, flags: 32 },
+    { sid: "S-1-16-8192", policy: 1, flags: 0, extra: true },
+  ])("refuses a batch with invalid mandatory integrity evidence %j", integrityLabel => {
+    const valid = fileDacl("02", 0);
+    const reply = [valid, { ...valid, integrityLabel }];
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify(reply)));
+    expect(() => readWindowsFileDacls([join(fixture, "directory", "file"), join(fixture, "directory", "another")]))
+      .toThrow("Invalid Windows file DACL response");
+  });
+
   it("accepts allow and audit ACEs in one file DACL", () => {
     const reply = fileDacl(`02${ace(0x00, mask + everyone)}${ace(0x02, mask + everyone)}`, 2);
     vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([reply])));
@@ -389,7 +437,7 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
   });
 
   it.each(["02", "03", "04", null])("accepts a zero-ACE file DACL with ACL bytes %s", (aclHex) => {
-    const row = { volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex, ownerSid: "S-1-5-18", control: 4, aceCount: 0, aclHex };
+    const row = fileDacl(aclHex, 0);
     vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([row])));
     expect(readWindowsFileDacls([join(fixture, "directory", "file")])).toEqual([row]);
   });

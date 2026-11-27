@@ -123,7 +123,7 @@ function accessRulesRefusal(kind: keyof typeof ACCESS_RULES_REFUSALS, reason: "d
   return Object.assign(new Error(`${refusal.text} [${refusal[reason]}]`), { code: refusal[reason] });
 }
 
-/** Check the created file's owner and access list before writing workbook bytes. */
+/** Check the created file's access rules before writing workbook bytes. */
 function requireSameAccessRules(kind: keyof typeof ACCESS_RULES_REFUSALS, source: WorkbookFile, copy: WorkbookFile, helper?: string): void {
   const files = [source, copy];
   let rules: ReturnType<typeof readWindowsFileDacls>;
@@ -134,7 +134,10 @@ function requireSameAccessRules(kind: keyof typeof ACCESS_RULES_REFUSALS, source
     const identity = files[index]?.identity;
     return identity && BigInt(rule.volumeSerialNumber) === identity.dev && BigInt(rule.fileIndex) === identity.ino;
   })) throw accessRulesRefusal(kind, "unreadable");
-  if (original.ownerSid !== created.ownerSid || original.control !== created.control || original.aclHex !== created.aclHex) {
+  const label = original.integrityLabel;
+  const createdLabel = created.integrityLabel;
+  if (original.ownerSid !== created.ownerSid || original.control !== created.control || original.aclHex !== created.aclHex
+    || label?.sid !== createdLabel?.sid || label?.policy !== createdLabel?.policy || label?.flags !== createdLabel?.flags) {
     throw accessRulesRefusal(kind, "differs");
   }
 }
