@@ -9,6 +9,8 @@ const MIRRORED_PORT_RANGE = [44_620, 48_715] as const;
 const NETSH_MAX_OUTPUT_BYTES = 64 * 1024;
 
 export function parseWindowsTailnetPortHint(output: string, port: number): TailnetObserverPortHint | null {
+  // A footer without its line ending may be a partial read.
+  if (!output.endsWith("\n")) return null;
   const lines = output.split(/\r?\n/);
   const separator = lines.findIndex(line => /^\s*-{2,}\s+-{2,}\s*$/.test(line));
   if (separator < 1) return null;

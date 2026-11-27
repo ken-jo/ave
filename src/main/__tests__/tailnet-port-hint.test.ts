@@ -40,8 +40,13 @@ describe("Windows Tailnet port hints", () => {
     "----------    --------\r\n",
     EXCLUDED_PORTS.slice(0, EXCLUDED_PORTS.indexOf("      5113")),
     EXCLUDED_PORTS.slice(0, EXCLUDED_PORTS.indexOf("* - 관리 포트 제외입니다.")),
+    EXCLUDED_PORTS.slice(0, EXCLUDED_PORTS.indexOf("* - 관") + "* - 관".length),
   ])("uses generic guidance for a truncated table (%j)", output => {
     expect(parseWindowsTailnetPortHint(output, 46_200)).toBeNull();
+  });
+
+  it("rejects an unterminated footer after a matching exclusion", () => {
+    expect(parseWindowsTailnetPortHint(EXCLUDED_PORTS.trimEnd(), 5113)).toBeNull();
   });
 
   it.each([
@@ -51,7 +56,7 @@ describe("Windows Tailnet port hints", () => {
     "     0           48715",
     "     44620       48715\r\n     unreadable row",
   ])("rejects a malformed body after the separator (%j)", body => {
-    const output = ["시작 포트    끝 포트", "----------    --------", body, "* - 관리 포트 제외입니다."].join("\r\n");
+    const output = ["시작 포트    끝 포트", "----------    --------", body, "* - 관리 포트 제외입니다.", ""].join("\r\n");
     expect(parseWindowsTailnetPortHint(output, 46_200)).toBeNull();
   });
 
