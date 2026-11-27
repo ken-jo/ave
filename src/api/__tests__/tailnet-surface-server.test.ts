@@ -28,7 +28,7 @@ import { unknownToolEffects } from "../../__tests__/support/tool-effect-resolver
 import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
 import { openEgressRelay, startEgressRelayService, stopEgressRelayService } from "../../permissions/egress-relay/relay.js";
 import { openEgressInvocation } from "../../permissions/egress-invocations.js";
-import type { TailnetWorkDecisionRequest, TailnetWorkDecisionResponse, TailnetWorkReview, TailnetWorkReviewSnapshot } from "../../shared/tailnet-work-decisions.js";
+import { TAILNET_WORK_DECISION_PATH, type TailnetWorkDecisionRequest, type TailnetWorkDecisionResponse, type TailnetWorkReview, type TailnetWorkReviewSnapshot } from "../../shared/tailnet-work-decisions.js";
 import type { TemplateGraph } from "../../shared/workflow-template-types.js";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 import * as tailnetListenerPolicy from "../../permissions/tailnet-listener-policy.js";
@@ -2839,6 +2839,10 @@ describe("phone work reviews", () => {
     browser.window.document.getElementById("work-review-refresh")?.click();
   }
 
+  function recentPhoneResults(browser: PhoneReviewBrowser) {
+    return browser.window.document.querySelector<HTMLElement>('#work-review-recent [role="status"]');
+  }
+
   const refreshedStageBinding = { ...stageBinding, attempt: stageBinding.attempt + 1, resultHash: "1".repeat(64), outputHash: undefined };
   const refreshedJoinBinding = { ...joinBinding, generation: joinBinding.generation + 1, conflictHash: "2".repeat(64) };
   const refreshedPlanHash = "3".repeat(64);
@@ -2846,7 +2850,7 @@ describe("phone work reviews", () => {
   const refreshedOutputHash = "5".repeat(64);
   const refreshCases = [
     [views[0], { ...views[0], binding: { ...views[0].binding, input: { runId, planHash: refreshedPlanHash } },
-      review: { ...views[0].review, planHash: refreshedPlanHash } }, refreshedPlanHash, "plan_mismatch", "Decision refused (plan_mismatch)."],
+      review: { ...views[0].review, planHash: refreshedPlanHash, revision: 1, planNumber: 2 } }, refreshedPlanHash, "plan_mismatch", "Decision refused (plan_mismatch)."],
     [views[1], { ...views[1], binding: { ...views[1].binding, input: refreshedStageBinding },
       review: { ...views[1].review, binding: refreshedStageBinding, outputs: [] } }, refreshedStageBinding.resultHash, "result_mismatch", "The result changed."],
     [views[2], { ...views[2], binding: { ...views[2].binding, input: refreshedJoinBinding },
@@ -2862,7 +2866,7 @@ describe("phone work reviews", () => {
   ] satisfies Array<[TailnetWorkReview, TailnetWorkReview, string, string, string]>;
 
   describe.each(refreshCases.map(([original, ...rest]) => [original.kind, original, ...rest] as const))("%s refresh orderings", (kind, original, revised, marker, error, refusal) => {
-    it.each(["submit then refresh", "refresh then response", "two cards in flight"])("%s", async ordering => {
+    it.each(["submit then refresh", "refresh then response", "two cards in flight", "revision changes between submit and response", "identity leaves before response"])("%s", async ordering => {
       const result = deferred<TailnetWorkDecisionResponse>();
       const otherResult = deferred<TailnetWorkDecisionResponse>();
       const secondPlan = { ...views[0], binding: { ...views[0].binding, itemId: 42 },
@@ -2872,10 +2876,11 @@ describe("phone work reviews", () => {
       const reviews: TailnetWorkReview[] = [original];
       if (ordering === "two cards in flight") reviews.push(other);
       if (kind === "stage") reviews.push(views[6]);
+      if (kind === "requested-output" && ordering === "identity leaves before response") reviews.push(views[1]);
       function isOriginal(decision: TailnetWorkDecisionRequest) {
         return decision.kind === kind && (decision.kind !== "plan" || decision.itemId !== secondPlan.binding.itemId);
       }
-      const { browser, received } = await openPhoneReviews(reviews, decision => isOriginal(decision) ? result.promise : otherResult.promise);
+      const { browser, received, requests } = await openPhoneReviews(reviews, decision => isOriginal(decision) ? result.promise : otherResult.promise);
       const otherSuccess: TailnetWorkDecisionResponse = other.kind === "join"
         ? { ok: true, kind: "join" } : { ok: true, kind: "plan", status: "approved" };
       function expectActions(approve: boolean, alternative: boolean) {
@@ -2903,6 +2908,21 @@ describe("phone work reviews", () => {
         expect(reviewStatus(browser, kind)).toBe("Submitting decision…");
         expectActions(false, false);
 
+        if (ordering === "identity leaves before response") {
+          reviews.length = 0;
+          refreshPhoneReviews(browser);
+          await vi.waitFor(() => expect(reviewStatus(browser, kind)).toBeUndefined());
+          result.resolve({ ok: false, error });
+          await vi.waitFor(() => expect(recentPhoneResults(browser)?.textContent ?? "").toContain(refusal));
+          const recent = recentPhoneResults(browser);
+          if (kind === "requested-output") expect(recent?.textContent).toContain(views[1].review.title);
+          expect(recent?.querySelectorAll("button")).toHaveLength(1);
+          recent?.querySelector("button")?.click();
+          expect(recent?.textContent).toBe("");
+          expect(received).toHaveLength(1);
+          return;
+        }
+
         if (ordering === "submit then refresh") {
           result.resolve({ ok: false, error });
           await vi.waitFor(() => expect(reviewStatus(browser, kind)).toContain(refusal));
@@ -2917,8 +2937,26 @@ describe("phone work reviews", () => {
         }
         await refresh();
         if (ordering !== "submit then refresh") {
-          expect(reviewStatus(browser, kind)).toBe("Submitting decision…");
-          expectActions(false, false);
+          expect(reviewStatus(browser, kind)).toBe("");
+          expectActions(true, true);
+          if (ordering === "revision changes between submit and response") {
+            const successes = {
+              plan: { ok: true, kind: "plan", status: "approved" },
+              stage: { ok: true, kind: "stage", status: "approved" },
+              join: { ok: true, kind: "join" },
+              "template-confirmation": { ok: true, kind: "template-confirmation", pin },
+              "create-and-run": { ok: true, kind: "create-and-run", itemId: 1, runId },
+              "schedule-attachment": { ok: true, kind: "schedule-attachment", attachmentId: "attachment", scheduleId: "routine-one" },
+              "requested-output": { ok: true, kind: "requested-output" },
+            } satisfies Record<TailnetWorkReview["kind"], TailnetWorkDecisionResponse>;
+            const snapshotRequests = () => requests.filter(request => request.path.endsWith("/snapshot")).length;
+            const before = snapshotRequests();
+            result.resolve(successes[kind]);
+            await vi.waitFor(() => expect(snapshotRequests()).toBeGreaterThan(before));
+            expect(reviewStatus(browser, kind)).toBe("");
+            expectActions(true, true);
+            return;
+          }
           result.resolve({ ok: false, error });
         }
         await vi.waitFor(() => expect(reviewStatus(browser, kind)).toContain(refusal));
@@ -2937,6 +2975,124 @@ describe("phone work reviews", () => {
         browser.window.close();
       }
     });
+  });
+
+  it.each(["changed text", "identical text"])("starts a fresh plan revision with %s after sending a change note", async text => {
+    const plan = views[0];
+    const planHash = text === "changed text" ? refreshedPlanHash : plan.binding.input.planHash;
+    const revised = { ...plan, binding: { ...plan.binding, input: { runId, planHash } }, review: {
+      ...plan.review, title: "Revised plan", revision: 1, planNumber: 2, planHash,
+      plan: text === "changed text" ? "A revised plan" : plan.review.plan,
+    } };
+    const reviews: TailnetWorkReview[] = [plan];
+    const posted = deferred<TailnetWorkDecisionResponse>();
+    const { browser, received, requests } = await openPhoneReviews(reviews, () => posted.promise);
+    const changes = () => phoneAction(browser, "plan", "request_changes");
+    const note = () => browser.window.document.querySelector<HTMLTextAreaElement>('[data-work-kind="plan"] textarea');
+    try {
+      changes().click();
+      const editor = note();
+      if (!editor) throw new Error("Missing change note");
+      editor.value = "Remove the deployment step";
+      editor.dispatchEvent(new browser.window.Event("input", { bubbles: true }));
+      changes().click();
+      await vi.waitFor(() => expect(received[0]).toMatchObject({ kind: "plan", input: { note: "Remove the deployment step" } }));
+      reviews[0] = revised;
+      posted.resolve({ ok: true, kind: "plan", status: "changes_requested" });
+      await vi.waitFor(() => expect(browser.window.document.querySelector('[data-work-kind="plan"] summary')?.textContent).toContain("Revised plan"));
+      expect(phoneAction(browser, "plan", "approve").disabled).toBe(false);
+      expect(phoneAction(browser, "plan", "reject").disabled).toBe(false);
+      expect(changes().disabled).toBe(false);
+      const posts = () => requests.filter(request => request.path === TAILNET_WORK_DECISION_PATH);
+      changes().click();
+      changes().click();
+      expect(posts()).toHaveLength(1);
+      expect(note()?.value).toBe("");
+      expect(note()?.parentElement?.hidden).toBe(false);
+      expect(reviewStatus(browser, "plan")).toBe("");
+    } finally {
+      posted.resolve({ ok: true, kind: "plan", status: "changes_requested" });
+      browser.window.close();
+    }
+  });
+
+  it("starts a fresh form when a submitted Create and run review advances to a new version", async () => {
+    const run = views[4];
+    const reviews: TailnetWorkReview[] = [run];
+    const result = deferred<TailnetWorkDecisionResponse>();
+    const success = { ok: true, kind: "create-and-run", itemId: 1, runId } as const;
+    const { browser, received } = await openPhoneReviews(reviews, () => result.promise);
+    const form = () => browser.window.document.querySelector('[data-work-kind="create-and-run"]');
+    try {
+      const title = form()?.querySelector<HTMLInputElement>('input[type="text"]');
+      const detail = form()?.querySelector<HTMLTextAreaElement>("textarea");
+      if (!title || !detail) throw new Error("Missing Create and run fields");
+      title.value = "Submitted title";
+      detail.value = "Submitted detail";
+      for (const field of [title, detail]) field.dispatchEvent(new browser.window.Event("input", { bubbles: true }));
+      phoneAction(browser, "create-and-run", "approve").click();
+      await vi.waitFor(() => expect(received[0]).toMatchObject({ input: { title: "Submitted title", detail: "Submitted detail" } }));
+      reviews[0] = { ...run, binding: { input: { ...run.binding.input, version: pin.version + 1 } }, review: { ...run.review, name: "New run" } };
+      result.resolve(success);
+      await vi.waitFor(() => expect(form()?.querySelector("summary")?.textContent).toContain("New run"));
+      expect(form()?.querySelector<HTMLInputElement>('input[type="text"]')?.value).toBe(run.binding.input.title);
+      expect(form()?.querySelector("textarea")?.value).toBe(run.binding.input.detail);
+      expect(phoneAction(browser, "create-and-run", "approve").disabled).toBe(false);
+    } finally {
+      result.resolve(success);
+      browser.window.close();
+    }
+  });
+
+  it.each(["dismiss", "next owner action"])("shows a departed plan's refusal until %s", async clearBy => {
+    const reviews: TailnetWorkReview[] = [views[0], views[2]];
+    const result = deferred<TailnetWorkDecisionResponse>();
+    const { browser } = await openPhoneReviews(reviews, decision => decision.kind === "plan" ? result.promise : { ok: true, kind: "join" });
+    try {
+      phoneAction(browser, "plan", "approve").click();
+      reviews.shift();
+      refreshPhoneReviews(browser);
+      await vi.waitFor(() => expect(reviewStatus(browser, "plan")).toBeUndefined());
+      result.resolve({ ok: false, error: "not_pending" });
+      await vi.waitFor(() => expect(recentPhoneResults(browser)?.textContent ?? "").toContain("Decision refused (not_pending)."));
+      const recent = recentPhoneResults(browser);
+      expect(recent?.parentElement?.querySelector("h3")?.textContent).toBe("Recent results");
+      expect(recent?.textContent).toContain("Plan approval");
+      expect(recent?.textContent).toContain(views[0].review.title);
+      if (clearBy === "dismiss") recent?.querySelector("button")?.click();
+      else phoneAction(browser, "join", "approve").click();
+      expect(recent?.textContent).toBe("");
+    } finally {
+      result.resolve({ ok: false, error: "not_pending" });
+      browser.window.close();
+    }
+  });
+
+  it("shows a settled stage rejection on the matching output that appeared during submission", async () => {
+    const reviews: TailnetWorkReview[] = [views[1]];
+    const result = deferred<TailnetWorkDecisionResponse>();
+    const unrelated = { ...views[6], binding: { input: { ...views[6].binding.input, itemId: 9 } } };
+    const { browser, received } = await openPhoneReviews(reviews, () => result.promise);
+    try {
+      phoneAction(browser, "stage", "reject").click();
+      await vi.waitFor(() => expect(received).toHaveLength(1));
+      reviews.push(views[6], unrelated);
+      refreshPhoneReviews(browser);
+      await vi.waitFor(() => expect(reviewStatus(browser, "requested-output", 1)).toBe(""));
+      expect(phoneAction(browser, "requested-output", "approve", 1).disabled).toBe(false);
+      expect(phoneAction(browser, "requested-output", "reject", 1).disabled).toBe(false);
+      expect(phoneAction(browser, "requested-output", "approve").disabled).toBe(true);
+      const pendingStatus = reviewStatus(browser, "requested-output");
+      result.resolve({ ok: true, kind: "stage", status: "rejected" });
+      await vi.waitFor(() => expect(reviewStatus(browser, "requested-output")).toBe("Decision submitted."));
+      expect(pendingStatus).toBe("Submitting decision…");
+      expect(phoneAction(browser, "requested-output", "approve").disabled).toBe(true);
+      expect(phoneAction(browser, "requested-output", "reject").disabled).toBe(true);
+      expect(phoneAction(browser, "requested-output", "approve", 1).disabled).toBe(false);
+    } finally {
+      result.resolve({ ok: true, kind: "stage", status: "rejected" });
+      browser.window.close();
+    }
   });
 
   it.each(["reject", "request_changes"] as const)("keeps %s available after a same-binding stale plan refusal", async action => {
@@ -2976,6 +3132,7 @@ describe("phone work reviews", () => {
       expect(received[1]).toMatchObject({ kind: "plan", input: { ...views[0].binding.input, decision: action } });
       refreshPhoneReviews(browser);
       await vi.waitFor(() => expect(reviewStatus(browser, "plan")).toBeUndefined());
+      expect(recentPhoneResults(browser)?.textContent).toContain("Decision submitted.");
       expect(received).toHaveLength(2);
     } finally {
       browser.window.close();

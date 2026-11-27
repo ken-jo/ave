@@ -1775,6 +1775,8 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "<section id=\"work-reviews\" aria-labelledby=\"work-review-heading\" hidden>",
     "<header><h2 id=\"work-review-heading\" data-web-message=\"heading\"></h2><button id=\"work-review-refresh\" type=\"button\" data-web-message=\"refresh\"></button></header>",
     "<p id=\"work-review-feedback\" role=\"status\" aria-atomic=\"true\"></p>",
+    "<div id=\"work-review-recent\"><h3 id=\"work-review-recent-heading\" data-web-message=\"recentResults\" hidden></h3>",
+    "<div id=\"work-review-recent-results\" role=\"status\" aria-atomic=\"true\"></div></div>",
     "<p id=\"work-review-empty\" data-web-message=\"empty\" hidden></p>",
     "<div id=\"work-review-list\"></div>",
     "</section>",
