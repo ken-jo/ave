@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync, existsSync, symlinkSync, readdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync, existsSync, symlinkSync, readdirSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -7,9 +7,7 @@ import JSZip from "jszip";
 import * as XLSX from "xlsx";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { build } from "esbuild";
-import { checkWindowsWorkbookAccess } from "../../main/host-script-runtime.js";
 import { WINDOWS_WORKBOOK_IDENTITY_ENV } from "../../shared/xlsx-edit.js";
-import { configureHostResources } from "../../main/host-resources.js";
 import { editWorkbookFile } from "../../skills/xlsx-edit.js";
 import { readWorkbookSnapshot } from "../../skills/xlsx-file-transaction.js";
 import { parseTableDocument } from "../table-document-reader.js";
@@ -23,7 +21,6 @@ beforeAll(async () => {
   const scripts = join(commandDirectory, "dist", "skill-scripts");
   mkdirSync(scripts, { recursive: true });
   script = join(scripts, "edit-xlsx.cjs");
-  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   await build({ entryPoints: [resolve("src/skills/xlsx-edit-cli.ts")], outfile: script,
     bundle: true, platform: "node", format: "cjs", target: "node22" });
 });
@@ -86,17 +83,19 @@ for (const name of ["exec", "execSync", "execFile", "execFileSync", "fork", "spa
     replacementZip.file("xl/media/opaque.bin", "different source");
     const replacement = await save(replacementZip, "replacement.xlsx");
     const replacementBytes = readFileSync(replacement);
-    const access = checkWindowsWorkbookAccess(path);
-    if ("reason" in access) throw new Error(access.reason);
+    const { dev, ino, ctimeNs } = lstatSync(path, { bigint: true });
+    const changeTime = ctimeNs / 100n + 116444736000000000n;
+    const identity = [dev, ino, changeTime].map(value => `0x${value.toString(16).padStart(16, "0")}`).join(":");
+    expect(readWorkbookSnapshot(path, identity).data).toEqual(original);
     const retired = join(directory, "retired.xlsx");
     renameSync(path, retired);
     renameSync(replacement, path);
     const result = run(path, [{ cell: "B1", value: 21 }], 0, script, [], {
-      ...process.env, [WINDOWS_WORKBOOK_IDENTITY_ENV]: access.identity,
+      ...process.env, [WINDOWS_WORKBOOK_IDENTITY_ENV]: identity,
     });
     expect(result.status, result.stderr).toBe(1);
     expect(result.stderr).toContain("Workbook changed before publication");
-    expect(() => readWorkbookSnapshot(path, access.identity)).toThrow(expect.objectContaining({ code: "ESTALE" }));
+    expect(() => readWorkbookSnapshot(path, identity)).toThrow(expect.objectContaining({ code: "ESTALE" }));
     expect(readFileSync(path)).toEqual(replacementBytes);
     expect(readFileSync(retired)).toEqual(original);
     expect(readdirSync(directory).sort()).toEqual(["book.xlsx", "edits.json", "retired.xlsx"]);
