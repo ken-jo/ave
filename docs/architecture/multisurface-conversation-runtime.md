@@ -293,8 +293,10 @@ tailscale serve --accept-app-caps=<owned-domain>/cap/ave-conversation http://127
 When the observer is enabled, the listener uses `AVE_TAILNET_OBSERVER_PORT`
 when set, then the saved port, then 46173. Boot reads the observer
 configuration and binds the resolved port. Settings and guided setup save
-an explicit port and propose 28173 when no port is saved and the observer
-is off.
+an explicit port. With no saved port, the draft is 46173 if the saved file
+has `enabled: true` or `AVE_TAILNET_OBSERVER=1` is set. Otherwise, the draft
+is 28173. A portless file with `enabled: true` still drafts 46173 when
+`AVE_TAILNET_OBSERVER=0` keeps the listener off.
 
 For a supervised deployment, pin `AVE_TAILNET_OBSERVER_PORT` to the same port
 as the supervisor's route. On Windows, if 46173 is excluded, set
