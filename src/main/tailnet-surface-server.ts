@@ -254,23 +254,27 @@ export function resolveTailnetObserverPort(
   file: TailnetObserverConfigFile | null,
   env: NodeJS.ProcessEnv = process.env,
   evidence?: TailnetObserverPortEvidence,
-): { port: number; source: "file" | "env-override" | "established" | "legacy-fallback" | "default" } {
+  entryPoint: "boot" | "settings" | "guided-setup" = "boot",
+): { port: number; canChoosePort: boolean } {
   const override = env[ENV_KEY.port];
-  if (override !== undefined) return { port: parseFixedPort(override), source: "env-override" };
-  if (file !== null) {
-    return { port: file.port === undefined ? LEGACY_TAILNET_OBSERVER_PORT : parseFixedPort(String(file.port)), source: "file" };
+  if (entryPoint === "boot" && override !== undefined) {
+    return { port: parseFixedPort(override), canChoosePort: false };
   }
-  if (evidence?.establishedPort != null) return { port: evidence.establishedPort, source: "established" };
+  if (file !== null) {
+    const port = file.port === undefined ? LEGACY_TAILNET_OBSERVER_PORT : parseFixedPort(String(file.port));
+    return { port, canChoosePort: false };
+  }
+  if (evidence?.establishedPort != null) return { port: evidence.establishedPort, canChoosePort: false };
 
   const environment = evidence?.environment;
   const target = environment?.serveTargetPort;
   if (target === LEGACY_TAILNET_OBSERVER_PORT || target === DEFAULT_TAILNET_OBSERVER_PORT) {
-    return { port: target, source: "established" };
+    return { port: target, canChoosePort: false };
   }
   if (environment?.serveStatusKnown === false && tailnetObserverEnableOverride(env) === true) {
-    return { port: LEGACY_TAILNET_OBSERVER_PORT, source: "legacy-fallback" };
+    return { port: LEGACY_TAILNET_OBSERVER_PORT, canChoosePort: false };
   }
-  return { port: DEFAULT_TAILNET_OBSERVER_PORT, source: "default" };
+  return { port: DEFAULT_TAILNET_OBSERVER_PORT, canChoosePort: entryPoint === "guided-setup" };
 }
 
 // Keep OFF side-effect free and use the same port resolver as Settings.
@@ -761,7 +765,7 @@ async function startForBoot(
   }
 
   activeServer = server;
-  establishedPort = server.port;
+  if (provenance.port !== "env-override") establishedPort = server.port;
   activeConfig = config;
   activePairedSharingRuntime = pairedSharingRuntime ?? null;
   options.log?.(

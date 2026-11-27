@@ -727,7 +727,7 @@ describe("Tailnet observer configuration surface", () => {
     })).resolves.toEqual({ port });
     expect.soft(startServer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port }));
     await expect.soft(settings.snapshot()).resolves.toMatchObject({
-      saved: { port, enabled: false },
+      saved: { port: target === 46_173 ? target : DEFAULT_TAILNET_OBSERVER_PORT, enabled: false },
       effective: { port, enabled: true },
       listeningPort: port,
       provenance: { port: override === undefined ? "unset" : "env-override" },
@@ -854,10 +854,13 @@ describe("Tailnet observer configuration surface", () => {
   });
 
   it.each([
-    { name: "without editing the port", override: undefined, edit: undefined, savedPort: 46_173, listeningPort: 46_173 },
-    { name: "with an explicit port edit", override: undefined, edit: 29_123, savedPort: 29_123, listeningPort: 29_123 },
-    { name: "with a port edit under an environment override", override: "46173", edit: 29_123, savedPort: 29_123, listeningPort: 46_173 },
-  ])("takes over an environment-only listener $name", async ({ override, edit, savedPort, listeningPort }) => {
+    { name: "without editing the port", target: 46_173, override: undefined, edit: undefined, savedPort: 46_173, listeningPort: 46_173 },
+    { name: "with an explicit port edit", target: 46_173, override: undefined, edit: 29_123, savedPort: 29_123, listeningPort: 29_123 },
+    { name: "with a port edit under an environment override", target: 46_173, override: "46173", edit: 29_123, savedPort: 29_123, listeningPort: 46_173 },
+    { name: "with a temporary override and no Serve route", target: null, override: "29999", edit: undefined, savedPort: 28_173, listeningPort: 29_999 },
+    { name: "with a deliberate edit matching the override", target: null, override: "29999", edit: 29_999, savedPort: 29_999, listeningPort: 29_999 },
+  ])("takes over an environment-only listener $name", async ({ target, override, edit, savedPort, listeningPort }) => {
+    const bootPort = override === undefined ? target ?? DEFAULT_TAILNET_OBSERVER_PORT : Number(override);
     const env = {
       AVE_TAILNET_OBSERVER: "1",
       AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
@@ -865,7 +868,7 @@ describe("Tailnet observer configuration surface", () => {
     };
     const { input, startServer } = options(env);
     const probeEnvironment = async () => ({
-      ...tailscaleEnvironment(null), serveConfigured: true, serveTargetPort: 46_173,
+      ...tailscaleEnvironment(null), serveConfigured: target !== null, serveTargetPort: target,
     });
     let saved: TailnetObserverConfigFile | null = null;
     const readConfigFile = async () => saved;
@@ -879,22 +882,26 @@ describe("Tailnet observer configuration surface", () => {
 
     await expect(maybeStartTailnetObserverServer({
       ...input, dependencies: { ...input.dependencies, readConfigFile, probeEnvironment },
-    })).resolves.toEqual({ port: 46_173 });
+    })).resolves.toEqual({ port: bootPort });
 
     const initial = await settings.snapshot();
-    if (edit === undefined) expect.soft(initial.saved.port).toBe(46_173);
+    if (edit === undefined) expect.soft(initial.saved.port).toBe(savedPort);
     await settings.apply({
       ...initial.saved, enabled: true, authorization: APP_CAPABILITY, port: edit ?? initial.saved.port,
     });
 
     expect.soft(writeConfigFile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port: savedPort }));
-    expect.soft(startServer.mock.calls.map(([config]) => config.port)).toEqual([46_173, listeningPort]);
+    expect.soft(startServer.mock.calls.map(([config]) => config.port)).toEqual([bootPort, listeningPort]);
     await expect(settings.snapshot()).resolves.toMatchObject({
       saved: { port: savedPort },
       effective: { port: listeningPort },
       provenance: { port: override === undefined ? "file" : "env-override" },
-      environment: { serveTargetPort: 46_173 },
+      environment: { serveTargetPort: target },
     });
+    if (override !== undefined) {
+      env.AVE_TAILNET_OBSERVER_PORT = undefined;
+      await expect(restartTailnetObserverServer()).resolves.toEqual({ port: savedPort });
+    }
     expect(runServe).not.toHaveBeenCalled();
   });
 

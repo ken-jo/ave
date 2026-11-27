@@ -206,8 +206,7 @@ export function createTailnetObserverConfigService(
         readConfigFile: async () => file,
         portEvidence,
       });
-      const savedPort = file?.port ?? (file === null ? resolution.config?.port : undefined)
-        ?? resolveTailnetObserverPort(file, {}, portEvidence).port;
+      const { port: savedPort } = resolveTailnetObserverPort(file, options.env, portEvidence, "settings");
       const saved = savedView(file, savedPort);
       const effective = effectiveView(resolution, saved);
       return Object.freeze({
@@ -276,12 +275,8 @@ export function createTailnetObserverConfigService(
 
       try {
         const { establishedPort } = runtimeState();
-        const selection = resolveTailnetObserverPort(file, options.env, { environment, establishedPort });
-        let port: number | null = selection.port;
-        if (selection.source === "default") port = await chooseObserverPort();
-        else if (selection.source === "env-override" && file !== null) {
-          port = resolveTailnetObserverPort(file, {}).port;
-        }
+        const selection = resolveTailnetObserverPort(file, options.env, { environment, establishedPort }, "guided-setup");
+        const port = selection.canChoosePort ? await chooseObserverPort() : selection.port;
         if (port === null) return guidedFailure("tailnet-guided-setup-port-unavailable");
         await saveAndRestart(
           proposalToFile(recommendedConfig(port), tailnetWebOriginFor(environment.dnsName)),

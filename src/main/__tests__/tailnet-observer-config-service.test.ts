@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
 import { createTailnetObserverConfigService } from "../tailnet-observer-config-service.js";
+import { loadTailnetObserverConfig } from "../tailnet-surface-server.js";
 import type {
   TailnetObserverConfigFile,
   TailscaleEnvironment,
@@ -475,6 +476,55 @@ describe("Tailnet observer configuration service", () => {
       expect(result).toEqual({ ok: false, error: TAILNET_OBSERVER_PORT_BLOCKED, output: null });
       expect(writeConfigFile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port }));
       expect(runServe).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { name: "temporary override with a blocked bind", blocked: true },
+      { name: "persistent override with a successful bind", blocked: false },
+    ])("keeps the guided file choice independent of a $name", async ({ blocked }) => {
+      const override = 29_999;
+      const env: NodeJS.ProcessEnv = { AVE_TAILNET_OBSERVER_PORT: String(override) };
+      let saved: TailnetObserverConfigFile | null = null;
+      let listeningPort: number | null = null;
+      const readConfigFile = async () => saved;
+      const writeConfigFile = vi.fn(async (file: TailnetObserverConfigFile) => { saved = file; });
+      const runServe = vi.fn(async () => ({ ok: true as const }));
+      const restartListener = vi.fn(async () => {
+        const { config } = await loadTailnetObserverConfig({ env, readConfigFile });
+        expect(config?.port).toBe(override);
+        if (blocked) throw new Error(TAILNET_OBSERVER_PORT_BLOCKED);
+        listeningPort = override;
+      });
+      const settings = createTailnetObserverConfigService({
+        pairedSharingBootstrapFailed: () => false,
+        env,
+        readConfigFile,
+        writeConfigFile,
+        runtimeState: () => ({
+          listeningPort, establishedPort: null, activeConfig: null, lastStartError: null, portBlock: null,
+        }),
+        probeEnvironment: async () => readyEnvironment(),
+        restartListener,
+        readOwnDeviceAdmission: async () => false,
+        runServe,
+      });
+
+      const result = await settings.guidedSetup();
+      expect.soft(writeConfigFile).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ port: DEFAULT_TAILNET_OBSERVER_PORT }),
+      );
+      expect.soft(restartListener).toHaveBeenCalledOnce();
+      if (blocked) {
+        expect.soft(result).toMatchObject({ ok: false, error: TAILNET_OBSERVER_PORT_BLOCKED });
+        expect.soft(runServe).not.toHaveBeenCalled();
+        delete env.AVE_TAILNET_OBSERVER_PORT;
+        await expect(loadTailnetObserverConfig({ env, readConfigFile })).resolves.toMatchObject({
+          config: { port: DEFAULT_TAILNET_OBSERVER_PORT },
+        });
+      } else {
+        expect.soft(result).toMatchObject({ ok: true, port: override });
+        expect(runServe).toHaveBeenCalledExactlyOnceWith({ cliPath: "tailscale", port: override });
+      }
     });
 
     it("keeps the saved port under an explicit environment override", async () => {
