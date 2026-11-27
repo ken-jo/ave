@@ -41,7 +41,10 @@ describe("createLoopRationaleBindings", () => {
     } as unknown as ConversationLoop;
     const shared = {
       service,
-      permissionManager: { getPolicyEpoch: () => "permission-1" } as never,
+      permissionManager: {
+        getPolicyEpoch: () => "permission-1",
+        getRationaleReviewerRouteGeneration: () => 0,
+      } as never,
       hookRunner: { getGeneration: () => "hook-1" } as never,
       scriptHookManager: { getGeneration: () => "script-1" } as never,
     };
