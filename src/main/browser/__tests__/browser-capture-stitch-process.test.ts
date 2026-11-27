@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { repositoryRoot } from "../../../plugins/isolation/__tests__/child-entry-bundle.js";
 import { buildBrowserCaptureStitchChild } from "../../../__tests__/support/browser-capture-stitch-bundle.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { type Bound, boundWait, SIGNAL_WAIT_MS, within } from "../../../__tests__/support/signal-wait.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import type { CdpSession } from "../browser-action-guard.js";
 
@@ -59,6 +60,19 @@ const STALLED_ENTRY = "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0,
 
 let cacheDir: string;
 let builtDir: string | undefined;
+
+// Share one work deadline so the full recovery poll fits before the test timeout.
+function stitchWorkBound(): Bound {
+  const deadline = performance.now() + SIGNAL_WAIT_MS;
+  return (expire) => {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) {
+      expire();
+      return () => {};
+    }
+    return boundWait(expire, remaining);
+  };
+}
 
 function entryDir(program?: string): string {
   const dir = mkdtempSync(join(cacheDir, "case-"));
@@ -285,19 +299,21 @@ describe("browser capture stitch process", () => {
   });
 
   it("accepts consecutive IDAT chunks from the production child", async () => {
-    runtime.mainDir = await builtEntryDir();
+    const workBound = stitchWorkBound();
+    runtime.mainDir = await within(builtEntryDir(), "the stitch child bundle", workBound);
     const width = 128;
     const height = 128;
     const pixels = fixtureBytes(width * height * 4);
-    const tilePng = await sharp(pixels, { raw: { width, height, channels: 4 } }).png().toBuffer();
+    const tilePng = await within(sharp(pixels, { raw: { width, height, channels: 4 } }).png().toBuffer(), "the tile PNG fixture", workBound);
     const stitcher = startCaptureStitcher(width, height);
     try {
-      await stitcher.decode(tilePng, { pixelWidth: width, pixelHeight: height, scale: 1, skip: 0, copied: 0, rows: height });
-      const png = await stitcher.encode();
+      await within(stitcher.decode(tilePng, { pixelWidth: width, pixelHeight: height, scale: 1, skip: 0, copied: 0, rows: height }), "the stitch child to decode the tile", workBound);
+      const png = await within(stitcher.encode(), "the stitch child to encode the PNG", workBound);
       expect(png.toString("latin1", PNG_HEADER_BYTES + 4, PNG_HEADER_BYTES + 8)).toBe("pHYs");
       const secondChunk = PNG_IMAGE_DATA_OFFSET + png.readUInt32BE(PNG_IMAGE_DATA_OFFSET) + 12;
       expect(png.toString("latin1", secondChunk + 4, secondChunk + 8)).toBe("IDAT");
-      expect((await sharp(png, { failOn: "warning" }).raw().toBuffer()).equals(pixels)).toBe(true);
+      const decoded = await within(sharp(png, { failOn: "warning" }).raw().toBuffer(), "the stitched PNG to decode", workBound);
+      expect(decoded.equals(pixels)).toBe(true);
     } finally {
       stitcher.stop();
       await expect.poll(getManagedChildProcessCount, { timeout: RECOVERY_BOUND_MS }).toBe(0);
@@ -370,12 +386,17 @@ describe("browser capture stitch process", () => {
   });
 
   it.each([0, BROWSER_CAPTURE_LIMITS.bytes + 1])("rejects an encode acknowledgement with %i payload bytes", async (payloadBytes) => {
+    const workBound = stitchWorkBound();
     const frame = replyFrame({ id: 0 });
     frame.writeUInt32BE(payloadBytes, 4);
     runtime.mainDir = entryDir(replyEntry(frame, { payloadBytes }));
     const stitcher = startCaptureStitcher(WIDTH, CONTENT_HEIGHT);
     try {
-      const reply = await stitcher.encode().then((payload) => ({ bytes: payload.length }), (error: unknown) => error);
+      const reply = await within(
+        stitcher.encode().then((payload) => ({ bytes: payload.length }), (error: unknown) => error),
+        "the stitch child's encode acknowledgement",
+        workBound,
+      );
       expect(reply).toMatchObject({ code: "screenshot-failed" });
     } finally {
       stitcher.stop();
