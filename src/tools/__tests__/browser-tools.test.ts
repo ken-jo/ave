@@ -737,14 +737,15 @@ describe("browser tools", () => {
   });
 
   it.each([
-    ["en", /pane chat.*bound browser tab.*rail chat/i, /empty browser pane.*main chat/i, /Only a main chat.*Rail chats.*empty browser pane/i],
-    ["ko", /창 채팅.*연결된 브라우저 탭.*사이드 패널 채팅/, /빈 브라우저 창.*메인 채팅/, /메인 채팅만.*사이드 패널 채팅.*빈 브라우저 창/],
+    ["en", /pane chat.*bound browser tab.*rail chat.*listing a tab does not grant access.*required consent still applies/i, /empty browser pane.*main chat/i, /Only a main chat.*Rail chats.*empty browser pane/i],
+    ["ko", /창 채팅.*연결된 브라우저 탭.*사이드 패널 채팅.*목록에 표시되어도 접근 권한은 부여되지 않으며.*필요한 동의는 여전히 적용됩니다/, /빈 브라우저 창.*메인 채팅/, /메인 채팅만.*사이드 패널 채팅.*빈 브라우저 창/],
   ] as const)("describes pane and rail routing in the %s browser schemas", (locale, tabId, navigate, tabNew) => {
     const previousLocale = getLocale();
     try {
       setLocale(locale);
       const { browserTools } = harness();
-      const navigateTool = browserTools.find((tool) => tool.name === BROWSER_TOOL.navigate)!;
+      const navigateTool = browserTools.find((tool) => tool.name === BROWSER_TOOL.navigate);
+      if (!navigateTool) throw new Error("Expected the browser navigation tool");
       expect(navigateTool.toJsonSchema()).toMatchObject({ properties: { tabId: { description: expect.stringMatching(tabId) } } });
       expect(navigateTool.description).toMatch(navigate);
       expect(browserTools.find((tool) => tool.name === BROWSER_TOOL.tabNew)?.description).toMatch(tabNew);

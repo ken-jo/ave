@@ -51,14 +51,16 @@ function createLoop(windowId?: number, onNavigate?: (tool: ReturnType<typeof cre
 function bindPage(id: number, tabId: string, url: string, title = "Page") {
   browserTabRegistry.guestAttached({ id, isDestroyed: () => false, getURL: () => url, getTitle: () => title } as never, WINDOW_ID);
   expect(browserTabRegistry.bindTab(WINDOW_ID, { tabId, webContentsId: id })).toMatchObject({ ok: true });
+  const tab = browserTabRegistry.liveRendererTab(WINDOW_ID, tabId);
+  if (!tab) throw new Error("Expected the bound browser tab to be live");
+  return tab;
 }
 
 describe("browser pane turn guidance", () => {
   it("withholds the bound tab while another conversation holds its lease", () => {
     const loop = createLoop(WINDOW_ID);
-    bindPage(1, PANE.tabId, BOUND_URL);
+    const tab = bindPage(1, PANE.tabId, BOUND_URL);
     browserTabRegistry.bindConversationSurface(loop.getSessionId(), { windowId: WINDOW_ID, surface: PANE });
-    const tab = browserTabRegistry.liveRendererTab(WINDOW_ID, PANE.tabId)!;
     const lease = browserTabRegistry.acquireControl(tab, { sessionId: "other-session" });
     const blocked = loop.buildSystemPromptForScope(SCOPE);
     expect(blocked).toContain("This chat cannot access its bound browser tab.");
@@ -71,9 +73,8 @@ describe("browser pane turn guidance", () => {
   it("asks the user to resume paused control before advertising browser actions again", () => {
     const loop = createLoop(WINDOW_ID);
     const sessionId = loop.getSessionId();
-    bindPage(1, PANE.tabId, BOUND_URL);
+    const tab = bindPage(1, PANE.tabId, BOUND_URL);
     browserTabRegistry.bindConversationSurface(sessionId, { windowId: WINDOW_ID, surface: PANE });
-    const tab = browserTabRegistry.liveRendererTab(WINDOW_ID, PANE.tabId)!;
     browserTabRegistry.acquireControl(tab, { sessionId });
     expect(browserTabRegistry.pause(WINDOW_ID, PANE.tabId)).toBe(true);
     const paused = loop.buildSystemPromptForScope(SCOPE);
@@ -113,16 +114,14 @@ describe("browser pane turn guidance", () => {
     const loop = createLoop(WINDOW_ID);
     const sessionId = loop.getSessionId();
     browserTabRegistry.bindConversationSurface(sessionId, { windowId: WINDOW_ID, surface: PANE });
-    bindPage(1, PANE.tabId, url);
-    const first = browserTabRegistry.liveRendererTab(WINDOW_ID, PANE.tabId)!;
+    const first = bindPage(1, PANE.tabId, url);
     const before = loop.buildSystemPromptForScope(SCOPE);
     const routing = before.match(/This chat is bound to browser tab [^.]+\./)?.[0];
     expect.soft(routing).toBe(`This chat is bound to browser tab ${first.handle}.`);
     expect.soft(before).not.toContain(pageText);
     browserTabRegistry.guestDestroyed(1);
-    bindPage(2, OTHER.tabId, OTHER_URL);
+    const replacement = bindPage(2, OTHER.tabId, OTHER_URL);
     browserTabRegistry.bindConversationSurface(sessionId, { windowId: WINDOW_ID, surface: OTHER });
-    const replacement = browserTabRegistry.liveRendererTab(WINDOW_ID, OTHER.tabId)!;
     const after = loop.buildSystemPromptForScope(SCOPE);
     expect.soft(after).toContain(`This chat is bound to browser tab ${replacement.handle}.`);
     expect(after).not.toContain(first.handle);
@@ -134,7 +133,9 @@ describe("browser pane turn guidance", () => {
     let navigation: ReturnType<typeof createBrowserTools>[number] | undefined;
     const loop = createLoop(WINDOW_ID, (tool) => { navigation = tool; });
     const sessionId = loop.getSessionId();
-    const approval = () => navigation!.approvalMemoryScope!({ url: OTHER_URL }, { sessionId });
+    const approvalMemoryScope = navigation?.approvalMemoryScope;
+    if (!approvalMemoryScope) throw new Error("Expected navigation to define an approval scope");
+    const approval = () => approvalMemoryScope({ url: OTHER_URL }, { cwd: process.cwd(), sessionId });
     const binding = { windowId: WINDOW_ID, surface: { ...PANE, browserSlotEmpty: true } };
     browserTabRegistry.bindConversationSurface(sessionId, binding);
     const empty = loop.buildSystemPromptForScope(SCOPE);
@@ -146,8 +147,7 @@ describe("browser pane turn guidance", () => {
     expect(browserTabRegistry.stop(WINDOW_ID, PANE.tabId)).toBe(true);
     expect.soft(loop.buildSystemPromptForScope(SCOPE)).toContain("This chat's bound browser page is closed or unavailable.");
     expect.soft(await approval()).toBeUndefined();
-    bindPage(1, PANE.tabId, BOUND_URL);
-    const tab = browserTabRegistry.liveRendererTab(WINDOW_ID, PANE.tabId)!;
+    const tab = bindPage(1, PANE.tabId, BOUND_URL);
     expect(loop.buildSystemPromptForScope(SCOPE)).toContain(tab.handle);
     expect(await approval()).toMatchObject({ tabOpener: "user", tabId: tab.handle });
 
