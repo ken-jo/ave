@@ -128,10 +128,11 @@ const READ_DENY = `file-read* file-read-metadata ${WRITE_DENY}`;
 const MOVE_DENY = "file-write-unlink file-write-create";
 // The SDK's run-cleanup names, and Ave's holder labels: only their own builders write rules for them.
 const RESERVED_PROFILE_TEXT = ["com.microsoft.mxc.run.", "dev.ave.holder."] as const;
-const HOLDER_LABEL_PREFIX = "dev.ave.holder.";
+/** Every holder label starts with this; `holder-label-sweep.ts` builds the labels under it. */
+export const HOLDER_LABEL_PREFIX = "dev.ave.holder.";
 const HOLDER_LABEL = /^dev\.ave\.holder\.[a-z0-9.]{1,96}$/u;
 /** A holder profile, label included, larger than this is refused before anything is spawned. */
-export const SEATBELT_HOLDER_PROFILE_MAX_BYTES = 512 * 1024;
+const SEATBELT_HOLDER_PROFILE_MAX_BYTES = 512 * 1024;
 
 function checkProfileString(value: string): void {
   if (CONTROL_CHARACTER.test(value)) {

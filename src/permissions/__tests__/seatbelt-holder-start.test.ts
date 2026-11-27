@@ -127,6 +127,15 @@ describe.runIf(NATIVE)("macOS holder start and stop", () => {
     await expect(start(launchOf("true"), { startMs: 1 })).rejects.toBeInstanceOf(MxcHolderStartRefusedError);
   });
 
+  it("resolves completion only after the whole output of a holder that exits at once", async () => {
+    const holder = await start(launchOf("/usr/bin/head -c 524288 /dev/zero | /usr/bin/tr '\\0' x; exit 0"));
+    let bytes = 0;
+    holder.process.stdout.on("data", (chunk: Buffer) => { bytes += chunk.length; });
+    await expect(holder.process.completion).resolves.toMatchObject({ code: 0 });
+    expect(bytes).toBe(524_288);
+    await holder.dispose();
+  });
+
   it("keeps the exit result when the caller writes stdin after the holder exited", async () => {
     const holder = await start(launchOf("exit 3"));
     await holder.process.completion;

@@ -343,12 +343,16 @@ export async function startSeatbeltHolderNow(launch: SeatbeltHolderLaunch, optio
     throw error;
   });
   const exit = observed as ReturnType<typeof observeManagedProcessGroup>;
-  // The holder's own exit: a descendant that keeps its stdout open does not delay it.
+  const streamsClosed = new Promise<void>((resolve) => { child.once("close", () => resolve()); });
+  // The holder's own exit, then its output's tail: every consumer of `completion` reads the whole output, and a
+  // descendant that keeps stdout open delays it by the bounded drain only.
   const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     if (child.exitCode !== null || child.signalCode !== null) resolve({ code: child.exitCode, signal: child.signalCode });
     else child.once("exit", (code, signal) => resolve({ code, signal }));
+  }).then(async (result) => {
+    await Promise.race([streamsClosed, sleep(TOOL_TIMEOUT_POLICY.mxcMacHolderOutputDrainMs, undefined, { ref: false })]);
+    return result;
   });
-  const streamsClosed = new Promise<void>((resolve) => { child.once("close", () => resolve()); });
   let diagnostic = "";
   const onDiagnostic = (chunk: Buffer): void => {
     if (diagnostic.length < DIAGNOSTIC_BYTES) diagnostic += chunk.toString("utf8").slice(0, DIAGNOSTIC_BYTES - diagnostic.length);

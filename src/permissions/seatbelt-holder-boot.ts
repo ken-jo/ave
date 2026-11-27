@@ -23,7 +23,8 @@ import {
 const log = createLogger("seatbelt-holder-boot");
 
 /** A canary: a background job in its own process group (job control on), the setpgid escape a group stop misses. */
-const CANARY_SCRIPT = "set -m; /bin/sleep 600 & echo $!; set +m; exec /bin/sleep 600";
+// The jobs end on their own within a minute (59 s, an unusual bound the tests can look for), so a canary that outlives a failed check is not left for long.
+const CANARY_SCRIPT = "set -m; /bin/sleep 59 & echo $!; set +m; exec /bin/sleep 59";
 
 export type SeatbeltHolderRouteProof =
   | { readonly state: "proven"; readonly helper: HolderSweepHelper; readonly launchers: SeatbeltHolderLaunchers }
@@ -43,6 +44,16 @@ function alive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
+}
+
+/** A signalled process stays visible to kill(pid, 0) until it is reaped; the reaper (launchd) gets a short bound. */
+async function goneWithin(pid: number, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (alive(pid)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  return true;
 }
 
 async function firstLine(holder: SeatbeltHolder): Promise<number> {
@@ -75,6 +86,7 @@ export async function proveSeatbeltHolderRoute(deps: SeatbeltHolderBootDependenc
   }
   const work = mkdtempSync(join(tmpdir(), "ave-holder-canary-"));
   const holders: SeatbeltHolder[] = [];
+  const jobs: number[] = [];
   let bystander: ChildProcess | undefined;
   const unproven = (detail: string): SeatbeltHolderRouteProof => ({ state: "unproven", reason: "sweep-unproven", detail });
   try {
@@ -87,17 +99,19 @@ export async function proveSeatbeltHolderRoute(deps: SeatbeltHolderBootDependenc
         label: "boot:holder-canary", helper, launchers, admittedDigest: launch.digest, assertStillValid: () => deps.signal?.throwIfAborted(),
       });
       holders.push(holder);
-      return { holder, job: await firstLine(holder) };
+      const job = await firstLine(holder);
+      jobs.push(job);
+      return { holder, job };
     };
     const a = await start();
     const b = await start();
-    bystander = spawn("/bin/sleep", ["600"], { stdio: "ignore" });
+    bystander = spawn("/bin/sleep", ["59"], { stdio: "ignore" });
     // C1: the group stop misses the background job; the sweep of A's label must find and end it.
     process.kill(-a.holder.process.pid, "SIGKILL");
     await a.holder.process.completion;
     if (!alive(a.job)) return unproven("the canary's background job left with its group, so the check proves nothing");
     const c1 = await runHolderSweep(helper, "sweep", a.holder.labels.holder, TOOL_TIMEOUT_POLICY.mxcMacHolderSweepMs);
-    if (!c1.verified || c1.signalled < 1 || alive(a.job)) return unproven(`C1: the sweep did not end an escaped member (${c1.verified ? `signalled ${c1.signalled}` : c1.reason})`);
+    if (!c1.verified || c1.signalled < 1 || !await goneWithin(a.job, 1_000)) return unproven(`C1: the sweep did not end an escaped member (${c1.verified ? `signalled ${c1.signalled}` : c1.reason})`);
     await a.holder.dispose("holder boot check");
     // C2: the other holder and an unsandboxed process are untouched.
     if (!alive(b.holder.process.pid) || !alive(b.job) || bystander.pid === undefined || !alive(bystander.pid)) {
@@ -114,6 +128,10 @@ export async function proveSeatbeltHolderRoute(deps: SeatbeltHolderBootDependenc
   } finally {
     bystander?.kill("SIGKILL");
     await Promise.allSettled(holders.map(holder => holder.dispose("holder boot check")));
+    // A failed check may leave a canary's escaped job; Ave started it, so Ave ends it.
+    for (const job of jobs) {
+      try { process.kill(job, "SIGKILL"); } catch { /* already gone */ }
+    }
     rmSync(work, { recursive: true, force: true });
   }
 }
@@ -161,7 +179,8 @@ export function startHolderWatcher(helper: HolderSweepHelper, input: { readonly 
       assertHolderSweepHelperUnchanged(helper);
     } catch (error) {
       log.warn({ err: errorMessage(error) }, "holder watcher not started: the helper changed");
-      return fail();
+      fail();
+      return;
     }
     const startedAt = Date.now();
     const child = spawn(helper.path, ["watch", label, HOLDER_CONTROL_LABEL], { detached: true, stdio: ["pipe", "ignore", "ignore"], env: {} });

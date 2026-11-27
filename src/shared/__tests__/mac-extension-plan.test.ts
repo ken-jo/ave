@@ -34,7 +34,8 @@ describe("one extension plan on every platform", () => {
   });
 
   it("publishes the macOS plan on darwin only, interning identical content", () => {
-    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const platform = Object.getOwnPropertyDescriptor(process, "platform");
+    if (platform === undefined) throw new Error("process.platform has no descriptor");
     Object.defineProperty(process, "platform", { value: "darwin" });
     try {
       capability.setMacExtensionPlan(off);

@@ -1,5 +1,6 @@
 // The holder boot sequence through the real chain and the real helper: the three controls, the boot sweep, the
 // watcher, and the gate holder starts wait on.
+import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -42,9 +43,6 @@ function resourcesWith(body: string | { copy: string }): string {
   return dir;
 }
 
-function alive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
 
 describe.runIf(NATIVE)("macOS holder boot sequence", () => {
   beforeAll(() => {
@@ -75,6 +73,8 @@ describe.runIf(NATIVE)("macOS holder boot sequence", () => {
     await expect(proveSeatbeltHolderRoute({ resourcePath: greedy, home })).resolves.toMatchObject({ state: "unproven", detail: expect.stringContaining("C2") });
     const unproving = resourcesWith(`[ "$1" = prove ] && { echo "result unproven check=false signal=false member=true"; exit 5; }; exec "${REAL}" "$@"`);
     await expect(proveSeatbeltHolderRoute({ resourcePath: unproving, home })).resolves.toMatchObject({ state: "unproven", detail: expect.stringContaining("C3") });
+    // No canary survives a failed check.
+    expect(spawnSync("/usr/bin/pgrep", ["-f", "^/bin/sleep 59$"]).stdout.toString().trim()).toBe("");
   }, 30_000);
 
   it("is binary-missing without the helper and integrity with a writable one", async () => {
@@ -120,7 +120,7 @@ describe.runIf(NATIVE)("macOS holder boot sequence", () => {
       expect(watcher.pid()).toBeDefined();
       expect(watcher.pid()).not.toBe(first);
     }, { timeout: 2_000, interval: 25 });
-    expect(alive(watcher.pid() as number)).toBe(true);
+    expect(() => process.kill(watcher.pid() as number, 0)).not.toThrow();
     expect(await watcher.stop()).toBe(true);
     const failing = verifyHolderSweepHelper(resourcesWith("exit 0"));
     const onUnavailable = vi.fn();

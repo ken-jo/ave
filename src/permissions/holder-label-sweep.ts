@@ -15,11 +15,10 @@ import { machoImageDigest } from "../../scripts/lib/macho-image-digest.mjs";
 import { createLogger } from "../lib/logger.js";
 import { aveHome } from "../shared/ave-home.js";
 import { errorMessage } from "../shared/error-message.js";
-import type { SeatbeltHolderLabels } from "./seatbelt-profile.js";
+import { HOLDER_LABEL_PREFIX, type SeatbeltHolderLabels } from "./seatbelt-profile.js";
 
 const log = createLogger("holder-label-sweep");
 
-export const HOLDER_LABEL_PREFIX = "dev.ave.holder.";
 /** Never allowed by any profile: the sweep's proof that a process is sandboxed at all. */
 export const HOLDER_CONTROL_LABEL = "dev.ave.holder.ctl";
 
@@ -70,7 +69,7 @@ export interface HolderSweepHelper {
   readonly identity: FileIdentity;
 }
 
-export function holderSweepHelperPath(resourcePath: string): string {
+function holderSweepHelperPath(resourcePath: string): string {
   return join(resourcePath, "macos-holder-sweep", "arm64", "ave-holder-sweep");
 }
 

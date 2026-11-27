@@ -90,7 +90,8 @@ describe("macOS holder launch", () => {
   });
 
   it("refuses a startup variable or an exported function before anything is spawned", () => {
-    for (const env of [{ "BASH_FUNC_read%%": "() { :; }" }, { BASH_ENV: "/tmp/x" }, { ENV: "/tmp/x" }, { DYLD_INSERT_LIBRARIES: "/tmp/x.dylib" }]) {
+    const refused: Record<string, string>[] = [{ "BASH_FUNC_read%%": "() { :; }" }, { BASH_ENV: "/tmp/x" }, { ENV: "/tmp/x" }, { DYLD_INSERT_LIBRARIES: "/tmp/x.dylib" }];
+    for (const env of refused) {
       expect(() => composeSeatbeltHolderLaunch(input({ env }), host())).toThrow(expect.objectContaining({ code: "launcher-environment-refused" }));
     }
   });

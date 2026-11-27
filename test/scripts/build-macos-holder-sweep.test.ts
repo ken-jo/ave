@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { writeTimedFile } from "./fixtures/timed-file.js";
 import {
   buildMacosHolderSweep, MACOS_HOLDER_SWEEP_NEVER_SIGNALS, macosHolderSweepCargoArgs, macosHolderSweepOutput, macosHolderSweepToolchain,
 } from "../../scripts/build-macos-holder-sweep.mjs";
@@ -17,11 +18,7 @@ const NEW = new Date("2026-02-01T00:00:00Z");
 const SOURCES = ["rust-toolchain.toml", "scripts/build-macos-holder-sweep.mjs", "scripts/lib/macho-image-digest.mjs",
   "native/macos-holder-sweep/Cargo.toml", "native/macos-holder-sweep/Cargo.lock", "native/macos-holder-sweep/src/main.rs"];
 
-function write(root: string, relative: string, time: Date, content: string | Buffer = relative): void {
-  mkdirSync(dirname(join(root, relative)), { recursive: true });
-  writeFileSync(join(root, relative), content);
-  utimesSync(join(root, relative), time, time);
-}
+const write = writeTimedFile;
 
 function fixtureRoot(built?: Date): string {
   const root = mkdtempSync(join(tmpdir(), "ave-holder-sweep-"));
