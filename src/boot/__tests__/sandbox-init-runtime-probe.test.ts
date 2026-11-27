@@ -218,6 +218,47 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
       harness.flush.mock.invocationCallOrder[0],
     );
   });
+
+  it("names the missing Linux packages when explicit shell activation aborts", async () => {
+    const errors = ["bubblewrap (bwrap) not installed", "socat not installed"];
+    h.checkDeps.mockResolvedValue({ errors, warnings: [] });
+    h.detectLinuxShell.mockResolvedValue({ state: "unavailable", reason: "tools-missing", detail: ["bwrap"] });
+    vi.stubEnv("AVE_SANDBOX_ENABLED", "1");
+
+    await expect(initSandboxGate(harness.context(false))).rejects.toThrow(
+      "Missing: bubblewrap (bwrap) not installed; socat not installed",
+    );
+
+    expect(harness.logSandboxGate).toHaveBeenCalledExactlyOnceWith({
+      platform: "linux",
+      onSignal: "explicit-env",
+      outcome: "abort",
+      reason: "abort-explicit-cannot-activate",
+    });
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "abort", dependencyErrors: errors });
+    expect(h.detectLinuxShell).not.toHaveBeenCalled();
+    expect(h.initialize).not.toHaveBeenCalled();
+  });
+
+  it("aborts explicit shell activation when dependencies pass but the Linux container is unavailable", async () => {
+    h.detectLinuxShell.mockResolvedValue({ state: "unavailable", reason: "shell-start-failed" });
+    vi.stubEnv("AVE_SANDBOX_ENABLED", "1");
+
+    await expect(initSandboxGate(harness.context(false))).rejects.toThrow(
+      "Linux container shell unavailable (shell-start-failed)",
+    );
+
+    expect(h.checkDeps).toHaveBeenCalledExactlyOnceWith();
+    expect(h.detectLinuxShell).toHaveBeenCalledAfter(h.checkDeps);
+    expect(harness.logSandboxGate).toHaveBeenCalledExactlyOnceWith({
+      platform: "linux",
+      onSignal: "explicit-env",
+      outcome: "abort",
+      reason: "abort-linux-runtime-probe-failed",
+    });
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "abort", causes: ["linux-runtime-probe-failed"] });
+    expect(h.initialize).not.toHaveBeenCalled();
+  });
 });
 
 describe("macOS container shell probe failure", () => {
@@ -254,6 +295,7 @@ it("records missing Linux shell tools even when the legacy dependency gate degra
   h.checkDeps.mockResolvedValue({ errors: ["missing bwrap"], warnings: [] });
   h.detectLinuxShell.mockResolvedValue({ state: "unavailable", reason: "tools-missing", detail: ["bwrap", "slirp4netns"] });
   await expect(initSandboxGate(harness.context(true))).resolves.toBeUndefined();
+  expect(h.detectLinuxShell).toHaveBeenCalledAfter(harness.logSandboxGate);
   expect(h.initialize).not.toHaveBeenCalled();
   expect(getContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "tools-missing", detail: ["bwrap", "slirp4netns"] });
   expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", substrate: "none", requiresExplicitUserApproval: true });

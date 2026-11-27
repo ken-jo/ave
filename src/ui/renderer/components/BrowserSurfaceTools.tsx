@@ -8,11 +8,12 @@ import { BrowserControlHeader } from "./BrowserControlHeader.js";
 import { BrowserCaptureControls } from "./browser-capture-controls.js";
 
 /** Persistent tab controls share one toolbar; the library body mounts only while open. */
-export function BrowserSurfaceTools({ api, tabId, onOpenUrl, composerGroupId }: {
+export function BrowserSurfaceTools({ api, tabId, onOpenUrl, composerGroupId, paneChatGroupId }: {
   api: AveApi;
   tabId: string;
   onOpenUrl: (url: string) => void;
   composerGroupId?: string | undefined;
+  paneChatGroupId?: string | undefined;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -32,7 +33,8 @@ export function BrowserSurfaceTools({ api, tabId, onOpenUrl, composerGroupId }: 
       data-testid="browser-workspace-toggle">
       <PanelsTopLeft className="h-3.5 w-3.5" aria-hidden="true" />{t("agentBrowser.workspace")}
     </Button> : null}
-    {api.browserWorkspace?.capture ? <BrowserCaptureControls key={tabId} api={api.browserWorkspace} tabId={tabId} composerGroupId={composerGroupId} /> : null}
+    {api.browserWorkspace?.capture ? <BrowserCaptureControls key={tabId} api={api.browserWorkspace} tabId={tabId}
+      composerGroupId={composerGroupId} paneChatGroupId={paneChatGroupId} /> : null}
     <BrowserControlHeader api={api} tabId={tabId} />
     </div>
     {open && api.browserWorkspace && api.browserTabs ? <div id={panelId} className="max-h-80 overflow-auto">

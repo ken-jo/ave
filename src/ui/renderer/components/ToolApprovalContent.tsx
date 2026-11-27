@@ -63,6 +63,7 @@ import { approvalAction } from "./permissions/approval-action.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 import type { RiskLevel, ToolCategory } from "../../../shared/permission-review-status.js";
 import { shellExecutionEnvironmentLines } from "../../../shared/shell-execution-environment.js";
+import { containerPlatform } from "../../../shared/container-platform.js";
 import { terminalCommandLookalikes } from "../../../shared/terminal-command-lookalikes.js";
 import { ApprovalDecisionBar, decisionSlotsDisabled, useApprovalDecisionState } from "./permissions/ApprovalDecisionBar.js";
 import {
@@ -1617,8 +1618,22 @@ function parseArgs(args: unknown): ParsedSummary | null {
   return args as ParsedSummary;
 }
 
+function shellSandboxBackendLabel(plan: NonNullable<ApprovalRequest["executionPlan"]>): string {
+  switch (containerPlatform(plan.platform)?.backend) {
+    case "process-container":
+      return plan.substrate === "mxc" ? t("toolApprovalDialog.sandboxBackendMxc") : t("toolApprovalDialog.sandboxBackendSrt");
+    case "seatbelt":
+      return t("toolApprovalDialog.sandboxBackendSeatbelt");
+    case "bubblewrap":
+      return t("toolApprovalDialog.sandboxBackendBubblewrap");
+    default:
+      throw new Error(`No shell sandbox backend for ${plan.platform}`);
+  }
+}
+
 function approvalSandboxSummary(request: ApprovalRequest): ReviewBasisRow | null {
-  const cap = request.executionPlan?.capability ?? request.sandboxCapability;
+  const plan = request.executionPlan;
+  const cap = plan?.capability ?? request.sandboxCapability;
   if (!cap) return null;
 
   let value: string;
@@ -1641,15 +1656,16 @@ function approvalSandboxSummary(request: ApprovalRequest): ReviewBasisRow | null
       proc: cap.confines.process ? "✓" : "✗",
     });
   } else {
-    value = t("toolApprovalDialog.sandboxActive", { kind: cap.kind });
+    const kind = plan?.sandboxed === true ? shellSandboxBackendLabel(plan) : cap.kind;
+    value = t("toolApprovalDialog.sandboxActive", { kind });
   }
-  if (request.executionPlan?.requiresExplicitUserApproval === true) {
+  if (plan?.requiresExplicitUserApproval === true) {
     value += ` · ${t("toolApprovalDialog.allowOnce")}`;
   }
   return {
     label: t("toolApprovalDialog.rowSandbox"),
     value,
-    testId: request.executionPlan ? "tool-approval-execution-plan" : "tool-approval-sandbox",
+    testId: plan ? "tool-approval-execution-plan" : "tool-approval-sandbox",
   };
 }
 

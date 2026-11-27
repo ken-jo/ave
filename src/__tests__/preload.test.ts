@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
 import type { AgentObservationEvent } from "../shared/agent-observation.js";
-import { WORK_BOARD } from "../shared/ipc-channels.js";
+import { ROUTINES, WORK_BOARD } from "../shared/ipc-channels.js";
 import type { AveApi, AvePreviewApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
@@ -103,6 +103,18 @@ describe("preload — plugin webview asset URLs", () => {
     } finally {
       Object.defineProperty(globalThis, "location", { configurable: true, value: location });
     }
+  });
+
+  it("forwards routine changes without exposing the IPC event and removes the listener on unsubscribe", async () => {
+    const api = await loadAveApi() as unknown as AveApi;
+    const changed = vi.fn();
+    const unsubscribe = api.onRoutinesChanged(changed);
+    const [, listener] = mockOn.mock.calls.find(([channel]) => channel === ROUTINES.changed) ?? [];
+    expect(listener).toBeTypeOf("function");
+    listener({ sender: {} });
+    expect(changed).toHaveBeenCalledExactlyOnceWith();
+    unsubscribe();
+    expect(mockRemoveListener).toHaveBeenCalledExactlyOnceWith(ROUTINES.changed, listener);
   });
 
   it("registers history listeners before readiness and disables replay only after the last unsubscribe", async () => {
