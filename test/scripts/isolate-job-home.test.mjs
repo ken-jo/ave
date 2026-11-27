@@ -319,7 +319,7 @@ describe("Windows job root writer precondition", () => {
     ["writer match", /live processes can still access the job root/],
     ["expired enumeration", /process enumeration reached its 5000 ms deadline/],
   ]) {
-    it("preserves the root after a late writer scan with " + outcome, async t => {
+    it(`preserves the root after a late writer scan with ${outcome}`, async t => {
       t.mock.timers.enable({ apis: ["setTimeout"] });
       let now = 0;
       t.mock.method(performance, "now", () => now);
@@ -336,7 +336,7 @@ describe("Windows job root writer precondition", () => {
       t.mock.timers.tick(now);
       stdout.write('{"kind":"processScanStarted"}\n');
       now = outcome === "expired enumeration" ? 10_000 : 5_100;
-      if (outcome === "writer match") stdout.write(JSON.stringify(PROCESS_DETAILS) + "\n");
+      if (outcome === "writer match") stdout.write(`${JSON.stringify(PROCESS_DETAILS)}\n`);
       if (outcome !== "missing completion") stdout.write('{"kind":"processes","failed":false,"limited":false}\n');
       close(null);
       await refusal;
