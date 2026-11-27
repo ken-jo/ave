@@ -23,7 +23,7 @@ import { assertLocalEmbeddingRuntime, bindLocalEmbeddingRuntime, refreshLocalInf
 import type { ModelFile } from './model-manifest.js';
 import type { MemoryInferenceTask } from './worker-client.js';
 import type { OnInferenceAdmission } from './worker-client-win32.js';
-import type { MemoryWorkerExit } from './build-teardown-win32.js';
+import type { BeginMemoryWorker, MemoryWorkerExit } from './build-registry-win32.js';
 
 // Set in the process environment at creation, where the native runtime reads it; the network block is the boundary, this is defense in depth.
 const TELEMETRY_OPT_OUT = { ORT_DISABLE_TELEMETRY: '1' } as const;
@@ -85,17 +85,17 @@ async function writeRequest(output: Writable, folder: string, taskJson: string, 
   } finally { await Promise.all(handles.map(handle => handle.close())); }
 }
 
-function sandboxHomeOrRefusal(requireTreeExit: boolean, onExitConfirmed?: () => void): ReturnType<typeof prepareManagedWindowsProcessHome> {
+function sandboxHomeOrRefusal(requireTreeExit: boolean, onExitConfirmed: () => void, onExitLost: () => void): ReturnType<typeof prepareManagedWindowsProcessHome> {
   try {
-    return prepareManagedWindowsProcessHome(INFERENCE_CHILD_LABEL, requireTreeExit ? INFERENCE_ACCOUNT_EXIT_RECEIPT : undefined, onExitConfirmed);
+    return prepareManagedWindowsProcessHome(INFERENCE_CHILD_LABEL, requireTreeExit ? INFERENCE_ACCOUNT_EXIT_RECEIPT : undefined, onExitConfirmed, onExitLost);
   } catch (error) {
     if (isSandboxHomeUnavailable(error)) throw new MemoryMapHostError('sandbox-home-unavailable');
     throw error;
   }
 }
 
-async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal: AbortSignal, exit?: MemoryWorkerExit): Promise<{
-  input: Readable; output: Writable; stop: () => void | Promise<void>; assertStillValid: () => void; supervised?: true;
+async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal: AbortSignal, beginWorker?: BeginMemoryWorker): Promise<{
+  input: Readable; output: Writable; stop: () => void | Promise<void>; assertStillValid: () => void; drainOutput?: true;
 }> {
   signal.throwIfAborted();
   const { route, assertStillValid: assertRoute } = bindLocalEmbeddingRuntime(readRoute);
@@ -109,7 +109,7 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
     const cwd = win32SystemBinary('');
     const runtimeReadRoots = [dirname(process.execPath), cwd];
     assertStillValid();
-    exit?.starting();
+    const exit = beginWorker?.('container');
     const holder = await spawnMxcBundledHolder({
       label: INFERENCE_CHILD_LABEL,
       command: process.execPath,
@@ -125,28 +125,34 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
       signal,
       assertStillValid,
     }).catch(error => {
-      if (!(error instanceof MxcProcessCleanupError)) exit?.confirmed();
+      if (error instanceof MxcProcessCleanupError) exit?.lost();
+      else exit?.confirmed();
       throw error;
     });
-    const stop = async () => { await holder.release(); exit?.confirmed(); };
+    const stop = async () => {
+      try { await holder.release(); } catch (error) { exit?.lost(); throw error; }
+      exit?.confirmed();
+    };
     try {
       // The supervisor splits a write into frames across yields; each frame takes the same check.
       holder.process.fenceInput(assertStillValid);
       holder.process.stderr.resume();
-      return { input: holder.process.stdout, output: holder.process.stdin, stop, assertStillValid, supervised: true };
+      return { input: holder.process.stdout, output: holder.process.stdin, stop, assertStillValid, drainOutput: true };
     } catch (error) {
       await stop();
       throw error;
     }
   }
 
-  const home = sandboxHomeOrRefusal(route === 'offline-sandbox', exit?.confirmed);
+  let exit: MemoryWorkerExit | undefined;
+  const account = route === 'offline-sandbox';
+  const home = sandboxHomeOrRefusal(account, () => exit?.confirmed(), () => exit?.lost());
   try {
     let running: ChildProcess;
     const cwd = win32SystemBinary('');
     const extraEnv = { ...home.env, ...TELEMETRY_OPT_OUT };
     assertStillValid();
-    exit?.starting();
+    exit = beginWorker?.(account ? 'account' : 'unconfined');
     if (route === 'unconfined') {
       if (!isAbsolute(entry)) throw new Error('Inference child entry must be absolute');
       running = spawnManaged(process.execPath, [entry], {
@@ -179,17 +185,18 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
       running.once('exit', (code, signal) => resolve(`code=${String(code)} signal=${String(signal)}`));
       running.once('error', error => resolve(error.message));
     });
-    const socket = await connectToAnnouncedChild({ stdout, exited, timeoutMs: TOOL_TIMEOUT_POLICY.windowsInferenceChildConnectMs, assertStillValid });
-    return { input: socket, output: socket, stop: () => { socket.destroy(); return home.stop(); }, assertStillValid };
+    const socket = await connectToAnnouncedChild({ stdout, exited, timeoutMs: TOOL_TIMEOUT_POLICY.windowsInferenceChildConnectMs, assertStillValid: assertRoute });
+    if (signal.aborted) socket.end();
+    return { input: socket, output: socket, stop: () => { socket.end(); return home.stop(); }, assertStillValid, drainOutput: true };
   } catch (error) {
-    await home.stop();
+    await home.stop(account ? TOOL_TIMEOUT_POLICY.windowsInferenceChildAcceptMs + TOOL_TIMEOUT_POLICY.windowsInferenceChildHandshakeMs : 0);
     throw error;
   }
 }
 
 export async function runInferenceChild<T>(folder: string, task: MemoryInferenceTask, signal: AbortSignal,
   onProgress?: (progress: MemoryMapProgress) => void, readLocalInferencePreference?: () => boolean,
-  onAdmission?: OnInferenceAdmission, exit?: MemoryWorkerExit): Promise<T> {
+  onAdmission?: OnInferenceAdmission, beginWorker?: BeginMemoryWorker): Promise<T> {
   signal.throwIfAborted();
   const admission = await refreshLocalInferenceAdmission();
   const readRoute = () => assertLocalEmbeddingRuntime(readLocalInferencePreference?.(), admission);
@@ -197,7 +204,7 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
   const taskJson = JSON.stringify(task);
   const lengths = [Buffer.byteLength(taskJson, 'utf8'), ...INFERENCE_FILES.map(file => file.bytes)];
   checkedInferenceFrameBytes(lengths);
-  const { input, output, stop, assertStillValid, supervised } = await spawnInferenceChild(readRoute, signal, exit);
+  const { input, output, stop, assertStillValid, drainOutput } = await spawnInferenceChild(readRoute, signal, beginWorker);
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const lines = createInterface({ input });
@@ -206,7 +213,7 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
       signal.removeEventListener('abort', abort);
       lines.close();
       // Holder disposal drains supervised output before it can read the exit receipt.
-      if (error && !supervised) {
+      if (error && !drainOutput) {
         output.destroy();
         input.destroy();
       }

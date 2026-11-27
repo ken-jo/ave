@@ -3,7 +3,7 @@ import { StoredMemoryGraphSchema } from '../../shared/memory-map-validation.js';
 import { retrieveMatches } from './retrieval.js';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import type { GraphSnapshot, MemoryMapProgress, MemoryMapFilters, RetrievalAnswer, EmbeddingNamespace, MemoryMapRecord } from '../../shared/memory-map.js';
+import type { GraphSnapshot, MemoryBuildOutcome, MemoryBuildView, MemoryMapProgress, MemoryMapFilters, RetrievalAnswer, EmbeddingNamespace, MemoryMapRecord } from '../../shared/memory-map.js';
 import { openFeatureNamespace, writeFileAtomicAtPathAdmitted, type FeatureNamespaceHandle } from '../storage/feature-namespace.js';
 import { catalogRevision, LOCAL_NAMESPACE, vectorKey, type VectorCache } from './graph.js';
 import { runMemoryWorker, type MemoryWorkerRunner, type OnInferenceAdmission } from './worker-client-win32.js';
@@ -15,7 +15,7 @@ import { MAX_INFERENCE_TASK_BYTES } from './inference-request.js';
 import { registerModelBuild } from './model-manager-win32.js';
 import { ManagedExitUnconfirmedError } from '../managed-child-processes.js';
 import { MxcProcessCleanupError } from '../../permissions/mxc-extension-errors.js';
-import { MemoryBuildTeardown } from './build-teardown-win32.js';
+import { BuildRegistry, type BuildOwner } from './build-registry-win32.js';
 export { MemoryMapHostError } from './errors.js';
 import type { ProviderEmbeddings } from './provider-embeddings-win32.js';
 const sameNamespace = (a: EmbeddingNamespace, b: EmbeddingNamespace) => a.source === b.source && a.providerId === b.providerId && a.modelId === b.modelId && a.modelRevision === b.modelRevision && a.preprocessingRevision === b.preprocessingRevision && (!b.dimensions || a.dimensions === b.dimensions);
@@ -27,31 +27,38 @@ interface HostOptions {
   runWorker?: MemoryWorkerRunner;
   watchAuthority?: (cancel: () => void) => () => void;
   onProgress?: (progress: MemoryMapProgress) => void;
+  registry?: BuildRegistry;
 }
 interface GraphBuildResult { snapshot: GraphSnapshot; cache: VectorCache }
 export class MemoryMapHost {
   private readonly namespace: FeatureNamespaceHandle;
   protected readonly runWorker: MemoryWorkerRunner;
-  private controller?: AbortController;
-  protected generation = 0;
+  private readonly registry: BuildRegistry;
   protected snapshot: GraphSnapshot | null = null;
-  private pending: GraphSnapshot | null = null;
   protected cache: VectorCache = {};
-  private scopeId?: string;
-  private hydrated = false;
+  private graphScope: { id?: string; hydrated: boolean } = { hydrated: false };
   private queryGeneration = 0;
   private queryController?: AbortController;
   constructor(protected readonly options: HostOptions) {
     this.namespace = options.namespace ?? openFeatureNamespace('memory-map');
     this.runWorker = options.runWorker ?? runMemoryWorker;
+    this.registry = options.registry ?? new BuildRegistry();
   }
-  cancel(): void { this.generation++; this.controller?.abort(); this.queryGeneration++; this.queryController?.abort(); this.pending = null; }
+  cancel(): void { this.queryGeneration++; this.queryController?.abort(); }
   async invalidate(): Promise<void> {
-    this.cancel(); this.snapshot = null; this.cache = {}; this.hydrated = true;
-    const generation = this.generation;
+    this.registry.stopAll('invalidate');
+    this.cancel();
+    this.clearGraph(this.graphScope.id, true);
+    const scope = this.graphScope;
     await this.clearSaved(() => {
-      if (this.generation !== generation) throw new MemoryMapHostError('request-stale');
+      if (this.graphScope !== scope) throw new MemoryMapHostError('request-stale');
     });
+  }
+  private clearGraph(id: string | undefined, hydrated: boolean): void {
+    this.snapshot = null;
+    this.cache = {};
+    this.graphScope = { id, hydrated };
+    this.registry.changed();
   }
   private async clearSaved(assertCurrent: () => void): Promise<void> {
     await this.namespace.childDir('', { assertStillValid: assertCurrent });
@@ -64,7 +71,11 @@ export class MemoryMapHost {
   }
   private selectedNamespace(): EmbeddingNamespace { return this.options.provider?.namespace() ?? LOCAL_NAMESPACE; }
   protected activate(catalog: MemoryMapCatalog): void {
-    if (this.scopeId !== catalog.authorizationScopeId) { this.cancel(); this.snapshot = null; this.cache = {}; this.scopeId = catalog.authorizationScopeId; this.hydrated = false; }
+    if (this.graphScope.id !== catalog.authorizationScopeId) {
+      this.registry.stopCurrent('scope-switch');
+      this.cancel();
+      this.clearGraph(catalog.authorizationScopeId, false);
+    }
   }
   private async readSaved() {
     const absent = { cache: {}, snapshot: null };
@@ -97,33 +108,49 @@ export class MemoryMapHost {
     }
   }
   async get(readCatalog: ReadMemoryMapCatalog): Promise<GraphSnapshot | null> {
+    return this.readView(readCatalog, (_catalog, snapshot) => snapshot);
+  }
+  async buildView(readCatalog: ReadMemoryMapCatalog): Promise<MemoryBuildView> {
+    return this.readView(readCatalog, (catalog, snapshot) => this.registry.view(catalog.authorizationScopeId, snapshot));
+  }
+  private matchesCatalog(snapshot: GraphSnapshot, catalog: MemoryMapCatalog): boolean {
+    return snapshot.authorizationScopeId === catalog.authorizationScopeId
+      && snapshot.catalogRevision === catalogRevision(catalog.records) && sameNamespace(snapshot.model.namespace, this.selectedNamespace());
+  }
+  private readySnapshot(catalog: MemoryMapCatalog): GraphSnapshot | null {
+    if (!this.snapshot || !this.matchesCatalog(this.snapshot, catalog)) return null;
+    this.validateSnapshot(this.snapshot, catalog);
+    return this.snapshot;
+  }
+  private async readView<T>(readCatalog: ReadMemoryMapCatalog, read: (catalog: MemoryMapCatalog, snapshot: GraphSnapshot | null) => T): Promise<T> {
     const catalog = readCatalog(); this.activate(catalog);
     const revision = catalogRevision(catalog.records);
     const selected = this.selectedNamespace();
-    const assertCurrent = (generation: number) => {
-      if (generation !== this.generation || !sameNamespace(selected, this.selectedNamespace())) throw new MemoryMapHostError('request-stale');
+    const assertCurrent = (scope: typeof this.graphScope) => {
+      if (scope !== this.graphScope || !sameNamespace(selected, this.selectedNamespace())) throw new MemoryMapHostError('request-stale');
       const latest = readCatalog();
       if (latest.authorizationScopeId !== catalog.authorizationScopeId || catalogRevision(latest.records) !== revision) throw new MemoryMapHostError('request-stale');
     };
-    const matchesCatalog = (snapshot: GraphSnapshot) => snapshot.authorizationScopeId === catalog.authorizationScopeId
-      && snapshot.catalogRevision === revision && sameNamespace(snapshot.model.namespace, selected);
-    if (!this.hydrated) {
-      const generation = this.generation;
+    if (!this.graphScope.hydrated) {
+      const scope = this.graphScope;
       const saved = await this.readSaved();
-      commitUnderAdmission(() => assertCurrent(generation), () => {
-        this.hydrated = true;
+      commitUnderAdmission(() => assertCurrent(scope), () => {
+        scope.hydrated = true;
         if (saved.snapshot) { this.snapshot = saved.snapshot; this.cache = saved.cache; }
+        this.registry.changed();
       });
     }
-    if (this.pending?.status === 'building' && matchesCatalog(this.pending)) return this.pending;
-    if ((this.snapshot && !matchesCatalog(this.snapshot)) || (this.pending && !matchesCatalog(this.pending))) {
-      this.cancel(); this.snapshot = null; this.cache = {};
-      const clearGeneration = this.generation;
-      await this.clearSaved(() => assertCurrent(clearGeneration));
-      assertCurrent(clearGeneration);
+    const building = this.registry.current?.snapshot;
+    if (building && this.matchesCatalog(building, catalog)) return read(catalog, building);
+    if ((this.snapshot && !this.matchesCatalog(this.snapshot, catalog)) || building) {
+      this.registry.stopCurrent('catalog-changed');
+      this.cancel();
+      this.clearGraph(catalog.authorizationScopeId, true);
+      const scope = this.graphScope;
+      await this.clearSaved(() => assertCurrent(scope));
+      assertCurrent(scope);
     }
-    if (this.snapshot) this.validateSnapshot(this.snapshot, catalog);
-    return this.pending ?? this.snapshot;
+    return read(catalog, this.readySnapshot(catalog));
   }
   private async embedLocal(catalog: MemoryMapCatalog, folder: string, savedCache: VectorCache, signal: AbortSignal, jobId: string, report: (progress: MemoryMapProgress) => void, assertCurrent: () => void, assertModelAdmission: () => void, runWorker: MemoryWorkerRunner): Promise<VectorCache> {
     const total = catalog.records.length;
@@ -175,17 +202,28 @@ export class MemoryMapHost {
     return cache;
   }
   async build(readCatalog: ReadMemoryMapCatalog, onAdmission?: (assertLive: () => void) => void,
-    teardown = new MemoryBuildTeardown(), buildId: string = randomUUID(), onTakeover?: () => void): Promise<GraphSnapshot> {
+    owner?: BuildOwner, assertLocal = () => {}): Promise<GraphSnapshot> {
+    const catalog = readCatalog();
+    owner ??= this.registry.register(randomUUID(), { scopeId: catalog.authorizationScopeId, assertAdmitted: () => {} });
+    return this.buildOwned(owner, catalog, readCatalog, assertLocal, onAdmission);
+  }
+
+  private async buildOwned(owner: BuildOwner, catalog: MemoryMapCatalog, readCatalog: ReadMemoryMapCatalog,
+    assertLocal: () => void, onAdmission?: (assertLive: () => void) => void): Promise<GraphSnapshot> {
     const runWorker: MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal,
       onProgress?: (progress: MemoryMapProgress) => void, onAdmission?: OnInferenceAdmission) =>
-      teardown.track(exit => this.runWorker<T>(folder, task, signal, onProgress, onAdmission, exit));
-    const catalog = readCatalog();
+      this.runWorker<T>(folder, task, signal, onProgress, onAdmission, owner.beginWorker);
     const selected = this.selectedNamespace();
     const revision = catalogRevision(catalog.records);
-    this.activate(catalog); this.cancel(); this.hydrated = true;
-    const generation = this.generation; const controller = new AbortController(); this.controller = controller;
-    onTakeover?.();
-    const active = () => sameNamespace(selected, this.selectedNamespace()) && !controller.signal.aborted && generation === this.generation;
+    try { owner.takeover(assertLocal); }
+    catch (error) { owner.fail(this.buildErrorCode(error)); throw error; }
+    if (this.graphScope.id !== catalog.authorizationScopeId) {
+      this.cancel();
+      this.clearGraph(catalog.authorizationScopeId, true);
+    } else this.graphScope = { id: catalog.authorizationScopeId, hydrated: true };
+    const scope = this.graphScope;
+    const signal = owner.signal;
+    const active = () => owner.isRunning() && sameNamespace(selected, this.selectedNamespace());
     const current = () => {
       if (!active()) return false;
       const latest = readCatalog();
@@ -195,8 +233,7 @@ export class MemoryMapHost {
       if (!active() || !(readCatalog.recordsAreCurrent
         ? readCatalog.recordsAreCurrent(catalog.authorizationScopeId, batch)
         : current())) {
-        controller.abort();
-        if (generation === this.generation) this.pending = null;
+        owner.stop('stale');
         throw new MemoryMapHostError('request-stale');
       }
     };
@@ -205,17 +242,18 @@ export class MemoryMapHost {
     };
     let stopWatching: (() => void) | undefined;
     let releaseModel: (() => void) | undefined;
-    this.pending = {
-      snapshotId: buildId, catalogRevision: revision, authorizationScopeId: catalog.authorizationScopeId,
+    owner.snapshot = {
+      snapshotId: owner.id, catalogRevision: revision, authorizationScopeId: catalog.authorizationScopeId,
       model: { id: selected.modelId, revision: selected.modelRevision, dimensions: selected.dimensions, preprocessingRevision: selected.preprocessingRevision, namespace: selected },
       projection: { algorithm: 'umap', dimensions: 2, version: '1.4.0', seed: 42, parameters: { nNeighbors: Math.min(12, Math.max(0, catalog.records.length - 1)), minDist: 0.1, nEpochs: 200 } },
       status: 'building', coverage: { eligible: catalog.records.length, embedded: 0, pending: catalog.records.length, excluded: catalog.excluded }, points: [], edges: [],
     };
+    let outcome: MemoryBuildOutcome = { kind: 'cancelled' };
     try {
       let folder = '';
       let assertModelAdmission: (() => void) | undefined;
       if (selected.source === 'local') {
-        folder = await this.options.validatedModelPath(controller.signal, (assertStillValid) => { assertModelAdmission = assertStillValid; });
+        folder = await this.options.validatedModelPath(signal, (assertStillValid) => { assertModelAdmission = assertStillValid; });
         releaseModel = registerModelBuild(folder);
       }
       assertCurrent();
@@ -226,7 +264,12 @@ export class MemoryMapHost {
         cache[key] = vector;
       }
       const publishProgress = (progress: MemoryMapProgress) => {
-        if (this.pending && progress.phase === 'embedding') this.pending.coverage = { ...this.pending.coverage, embedded: progress.completed, pending: progress.total - progress.completed };
+        const snapshot = owner.snapshot;
+        if (snapshot && progress.phase === 'embedding') {
+          owner.snapshot = { ...snapshot, coverage: { ...snapshot.coverage, embedded: progress.completed, pending: progress.total - progress.completed } };
+          this.registry.changed();
+        }
+        owner.report(progress);
         this.options.onProgress?.(progress);
       };
       const report = (progress: MemoryMapProgress) => {
@@ -235,14 +278,14 @@ export class MemoryMapHost {
       let assertBuildAdmission: (() => void) | undefined;
       let result: GraphBuildResult;
       if (selected.source === 'provider') {
-        stopWatching = this.options.watchAuthority?.(() => { if (active()) this.cancel(); });
+        stopWatching = this.options.watchAuthority?.(() => owner.stop('authority'));
         const provider = this.options.provider as ProviderEmbeddings;
-        assertBuildAdmission = provider.bindConsent(selected, controller.signal);
-        result = await provider.build(catalog, selected, saved, controller.signal, report, assertAuthority, assertCurrent, teardown);
+        assertBuildAdmission = provider.bindConsent(selected, signal);
+        result = await provider.build(catalog, selected, saved, signal, report, assertAuthority, assertCurrent, owner.beginWorker);
       } else {
         if (assertModelAdmission === undefined) throw new MemoryMapHostError('local-runtime-unavailable');
-        const jobId = randomUUID();
-        const vectors = await this.embedLocal(catalog, folder, cache, controller.signal, jobId, report, assertCurrent, assertModelAdmission, runWorker);
+        const jobId = owner.id;
+        const vectors = await this.embedLocal(catalog, folder, cache, signal, jobId, report, assertCurrent, assertModelAdmission, runWorker);
         assertCurrent();
         assertBuildAdmission = await this.options.refreshLocalAdmission();
         assertCurrent();
@@ -250,7 +293,7 @@ export class MemoryMapHost {
         let projecting!: Promise<GraphBuildResult>;
         commitUnderAdmission(assertProjection, () => { projecting = runWorker<GraphBuildResult>('', {
           kind: 'project', input: { ...catalog, cache: vectors, namespace: LOCAL_NAMESPACE, jobId },
-        }, controller.signal, progress => {
+        }, signal, progress => {
           if (progress.phase === 'embedding') return;
           try { commitUnderAdmission(assertProjection, () => report(progress)); } catch { /* Refused. */ }
         }); });
@@ -269,24 +312,37 @@ export class MemoryMapHost {
       const canPublish = () => { assertCanPublish(); return true; };
       // The ready state is published in the step that replaces the file, under the same check.
       const committed = await writeFileAtomicAtPathAdmitted(join(this.namespace.dir, 'snapshot.json'), JSON.stringify(result), canPublish, () => {
-        this.cache = result.cache; this.snapshot = result.snapshot; this.pending = null;
+        this.cache = result.cache; this.snapshot = result.snapshot; owner.snapshot = null;
+        this.registry.changed();
       });
       if (!committed) throw new MemoryMapHostError('request-stale');
       return commitUnderAdmission(assertCanPublish, () => {
-        onAdmission?.(assertCanPublish);
+        onAdmission?.(() => {
+          signal.throwIfAborted();
+          if (this.graphScope !== scope || this.readySnapshot(readCatalog()) !== result.snapshot) throw new MemoryMapHostError('request-stale');
+          assertBuildAdmission?.();
+        });
+        outcome = { kind: 'ready' };
         return result.snapshot;
       });
     } catch (error) {
-      if (generation !== this.generation || controller.signal.aborted) {
+      if (signal.aborted) {
         if (error instanceof ManagedExitUnconfirmedError || error instanceof MxcProcessCleanupError) throw error;
         throw new MemoryMapHostError('request-stale');
       }
-      if (this.pending) this.pending = { ...this.pending, status: error instanceof MemoryMapHostError && error.code === 'model-unconfigured' ? 'unconfigured' : 'failed' };
+      outcome = { kind: 'failed', code: this.buildErrorCode(error) };
+      if (owner.exit === 'pending') owner.stop('stale');
       throw error;
     } finally {
+      owner.snapshot = null;
+      owner.settle(outcome);
       releaseModel?.();
       stopWatching?.();
     }
+  }
+  private buildErrorCode(error: unknown): Extract<MemoryBuildOutcome, { kind: 'failed' }>['code'] {
+    if (error instanceof ManagedExitUnconfirmedError || error instanceof MxcProcessCleanupError) return 'local-runtime-unavailable';
+    return error instanceof MemoryMapHostError ? error.code : 'graph-build-failed';
   }
   async retrieve(readCatalog: ReadMemoryMapCatalog, request: { question: string; filters: MemoryMapFilters; snapshotId: string; queryId: string }, onAdmission?: (assertLive: () => void) => void): Promise<RetrievalAnswer> {
     const catalog = readCatalog(); this.activate(catalog);

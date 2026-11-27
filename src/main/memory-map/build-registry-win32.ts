@@ -106,6 +106,7 @@ export class BuildOwner {
     if (this.state.lifecycle !== 'admitting') throw new MemoryMapHostError('request-stale');
   }
 
+  assertAdmitted(): void { this.request.assertAdmitted(); }
   isRunning(): boolean { return this.state.lifecycle === 'running' && !this.signal.aborted; }
   fail(code: MemoryMapError): void { this.transition({ type: 'fail', code }); }
   settle(outcome: MemoryBuildOutcome): void { this.transition({ type: 'settle', outcome }); }

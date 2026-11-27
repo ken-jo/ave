@@ -153,12 +153,12 @@ export async function wrapManagedBundledCommand(input: Omit<BundledWrapInput, "s
 }
 
 /** Own a private HOME and command wrap for a Windows launch with no lifetime ACL grants. */
-export function prepareManagedWindowsProcessHome(label: string, treeReceiptLine?: string, onExitConfirmed?: () => void) {
+export function prepareManagedWindowsProcessHome(label: string, treeReceiptLine?: string, onExitConfirmed?: () => void, onExitLost?: () => void) {
   if (process.platform !== "win32") throw new Error("Managed Windows process HOME requires Windows");
   const home = treeReceiptLine === undefined ? createSandboxProcessHome() : createSandboxProcessHome("win32", undefined, null);
   const resources = treeReceiptLine === undefined ? createManagedRelayResources() : createManagedResources();
   let child: ChildProcess | undefined;
-  let treeExit: ReturnType<typeof observeManagedWindowsRelayTreeExit> | undefined;
+  let treeExit: Promise<void> | undefined;
   let directExit: Promise<void> | undefined;
   let wrapped = false;
   recordManagedCleanup(resources, home.cleanup, () => wrapped ? cleanupAsrtSandboxAfterCommand() : undefined);
@@ -168,7 +168,15 @@ export function prepareManagedWindowsProcessHome(label: string, treeReceiptLine?
     onSpawn(running: ChildProcess) {
       child = running;
       if (treeReceiptLine !== undefined) {
-        treeExit = observeManagedWindowsRelayTreeExit(running, resources, treeReceiptLine);
+        treeExit = observeManagedWindowsRelayTreeExit(running, resources, treeReceiptLine).then(receipt => {
+          if (receipt === undefined) {
+            onExitLost?.();
+            throw new ManagedExitUnconfirmedError();
+          }
+          onExitConfirmed?.();
+          return releaseManagedResources(resources, receipt);
+        });
+        void treeExit.catch(() => {});
         return;
       }
       directExit = observeManagedWindowsRelayExit(running, resources).then(receipt => {
@@ -177,7 +185,7 @@ export function prepareManagedWindowsProcessHome(label: string, treeReceiptLine?
           .catch((error: unknown) => log.warn(`[${label}] sandbox home release failed: ${errorMessage(error)}`));
       });
     },
-    async stop() {
+    async stop(preAuthenticationMs = 0) {
       if (child === undefined) {
         onExitConfirmed?.();
         return abandonManagedLaunch(resources);
@@ -189,12 +197,7 @@ export function prepareManagedWindowsProcessHome(label: string, treeReceiptLine?
           () => new ManagedExitUnconfirmedError());
       }
       try {
-        const cleanup = treeExit.then(async receipt => {
-          if (receipt === undefined) throw new ManagedExitUnconfirmedError();
-          onExitConfirmed?.();
-          await releaseManagedResources(resources, receipt);
-        });
-        await raceWithTimeout(cleanup, TOOL_TIMEOUT_POLICY.windowsInferenceRelayStopMs,
+        await raceWithTimeout(treeExit, preAuthenticationMs + TOOL_TIMEOUT_POLICY.windowsInferenceRelayStopMs,
           () => new ManagedExitUnconfirmedError());
       } catch (error) {
         terminateChildBestEffort(child);

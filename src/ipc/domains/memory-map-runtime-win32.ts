@@ -13,7 +13,7 @@ import type { WindowsMemoryEmbeddingSettingsSchema, MemoryRetrievalSchema } from
 import { assertLocalEmbeddingRuntime, bindLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from '../../main/memory-map/local-runtime-win32.js';
 import type { WindowsBackgroundAdmission } from '../../permissions/windows-background-features.js';
 import { runMemoryWorker } from '../../main/memory-map/worker-client-win32.js';
-import { MemoryBuildTeardown } from '../../main/memory-map/build-teardown-win32.js';
+import { BuildRegistry } from '../../main/memory-map/build-registry-win32.js';
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager-win32.js';
 import { downloadModelFile } from '../../main/memory-map/model-download-win32.js';
 import { ManagedExitUnconfirmedError } from '../../main/managed-child-processes.js';
@@ -46,6 +46,7 @@ type OnReplyAdmission = (assertLive: () => void) => void;
 
 export interface MemoryMapRuntime {
   get(scope: MemoryMapScope | undefined): unknown;
+  buildView(scope: MemoryMapScope | undefined): unknown;
   build(scope: MemoryMapScope | undefined, buildId: string, event: IpcMainInvokeEvent, onAdmission: OnReplyAdmission): unknown;
   cancel(buildId: string): Promise<null>;
   facets(scope: MemoryMapScope | undefined): unknown;
@@ -79,13 +80,10 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     const admission = await refreshLocalInferenceAdmission();
     return bindLocalEmbeddingRuntime(() => localRuntime(admission)).assertStillValid;
   };
-  let buildGeneration = 0;
-  const buildTeardowns = new Map<string, MemoryBuildTeardown>();
-  let latestBuildId: string | undefined;
+  const registry = new BuildRegistry();
   let modelGeneration = 0;
   let settingsGeneration = 0;
   let settingsWrite: Promise<unknown> = Promise.resolve();
-  let hostBuild: { id: string; event: IpcMainInvokeEvent } | undefined;
   const model = new LocalModelManager({
     refreshAdmission: refreshLocalAdmission,
     downloadFile: downloadModelFile,
@@ -118,6 +116,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     }
   };
   const host = new MemoryMapHost({
+    registry,
     provider,
     watchAuthority,
     refreshLocalAdmission,
@@ -134,13 +133,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
       onAdmission?.(assertStillValid);
       return folder;
     },
-    onProgress: progress => {
-      if (hostBuild && validateHostRendererSender(hostBuild.event)) {
-        sendToWebContents(hostBuild.event.sender, CHANNELS.memoryMap.progress, { ...progress, jobId: hostBuild.id });
-      }
-    },
   });
-  const cancelBuild = () => { buildGeneration += 1; hostBuild = undefined; host.cancel(); };
   const cancelModel = () => { modelGeneration += 1; model.cancel(); };
   const assertCurrentModelRequest = (generation: number) => {
     if (generation !== modelGeneration) throw new MemoryModelError('model-cancelled');
@@ -153,7 +146,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     const admission = await refreshLocalInferenceAdmission();
     assertCurrentModelRequest(generation);
     localRuntime(admission);
-    cancelBuild();
+    registry.stopAll('model');
     return start(status => {
       if (validateHostRendererSender(event)) sendToWebContents(event.sender, CHANNELS.memoryMap.modelProgress, status);
     });
@@ -191,39 +184,32 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   };
   return {
     get: scope => host.get(catalog(scope)),
+    buildView: scope => host.buildView(catalog(scope)),
     build: async (scope, buildId, event, onAdmission) => {
-      if (buildTeardowns.has(buildId)) throw new MemoryMapHostError('invalid-input');
-      const generation = ++buildGeneration;
-      const teardown = new MemoryBuildTeardown();
-      latestBuildId = buildId;
-      buildTeardowns.set(buildId, teardown);
+      const resolved = resolveScope(scope);
+      if (!resolved.ok) throw new MemoryMapHostError('project-not-allowed');
+      const owner = registry.register(buildId, {
+        scopeId: memoryMapScopeId(resolved.options),
+        assertAdmitted: () => {},
+        onProgress: progress => {
+          if (registry.current?.id === progress.jobId && validateHostRendererSender(event)) {
+            sendToWebContents(event.sender, CHANNELS.memoryMap.progress, progress);
+          }
+        },
+      });
       try {
+        let assertLocal = () => {};
         if (deps.settingsService.get('memoryEmbedding')?.source !== 'provider') {
-          const admission = await refreshLocalInferenceAdmission();
-          if (generation !== buildGeneration) throw new MemoryMapHostError('request-stale');
-          localRuntime(admission);
+          assertLocal = await refreshLocalAdmission();
         }
-        const readCatalog = catalog(scope, () => {
-          if (hostBuild?.id === buildId) host.cancel();
-        });
-        return await host.build(readCatalog, onAdmission, teardown, buildId, () => {
-          hostBuild = { id: buildId, event };
-        });
-      } finally {
-        if (latestBuildId === buildId) latestBuildId = undefined;
-        if (hostBuild?.id === buildId) hostBuild = undefined;
+        owner.assertAdmitting();
+        return await host.build(catalog(scope, () => owner.stop('scope-denied')), onAdmission, owner, assertLocal);
+      } catch (error) {
+        owner.fail(error instanceof MemoryMapHostError ? error.code : 'graph-build-failed');
+        throw error;
       }
     },
-    cancel: async buildId => {
-      const teardown = buildTeardowns.get(buildId);
-      if (latestBuildId === buildId) {
-        latestBuildId = undefined;
-        buildGeneration += 1;
-      }
-      if (hostBuild?.id === buildId) { hostBuild = undefined; host.cancel(); }
-      if (!teardown || !await teardown.waitForExit()) throw new MemoryMapHostError('build-exit-unconfirmed');
-      return null;
-    },
+    cancel: buildId => registry.cancel(buildId),
     facets: async scope => { await host.get(catalog(scope)); return memoryFacets(catalog(scope)().records); },
     retrieve: (request, onAdmission) => host.retrieve(catalog(request.scope), request, onAdmission),
     modelStatus: async onAdmission => {
@@ -258,7 +244,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
               if (!(error instanceof MemoryMapHostError)) throw error;
             }
             if (usingHostChild) {
-              if (previous?.source !== 'provider') cancelBuild();
+              if (previous?.source !== 'provider') registry.stopAll('settings');
               cancelModel();
             }
           }
@@ -281,7 +267,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
         provider.assertCurrentEndpoint(input.providerId, input.endpointId);
       }
       const generation = ++settingsGeneration;
-      provider.suspend(); cancelBuild();
+      provider.suspend(); registry.stopAll('settings');
       const pending = settingsWrite.catch(() => {}).then(async () => {
         if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
         const consent = input.source === 'provider' ? await provider.issueConsent(input.providerId, input.modelId, input.endpointId) : undefined;

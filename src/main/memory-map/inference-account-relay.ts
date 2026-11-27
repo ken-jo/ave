@@ -79,10 +79,27 @@ export async function bindInferenceAccountJob() {
 export async function runInferenceAccountTarget(socket: Socket, env: Readonly<Record<string, string>>,
   targetTreeGone: () => boolean): Promise<void> {
   socket.on('error', () => {});
-  if (socket.destroyed || socket.readableEnded) {
-    if (!targetTreeGone()) throw new Error('Inference relay job membership is unverified');
-    return;
-  }
+  if (socket.destroyed || socket.readableEnded) return;
+  const first = await new Promise<Buffer | null>(resolve => {
+    const finish = (byte: Buffer | null) => {
+      socket.off('readable', read);
+      socket.off('end', end);
+      socket.off('close', end);
+      socket.off('error', end);
+      resolve(byte);
+    };
+    const end = () => finish(null);
+    const read = () => {
+      const byte = socket.read(1) as Buffer | null;
+      if (byte) finish(byte);
+    };
+    socket.on('readable', read);
+    socket.once('end', end);
+    socket.once('close', end);
+    socket.once('error', end);
+    read();
+  });
+  if (!first || socket.destroyed || socket.readableEnded) return;
   const entry = process.argv[1];
   if (entry === undefined) throw new Error('Inference target entry is missing');
   const overrides = { ...env, ELECTRON_RUN_AS_NODE: '1' };
@@ -99,6 +116,7 @@ export async function runInferenceAccountTarget(socket: Socket, env: Readonly<Re
   const stop = () => ownerLeft.abort();
   socket.once('end', stop);
   socket.once('close', stop);
+  child.stdin.write(first);
   socket.pipe(child.stdin);
   child.stdout.pipe(socket, { end: false });
   try {
@@ -124,17 +142,22 @@ export async function runInferenceAccountTarget(socket: Socket, env: Readonly<Re
 
 export async function serveInferenceAccountRelay(env: Readonly<Record<string, string>>): Promise<void> {
   const job = await bindInferenceAccountJob();
+  let socket: Socket | undefined;
   try {
-    const socket = await acceptHostOverLoopback({
+    socket = await acceptHostOverLoopback({
       announce: line => { process.stdout.write(line); },
       acceptTimeoutMs: TOOL_TIMEOUT_POLICY.windowsInferenceChildAcceptMs,
       handshakeTimeoutMs: TOOL_TIMEOUT_POLICY.windowsInferenceChildHandshakeMs,
     });
     await runInferenceAccountTarget(socket, env, job.targetTreeGone);
-    await new Promise<void>((resolve, reject) => {
-      process.stderr.write(`${INFERENCE_ACCOUNT_EXIT_RECEIPT}\n`, error => error ? reject(error) : resolve());
-    });
   } finally {
-    job.release();
+    socket?.destroy();
+    try {
+      if (job.targetTreeGone()) {
+        await new Promise<void>((resolve, reject) => {
+          process.stderr.write(`${INFERENCE_ACCOUNT_EXIT_RECEIPT}\n`, error => error ? reject(error) : resolve());
+        });
+      } else throw new Error('Inference relay job membership is unverified');
+    } finally { job.release(); }
   }
 }

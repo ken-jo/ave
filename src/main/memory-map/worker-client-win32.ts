@@ -4,16 +4,18 @@ import type { MemoryMapProgress } from '../../shared/memory-map.js';
 import { mainDir } from '../main-paths.js';
 import type { MemoryWorkerTask } from './worker-client.js';
 import { runInferenceChild } from './inference-child-win32.js';
-import type { MemoryWorkerExit } from './build-teardown-win32.js';
+import type { BeginMemoryWorker } from './build-registry-win32.js';
 
 export type OnInferenceAdmission = (assertStillValid: () => void) => void;
 export type MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal,
-  onProgress?: (progress: MemoryMapProgress) => void, onAdmission?: OnInferenceAdmission, exit?: MemoryWorkerExit) => Promise<T>;
+  onProgress?: (progress: MemoryMapProgress) => void, onAdmission?: OnInferenceAdmission, beginWorker?: BeginMemoryWorker) => Promise<T>;
 
 function runProjectionWorker<T>(task: Extract<MemoryWorkerTask, { kind: 'project' }>, signal: AbortSignal,
-  onProgress?: (progress: MemoryMapProgress) => void, exit?: MemoryWorkerExit): Promise<T> {
-  const worker = new Worker(join(mainDir, 'memory-map-worker.js'), { workerData: { task } });
-  exit?.starting();
+  onProgress?: (progress: MemoryMapProgress) => void, beginWorker?: BeginMemoryWorker): Promise<T> {
+  const exit = beginWorker?.('projection');
+  let worker: Worker;
+  try { worker = new Worker(join(mainDir, 'memory-map-worker.js'), { workerData: { task } }); }
+  catch (error) { exit?.confirmed(); throw error; }
   return new Promise<T>((resolve, reject) => {
     let outcome: { error: Error } | { value: T } | undefined;
     const finish = (result: NonNullable<typeof outcome>) => {
@@ -44,9 +46,9 @@ function runProjectionWorker<T>(task: Extract<MemoryWorkerTask, { kind: 'project
 }
 
 export const runMemoryWorker = async <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal,
-  onProgress?: (progress: MemoryMapProgress) => void, onAdmission?: OnInferenceAdmission, exit?: MemoryWorkerExit,
+  onProgress?: (progress: MemoryMapProgress) => void, onAdmission?: OnInferenceAdmission, beginWorker?: BeginMemoryWorker,
   readLocalInferencePreference?: () => boolean): Promise<T> => {
   signal.throwIfAborted();
-  if (task.kind === 'project') return runProjectionWorker<T>(task, signal, onProgress, exit);
-  return runInferenceChild<T>(folder, task, signal, onProgress, readLocalInferencePreference, onAdmission, exit);
+  if (task.kind === 'project') return runProjectionWorker<T>(task, signal, onProgress, beginWorker);
+  return runInferenceChild<T>(folder, task, signal, onProgress, readLocalInferencePreference, onAdmission, beginWorker);
 };

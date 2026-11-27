@@ -3,7 +3,7 @@ import type { MemoryEmbeddingConsent } from '../../shared/memory-embedding-confi
 import type { EmbeddingNamespace, MemoryEmbeddingProvider, MemoryMapProgress, GraphSnapshot, MemoryMapRecord } from '../../shared/memory-map.js';
 import type { MemoryMapCatalog } from './catalog.js';
 import { runMemoryWorker, type MemoryWorkerRunner } from './worker-client-win32.js';
-import type { MemoryBuildTeardown, MemoryWorkerExit } from './build-teardown-win32.js';
+import type { BeginMemoryWorker } from './build-registry-win32.js';
 import { vectorKey, type VectorCache } from './graph.js';
 import { MemoryMapHostError } from './errors.js';
 import type { ProviderEgress } from './provider-egress.js';
@@ -48,7 +48,7 @@ export class ProviderEmbeddings {
     });
   }
 
-  async build(catalog: MemoryMapCatalog, namespace: EmbeddingNamespace, saved: { snapshot: { model: { namespace: EmbeddingNamespace } } | null; cache: VectorCache }, signal: AbortSignal, onProgress: (progress: MemoryMapProgress) => void, assertAuthority: (batch: readonly MemoryMapRecord[]) => void, assertCatalog: () => void, teardown?: MemoryBuildTeardown) {
+  async build(catalog: MemoryMapCatalog, namespace: EmbeddingNamespace, saved: { snapshot: { model: { namespace: EmbeddingNamespace } } | null; cache: VectorCache }, signal: AbortSignal, onProgress: (progress: MemoryMapProgress) => void, assertAuthority: (batch: readonly MemoryMapRecord[]) => void, assertCatalog: () => void, beginWorker: BeginMemoryWorker) {
     const assertConsent = this.bindConsent(namespace, signal);
     const records = [...catalog.records].sort((a, b) => a.memoryId.localeCompare(b.memoryId));
     let selected = { ...namespace };
@@ -75,13 +75,12 @@ export class ProviderEmbeddings {
     const assertProjection = () => { assertCatalog(); assertConsent(); };
     let projecting!: Promise<{ snapshot: GraphSnapshot; cache: VectorCache }>;
     commitUnderAdmission(assertProjection, () => {
-      const project = (exit?: MemoryWorkerExit) => this.runWorker<{ snapshot: GraphSnapshot; cache: VectorCache }>('', {
+      projecting = this.runWorker<{ snapshot: GraphSnapshot; cache: VectorCache }>('', {
         kind: 'project', input: { ...catalog, namespace: selected, cache, jobId },
       }, signal, progress => {
         if (progress.phase === 'embedding') return;
         try { commitUnderAdmission(assertProjection, () => onProgress(progress)); } catch { /* Refused. */ }
-      }, undefined, exit);
-      projecting = teardown ? teardown.track(project) : project();
+      }, undefined, beginWorker);
     });
     const result = await projecting;
     assertProjection();
