@@ -1184,6 +1184,9 @@ export type AvePreloadApi = {
     | import("../../shared/work-board-types.js").StageJoinDecideIpcResult
     | { ok: false; error: string }
   >;
+  retryWorkStageOutput: (
+    itemId: number, input: import("../../shared/work-board-types.js").StageOutputRetryInput,
+  ) => Promise<import("../../shared/work-board-types.js").StageOutputRetryIpcResult | { ok: false; error: string }>;
   retryWorkStage: (
     itemId: number,
     input: import("../../shared/work-board-types.js").StageRetryInput,

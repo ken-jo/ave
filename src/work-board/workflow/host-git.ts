@@ -7,6 +7,12 @@ import { createLogger } from "../../lib/logger.js";
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import { buildHostGitArgs, HOOK_EVENTS, HOOK_EVENTS_VALIDATED, spawnHostGitIfWorkspaceFree } from "../../shared/host-git.js";
 import { parseGitVersion } from "../../shared/git-version.js";
+import { hasControlChars, hasInvisibleOrReorderingChars } from "../../shared/display-safe-text.js";
+import { escapeRegExp } from "../../shared/escape-reg-exp.js";
+import { hasExactKeys, isPlainRecord } from "../../shared/is-record.js";
+import { canonicalWorkflowJson } from "../../shared/workflow-template-output.js";
+import type { RequestedOutputDecl } from "../../shared/workflow-template-types.js";
+import { runBranch } from "./workspace-layout.js";
 import { absolutePosixSearchPath, executableIdentitySync, type GitDiscovery, installerGitRoot, withHostGitRecovery } from "../../shared/host-git-executable.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
@@ -37,6 +43,23 @@ const INHERITED_ENV = new Set([
   "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
   "TEMP", "TMP", "TMPDIR", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ",
 ]);
+const HTTPS_PUSH_BOOLEAN_CONFIG = {
+  "http.followredirects": "false",
+  "http.savecookies": "false",
+};
+const HTTPS_PUSH_CONFIG = {
+  "http.extraheader": "",
+  "http.cookiefile": "",
+  "http.curloptresolve": "",
+  "http.useragent": "",
+};
+const WORKFLOW_PUSH_CONFIG = [
+  "core.askPass=", "credential.interactive=never", "push.followTags=false", "push.recurseSubmodules=no", "push.gpgSign=false",
+  "push.pushOption=", "push.negotiate=false", "push.useForceIfIncludes=false", "submodule.recurse=false",
+  ...Object.entries({ ...HTTPS_PUSH_CONFIG, ...HTTPS_PUSH_BOOLEAN_CONFIG }).map(([key, value]) => `${key}=${value}`),
+  "gc.auto=0", "maintenance.auto=false", "protocol.ext.allow=never",
+] as const;
+const WORKFLOW_PUSH = Symbol("workflow-push");
 const OWN_ENV = { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_ALLOW_PROTOCOL: "", GIT_NO_LAZY_FETCH: "1" } as const;
 
 interface HostGitResult { code: number; stdout: string; stderr: string }
@@ -46,7 +69,9 @@ interface HostGitResult { code: number; stdout: string; stderr: string }
  * that one path and never as a pattern; an argument list carries none. `deadline` is a `performance.now()` timestamp for preflight and launch.
  * `bytes`: git runs in the C locale, so a pattern it is given matches a name byte for byte; in the host's own locale, one whose
  * characters the name's bytes are not would match no part of it. */
-interface HostGitCall { stdin?: string; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; bytes?: boolean; worktree?: { gitDir: string; workTree: string }; paths?: readonly string[]; requiresFloor?: boolean; deadline?: number }
+interface HostGitCall { stdin?: string; holdPreparedRef?: (signal: AbortSignal) => Promise<void>; signal?: AbortSignal;
+  [WORKFLOW_PUSH]?: true; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; bytes?: boolean;
+  worktree?: { gitDir: string; workTree: string }; paths?: readonly string[]; requiresFloor?: boolean; deadline?: number }
 /** Bytes as the text they are and nothing else: no byte replaced, no leading mark dropped. Throws for bytes that are no text. */
 const STRICT_TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 export class HostGitError extends Error {
@@ -123,22 +148,28 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
   });
   const env = gitEnv(base, name => INHERITED_ENV.has(name));
   const isolated = isolatedEnv(base);
+  const pushEnv = gitEnv(base, name => INHERITED_ENV.has(name) || /^(?:SSH_AUTH_SOCK|GIT_(?:SSH|SSH_COMMAND|SSH_VARIANT|CONFIG_COUNT|CONFIG_PARAMETERS|CONFIG_(?:KEY|VALUE)_\d+))$/u.test(name));
+  pushEnv.GIT_ALLOW_PROTOCOL = "https:ssh";
+  pushEnv.SSH_ASKPASS_REQUIRE = "never";
+  pushEnv.GIT_NO_REPLACE_OBJECTS = "1";
   const timeoutMs = options.timeoutMs ?? TOOL_TIMEOUT_POLICY.stageWorkspaceGitMs;
   const maxOutputBytes = options.maxOutputBytes ?? GIT_MAX_OUTPUT_BYTES;
   const teardownMs = options.teardownMs ?? GIT_TEARDOWN_MS;
 
   const launchEnv = (call: HostGitCall): NodeJS.ProcessEnv => {
-    const chosen = call.isolated === true ? isolated : env;
+    const chosen = call[WORKFLOW_PUSH] ? pushEnv : call.isolated === true ? isolated : env;
     return call.bytes === true ? byteLocaleEnv(chosen) : chosen;
   };
 
   /** What git wrote, as the bytes it wrote. */
   async function raw(cwd: string, args: readonly string[], call: HostGitCall = {}): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
+    call.signal?.throwIfAborted();
     if (args.includes("--")) throw new Error("a path reaches git only as one of the call's paths");
     const { deadline } = call;
     const resolve = resolver(call.requiresFloor === true);
     checkDeadline(deadline);
-    const configArgs = [...HARDENED_CONFIG.flatMap(entry => ["-c", entry]), ...(call.drivers ?? [])];
+    const config = call[WORKFLOW_PUSH] ? WORKFLOW_PUSH_CONFIG : HARDENED_CONFIG;
+    const configArgs = [...config.flatMap(entry => ["-c", entry]), ...(call.drivers ?? [])];
     const full = [
       ...call.worktree === undefined ? [] : [`--git-dir=${call.worktree.gitDir}`, `--work-tree=${call.worktree.workTree}`],
       ...args,
@@ -147,6 +178,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
     let timer: NodeJS.Timeout | undefined;
     let arm = (): void => {};
     const runResolved = async (git: HostGitProgram | null) => {
+      call.signal?.throwIfAborted();
       checkDeadline(deadline);
       if (call.requiresFloor) {
         const holds = git !== null && isAbsolute(git.path) && await floorHoldsOn(git, base, deadline);
@@ -177,6 +209,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
       if (executableIdentitySync(git.path) !== git.identity) return reject(new HostGitError("unavailable", "the selected git changed before launch"));
       const timeLeft = (): number => call.deadline === undefined ? timeoutMs : Math.min(timeoutMs, call.deadline - performance.now());
       if (timeLeft() <= 0) return reject(gitTimedOut());
+      call.signal?.throwIfAborted();
       const started = spawnHostGitIfWorkspaceFree(cwd, git.path, args, { cwd, env: programEnv(launchEnv(call), git), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] }, call.deadline);
       if (started === "held") return reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
       if (started === "no-folder") return reject(new HostGitError("unavailable", "the folder git would run in does not exist"));
@@ -187,46 +220,80 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
       let failure: HostGitError | undefined;
       let settled = false;
       let abandoning: NodeJS.Timeout | undefined;
+      const hold = call.holdPreparedRef;
+      const lock = hold && new AbortController();
+      let preparedWork: Promise<void> | undefined;
+      let releasing = false;
+      const loseLock = (): void => {
+        if (lock && !releasing) lock.abort(new HostGitError("terminated", "the prepared Git ref lock was lost"));
+      };
       const settle = (how: () => void): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         clearTimeout(abandoning);
+        call.signal?.removeEventListener("abort", cancel);
         how();
+      };
+      const settleAfterPreparedWork = (how: () => void): void => {
+        if (preparedWork) void preparedWork.then(() => settle(how));
+        else settle(how);
       };
       // The call ends here even when the process never reports its end: a descendant that holds a pipe, or a process the kill did not
       // reach, would otherwise hold the caller, and with it the run's queue, for good.
       const abandon = (): void => {
         abandoning ??= setTimeout(() => {
           for (const stream of [child.stdin, child.stdout, child.stderr]) stream.destroy();
-          settle(() => reject(failure ?? new HostGitError("terminated", "git ended and left its pipes open")));
+          settleAfterPreparedWork(() => reject(failure ?? new HostGitError("terminated", "git ended and left its pipes open")));
         }, teardownMs);
       };
       const stop = (error: HostGitError): void => {
         if (failure) return;
         failure = error;
+        loseLock();
         // The whole tree, within the bound that kill has of its own; then the wait for the pipes begins.
         void Promise.resolve().then(() => forceKillManagedChildProcess(child, `host git ${error.reason}`)).then(abandon, abandon);
       };
+      const cancel = (): void => stop(new HostGitError("terminated", "the prepared Git ref lock was lost"));
       const timer = setTimeout(() => stop(gitTimedOut()), Math.ceil(timeLeft()));
+      call.signal?.addEventListener("abort", cancel, { once: true });
       const collect = (into: Buffer[]) => (chunk: Buffer): void => {
         size += chunk.length;
         if (size > maxOutputBytes) stop(new HostGitError("output-limit", "git wrote more than the host reads"));
         else into.push(chunk);
       };
-      child.stdout.on("data", collect(out));
+      const collectStdout = collect(out);
+      child.stdout.on("data", (chunk: Buffer) => {
+        collectStdout(chunk);
+        if (hold && lock && !lock.signal.aborted && !preparedWork && Buffer.concat(out).toString("ascii") === "start: ok\nprepare: ok\n") {
+          const release = (): void => {
+            if (lock.signal.aborted) return;
+            releasing = true;
+            child.stdin.end("abort\n");
+          };
+          preparedWork = Promise.resolve().then(() => hold(lock.signal)).then(release, release);
+        }
+      });
       child.stderr.on("data", collect(err));
-      child.on("error", (error) => settle(() => reject(new HostGitError("unavailable", error.message, { cause: error }))));
-      child.on("exit", abandon);
-      child.on("close", (code) => settle(() => {
-        if (failure) reject(failure);
-        else if (call.deadline !== undefined && timeLeft() <= 0) reject(gitTimedOut());
-        // Ended by something other than the host: what it wrote is not a whole answer.
-        else if (code === null) reject(new HostGitError("terminated", "git ended without an exit code"));
-        else resolve({ code, stdout: Buffer.concat(out), stderr: Buffer.concat(err) });
-      }));
+      child.on("error", (error) => {
+        loseLock();
+        settleAfterPreparedWork(() => reject(new HostGitError("unavailable", error.message, { cause: error })));
+      });
+      child.on("exit", () => { loseLock(); abandon(); });
+      child.on("close", (code) => {
+        loseLock();
+        settleAfterPreparedWork(() => {
+          if (failure) reject(failure);
+          else if (preparedWork && lock?.signal.aborted) reject(lock.signal.reason);
+          else if (call.deadline !== undefined && timeLeft() <= 0) reject(gitTimedOut());
+          // Ended by something other than the host: what it wrote is not a whole answer.
+          else if (code === null) reject(new HostGitError("terminated", "git ended without an exit code"));
+          else resolve({ code, stdout: Buffer.concat(out), stderr: Buffer.concat(err) });
+        });
+      });
       child.stdin.on("error", () => undefined);
-      child.stdin.end(call.stdin ?? "");
+      if (call.holdPreparedRef) child.stdin.write(call.stdin ?? "");
+      else child.stdin.end(call.stdin ?? "");
     });
   }
 
@@ -357,4 +424,187 @@ function removeScratch(scratch: string, attempt = 0): void {
     if (attempt === 0) log.warn("the git floor probe's scratch folder could not be removed yet: %s", String(error));
     if (attempt < SCRATCH_RETRIES) setTimeout(() => removeScratch(scratch, attempt + 1), SCRATCH_RETRY_MS * (attempt + 1)).unref();
   }
+}
+
+const REMOTE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
+const COMMIT_ID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
+const REWRITE_KEYS = "^url\\..*\\.(insteadof|pushinsteadof)$";
+const REWRITE_KEY = new RegExp(REWRITE_KEYS, "u");
+
+type PushRemoteCode = "remote-not-configured" | "output-remote-local-unsupported" | "push-url-unverified";
+type PushCode = PushRemoteCode | "push-url-changed" | "push-ref-changed"
+  | "push-authentication" | "push-non-fast-forward" | "push-failed" | "output-execution-interrupted";
+
+interface PushBinding { remote: string; url: string; ref: string; sha: string }
+interface PushOutcome { status: "done" | "failed"; detail: string }
+
+export function isWorkflowPush(decl: RequestedOutputDecl): boolean {
+  return decl.owner === "host" && decl.ownerId === "host:git" && decl.toolName === "git_push";
+}
+
+function pushDeadline(): HostGitCall {
+  return { [WORKFLOW_PUSH]: true, exact: true, bytes: true, requiresFloor: true,
+    deadline: performance.now() + TOOL_TIMEOUT_POLICY.stageWorkspaceGitMs };
+}
+
+function withoutUrlSecrets(url: string): string {
+  // Keep the original spelling. Git compares rewrite prefixes against that exact spelling.
+  return url.replace(/^([a-z][a-z0-9+.-]*:\/\/)([^/@?#]*)@/iu, (_match, scheme: string, userInfo: string) =>
+    scheme.toLowerCase() === "ssh://" ? `${scheme}${userInfo.split(":", 1)[0]}@` : scheme);
+}
+
+function validatePushUrl(raw: string): { url: string } | { code: PushRemoteCode } {
+  if (/^file:/iu.test(raw) || (process.platform === "win32" && /^[a-z]:/iu.test(raw))
+    || /^[/\\]/u.test(raw) || !/^[^:/\\]+:/u.test(raw)) {
+    return { code: "output-remote-local-unsupported" };
+  }
+  const url = withoutUrlSecrets(raw);
+  if (!hasControlChars(url) && !hasInvisibleOrReorderingChars(url) && !url.startsWith("-") && !/[?#\\]/u.test(url)) {
+    if (/^(?:https|ssh):\/\//iu.test(url)) {
+      if (URL.canParse(url) && new URL(url).hostname) return { url };
+    } else if (!url.includes("://") && /^(?:[^@/:]+@)?(?:\[[\da-f:]+\]|[^/:]+):[^:]/iu.test(url)) {
+      return { url };
+    }
+  }
+  return { code: "remote-not-configured" };
+}
+
+function pushRefOf(runId: string): string {
+  return `refs/heads/${runBranch(runId)}`;
+}
+
+async function readPushUrl(git: HostGit, cwd: string, remote: string, call: HostGitCall): Promise<
+  { url: string } | { code: PushRemoteCode }
+> {
+  try {
+    const resolved = await git.run(cwd, ["remote", "get-url", "--push", "--all", remote], call);
+    if (resolved.code !== 0) {
+      const listed = await git.run(cwd, ["remote"], call);
+      return { code: listed.code === 0 && listed.stderr === "" && !listed.stdout.split("\n").includes(remote)
+        ? "remote-not-configured" : "push-url-unverified" };
+    }
+    const raw = resolved.stdout.slice(0, -1).split("\n");
+    if (resolved.stderr !== "" || !resolved.stdout.endsWith("\n")) return { code: "push-url-unverified" };
+    if (raw.length !== 1) return { code: "remote-not-configured" };
+    return validatePushUrl(raw[0]);
+  } catch { return { code: "push-url-unverified" }; }
+}
+
+function configRecords(result: HostGitResult): string[] | undefined {
+  if (result.stderr !== "") return;
+  if (result.code === 1 && result.stdout === "") return [];
+  if (result.code === 0 && result.stdout.endsWith("\0")) return result.stdout.slice(0, -1).split("\0");
+}
+
+async function pushConfigMatches(git: HostGit, cwd: string, url: string, call: HostGitCall): Promise<boolean> {
+  try {
+    const keys = `${REWRITE_KEYS}|^remote\\.${escapeRegExp(url)}\\.`;
+    const rules = configRecords(await git.run(cwd, ["config", "--includes", "--null", "--get-regexp", keys], call));
+    // NUL records preserve leading spaces and multiline values when matching literal rewrite prefixes.
+    if (!rules?.every(record => {
+      const boundary = record.indexOf("\n");
+      return boundary !== -1 && REWRITE_KEY.test(record.slice(0, boundary)) && !url.startsWith(record.slice(boundary + 1));
+    })) return false;
+    if (!/^https:/iu.test(url)) return true;
+    for (const [key, value] of Object.entries(HTTPS_PUSH_BOOLEAN_CONFIG)) {
+      const effective = configRecords(await git.run(cwd,
+        ["config", "--includes", "--null", "--type=bool", "--get-urlmatch", key, url], call));
+      if (effective?.length !== 1 || effective[0] !== value) return false;
+    }
+    const effective = configRecords(await git.run(cwd, ["config", "--includes", "--null", "--get-urlmatch", "http", url], call));
+    const hardened = new Map(Object.entries(HTTPS_PUSH_CONFIG));
+    if (!effective) return false;
+    for (const record of effective) {
+      const boundary = record.indexOf("\n");
+      const key = boundary < 0 ? record : record.slice(0, boundary);
+      if (!key.startsWith("http.")) return false;
+      if (hardened.has(key)) {
+        if (boundary < 0 || hardened.get(key) !== record.slice(boundary + 1)) return false;
+        hardened.delete(key);
+      }
+    }
+    return hardened.size === 0;
+  } catch { return false; }
+}
+
+async function readPushCommit(git: HostGit, cwd: string, ref: string, call: HostGitCall): Promise<string | undefined> {
+  const found = await git.run(cwd, ["for-each-ref", "--format=%(objecttype) %(objectname) %(refname) %(symref)", ref], call);
+  const sha = found.stdout.split(" ")[1];
+  if (found.code === 0 && found.stderr === "" && COMMIT_ID.test(sha) && found.stdout === `commit ${sha} ${ref} \n`) return sha;
+}
+
+export async function configuredWorkflowPush(git: HostGit, cwd: string, runId: string, raw: unknown): Promise<
+  { binding: PushBinding } | { code: "remote-not-configured" | "output-remote-local-unsupported" }
+> {
+  const refused = { code: "remote-not-configured" } as const;
+  if (!isPlainRecord(raw) || !hasExactKeys(raw, ["remote"]) || typeof raw.remote !== "string" || !REMOTE_NAME.test(raw.remote)) return refused;
+  const { remote } = raw;
+  const call = pushDeadline();
+  try {
+    const resolved = await readPushUrl(git, cwd, remote, call);
+    if ("code" in resolved) return resolved.code === "output-remote-local-unsupported" ? { code: resolved.code } : refused;
+    const { url } = resolved;
+    const ref = pushRefOf(runId);
+    const sha = await readPushCommit(git, cwd, ref, call);
+    if (!sha || !await pushConfigMatches(git, cwd, url, call)) return refused;
+    return { binding: { remote, url, ref, sha } };
+  } catch { return refused; }
+}
+
+function pushHost(url: string): string {
+  if (url.includes("://")) {
+    try { return new URL(url).hostname; } catch { return ""; }
+  }
+  return url.match(/^(?:[^@/:]+@)?(\[[\da-f:]+\]|[^/:]+):/iu)?.[1] ?? "";
+}
+
+export async function executeWorkflowPush(
+  git: HostGit, cwd: string | undefined, runId: string, args: Record<string, unknown>, canExecute: () => boolean, authority: AbortSignal,
+): Promise<PushOutcome> {
+  const failure = (code: PushCode): PushOutcome => ({ status: "failed", detail: code });
+  const { remote, url, ref, sha } = args;
+  if (!cwd || typeof remote !== "string" || !REMOTE_NAME.test(remote) || typeof url !== "string"
+    || ref !== pushRefOf(runId) || typeof sha !== "string" || !COMMIT_ID.test(sha)) return failure("remote-not-configured");
+  const approved = validatePushUrl(url);
+  if ("code" in approved) return failure(approved.code);
+  if (approved.url !== url || !hasExactKeys(args, ["remote", "url", "ref", "sha"])) return failure("remote-not-configured");
+  const call = pushDeadline();
+  let outcome = failure("push-ref-changed");
+  let lockSignal: AbortSignal | undefined;
+  try {
+    // Hold the run ref through transport. The source SHA also binds what Git reads if the lock exits before the host observes it.
+    const locked = await git.run(cwd, ["update-ref", "--stdin"], {
+      ...call, stdin: `start\noption no-deref\nverify ${ref} ${sha}\nprepare\n`,
+      holdPreparedRef: async signal => {
+        lockSignal = signal;
+        const lockedCall = { ...call, signal };
+        try {
+          if (await readPushCommit(git, cwd, ref, lockedCall) !== sha) return;
+          const resolved = await readPushUrl(git, cwd, remote, lockedCall);
+          if ("code" in resolved) { outcome = failure(resolved.code); return; }
+          if (resolved.url !== url) { outcome = failure("push-url-changed"); return; }
+          if (!await pushConfigMatches(git, cwd, url, lockedCall)) {
+            outcome = failure("push-url-unverified"); return;
+          }
+          signal.throwIfAborted();
+          if (!canExecute()) { outcome = failure("output-execution-interrupted"); return; }
+          // The launcher checks both the ref lock and the run's authority as it starts the process, on every launch attempt.
+          const pushed = await git.run(cwd, ["push", "--porcelain", "--no-follow-tags", "--recurse-submodules=no", "--no-signed", url, `${sha}:${ref}`],
+            { ...lockedCall, signal: AbortSignal.any([signal, authority]) });
+          // Only known diagnostic phrases are retained. A credential helper can write arbitrary secrets to either pipe.
+          const authMessage = pushed.stderr.match(/authentication failed|could not read (?:username|password)|permission denied|could not read from remote|terminal prompts disabled|refusing to prompt for credentials|cannot prompt|unable to get (?:username|password)|\b(?:401|403)\b/iu)?.[0];
+          const exit = pushed.code === 0 ? "ok"
+            : authMessage ? { code: "push-authentication", message: authMessage }
+              : /non-fast-forward|fetch first/iu.test(pushed.stdout) ? "push-non-fast-forward" : "push-failed";
+          outcome = { status: pushed.code === 0 ? "done" : "failed",
+            detail: canonicalWorkflowJson({ remote, host: pushHost(url).slice(0, 2048), branch: ref.slice("refs/heads/".length), sha, exit }) };
+        } catch { outcome = failure(authority.aborted && !signal.aborted ? "output-execution-interrupted" : "push-failed"); }
+      },
+    });
+    if (locked.code !== 0 && outcome.detail === "push-ref-changed") {
+      const resolved = await readPushUrl(git, cwd, remote, call);
+      if ("code" in resolved) return failure(resolved.code);
+    }
+  } catch { /* The ref was not verified, or the outcome was already classified by the attempt. */ }
+  return lockSignal?.aborted ? failure("push-ref-changed") : outcome;
 }

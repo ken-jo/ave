@@ -129,7 +129,8 @@ export class PluginMcpHost {
       const list = (await this.request("tools/list", {})) as { tools?: DiscoveredMcpTool[] };
       const tools: Tool[] = [];
       for (const tool of list.tools ?? []) {
-        const signedPolicy = this.signedOperationPolicies[tool.name];
+        const signedPolicy = Object.hasOwn(this.signedOperationPolicies, tool.name)
+          ? this.signedOperationPolicies[tool.name] : undefined;
         const wirePolicy = tool._meta?.["ai.agent-connector.ave/operationPolicy"];
         if (
           canonicalStringify(wirePolicy ?? null) !==

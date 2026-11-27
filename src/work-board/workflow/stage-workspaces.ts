@@ -853,7 +853,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     conflict: { conflictHash: resultHashOf(canonicalWorkflowJson({ runId: run.runId, joinId, reason, files, bound })), reason, files, ...(excerpt ? { excerpt } : {}) },
   });
 
-  async function integrateGit(run: RunRef, at: Held, joinId: string, stageIds: readonly string[]): ReturnType<StageWorkspaceProvider["integrate"]> {
+  async function integrateGit(run: RunRef, at: Held, joinId: string, stageIds: readonly string[], authority?: AbortSignal): ReturnType<StageWorkspaceProvider["integrate"]> {
     const { file } = at;
     const root = at.live?.root;
     const joined = file.joinDir === undefined ? undefined : at.run.child(JOIN_DIR, file.joinDir);
@@ -898,7 +898,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       file.merging = sealCommit;
       writeRunFile(at, file);
       await assertRepository(at);
-      const merged = await inJoin(["merge", "--no-edit", "--no-stat", "--no-verify", "--no-gpg-sign", "-m", `Collect stage ${stageId}\n\n${trailers(run, stageId)}`, END_OF_OPTIONS, sealCommit], { drivers });
+      // The run's authority goes to the launch itself, which checks it as it starts the process.
+      const merged = await inJoin(["merge", "--no-edit", "--no-stat", "--no-verify", "--no-gpg-sign", "-m", `Collect stage ${stageId}\n\n${trailers(run, stageId)}`, END_OF_OPTIONS, sealCommit], { drivers, ...authority ? { signal: authority } : {} });
       if (merged.code !== 0) {
         // The files are read before the abort takes the merge state away; one that could not be read refuses the join.
         const paths = await unmerged().catch((error: unknown) => error as Error);
@@ -926,7 +927,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return { ok: true };
   }
 
-  async function integrateFolder(run: RunRef, at: Held, joinId: string, stageIds: readonly string[]): ReturnType<StageWorkspaceProvider["integrate"]> {
+  async function integrateFolder(run: RunRef, at: Held, joinId: string, stageIds: readonly string[], authority?: AbortSignal): ReturnType<StageWorkspaceProvider["integrate"]> {
     const { file } = at;
     if (file.joins[joinId] === true) return { ok: true };
     if (stageIds.some(stageId => file.stages[stageId]?.sealed !== true)) throw new Error("a stage of the join is not sealed");
@@ -1004,27 +1005,76 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
     if (files.length > 0) return conflictOf(run, joinId, "same-path", files, Object.fromEntries(stageIds.map(id => [id, file.stages[id]?.manifest ?? []])));
     const wanted: typeof copies = [];
+    const keepUserOutput = (copy: (typeof copies)[number], there: { sha256: string; size: number }): boolean => {
+      if (there.sha256 === copy.sha256 || there.sha256 === file.out[copy.path]?.sha256) return false;
+      next.set(copy.path, { ...there, stageId: copy.stageId });
+      return true;
+    };
     // Checked before anything is written: each sealed file is still what was sealed, and a file the host did not put in the output folder stays.
     for (const copy of copies) {
       if (contested.has(copy.path)) continue;
       if ((await hashSeedFile(stageDir(copy.stageId), copy.path)).sha256 !== copy.sha256) throw new Error("a sealed stage file changed before it was collected");
       const there = fileInOut(copy.path) ? await hashSeedFile(out, copy.path) : undefined;
-      if (there !== undefined && there.sha256 !== copy.sha256 && there.sha256 !== file.out[copy.path]?.sha256) next.set(copy.path, { ...there, stageId: copy.stageId });
-      else wanted.push(copy);
+      if (there === undefined || !keepUserOutput(copy, there)) wanted.push(copy);
     }
-    // Each copy is the sealed content, or it does not stay.
-    for (const copy of wanted) await copySeedFiles(stageDir(copy.stageId), out, [copy.path], new Map([[copy.path, copy.sha256]]));
-    file.out = Object.fromEntries(next);
-    file.joins[joinId] = true;
-    writeRunFile(at, file);
+    const assertAuthority = () => authority?.throwIfAborted();
+    assertAuthority();
+    const staged = wanted.length > 0 ? at.run.makeTemp("collect-") : undefined;
+    const published = new Map<string, WorkspaceRecord["out"][string]>();
+    try {
+      if (staged) {
+        // Prepare the verified bytes off the output tree. An interrupted read leaves the previous output intact.
+        const prepared = [];
+        for (const copy of wanted) {
+          assertAuthority();
+          const [source] = await copySeedFiles(stageDir(copy.stageId), staged, [copy.path], new Map([[copy.path, copy.sha256]]), false, authority);
+          if (source === undefined) throw new Error("a staged copy is missing");
+          prepared.push({ copy, source });
+        }
+        // Publish without yielding. A failed rename leaves the last destination intact.
+        const keptUserOutput = Symbol();
+        for (const { copy, source } of prepared) {
+          const segments = copy.path.split("/");
+          const leaf = segments.pop() as string;
+          assertAuthority();
+          const destination = out.ensurePath(segments);
+          try {
+            destination.replaceFileFrom(leaf, source.directory, leaf, source.id, () => {
+              const there = destination.hashFile(leaf);
+              if (there !== undefined && keepUserOutput(copy, there)) throw keptUserOutput;
+              assertAuthority();
+            });
+          } catch (error) {
+            if (error === keptUserOutput) continue;
+            throw error;
+          }
+          published.set(copy.path, { sha256: copy.sha256, size: copy.size, stageId: copy.stageId });
+        }
+      }
+      assertAuthority();
+      file.out = Object.fromEntries(next);
+      file.joins[joinId] = true;
+      writeRunFile(at, file);
+    } catch (error) {
+      // Keep the identity of each completed copy so a later attempt can distinguish it from a user's edit.
+      delete file.joins[joinId];
+      if (published.size > 0) {
+        file.out = Object.fromEntries([...Object.entries(file.out), ...published]);
+        writeRunFile(at, file);
+      }
+      throw error;
+    } finally {
+      if (staged) await at.run.remove(basename(staged.path), staged.id);
+    }
     return { ok: true };
   }
 
-  function integrate(run: RunRef, joinId: string, stageIds: readonly string[]): ReturnType<StageWorkspaceProvider["integrate"]> {
+  function integrate(run: RunRef, joinId: string, stageIds: readonly string[], authority?: AbortSignal): ReturnType<StageWorkspaceProvider["integrate"]> {
     return serial(run.runId, async () => {
+      authority?.throwIfAborted();
       const found = locate(run);
       if (!found) throw new Error("the run has no workspace");
-      return found.file.kind === "git" ? integrateGit(run, found, joinId, stageIds) : integrateFolder(run, found, joinId, stageIds);
+      return found.file.kind === "git" ? integrateGit(run, found, joinId, stageIds, authority) : integrateFolder(run, found, joinId, stageIds, authority);
     });
   }
 

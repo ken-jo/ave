@@ -209,6 +209,7 @@ export interface ExecutionStageContext {
   approvedPolicyEpoch?: string;
   permissionRecheckResult?: PermissionCheckResult;
   replayRootBinding?: ReplayRootBinding;
+  approvedInvocation?: ExecuteOptions["approvedInvocation"];
   /** The file targets and project anchors the authorization judged; verified at handler admission. */
   fileTargetSeal?: TargetSeal;
   imageTargetPath?: string;
@@ -1337,6 +1338,7 @@ export async function executeAuthorizedToolInvocation(
       abortSignal: signal,
     };
     if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
+    if (context.approvedInvocation && !context.approvedInvocation(tool, finalInput)) throw new Error("The approved output changed");
     let execution: ReturnType<Tool["execute"]>;
     try {
       execution = runWithToolExecutionCwd(executionCwd, () =>

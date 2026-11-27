@@ -10,6 +10,8 @@ import { extractFileEditDiff } from "../utils/file-diff.js";
 import type { FileEditDiffData } from "../utils/file-diff.js";
 import { getToolCallLabel, getToolDisplayName } from "../utils/tool-display.js";
 import { formatDuration } from "../../../lib/turn-summary-format.js";
+import { STAGE_REQUEST_OUTPUT_TOOL } from "../../../shared/workflow-template-types.js";
+import { isRecord } from "../../../shared/is-record.js";
 import { parseBrowserPreviewImage } from "../../../shared/browser-workspace.js";
 import type { RenderHtmlPayload } from "../types.js";
 import { HtmlPreview } from "./HtmlPreview.js";
@@ -242,6 +244,17 @@ function ToolStatusBadge({
   );
 }
 
+function WorkflowOutputRefusal({ tool }: { tool: ToolItem }) {
+  const { t } = useTranslation();
+  if (tool.source !== "builtin" || tool.name !== STAGE_REQUEST_OUTPUT_TOOL || tool.status !== "error" || typeof tool.result !== "string") return null;
+  let result: unknown;
+  try { result = JSON.parse(tool.result); } catch { return null; }
+  if (!isRecord(result) || typeof result.reasonCode !== "string") return null;
+  const key = `reasonCodes.${result.reasonCode}`;
+  const message = t(key);
+  return message === key ? null : <p className="px-3 py-1 text-destructive" role="status">{message}</p>;
+}
+
 function isToolResultStub(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -337,6 +350,7 @@ function SingleToolInline({
           : <ToolDurationBadge durationMs={tool.durationMs} />}
         {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
       </div>
+      <WorkflowOutputRefusal tool={tool} />
       <LiveToolOutput tool={tool} />
       <ToolBrowserPreview tool={tool} />
       <DocumentToolLink name={tool.name} result={tool.result} sessionId={sessionId} failed={isError} />
@@ -501,6 +515,7 @@ export function ToolGroupCard({
         )}
         {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
       </button>
+      {tools.map(tool => <WorkflowOutputRefusal key={tool.toolUseId} tool={tool} />)}
       {/* A collapsed group still shows what its running tools print. */}
       {!open && tools.map((tool) => <LiveToolOutput key={tool.toolUseId} tool={tool} />)}
       {/* A collapsed group shows only its latest page thumbnail. */}

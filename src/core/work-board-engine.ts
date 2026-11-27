@@ -1,4 +1,4 @@
-import { withoutWorkflowProjection } from "../work-board/workflow/run-read-projection.js";
+import { withoutWorkflowProjection, type WorkflowRunReadSurface } from "../work-board/workflow/run-read-projection.js";
 /** Sequence isolated plan and execution children around the user's work approval of each plan; persist their output and execution session
  * id on the board. The approval is a decision stored on the item (permission-decision-tree.md "Work approvals"), not a tool-approval card. */
 import { randomUUID } from "node:crypto";
@@ -31,14 +31,17 @@ import type {
   StageJoinDecideInput,
   StageJoinDecideResult,
   OpenJoinResult,
+  StageOutputRetryInput,
+  StageOutputRetryResult,
   StageRetryInput,
   StageRetryResult,
   WorkItemUpdateResult,
 } from "../shared/work-board-types.js";
 import type { EnvelopeToolRef, RemoteProvisionalStart, RunAuthoritySource } from "../shared/workflow-template-types.js";
+import type { SecuritySettingsDecision } from "../ipc/security-settings-gesture.js";
 import type { RunRecord } from "../work-board/workflow/run-state.js";
 import type { ScheduledRunOutcome } from "../work-board/workflow/schedule-breaker.js";
-import { createStageRunEngine, type StageRunEngineDeps, type ScheduledTemplateSource, type ScheduledTemplateStart } from "../work-board/workflow/stage-run-engine.js";
+import { createStageRunEngine, type StageGateDecider, type StageRunEngineDeps, type ScheduledTemplateSource, type ScheduledTemplateStart } from "../work-board/workflow/stage-run-engine.js";
 import {
   MAX_PLAN_NOTE_LENGTH,
   BRIEFING_PROPOSAL_KINDS,
@@ -206,9 +209,10 @@ export interface WorkBoardEngine {
 
   /** Template runs. The user's decision at a stage gate or on a join that could not be collected, a retry of a failed stage, and
    * continuing a run that a restart left with only ready stages. Each is refused and changes nothing unless it matches the stored run. */
-  decideStageGate(itemId: number, input: StageGateDecideInput, authority?: WorkDecisionAuthority): Promise<StageGateDecideResult>;
+  decideStageGate(itemId: number, input: StageGateDecideInput, decider?: StageGateDecider): Promise<StageGateDecideResult>;
   decideStageJoin(itemId: number, input: StageJoinDecideInput, authority?: WorkDecisionAuthority): Promise<StageJoinDecideResult>;
   openStageJoin(itemId: number, input: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
+  retryOutput(itemId: number, input: StageOutputRetryInput, receipt: SecuritySettingsDecision): Promise<StageOutputRetryResult>;
   retryStage(itemId: number, input: StageRetryInput): Promise<StageRetryResult>;
   continueRun(itemId: number, input: { runId: string }): Promise<StageRetryResult>;
   /** Called beside the workspace revocation fan-out: stops every live stage child of template runs on that project. */
@@ -216,8 +220,8 @@ export interface WorkBoardEngine {
   /** Boot, after the store reconciled: show rows as the run file says and take over unsettled template runs. Spawns nothing. */
   adoptParkedTemplateRuns(): Promise<void>;
   /** Adds what a board reader is told about each row's template run; drops whatever a row says about it itself. */
-  readTemplateRuns<T extends WorkItemResolved>(items: readonly T[]): Promise<T[]>;
-  projectTemplateRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }): Promise<T[]>;
+  readTemplateRuns<T extends WorkItemResolved>(items: readonly T[], surface?: WorkflowRunReadSurface): Promise<T[]>;
+  projectTemplateRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }, surface?: "local-desktop"): Promise<T[]>;
   /** The user's clear of a row shown `template-run-not-found`, while it is as its card showed it: the row ends error. Starts and stops
    * nothing. */
   clearMissingRun(itemId: number, input: { revision: string; runId: string }): Promise<WorkItemUpdateResult>;
@@ -1082,17 +1086,18 @@ export function createWorkBoardEngine(
     steerRun,
     cancelRun,
     readScheduledOutcome: async (record) => stageRuns?.readScheduledOutcome(record) ?? null,
-    decideStageGate: async (itemId, input, authority) => { await recover(); return stageRuns?.decideGate(itemId, input, authority) ?? { ok: false, reason: "not_found" }; },
+    decideStageGate: async (itemId, input, decider) => { await recover(); return stageRuns?.decideGate(itemId, input, decider) ?? { ok: false, reason: "not_found" }; },
     decideStageJoin: async (itemId, input, authority) => { await recover(); return stageRuns?.decideJoin(itemId, input, authority) ?? { ok: false, reason: "not_found" }; },
     openStageJoin: async (itemId, input, open) => stageRuns?.openJoin(itemId, input, open) ?? { ok: false, reason: "not_found" },
+    retryOutput: async (itemId, input, receipt) => { await recover(); return stageRuns?.retryOutput(itemId, input, receipt) ?? { ok: false, reason: "not_found" }; },
     retryStage: async (itemId, input) => { await recover(); return stageRuns?.retryStage(itemId, input) ?? { ok: false, reason: "not_found" }; },
     continueRun: async (itemId, input) => { await recover(); return stageRuns?.continueRun(itemId, input) ?? { ok: false, reason: "not_found" }; },
     projectRootRevoked: (canonicalRoot) => stageRuns?.projectRootRevoked(canonicalRoot),
     adoptParkedTemplateRuns: async () => { await recover(); await stageRuns?.adoptParkedRuns(); },
-    readTemplateRuns: async (items) => stageRuns ? stageRuns.readRuns(items) : items.map(withoutWorkflowProjection),
-    projectTemplateRuns: async (items, detail) => {
+    readTemplateRuns: async (items, surface) => stageRuns ? stageRuns.readRuns(items, undefined, surface) : items.map(withoutWorkflowProjection),
+    projectTemplateRuns: async (items, detail, surface) => {
       await recover();
-      return stageRuns ? stageRuns.projectRuns(items, detail) : items.map(withoutWorkflowProjection);
+      return stageRuns ? stageRuns.projectRuns(items, detail, surface) : items.map(withoutWorkflowProjection);
     },
     clearMissingRun: async (itemId, input) => { await recover(); return stageRuns?.clearMissingRun(itemId, input) ?? { status: "not_found", itemId }; },
   };

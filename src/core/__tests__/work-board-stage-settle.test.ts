@@ -7,6 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { within } from "../../__tests__/support/signal-wait.js";
 import { en } from "../../i18n/messages/en.js";
+import * as boardStorage from "../../main/storage/rewrite-keeping-bytes.js";
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { ko } from "../../i18n/messages/ko.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
@@ -1415,6 +1416,15 @@ it("a user's delete of the listed row of a run a restart left with a stage runni
 
 const intentsOf = (h: Harness): unknown => (JSON.parse(readFileSync(runsFile(h), "utf8")) as { deleteIntents?: unknown }).deleteIntents ?? [];
 
+function failNextBoardWrite(boardPath: string): void {
+  const rewrite = boardStorage.rewriteKeepingBytes;
+  const write = vi.spyOn(boardStorage, "rewriteKeepingBytes").mockImplementation(async (path, ...args) => {
+    if (path !== boardPath) return rewrite(path, ...args);
+    write.mockRestore();
+    throw new Error("the board write failed");
+  });
+}
+
 async function parkedRun(h: Harness): Promise<{ id: number; runId: string }> {
   const version = await h.confirm([stageOf("a")]);
   const id = await h.addItem(version);
@@ -1498,23 +1508,27 @@ it("a deleted row's run whose takeover write fails keeps its delete intent, and 
   expect(h.interrupts).toEqual([]);
 }));
 
-it("a delete whose board write fails after its delete intent is stored deletes nothing, takes its intent back and ends no run: the live run completes untouched", () => withHarness(async (h) => {
+it("a delete whose board write fails withdraws its intent and stops the live run on the retained row", () => withHarness(async (h) => {
   const live = await liveRun(h);
   const row = await h.item(live.id);
-  vi.spyOn(h.board as unknown as { commit: (board: unknown) => Promise<void> }, "commit").mockRejectedValueOnce(new Error("the board write failed"));
+  failNextBoardWrite(h.boardPath);
   await expect(h.board.remove(live.id, row.mutationRevision)).rejects.toThrow("the board write failed");
   expect(intentsOf(h)).toEqual([]);
   expect((await h.item(live.id)).runId).toBe(live.runId);
   expect(await h.board.deletedRuns()).toEqual([]);
-  await completesUntouched(h, live);
+  expect(await live.run).toMatchObject({ status: "cancelled", reason: "user-stopped" });
+  expect(h.interrupts).toEqual([live.child.sessionId]);
+  expect((await h.runOf(live.runId))?.settled?.status).toBe("cancelled");
   expect(intentsOf(h)).toEqual([]);
 }));
 
-it("a delete whose board write fails after its delete intent is stored takes its intent back and leaves the parked run to its listed row at the next boot, and the delete tried again ends it cancelled as its row removed", () => withHarness(async (h) => {
+it("a failed delete with no engine to consume its Stop leaves the parked run for the next boot and a later delete removes it", () => withHarness(async (h) => {
   const { id, runId } = await parkedRun(h);
   const row = await h.item(id);
-  vi.spyOn(h.board as unknown as { commit: (board: unknown) => Promise<void> }, "commit").mockRejectedValueOnce(new Error("the board write failed"));
-  await expect(h.board.remove(id, row.mutationRevision)).rejects.toThrow("the board write failed");
+  const dying = new WorkBoardStore(h.boardPath);
+  failNextBoardWrite(h.boardPath);
+  await expect(dying.remove(id, row.mutationRevision)).rejects.toThrow("the board write failed");
+  expect(dying.runAuthority(id, runId).aborted).toBe(true);
   expect(intentsOf(h)).toEqual([]);
 
   const next = h.makeEngine();

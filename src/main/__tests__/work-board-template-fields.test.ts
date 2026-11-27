@@ -14,7 +14,7 @@ afterEach(async () => { vi.restoreAllMocks(); await rm(dir, { recursive: true, f
 
 const pin = { templateId: "template-1", version: 1, graphHash: "b".repeat(64) };
 const source = { kind: "local-create-and-run", pin } as const;
-const stage = { stageId: "plan", attempt: 1, status: "awaiting_gate", output: "result", resultHash: "a".repeat(64), outputHash: "c".repeat(64), gate: { type: "human", status: "pending", revision: 0 } } as const;
+const stage = { stageId: "plan", attempt: 1, status: "awaiting_gate", output: "result", resultHash: "a".repeat(64), gate: { type: "human", status: "pending", revision: 0 } } as const;
 const start = (): TemplateRunStart => ({ ...pin, source, stageRuns: [structuredClone(stage)] });
 const row = (id: number, patch: Record<string, unknown> = {}) => ({ id, title: `Work ${id}`, status: "planned", priority: "medium", created_at: "2026-01-01", updated_at: "2026-01-01", ...patch });
 const readJson = async (path: string) => JSON.parse(await readFile(path, "utf8"));
@@ -38,7 +38,7 @@ it("keeps a board row with run fields written by hand as it was written, unliste
     stageRuns: [{ ...stage, gate: { type: "human", status: "approved", revision: 0 } }],
     stageJoins: [{ joinId: "join-a", stageIds: ["plan"], status: "integrated" }],
     runWorkspace: { kind: "folder", runRoot: "/runs/example" }, gate: { type: "human", status: "approved", revision: 0 },
-    resultHash: "a".repeat(64), outputHash: "c".repeat(64),
+    resultHash: "a".repeat(64),
   };
   const history = { runId: "run-1", startedAt: "2026-01-01", status: "executing" };
   const approval = { status: "pending", runId: "run-1", planHash: "d".repeat(64), itemDigest: "e".repeat(64), requestedAt: "2026-01-01", revision: 0 };

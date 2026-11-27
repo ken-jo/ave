@@ -102,7 +102,7 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
         review.push({ kind: "plan", deny: "reject", binding: { itemId, input: { runId, planHash } }, review: view });
       }
     }
-    for (const item of await engine.readTemplateRuns(rows.filter(row => row.templateId !== undefined && row.runId !== undefined))) {
+    for (const item of await engine.readTemplateRuns(rows.filter(row => row.templateId !== undefined && row.runId !== undefined), "tailnet")) {
       for (const view of workflowApprovalViews(item, projects)) {
         if (view.kind === "join-conflict") {
           review.push({ kind: "join", deny: "reject", binding: { itemId: item.id, input: view.binding }, review: view });
@@ -111,7 +111,7 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
         review.push({ kind: "stage", deny: "reject", binding: { itemId: item.id, input: view.binding }, review: view });
         const registered = outputRegistration;
         const { outputHash, runId, stageId, attempt } = view.binding;
-        if (!registered || !outputHash || !view.outputs?.length) continue;
+        if (!registered || !outputHash) continue;
         const scoped = withOutputAuthority(withProjectAuthority(evidence, item.projectRoot), registered);
         if (!scoped.authority.isCurrent()) continue;
         const input = { itemId: item.id, runId, stageId, attempt, outputHash };
@@ -263,17 +263,21 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
     const note = request.kind === "requested-output" ? undefined : request.input.note;
     if (note !== undefined && note.length > MAX_PLAN_NOTE_LENGTH) return refused("note_too_long");
     const effectiveNote = note !== undefined && settingsService.get("privacy")?.piiRedactEnabled ? redactForLLM(note).redacted : note;
-    if (request.kind === "requested-output" || (request.kind === "stage" && request.input.decision !== "request_changes")) {
+    if (request.kind === "requested-output" || (outputRegistration && request.kind === "stage" && request.input.decision === "reject")) {
       const { runId, stageId, attempt, outputHash, decision } = request.input;
       if (item.item.runId !== runId) return refused("run_mismatch");
-      const [current] = await engine.readTemplateRuns([item.item]);
+      const [current] = await engine.readTemplateRuns([item.item], "tailnet");
       const pending = current?.pendingWorkflowDecisions?.find(entry => entry.kind === "stage-gate" && entry.binding.stageId === stageId);
-      if (pending?.kind === "stage-gate" && pending.outputs?.length) {
+      if (pending?.kind === "stage-gate" && pending.binding.outputHash !== undefined) {
         if (pending.binding.attempt !== attempt) return refused("attempt_mismatch");
         if (request.kind === "stage" && request.input.resultHash !== pending.binding.resultHash) return refused("result_mismatch");
         if (outputHash === undefined || outputHash !== pending.binding.outputHash) return refused("output_mismatch");
         if (effectiveNote !== undefined && hasUnsafeDirectiveControlChars(effectiveNote)) return refused("note_invalid");
-        // The owner commits both the stage gate and the execution records. A remote decision never starts those executions.
+        if (request.kind === "requested-output" && decision === "approve") {
+          const result = await engine.decideStageGate(itemId, { ...pending.binding, decision }, { kind: "tailnet", authority: evidence.authority });
+          return result.ok ? { ok: true, kind: request.kind } : refused(result.reason);
+        }
+        // The registered owner commits the gate rejection and checks its own authority.
         if (decision === "request_changes") return refused("not_pending");
         const result = await decideOutputs({ itemId, runId, stageId, attempt, outputHash, decision }, evidence, effectiveNote);
         if (!result.ok) return refused(result.error);
@@ -284,7 +288,7 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
     }
     const result = request.kind === "plan"
       ? (await engine.decidePlan(itemId, { ...request.input, note: effectiveNote }, { authority: evidence.authority })).result
-      : await engine.decideStageGate(itemId, { ...request.input, note: effectiveNote }, evidence.authority);
+      : await engine.decideStageGate(itemId, { ...request.input, note: effectiveNote }, { kind: "tailnet", authority: evidence.authority });
     return result.ok ? { ok: true, kind: request.kind, status: result.status } : refused(result.reason);
   }
 

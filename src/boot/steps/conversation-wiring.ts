@@ -31,6 +31,7 @@ import { createWorkBoardEngine, type WorkBoardEngine,
 import { createWorkBoardReporter, type WorkBoardReporter,
 } from "../../work-board/work-report.js";
 import { appendMemory } from "../../work-board/work-memory.js";
+import { governedWorkflowOutput } from "./workflow-output-invocation.js";
 import { workflowEngineExtensions } from "./workflow-engine-extensions.js";
 import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import { isAuthorizedWorkspaceProjectRoot, resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
@@ -640,7 +641,7 @@ export async function wireConversation(
     // Persist each run’s conversations so context survives restart and accumulates across reruns.
     transcriptStorage: workBoardStorage,
     workflow: {
-      ...workflowEngineExtensions(workBoardStore, ctx.workflowTemplateStore, permissionManager, unattendedEffects),
+      ...workflowEngineExtensions(workBoardStore, ctx.workflowTemplateStore, permissionManager, governedWorkflowOutput(toolRegistry, conversationLoop.toolExecutor), unattendedEffects),
       resolveProjectRoot: (projectRoot) => {
         const resolved = resolveAuthorizedWorkspaceProject(projectRoot);
         return resolved.authorized && resolved.project ? resolved.project.projectRoot : null;

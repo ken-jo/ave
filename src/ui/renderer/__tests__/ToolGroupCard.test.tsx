@@ -74,6 +74,14 @@ function installHtmlPreviewWindowMock() {
 }
 
 describe("ToolGroupCard", () => {
+  it.each([false, true])("shows the local push refusal on the intake card with grouped=%s", grouped => {
+    const tool = makeTool({ name: "stage_request_output", source: "builtin", status: "error",
+      result: '{"reasonCode":"output-remote-local-unsupported"}' });
+    const group = grouped ? makeMultiGroup({ tools: [tool, makeTool({ toolUseId: "tu-2" })] }) : makeGroup({ tools: [tool] });
+    const { getByText } = render(<ToolGroupCard group={group} />);
+    expect(getByText(t("reasonCodes.output-remote-local-unsupported"))).toBeVisible();
+  });
+
   it("renders without crashing", () => {
     const { container } = render(<ToolGroupCard group={makeGroup()} />);
     expect(container).toBeTruthy();

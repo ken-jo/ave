@@ -703,6 +703,7 @@ describe("preload contextBridge world shape lock", () => {
           "resumeSessionGoal": "function",
           "retryBootstrap": "function",
           "retryWorkStage": "function",
+          "retryWorkStageOutput": "function",
           "runWorkBoardBriefing": "function",
           "runWorkBoardItem": "function",
           "savePersonaPrompt": "function",

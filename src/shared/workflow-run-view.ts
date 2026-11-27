@@ -4,7 +4,7 @@ import type { StageJoin, TemplateVersionPin, WorkItemStageRun } from "./workflow
 type JoinEvidence = Omit<NonNullable<StageJoin["conflict"]>, "conflictHash">;
 
 export type PendingWorkflowDecision =
-  | { kind: "stage-gate"; binding: Omit<StageGateDecideInput, "decision" | "note">; result: string; outputs?: { id: string; summary: string }[]; arrivedAt: string | null }
+  | { kind: "stage-gate"; binding: Omit<StageGateDecideInput, "decision" | "note">; result: string; outputs?: { id: string; summary: string; payload: string; pushRunBranch?: boolean; httpsAccountsHelp?: boolean }[]; arrivedAt: string | null }
   | { kind: "join-conflict"; binding: Omit<StageJoinDecideInput, "decision">; evidence: JoinEvidence; canOpenFolder?: boolean; arrivedAt: null };
 
 export interface WorkflowRunPinView {
@@ -30,10 +30,11 @@ export interface WorkflowStageInputView {
   truncated: boolean;
 }
 
-export interface WorkflowStageView extends Pick<WorkItemStageRun, "stageId" | "attempt" | "status" | "childSessionId" | "startedAt" | "endedAt" | "failure" | "gate"> {
+export interface WorkflowStageView extends Pick<WorkItemStageRun, "stageId" | "attempt" | "status" | "childSessionId" | "startedAt" | "endedAt" | "failure" | "gate" | "outputExecutions"> {
   deniedCalls?: WorkItemStageRun["deniedCalls"];
   result?: string;
   resultHash?: string;
+  outputRetry?: { hash: string; ids: string[] };
   receivedInputs?: WorkflowStageInputView[];
   activity?: WorkflowStageActivity;
   breaker?: WorkflowStageBreaker;
