@@ -3438,13 +3438,26 @@ export async function checkAsrtDependencies(): Promise<{
   if (process.platform === "win32") {
     const mod = await import("@anthropic-ai/sandbox-runtime");
     // A missing bundled binary is a failed check, not a boot crash: ASRT's own implicit-resolve path reports it the same way, and the gate turns it into `windows-sandbox-missing` (sandbox-start-failure.ts).
-    let srtWin: ReturnType<typeof mod.resolveSrtWin>;
     try {
-      srtWin = mod.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
+      const srtWin = mod.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
+      const { user, wfp } = await mod.checkWindowsSandboxStatusAsync({ srtWin });
+      if (user.provisioned === false && user.groupExists === false && user.credPresent === false
+        && user.inBuiltinUsers === false && user.inSandboxGroup === false && user.hiddenFromLogon === false
+        && user.sid === undefined && user.groupSid === undefined && user.markerVersion === undefined
+        && user.caCertThumb === undefined && user.caCertPem === undefined
+        && wfp.state === "absent" && wfp.filters === 0 && wfp.userSid === undefined
+        && wfp.portRange === undefined && wfp.hint === undefined) {
+        return { errors: [], warnings: [], accountBackendAbsent: true };
+      }
+      if (user.provisioned !== true || user.groupExists !== true || user.credPresent !== true) {
+        return { errors: [`Windows sandbox account setup is incomplete. ${mod.windowsInstallInstructions()}`], warnings: [] };
+      }
+      // When enumeration is unavailable, initialization still requires the behavioral egress probe.
+      if (wfp.state === "installed" || wfp.state === "cannot-read") return { errors: [], warnings: [] };
+      return { errors: [`Windows sandbox network filters are unavailable. ${mod.windowsInstallInstructions()}`], warnings: [] };
     } catch (error) {
       return { errors: [errorMessage(error)], warnings: [], dependencyFailure: error };
     }
-    return mod.checkWindowsDependenciesAsync({ srtWin });
   }
   const SandboxManager = await loadSandboxManager();
   if (process.platform === "linux" && SandboxManager.isSupportedPlatform()) {

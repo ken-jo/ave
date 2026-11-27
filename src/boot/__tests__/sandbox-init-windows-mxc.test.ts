@@ -21,6 +21,8 @@ const SANDBOX_ROOT_NAME = vi.hoisted(() => `ave-sandbox-init-windows-mxc-sandbox
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
   checkDeps: vi.fn(),
+  accountInventory: vi.fn(),
+  accountDependencies: vi.fn(),
   offlineConfinement: vi.fn(),
   accountOperational: vi.fn(),
   requireLauncher: vi.fn(),
@@ -68,6 +70,17 @@ vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
   probeHostMxcPowerShellStart: h.startProbe,
   getHostWxcExecIdentity: h.requireLauncher,
   resolveHostWxcExecPath: h.verifyLauncher,
+}));
+
+vi.mock("@anthropic-ai/sandbox-runtime", () => ({
+  resolveSrtWin: ({ path }: { path: string }) => ({ exe: path, prependArgs: [] }),
+  checkWindowsDependenciesAsync: h.accountDependencies,
+  checkWindowsSandboxStatusAsync: h.accountInventory,
+  windowsInstallInstructions: () => "Complete Windows sandbox setup.",
+}));
+vi.mock("../../permissions/srt-win-integrity.js", async original => ({
+  ...await original<typeof import("../../permissions/srt-win-integrity.js")>(),
+  getVerifiedSrtWinExePath: () => "C:/example/resources/srt-win.exe",
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
@@ -144,6 +157,11 @@ const SRT_WIN_MISSING = { errors: ["no srt-win path configured"], warnings: [] }
 const MXC_OK = { state: "available", windowsBuild: "10.0.26300.9711" };
 const MXC_OLD = { state: "unavailable", reason: "container-unavailable", windowsBuild: "10.0.22631.4317", detail: "no container API" };
 const NO_CONTAINER = { ...MXC_OLD, baseContainerApiPresent: false, containerBackendAbsent: true };
+const EMPTY_ACCOUNT_INVENTORY = {
+  user: { provisioned: false, groupExists: false, credPresent: false, inBuiltinUsers: false,
+    inSandboxGroup: false, hiddenFromLogon: false, realUserSid: "S-1-5-21-1000" },
+  wfp: { state: "absent", filters: 0 },
+};
 const NO_ACCOUNT_BACKEND = { errors: [], warnings: [], accountBackendAbsent: true };
 const RELEASE_EVIDENCE = {
   ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
@@ -885,7 +903,12 @@ it.each([
   { label: "duplicate raw API fact", response: JSON.stringify(HOST_CONTAINER_ABSENCE_PROBE).replace(
     '"baseContainerApiPresent":false', '"baseContainerApiPresent":true,"baseContainerApiPresent":false',
   ) },
-  { label: "definitive host absence", response: HOST_CONTAINER_ABSENCE_PROBE, available: true },
+  { label: "definitive host absence", response: HOST_CONTAINER_ABSENCE_PROBE, available: true, inventory: EMPTY_ACCOUNT_INVENTORY },
+  { label: "account group remains", mxc: NO_CONTAINER, inventory: { ...EMPTY_ACCOUNT_INVENTORY, user: { ...EMPTY_ACCOUNT_INVENTORY.user, groupExists: true } } },
+  { label: "account setup marker remains", mxc: NO_CONTAINER, inventory: { ...EMPTY_ACCOUNT_INVENTORY, user: { ...EMPTY_ACCOUNT_INVENTORY.user, markerVersion: 1 } } },
+  { label: "network filters remain", mxc: NO_CONTAINER, inventory: { ...EMPTY_ACCOUNT_INVENTORY, wfp: { state: "absent", filters: 1 } } },
+  { label: "network inventory unreadable", mxc: NO_CONTAINER, inventory: { ...EMPTY_ACCOUNT_INVENTORY, wfp: { state: "cannot-read", filters: 0 } } },
+  { label: "account inventory probe failed", mxc: NO_CONTAINER, inventory: new Error("inventory unavailable") },
   { label: "container API present", mxc: { ...MXC_OLD, baseContainerApiPresent: true }, deps: NO_ACCOUNT_BACKEND },
   { label: "container API fact missing", mxc: MXC_OLD, deps: NO_ACCOUNT_BACKEND },
   { label: "contradictory container facts", mxc: { ...NO_CONTAINER, baseContainerApiPresent: true }, deps: NO_ACCOUNT_BACKEND },
@@ -900,12 +923,22 @@ it.each([
   { label: "account setup failed", mxc: NO_CONTAINER, deps: { errors: ["setup failed"], warnings: [] } },
   { label: "contradictory account result", mxc: NO_CONTAINER, deps: { ...NO_ACCOUNT_BACKEND, errors: ["setup failed"] } },
   { label: "backend ready", mxc: NO_CONTAINER, deps: { errors: [], warnings: [] } },
-])("projects settings and admits unconfined inference only with boot evidence: $label", async ({ mxc, deps, response, available, rootFailed }) => {
+])("projects settings and admits unconfined inference only with boot evidence: $label", async ({ mxc, deps, response, available, rootFailed, inventory }) => {
   const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
   try {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
     if (rootFailed) h.establishHomesError = new Error("root not private");
     h.checkDeps.mockResolvedValue(deps ?? NO_ACCOUNT_BACKEND);
+    if (inventory !== undefined) {
+      h.accountDependencies.mockReset().mockResolvedValue({ errors: ["Sandbox account is not provisioned"], warnings: [] });
+      h.accountInventory.mockReset().mockImplementation(async () => {
+        if (inventory instanceof Error) throw inventory;
+        return inventory;
+      });
+      h.checkDeps.mockImplementation((await vi.importActual<typeof import("../../permissions/asrt-sandbox.js")>(
+        "../../permissions/asrt-sandbox.js",
+      )).checkAsrtDependencies);
+    }
     const run = vi.fn(async () => ({
       code: 0, stdout: typeof response === "string" ? response : JSON.stringify(response), stderr: "",
     }));
@@ -920,6 +953,9 @@ it.each([
     }
     await initSandboxGate(harness.context(false, false));
     if (response) expect(run).toHaveBeenCalledOnce();
+    if (inventory !== undefined) {
+      expect(getWindowsSandboxSubstrate()?.accountBackendAbsent).toBe(available ? true : undefined);
+    }
 
     const settingsService = {
       getAll: () => DEFAULT_SETTINGS,
@@ -932,7 +968,12 @@ it.each([
     const embeddingSettings = await memoryMap.settingsGet();
     expect.soft(Object.hasOwn(generalSettings.features ?? {}, "sessionIndexingWithoutContainment")).toBe(Boolean(available));
     expect.soft(Object.hasOwn(embeddingSettings, "localInferenceWithoutSandbox")).toBe(Boolean(available));
-    if (available) expect(assertLocalEmbeddingRuntime(undefined, await refreshWindowsBackgroundAdmission())).toBe("unconfined");
+    if (available) {
+      expect(assertLocalEmbeddingRuntime(undefined, await refreshWindowsBackgroundAdmission())).toBe("unconfined");
+      expect(h.accountInventory.mock.calls.length).toBeGreaterThan(1);
+      h.accountInventory.mockResolvedValue({ ...EMPTY_ACCOUNT_INVENTORY, wfp: { state: "cannot-read", filters: 0 } });
+      expect((await refreshWindowsBackgroundAdmission()).areSwitchesAvailable()).toBe(false);
+    }
     else await expect((async () => memoryMap.build(undefined, {} as Parameters<typeof memoryMap.build>[1], () => {}))())
       .rejects.toMatchObject({ code: "local-runtime-unavailable" });
     expect(resolveScope).not.toHaveBeenCalled();
