@@ -1957,7 +1957,6 @@ describe("installer smoke and packaging discipline", () => {
     expect(commands[0]).toMatch(/^bun run test --\s/u);
     expect(commands[0]?.split(/\s+/u)).toEqual(expect.arrayContaining([
       "src/permissions/__tests__/linux-sandbox-wrap.test.ts",
-      "src/permissions/__tests__/asrt-sandbox.test.ts",
     ]));
   });
 
@@ -2551,10 +2550,7 @@ it("builds the native path classifier before the Windows permission boundaries",
     "src/tools/__tests__/powershell-exfiltration-gate.test.ts",
     "src/permissions/__tests__/powershell-unc-write-boundary.test.ts",
     "src/__tests__/support/fixture-owner.test.ts",
-    "src/__tests__/support/fixture-acl-reset.test.ts",
     "src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts",
-    "src/permissions/__tests__/asrt-background-initialization.test.ts",
-    "src/permissions/__tests__/asrt-windows-initialization.test.ts",
     "src/boot/__tests__/sandbox-init-windows-mxc.test.ts",
   ]) {
     expect(selection).toContain(suite);

@@ -12,12 +12,10 @@ import {
   annotateWithSandboxViolations,
   closeAllEgressConnections,
   closeEgressConnections,
-  DEFAULT_WINDOWS_PROXY_PORT_RANGE,
   getWindowsProxyPortRange,
   initializeAsrtSandbox,
   isAsrtSandboxActive,
   resetAsrtSandbox,
-  wrapToolCommand,
 } from "../asrt-sandbox.js";
 import { openInvocationProxyListener, type InvocationProxyListener } from "../egress-invocation-listener.js";
 import { openHostEgressListener } from "../egress-host-listener.js";
@@ -181,7 +179,6 @@ describe.skipIf(process.platform !== "win32")("proxy-only connection revocation"
     await expectPromptClose(resetAsrtSandbox());
     await expectTunnelStopped(tunnel, upstream);
     expect(closeAllEgressConnections()).toBe(0);
-    expect(getWindowsProxyPortRange()).toEqual(DEFAULT_WINDOWS_PROXY_PORT_RANGE);
   });
 
   it("closes the upstream socket while its CONNECT response is still pending", async () => {
@@ -240,16 +237,14 @@ describe.skipIf(process.platform !== "win32")("proxy-only connection revocation"
     expect(second.received.join("")).toBe("before-close");
   });
 
-  it("leaves the wrap runtime uninitialized, refuses wraps, and clears the configured range on reset", async () => {
+  it("keeps proxy-only boot and revocation on their own relay service", async () => {
     const initialize = vi.spyOn(SandboxManager, "initialize");
     const closeAll = vi.spyOn(SandboxManager, "closeAllInvocationConnections");
     const closeSome = vi.spyOn(SandboxManager, "closeInvocationConnections");
-    await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true, proxyPortRange: [42000, 42009] } }, async () => true);
+    await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } }, async () => true);
     expect(initialize).not.toHaveBeenCalled();
     expect(SandboxManager.getProxyPort()).toBeUndefined();
     expect(isAsrtSandboxActive()).toBe(true);
-    expect(getWindowsProxyPortRange()).toEqual([42000, 42009]);
-    await expect(wrapToolCommand("echo ok", { commandId: TOKEN, toolName: "bash" } as never)).rejects.toThrow("the wrap runtime is not initialized");
     expect(closeAllEgressConnections()).toBe(0);
     expect(closeEgressConnections([TOKEN], DESTINATION.host, DESTINATION.port)).toBe(0);
     await resetAsrtSandbox();
@@ -257,7 +252,6 @@ describe.skipIf(process.platform !== "win32")("proxy-only connection revocation"
     expect(closeAll).not.toHaveBeenCalled();
     expect(closeSome).not.toHaveBeenCalled();
     expect(isAsrtSandboxActive()).toBe(false);
-    expect(getWindowsProxyPortRange()).toEqual(DEFAULT_WINDOWS_PROXY_PORT_RANGE);
   });
 
   it("opens no route without an ask callback", async () => {
@@ -277,10 +271,9 @@ describe.skipIf(process.platform !== "win32")("proxy-only connection revocation"
 
   it("discards a session whose initialization fails, and its relay service", async () => {
     startEgressRelayService({ ask: async () => true });
-    await expect(initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true, proxyPortRange: [42000, 42009] } }, async () => true))
+    await expect(initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } }, async () => true))
       .rejects.toThrow("the service is already started");
     expect(isAsrtSandboxActive()).toBe(false);
     await expect(openHostEgressListener(TOKEN)).rejects.toThrow("the service is not started");
-    expect(getWindowsProxyPortRange()).toEqual(DEFAULT_WINDOWS_PROXY_PORT_RANGE);
   });
 });

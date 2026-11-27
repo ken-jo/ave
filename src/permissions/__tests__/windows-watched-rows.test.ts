@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { getLocale, loadLocaleMessages, setLocale, t, type Locale } from "../../i18n/index.js";
 import * as restoreRename from "../../lib/transient-fs-lock-retry.js";
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { rankAdmittedMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
@@ -44,7 +45,7 @@ vi.mock("../../shared/windows-path-facts.js", async (importOriginal) => {
 import type { MxcWatchedRow } from "../mxc-windows.js";
 import {
   claimMxcWatchedRows, deferWatchedReceipt, hasWatchedWork, isWatchedWorkspaceConsumable, listWatchedQuarantine, placeholderLeftovers, releaseWatchClaim,
-  resetWatchedRows, restoreWatchedQuarantine, pruneWatchedRows, sweepWatchedRows, WATCHED_ROW_VIOLATION, watchAbsentProtectedRow, watchedProtectedRows,
+  prepareAbsentProtectedWatch, resetWatchedRows, restoreWatchedQuarantine, pruneWatchedRows, sweepWatchedRows, WATCHED_ROW_VIOLATION, watchAbsentProtectedRow, watchedProtectedRows,
 } from "../windows-watched-rows.js";
 
 // What the ranker records for an absent name beneath an existing folder.
@@ -109,6 +110,54 @@ describe("watched protected rows", () => {
     expect(isWatchedWorkspaceConsumable(workspace)).toBe(true);
     resetWatchedRows();
     expect(watchedProtectedRows()).not.toContain(tasks);
+  });
+
+  it("publishes a prepared optional row and root only when committed", () => {
+    const proposed = join(workspace, "proposed");
+    mkdirSync(proposed);
+    const existing = join(proposed, "existing-watch");
+    const added = join(proposed, "new-watch");
+    watchAbsentProtectedRow(existing, [workspace]);
+
+    const [publishRoot, publishRow] = withLocalityDecision(() => [
+      prepareAbsentProtectedWatch(existing, [proposed], false),
+      prepareAbsentProtectedWatch(added, [proposed], false),
+    ]);
+    expect(watchedProtectedRows()).toEqual([existing]);
+    expect(publishRoot).toBeTypeOf("function");
+    expect(publishRow).toBeTypeOf("function");
+    publishRoot?.();
+    publishRow?.();
+    pruneWatchedRows([proposed]);
+    expect(watchedProtectedRows()).toEqual([existing, added]);
+  });
+
+  it.runIf(process.platform === "win32")("leaves optional rows and roots unchanged after a later drive query fails", () => {
+    const proposed = join(workspace, "proposed");
+    mkdirSync(proposed);
+    const existing = join(proposed, "existing-watch");
+    const added = join(proposed, "new-watch");
+    const failedDrive = workspace.startsWith("Z:") ? "Y:" : "Z:";
+    const failure = new Error("Watch drive query failed");
+    watchAbsentProtectedRow(existing, [workspace]);
+
+    setWindowsDriveQueryForTest(drive => {
+      if (drive === failedDrive) throw failure;
+      return String.raw`\Device\HarddiskVolume1`;
+    });
+    try {
+      expect(() => withLocalityDecision(() => [
+        prepareAbsentProtectedWatch(existing, [proposed], false),
+        prepareAbsentProtectedWatch(added, [proposed], false),
+        prepareAbsentProtectedWatch(join(`${failedDrive}\\`, "blocked", "watch"), [proposed], false),
+      ])).toThrow(failure);
+    } finally {
+      setWindowsDriveQueryForTest();
+    }
+
+    expect(watchedProtectedRows()).toEqual([existing]);
+    pruneWatchedRows([proposed]);
+    expect(watchedProtectedRows()).toEqual([]);
   });
 
   it.each(RECEIPT_LOCALES)("uses %s receipt wording for a quarantined entry with a manifest and restore locations", async locale => {
