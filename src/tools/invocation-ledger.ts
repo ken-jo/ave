@@ -476,7 +476,7 @@ const DENIAL_SOURCES = new Set([
   "plugin-operation-grant", "rule", "script-hook", "sensitive-paths", "tool-executor",
 ]);
 
-export function emitToolDecision(
+function emitToolDecision(
   entry: PermissionAuditEntryInput,
   fields: Readonly<Record<string, string | number | boolean | undefined>> = {},
 ): void {
@@ -541,7 +541,7 @@ function closeDetachedToolInvocations(): void {
   for (const commit of commits) commitDetached(commit);
 }
 
-export function recordToolInvocationFailure(error: unknown): void {
+function recordToolInvocationFailure(error: unknown): void {
   if (shutdownStarted) shutdownFailure ??= { error };
 }
 

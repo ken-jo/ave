@@ -14,7 +14,7 @@ const MESSAGE_NAMES = ["ELECTRON_DECRYPT_FAILED_MESSAGE", "ELECTRON_DECRYPT_TEMP
 export function readExpectedMessages(root = ROOT) {
   const text = readFileSync(join(root, SOURCE), "utf-8");
   return MESSAGE_NAMES.map((name) => {
-    const match = new RegExp(`export const ${name} = "([^"]+)";`).exec(text);
+    const match = new RegExp(`^(?:export )?const ${name} = "([^"]+)";`, "m").exec(text);
     if (match === null) throw new Error(`${SOURCE} no longer declares ${name} as a plain string`);
     return { name, message: match[1] };
   });

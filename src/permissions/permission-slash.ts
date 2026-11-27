@@ -24,7 +24,6 @@ import {
   type HookTrustCommandOptions,
   type HookTrustCommandResult,
 } from "../hooks/hook-trust-commands.js";
-export { stripLeadingSlash } from "../shared/slash-sanitizer.js";
 import { stripLeadingSlash } from "../shared/slash-sanitizer.js";
 import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 import { HOME_FOLDER_REFUSED } from "../shared/permissions-events.js";
@@ -410,7 +409,7 @@ export function parsePermissionModeCommand(
 
 // /permission rules / hooks
 
-export type PermissionRulesCommand =
+type PermissionRulesCommand =
   | { verb: "rules"; sub: "list" }
   | { verb: "rules"; sub: "add" | "remove"; action: "allow" | "deny"; pattern: string };
 export type PermissionHooksCommand =
@@ -419,7 +418,7 @@ export type PermissionHooksCommand =
   | { verb: "hooks"; sub: "disable"; name: string }
   | { verb: "hooks"; sub: "reject"; name: string };
 
-export function parsePermissionRulesCommand(
+function parsePermissionRulesCommand(
   rawArgs: string,
 ): PermissionRulesCommand | { ok: false; error: string } {
   const tokenized = tokenizePermissionArgs(rawArgs);
@@ -446,7 +445,7 @@ export function parsePermissionRulesCommand(
   return { verb: "rules", sub, action, pattern };
 }
 
-export function parsePermissionHooksCommand(
+function parsePermissionHooksCommand(
   rawArgs: string,
 ): PermissionHooksCommand | { ok: false; error: string } {
   const args = rawArgs.trim().split(/\s+/).filter((p) => p.length > 0);

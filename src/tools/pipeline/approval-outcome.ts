@@ -70,7 +70,7 @@ export function browserApprovalErrorOf(error: unknown): BrowserApprovalError | u
   if (error instanceof Error && error.cause instanceof BrowserApprovalError) return error.cause;
 }
 
-export function approvalCancellationMessage(detail?: string): string {
+function approvalCancellationMessage(detail?: string): string {
   const cancellation = t("be_executor.toolExecutionCancelled");
   return detail ? `${cancellation} (${detail})` : cancellation;
 }

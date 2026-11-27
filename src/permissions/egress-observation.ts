@@ -6,7 +6,7 @@ import type { EgressDenial, EgressDenialSource } from "../shared/egress-denials.
 import type { EgressGrantScope } from "../shared/sandbox-capability-info.js";
 
 /** Events observed by sandbox backends while intercepting filesystem or network operations. */
-export type SandboxEvent =
+type SandboxEvent =
   | {
       type: "egress_attempted";
       blocked: boolean;

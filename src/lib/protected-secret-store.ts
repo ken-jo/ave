@@ -10,7 +10,6 @@ import {
   linkSync,
   mkdirSync,
   readdirSync,
-  renameSync,
   unlinkSync,
   writeFileSync,
   chmodSync,
@@ -20,6 +19,7 @@ import { platform } from "node:process";
 import { aveHome } from "../shared/ave-home.js";
 import { isMissingPathError, PRIVATE_FILE_MODE, writeUtf8FileAtomicSync } from "./atomic-file.js";
 import { readStableRegularFileUtf8 } from "./stable-regular-file.js";
+import { renameFileOnceSync } from "./transient-fs-lock-retry.js";
 
 // `safe:v1:` stores OS-protected ciphertext.
 const SAFE_STORAGE_SECRET_PREFIX = "safe:v1:";
@@ -110,7 +110,7 @@ export interface SafeStorageLike {
 }
 
 /** Temporary keychain unavailability leaves the ciphertext intact. */
-export class SafeStorageTemporarilyUnavailableError extends Error {
+class SafeStorageTemporarilyUnavailableError extends Error {
   constructor() {
     super("Electron safeStorage is temporarily unavailable; the secret store was not opened");
     this.name = "SafeStorageTemporarilyUnavailableError";
@@ -119,7 +119,7 @@ export class SafeStorageTemporarilyUnavailableError extends Error {
 
 /** Classify known decrypt failures without quarantining temporarily unavailable entries. */
 export const ELECTRON_DECRYPT_FAILED_MESSAGE = "Error while decrypting the ciphertext provided to safeStorage.decryptStringAsync.";
-export const ELECTRON_DECRYPT_TEMPORARILY_UNAVAILABLE_MESSAGE = "safeStorage.decryptStringAsync is temporarily unavailable. Please try again.";
+const ELECTRON_DECRYPT_TEMPORARILY_UNAVAILABLE_MESSAGE = "safeStorage.decryptStringAsync is temporarily unavailable. Please try again.";
 
 /**
  * A permanent decrypt failure or an invalid ciphertext encoding.
@@ -130,41 +130,6 @@ class UnreadableCiphertextError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "UnreadableCiphertextError";
-  }
-}
-
-/** Use single-line mode-0600 files when OS-backed secret encryption is unavailable. */
-export class FileSecretStore implements SecretStore {
-  private readonly dir: string;
-
-  constructor(dir?: string) {
-    this.dir = dir ?? join(aveHome(), "secrets");
-    hardenSecretDirectory(this.dir);
-  }
-
-  private path(name: string): string {
-    // Reject traversal characters to keep the keystore flat.
-    if (/[/\\]|\.\./.test(name)) {
-      throw new Error(`invalid secret name: ${name}`);
-    }
-    return join(this.dir, name);
-  }
-
-  read(
-    name: string,
-    maxBytes = DEFAULT_SECRET_READ_MAX_BYTES,
-  ): string | null {
-    assertSecretReadLimit(maxBytes);
-    const p = this.path(name);
-    const value = readSecretFileUtf8Bounded(p, maxBytes + 1);
-    if (value === null) return null;
-    assertSecretValueWithinLimit(value, maxBytes);
-    return value;
-  }
-
-  write(name: string, value: string): void {
-    const p = this.path(name);
-    atomicWriteSecretFile(this.dir, p, value);
   }
 }
 
@@ -423,7 +388,7 @@ export class SafeStorageSecretStore implements SecretStore {
   ): void {
     const createdAt = new Date().toISOString();
     const quarantinedPath = this.quarantinePath(path, createdAt);
-    renameSync(path, quarantinedPath);
+    renameFileOnceSync(path, quarantinedPath);
     try { chmodSync(quarantinedPath, 0o600); } catch {  }
 
     const marker = {
