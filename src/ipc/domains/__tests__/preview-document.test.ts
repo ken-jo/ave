@@ -437,10 +437,14 @@ describe("read-only observation sender boundary", () => {
     return result.observation;
   }
 
+  // Advance the receipt watch only when the case exercises a tick. Child deadlines stay on the real clock.
+  beforeEach(() => { vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] }); });
   afterEach(async () => {
-    const state = await import("../../../main/app-state.js");
-    for (const window of state.getMainWindows()) state.unregisterMainWindow(window);
-    setSessionContentsLookup(null);
+    try {
+      const state = await import("../../../main/app-state.js");
+      for (const window of state.getMainWindows()) state.unregisterMainWindow(window);
+      setSessionContentsLookup(null);
+    } finally { vi.useRealTimers(); }
   });
 
   it("binds a full text preview to exactly its displayed bytes, frame and session", async () => {
@@ -552,10 +556,8 @@ describe("read-only observation sender boundary", () => {
   });
 
   it("keeps at most sixteen frame-bound preview opener receipts", async () => {
-    // Only the receipt watch is faked, so a single tick can be counted.
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const event = documentEvent(OK_FRAME);
     try {
-      const event = documentEvent(OK_FRAME);
       const results: PreviewReadFileResult[] = [];
       for (let index = 0; index < 17; index += 1) {
         const path = join(root, `preview-open-${index}.txt`);
@@ -574,8 +576,7 @@ describe("read-only observation sender boundary", () => {
       expect(await handlers.get(CHANNELS.attach.openExternal)!(event, results[0].path)).toEqual({ ok: false, error: "path_not_authorized" });
       expect(await handlers.get(CHANNELS.attach.openExternal)!(event, results[16].path)).toEqual({ ok: true });
       expect(openPath).toHaveBeenCalledExactlyOnceWith(results[16].path);
-      event.sender.emit("destroyed");
-    } finally { vi.useRealTimers(); }
+    } finally { event.sender.emit("destroyed"); }
   });
 
   it.each(["latest-first", "stale-first"])("keeps the latest text baseline alive across overlapping reloads (%s)", async (order) => {
