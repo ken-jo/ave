@@ -3,6 +3,7 @@ import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { setWindowSize } from "./seeded-electron.js";
+import { waitForApprovalArming } from "./approval-keyboard.js";
 
 // Geometry coverage needs no seeded plugin.
 test.use({ seedViewFixturePlugin: false });
@@ -52,7 +53,7 @@ test('approval cards return from a browser surface without an in-app notificatio
   await expect(browser).not.toBeVisible();
   const panel = mainWindow.getByTestId('tool-approval-panel');
   await expect(panel).toHaveAttribute('data-approval-request-id', 'approval-notice-e2e');
-  await expect(panel.getByTestId(TEST_IDS.denyButton)).toBeFocused();
+  await expect(panel).toBeFocused();
   await mainWindow.screenshot({ path: testInfo.outputPath('conversation-approval.png') });
 });
 
@@ -119,6 +120,7 @@ test('approval dock floats over the route without changing its layout', async ({
   }, sessionId);
 
   const dock = mainWindow.getByTestId(TEST_IDS.approvalDock).first();
+  const panel = dock.getByTestId('tool-approval-panel');
   await expect(dock).toBeVisible();
   await expect(dock).toHaveAttribute('role', 'region');
   await expect(dock).not.toHaveAttribute('aria-modal', 'true');
@@ -184,7 +186,7 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(deny).toBeVisible();
   await expect(allowAlways).toBeVisible();
   await expect(allowAlways).toBeEnabled();
-  await expect(deny).toBeFocused();
+  await expect(panel).toBeFocused();
   await expect(dock.locator('input, textarea, [contenteditable="true"], [role="textbox"]'))
     .toHaveCount(0);
   await expect(dock.getByTestId('approval-tool-identity')).toContainText('read_file');
@@ -290,8 +292,10 @@ test('approval dock floats over the route without changing its layout', async ({
   })).toBe(true);
 
   // Resolving approval must focus the pending question rather than the obscured composer.
+  await waitForApprovalArming();
   await approve.focus();
-  await approve.press('Enter');
+  await expect(approve).toBeFocused();
+  await mainWindow.keyboard.press('Enter');
   await expect(dock).toHaveCount(0);
   const firstQuestionChoice = questionOverlay.getByRole('option').first();
   await expect(firstQuestionChoice).toBeFocused();
@@ -315,7 +319,8 @@ test('approval dock floats over the route without changing its layout', async ({
     });
   }, sessionId);
   await expect(dock).toBeVisible();
-  await expect(deny).toBeFocused();
+  await expect(panel).toHaveAttribute('data-approval-request-id', 'approval-dock-layout-continuation-e2e');
+  await expect(panel).toBeFocused();
   await expect(composerDock).toHaveAttribute('inert', '');
   await expect(composerDock).toHaveAttribute('aria-hidden', 'true');
 
@@ -366,21 +371,24 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(deny).toBeVisible();
 
   // Keys outside the dock must not decide approval.
+  await waitForApprovalArming();
   const outside = mainWindow.getByTestId('toolbar-work-board');
   await outside.focus();
-  await outside.press('d');
+  await expect(outside).toBeFocused();
+  await mainWindow.keyboard.press('d');
   await expect(dock).toBeVisible();
 
   await approve.focus();
-  await approve.press('ArrowLeft');
-  await expect(allowAlways).toBeFocused();
-  await allowAlways.press('ArrowLeft');
-  await expect(deny).toBeFocused();
-  await deny.press('ArrowRight');
-  await expect(allowAlways).toBeFocused();
-  await allowAlways.press('ArrowRight');
   await expect(approve).toBeFocused();
-  await approve.press('Enter');
+  await mainWindow.keyboard.press('ArrowLeft');
+  await expect(allowAlways).toBeFocused();
+  await mainWindow.keyboard.press('ArrowLeft');
+  await expect(deny).toBeFocused();
+  await mainWindow.keyboard.press('ArrowRight');
+  await expect(allowAlways).toBeFocused();
+  await mainWindow.keyboard.press('ArrowRight');
+  await expect(approve).toBeFocused();
+  await mainWindow.keyboard.press('Enter');
   await expect(dock).toHaveCount(0);
 
   // Preserve native Space activation alongside directional focus movement.
@@ -401,15 +409,16 @@ test('approval dock floats over the route without changing its layout', async ({
     });
   }, sessionId);
   await expect(dock).toBeVisible();
-  const secondApprove = dock.getByTestId(TEST_IDS.approveButton);
-  const secondDeny = dock.getByTestId(TEST_IDS.denyButton);
-  const secondAlways = dock.getByTestId(TEST_IDS.allowSessionButton);
-  await expect(secondDeny).toBeFocused();
-  await secondDeny.press('ArrowRight');
-  await expect(secondAlways).toBeFocused();
-  await secondAlways.press('ArrowRight');
-  await expect(secondApprove).toBeFocused();
-  await secondApprove.press('Space');
+  await expect(panel).toHaveAttribute('data-approval-request-id', 'approval-dock-space-e2e');
+  await expect(panel).toBeFocused();
+  await waitForApprovalArming();
+  await deny.focus();
+  await expect(deny).toBeFocused();
+  await mainWindow.keyboard.press('ArrowRight');
+  await expect(allowAlways).toBeFocused();
+  await mainWindow.keyboard.press('ArrowRight');
+  await expect(approve).toBeFocused();
+  await mainWindow.keyboard.press('Space');
   await expect(dock).toHaveCount(0);
 });
 

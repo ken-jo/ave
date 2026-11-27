@@ -1,11 +1,13 @@
 // Drive approval sentences through the real composer and selector bridge before confirming a decision.
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { act, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { renderApp } from "./render-app.js";
 import { submitChatMessage } from "./helpers.js";
 import { MOCK_DEFAULT_SESSION_ID } from "./mock-ave-api.js";
 import { TEST_IDS, testIdSelector } from "../../src/shared/test-ids.js";
+import { formatIpcError } from "../../src/ui/renderer/format-ipc-error.js";
 
 const TARGET = "/home/example/reports/q3.md";
 const PARENT = "/home/example/reports";
@@ -32,14 +34,32 @@ function approvalRequest(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function appWithPendingApproval() {
+function requireValue<T>(value: T | null | undefined, description: string): T {
+  if (value === null || value === undefined) {
+    throw new Error(`Missing ${description}`);
+  }
+  return value;
+}
+
+function mainComposer(container: HTMLElement) {
+  return requireValue(
+    container.querySelector<HTMLTextAreaElement>(testIdSelector(TEST_IDS.composerTextarea)),
+    "main composer textarea",
+  );
+}
+
+async function appWithPendingApproval(overrides: Record<string, unknown> = {}) {
   const app = await renderApp({ hasApiKey: true });
+  const composer = mainComposer(app.container);
+  act(() => composer.focus());
   await act(async () => {
-    app.emitApproval(approvalRequest());
+    app.emitApproval(approvalRequest(overrides));
   });
   await waitFor(() =>
     expect(app.container.querySelector(testIdSelector(TEST_IDS.approvalDock))).toBeTruthy(),
   );
+  expect(composer).toHaveFocus();
+  expect(composer.closest("[inert]")).toBeNull();
   return app;
 }
 
@@ -152,17 +172,30 @@ describe("/allow — the sentence fills the form", () => {
     expect(app.api.chatSend).not.toHaveBeenCalled();
   });
 
+  it("keeps ordinary drafts blocked while the composer can submit /allow", async () => {
+    const app = await appWithPendingApproval();
+    const composer = mainComposer(app.container);
+    const send = app.container.querySelector('[data-testid="composer-send-button"]');
+    const { approval } = requireValue(window.ave, "window.ave");
+
+    for (const draft of ["keep this draft", "/allowance this folder"]) {
+      await submitChatMessage(app.container, draft);
+      expect(composer).toHaveValue(draft);
+      expect(send).toBeDisabled();
+    }
+    expect(approval?.selectSentence).not.toHaveBeenCalled();
+
+    fireEvent.change(composer, { target: { value: "/allow this folder" } });
+    expect(send).toBeEnabled();
+    await userEvent.keyboard("{Enter}");
+    expect(approval?.selectSentence).toHaveBeenCalledExactlyOnceWith("req-allow-1", "/allow this folder");
+    expect(approval?.respond).not.toHaveBeenCalled();
+    expect(app.api.chatSend).not.toHaveBeenCalled();
+  });
+
   it("ignores a proposal for a scope this request does not offer", async () => {
     // Remote requests allow only one-shot or denial; reject wider proposals instead of approximating them.
-    const app = await renderApp({ hasApiKey: true });
-    await act(async () => {
-      app.emitApproval(
-        approvalRequest({ allowedChoices: ["allow-once", "deny-once"] }),
-      );
-    });
-    await waitFor(() =>
-      expect(app.container.querySelector(testIdSelector(TEST_IDS.approvalDock))).toBeTruthy(),
-    );
+    const app = await appWithPendingApproval({ allowedChoices: ["allow-once", "deny-once"] });
     const ns = window.ave as unknown as {
       approval: { selectSentence: ReturnType<typeof vi.fn>; respond: ReturnType<typeof vi.fn> };
     };
@@ -179,31 +212,26 @@ describe("/allow — the sentence fills the form", () => {
     expect(choice(app.container, "allow-always")).not.toHaveAttribute("data-proposed");
     expect(choice(app.container, "deny-once")?.tabIndex).toBe(0);
     expect(choice(app.container, "allow-once")?.tabIndex).toBe(-1);
-    expect(document.activeElement).toBe(choice(app.container, "deny-once"));
+    expect(mainComposer(app.container)).toHaveFocus();
     expect(ns.approval.respond).not.toHaveBeenCalled();
   });
 });
 
 describe("/allow — every failure is plain, and none of it is a grant", () => {
   it("does not invoke the filesystem scope selector for a generic tool approval", async () => {
-    const app = await renderApp({ hasApiKey: true });
+    const app = await appWithPendingApproval({
+      id: "req-generic-tool",
+      kind: "tool",
+      toolName: "bash",
+      outOfAllowedDir: undefined,
+    });
     const ns = window.ave as unknown as {
       approval: { selectSentence: ReturnType<typeof vi.fn>; respond: ReturnType<typeof vi.fn> };
     };
-    await act(async () => {
-      app.emitApproval(approvalRequest({
-        id: "req-generic-tool",
-        kind: "tool",
-        toolName: "bash",
-        outOfAllowedDir: undefined,
-      }));
-    });
-    await waitFor(() =>
-      expect(app.container.querySelector('[data-testid="tool-approval-panel"]')).toBeTruthy(),
-    );
-
     await submitChatMessage(app.container, "/allow this folder");
 
+    await waitFor(() => expect(systemText(app.container)).toContain(formatIpcError("allow-no-pending-request", undefined)));
+    expect(mainComposer(app.container)).toHaveValue("");
     expect(ns.approval.selectSentence).not.toHaveBeenCalled();
     expect(ns.approval.respond).not.toHaveBeenCalled();
     expect(app.api.chatSend).not.toHaveBeenCalled();
@@ -226,11 +254,13 @@ describe("/allow — every failure is plain, and none of it is a grant", () => {
     await submitChatMessage(app.container, "/allow 허용해줘");
 
     await waitFor(() => expect(ns.approval.selectSentence).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(ns.approval.respond).not.toHaveBeenCalled());
+    await waitFor(() => expect(systemText(app.container)).toContain(formatIpcError(code, undefined)));
+    expect(ns.approval.respond).not.toHaveBeenCalled();
+    expect(app.api.chatSend).not.toHaveBeenCalled();
     expect(app.container.querySelector("[data-proposed]")).toBeNull();
     expect(choice(app.container, "deny-once")?.tabIndex).toBe(0);
     expect(choice(app.container, "allow-once")?.tabIndex).toBe(-1);
-    expect(document.activeElement).toBe(choice(app.container, "deny-once"));
+    expect(mainComposer(app.container)).toHaveFocus();
     expect(systemText(app.container)).not.toContain(code);
   });
 
@@ -304,10 +334,8 @@ describe("/allow — every failure is plain, and none of it is a grant", () => {
     await waitFor(() =>
       expect(choice(app.container, "allow-always")?.dataset.proposed).toBe("true"),
     );
-
-    await act(async () => {
-      choice(app.container, "deny-once")!.click();
-    });
+    await waitFor(() => expect(choice(app.container, "allow-always")).toHaveFocus());
+    await userEvent.click(requireValue(choice(app.container, "deny-once"), "deny-once button"));
     await waitFor(() =>
       expect(
         app.container.querySelector(testIdSelector(TEST_IDS.approvalDock))
@@ -318,7 +346,7 @@ describe("/allow — every failure is plain, and none of it is a grant", () => {
     expect(app.container.querySelector("[data-proposed]")).toBeNull();
     expect(choice(app.container, "deny-once")?.tabIndex).toBe(0);
     expect(choice(app.container, "allow-once")?.tabIndex).toBe(-1);
-    expect(document.activeElement).toBe(choice(app.container, "deny-once"));
+    expect(app.container.querySelector('[data-testid="tool-approval-panel"]')).toHaveFocus();
     expect(choice(app.container, "allow-always")?.tabIndex).toBe(-1);
     expect(
       app.container.querySelector(testIdSelector(TEST_IDS.approvalReviewDetails))?.textContent,
