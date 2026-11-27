@@ -8,6 +8,7 @@ import { ensureWorkspaceCwd } from "./main/ensure-workspace-cwd.js";
 import { isAuthorizedWorkspaceProjectRoot } from "./main/project-root-authorization.js";
 import { acquireHostInstanceLock } from "./main/host-instance-lock.js";
 import { createWindowlessHost } from "./main/windowless-host.js";
+import { isNewTailnetObserverHome } from "./main/tailnet-surface-server.js";
 import { probeHostRuntimeResources } from "./main/host-runtime-probe.js";
 import { configureHostResources } from "./main/host-resources.js";
 import { runAppShutdownCleanup, runIncompleteBootShutdown, runShutdownHooks } from "./main/app-shutdown.js";
@@ -75,6 +76,7 @@ export async function main(): Promise<number> {
     }
   }
   const profile = userDataPath(argv);
+  const freshTailnetAveHome = isNewTailnetObserverHome();
   ensureWorkspaceCwd();
   await acquireHostInstanceLock();
   let host: Awaited<ReturnType<typeof createNodeBootHost>> | undefined;
@@ -115,7 +117,7 @@ export async function main(): Promise<number> {
           .startAfterOperatorAttestation(attestationPath, createHost)
         : await createHost();
       if (interrupted) throw new Error("host-bootstrap-interrupted");
-      runtime = await createWindowlessHost(projectRoot, host);
+      runtime = await createWindowlessHost(projectRoot, host, freshTailnetAveHome);
     })(), bootstrapInterruption]);
     if (interrupted) return EXEC_FAILURE_EXIT_CODE;
     if (!runtime) throw new Error("host-runtime-unavailable");

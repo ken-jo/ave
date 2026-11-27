@@ -203,7 +203,7 @@ export function createTailnetObserverConfigService(
       }
       const environment = await probeEnvironment();
       const state = runtimeState();
-      const portEvidence = { environment, establishedPort: state.establishedPort };
+      const portEvidence = { environment, ...state };
       const resolution = await loadTailnetObserverConfig({
         env: options.env,
         readConfigFile: async () => file,
@@ -241,7 +241,8 @@ export function createTailnetObserverConfigService(
     },
 
     async configureServe(): Promise<TailnetServeResult> {
-      const { listeningPort, establishedPort } = runtimeState();
+      const state = runtimeState();
+      const { listeningPort } = state;
       if (listeningPort === null) return serveFailure("tailnet-serve-not-listening", null);
       const environment = await probeEnvironment();
       if (environment.state !== "ready" || environment.cliPath === null) {
@@ -253,7 +254,7 @@ export function createTailnetObserverConfigService(
       try {
         if (tailnetObserverPortOverride(options.env) !== undefined) {
           const file = await readConfigFile();
-          const durable = resolveTailnetObserverPort(file, options.env, { environment, establishedPort }, "settings");
+          const durable = resolveTailnetObserverPort(file, options.env, { environment, ...state }, "settings");
           if (durable.port !== listeningPort) return serveFailure(SERVE_PORT_OVERRIDE_CONFLICT, null);
         }
       } catch (err) {
@@ -287,8 +288,7 @@ export function createTailnetObserverConfigService(
 
       let savedPort: number;
       try {
-        const { establishedPort, listeningPort } = runtimeState();
-        const selection = resolveTailnetObserverPort(file, options.env, { environment, establishedPort, listeningPort }, "guided-setup");
+        const selection = resolveTailnetObserverPort(file, options.env, { environment, ...runtimeState() }, "guided-setup");
         const port = selection.canChoosePort ? await chooseObserverPort() : selection.port;
         if (port === null) return guidedFailure("tailnet-guided-setup-port-unavailable");
         savedPort = port;

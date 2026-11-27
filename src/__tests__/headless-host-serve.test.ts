@@ -13,6 +13,7 @@ vi.mock("../boot/node-host-runtime.js", () => ({ createNodeBootHost: vi.fn(async
 vi.mock("../boot/dev-flags.js", () => ({ getIsPackaged: () => false, isPackagedElectronProcess: () => false }));
 vi.mock("../main/main-paths.js", () => ({ projectRoot: "/project" }));
 vi.mock("../main/ensure-workspace-cwd.js", () => ({ ensureWorkspaceCwd: vi.fn() }));
+vi.mock("../main/tailnet-surface-server.js", () => ({ isNewTailnetObserverHome: vi.fn(() => true) }));
 vi.mock("../main/project-root-authorization.js", () => ({ isAuthorizedWorkspaceProjectRoot: vi.fn(() => true) }));
 vi.mock("../main/host-instance-lock.js", () => ({ acquireHostInstanceLock: vi.fn(async () => undefined) }));
 vi.mock("../main/host-runtime-probe.js", () => ({ probeHostRuntimeResources: vi.fn() }));
@@ -116,12 +117,15 @@ describe("headless --serve", () => {
     // ensureWorkspaceCwd only creates a missing home (create-only helper); repair runs in bootstrap() under the lock.
     startTailnetSurface.mockResolvedValue({ ok: true, enabled: false });
     const { ensureWorkspaceCwd } = await import("../main/ensure-workspace-cwd.js");
+    const { isNewTailnetObserverHome } = await import("../main/tailnet-surface-server.js");
     const { acquireHostInstanceLock } = await import("../main/host-instance-lock.js");
     const { createWindowlessHost } = await import("../main/windowless-host.js");
     await serveUntilReady();
     const first = vi.mocked(ensureWorkspaceCwd).mock.invocationCallOrder[0]!;
+    expect(vi.mocked(isNewTailnetObserverHome).mock.invocationCallOrder[0]!).toBeLessThan(first);
     expect(first).toBeLessThan(vi.mocked(acquireHostInstanceLock).mock.invocationCallOrder[0]!);
     expect(first).toBeLessThan(vi.mocked(createWindowlessHost).mock.invocationCallOrder[0]!);
+    expect(createWindowlessHost).toHaveBeenLastCalledWith("/project", expect.anything(), true);
   });
 
   it("keeps serving the local API when the Tailnet surface fails to start", async () => {

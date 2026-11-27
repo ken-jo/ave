@@ -12,10 +12,11 @@ import * as windowsIntegrity from "../../permissions/srt-win-integrity.js";
 import * as sandboxCapability from "../../permissions/sandbox-capability.js";
 import * as aveHome from "../../shared/ave-home.js";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
+import * as listenerPortPolicy from "../../permissions/tailnet-listener-policy.js";
 import * as portHints from "../tailnet-port-hint.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import type { TailnetPairedSharingRuntime } from "../tailnet-paired-sharing-runtime.js";
-import { writeJsonAtomic, type FeatureNamespaceHandle } from "../storage/feature-namespace.js";
+import { readJsonFile, writeJsonAtomic, type FeatureNamespaceHandle } from "../storage/feature-namespace.js";
 import { createTailnetObserverConfigService } from "../tailnet-observer-config-service.js";
 import type { TailnetShareActorId } from "../tailnet-pairing-share-store.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
@@ -89,6 +90,7 @@ function options(
     close: vi.fn(async () => undefined),
   })),
 ) {
+  const namespace = memoryNamespace();
   return {
     startServer,
     input: {
@@ -96,6 +98,7 @@ function options(
       conversationSurfaceRuntime: runtime(),
       getCurrentConversationId: () => "main-session",
       isConversationBusy: () => false,
+      freshAveHome: true,
       env,
       dependencies: {
         startServer: startServer as never,
@@ -103,6 +106,7 @@ function options(
         // have an observer configured.
         readConfigFile: async (): Promise<TailnetObserverConfigFile | null> => null,
         probeEnvironment: async () => tailscaleEnvironment(null),
+        openTailnetNamespace: () => namespace,
       },
     },
   };
@@ -767,7 +771,7 @@ describe("Tailnet observer configuration surface", () => {
       });
 
       await expect.soft(maybeStartTailnetObserverServer({
-        ...input, dependencies: { ...input.dependencies, probeEnvironment },
+        ...input, freshAveHome: false, dependencies: { ...input.dependencies, probeEnvironment },
       })).resolves.toEqual({ port });
       available = true;
       await expect.soft(probeEnvironment()).resolves.toMatchObject({ serveTargetPort: port });
@@ -846,7 +850,7 @@ describe("Tailnet observer configuration surface", () => {
       serveTargetPort: target,
     });
     await expect.soft(maybeStartTailnetObserverServer({
-      ...input, log, dependencies: { ...input.dependencies, probeEnvironment },
+      ...input, freshAveHome: known, log, dependencies: { ...input.dependencies, probeEnvironment },
     })).resolves.toEqual({ port });
     expect.soft(startServer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port }));
     if (override !== undefined) {
@@ -1016,20 +1020,24 @@ describe("Tailnet observer port state table", () => {
   const legacyPort = 46_173;
   const overridePort = 29_999;
   const savedPort = 29_123;
+  type Route = "foreground" | "background" | "background-default" | "background-override" | "absent" | "failed" | "unavailable" | "unrelated";
   interface PortCase {
     id: string;
     file: "none" | "on" | "off" | number;
-    route: "foreground" | "background" | "background-default" | "background-override" | "absent" | "failed" | "unavailable" | "unrelated";
+    route: Route;
     enable?: boolean;
     override?: number;
-    priorListener?: boolean;
+    priorRoute?: Route;
+    restartProcess?: boolean;
+    existingHome?: boolean;
+    supervisorRestoresRoute?: boolean;
     occupied?: number;
     holdsDefault?: boolean;
     removeOverride?: boolean;
     edit?: number;
     boot: number | null;
     draft: number;
-    guided: number | "alternate" | "not-ready" | "forced-off";
+    guided: number | "alternate" | "not-ready" | "forced-off" | "port-unavailable";
   }
   const cases: PortCase[] = [
     { id: "C1 R3 E1 B1", file: "none", route: "absent", boot: null, draft: defaultPort, guided: defaultPort },
@@ -1040,10 +1048,10 @@ describe("Tailnet observer port state table", () => {
     { id: "C2 R5", file: "none", route: "unrelated", enable: true, boot: defaultPort, draft: defaultPort, guided: defaultPort },
     { id: "C3 R1", file: "none", route: "foreground", enable: true, boot: legacyPort, draft: legacyPort, guided: legacyPort },
     { id: "C3 R2 B3", file: "none", route: "background", boot: null, draft: legacyPort, guided: legacyPort },
-    { id: "C4 R4", file: "none", route: "failed", enable: true, boot: legacyPort, draft: legacyPort, guided: legacyPort },
+    { id: "C4 R4", file: "none", route: "failed", enable: true, existingHome: true, boot: legacyPort, draft: legacyPort, guided: legacyPort },
     { id: "C5 R4", file: "none", route: "failed", boot: null, draft: defaultPort, guided: defaultPort },
     {
-      id: "C6", file: "none", route: "absent", enable: true, priorListener: true,
+      id: "C6", file: "none", route: "absent", enable: true, priorRoute: "background",
       boot: legacyPort, draft: legacyPort, guided: legacyPort,
     },
     { id: "C7", file: "on", route: "absent", boot: legacyPort, draft: legacyPort, guided: legacyPort },
@@ -1079,8 +1087,35 @@ describe("Tailnet observer port state table", () => {
       boot: defaultPort, draft: defaultPort, guided: defaultPort,
     },
     {
-      id: "C12", file: "off", route: "absent", enable: true, priorListener: true,
+      id: "C12", file: "off", route: "absent", enable: true, priorRoute: "background",
       boot: legacyPort, draft: legacyPort, guided: legacyPort,
+    },
+    {
+      id: "C13 R3 restart while legacy supervisor route is down", file: "none", route: "absent", enable: true,
+      existingHome: true, priorRoute: "background", restartProcess: true, supervisorRestoresRoute: true,
+      boot: legacyPort, draft: legacyPort, guided: legacyPort,
+    },
+    {
+      id: "C13 R4 restart after default listener is established", file: "none", route: "failed", enable: true,
+      priorRoute: "absent", restartProcess: true, boot: defaultPort, draft: defaultPort, guided: defaultPort,
+    },
+    {
+      id: "C13 R3 restart with a preserved portless OFF file", file: "off", route: "absent", enable: true,
+      existingHome: true, priorRoute: "background", restartProcess: true,
+      boot: legacyPort, draft: legacyPort, guided: legacyPort,
+    },
+    {
+      id: "C14 R3 first upgrade launch while legacy supervisor route is down", file: "none", route: "absent", enable: true,
+      existingHome: true, supervisorRestoresRoute: true, boot: legacyPort, draft: legacyPort, guided: legacyPort,
+    },
+    {
+      id: "C14 R5 first upgrade launch with an unrelated root", file: "none", route: "unrelated", enable: true,
+      existingHome: true, boot: legacyPort, draft: legacyPort, guided: legacyPort,
+    },
+    {
+      id: "C15 R4 restart after first default bind failed", file: "none", route: "failed", enable: true,
+      priorRoute: "absent", restartProcess: true, occupied: defaultPort,
+      boot: defaultPort, draft: defaultPort, guided: "alternate",
     },
     {
       id: "E2 B4", file: "none", route: "absent", enable: true, override: overridePort, occupied: overridePort,
@@ -1096,7 +1131,7 @@ describe("Tailnet observer port state table", () => {
     },
     {
       id: "C2 E6 B5 listener holds the default", file: "none", route: "absent", enable: true, override: defaultPort,
-      holdsDefault: true, boot: defaultPort, draft: defaultPort, guided: defaultPort,
+      holdsDefault: true, removeOverride: true, boot: defaultPort, draft: defaultPort, guided: defaultPort,
     },
     {
       id: "C11 E5 B3 override removed with existing default route", file: defaultPort, route: "background-default", enable: true,
@@ -1106,14 +1141,20 @@ describe("Tailnet observer port state table", () => {
       id: "C11 E5 B3 route already on override", file: defaultPort, route: "background-override", enable: true,
       override: overridePort, boot: overridePort, draft: defaultPort, guided: defaultPort,
     },
+    {
+      id: "C1 B6 no eligible alternate", file: "none", route: "absent", occupied: defaultPort,
+      boot: null, draft: defaultPort, guided: "port-unavailable",
+    },
   ];
 
   it.each(cases.flatMap(row => (["boot", "Settings", "guided setup"] as const).map(entry => ({ ...row, entry }))))(
     "$id through $entry",
-    async ({ file, route, enable, override, priorListener, occupied, holdsDefault, removeOverride, edit, boot, draft, guided, entry }) => {
+    async ({ file, route, enable, override, priorRoute, restartProcess, existingHome, supervisorRestoresRoute, occupied,
+      holdsDefault, removeOverride, edit, boot, draft, guided, entry }) => {
       const dir = makeTempDir();
       const configPath = join(dir, "observer.json");
       const namespace = {
+        readJson: <T>(name: string, fallback: T) => readJsonFile(join(dir, name), fallback),
         dir, writeJson: vi.fn((name: string, value: unknown) => writeJsonAtomic(dir, name, value)),
       } as FeatureNamespaceHandle;
       const legacyFile = file === "on" || file === "off";
@@ -1131,7 +1172,7 @@ describe("Tailnet observer port state table", () => {
       };
       const readConfigFile = () => readTailnetObserverConfigFile(namespace, env);
       const writeConfigFile = vi.fn((next: TailnetObserverConfigFile) => writeTailnetObserverConfigFile(next, namespace));
-      let currentRoute = priorListener ? "background" : route;
+      let currentRoute = priorRoute ?? route;
       const routePort = () => {
         switch (currentRoute) {
           case "foreground":
@@ -1199,15 +1240,22 @@ describe("Tailnet observer port state table", () => {
             blocker.listen({ host: "127.0.0.1", port: defaultPort, exclusive: true }, resolve);
           });
         }
-        const start = () => maybeStartTailnetObserverServer({
+        const start = (freshAveHome = false) => maybeStartTailnetObserverServer({
           ...input,
-          dependencies: { ...input.dependencies, readConfigFile, probeEnvironment },
+          freshAveHome,
+          dependencies: { ...input.dependencies, readConfigFile, probeEnvironment, openTailnetNamespace: () => namespace },
           tailnetPairedSharingRuntime: fakeRuntime(fakeStore()),
         });
-        await assertBind(start(), boot);
-        if (priorListener) {
+        await assertBind(start(!existingHome), boot);
+        if (priorRoute !== undefined) {
           currentRoute = route;
-          await assertBind(restartTailnetObserverServer(), boot);
+          if (restartProcess) {
+            await stopTailnetObserverServer();
+            resetTailnetObserverServerForTests();
+            await assertBind(start(), boot);
+          } else {
+            await assertBind(restartTailnetObserverServer(), boot);
+          }
         }
 
         const snapshot = await settings.snapshot();
@@ -1218,6 +1266,11 @@ describe("Tailnet observer port state table", () => {
           expect(await readFile(configPath, "utf8")).toBe(original);
         }
         expect(writeConfigFile).not.toHaveBeenCalled();
+        if (supervisorRestoresRoute) {
+          currentRoute = "background";
+          const restored = await settings.snapshot();
+          expect(restored.environment.serveTargetPort).toBe(restored.listeningPort);
+        }
         if (entry === "boot") {
           expect(runServe).not.toHaveBeenCalled();
           return;
@@ -1230,7 +1283,16 @@ describe("Tailnet observer port state table", () => {
           return;
         }
 
-        const result = await settings.guidedSetup();
+        const policy = guided === "port-unavailable"
+          ? vi.spyOn(listenerPortPolicy, "readTailnetListenerPortPolicy").mockResolvedValue(() => false)
+          : null;
+        const result = await settings.guidedSetup().finally(() => policy?.mockRestore());
+        if (guided === "port-unavailable") {
+          expect(result).toMatchObject({ ok: false, error: "tailnet-guided-setup-port-unavailable" });
+          expect(writeConfigFile).not.toHaveBeenCalled();
+          expect(runServe).not.toHaveBeenCalled();
+          return;
+        }
         if (guided === "not-ready" || guided === "forced-off") {
           expect(result).toMatchObject({
             ok: false, error: guided === "not-ready" ? "tailnet-guided-setup-not-ready" : "tailnet-serve-not-listening",
@@ -1256,14 +1318,6 @@ describe("Tailnet observer port state table", () => {
           expect.soft(result).toMatchObject(conflict);
           await expect.soft(settings.configureServe()).resolves.toMatchObject(conflict);
           expect.soft(runServe).not.toHaveBeenCalled();
-          if (removeOverride) {
-            await stopTailnetObserverServer();
-            resetTailnetObserverServerForTests();
-            delete env.AVE_TAILNET_OBSERVER_PORT;
-            await assertBind(start(), draft);
-            const after = await settings.snapshot();
-            expect(after.environment.serveTargetPort).toBe(after.listeningPort);
-          }
         } else {
           expect(result).toMatchObject({ ok: true, port: runtimePort });
           if (routePort() === runtimePort) {
@@ -1272,12 +1326,35 @@ describe("Tailnet observer port state table", () => {
             expect(runServe).toHaveBeenCalledExactlyOnceWith({ cliPath: "tailscale", port: runtimePort });
           }
         }
+        if (removeOverride) {
+          await stopTailnetObserverServer();
+          resetTailnetObserverServerForTests();
+          delete env.AVE_TAILNET_OBSERVER_PORT;
+          await assertBind(start(), draft);
+          const after = await settings.snapshot();
+          expect(after.environment.serveTargetPort).toBe(after.listeningPort);
+        }
       } finally {
         hint.mockRestore();
         if (blocker.listening) await new Promise<void>(resolve => blocker.close(() => resolve()));
       }
     },
   );
+});
+
+it("detects a new observer home only before the home is created", async () => {
+  const { isNewTailnetObserverHome } = await import("../tailnet-surface-server.js");
+  const home = makeTempDir();
+  const resolvedHome = vi.spyOn(aveHome, "aveHome").mockReturnValue(join(home, "missing"));
+  vi.stubEnv("AVE_TAILNET_OBSERVER", "1");
+  try {
+    expect(isNewTailnetObserverHome()).toBe(true);
+    resolvedHome.mockReturnValue(home);
+    expect(isNewTailnetObserverHome()).toBe(false);
+  } finally {
+    resolvedHome.mockRestore();
+    vi.unstubAllEnvs();
+  }
 });
 
 function readyStatus(overrides: Record<string, unknown> = {}): string {

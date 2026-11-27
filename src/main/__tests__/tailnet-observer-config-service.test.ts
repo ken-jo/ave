@@ -432,6 +432,7 @@ describe("Tailnet observer configuration service", () => {
               const blocked = bootFailed && listeningPort === null;
               return {
                 listeningPort, establishedPort: listeningPort, activeConfig: null,
+                freshPortSelection: bootFailed,
                 lastStartError: blocked ? TAILNET_OBSERVER_PORT_BLOCKED : null,
                 portBlock: blocked ? { code: "EADDRINUSE", port: defaultPort, hint: null } : null,
               };

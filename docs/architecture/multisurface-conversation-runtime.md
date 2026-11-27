@@ -291,6 +291,12 @@ tailscale serve --accept-app-caps=<owned-domain>/cap/ave-conversation http://127
 ~~~
 
 Use the configured listener port or the [default port](../../src/shared/tailnet-observer-config.ts).
+For a supervised deployment, pin `AVE_TAILNET_OBSERVER_PORT` to the same port
+as the supervisor's route. A new Ave home uses 28173 for an implicit listener.
+On an existing home with no saved port or listener history, environment-only
+startup keeps 46173 if the route cannot identify the port. Once the implicit
+port is established, Ave remembers it across restarts, including while the
+supervisor has Serve stopped.
 
 This command is intentionally not executed by Ave. Do not leave a persistent
 Serve target pointing at the fixed port after the app exits: another local

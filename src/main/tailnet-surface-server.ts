@@ -4,6 +4,7 @@ import { tailnetOwnerLoginFromStatus } from "./tailnet-owner-identity.js";
 import { createTailnetOwnerIdentityPolicy, probeTailnetOwnerIdentityGuard } from "./tailnet-owner-policy.js";
 import type { SecretEncryption } from "../data/secret-document-store.js";
 // The owner must enable the listener and approve the exact serve command; never retain admin credentials or mutate tailnet policy.
+import { lstatSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer as createPortProbe } from "node:net";
 import { join } from "node:path";
@@ -51,6 +52,7 @@ import { assertTailnetListenerPortAllowed, readTailnetListenerPortPolicy } from 
 import { getWindowsTailnetPortHint } from "./tailnet-port-hint.js";
 import { createLogger } from "../lib/logger.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
+import { aveHome } from "../shared/ave-home.js";
 
 export interface TailnetObserverConfig {
   readonly port: number;
@@ -101,6 +103,7 @@ export interface TailnetObserverConfigFile {
 
 const TAILNET_FEATURE_NAMESPACE = "tailnet";
 const TAILNET_OBSERVER_CONFIG_FILE = "observer.json";
+const TAILNET_IMPLICIT_PORT_FILE = "observer-implicit-port.json";
 const TAILNET_OWN_DEVICE_ADMISSION_FILE = "own-device-admission.json";
 const LEGACY_TAILNET_OBSERVER_PORT = 46_173;
 const log = createLogger("tailnet-observer");
@@ -161,6 +164,7 @@ export interface StartTailnetObserverServerOptions {
   readonly tailnetControllerReceiptStore?: TailnetControllerReceiptStore;
   // Host-owned P2 pairing runtime. `null` explicitly means boot setup failed; the listener must not silently construct a distinct runtime for itself.
   readonly tailnetPairedSharingRuntime?: TailnetPairedSharingRuntime | null;
+  readonly freshAveHome?: boolean;
   readonly env?: NodeJS.ProcessEnv;
   readonly log?: (message: string) => void;
   // Where automatic own-device grants are recorded. The listener's log is a developer-facing stream; an admission that skipped the approval click belongs
@@ -249,6 +253,21 @@ interface TailnetObserverPortEvidence {
   readonly environment?: TailscaleEnvironment;
   readonly establishedPort?: number | null;
   readonly listeningPort?: number | null;
+  readonly freshPortSelection?: boolean;
+}
+
+// Capture this before boot creates the home. A failed lookup provides no evidence of a new installation.
+export function isNewTailnetObserverHome(): boolean {
+  if (tailnetObserverEnableOverride() !== true) return false;
+  try {
+    return lstatSync(aveHome(), { throwIfNoEntry: false }) === undefined;
+  } catch {
+    return false;
+  }
+}
+
+function isRecognizedServePort(port: unknown): port is number {
+  return port === LEGACY_TAILNET_OBSERVER_PORT || port === DEFAULT_TAILNET_OBSERVER_PORT;
 }
 
 export function tailnetObserverPortOverride(env: NodeJS.ProcessEnv = process.env): number | undefined {
@@ -272,13 +291,12 @@ export function resolveTailnetObserverPort(
   if (file?.enabled === true) return { port: LEGACY_TAILNET_OBSERVER_PORT, canChoosePort: false };
   if (evidence?.establishedPort != null) return { port: evidence.establishedPort, canChoosePort: false };
 
-  const environment = evidence?.environment;
-  const target = environment?.serveTargetPort;
-  if (target === LEGACY_TAILNET_OBSERVER_PORT || target === DEFAULT_TAILNET_OBSERVER_PORT) {
+  const target = evidence?.environment?.serveTargetPort;
+  if (isRecognizedServePort(target)) {
     return { port: target, canChoosePort: false };
   }
-  const environmentEnabled = tailnetObserverEnableOverride(env) === true;
-  if (file === null && environment?.serveStatusKnown === false && environmentEnabled) {
+  if (file === null && evidence?.environment !== undefined && evidence.freshPortSelection !== true
+      && tailnetObserverEnableOverride(env) === true) {
     return { port: LEGACY_TAILNET_OBSERVER_PORT, canChoosePort: false };
   }
   return {
@@ -429,6 +447,7 @@ let stopped = false;
 
 let activeConfig: TailnetObserverConfig | null = null;
 let establishedPort: number | null = null;
+let freshPortSelection = false;
 let lastStartError: string | null = null;
 let portBlock: TailnetObserverPortBlock | null = null;
 // Retain composition inputs so saved configuration can restart the listener without requiring an app relaunch.
@@ -445,6 +464,7 @@ export interface TailnetObserverRuntimeState {
   // The port the listener actually bound, or null when nothing is listening.
   readonly listeningPort: number | null;
   readonly establishedPort: number | null;
+  readonly freshPortSelection?: boolean;
   // The configuration the running listener booted with.
   readonly activeConfig: TailnetObserverConfig | null;
   // The kebab-case code of the last failed start. Boot logs this and continues, which is why "the observer is not up and I cannot tell why" used to
@@ -457,6 +477,7 @@ export function getTailnetObserverRuntimeState(): TailnetObserverRuntimeState {
   return Object.freeze({
     listeningPort: activeServer?.port ?? null,
     establishedPort,
+    freshPortSelection,
     activeConfig,
     lastStartError,
     portBlock,
@@ -682,21 +703,45 @@ async function startForBoot(
   const resolved = dependencies(options.dependencies, options.env);
   const env = options.env ?? process.env;
   const file = await resolved.readConfigFile();
-  const environment = file?.port === undefined && file?.enabled !== true && tailnetObserverEnableOverride(env) === true
+  const implicitNamespace = file?.port === undefined && file?.enabled !== true ? resolved.openTailnetNamespace() : undefined;
+  const stored = await implicitNamespace?.readJson<unknown>(TAILNET_IMPLICIT_PORT_FILE, null);
+  if (generation !== lifecycleGeneration) return null;
+  if (isFixedPort(stored)) establishedPort ??= stored;
+  freshPortSelection = stored === "fresh" || options.freshAveHome === true;
+
+  let remembered = stored;
+  const rememberPort = async (port: number | "fresh") => {
+    if (implicitNamespace === undefined || remembered === port) return;
+    try {
+      await implicitNamespace.writeJson(TAILNET_IMPLICIT_PORT_FILE, port);
+      remembered = port;
+    } catch {
+      log.warn("Could not remember the implicit observer port.");
+    }
+  };
+
+  const environment = implicitNamespace !== undefined && tailnetObserverEnableOverride(env) === true
     ? await resolved.probeEnvironment()
     : undefined;
-  const { config, provenance } = resolveFromLayers(file, env, { environment, establishedPort });
+  if (generation !== lifecycleGeneration) return null;
+  const portEvidence = { environment, establishedPort, freshPortSelection };
+  const { config, provenance } = resolveFromLayers(file, env, portEvidence);
   if (!config) return null;
 
   const target = environment?.serveTargetPort;
   if (target != null && target !== config.port) {
     options.log?.(`[tailnet-observer] Serve targets port ${target}; the configured listener port is ${config.port}`);
-  } else if (target === config.port && provenance.port === "unset") {
-    if (generation === lifecycleGeneration) establishedPort = target;
-    if (target === LEGACY_TAILNET_OBSERVER_PORT) {
+  }
+  if (isRecognizedServePort(target) && target === resolveTailnetObserverPort(file, env, portEvidence, "settings").port) {
+    establishedPort = target;
+    await rememberPort(target);
+    if (target === config.port && target === LEGACY_TAILNET_OBSERVER_PORT) {
       options.log?.(`[tailnet-observer] Preserving listener port ${target} from the existing Serve target`);
     }
+  } else if (file === null && freshPortSelection && establishedPort === null) {
+    await rememberPort("fresh");
   }
+  if (generation !== lifecycleGeneration) return null;
   await assertTailnetListenerPortAllowed(config.port);
   if (config.controllerEnabled && options.conversationCommandPort === undefined) {
     throw new Error("tailnet-controller-command-port-unavailable");
@@ -774,8 +819,15 @@ async function startForBoot(
     return null;
   }
 
+  if (provenance.port !== "env-override") {
+    establishedPort = server.port;
+    await rememberPort(server.port);
+  }
+  if (generation !== lifecycleGeneration) {
+    await server.close();
+    return null;
+  }
   activeServer = server;
-  if (provenance.port !== "env-override") establishedPort = server.port;
   activeConfig = config;
   activePairedSharingRuntime = pairedSharingRuntime ?? null;
   options.log?.(
@@ -918,6 +970,7 @@ export function resetTailnetObserverServerForTests(): void {
   lifecycleGeneration += 1;
   stopped = false;
   establishedPort = null;
+  freshPortSelection = false;
   activeConfig = null;
   lastStartError = null;
   portBlock = null;
@@ -1195,12 +1248,16 @@ export async function configureTailscaleServe(options: {
   return Object.freeze({ ok: true as const });
 }
 
+function isFixedPort(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= 65_535;
+}
+
 function parseFixedPort(value: string): number {
   if (!/^[1-9]\d*$/.test(value)) {
     throw new Error("tailnet-observer-port-invalid");
   }
   const port = Number(value);
-  if (!Number.isSafeInteger(port) || port > 65_535) {
+  if (!isFixedPort(port)) {
     throw new Error("tailnet-observer-port-invalid");
   }
   return port;

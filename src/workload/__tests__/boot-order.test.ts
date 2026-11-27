@@ -9,7 +9,7 @@ describe("workload broker boot ordering", () => {
     const initialize = text.indexOf("await initializeWorkloadBroker(request.workloadBroker)");
     const binding = text.indexOf("isActiveWorkloadBrokerCwd(request.turn.cwd)", initialize);
     const host = text.indexOf("const createHost = () => createNodeBootHost({", binding);
-    const tools = text.indexOf("createWindowlessHost(projectRoot, host)", host);
+    const tools = text.indexOf("createWindowlessHost(projectRoot, host, freshTailnetAveHome)", host);
     expect(initialize).toBeGreaterThan(-1);
     expect(binding).toBeGreaterThan(initialize);
     expect(host).toBeGreaterThan(binding);
