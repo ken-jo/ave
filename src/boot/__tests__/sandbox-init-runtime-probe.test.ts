@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import type { SandboxMacContainerShellSupport } from "../../shared/sandbox-capability-info.js";
 import {
   createSandboxBootHarness,
   type SandboxBootHarness,
@@ -19,6 +20,7 @@ const h = vi.hoisted(() => ({
   checkDeps: vi.fn(),
   isProbeError: vi.fn(),
   isMacProbeError: vi.fn(),
+  detectMacShell: vi.fn<() => Promise<SandboxMacContainerShellSupport>>(),
   logger: {
     debug: vi.fn(),
     info: vi.fn(),
@@ -36,7 +38,7 @@ vi.mock("../../lib/logger.js", () => ({
 }));
 
 vi.mock("../../permissions/mxc-macos.js", () => ({
-  detectHostMxcMacShellSupport: vi.fn(async () => ({ state: "available" })),
+  detectHostMxcMacShellSupport: h.detectMacShell,
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
@@ -71,6 +73,8 @@ import {
   __resetSandboxRequestedAtBootForTest,
   detectSandboxCapability,
   getHostShellExecutionPlan,
+  getMacContainerShellInfo,
+  getSandboxBootOutcome,
   isPluginWorkerConfinementRequestedAtBoot,
   isShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
@@ -90,6 +94,8 @@ beforeEach(() => {
   h.isProbeError.mockReset();
   h.isMacProbeError.mockReset();
   h.isMacProbeError.mockReturnValue(false);
+  h.detectMacShell.mockReset();
+  h.detectMacShell.mockResolvedValue({ state: "available" });
   h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");
   vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "");
@@ -192,7 +198,37 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
   });
 });
 
- describe("macOS sandbox runtime probe failure", () => {
+describe("macOS container shell probe failure", () => {
+  it.each(["binary-missing", "launcher-mismatch", "shell-start-failed"] as const)(
+    "aborts before runtime activation when explicitly required and the probe returns %s", async (reason) => {
+      setProcessPlatform("darwin");
+      vi.stubEnv("AVE_SANDBOX_ENABLED", "1");
+      h.detectMacShell.mockResolvedValue({ state: "unavailable", reason });
+
+      await expect(initSandboxGate(harness.context(false))).rejects.toThrow(`macOS container shell unavailable (${reason})`);
+      expect(h.initialize).not.toHaveBeenCalled();
+      expect(detectSandboxCapability()).toMatchObject({ kind: "none" });
+      expect(getSandboxBootOutcome()).toMatchObject({ action: "abort", onSignal: "explicit-env" });
+      expect(harness.logSandboxGate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "abort" }));
+      expect(harness.flush).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([false, true])("keeps the settings-selected shell approval floor with explicit worker override %s", async (workerExplicit) => {
+    setProcessPlatform("darwin");
+    vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", workerExplicit ? "1" : "");
+    h.detectMacShell.mockResolvedValue({ state: "unavailable", reason: "shell-start-failed" });
+
+    await expect(initSandboxGate(harness.context(true))).resolves.toBeUndefined();
+    expect(h.initialize).toHaveBeenCalledOnce();
+    expect(getMacContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "shell-start-failed" });
+    const plan = getHostShellExecutionPlan();
+    expect(plan).toMatchObject({ mode: "plain", fallbackReason: "active-sandbox-not-shell-contained" });
+    expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
+  });
+});
+
+describe("macOS sandbox runtime probe failure", () => {
   it.each([false, true])("records its unavailable reason with explicit override %s", async (explicit) => {
     setProcessPlatform("darwin");
     const probeError = new Error("configured wrapper denied");

@@ -298,6 +298,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             const support = await detectHostMxcMacShellSupport(getHostResources().resourcePath, startupSignal);
             setContainerShellSubstrate(support);
             if (support.state === "unavailable") {
+              if (shellExplicitEnv) throw new Error(`macOS container shell unavailable (${support.reason})`);
               log.warn("boot: macOS container shell unavailable (%s)", support.reason);
             }
           }
@@ -495,7 +496,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             if (failDecision.action === "abort") {
               // Explicit activation must fail closed on initialization errors.
               log.error(
-                `boot: OS tool sandbox is ON via ${explicitEnvLabel} but ASRT initialization failed — refusing to start. ` +
+                `boot: OS tool sandbox is ON via ${explicitEnvLabel} but sandbox initialization failed — refusing to start. ` +
                   `Cause: ${cause}`,
               );
               recordGate("abort", failureReason, [cause], failureCauses);
