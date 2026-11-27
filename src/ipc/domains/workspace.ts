@@ -241,7 +241,7 @@ export interface WorkspaceRevealResult {
 function currentScope(): { cwd: string; extraAllowed: string[] } {
   const cwd = getDefaultWorkspaceRoot();
   const additional = readPermissionSettings().permissions.additionalDirectories;
-  return { cwd, extraAllowed: buildRuntimeAllowedDirectories(additional) };
+  return { cwd, extraAllowed: buildRuntimeAllowedDirectories(additional, process.platform === "win32" ? cwd : undefined) };
 }
 
 /** Case-folded canonical form used for every root and containment comparison in this domain. */
