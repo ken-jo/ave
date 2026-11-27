@@ -25,21 +25,31 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
   const inferenceDescriptionId = useId();
   const localInferenceWithoutSandbox = settings?.localInferenceWithoutSandbox;
   const localRuntimeRefusal = localInferenceWithoutSandbox === false ? 'local-inference-disabled' : modelRuntimeRefusal;
-  const applyModelStatus = useCallback((result: Awaited<ReturnType<MemoryMapApi['modelStatus']>>) => {
+  const applyModelStatus = useCallback((result: Awaited<ReturnType<MemoryMapApi['modelStatus']>>, hasInferencePreference: boolean) => {
     const refusal = !result.ok && isLocalInferenceRefusal(result.error) ? result.error : null;
     setModelRuntimeRefusal(refusal);
-    if (refusal !== null) { setStatus(null); setError(null); return; }
+    if (refusal !== null) {
+      if (hasInferencePreference) { setStatus(null); setError(null); }
+      return;
+    }
     if (result.ok) { setStatus(result.value); setError(result.value.error ?? null); } else setError(result.error);
   }, []);
   useEffect(() => {
     let active = true;
+    let initialHasInferencePreference = false;
+    let initialRefusal = false;
     const stop = api.onModelProgress(value => { if (active) { generation.current++; setStatus(value); setError(value.error ?? null); } });
     const current = generation.current;
     void api.modelStatus().then(result => {
       if (!active || current !== generation.current) return;
-      applyModelStatus(result);
+      initialRefusal = !result.ok && isLocalInferenceRefusal(result.error);
+      applyModelStatus(result, initialHasInferencePreference);
     }).catch(() => { if (active) setError("model-download-failed"); });
     void api.settingsGet().then(result => { if (active && result.ok) {
+      initialHasInferencePreference = result.value.localInferenceWithoutSandbox !== undefined;
+      if (initialHasInferencePreference && initialRefusal && current === generation.current) {
+        setStatus(null); setError(null);
+      }
       setSettings(result.value); setRevision(result.value.namespace.modelRevision); setSource(result.value.source);
       setProviderId(result.value.namespace.providerId ?? ''); setModelId(result.value.source === 'provider' ? result.value.namespace.modelId : '');
       const route = result.value.providers.find(provider => provider.id === result.value.namespace.providerId)?.route;
@@ -57,8 +67,8 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
     try {
       const initial = await (action === "download" ? api.modelDownload() : action === "existing" ? api.modelUseExisting() : api.modelCancel());
       const result = initial.ok && action === "cancel" ? await api.modelStatus() : initial;
-      if (!result.ok) applyModelStatus(result);
-      else if (result.value) applyModelStatus({ ok: true, value: result.value });
+      if (!result.ok) applyModelStatus(result, localInferenceWithoutSandbox !== undefined);
+      else if (result.value) applyModelStatus({ ok: true, value: result.value }, localInferenceWithoutSandbox !== undefined);
     } catch { setError(action === "existing" ? "model-folder-invalid" : "model-download-failed"); }
     finally { setBusy(false); }
   };
@@ -70,7 +80,7 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
       setSettings(result.value);
       const current = ++generation.current;
       const modelStatus = await api.modelStatus();
-      if (current === generation.current) applyModelStatus(modelStatus);
+      if (current === generation.current) applyModelStatus(modelStatus, result.value.localInferenceWithoutSandbox !== undefined);
       return true;
     } catch { setError('local-runtime-unavailable'); return false; }
     finally { setBusy(false); }
