@@ -12,6 +12,7 @@ import {
   annotateWithSandboxViolations,
   closeAllEgressConnections,
   closeEgressConnections,
+  getWindowsProxyPortRange,
   initializeAsrtSandbox,
   resetAsrtSandbox,
 } from "../asrt-sandbox.js";
