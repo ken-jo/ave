@@ -480,6 +480,55 @@ it('keeps the container cleanup refusal when Cancel stops an active inference', 
   expect(release).toHaveBeenCalledOnce();
 });
 
+it.each([true, false])('drains container output queued before the exit frame (receipt: %s)', async receivedExit => {
+  route.mockReturnValue('mxc');
+  const writing = deferred<void>();
+  const queuedOutput = deferred<void>();
+  const terminalFrame = deferred<void>();
+  const { child } = serveReply(() => { writing.resolve(); return new Promise(() => {}); });
+  const failure = new MxcProcessCleanupError('Container exit unconfirmed');
+  const release = vi.fn(async () => {
+    child.stdout.resume();
+    try {
+      for (const frame of [
+        '{"kind":"progress","progress":{"phase":"embedding"}}\n',
+        '{"kind":"result","value":"discarded"}\n',
+      ]) {
+        await new Promise<void>((resolve, reject) => {
+          child.stdout.write(frame, error => error ? reject(error) : resolve());
+        });
+      }
+    } catch {
+      throw failure;
+    } finally {
+      queuedOutput.resolve();
+    }
+    await terminalFrame.promise;
+    if (!receivedExit) throw failure;
+  });
+  spawnMxc.mockResolvedValue({ process: Object.assign(child, { fenceInput: vi.fn() }), release });
+  const controller = new AbortController();
+  const onProgress = vi.fn();
+  const confirmed = vi.fn();
+  const outcome = runInferenceChild(folder, TASK, controller.signal, onProgress, undefined, undefined,
+    { starting: vi.fn(), confirmed }).catch((error: unknown) => error);
+
+  await writing.promise;
+  controller.abort();
+  await queuedOutput.promise;
+  expect(confirmed).not.toHaveBeenCalled();
+  terminalFrame.resolve();
+  const error = await outcome;
+  expect(onProgress).not.toHaveBeenCalled();
+  if (receivedExit) {
+    expect(error).toEqual(new Error('Memory worker cancelled'));
+    expect(confirmed).toHaveBeenCalledOnce();
+  } else {
+    expect(error).toBe(failure);
+    expect(confirmed).not.toHaveBeenCalled();
+  }
+});
+
 it.each([true, false])('waits for direct child exit after Cancel (confirmed: %s)', async confirmed => {
   route.mockReturnValue('unconfined');
   const stopped = deferred<void>();

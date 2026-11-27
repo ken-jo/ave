@@ -95,7 +95,7 @@ function sandboxHomeOrRefusal(requireTreeExit: boolean, onExitConfirmed?: () => 
 }
 
 async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal: AbortSignal, exit?: MemoryWorkerExit): Promise<{
-  input: Readable; output: Writable; stop: () => void | Promise<void>; assertStillValid: () => void;
+  input: Readable; output: Writable; stop: () => void | Promise<void>; assertStillValid: () => void; supervised?: true;
 }> {
   signal.throwIfAborted();
   const { route, assertStillValid: assertRoute } = bindLocalEmbeddingRuntime(readRoute);
@@ -133,7 +133,7 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
       // The supervisor splits a write into frames across yields; each frame takes the same check.
       holder.process.fenceInput(assertStillValid);
       holder.process.stderr.resume();
-      return { input: holder.process.stdout, output: holder.process.stdin, stop, assertStillValid };
+      return { input: holder.process.stdout, output: holder.process.stdin, stop, assertStillValid, supervised: true };
     } catch (error) {
       await stop();
       throw error;
@@ -197,7 +197,7 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
   const taskJson = JSON.stringify(task);
   const lengths = [Buffer.byteLength(taskJson, 'utf8'), ...INFERENCE_FILES.map(file => file.bytes)];
   checkedInferenceFrameBytes(lengths);
-  const { input, output, stop, assertStillValid } = await spawnInferenceChild(readRoute, signal, exit);
+  const { input, output, stop, assertStillValid, supervised } = await spawnInferenceChild(readRoute, signal, exit);
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const lines = createInterface({ input });
@@ -205,7 +205,8 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
       if (settled) return; settled = true;
       signal.removeEventListener('abort', abort);
       lines.close();
-      if (error) {
+      // Holder disposal drains supervised output before it can read the exit receipt.
+      if (error && !supervised) {
         output.destroy();
         input.destroy();
       }
