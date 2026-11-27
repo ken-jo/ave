@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aveHome } from "../../../shared/ave-home.js";
 import { type HostGit, HostGitError } from "../host-git.js";
 import { nodeIdOf } from "../owned-fs.js";
@@ -18,17 +18,13 @@ vi.mock("../../../lib/logger.js", () => {
 
 const createFixture = seedGitFixtures();
 let fx: GitFixture;
-/** Set while a group of tests that change nothing shares one fixture. */
-let shared = false;
 
 beforeEach(() => {
-  if (!shared) fx = createFixture();
+  fx = createFixture();
   warned.length = 0;
 });
 
-afterEach(async () => {
-  if (!shared) await fx.done();
-});
+afterEach(() => fx.done());
 
 /** The exit code of plain git, for a call that may fail. */
 const code = (cwd: string, ...args: string[]): number | null => spawnSync("git", args, { cwd, env: fx.env, encoding: "utf8" }).status;
@@ -312,20 +308,8 @@ describe.each(["release", "swept", "discarded"] as const)("what a %s with its pr
   });
 
   describe("a record changed in place", () => {
-    let at: Scene;
-
-    beforeAll(async () => {
-      fx = createFixture();
-      shared = true;
-      at = await scene();
-    });
-
-    afterAll(async () => {
-      shared = false;
-      await fx.done();
-    });
-
     it.each(refused)("a record whose %s no longer matches stops it: nothing of the run goes", async (_field, path, value) => {
+      const at = await scene();
       writeFileSync(keptFile(), "kept\n");
       setPath(at.record, path, value(at));
       try {
