@@ -44,4 +44,17 @@ describe('memory map preload bridge', () => {
       setProcessPlatform(originalPlatform);
     }
   });
+  it.each(['win32', 'darwin', 'linux'] as const)('exposes the atomic build view only on Windows (%s)', async platform => {
+    const originalPlatform = process.platform;
+    setProcessPlatform(platform);
+    vi.resetModules();
+    try {
+      const { memoryMapApiSurface } = await import('../memory-map-api-surface.js');
+      if (platform === 'win32') {
+        assert.ok(memoryMapApiSurface.buildView);
+        await memoryMapApiSurface.buildView(undefined);
+        expect(state.invoke).toHaveBeenLastCalledWith(CHANNELS.memoryMap.buildView, undefined);
+      } else expect(Object.hasOwn(memoryMapApiSurface, 'buildView')).toBe(false);
+    } finally { setProcessPlatform(originalPlatform); }
+  });
 });

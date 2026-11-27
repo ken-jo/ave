@@ -19,6 +19,7 @@ import { TOOL_TIMEOUT_POLICY } from '../../../shared/tool-timeout-policy.js';
 import type { WindowsBackgroundAdmission } from '../../../permissions/windows-background-features.js';
 import { parseChildLaunchArgs } from '../../../plugins/isolation/child-loopback-link.js';
 import { runInferenceChild } from '../inference-child-win32.js';
+import { BuildRegistry } from '../build-registry-win32.js';
 import { INFERENCE_ACCOUNT_EXIT_RECEIPT, INFERENCE_ACCOUNT_RELAY_ARG, MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
 import { MODEL_FILES } from '../model-manifest.js';
 
@@ -93,6 +94,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   setProcessPlatform(HOST_PLATFORM);
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
@@ -134,7 +136,7 @@ function serveReply(beforeWrite?: (received: number) => void | Promise<void>) {
     const [socket, peer] = duplexPair();
     peer.pipe(stdin);
     stdout.pipe(peer);
-    socket.once('close', () => { peer.destroy(); publishAccountReceipt(child); });
+    peer.once('end', () => { peer.end(); publishAccountReceipt(child); });
     return socket;
   });
   return { child, completed };
@@ -190,7 +192,7 @@ describe('inference model stream', () => {
       const [socket, peer] = duplexPair();
       peer.pipe(child.stdin);
       child.stdout.pipe(peer);
-      socket.once('close', () => { peer.destroy(); publishAccountReceipt(child); });
+      peer.once('end', () => { peer.end(); publishAccountReceipt(child); });
       connectLoopback.mockResolvedValueOnce(socket);
       child.stdin = processStdin;
       child.stdout = new PassThrough();
@@ -222,7 +224,7 @@ describe('inference model stream', () => {
     child.stdout.pipe(peer);
     const connecting = deferred<void>();
     const connect = deferred<typeof socket>();
-    socket.once('close', () => publishAccountReceipt(child));
+    peer.once('end', () => { peer.end(); publishAccountReceipt(child); });
     connectLoopback.mockImplementationOnce(() => { connecting.resolve(); return connect.promise; });
 
     const inference = runInferenceChild(folder, TASK, new AbortController().signal);
@@ -385,6 +387,68 @@ it.each(['cancellation', 'late startup refusal'] as const)('retains HOME and wra
   }
 });
 
+it.each(['abort before authentication', 'admission lost before authentication'] as const)('requires the account receipt when %s', async reason => {
+  const { child: wrapper } = serveReply();
+  const cleanup = vi.fn();
+  createHome.mockReturnValue({ env: {}, cleanup });
+  vi.mocked(cleanupAsrtSandboxAfterCommand).mockClear();
+  spawn.mockImplementationOnce(spec => {
+    spec.onWrapped?.();
+    spec.onSpawn?.(wrapper as unknown as ChildProcess);
+    return { child: wrapper };
+  });
+  const [socket, peer] = duplexPair();
+  const received = vi.fn();
+  peer.on('data', received);
+  const eof = deferred<void>();
+  peer.once('end', eof.resolve);
+  const connecting = deferred<void>();
+  const finishDial = deferred<void>();
+  connectLoopback.mockImplementationOnce(async ({ assertStillValid }: { assertStillValid(): void }) => {
+    connecting.resolve();
+    await finishDial.promise;
+    assertStillValid();
+    return socket;
+  });
+  const registry = new BuildRegistry();
+  const owner = registry.register('pre-auth', { scopeId: 'scope', assertAdmitted: () => {} });
+  owner.takeover(() => {});
+  const result = runInferenceChild(folder, TASK, owner.signal, undefined, undefined, undefined, owner.beginWorker).catch(error => error);
+  await connecting.promise;
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    if (reason.startsWith('admission')) helperIdentity.mockReturnValue('replacement-helper');
+    const reply = vi.fn();
+    const cancel = registry.cancel(owner.id).then(reply, reply);
+    finishDial.resolve();
+    if (reason.startsWith('admission')) {
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsInferenceChildAcceptMs - 1);
+      expect(reply).toHaveBeenCalledWith(expect.objectContaining({ code: 'build-exit-unconfirmed' }));
+      expect(wrapper.kill).not.toHaveBeenCalled();
+    } else {
+      await eof.promise;
+      expect(reply).not.toHaveBeenCalled();
+    }
+    expect(received).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(cleanupAsrtSandboxAfterCommand).not.toHaveBeenCalled();
+    wrapper.stderr.write(`${INFERENCE_ACCOUNT_EXIT_RECEIPT}\n`);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cleanup).not.toHaveBeenCalled();
+    wrapper.emit('close', 0, null);
+    await cancel;
+    await result;
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(cleanupAsrtSandboxAfterCommand).toHaveBeenCalledOnce();
+    expect(wrapper.kill).not.toHaveBeenCalled();
+    expect(await registry.cancel(owner.id)).toBeNull();
+  } finally {
+    socket.destroy();
+    peer.destroy();
+    vi.useRealTimers();
+  }
+});
+
 it('releases only after the relay confirms the stopped target tree', async () => {
   vi.mocked(cleanupAsrtSandboxAfterCommand).mockClear();
   const cleanup = vi.fn();
@@ -396,7 +460,8 @@ it('releases only after the relay confirms the stopped target tree', async () =>
   const stopRequested = deferred<void>();
   const control = new AbortController();
   connectLoopback.mockImplementationOnce(async () => {
-    socket.once('close', stopRequested.resolve);
+    peer.once('end', stopRequested.resolve);
+    peer.resume();
     connected.resolve();
     return socket;
   });
@@ -510,8 +575,9 @@ it.each([true, false])('drains container output queued before the exit frame (re
   const controller = new AbortController();
   const onProgress = vi.fn();
   const confirmed = vi.fn();
+  const lost = vi.fn();
   const outcome = runInferenceChild(folder, TASK, controller.signal, onProgress, undefined, undefined,
-    { starting: vi.fn(), confirmed }).catch((error: unknown) => error);
+    () => ({ confirmed, lost })).catch((error: unknown) => error);
 
   await writing.promise;
   controller.abort();
@@ -523,9 +589,11 @@ it.each([true, false])('drains container output queued before the exit frame (re
   if (receivedExit) {
     expect(error).toEqual(new Error('Memory worker cancelled'));
     expect(confirmed).toHaveBeenCalledOnce();
+    expect(lost).not.toHaveBeenCalled();
   } else {
     expect(error).toBe(failure);
     expect(confirmed).not.toHaveBeenCalled();
+    expect(lost).toHaveBeenCalledOnce();
   }
 });
 
@@ -541,7 +609,7 @@ it.each([true, false])('waits for direct child exit after Cancel (confirmed: %s)
   const controller = new AbortController();
   const reply = vi.fn();
   const result = runInferenceChild(folder, TASK, controller.signal, undefined, undefined, undefined,
-    { starting: vi.fn(), confirmed: onExitConfirmed }).catch(reply);
+    () => ({ confirmed: onExitConfirmed, lost: vi.fn() })).catch(reply);
   await vi.waitFor(() => expect(spawnHost).toHaveBeenCalledOnce());
   vi.useFakeTimers();
   try {

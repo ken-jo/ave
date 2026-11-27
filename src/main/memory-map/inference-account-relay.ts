@@ -143,6 +143,7 @@ export async function runInferenceAccountTarget(socket: Socket, env: Readonly<Re
 export async function serveInferenceAccountRelay(env: Readonly<Record<string, string>>): Promise<void> {
   const job = await bindInferenceAccountJob();
   let socket: Socket | undefined;
+  let confirmed = false;
   try {
     socket = await acceptHostOverLoopback({
       announce: line => { process.stdout.write(line); },
@@ -153,11 +154,13 @@ export async function serveInferenceAccountRelay(env: Readonly<Record<string, st
   } finally {
     socket?.destroy();
     try {
-      if (job.targetTreeGone()) {
+      confirmed = job.targetTreeGone();
+      if (confirmed) {
         await new Promise<void>((resolve, reject) => {
           process.stderr.write(`${INFERENCE_ACCOUNT_EXIT_RECEIPT}\n`, error => error ? reject(error) : resolve());
         });
-      } else throw new Error('Inference relay job membership is unverified');
+      }
     } finally { job.release(); }
   }
+  if (!confirmed) throw new Error('Inference relay job membership is unverified');
 }

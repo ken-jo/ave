@@ -5,6 +5,7 @@ import { promises as fs } from 'node:fs';
 import { lstat, mkdir, readFile, realpath, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { BuildRegistry } from '../build-registry-win32.js';
 import { MemoryMapHost } from '../host-win32.js';
 import { MemoryMapHostError } from '../errors.js';
 import { buildGraph, catalogRevision, LOCAL_NAMESPACE, vectorKey } from '../graph.js';
@@ -314,6 +315,7 @@ describe('memory graph publication', () => {
     const expectedBatches = records.map(record => [`${record.title}\n${record.text}`]);
     const batches: string[][] = [];
     const failure = new Error('Second embedding batch failed');
+    const registry = new BuildRegistry();
     let cancelledSignal: AbortSignal | undefined;
     const runWorker: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
       const [, task, signal] = args;
@@ -322,13 +324,13 @@ describe('memory graph publication', () => {
         if (batches.length === 2) {
           if (interruption === 'failure') throw failure;
           cancelledSignal = signal;
-          host.cancel();
+          registry.stopCurrent('user');
           signal.throwIfAborted();
         }
       }
       return f.runWorker<T>(...args);
     };
-    const host = new InspectableMemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker });
+    const host = new InspectableMemoryMapHost({ registry, namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker });
     await host.build(() => f.catalog);
     const path = join(f.root, 'snapshot.json');
     const previousBytes = await readFile(path);
@@ -416,12 +418,13 @@ describe('memory graph publication', () => {
   });
   it('publishes the ready state in the step that replaces the stored graph', async () => {
     const f = await fixture();
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: f.runWorker });
+    const registry = new BuildRegistry();
+    const host = new MemoryMapHost({ registry, namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: f.runWorker });
     const atomicReplace = atomicFile.replaceUtf8FileAtomicSyncIf;
     const replace = vi.spyOn(atomicFile, 'replaceUtf8FileAtomicSyncIf').mockImplementationOnce((path, body, canCommit, mode) =>
       atomicReplace(path, body, () => {
         const allowed = canCommit();
-        queueMicrotask(() => host.cancel());
+        queueMicrotask(() => registry.stopCurrent('user'));
         return allowed;
       }, mode));
     try {

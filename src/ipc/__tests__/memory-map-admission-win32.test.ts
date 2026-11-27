@@ -11,7 +11,7 @@ import { CHANNELS } from '../../contract/app-contract.js';
 import { ManagedExitUnconfirmedError } from '../../main/managed-child-processes.js';
 import { MxcProcessCleanupError } from '../../permissions/mxc-extension-errors.js';
 import { buildGraph } from '../../main/memory-map/graph.js';
-import type { MemoryWorkerExit } from '../../main/memory-map/build-teardown-win32.js';
+import type { BeginMemoryWorker } from '../../main/memory-map/build-registry-win32.js';
 import * as localRuntime from '../../main/memory-map/local-runtime-win32.js';
 import type { MemoryWorkerTask } from '../../main/memory-map/worker-client.js';
 import { registerMxcReleaseGateEvidence } from '../../permissions/mxc-extension-admission.js';
@@ -31,7 +31,7 @@ const state = vi.hoisted(() => ({
   handle: undefined as ((event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>) | undefined,
   get: undefined as ((event: IpcMainInvokeEvent) => Promise<unknown>) | undefined,
   cancel: undefined as ((event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>) | undefined,
-  runWorker: vi.fn<(folder: string, task: MemoryWorkerTask, signal: AbortSignal, progress?: unknown, admission?: unknown, exit?: MemoryWorkerExit) => Promise<unknown>>(),
+  runWorker: vi.fn<(folder: string, task: MemoryWorkerTask, signal: AbortSignal, progress?: unknown, admission?: unknown, beginWorker?: BeginMemoryWorker) => Promise<unknown>>(),
   beforeCommit: undefined as (() => Promise<unknown>) | undefined,
   afterRead: undefined as (() => void) | undefined,
 }));
@@ -130,8 +130,8 @@ describe.each(['container', 'unconfined', 'account', 'projection'] as const)('%s
     const stopping = deferred<void>();
     const finishTeardown = deferred<void>();
     let confirmExit: (() => void) | undefined;
-    state.runWorker.mockReset().mockImplementation(async (_folder, task, signal, _progress, _admission, exit) => {
-      exit?.starting?.();
+    state.runWorker.mockReset().mockImplementation(async (_folder, task, signal, _progress, _admission, beginWorker) => {
+      const exit = beginWorker?.(task.kind === 'project' ? 'projection' : route === 'projection' ? 'container' : route);
       if (route === 'projection' && task.kind === 'embed-batch') {
         exit?.confirmed();
         return task.texts.map(() => [1, ...Array<number>(383).fill(0)]);
@@ -141,7 +141,10 @@ describe.each(['container', 'unconfined', 'account', 'projection'] as const)('%s
       signal.addEventListener('abort', () => stopping.resolve(), { once: true });
       started.resolve(signal);
       await finishTeardown.promise;
-      if (outcome === 'refused') throw route === 'container' ? new MxcProcessCleanupError('Tree exit unconfirmed') : new ManagedExitUnconfirmedError();
+      if (outcome === 'refused') {
+        if (route !== 'unconfined') exit?.lost();
+        throw route === 'container' ? new MxcProcessCleanupError('Tree exit unconfirmed') : new ManagedExitUnconfirmedError();
+      }
       confirmExit?.();
       signal.throwIfAborted();
     });
@@ -161,12 +164,13 @@ describe.each(['container', 'unconfined', 'account', 'projection'] as const)('%s
     try {
       const signal = await Promise.race([started.promise, build.then(() => { throw new Error('Worker did not start'); })]);
       expect(await state.get?.(event)).toMatchObject({ ok: true, value: { status: 'building', snapshotId: buildId } });
-      if (outcome === 'deadline') vi.useFakeTimers();
+      const waitsForDeadline = outcome === 'deadline' || (outcome === 'refused' && route === 'unconfined');
+      if (waitsForDeadline) vi.useFakeTimers();
       const replied = vi.fn();
       const firstCancel = cancel(event, buildId).then(replied);
       const secondCancel = cancel(event, buildId).then(replied);
       await stopping.promise;
-      if (outcome === 'deadline') await vi.advanceTimersByTimeAsync(0);
+      if (waitsForDeadline) await vi.advanceTimersByTimeAsync(0);
       else await new Promise<void>(resolve => setImmediate(resolve));
       expect.soft(signal.aborted).toBe(true);
       expect.soft(replied).not.toHaveBeenCalled();
@@ -178,6 +182,7 @@ describe.each(['container', 'unconfined', 'account', 'projection'] as const)('%s
       } else {
         finishTeardown.resolve();
         expect(await build).toMatchObject({ ok: false });
+        if (waitsForDeadline) await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsMemoryBuildCancelMs);
       }
       await Promise.all([firstCancel, secondCancel]);
       const reply = outcome === 'confirmed' ? { ok: true, value: null } : { ok: false, error: 'build-exit-unconfirmed' };
@@ -195,8 +200,8 @@ describe.each(['container', 'unconfined', 'account', 'projection'] as const)('%s
         const nextStarted = deferred<void>();
         const nextExit = deferred<void>();
         const nextReply = vi.fn((reply: unknown) => reply);
-        state.runWorker.mockImplementationOnce(async (_folder, _task, signal, _progress, _admission, exit) => {
-          exit?.starting();
+        state.runWorker.mockImplementationOnce(async (_folder, _task, signal, _progress, _admission, beginWorker) => {
+          const exit = beginWorker?.('account');
           nextStarted.resolve();
           await nextExit.promise;
           exit?.confirmed();
@@ -225,7 +230,7 @@ describe.each(['container', 'unconfined', 'account', 'projection'] as const)('%s
   });
 });
 
-it('keeps the live projection cancellable when a replacement catalog scan fails', async () => {
+it.each(['catalog scan fails', 'scope options change before takeover'] as const)('keeps the live projection cancellable when a replacement %s', async failure => {
   state.root = roots.track(await mkdtemp(join(tmpdir(), 'memory-map-admission-')));
   setProcessPlatform('win32');
   state.account = false;
@@ -240,13 +245,16 @@ it('keeps the live projection cancellable when a replacement catalog scan fails'
 
   const projecting = deferred<AbortSignal>();
   const finishTeardown = deferred<void>();
-  state.runWorker.mockReset().mockImplementation(async (_folder, task, signal, _progress, _admission, exit) => {
-    exit?.starting();
+  let startedProjection = false;
+  state.runWorker.mockReset().mockImplementation(async (_folder, task, signal, _progress, _admission, beginWorker) => {
+    const exit = beginWorker?.(task.kind === 'project' ? 'projection' : 'container');
     if (task.kind === 'embed-batch') {
       exit?.confirmed();
       return task.texts.map(() => [1, ...Array<number>(383).fill(0)]);
     }
     if (task.kind !== 'project') throw new Error('Expected projection');
+    if (startedProjection) throw new Error('Replacement reached projection');
+    startedProjection = true;
     projecting.resolve(signal);
     await finishTeardown.promise;
     exit?.confirmed();
@@ -258,11 +266,12 @@ it('keeps the live projection cancellable when a replacement catalog scan fails'
   });
   const note = { id: randomUUID(), filename: 'example.md', title: 'Example', content: 'Memory' };
   const readCatalog = vi.fn(() => ({ notes: [note] }));
+  let projectName = 'example';
   registerWindowsMemoryMapHandlers({
     auditLogger: { log: vi.fn() },
     settingsService: { get: (key: string) => key === 'memoryEmbedding' ? { localModelPath: state.root } : undefined },
     memoryManager: { readMemoryPanelCatalog: readCatalog },
-  } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+  } as unknown as IpcDeps, () => ({ ok: true, options: { projectRoot: state.root, projectName } }));
   const event = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
   if (!state.handle || !state.cancel || !state.get) throw new Error('Memory-map IPC is not registered');
 
@@ -271,9 +280,14 @@ it('keeps the live projection cancellable when a replacement catalog scan fails'
   const build = state.handle(event, { buildId: firstId });
   try {
     const signal = await Promise.race([projecting.promise, build.then(() => { throw new Error('Projection did not start'); })]);
-    readCatalog.mockImplementationOnce(() => { throw Object.assign(new Error('Cannot read catalog'), { code: 'EACCES' }); });
-    expect(await state.handle(event, { buildId: secondId })).toEqual({ ok: false, error: 'graph-build-failed' });
-    expect(await state.get(event)).toMatchObject({ ok: true, value: { status: 'building', snapshotId: firstId } });
+    readCatalog.mockImplementationOnce(() => {
+      if (failure === 'catalog scan fails') throw Object.assign(new Error('Cannot read catalog'), { code: 'EACCES' });
+      projectName = 'example (additional)';
+      return { notes: [note] };
+    });
+    const replacement = await state.handle(event, { buildId: secondId });
+    expect(replacement).toEqual({ ok: false, error: failure === 'catalog scan fails' ? 'graph-build-failed' : 'project-not-allowed' });
+    expect.soft(await state.get(event)).toMatchObject({ ok: true, value: { status: 'building', snapshotId: firstId } });
     expect(await state.cancel(event, secondId)).toEqual({ ok: true, value: null });
     expect(signal.aborted).toBe(false);
 
@@ -284,7 +298,7 @@ it('keeps the live projection cancellable when a replacement catalog scan fails'
     expect(replied).not.toHaveBeenCalled();
     finishTeardown.resolve();
     expect(await canceled).toEqual({ ok: true, value: null });
-    expect(await build).toEqual({ ok: false, error: 'request-stale' });
+    expect(await build).toEqual({ ok: false, error: failure === 'catalog scan fails' ? 'request-stale' : 'project-not-allowed' });
     expect(await state.get(event)).toEqual({ ok: true, value: null });
   } finally {
     finishTeardown.resolve();
@@ -293,10 +307,13 @@ it('keeps the live projection cancellable when a replacement catalog scan fails'
 });
 
 describe.each(['account', 'container'] as const)('%s admission', backend => {
-  describe.each([backend, 'sandbox home'] as const)('%s proof', proof => it.each(['before projection', 'during projection', 'before atomic commit'] as const)(
+  describe.each([backend, 'sandbox home', 'scope identity'] as const)('%s proof', proof => it.each(proof === 'scope identity'
+    ? ['before atomic commit'] as const : ['before projection', 'during projection', 'before atomic commit'] as const)(
     `refuses a cached IPC build on ${proof} proof loss %s`, async boundary => {
+      let projectName = 'example';
       const loseProof = () => {
-        if (proof === 'sandbox home') markSandboxHomesUnavailable();
+        if (proof === 'scope identity') projectName = 'example (additional)';
+        else if (proof === 'sandbox home') markSandboxHomesUnavailable();
         else if (proof === 'container') unregister?.();
         else state.operational = false;
       };
@@ -328,7 +345,7 @@ describe.each(['account', 'container'] as const)('%s admission', backend => {
         auditLogger: { log: vi.fn() },
         settingsService: { get: (key: string) => key === 'memoryEmbedding' ? { localModelPath: state.root } : undefined },
         memoryManager: { readMemoryPanelCatalog: () => ({ notes: [note] }) },
-      } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+      } as unknown as IpcDeps, () => ({ ok: true, options: { projectRoot: state.root, projectName } }));
       const event = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
       const handle = state.handle;
       if (handle === undefined) throw new Error('Memory-map build IPC is not registered');
@@ -350,7 +367,7 @@ describe.each(['account', 'container'] as const)('%s admission', backend => {
         loseProof();
         release.resolve();
       }
-      expect.soft(await result).toEqual({ ok: false, error: 'local-runtime-unavailable' });
+      expect.soft(await result).toEqual({ ok: false, error: proof === 'scope identity' ? 'project-not-allowed' : 'local-runtime-unavailable' });
       expect.soft(state.runWorker.mock.calls.map(([, task]) => task.kind)).toEqual(boundary === 'before projection' ? [] : ['project']);
       expect(await readFile(path)).toEqual(previous);
     },

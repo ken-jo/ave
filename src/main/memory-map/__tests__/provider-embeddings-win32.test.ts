@@ -13,7 +13,7 @@ import { buildGraph } from '../graph.js';
 import { createMemoryProviderEgress } from '../provider-egress.js';
 import type { MemoryWorkerRunner } from '../worker-client-win32.js';
 import { MemoryMapHost } from '../host-win32.js';
-import { MemoryBuildTeardown, type MemoryWorkerExit } from '../build-teardown-win32.js';
+import { BuildRegistry, type MemoryWorkerExit } from '../build-registry-win32.js';
 import { deferred } from '../../../__tests__/support/deferred.js';
 
 const cleanup: (() => Promise<unknown>)[] = [];
@@ -49,11 +49,14 @@ async function fixture(allowedDomains = ['127.0.0.1'], holdProjection?: (signal:
   const chokepoint = vi.fn<typeof fetch>((input, init) => nativeFetch(input, init));
   vi.stubGlobal('fetch', vi.fn(() => { throw new Error('Ambient fetch is forbidden'); }));
   const project = vi.fn(buildGraph);
-  const worker: MemoryWorkerRunner = async <T>(folder: string, task: Parameters<MemoryWorkerRunner>[1], signal: AbortSignal, report: Parameters<MemoryWorkerRunner>[3], _admission: Parameters<MemoryWorkerRunner>[4], exit: Parameters<MemoryWorkerRunner>[5]) => {
+  const worker: MemoryWorkerRunner = async <T>(folder: string, task: Parameters<MemoryWorkerRunner>[1], signal: AbortSignal, report: Parameters<MemoryWorkerRunner>[3], _admission: Parameters<MemoryWorkerRunner>[4], beginWorker: Parameters<MemoryWorkerRunner>[5]) => {
     expect(folder).toBe(''); expect(task.kind).toBe('project'); signal.throwIfAborted();
     if (task.kind !== 'project') throw new Error('Unexpected worker task');
-    await holdProjection?.(signal, exit);
-    return await project(task.input, { embed: async () => { throw new Error('Unexpected local embedding'); }, dispose: async () => {} }, report ?? (() => {})) as T;
+    const exit = beginWorker?.('projection');
+    try {
+      await holdProjection?.(signal, exit);
+      return await project(task.input, { embed: async () => { throw new Error('Unexpected local embedding'); }, dispose: async () => {} }, report ?? (() => {})) as T;
+    } finally { exit?.confirmed(); }
   };
   const audit = vi.fn();
   const provider = new ProviderEmbeddings(settings, createMemoryProviderEgress(chokepoint, allowedDomains, audit), worker);
@@ -61,13 +64,14 @@ async function fixture(allowedDomains = ['127.0.0.1'], holdProjection?: (signal:
   const namespace: FeatureNamespaceHandle = { dir: root, readJson: async (_, fallback) => { try { return JSON.parse(await readFile(join(root, 'snapshot.json'), 'utf8')); } catch { return fallback; } }, writeJson: async (name, value) => writeFile(join(root, name), JSON.stringify(value)), childDir: async name => { await mkdir(join(root, name), { recursive: true }); return join(root, name); }, createFile: name => open(join(root, name), 'wx') };
   const catalog = { authorizationScopeId: 'scope', excluded: 0, records: Array.from({ length: 2 }, (_, i) => ({ memoryId: `id-${i}`, contentRevision: `r-${i}`, title: `Title ${i}`, text: `Private memory ${i}`, sourceKind: 'user' as const })) };
   const progress: MemoryMapProgress[] = [];
-  const host = new MemoryMapHost({ namespace, provider, refreshLocalAdmission: async () => { throw new Error('Local runtime must not load'); }, validatedModelPath: async () => { throw new Error('Local model must not load'); }, onProgress: value => progress.push(value) });
+  const registry = new BuildRegistry();
+  const host = new MemoryMapHost({ registry, namespace, provider, refreshLocalAdmission: async () => { throw new Error('Local runtime must not load'); }, validatedModelPath: async () => { throw new Error('Local model must not load'); }, onProgress: value => progress.push(value) });
   return { changeEndpoint: () => {
     const next = `${baseUrl}/alternate`;
     llm.vendors['openai-compatible'].baseUrl = next;
     llm.modelListCache.saved.baseUrl = next;
     llm.modelListCache.saved.endpoint = `${next}/models`;
-  }, pauseResponse: () => { let release!: () => void; responseWait = new Promise<void>(resolve => { release = resolve; }); return release; }, provider, host, settings, audit, namespace, catalog, requests, chokepoint, progress, project, key, consent, get config() { return config; }, set config(value) { config = value; }, set dimensions(value: number) { dimensions = value; }, set inconsistent(value: boolean) { inconsistent = value; }, set fail(value: boolean) { fail = value; } };
+  }, pauseResponse: () => { let release!: () => void; responseWait = new Promise<void>(resolve => { release = resolve; }); return release; }, provider, host, registry, settings, audit, namespace, catalog, requests, chokepoint, progress, project, key, consent, get config() { return config; }, set config(value) { config = value; }, set dimensions(value: number) { dimensions = value; }, set inconsistent(value: boolean) { inconsistent = value; }, set fail(value: boolean) { fail = value; } };
 }
 describe('provider memory embeddings', () => {
   it('keeps provider projection attached to the build owner until thread exit', async () => {
@@ -75,25 +79,23 @@ describe('provider memory embeddings', () => {
     const exited = deferred<void>();
     const f = await fixture(undefined, async (signal, exit) => {
       assert.ok(exit);
-      exit.starting();
       projected.resolve(exit);
       await exited.promise;
       signal.throwIfAborted();
     });
     f.consent();
-    const teardown = new MemoryBuildTeardown();
-    const build = f.host.build(() => f.catalog, undefined, teardown).catch((error: unknown) => error);
+    const owner = f.registry.register('provider-build', { scopeId: f.catalog.authorizationScopeId, assertAdmitted: () => {} });
+    const build = f.host.build(() => f.catalog, undefined, owner).catch((error: unknown) => error);
     try {
       const thread = await Promise.race([projected.promise, build.then(() => { throw new Error('Projection did not start'); })]);
-      f.host.cancel();
       const replied = vi.fn();
-      const cancel = teardown.waitForExit().then(replied);
+      const cancel = f.registry.cancel(owner.id).then(replied);
       await new Promise<void>(resolve => setImmediate(resolve));
       expect(replied).not.toHaveBeenCalled();
       thread.confirmed();
       exited.resolve();
       await cancel;
-      expect(replied).toHaveBeenCalledExactlyOnceWith(true);
+      expect(replied).toHaveBeenCalledExactlyOnceWith(null);
       expect(await build).toMatchObject({ code: 'request-stale' });
       expect(await f.host.get(() => f.catalog)).toBeNull();
     } finally {
@@ -226,7 +228,7 @@ describe('provider memory embeddings', () => {
   });
   it('bounds batches and stops the next batch after opting out', async () => {
     const f = await fixture(); f.consent(); f.catalog.records = Array.from({ length: 33 }, (_, i) => ({ ...f.catalog.records[0], memoryId: `id-${i}` }));
-    const host = new MemoryMapHost({ namespace: f.namespace, provider: f.provider, refreshLocalAdmission: async () => { throw new Error('Local runtime must not load'); }, validatedModelPath: async () => '', onProgress: () => { f.config.source = 'local'; host.cancel(); } });
+    const host = new MemoryMapHost({ registry: f.registry, namespace: f.namespace, provider: f.provider, refreshLocalAdmission: async () => { throw new Error('Local runtime must not load'); }, validatedModelPath: async () => '', onProgress: () => { f.config.source = 'local'; f.registry.stopCurrent('authority'); } });
     await expect(host.build(() => f.catalog)).rejects.toThrow('request-stale');
     expect(f.requests).toHaveLength(1); expect(f.requests[0].input).toHaveLength(16);
     expect(await host.get(() => f.catalog)).toBeNull();

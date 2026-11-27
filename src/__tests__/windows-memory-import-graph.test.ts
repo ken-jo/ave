@@ -13,6 +13,7 @@ const SELECTORS = new Set([
   "src/boot.ts",
   "src/data/settings-store.ts",
   "src/data/settings-normalization.ts",
+  "src/ui/renderer/App.tsx",
 ]);
 const ADMISSION_MODULES = new Set([
   "src/shared/admission-commit",
@@ -38,7 +39,7 @@ const EXISTING_EDGES = new Set([
 
 const portable = (path: string) => path.replaceAll("\\", "/");
 const modulePath = (path: string) => path.replace(/\.[cm]?[jt]sx?$/, "");
-const isWindowsImplementation = (path: string) => basename(path).endsWith("-win32");
+const isWindowsImplementation = (path: string) => /(?:-win32|Win32)$/.test(basename(path));
 const isWindowsModule = (path: string) => isWindowsImplementation(path) || ADMISSION_MODULES.has(path);
 
 function moduleSpecifier(node: ts.Node): ts.Node | undefined {

@@ -984,7 +984,7 @@ it.each([
       expect((await refreshWindowsBackgroundAdmission()).areSwitchesAvailable()).toBe(false);
     }
     else await expect((async () => memoryMap.build(undefined, "11111111-1111-4111-8111-111111111111",
-      {} as Parameters<typeof memoryMap.build>[2], () => {}))())
+      {} as Parameters<typeof memoryMap.build>[2], () => {}, {}, () => {}))())
       .rejects.toMatchObject({ code: "local-runtime-unavailable" });
     expect(resolveScope).not.toHaveBeenCalled();
   } finally {

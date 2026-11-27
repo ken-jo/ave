@@ -6,10 +6,11 @@ import { deferred } from '../../../../__tests__/support/deferred.js';
 import { createMemoryMapApi } from '../../../../__tests__/support/memory-map-api.js';
 import { ko } from '../../../../i18n/messages/ko.js';
 import { makeMockAveApi } from '../../../../../test/renderer/mock-ave-api.js';
-import type { GraphSnapshot } from '../../../../shared/memory-map.js';
+import type { GraphSnapshot, MemoryBuildStatus, MemoryBuildView, MemoryMapApi } from '../../../../shared/memory-map.js';
 import type { AveApi } from '../../types.js';
 import type { MemoryGraphRenderer } from '../memory-graph-renderer.js';
 import { MemoryView } from '../MemoryView.js';
+import { MemoryViewWin32 } from '../MemoryViewWin32.js';
 
 const renderer = vi.hoisted(() => ({ update: vi.fn<MemoryGraphRenderer['update']>(), zoom: vi.fn(), fit: vi.fn(), destroy: vi.fn(), callbacks: null as null | { onSelect: (id: string) => void; onError: () => void } }));
 vi.mock('../memory-graph-renderer.js', () => ({
@@ -41,23 +42,192 @@ function setup() {
 function selectTab(name: string) { fireEvent.mouseDown(screen.getByRole('tab', { name }), { button: 0, ctrlKey: false }); }
 async function ready() { await screen.findByText('메모리 3 · 연결 2'); }
 
-describe('memory map view', () => {
+const FIRST_BUILD = '11111111-1111-4111-8111-111111111111';
+const SECOND_BUILD = '22222222-2222-4222-8222-222222222222';
+const REFUSAL = { ok: false, error: 'build-exit-unconfirmed' } as const;
+const CANCELLED = { ok: true, value: null } as const;
+const buildRow = (id: string, phase: MemoryBuildStatus['phase']): MemoryBuildStatus => ({ id, phase });
+const cancelButton = () => screen.findByRole('button', { name: ko['memoryMap.cancelBuild'] });
+const retryButton = () => screen.findByRole('button', { name: ko['memoryMap.retryCancel'] });
+
+function setupWindows(snapshot: GraphSnapshot | null = SNAPSHOT, builds: MemoryBuildStatus[] = []) {
+  const f = setup();
+  let view: MemoryBuildView = { instance: 'host', revision: 1, snapshot, builds };
+  const buildView = vi.fn<NonNullable<MemoryMapApi['buildView']>>(async () => ({ ok: true, value: view }));
+  Object.assign(f.map, { buildView });
+  const publish = (nextSnapshot: GraphSnapshot | null, ...nextBuilds: MemoryBuildStatus[]) => {
+    view = { ...view, revision: view.revision + 1, snapshot: nextSnapshot, builds: nextBuilds };
+  };
+  const save = () => {
+    const callback = vi.mocked(f.api.onMemorySaveResult).mock.calls.at(-1)?.[0];
+    assert.ok(callback);
+    act(() => callback({} as Parameters<typeof callback>[0]));
+  };
+  return { ...f, buildView, publish, save };
+}
+
+describe('Windows memory map build view', () => {
   it('links to the switch and keeps local rebuild disabled without duplicating the off notice', async () => {
-    const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows');
+    const { map, props } = setupWindows();
+    map.modelStatus.mockResolvedValue({ ok: false, error: 'local-inference-disabled' });
+    render(<MemoryViewWin32 {...props} />);
+    expect(await screen.findByRole('button', { name: ko['memoryMap.openSettings'] })).toBeEnabled();
+    expect(screen.queryByText(ko['memoryMap.error.local-inference-disabled'])).toBeNull();
+    expect(screen.getByRole('button', { name: ko['memoryMap.rebuild'] })).toBeDisabled();
+    expect(map.build).not.toHaveBeenCalled();
+  });
+
+  it('keeps a pre-takeover build cancellable through refresh and observes settlement', async () => {
+    vi.useFakeTimers();
+    const { map, props, publish, save } = setupWindows();
+    const build = deferred<Awaited<ReturnType<typeof map.build>>>();
+    map.build.mockImplementation((_scope, id) => {
+      assert.ok(id);
+      publish(SNAPSHOT, buildRow(id, 'admitting'));
+      return build.promise;
+    });
+    const ui = render(<MemoryViewWin32 {...props} />);
     try {
-      const { map, props } = setup();
-      map.modelStatus.mockResolvedValue({ ok: false, error: 'local-inference-disabled' });
-      render(<MemoryView {...props} />);
-      expect(await screen.findByRole('button', { name: '메모리 임베딩 설정' })).toBeEnabled();
-      expect(screen.queryByText(ko['memoryMap.error.local-inference-disabled'])).toBeNull();
-      expect(screen.getByRole('button', { name: '지도 다시 만들기' })).toBeDisabled();
-      expect(screen.getByRole('button', { name: '메모리 임베딩 설정' })).toBeEnabled();
-      expect(map.build).not.toHaveBeenCalled();
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('button', { name: ko['memoryMap.rebuild'] }));
+      await act(async () => {});
+      save();
+      await act(async () => {});
+      expect(screen.getByRole('button', { name: ko['memoryMap.cancelBuild'] })).toBeEnabled();
+      const id = map.build.mock.calls[0][1];
+      assert.ok(id);
+      publish({ ...SNAPSHOT, status: 'building', snapshotId: id }, buildRow(id, 'running'));
+      await act(async () => vi.advanceTimersByTimeAsync(1500));
+      const progress = map.onProgress.mock.calls.at(-1)?.[0];
+      assert.ok(progress);
+      act(() => progress({ jobId: id, phase: 'embedding', completed: 1, total: 3 }));
+      publish(SNAPSHOT, { ...buildRow(id, 'stopped'), outcome: { kind: 'ready' } });
+      await act(async () => vi.advanceTimersByTimeAsync(1500));
+      expect(screen.queryByRole('button', { name: ko['memoryMap.cancelBuild'] })).toBeNull();
+      selectTab(ko['memoryMap.cards']);
+      expect(screen.getByText('Alpha memory')).toBeVisible();
+      expect(map.get).not.toHaveBeenCalled();
     } finally {
-      userAgent.mockRestore();
+      ui.unmount();
+      build.resolve({ ok: true, value: SNAPSHOT });
+      vi.useRealTimers();
     }
   });
 
+  it('keeps a newer ready graph visible when Retry for an older exit refuses', async () => {
+    const { map, props, publish, save } = setupWindows({ ...SNAPSHOT, status: 'building', snapshotId: FIRST_BUILD }, [buildRow(FIRST_BUILD, 'running')]);
+    const pending = deferred<Awaited<ReturnType<typeof map.cancel>>>();
+    map.cancel.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(REFUSAL);
+    const view = render(<MemoryViewWin32 {...props} />);
+    fireEvent.click(await cancelButton());
+    publish(SNAPSHOT, buildRow(SECOND_BUILD, 'stopped'), buildRow(FIRST_BUILD, 'stopping'));
+    save();
+    selectTab(ko['memoryMap.cards']);
+    await screen.findByText('Alpha memory');
+    publish(SNAPSHOT, buildRow(SECOND_BUILD, 'stopped'), buildRow(FIRST_BUILD, 'exit-unconfirmed'));
+    await act(async () => pending.resolve(REFUSAL));
+    fireEvent.click(await retryButton());
+    await waitFor(() => expect(map.cancel.mock.calls).toEqual([[FIRST_BUILD], [FIRST_BUILD]]));
+    await waitFor(() => expect(screen.getByRole('button', { name: ko['memoryMap.retryCancel'] })).toBeEnabled());
+    expect(screen.getByText('Alpha memory')).toBeVisible();
+    view.unmount();
+    render(<MemoryViewWin32 {...props} />);
+    expect(await retryButton()).toBeEnabled();
+  });
+
+  it.each(['container', 'unconfined', 'account', 'projection'] as const)('shows the Windows %s Cancel refusal after a memory-save refresh', async () => {
+    const { map, props, publish, save } = setupWindows({ ...SNAPSHOT, status: 'building', snapshotId: FIRST_BUILD }, [buildRow(FIRST_BUILD, 'running')]);
+    const cancel = deferred<Awaited<ReturnType<typeof map.cancel>>>();
+    map.cancel.mockReturnValueOnce(cancel.promise);
+    render(<MemoryViewWin32 {...props} />);
+    fireEvent.click(await cancelButton());
+    publish(SNAPSHOT, buildRow(FIRST_BUILD, 'stopping'));
+    save();
+    await ready();
+    publish(SNAPSHOT, buildRow(FIRST_BUILD, 'exit-unconfirmed'));
+    await act(async () => cancel.resolve(REFUSAL));
+    expect(await screen.findByRole('alert')).toHaveTextContent(ko['memoryMap.error.build-exit-unconfirmed']);
+  });
+
+  it.each(['started', 'resumed'] as const)('retries Cancel for the %s Windows build after the view sees a newer build', async source => {
+    const firstSnapshot = { ...SNAPSHOT, status: 'building' as const, snapshotId: FIRST_BUILD };
+    const { map, props, publish, save } = source === 'started' ? setupWindows() : setupWindows(firstSnapshot, [buildRow(FIRST_BUILD, 'running')]);
+    const pendingBuild = deferred<Awaited<ReturnType<typeof map.build>>>();
+    const firstCancel = deferred<Awaited<ReturnType<typeof map.cancel>>>();
+    let firstId = FIRST_BUILD;
+    if (source === 'started') map.build.mockImplementationOnce((_scope, id) => {
+      assert.ok(id);
+      firstId = id;
+      publish({ ...firstSnapshot, snapshotId: id }, buildRow(id, 'running'));
+      return pendingBuild.promise;
+    });
+    map.cancel.mockReturnValueOnce(firstCancel.promise).mockResolvedValueOnce(REFUSAL).mockImplementationOnce(async () => {
+      publish(SNAPSHOT, buildRow(SECOND_BUILD, 'stopped'), buildRow(firstId, 'exit-unconfirmed'));
+      return CANCELLED;
+    }).mockImplementationOnce(async () => {
+      publish(SNAPSHOT, buildRow(SECOND_BUILD, 'stopped'));
+      return CANCELLED;
+    });
+    render(<MemoryViewWin32 {...props} />);
+    if (source === 'started') {
+      await ready();
+      fireEvent.click(screen.getByRole('button', { name: ko['memoryMap.rebuild'] }));
+    }
+    fireEvent.click(await cancelButton());
+    publish({ ...firstSnapshot, snapshotId: SECOND_BUILD }, buildRow(SECOND_BUILD, 'running'), buildRow(firstId, 'exit-unconfirmed'));
+    save();
+    await act(async () => firstCancel.resolve(REFUSAL));
+    fireEvent.click(await retryButton());
+    await waitFor(() => expect(map.cancel.mock.calls).toEqual([[firstId], [firstId]]));
+    expect(map.build).toHaveBeenCalledTimes(source === 'started' ? 1 : 0);
+    const progress = map.onProgress.mock.calls.at(-1)?.[0];
+    assert.ok(progress);
+    act(() => {
+      progress({ jobId: SECOND_BUILD, phase: 'embedding', completed: 2, total: 3 });
+      progress({ jobId: firstId, phase: 'embedding', completed: 1, total: 2 });
+    });
+    expect(screen.getByText('임베딩 2 / 3')).toBeTruthy();
+    await act(async () => pendingBuild.resolve({ ok: false, error: 'request-stale' }));
+    fireEvent.click(await cancelButton());
+    await ready();
+    expect(screen.getByRole('alert')).toHaveTextContent(ko['memoryMap.error.build-exit-unconfirmed']);
+    map.build.mockImplementationOnce(async (_scope, id) => {
+      assert.ok(id);
+      publish(SNAPSHOT, { ...buildRow(id, 'stopped'), outcome: { kind: 'failed', code: 'graph-build-failed' } }, buildRow(firstId, 'exit-unconfirmed'));
+      return { ok: false, error: 'graph-build-failed' };
+    });
+    fireEvent.click(screen.getByRole('button', { name: ko['memoryMap.rebuild'] }));
+    save();
+    await ready();
+    fireEvent.click(await retryButton());
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(map.cancel.mock.calls).toEqual([[firstId], [firstId], [SECOND_BUILD], [firstId]]);
+  });
+
+  it('keeps both Windows refusals bound to their own Retry controls', async () => {
+    const { map, props, publish } = setupWindows(SNAPSHOT, [buildRow(SECOND_BUILD, 'exit-unconfirmed'), buildRow(FIRST_BUILD, 'exit-unconfirmed')]);
+    const second = deferred<Awaited<ReturnType<typeof map.cancel>>>();
+    map.cancel.mockReturnValueOnce(second.promise).mockImplementationOnce(async () => {
+      publish(SNAPSHOT, buildRow(SECOND_BUILD, 'exit-unconfirmed'));
+      return CANCELLED;
+    });
+    render(<MemoryViewWin32 {...props} />);
+    await ready();
+    const [retrySecond, retryFirst] = screen.getAllByRole('button', { name: ko['memoryMap.retryCancel'] });
+    fireEvent.click(retrySecond);
+    expect(retrySecond).toBeDisabled();
+    expect(retryFirst).toBeEnabled();
+    fireEvent.click(retryFirst);
+    await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(1));
+    publish(SNAPSHOT);
+    await act(async () => second.resolve(CANCELLED));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(map.cancel.mock.calls).toEqual([[SECOND_BUILD], [FIRST_BUILD]]);
+    expect(map.build).not.toHaveBeenCalled();
+  });
+});
+
+describe('memory map view', () => {
   it.each([null, SNAPSHOT])('disables local build on first open with an unsupported local runtime and snapshot %#', async snapshot => {
     const { map, props } = setup();
     map.get.mockResolvedValue({ ok: true, value: snapshot });
@@ -179,131 +349,6 @@ describe('memory map view', () => {
     render(<MemoryView {...props} />);
     expect(screen.getByText('메모리 지도 불러오는 중…')).toBeTruthy();
     expect(await screen.findByText('메모리가 변경되었습니다. 지도를 다시 만드세요.')).toBeTruthy();
-  });
-  it('shows the cancellation refusal after ignoring the superseded build reply', async () => {
-    const { map, props } = setup();
-    const build = deferred<Awaited<ReturnType<typeof map.build>>>();
-    map.build.mockReturnValue(build.promise);
-    map.cancel.mockResolvedValue({ ok: false, error: 'build-exit-unconfirmed' });
-    render(<MemoryView {...props} />); await ready();
-    fireEvent.click(screen.getByRole('button', { name: '지도 다시 만들기' }));
-    fireEvent.click(screen.getByRole('button', { name: '지도 생성 취소' }));
-    await act(async () => build.resolve({ ok: false, error: 'request-stale' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('메모리 지도 작업 프로세스가 종료됐는지 확인할 수 없습니다.');
-    expect(map.get).toHaveBeenCalledOnce();
-  });
-  it.each(['container', 'unconfined', 'account', 'projection'] as const)('shows the Windows %s Cancel refusal after a memory-save refresh', async () => {
-    const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows');
-    try {
-      const { map, props, api } = setup();
-      const cancel = deferred<Awaited<ReturnType<typeof map.cancel>>>();
-      map.cancel.mockReturnValue(cancel.promise);
-      map.build.mockImplementation(() => new Promise(() => {}));
-      render(<MemoryView {...props} />); await ready();
-      fireEvent.click(screen.getByRole('button', { name: '지도 다시 만들기' }));
-      fireEvent.click(screen.getByRole('button', { name: '지도 생성 취소' }));
-      const save = vi.mocked(api.onMemorySaveResult).mock.calls[0][0];
-      act(() => save({} as Parameters<typeof save>[0]));
-      await waitFor(() => expect(map.get).toHaveBeenCalledTimes(2));
-      await act(async () => cancel.resolve({ ok: false, error: 'build-exit-unconfirmed' }));
-      expect(await screen.findByRole('alert')).toHaveTextContent(ko['memoryMap.error.build-exit-unconfirmed']);
-    } finally {
-      userAgent.mockRestore();
-    }
-  });
-  it.each(['started', 'resumed'] as const)('retries Cancel for the %s Windows build after the view sees a newer build', async source => {
-    const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows');
-    try {
-      const { map, props, api } = setup();
-      const firstId = '11111111-1111-4111-8111-111111111111';
-      const secondId = '22222222-2222-4222-8222-222222222222';
-      const firstCancel = deferred<Awaited<ReturnType<typeof map.cancel>>>();
-      const refusal = { ok: false, error: 'build-exit-unconfirmed' } as const;
-      map.cancel.mockReturnValueOnce(firstCancel.promise).mockResolvedValueOnce(refusal).mockResolvedValueOnce({ ok: true, value: null });
-      map.build.mockImplementation(() => new Promise(() => {}));
-      if (source === 'resumed') map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, status: 'building', snapshotId: firstId } });
-      render(<MemoryView {...props} />);
-      if (source === 'started') {
-        await ready();
-        fireEvent.click(screen.getByRole('button', { name: '지도 다시 만들기' }));
-      }
-      fireEvent.click(await screen.findByRole('button', { name: '지도 생성 취소' }));
-      map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, status: 'building', snapshotId: secondId } });
-      const save = vi.mocked(api.onMemorySaveResult).mock.calls[0][0];
-      act(() => save({} as Parameters<typeof save>[0]));
-      await waitFor(() => expect(map.get).toHaveBeenCalledTimes(2));
-      await act(async () => firstCancel.resolve(refusal));
-      expect(await screen.findByRole('alert')).toHaveTextContent(ko['memoryMap.error.build-exit-unconfirmed']);
-
-      fireEvent.click(screen.getByRole('button', { name: ko['memoryMap.retryCancel'] }));
-      expect(await screen.findByRole('alert')).toHaveTextContent(ko['memoryMap.error.build-exit-unconfirmed']);
-      const displayedId = source === 'started' ? map.build.mock.calls[0]?.[1] : firstId;
-      expect(displayedId).toBeTruthy();
-      expect(map.cancel.mock.calls).toEqual([[displayedId], [displayedId]]);
-      expect(map.build).toHaveBeenCalledTimes(source === 'started' ? 1 : 0);
-
-      const progress = map.onProgress.mock.calls.at(-1)?.[0];
-      assert.ok(progress);
-      act(() => {
-        progress({ jobId: firstId, phase: 'embedding', completed: 1, total: 2 });
-        progress({ jobId: secondId, phase: 'embedding', completed: 2, total: 3 });
-      });
-      expect(screen.getByText('임베딩 2 / 3')).toBeTruthy();
-      map.get.mockResolvedValue({ ok: true, value: SNAPSHOT });
-      fireEvent.click(screen.getByRole('button', { name: '지도 생성 취소' }));
-      await waitFor(() => expect(map.cancel).toHaveBeenLastCalledWith(secondId));
-      await ready();
-      expect(screen.getByRole('alert')).toHaveTextContent(ko['memoryMap.error.build-exit-unconfirmed']);
-
-      const replacement = deferred<Awaited<ReturnType<typeof map.build>>>();
-      map.build.mockReturnValueOnce(replacement.promise);
-      fireEvent.click(screen.getByRole('button', { name: '지도 다시 만들기' }));
-      await act(async () => replacement.resolve({ ok: false, error: 'graph-build-failed' }));
-      act(() => save({} as Parameters<typeof save>[0]));
-      await ready();
-      expect(screen.getByRole('alert')).toHaveTextContent(ko['memoryMap.error.build-exit-unconfirmed']);
-
-      map.cancel.mockClear().mockResolvedValueOnce({ ok: true, value: null });
-      map.build.mockClear();
-      fireEvent.click(screen.getByRole('button', { name: ko['memoryMap.retryCancel'] }));
-      await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
-      expect(map.cancel.mock.calls).toEqual([[displayedId]]);
-      expect(map.build).not.toHaveBeenCalled();
-    } finally {
-      userAgent.mockRestore();
-    }
-  });
-  it('keeps both Windows refusals bound to their own Retry controls', async () => {
-    const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows');
-    try {
-      const { map, props, api } = setup();
-      const firstId = '11111111-1111-4111-8111-111111111111';
-      const secondId = '22222222-2222-4222-8222-222222222222';
-      const refusal = { ok: false, error: 'build-exit-unconfirmed' } as const;
-      const firstCancel = deferred<Awaited<ReturnType<typeof map.cancel>>>();
-      map.cancel.mockReturnValueOnce(firstCancel.promise).mockResolvedValueOnce(refusal).mockResolvedValue({ ok: true, value: null });
-      map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, snapshotId: firstId, status: 'building' } });
-      render(<MemoryView {...props} />);
-      fireEvent.click(await screen.findByRole('button', { name: '지도 생성 취소' }));
-
-      map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, snapshotId: secondId, status: 'building' } });
-      const save = vi.mocked(api.onMemorySaveResult).mock.calls[0][0];
-      act(() => save({} as Parameters<typeof save>[0]));
-      await act(async () => firstCancel.resolve(refusal));
-      fireEvent.click(screen.getByRole('button', { name: '지도 생성 취소' }));
-      const retries = () => screen.getAllByRole('button', { name: ko['memoryMap.retryCancel'] });
-      await waitFor(() => expect(retries()).toHaveLength(2));
-      fireEvent.click(retries()[0]);
-      await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(1));
-      expect(map.get).toHaveBeenCalledTimes(2);
-      map.get.mockResolvedValue({ ok: true, value: SNAPSHOT });
-      fireEvent.click(screen.getByRole('button', { name: ko['memoryMap.retryCancel'] }));
-      await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
-      expect(map.cancel.mock.calls).toEqual([[firstId], [secondId], [firstId], [secondId]]);
-      expect(map.build).not.toHaveBeenCalled();
-    } finally {
-      userAgent.mockRestore();
-    }
   });
   it.each(['Macintosh', 'Linux'])('keeps resumed-build polling while Cancel is pending on %s', async platform => {
     const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(platform);

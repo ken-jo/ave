@@ -20,7 +20,7 @@ vi.mock('node:child_process', async importOriginal => {
 });
 import { runMemoryWorker } from '../worker-client.js';
 import { runMemoryWorker as runWindowsMemoryWorker } from '../worker-client-win32.js';
-import { MemoryBuildTeardown } from '../build-teardown-win32.js';
+import { BuildRegistry } from '../build-registry-win32.js';
 import { LOCAL_NAMESPACE } from '../graph.js';
 import { TOOL_TIMEOUT_POLICY } from '../../../shared/tool-timeout-policy.js';
 describe('memory worker lifecycle', () => {
@@ -50,10 +50,11 @@ describe('memory worker lifecycle', () => {
       const controller = new AbortController(); const pending = runMemoryWorker(root, { kind: 'project', input: { ...input, jobId: 'wait' } }, controller.signal); controller.abort();
       await expect(pending).rejects.toThrow('cancelled');
       const windowsController = new AbortController();
-      const exit = { starting: vi.fn(), confirmed: vi.fn() };
+      const exit = { confirmed: vi.fn(), lost: vi.fn() };
+      const beginWorker = vi.fn(() => exit);
       const windowsPending = runWindowsMemoryWorker(root, { kind: 'project', input: { ...input, jobId: 'wait' } },
-        windowsController.signal, undefined, undefined, exit);
-      expect(exit.starting).toHaveBeenCalledOnce();
+        windowsController.signal, undefined, undefined, beginWorker);
+      expect(beginWorker).toHaveBeenCalledExactlyOnceWith('projection');
       expect(exit.confirmed).not.toHaveBeenCalled();
       windowsController.abort();
       await expect(windowsPending).rejects.toThrow('cancelled');
@@ -73,18 +74,17 @@ describe('memory worker lifecycle', () => {
     state.projectionWorker = worker;
     vi.useFakeTimers();
     try {
-      const teardown = new MemoryBuildTeardown();
-      const controller = new AbortController();
+      const registry = new BuildRegistry();
+      const owner = registry.register('job', { scopeId: 'scope', assertAdmitted: () => {} });
+      owner.takeover(() => {});
       const input = { jobId: 'job', records: [], cache: {}, excluded: 0, authorizationScopeId: 'scope', namespace: LOCAL_NAMESPACE };
       const finished = vi.fn();
-      const pending = teardown.track(exit =>
-        runWindowsMemoryWorker('', { kind: 'project', input }, controller.signal, undefined, undefined, exit)
-      ).then(finished, finished);
+      const pending = runWindowsMemoryWorker('', { kind: 'project', input }, owner.signal, undefined, undefined, owner.beginWorker).then(finished, finished);
       if (trigger === 'result') worker.emit('message', { kind: 'result', value: 'projected' });
-      controller.abort();
+      owner.stop('user');
       const replied = vi.fn();
-      const firstCancel = teardown.waitForExit().then(replied);
-      const concurrentCancel = teardown.waitForExit().then(replied);
+      const firstCancel = owner.waitForExit().then(replied);
+      const concurrentCancel = owner.waitForExit().then(replied);
       const deadline = TOOL_TIMEOUT_POLICY.windowsMemoryBuildCancelMs;
       await vi.advanceTimersByTimeAsync(deadline - 1);
       expect(worker.terminate).toHaveBeenCalledOnce();
@@ -94,12 +94,12 @@ describe('memory worker lifecycle', () => {
         await vi.advanceTimersByTimeAsync(1);
         await Promise.all([firstCancel, concurrentCancel]);
         expect(replied.mock.calls).toEqual([[false], [false]]);
-        expect(await teardown.waitForExit()).toBe(false);
+        expect(await owner.waitForExit()).toBe(false);
       }
       worker.emit('exit', 0);
       await Promise.all([pending, firstCancel, concurrentCancel]);
       expect(replied.mock.calls).toEqual(receipt === 'before deadline' ? [[true], [true]] : [[false], [false]]);
-      expect(await teardown.waitForExit()).toBe(true);
+      expect(await owner.waitForExit()).toBe(true);
       expect(finished.mock.calls).toEqual([[trigger === 'result' ? 'projected'
         : trigger === 'termination refusal' ? terminationError : new Error('Memory worker cancelled')]]);
     } finally {

@@ -17,13 +17,13 @@ import { graphMemoryRevision, type ReadMemoryMapCatalog } from '../../main/memor
 import { MemoryMapHostError } from '../../main/memory-map/errors.js';
 import { MODEL_FILES, modelFileUrl } from '../../main/memory-map/model-manifest.js';
 import type { MemoryWorkerRunner } from '../../main/memory-map/worker-client-win32.js';
-import type { MemoryBuildTeardown, MemoryWorkerExit } from '../../main/memory-map/build-teardown-win32.js';
+import { BuildRegistry, type BuildOwner, type MemoryWorkerExit } from '../../main/memory-map/build-registry-win32.js';
 const state = vi.hoisted(() => ({
   artifactRequest: vi.fn<(url: URL, options: RequestOptions, respond: (incoming: IncomingMessage) => void) => ClientRequest>(),
   handles: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>>(),
   get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null),
   build: vi.fn(async (_readCatalog: ReadMemoryMapCatalog, _onAdmission: (assertLive: () => void) => void,
-    _teardown: MemoryBuildTeardown, _buildId: string, _onTakeover: () => void) => ({ snapshotId: 'snapshot' })),
+    _owner: BuildOwner, _assertLocal: () => void) => ({ snapshotId: 'snapshot' })),
   cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
   status: vi.fn(async () => ({ status: 'unconfigured' })), download: vi.fn(async () => ({ status: 'ready' })), modelCancel: vi.fn(), adoptExistingFolder: vi.fn(async () => ({ status: 'ready' })),
   downloadFile: undefined as ConstructorParameters<typeof import('../../main/memory-map/model-manager-win32.js').LocalModelManager>[0]['downloadFile'],
@@ -56,6 +56,7 @@ import { registerWindowsMemoryMapHandlers } from '../domains/memory-map-win32.js
 import { createMemoryMapInvoker } from './memory-map-fixtures.js';
 const hostEvent = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
 const { invoke, providerEndpointId } = createMemoryMapInvoker(state.handles, hostEvent);
+const stopBuilds = vi.spyOn(BuildRegistry.prototype, 'stopAll');
 function invokeBuild(scope?: unknown, event?: IpcMainInvokeEvent) {
   return invoke('build', { scope, buildId: randomUUID() }, event);
 }
@@ -79,48 +80,51 @@ describe('memory map host boundary', () => {
     const firstId = randomUUID();
     const secondId = randomUUID();
     const unknownId = randomUUID();
-    const firstStarted = deferred<void>();
-    const secondStarted = deferred<MemoryWorkerExit>();
+    const firstStarted = deferred<BuildOwner>();
+    const secondStarted = deferred<{ owner: BuildOwner; exit: MemoryWorkerExit }>();
     const firstSettled = deferred<void>();
     const secondSettled = deferred<void>();
-    state.build.mockImplementationOnce((_catalog, _onAdmission, teardown, _buildId, onTakeover) => teardown.track(async exit => {
-      onTakeover();
-      exit.starting();
-      firstStarted.resolve();
+    state.build.mockImplementationOnce(async (_catalog, _onAdmission, owner, assertLocal) => {
+      owner.takeover(assertLocal);
+      const exit = owner.beginWorker('account');
+      firstStarted.resolve(owner);
       await firstSettled.promise;
+      exit.lost();
+      owner.settle({ kind: 'cancelled' });
       throw new MemoryMapHostError('local-runtime-unavailable');
-    })).mockImplementationOnce((_catalog, _onAdmission, teardown, _buildId, onTakeover) => teardown.track(async exit => {
-      onTakeover();
-      exit.starting();
-      secondStarted.resolve(exit);
+    }).mockImplementationOnce(async (_catalog, _onAdmission, owner, assertLocal) => {
+      owner.takeover(assertLocal);
+      const exit = owner.beginWorker('account');
+      secondStarted.resolve({ owner, exit });
       await secondSettled.promise;
+      owner.settle({ kind: 'cancelled' });
       return { snapshotId: 'snapshot' };
-    }));
+    });
     const first = invoke('build', { buildId: firstId });
     let second: Promise<unknown> | undefined;
     try {
-      await firstStarted.promise;
+      const firstOwner = await firstStarted.promise;
       second = invoke('build', { buildId: secondId });
-      const secondExit = await secondStarted.promise;
+      const { owner: secondOwner, exit: secondExit } = await secondStarted.promise;
       const refusal = { ok: false, error: 'build-exit-unconfirmed' };
       expect(await invoke('cancel')).toEqual({ ok: false, error: 'invalid-input' });
       expect(await invoke('build', { buildId: secondId })).toEqual({ ok: false, error: 'invalid-input' });
       const firstCancel = invoke('cancel', firstId);
       await new Promise<void>(resolve => setImmediate(resolve));
-      expect(state.cancel).not.toHaveBeenCalled();
+      expect(firstOwner.signal.aborted).toBe(true);
       firstSettled.resolve();
       expect(await firstCancel).toEqual(refusal);
       expect(await invoke('cancel', firstId)).toEqual(refusal);
-      expect(state.cancel).not.toHaveBeenCalled();
+      expect(secondOwner.signal.aborted).toBe(false);
 
       const replied = vi.fn((result: unknown) => result);
       const secondCancel = invoke('cancel', secondId).then(replied);
       await new Promise<void>(resolve => setImmediate(resolve));
       expect(replied).not.toHaveBeenCalled();
-      expect(state.cancel).toHaveBeenCalledOnce();
+      expect(secondOwner.signal.aborted).toBe(true);
       secondExit.confirmed();
       expect(await secondCancel).toEqual({ ok: true, value: null });
-      expect(await invoke('cancel', unknownId)).toEqual(refusal);
+      expect(await invoke('cancel', unknownId)).toEqual({ ok: false, error: 'invalid-input' });
     } finally {
       firstSettled.resolve();
       secondSettled.resolve();
@@ -404,7 +408,7 @@ describe('memory map host boundary', () => {
     await expect(change()).resolves.toMatchObject({ ok: true, value: preference });
     expect(set).toHaveBeenCalledWith('memoryEmbedding', { source: 'local', localModelPath, ...preference },
       expect.objectContaining({ field: ['memoryEmbedding', 'localInferenceWithoutSandbox'] }));
-    expect(state.cancel).toHaveBeenCalledOnce();
+    expect(stopBuilds).toHaveBeenCalledExactlyOnceWith('settings');
     await expect(invoke('modelStatus')).resolves.toEqual({ ok: false, error: 'local-inference-disabled' });
     await expect(invokeBuild()).resolves.toEqual({ ok: false, error: 'local-inference-disabled' });
     await expect(invoke('settingsSet', { source: 'local' })).resolves.toMatchObject({ ok: true, value: preference });
@@ -568,7 +572,7 @@ describe('memory map host boundary', () => {
     expect(config).toMatchObject({ source: 'provider', providerId: selection.providerId, modelId: selection.modelId, consent: { version: 2, providerId: selection.providerId, modelId: selection.modelId, endpointId: expect.stringMatching(/^[a-f0-9]{64}$/), timestamp: expect.any(String) } });
     expect(state.invalidate).toHaveBeenCalledOnce();
     expect(await invoke('settingsSet', { source: 'local' })).toMatchObject({ ok: true, value: { source: 'local' } });
-    expect(config).toEqual({ source: 'local' }); expect(state.cancel).toHaveBeenCalled();
+    expect(config).toEqual({ source: 'local' }); expect(stopBuilds).toHaveBeenCalledWith('settings');
   });
   it('orders pending settings writes so opt-out cannot be overwritten by an older provider save', async () => {
     let config: unknown; let release!: () => void; let started!: () => void;

@@ -10,5 +10,7 @@ export const WINDOWS_MEMORY_CLASS_A_FILES = [
   "src/main/memory-map/model-manager.ts",
   "src/main/memory-map/provider-embeddings.ts",
   "src/main/memory-map/worker-client.ts",
+  "src/main/memory-map/worker-main.ts",
   "src/memory/session-turn-journal.ts",
+  "src/ui/renderer/components/MemoryView.tsx",
 ] as const;

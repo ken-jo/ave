@@ -72,7 +72,7 @@ interface BuildRequest {
 
 export class BuildOwner {
   private state = INITIAL_STATE;
-  private readonly controller = new AbortController();
+  private controller?: AbortController;
   private deadline?: ReturnType<typeof setTimeout>;
   private wait?: Promise<boolean>;
   private resolveWait?: (confirmed: boolean) => void;
@@ -81,7 +81,10 @@ export class BuildOwner {
   constructor(readonly id: string, readonly order: number, private readonly request: BuildRequest,
     private readonly registry: BuildRegistry) {}
 
-  get signal(): AbortSignal { return this.controller.signal; }
+  get signal(): AbortSignal {
+    if (!this.controller) throw new MemoryMapHostError('request-stale');
+    return this.controller.signal;
+  }
   get scopeId(): string { return this.request.scopeId; }
   get canPrune(): boolean { return this.state.lifecycle === 'settled' && this.exit === 'clear'; }
   get exit(): BuildExit { return buildExit(this.state); }
@@ -97,6 +100,7 @@ export class BuildOwner {
     this.assertAdmitting();
     commitUnderAdmission(() => { this.request.assertAdmitted(); assertLocal(); }, () => {
       this.assertAdmitting();
+      this.controller = new AbortController();
       this.transition({ type: 'takeover' });
       this.registry.bind(this);
     });
@@ -122,7 +126,7 @@ export class BuildOwner {
   };
 
   stop(_reason: StopReason): void {
-    if (this.transition({ type: 'stop' })) this.controller.abort(new MemoryMapHostError('request-stale'));
+    if (this.transition({ type: 'stop' })) this.controller?.abort(new MemoryMapHostError('request-stale'));
     if (this.state.receipts.includes('pending') && !this.state.expired && this.deadline === undefined) {
       this.deadline = setTimeout(() => { this.transition({ type: 'deadline' }); }, TOOL_TIMEOUT_POLICY.windowsMemoryBuildCancelMs);
       this.deadline.unref();
@@ -180,12 +184,14 @@ export class BuildRegistry {
     if (!owner.canPrune) return;
     this.owners.delete(owner.id);
     this.tombstones.add(owner.id);
-    if (this.tombstones.size > RETENTION_LIMIT) this.tombstones.delete(this.tombstones.values().next().value!);
+    const firstTombstone = this.tombstones.values().next();
+    if (this.tombstones.size > RETENTION_LIMIT && !firstTombstone.done) this.tombstones.delete(firstTombstone.value);
     const previous = this.completed.get(owner.scopeId);
     if (!previous || previous.order < owner.order) {
       this.completed.delete(owner.scopeId);
       this.completed.set(owner.scopeId, { order: owner.order, status: owner.status });
-      if (this.completed.size > RETENTION_LIMIT) this.completed.delete(this.completed.keys().next().value!);
+      const firstScope = this.completed.keys().next();
+      if (this.completed.size > RETENTION_LIMIT && !firstScope.done) this.completed.delete(firstScope.value);
     }
   }
 

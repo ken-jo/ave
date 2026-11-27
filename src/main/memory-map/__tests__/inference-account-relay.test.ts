@@ -4,11 +4,14 @@ import { duplexPair, PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setProcessPlatform } from '../../../__tests__/support/process-platform.js';
 import { afterQueuedCallbacks } from '../../../__tests__/support/deferred.js';
-import { bindInferenceAccountJob, runInferenceAccountTarget } from '../inference-account-relay.js';
+import { bindInferenceAccountJob, runInferenceAccountTarget, serveInferenceAccountRelay } from '../inference-account-relay.js';
+import { INFERENCE_ACCOUNT_EXIT_RECEIPT } from '../inference-request.js';
 
-const { query, spawn, open, close, imageName, systemDirectory } = vi.hoisted(() => ({
+const { query, spawn, open, close, imageName, systemDirectory, accept } = vi.hoisted(() => ({
   query: vi.fn(), spawn: vi.fn(), open: vi.fn(), close: vi.fn(), imageName: vi.fn(), systemDirectory: vi.fn(),
+  accept: vi.fn(),
 }));
+vi.mock('../../../plugins/isolation/child-loopback-link.js', () => ({ acceptHostOverLoopback: accept }));
 vi.mock('koffi', () => ({ load: () => ({
   func: (prototype: string) => {
     if (prototype.includes('QueryInformationJobObject')) return query;
@@ -26,6 +29,7 @@ beforeEach(() => {
   setProcessPlatform('win32');
   query.mockReset();
   spawn.mockReset();
+  accept.mockReset();
   open.mockReset().mockImplementation((_access, _inherit, pid: number) => pid);
   close.mockReset().mockReturnValue(true);
   systemDirectory.mockReset().mockImplementation((output: Buffer) => output.write('C:\\Windows\\System32', 'utf16le') / 2);
@@ -55,6 +59,28 @@ function job(limits: number, initialPids: number[]) {
 }
 
 describe('account relay job evidence', () => {
+  it.each(['authenticated EOF', 'accept timeout'] as const)('receipts pre-auth Cancel without starting a target (%s)', async exit => {
+    job(0x2000, [process.pid]);
+    const [socket, peer] = duplexPair();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation((_line, encoding, callback) => {
+      const done = typeof encoding === 'function' ? encoding : callback;
+      done?.();
+      return true;
+    });
+    try {
+      if (exit === 'accept timeout') accept.mockRejectedValue(new Error('Accept timed out'));
+      else accept.mockResolvedValue(socket);
+      const result = serveInferenceAccountRelay({}).catch(() => undefined);
+      peer.end();
+      await result;
+      expect.soft(spawn).not.toHaveBeenCalled();
+      expect(stderr).toHaveBeenCalledWith(`${INFERENCE_ACCOUNT_EXIT_RECEIPT}\n`, expect.any(Function));
+    } finally {
+      stderr.mockRestore();
+      socket.destroy();
+      peer.destroy();
+    }
+  });
   it('pins preexisting infrastructure and refuses live target processes', async () => {
     const relay = process.pid;
     const parent = process.ppid;
@@ -109,6 +135,8 @@ describe('account relay job evidence', () => {
     const targetTreeGone = vi.fn(() => false);
     const result = runInferenceAccountTarget(socket as unknown as Socket, {}, targetTreeGone).catch(error => error as Error);
     try {
+      peer.write('request');
+      await afterQueuedCallbacks();
       socket.destroy();
       await afterQueuedCallbacks();
       expect(child.kill).toHaveBeenCalledOnce();

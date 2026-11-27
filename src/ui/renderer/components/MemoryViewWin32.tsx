@@ -118,17 +118,19 @@ function MemoryBuildScope(props: ViewProps & { scope?: MemoryMapScope }) {
   }, [needsPoll]);
 
   const failedBuild = outcome?.kind === 'failed' ? outcome.code : undefined;
+  const unavailable = availability?.error === 'local-runtime-unavailable' || availability?.error === 'local-inference-disabled';
   const error = denied ? viewError : availability?.error ?? (view === null ? viewError : null)
     ?? (snapshot?.status === 'ready' ? null : failedBuild ?? null);
   let state: MapState;
   if (active) state = 'building';
+  else if (snapshot?.status === 'ready') state = snapshot.points.length ? 'ready' : 'empty';
   else if (error) state = stateForError(error);
   else if (!view || !availability) state = 'loading';
-  else if (snapshot?.status === 'ready') state = snapshot.points.length ? 'ready' : 'empty';
   else if (snapshot && snapshot.status !== 'building') state = snapshot.status;
   else if (availability.settings?.source === 'provider' ? availability.settings.providerAvailable : availability.model?.status === 'ready') {
     state = view.hadReady ? 'stale' : 'empty';
   } else state = 'unconfigured';
+  const disableBuild = !!buildPending || !availability || !!availability.error || ['building', 'loading', 'unconfigured', 'unavailable'].includes(state);
 
   const visiblePoints = useMemo(() => (snapshot?.points ?? []).filter(point =>
     (!filters.sources?.length || filters.sources.includes(point.sourceKind)) &&
@@ -192,7 +194,10 @@ function MemoryBuildScope(props: ViewProps & { scope?: MemoryMapScope }) {
         <TabsTrigger value="cards">{t('memoryMap.cards')}</TabsTrigger>
         <TabsTrigger value="manage">{t('memoryMap.manage')}</TabsTrigger>
       </TabsList>
-      {tab !== 'manage' && <Button size="sm" variant="outline" disabled={!!buildPending || ['building', 'loading', 'unconfigured', 'unavailable'].includes(state)} onClick={() => void handleBuild()}>{t('memoryMap.rebuild')}</Button>}
+      {tab !== 'manage' && <div className="flex items-center gap-2">
+        {snapshot?.status === 'ready' && unavailable && <Button size="sm" onClick={onOpenEmbeddingSettings}>{t('memoryMap.openSettings')}</Button>}
+        <Button size="sm" variant="outline" disabled={disableBuild} onClick={() => void handleBuild()}>{t('memoryMap.rebuild')}</Button>
+      </div>}
     </div>
     {tab !== 'manage' && refusals.map(({ id }) => <div key={id} className="flex flex-wrap items-center gap-2">
       <p role="alert" className="text-xs text-destructive">{t('memoryMap.error.build-exit-unconfirmed')}{refusals.length > 1 && <> <code>{id}</code></>}</p>
@@ -215,7 +220,7 @@ function MemoryBuildScope(props: ViewProps & { scope?: MemoryMapScope }) {
         {state === 'ready' && snapshot ? <>
           <TabsContent value="map" className="absolute inset-0 m-0">
             <MemoryMapCanvas snapshot={snapshot} visible={visible} selected={selected} matched={matched} onSelect={handleSelect} />
-            <div className="pointer-events-none absolute inset-x-3 bottom-3 max-h-[60%]"><MemoryQuestionBox api={api.memoryMap} snapshot={snapshot} scope={scope} filters={filters} onMatches={setMatched} onSelect={handleSelect} /></div>
+            {!unavailable && <div className="pointer-events-none absolute inset-x-3 bottom-3 max-h-[60%]"><MemoryQuestionBox api={api.memoryMap} snapshot={snapshot} scope={scope} filters={filters} onMatches={setMatched} onSelect={handleSelect} /></div>}
           </TabsContent>
           <TabsContent value="cards" className="absolute inset-0 m-0 flex flex-col overflow-auto p-3">
             <ul className="grid gap-2 @[700px]:grid-cols-2">{visiblePoints.slice(page * CARD_PAGE_SIZE, (page + 1) * CARD_PAGE_SIZE).map(point => <li key={point.memoryId}><button type="button" aria-label={`${point.title} ${t(`memoryMap.source.${point.sourceKind}`)}${point.projectName ? ` · ${point.projectName}` : ''}`} aria-pressed={selected === point.memoryId} onClick={() => handleSelect(point.memoryId)} className="h-full w-full space-y-2 rounded-lg border p-3 text-left hover:bg-muted aria-pressed:bg-accent"><span className="block break-words text-sm font-medium">{point.title}</span><span className="block text-xs text-muted-foreground">{t(`memoryMap.source.${point.sourceKind}`)}{point.projectName ? ` · ${point.projectName}` : ''}</span></button></li>)}</ul>
@@ -228,7 +233,7 @@ function MemoryBuildScope(props: ViewProps & { scope?: MemoryMapScope }) {
           {error && state === 'failed' && <p role="alert" className="text-xs text-destructive">{t(MEMORY_MAP_ERROR_KEYS[error])}</p>}
           {(state === 'unconfigured' || state === 'unavailable') && <Button size="sm" onClick={onOpenEmbeddingSettings}>{t('memoryMap.openSettings')}</Button>}
           {activeId && <><p className="text-xs">{shownProgress ? t(`memoryMap.phase.${shownProgress.phase}`, { completed: shownProgress.completed, total: shownProgress.total }) : snapshot?.status === 'building' ? t('memoryMap.phase.embedding', { completed: snapshot.coverage.embedded, total: snapshot.coverage.eligible }) : t('memoryMap.preparing')}</p>{shownProgress && <progress aria-label={t('memoryMap.state.building')} value={shownProgress.completed} max={Math.max(1, shownProgress.total)} />}<Button size="sm" variant="outline" disabled={cancelPending.has(activeId)} onClick={() => void handleCancel(activeId)}>{t('memoryMap.cancelBuild')}</Button></>}
-          {['failed', 'stale', 'empty'].includes(state) && <Button size="sm" disabled={!!buildPending} onClick={() => void handleBuild()}>{t(state === 'failed' ? 'memoryMap.retry' : 'memoryMap.rebuild')}</Button>}
+          {['failed', 'stale', 'empty'].includes(state) && <Button size="sm" disabled={disableBuild} onClick={() => void handleBuild()}>{t(state === 'failed' ? 'memoryMap.retry' : 'memoryMap.rebuild')}</Button>}
         </div>}
         {selectedPoint && state === 'ready' && <aside aria-label={t('memoryMap.detail')} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); handleClose(); } }} className="absolute inset-y-0 right-0 z-10 w-full max-w-sm space-y-4 overflow-auto border-l bg-background p-4 shadow-lg">
           <Button ref={closeButton} size="sm" variant="outline" onClick={handleClose}>{t('memoryMap.closeDetail')}</Button>

@@ -50,7 +50,7 @@ vi.mock('../domains/memory-map-runtime.js', async importOriginal => {
   };
 });
 vi.mock('../domains/memory-map-runtime-win32.js', () => ({
-  createMemoryMapRuntime: () => { state.windowsRuntime(); return { get: () => 'windows-graph' }; },
+  createMemoryMapRuntime: () => { state.windowsRuntime(); return { get: () => 'windows-graph', buildView: () => 'windows-build-view' }; },
 }));
 
 const platform = process.platform;
@@ -71,7 +71,7 @@ beforeEach(async () => {
 });
 afterEach(() => setProcessPlatform(platform));
 
-it.each(['linux', 'win32'] as const)('loads only the selected Memory Map runtime on %s', async selected => {
+it.each(['darwin', 'linux', 'win32'] as const)('loads only the selected Memory Map runtime on %s', async selected => {
   setProcessPlatform(selected);
   state.getGraph.mockResolvedValueOnce('main-graph');
   registerChatHandlers(deps);
@@ -80,8 +80,10 @@ it.each(['linux', 'win32'] as const)('loads only the selected Memory Map runtime
   await expect(invokeNativeChatHandler(state.handles, CHANNELS.memoryMap.get)).resolves.toEqual({
     ok: true, value: selected === 'win32' ? 'windows-graph' : 'main-graph',
   });
-  expect(state.posixRuntime).toHaveBeenCalledTimes(selected === 'linux' ? 1 : 0);
+  expect(state.posixRuntime).toHaveBeenCalledTimes(selected === 'win32' ? 0 : 1);
   expect(state.windowsRuntime).toHaveBeenCalledTimes(selected === 'win32' ? 1 : 0);
+  expect(state.handles.has(CHANNELS.memoryMap.buildView)).toBe(selected === 'win32');
+  if (selected === 'win32') await expect(invokeNativeChatHandler(state.handles, CHANNELS.memoryMap.buildView)).resolves.toEqual({ ok: true, value: 'windows-build-view' });
   state.getGraph.mockReset();
 });
 

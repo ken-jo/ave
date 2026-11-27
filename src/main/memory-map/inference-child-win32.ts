@@ -187,7 +187,11 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
     });
     const socket = await connectToAnnouncedChild({ stdout, exited, timeoutMs: TOOL_TIMEOUT_POLICY.windowsInferenceChildConnectMs, assertStillValid: assertRoute });
     if (signal.aborted) socket.end();
-    return { input: socket, output: socket, stop: () => { socket.end(); return home.stop(); }, assertStillValid, drainOutput: true };
+    const stop = async () => {
+      socket.end();
+      try { await home.stop(); } finally { socket.destroy(); }
+    };
+    return { input: socket, output: socket, stop, assertStillValid, drainOutput: true };
   } catch (error) {
     await home.stop(account ? TOOL_TIMEOUT_POLICY.windowsInferenceChildAcceptMs + TOOL_TIMEOUT_POLICY.windowsInferenceChildHandshakeMs : 0);
     throw error;
@@ -212,7 +216,7 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
       if (settled) return; settled = true;
       signal.removeEventListener('abort', abort);
       lines.close();
-      // Holder disposal drains supervised output before it can read the exit receipt.
+      // The holder drains its terminal frame. The account relay observes socket EOF.
       if (error && !drainOutput) {
         output.destroy();
         input.destroy();
