@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Agent as HttpAgent, request as httpRequest } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,8 +19,32 @@ import { createSharedConversationProjectionStore } from "../../engine/shared-con
 import type { ConversationCommandPort } from "../../main/conversation-command-port.js";
 import type { TailnetPairedShareAuthorizer } from "../../main/tailnet-paired-share-authorizer.js";
 import type { TailnetAuthorization } from "../../shared/tailnet-observer-config.js";
+import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
+import { initializeAveHomeFixture, protectAveHomeFixture } from "../../__tests__/support/ave-home-privacy.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
+import { openEgressRelay, startEgressRelayService, stopEgressRelayService } from "../../permissions/egress-relay/relay.js";
+import { openEgressInvocation } from "../../permissions/egress-invocations.js";
+import type { TailnetWorkDecisionRequest, TailnetWorkReviewSnapshot } from "../../shared/tailnet-work-decisions.js";
+import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
+import * as tailnetListenerPolicy from "../../permissions/tailnet-listener-policy.js";
+import * as sandbox from "../../permissions/asrt-sandbox.js";
+import { spawnWithSandbox } from "../../tools/shell-tools.js";
+import { prepareSandboxFixture } from "../../tools/__tests__/support/prepared-shell.js";
+import { quoteSandboxWrappedWord } from "../../permissions/sandbox-wrapped-command.js";
+import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
+import { aveHome } from "../../shared/ave-home.js";
+import { RoutinesStore } from "../../main/routines-store.js";
+import { createTailnetObserverConfigService } from "../../main/tailnet-observer-config-service.js";
+import { maybeStartTailnetObserverServer, resetTailnetObserverServerForTests, stopTailnetObserverServer, type TailnetObserverConfigFile } from "../../main/tailnet-surface-server.js";
+import type { TailnetPairedSharingRuntime } from "../../main/tailnet-paired-sharing-runtime.js";
+import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
+import { createTailnetWorkDecisions } from "../../main/tailnet-work-decisions.js";
+import { ToolRegistry } from "../../tools/registry.js";
+import { itemDigestOf } from "../../main/work-board-store.js";
+import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 
 const CAPABILITY = "ave.example.com/cap/conversation-observer";
 const APP_CAPABILITY = Object.freeze({ kind: "app-capability" as const, capability: CAPABILITY });
@@ -43,6 +67,7 @@ afterEach(async () => {
 });
 
 interface FixtureOptions {
+  readonly port?: number;
   readonly probeOwnerIdentity?: () => Promise<import("../../main/tailnet-owner-policy.js").TailnetOwnerIdentityEvidence>;
   readonly ownerIdentityError?: (login: string, evidence: import("../../main/tailnet-owner-policy.js").TailnetOwnerIdentityEvidence) => import("../../shared/tailnet-sharing.js").TailnetOwnerIdentityErrorCode | null;
   readonly authorization?: TailnetAuthorization;
@@ -74,7 +99,7 @@ async function fixture(options: FixtureOptions = {}) {
   const server = await startTailnetSurfaceServer({
     probeOwnerIdentity: options.probeOwnerIdentity ?? (async () => ({ revision: 1, ownerLogin: "owner@example.com" })),
     ownerIdentityError: options.ownerIdentityError ?? (() => null),
-    port: await reservePort(),
+    port: options.port ?? await reservePort(),
     authorization: options.authorization ?? APP_CAPABILITY,
     projectionStore: store,
     getCurrentConversationId: options.conversationId ?? (() => CONVERSATION_ID),
@@ -192,7 +217,7 @@ function url(server: TailnetSurfaceServer, path: string): string {
   return "http://127.0.0.1:" + server.port + path;
 }
 function tailnetRoleHeaders(
-  roles: readonly ("observer" | "controller" | "pairing")[],
+  roles: readonly ("observer" | "controller" | "pairing" | "work-decision")[],
   login = "owner@example.com",
 ): Record<string, string> {
   return {
@@ -206,7 +231,7 @@ function tailnetRoleHeaders(
 function webSessionHeaders(
   cookieToken: string,
   csrfToken: string,
-  roles: readonly ("observer" | "controller" | "pairing")[] = ["observer"],
+  roles: readonly ("observer" | "controller" | "pairing" | "work-decision")[] = ["observer"],
   login = "owner@example.com",
 ): Record<string, string> {
   return {
@@ -347,6 +372,18 @@ describe("Tailnet observer authorization", () => {
 });
 
 describe("Tailnet observer HTTP boundary", () => {
+  it("refuses to bind inside the effective confined-worker loopback range", async () => {
+    const port = await reservePort();
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const range = vi.spyOn(sandbox, "getWindowsProxyPortRange").mockReturnValue([port, port]);
+    try {
+      await expect(fixture({ port })).rejects.toThrow("tailnet-observer-port-confined-worker-range");
+    } finally {
+      range.mockRestore();
+      platform.mockRestore();
+    }
+  });
+
   it("binds only fixed literal loopback ports", async () => {
     const timeline = createPlatformConversationTimeline();
     const store = createSharedConversationProjectionStore(timeline);
@@ -1878,10 +1915,16 @@ it("rejects a pairing body whose request evidence was suspended and replaced dur
   const { createTailnetOwnerIdentityPolicy } = await import("../../main/tailnet-owner-policy.js");
   let login: string | null = "owner@example.com";
   const policy = createTailnetOwnerIdentityPolicy({ getOwnerLogin: async () => login });
+  const admitted = deferred<void>();
   const probeOwnerIdentity = vi.fn(policy.probeOwnerIdentity);
+  const ownerIdentityError: NonNullable<FixtureOptions["ownerIdentityError"]> = (login, evidence) => {
+    const error = policy.ownerIdentityError(login, evidence);
+    if (error === null) admitted.resolve();
+    return error;
+  };
   const sharing = pairedSharing({ observe: true, control: true });
   const claimInvitation = vi.fn(async () => ({ expiresAt: Date.now() + 1_000 }));
-  const { server } = await fixture({ probeOwnerIdentity, ownerIdentityError: policy.ownerIdentityError, pairedSharing: sharing.authorizer, pairing: { claimInvitation } });
+  const { server } = await fixture({ probeOwnerIdentity, ownerIdentityError, pairedSharing: sharing.authorizer, pairing: { claimInvitation } });
   let finish!: () => void;
   const completed = new Promise<{ status: number; body: string }>((resolve, reject) => {
     const req = httpRequest({ hostname: "127.0.0.1", port: server.port, path: "/tailnet/v2/pairing/claim", method: "POST", headers: { ...observerHeaders("pairing"), "content-type": "application/json" } }, response => {
@@ -1893,7 +1936,8 @@ it("rejects a pairing body whose request evidence was suspended and replaced dur
     req.flushHeaders();
     finish = () => req.end(JSON.stringify({ code: "ave-pair-v1." + "a".repeat(43) }));
   });
-  await vi.waitFor(() => expect(probeOwnerIdentity).toHaveBeenCalledOnce());
+  await admitted.promise;
+  expect(probeOwnerIdentity).toHaveBeenCalledOnce();
   login = null;
   await policy.probeOwnerIdentity();
   login = "owner@example.com";
@@ -1986,10 +2030,16 @@ it("checks request identity before submitting a command after asynchronous body 
   let unavailable = false;
   const submit = vi.fn();
   const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com" }));
-  const { server } = await fixture({ probeOwnerIdentity, ownerIdentityError: () => unavailable ? "tailnet-owner-identity-unavailable" : null, controllerCommandPort: { submit, execute: vi.fn() } as unknown as ConversationCommandPort });
+  const ownerIdentityError = vi.fn<NonNullable<FixtureOptions["ownerIdentityError"]>>(() => unavailable ? "tailnet-owner-identity-unavailable" : null);
+  const { server } = await fixture({ probeOwnerIdentity, ownerIdentityError, controllerCommandPort: { submit, execute: vi.fn() } as unknown as ConversationCommandPort });
   const snapshot = await fetch(url(server, "/tailnet/v1/status"), { headers: observerHeaders() });
   const scope = (await snapshot.json() as { conversation: { scope: string } }).conversation.scope;
   probeOwnerIdentity.mockClear();
+  const admitted = deferred<void>();
+  ownerIdentityError.mockImplementationOnce(() => {
+    admitted.resolve();
+    return null;
+  });
   let finish!: () => void;
   const completed = new Promise<number>((resolve, reject) => {
     const req = httpRequest({ hostname: "127.0.0.1", port: server.port, path: "/tailnet/v1/commands", method: "POST", headers: { ...controllerHeaders(), "content-type": "application/json" } }, response => {
@@ -2000,9 +2050,565 @@ it("checks request identity before submitting a command after asynchronous body 
     req.flushHeaders();
     finish = () => req.end(JSON.stringify({ id: "denied-before-submission-0001", type: "conversation.send", input: "must not submit", scope }));
   });
-  await vi.waitFor(() => expect(probeOwnerIdentity).toHaveBeenCalledOnce());
+  await admitted.promise;
+  expect(probeOwnerIdentity).toHaveBeenCalledOnce();
   unavailable = true;
   finish();
   expect(await completed).toBe(403);
   expect(submit).not.toHaveBeenCalled();
+});
+
+describe("remote work decisions", () => {
+  const path = "/tailnet/v2/web/work-decisions";
+  const receiptId = "8fe084f3-931b-4414-8e6a-b6101905e344";
+  const workRoles = ["observer", "controller", "work-decision"] as const;
+
+  it.each([
+    ["controller capability", 403, "tailnet-role-required"],
+    ["work-only capability", 403, "tailnet-role-required"],
+    ["session cookie", 401, "web-session-required"],
+    ["Serve target", 403, "work-decision-serve-required"],
+    ["origin", 403, "same-origin-required"],
+    ["CSRF", 403, "csrf-required"],
+    ["stale conversation scope", 409, "work-decision-scope-mismatch"],
+    ["work identity", 400, "invalid-work-decision"],
+    ["accepted and replayed", 200, undefined],
+  ] as const)("checks %s before routing", async (condition, status, error) => {
+    const decide = vi.fn(async () => ({ ok: true as const, kind: "plan" as const, status: "approved" as const }));
+    const sharing = pairedSharing({ observe: true, control: true });
+    const web = {
+      origin: WEB_ORIGIN,
+      workDecisions: {
+        decide,
+        verifyServeTarget: async () => condition !== "Serve target",
+        receipts: createReceiptStore(),
+      },
+    };
+    const { server } = await fixture({ web, pairedSharing: sharing.authorizer });
+    const session = await openWebSession(server);
+    const snapshot = await fetch(url(server, "/tailnet/v2/web/snapshot"), {
+      headers: webSessionHeaders(session.cookieToken, session.csrfToken),
+    });
+    const { scope } = (await snapshot.json() as { snapshot: { scope: string } }).snapshot;
+    const headers: Record<string, string> = {
+      ...webSessionHeaders(session.cookieToken, session.csrfToken, condition === "controller capability" ? ["observer", "controller"] : condition === "work-only capability" ? ["work-decision"] : workRoles),
+      "Content-Type": "application/json",
+    };
+    if (condition === "origin") headers.Origin = "https://other.ts.net";
+    if (condition === "session cookie") delete headers.Cookie;
+    if (condition === "CSRF") delete headers["X-Ave-Tailnet-Csrf"];
+    const request = {
+      id: receiptId, scope: condition === "stale conversation scope" ? PAIRED_SHARE.scope : scope,
+      kind: "plan", itemId: condition === "work identity" ? 0 : 1,
+      input: { runId: "run", planHash: "a".repeat(64), decision: "approve", note: OWNER_ONLY_SENTINEL },
+    };
+    const submit = () => fetch(url(server, path), { method: "POST", headers, body: JSON.stringify(request) });
+    const response = await submit();
+    expect(response.status).toBe(status);
+    const body = await response.text();
+    expect(body).not.toContain(OWNER_ONLY_SENTINEL);
+    if (error) {
+      expect(JSON.parse(body)).toMatchObject({ ok: false, error });
+      expect(decide).not.toHaveBeenCalled();
+      return;
+    }
+    expect(JSON.parse(body)).toEqual({ ok: true, kind: "plan", status: "approved" });
+    expect(decide).toHaveBeenCalledOnce();
+    const replay = await submit();
+    expect(replay.status).toBe(409);
+    expect(await replay.json()).toMatchObject({ ok: false, error: "work-decision-replayed" });
+    expect(decide).toHaveBeenCalledOnce();
+  });
+});
+
+it("blocks a duplicate work request in flight and notices a paired share revoked after admission", async () => {
+  const dispatch = deferred<void>();
+  const release = deferred<void>();
+  const path = "/tailnet/v2/web/work-decisions";
+  const sharing = pairedSharing({ observe: true, control: true });
+  const { server } = await fixture({
+    pairedSharing: sharing.authorizer,
+    web: { origin: WEB_ORIGIN, workDecisions: {
+      verifyServeTarget: async () => true,
+      receipts: createReceiptStore(),
+      async decide(_request, { authority }) {
+        dispatch.resolve();
+        await release.promise;
+        expect(authority.isCurrent()).toBe(false);
+        return await authority.refreshCurrent()
+          ? { ok: true, kind: "plan", status: "approved" }
+          : { ok: false, error: "remote-controller-authority-revoked" };
+      },
+    } },
+  });
+  const session = await openWebSession(server);
+  const snapshot = await fetch(url(server, "/tailnet/v2/web/snapshot"), {
+    headers: webSessionHeaders(session.cookieToken, session.csrfToken),
+  });
+  const { scope } = (await snapshot.json() as { snapshot: { scope: string } }).snapshot;
+  const headers = { ...webSessionHeaders(session.cookieToken, session.csrfToken, ["controller", "work-decision"]), "Content-Type": "application/json" };
+  const body = JSON.stringify({
+    id: "d5bdac87-cda7-42b5-9290-4d31ae6014e3", scope, kind: "plan", itemId: 1,
+    input: { runId: "run", planHash: "a".repeat(64), decision: "approve" },
+  });
+  const submit = () => fetch(url(server, path), { method: "POST", headers, body });
+  const first = submit();
+  try {
+    await dispatch.promise;
+    const duplicate = await submit();
+    expect(duplicate.status).toBe(409);
+    expect(await duplicate.json()).toEqual({ ok: false, error: "work-decision-replayed" });
+    sharing.revoke();
+    release.resolve();
+    const refused = await first;
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toEqual({ ok: false, error: "remote-controller-authority-revoked" });
+  } finally {
+    release.resolve();
+  }
+});
+
+it("keeps identity-only Web reads and requires a work-decision capability for mutations", async () => {
+  const decide = vi.fn(async () => ({ ok: true as const, kind: "join" as const }));
+  const { server } = await fixture({
+    authorization: { kind: "tailnet-identity" },
+    pairedSharing: pairedSharing({ observe: true, control: true }).authorizer,
+    web: { origin: WEB_ORIGIN, workDecisions: { decide, verifyServeTarget: async () => true, receipts: createReceiptStore() } },
+  });
+  const session = await openWebSession(server);
+  const headers = webSessionHeaders(session.cookieToken, session.csrfToken, ["observer", "controller", "work-decision"]);
+  const snapshot = await fetch(url(server, "/tailnet/v2/web/snapshot"), { headers });
+  expect(snapshot.status).toBe(200);
+  const { scope } = (await snapshot.json()).snapshot;
+  const result = await fetch(url(server, "/tailnet/v2/web/work-decisions"), {
+    method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ id: crypto.randomUUID(), scope, kind: "plan", itemId: 1,
+      input: { runId: "run", planHash: "a".repeat(64), decision: "approve" } }),
+  });
+  expect(result.status).toBe(403);
+  expect(await result.json()).toMatchObject({ error: "work-decision-capability-required" });
+  expect(decide).not.toHaveBeenCalled();
+});
+
+it("refuses the live listener through an agent egress relay while the paired Web path succeeds", async () => {
+  const { server } = await fixture({
+    pairedSharing: pairedSharing({ observe: true, control: true }).authorizer,
+    web: { origin: WEB_ORIGIN },
+  });
+  const session = await openWebSession(server);
+  const headers = webSessionHeaders(session.cookieToken, session.csrfToken);
+  const target = url(server, "/tailnet/v2/web/snapshot");
+  expect((await fetch(target, { headers })).status).toBe(200);
+
+  startEgressRelayService({ ask: async () => true, allow: [`127.0.0.1:${server.port}`] });
+  const invocation = openEgressInvocation({
+    kind: "shell", toolName: "bash", toolUseId: undefined,
+    context: { sessionId: undefined, workspaceRoot: undefined, approvalSurface: "unavailable" },
+  });
+  try {
+    const relay = await openEgressRelay(invocation.token);
+    const response = await new Promise<{ status: number | undefined; body: string }>((resolve, reject) => {
+      const request = httpRequest({
+        host: "127.0.0.1", port: relay.port, path: target,
+        headers: { ...headers, "Proxy-Authorization": relay.proxyAuthorization },
+      }, result => {
+        let body = "";
+        result.setEncoding("utf8").on("data", chunk => { body += chunk; });
+        result.on("end", () => resolve({ status: result.statusCode, body }));
+      });
+      request.on("error", reject).end();
+    });
+    expect(response).toMatchObject({ status: 403, body: expect.stringContaining("tailnet-loopback-destination") });
+  } finally {
+    invocation.release();
+    await stopEgressRelayService();
+  }
+});
+
+async function pairedWorkFixture(h: Awaited<ReturnType<typeof stageRunHarness>>) {
+  if (process.platform === "win32") {
+    const home = aveHome();
+    protectAveHomeFixture(home);
+    await initializeAveHomeFixture(home);
+  }
+  const sharing = pairedSharing({ observe: true, control: true });
+  const routines = new RoutinesStore(join(h.dir, "routines.json"));
+  routines.bindTemplateAttachments(h.templates);
+  const log = vi.fn();
+  const runtime = createTailnetWorkDecisions({
+    workBoardStore: h.board, workBoardEngine: h.engine, workflowTemplateStore: h.templates, routinesStore: routines,
+    settingsService: { get: key => DEFAULT_SETTINGS[key] }, auditLogger: { log }, toolRegistry: new ToolRegistry(),
+  });
+  if (!runtime) throw new Error("Work decision runtime unavailable");
+  const list = vi.fn(runtime.list);
+  const { server } = await fixture({
+    pairedSharing: sharing.authorizer,
+    web: { origin: WEB_ORIGIN, workDecisions: { decide: runtime.decide, list, verifyServeTarget: async () => true, receipts: createReceiptStore() } },
+  });
+  const snapshot = url(server, "/tailnet/v2/web/snapshot");
+  const session = await openWebSession(server);
+  const headers = webSessionHeaders(session.cookieToken, session.csrfToken, ["observer", "controller", "work-decision"]);
+  async function readReviews(): Promise<TailnetWorkReviewSnapshot> {
+    const read = await fetch(snapshot, { headers });
+    expect(read.status).toBe(200);
+    return (await read.json()).snapshot;
+  }
+  function postDecision(request: TailnetWorkDecisionRequest): Promise<Response> {
+    return fetch(url(server, "/tailnet/v2/web/work-decisions"), {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(request),
+    });
+  }
+  return { sharing, snapshot, session, headers, list, log, readReviews, postDecision };
+}
+
+it("posts a real plan binding from the paired snapshot and withholds reviews after revocation", async () => {
+  const h = await stageRunHarness();
+  await h.runThenEnd(async () => {
+    const { sharing, snapshot, session, headers, list, log, readReviews, postDecision } = await pairedWorkFixture(h);
+    const plan = "Current review";
+    const created = await h.board.create({ title: "Work" });
+    if (created.status !== "created") throw new Error("Work item not created");
+    const { itemId } = created;
+    const runId = "plan-run";
+    await h.board.beginRun(itemId, runId, "2026-11-27T00:00:00Z");
+    await h.board.setPlanAwaitingApproval(itemId, { runId, plan, runSessionId: "plan-session", revision: 1, itemDigest: itemDigestOf(created.item) });
+
+    const unpaired = await fetch(snapshot, { headers: { ...headers, Cookie: "" } });
+    expect(unpaired.status).toBe(401);
+    expect(await unpaired.text()).not.toContain(plan);
+    expect(list).not.toHaveBeenCalled();
+
+    const observer = await fetch(snapshot, { headers: webSessionHeaders(session.cookieToken, session.csrfToken) });
+    expect(observer.status).toBe(200);
+    expect(await observer.text()).not.toContain(plan);
+    expect(list).not.toHaveBeenCalled();
+
+    const { scope, workReviews } = await readReviews();
+    const offered = workReviews?.find(review => review.kind === "plan");
+    if (!offered) throw new Error("Missing plan review");
+    expect(offered.review.plan).toBe(plan);
+    const { kind, binding } = offered;
+    const response = await postDecision({ id: crypto.randomUUID(), scope, kind, ...binding, input: { ...binding.input, decision: "reject" } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, kind, status: "rejected" });
+    expect((await h.item(itemId)).planApproval).toMatchObject({ status: "rejected" });
+    expect(log).toHaveBeenCalledOnce();
+
+    sharing.revoke();
+    const revoked = await fetch(snapshot, { headers });
+    expect(revoked.status).toBe(401);
+    expect(await revoked.text()).not.toContain(plan);
+    expect(list).toHaveBeenCalledOnce();
+  });
+});
+
+it.each(["revocation", "prepare failure", "prepare failure with a desktop edit"] as const)(
+  "rolls back Create and run after pre-launch %s", async failure => {
+    const entered = deferred<{ itemId: number; runId: string }>();
+    const release = deferred<void>();
+    const spawn = vi.fn();
+    const h: Awaited<ReturnType<typeof stageRunHarness>> = await stageRunHarness({
+      observeRunWork: true,
+      onSpawn: spawn,
+      workspace: {
+        async prepare(ref, stage) {
+          entered.resolve(ref);
+          await release.promise;
+          if (failure !== "revocation") return { ok: false, code: "workspace-unavailable" };
+          return { ok: true, workspace: { kind: "folder", root: join(h.dir, "runs", ref.runId, stage.id) } };
+        },
+      },
+    });
+    await h.runThenEnd(async () => {
+      await h.confirm([stageOf("a")]);
+      const { sharing, log, readReviews, postDecision } = await pairedWorkFixture(h);
+      const { scope, workReviews } = await readReviews();
+      const offered = workReviews?.find(review => review.kind === "create-and-run");
+      if (!offered) throw new Error("Missing start review");
+
+      const pending = postDecision({ id: crypto.randomUUID(), scope, kind: offered.kind, ...offered.binding });
+      let allocated: { itemId: number; runId: string };
+      try {
+        allocated = await Promise.race([entered.promise, pending.then(response => {
+          if (!response.ok) throw new Error(`Start refused before preparation: ${response.status}`);
+          return entered.promise;
+        })]);
+        expect((await h.runOf(allocated.runId))?.stageRuns).toMatchObject([{ stageId: "a", status: "running", attempt: 1 }]);
+        if (failure === "revocation") sharing.revoke();
+        if (failure === "prepare failure with a desktop edit") {
+          expect(await h.board.update(allocated.itemId, { title: "Desktop edit", priority: "high" })).toMatchObject({ status: "updated" });
+        }
+      } finally {
+        release.resolve();
+      }
+
+      const response = await pending;
+      const result = await response.json();
+      if (result.ok) (await h.untilSpawned(1))[0].finish();
+      if (failure === "revocation") {
+        expect.soft(response.status).toBe(403);
+        expect.soft(result).toEqual({ ok: false, error: "remote-controller-authority-revoked" });
+      } else {
+        expect.soft(response.ok).toBe(false);
+        expect.soft(result).toMatchObject({ ok: false });
+      }
+      const { items } = JSON.parse(readFileSync(h.boardPath, "utf8"));
+      if (failure === "prepare failure with a desktop edit") {
+        expect.soft(items).toEqual([expect.objectContaining({ id: allocated.itemId, title: "Desktop edit", priority: "high" })]);
+        expect.soft(items[0]).not.toHaveProperty("runId");
+        expect.soft(items[0]).not.toHaveProperty("runHistory");
+      } else {
+        expect.soft(items).toEqual([]);
+      }
+      expect.soft(await h.runOf(allocated.runId)).toBeNull();
+      await expect(h.engine.retryStage(allocated.itemId, { runId: allocated.runId, stageId: "a", attempt: 1 })).resolves.toMatchObject({ ok: false });
+      expect.soft(log).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
+    });
+  },
+);
+
+it("retracts an unaccepted item after restart during workspace opening", async () => {
+  const entered = deferred<{ itemId: number; runId: string }>();
+  const release = deferred<void>();
+  const spawn = vi.fn();
+  const h = await stageRunHarness({ onSpawn: spawn, workspace: {
+    async open(ref) {
+      entered.resolve(ref);
+      await release.promise;
+      return { ok: false, code: "workspace-unavailable" };
+    },
+  } });
+  await h.runThenEnd(async () => {
+    await h.confirm([stageOf("a")]);
+    const { sharing, log, readReviews, postDecision } = await pairedWorkFixture(h);
+    const { scope, workReviews } = await readReviews();
+    const offered = workReviews?.find(review => review.kind === "create-and-run");
+    if (!offered) throw new Error("Missing start review");
+    const pending = postDecision({ id: crypto.randomUUID(), scope, kind: offered.kind, ...offered.binding });
+    try {
+      const { itemId, runId } = await Promise.race([entered.promise, pending.then(response => {
+        throw new Error(`Start completed before workspace opening: ${response.status}`);
+      })]);
+      expect.soft(JSON.parse(readFileSync(h.boardPath, "utf8")).items[0]).toHaveProperty("remoteProvisional");
+      expect.soft(await h.board.list()).toMatchObject({ items: [] });
+      sharing.revoke();
+      const recovered = h.makeEngine();
+      await recovered.adoptParkedTemplateRuns();
+      expect.soft(JSON.parse(readFileSync(h.boardPath, "utf8")).items).toEqual([]);
+      expect.soft(await h.runOf(runId)).toBeNull();
+      expect.soft(await recovered.continueRun(itemId, { runId })).toMatchObject({ ok: false });
+      expect.soft(await recovered.retryStage(itemId, { runId, stageId: "a", attempt: 1 })).toMatchObject({ ok: false });
+      expect.soft(spawn).not.toHaveBeenCalled();
+      expect.soft(log).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await pending;
+    }
+  });
+});
+
+it.each(["controller", "pairing", "web"] as const)("applies a saved %s reduction to the paired forced-on listener", async reduction => {
+  const env = { AVE_TAILNET_OBSERVER: "1" };
+  const port = await reservePort();
+  let saved: TailnetObserverConfigFile = {
+    enabled: true, authorization: APP_CAPABILITY, port, controllerEnabled: true, pairedSharingEnabled: true, webEnabled: true, webOrigin: WEB_ORIGIN,
+  };
+  const readConfigFile = async () => saved;
+  const projection = createSharedConversationProjectionStore(createPlatformConversationTimeline());
+  stores.push(projection);
+  const sharing = pairedSharing({ observe: true, control: true });
+  const invoked = vi.fn(async () => ({ ok: false, error: "not_pending" } as const));
+  const submit = vi.fn<NonNullable<ConversationCommandPort["submit"]>>(() => ({ completion: Promise.resolve({
+    text: "done", toolCalls: [], route: "default", stopReason: "end_turn",
+  }) }));
+  const startServer = vi.fn(startTailnetSurfaceServer);
+  const admission = vi.spyOn(tailnetListenerPolicy, "assertTailnetListenerPortAllowed");
+  try {
+    await maybeStartTailnetObserverServer({
+      env,
+      encryption: unavailableSecretEncryption,
+      conversationSurfaceRuntime: { sharedProjection: projection } as ConversationSurfaceRuntime,
+      getCurrentConversationId: () => CONVERSATION_ID,
+      isConversationBusy: () => false,
+      conversationCommandPort: { submit, execute: vi.fn() },
+      tailnetPairedSharingRuntime: { authorizer: sharing.authorizer } as TailnetPairedSharingRuntime,
+      tailnetControllerReceiptStore: createReceiptStore(),
+      workDecisions: { decide: invoked, list: async () => [] },
+      dependencies: { readConfigFile, startServer },
+    });
+    const server = await startServer.mock.results[0].value;
+    const roles = tailnetRoleHeaders(["observer", "controller", "work-decision"]);
+    const session = await openWebSession(server, roles);
+    const headers = webSessionHeaders(session.cookieToken, session.csrfToken, ["observer", "controller", "work-decision"]);
+    const snapshot = () => fetch(url(server, "/tailnet/v2/web/snapshot"), { headers });
+    const { snapshot: { scope } } = await (await snapshot()).json();
+    const command = (browser = true) => fetch(url(server, browser ? "/tailnet/v2/web/commands" : "/tailnet/v1/commands"), {
+      method: "POST", headers: { ...(browser ? headers : controllerHeaders()), "Content-Type": "application/json" },
+      body: JSON.stringify({ id: crypto.randomUUID(), type: "conversation.send", scope, input: "Remote message" }),
+    });
+    const work = () => fetch(url(server, "/tailnet/v2/web/work-decisions"), {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: "{}",
+    });
+    expect((await command()).status).toBe(202);
+    expect(submit).toHaveBeenCalledOnce();
+    const actor = submit.mock.calls[0][0];
+    if (!("pairedShareGuard" in actor) || !actor.pairedShareGuard || !actor.pairedShare) throw new Error("Controller was unpaired");
+    expect(actor.pairedShareGuard.isCurrent(actor.pairedShare)).toBe(true);
+    admission.mockClear();
+    admission.mockRejectedValue(new Error("Listener admission must not run during reduction"));
+    expect((await work()).status).toBe(400);
+    const service = createTailnetObserverConfigService({
+      env, readConfigFile,
+      writeConfigFile: async file => { saved = file; },
+      pairedSharingBootstrapFailed: () => false,
+      readOwnDeviceAdmission: async () => false,
+      probeEnvironment: async () => ({
+        state: "ready", cliPath: null, login: "owner@example.com", dnsName: new URL(WEB_ORIGIN).hostname,
+        tailnetName: null, serveConfigured: true, serveTargetPort: port, detail: null,
+      }),
+    });
+    const before = (await service.snapshot()).saved;
+    await service.apply({
+      ...before, enabled: false,
+      controllerEnabled: reduction === "web",
+      pairedSharingEnabled: reduction !== "pairing",
+      webEnabled: reduction === "controller",
+    });
+    expect.soft((await command()).status).toBe(404);
+    expect.soft((await work()).status).toBe(404);
+    expect.soft((await service.snapshot()).listeningPort).toBe(port);
+    expect.soft(startServer).toHaveBeenCalledOnce();
+    expect.soft(admission).not.toHaveBeenCalled();
+    expect.soft(actor.pairedShareGuard.isCurrent(actor.pairedShare)).toBe(false);
+    expect.soft(submit).toHaveBeenCalledOnce();
+    if (reduction === "controller") expect((await snapshot()).status).toBe(200);
+    expect((await command(false)).status).toBe(reduction === "web" ? 202 : 404);
+  } finally {
+    admission.mockRestore();
+    await stopTailnetObserverServer();
+    resetTailnetObserverServerForTests();
+  }
+});
+
+it.each([false, true])("retracts an unlaunched remote run after restart (desktop edit: %s)", async edited => {
+  const entered = deferred<{ itemId: number; runId: string }>();
+  const release = deferred<void>();
+  const spawn = vi.fn();
+  let restarted = false;
+  const h: Awaited<ReturnType<typeof stageRunHarness>> = await stageRunHarness({
+    observeRunWork: true,
+    onSpawn: spawn,
+    workspace: {
+      async prepare(ref, stage) {
+        if (!restarted) {
+          entered.resolve(ref);
+          await release.promise;
+        }
+        return { ok: true, workspace: { kind: "folder", root: join(h.dir, "runs", ref.runId, stage.id) } };
+      },
+    },
+  });
+  await h.runThenEnd(async () => {
+    await h.confirm([stageOf("a")]);
+    const { sharing, log, readReviews, postDecision } = await pairedWorkFixture(h);
+    const { scope, workReviews } = await readReviews();
+    const offered = workReviews?.find(review => review.kind === "create-and-run");
+    if (!offered) throw new Error("Missing start review");
+    const pending = postDecision({ id: crypto.randomUUID(), scope, kind: offered.kind, ...offered.binding });
+    try {
+      const { itemId, runId } = await Promise.race([entered.promise, pending.then(response => {
+        throw new Error(`Start completed before preparation: ${response.status}`);
+      })]);
+      expect(await h.runOf(runId)).toMatchObject({
+        stageRuns: [{ stageId: "a", status: "running", attempt: 1 }],
+      });
+      expect((await h.item(itemId)).remoteProvisional).toMatchObject({ mutationRevision: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      if (edited) {
+        expect(await h.board.update(itemId, { title: "Desktop edit", priority: "high" })).toMatchObject({ status: "updated" });
+      }
+      sharing.revoke();
+
+      // The replacement reads the same files while the first process is still
+      // frozen at preparation, so its request cleanup cannot repair the disk first.
+      restarted = true;
+      const recovered = h.makeEngine();
+      await recovered.adoptParkedTemplateRuns();
+      const { items } = JSON.parse(readFileSync(h.boardPath, "utf8"));
+      expect.soft(items).toEqual(edited
+        ? [expect.objectContaining({ id: itemId, title: "Desktop edit", priority: "high" })] : []);
+      expect.soft(items[0]?.runId).toBeUndefined();
+      expect.soft(items[0]?.runHistory).toBeUndefined();
+      expect.soft(await h.runOf(runId)).toBeNull();
+      expect.soft(h.sweeps.at(-1)).not.toContain(runId);
+      const continued = await recovered.continueRun(itemId, { runId });
+      expect.soft(continued.ok).toBe(false);
+      const retry = await recovered.retryStage(itemId, { runId, stageId: "a", attempt: 1 });
+      expect.soft(retry.ok).toBe(false);
+      if (continued.ok || retry.ok) (await h.untilSpawned(1))[0].finish();
+      expect.soft(spawn).not.toHaveBeenCalled();
+      expect.soft(log).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await pending;
+    }
+  });
+});
+
+it("drops review payload when the paired share is revoked while projection is pending", async () => {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const sharing = pairedSharing({ observe: true, control: true });
+  const list = vi.fn(async () => {
+    entered.resolve();
+    await release.promise;
+    return [];
+  });
+  const { server } = await fixture({
+    pairedSharing: sharing.authorizer,
+    web: { origin: WEB_ORIGIN, workDecisions: {
+      decide: async () => ({ ok: false, error: "not_pending" }),
+      list, verifyServeTarget: async () => true, receipts: createReceiptStore(),
+    } },
+  });
+  const session = await openWebSession(server);
+  const headers = webSessionHeaders(session.cookieToken, session.csrfToken, ["observer", "controller", "work-decision"]);
+  const request = fetch(url(server, "/tailnet/v2/web/snapshot"), { headers });
+  try {
+    await entered.promise;
+    sharing.revoke();
+    release.resolve();
+    const response = await request;
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ ok: false, error: "web-session-revoked" });
+  } finally {
+    release.resolve();
+  }
+});
+
+it.runIf((process.platform === "darwin" || process.platform === "linux") && !shouldSkipNativeSandboxTests())("blocks the active listener from a confined shell both directly and through its proxy", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "tailnet-shell-"));
+  try {
+    await initializeRequiredSandbox({ allowedDomains: [], strictAllowlist: false }, async () => true);
+    const { server } = await fixture({
+      pairedSharing: pairedSharing({ observe: true, control: true }).authorizer,
+      web: { origin: WEB_ORIGIN },
+    });
+    const session = await openWebSession(server);
+    const headers = webSessionHeaders(session.cookieToken, session.csrfToken);
+    const target = url(server, "/tailnet/v2/web/snapshot");
+    expect((await fetch(target, { headers })).status).toBe(200);
+
+    const curl = (bypass: string) => [
+      "/usr/bin/curl", "-sS", "-w", "%{http_code}", "--noproxy", bypass, target,
+    ].map(quoteSandboxWrappedWord).join(" ");
+    const command = `${curl("127.0.0.1")}; printf '\\n'; ${curl("")}`;
+    const result = await spawnWithSandbox(command, cwd, [cwd], 10, prepareSandboxFixture(command, cwd, { toolUseId: "tailnet-shell" }));
+    expect(result.output).toMatch(/000/u);
+    expect(result.output).toContain("tailnet-loopback-destination");
+    expect(result.output).toMatch(/403/u);
+  } finally {
+    await sandbox.resetAsrtSandbox();
+    await cleanupTmpDir(cwd);
+  }
 });

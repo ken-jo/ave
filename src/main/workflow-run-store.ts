@@ -1,3 +1,4 @@
+import { WorkDecisionAuthorityError, type WorkDecisionAuthority } from "../work-board/work-decision-authority.js";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { openFeatureNamespace } from "./storage/feature-namespace.js";
@@ -608,9 +609,9 @@ export class WorkflowRunStore {
 
   /** Store a new run that is not over, or replace one whose item, pin, start authority and end are unchanged. The same write applies
    * `retain` to the other runs. */
-  async put(record: WorkflowRunRecord, retain?: WorkflowRunRetention): Promise<WorkflowRunWriteResult> {
+  async put(record: WorkflowRunRecord, retain?: WorkflowRunRetention, authority?: WorkDecisionAuthority): Promise<WorkflowRunWriteResult> {
     assertWorkflowRunRecord(record);
-    return this.write(record.runId, prior => prior ?? record, () => record, retain && (run => run.runId === record.runId ? run : retain(run))) as Promise<WorkflowRunWriteResult>;
+    return this.write(record.runId, prior => prior ?? record, () => record, retain && (run => run.runId === record.runId ? run : retain(run)), undefined, authority) as Promise<WorkflowRunWriteResult>;
   }
 
   /** Whether a run that is not over may be on a row below `id`: true for a readable one, and while the file awaits review, is past its read
@@ -653,8 +654,8 @@ export class WorkflowRunStore {
    * or a RunEnd: its final state and why it ends; `settled` is then set from that cause in the same write, and the run's delete intent
    * goes with it. A cause `allowed` refuses on what the file holds of the run, read inside the lock, writes nothing (`cause-refused`); so
    * does an end of a run already over (`refused`). */
-  async settleRun(runId: string, step: (run: WorkflowRunRecord) => WorkflowRunRecord | RunEnd | null, allowed: (cause: RunEndCause, run: RunFileFacts) => boolean): Promise<WorkflowRunWriteResult | { status: "cause-refused" }> {
-    return this.write(runId, prior => prior, step, undefined, allowed);
+  async settleRun(runId: string, step: (run: WorkflowRunRecord) => WorkflowRunRecord | RunEnd | null, allowed: (cause: RunEndCause, run: RunFileFacts) => boolean, authority?: WorkDecisionAuthority): Promise<WorkflowRunWriteResult | { status: "cause-refused" }> {
+    return this.write(runId, prior => prior, step, undefined, allowed, authority);
   }
 
   // Without `allowed` no write may end a run; a run's end, once stored, never changes.
@@ -664,6 +665,7 @@ export class WorkflowRunStore {
     next: (run: WorkflowRunRecord) => WorkflowRunRecord | RunEnd | null,
     retain?: WorkflowRunRetention,
     allowed?: (cause: RunEndCause, run: RunFileFacts) => boolean,
+    authority?: WorkDecisionAuthority,
   ): Promise<WorkflowRunWriteResult | { status: "cause-refused" }> {
     return withInProcessFileQueue(this.filePath, async (): Promise<WorkflowRunWriteResult | { status: "cause-refused" }> => {
       const file = await this.read();
@@ -689,7 +691,13 @@ export class WorkflowRunStore {
         assertWorkflowRunRecord(run);
       }
       if (index === -1) file.runs.push(run); else file.runs[index] = run;
-      if (!(await this.commit(file, { runIds: [runId, ...retainedChanges] }))) return { status: "too-large" };
+      if (authority && !await authority.refreshCurrent()) return { status: "refused" };
+      try {
+        if (!await this.commit(file, { runIds: [runId, ...retainedChanges], canCommit: authority?.isCurrent })) return { status: "too-large" };
+      } catch (error) {
+        if (error instanceof WorkDecisionAuthorityError) return { status: "refused" };
+        throw error;
+      }
       this.runsRemoved(removed);
       return { status: "stored", run: structuredClone(run) };
     });
@@ -697,10 +705,11 @@ export class WorkflowRunStore {
 
   // A file past the read limit could not be read again, so nothing could shrink it afterwards: such a write is refused and the file stays as it is.
   // Bytes it would not give back, and the file before a discard, are copied beside it first.
-  private async commit(file: RunsFile, { discard = false, runIds = [], settle }: {
+  private async commit(file: RunsFile, { discard = false, runIds = [], settle, canCommit }: {
     discard?: boolean;
     runIds?: readonly string[];
     settle?: (committedIds: Set<string> | undefined) => void | Promise<void>;
+    canCommit?: () => boolean;
   } = {}): Promise<boolean> {
     let committedIds: Set<string> | undefined;
     try {
@@ -708,7 +717,7 @@ export class WorkflowRunStore {
       keepOpenIntents(file);
       const text = fileText(file);
       if (Buffer.byteLength(text, "utf8") > AVE_HOME_INPUT_MAX_BYTES) return false;
-      await rewriteKeepingBytes(this.filePath, text, { tag: "invalid-runs", ...(discard ? {} : { unchanged: file.unchanged }) });
+      if (!await rewriteKeepingBytes(this.filePath, text, { tag: "invalid-runs", ...(discard ? {} : { unchanged: file.unchanged }), canCommit })) throw new WorkDecisionAuthorityError();
       committedIds = new Set(runIds);
       addChangedMetadataIds(file, committedIds);
       return true;

@@ -23,6 +23,8 @@ export interface SandboxWindowsStatusInfo {
   userState: "absent" | "incomplete" | "ready" | null;
   /** `absent` | `installed` | `cannot-read`, or null when not observed. */
   wfpState: "absent" | "installed" | "cannot-read" | null;
+  /** Inclusive loopback permit bounds observed in the installed WFP state. */
+  wfpPortRange?: readonly [number, number];
   /** True when the sandbox user is ready and WFP is either directly observed as installed or
    * `cannot-read` plus ASRT behavioral egress verification succeeds. Always false off-win32. */
   ready: boolean;

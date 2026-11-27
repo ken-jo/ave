@@ -471,6 +471,7 @@ async function main() {
       conversationSurfaceRuntime,
       conversationCommandPort,
       getCurrentConversationId,
+      workDecisions: services.tailnetWorkDecisions,
       tailnetPairedSharingRuntime: tailnetPairedSharingBootstrapUnavailable
         ? null : tailnetPairedSharingRuntime,
       isConversationBusy: () => conversationSurfaceRuntime.activity.isBusy(),

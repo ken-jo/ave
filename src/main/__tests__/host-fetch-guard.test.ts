@@ -4,6 +4,7 @@ import { REDIRECT_STATUSES, type HostFetchTransport } from "../host-fetch-guard.
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { directHostFetchTransport } from "../../__tests__/support/host-fetch-transport.js";
+import { reserveTailnetListenerPort } from "../../shared/tailnet-listener-port.js";
 
 const lookupMock = vi.fn<
   (host: string, opts: unknown) => Promise<Array<{ address: string; family: number }>>
@@ -230,6 +231,17 @@ describe("evaluateHostFetch — allowPrivateNetworks governance opt-in", () => {
 });
 
 describe("evaluateHostFetch — declared loopback endpoint (local inference server)", () => {
+  it("refuses the live Tailnet destination even when the plugin declared loopback", async () => {
+    const release = reserveTailnetListenerPort(46173);
+    try {
+      const request = { pluginId: "p", allowedDomains: ["127.0.0.1"] };
+      await expect(evaluateHostFetch({ ...request, rawUrl: "http://127.0.0.1:46174/control" })).resolves.toMatchObject({ ok: true });
+      await expect(evaluateHostFetch({ ...request, rawUrl: "http://127.0.0.1:46173/review" }))
+        .resolves.toMatchObject({ ok: false, reason: "tailnet-loopback-destination" });
+    } finally {
+      release();
+    }
+  });
   // What a user pointing a plugin at LM Studio / LiteLLM / a local proxy has: a manifest that names the local machine, and a server that speaks http.
   const LOCAL = ["localhost", "127.0.0.1", "::1", "api.example.com"];
 
@@ -523,6 +535,22 @@ describe("runHostFetchHops — hop deadline", () => {
 });
 
 describe("runHostFetchHops — redirect policy", () => {
+  it("rechecks the live port after awaiting hop authorization", async () => {
+    lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    const first = await firstAllow("https://api.example.com:46173/a");
+    const { transport, calls } = scriptedTransport([new Response("control"), new Response("refused")]);
+    const { options, denials } = hopOptions(first, {}, transport);
+    expect(await (await runHostFetchHops(options)).text()).toBe("control");
+    let release: (() => void) | undefined;
+    try {
+      await expect(runHostFetchHops({ ...options, authorizeHop: async () => { release = reserveTailnetListenerPort(46173); } }))
+        .rejects.toThrow("tailnet-loopback-destination");
+      expect(calls).toHaveLength(1);
+      expect(denials).toContainEqual(expect.objectContaining({ reason: "tailnet-loopback-destination" }));
+    } finally {
+      release?.();
+    }
+  });
   it("stops a followed redirect when the registry revokes during the first response", async () => {
     publicDns();
     const lease = registeredCredentialUse();

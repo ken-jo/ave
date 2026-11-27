@@ -66,7 +66,7 @@ function stages(value: unknown): boolean {
 function authority(value: unknown, pin: Record<string, unknown>): boolean {
   if (!isRecord(value) || !isRecord(value.pin)) return false;
   if (value.pin.templateId !== pin.templateId || value.pin.version !== pin.version || value.pin.graphHash !== pin.graphHash) return false;
-  return (value.kind === "local-create-and-run" && optional(value, "projectRoot", text)) || (value.kind === "schedule-attachment" && isTemplateId(value.attachmentId) && timestamp(value.firedAt));
+  return ((value.kind === "local-create-and-run" || value.kind === "tailnet-create-and-run") && optional(value, "projectRoot", text)) || (value.kind === "schedule-attachment" && isTemplateId(value.attachmentId) && timestamp(value.firedAt));
 }
 /** One entry of the covered run file. Unknown keys are refused, so an entry is either fully understood or left untouched. */
 export function assertWorkflowRunRecord(raw: unknown): asserts raw is WorkflowRunRecord {
