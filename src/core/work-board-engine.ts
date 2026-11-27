@@ -35,7 +35,7 @@ import type {
   StageRetryResult,
   WorkItemUpdateResult,
 } from "../shared/work-board-types.js";
-import type { EnvelopeToolRef, RunAuthoritySource } from "../shared/workflow-template-types.js";
+import type { EnvelopeToolRef, RemoteProvisionalStart, RunAuthoritySource } from "../shared/workflow-template-types.js";
 import { createStageRunEngine, type StageRunEngineDeps, type ScheduledTemplateSource, type ScheduledTemplateStart } from "../work-board/workflow/stage-run-engine.js";
 import {
   MAX_PLAN_NOTE_LENGTH,
@@ -135,8 +135,9 @@ import type { WorkDecisionAuthority } from "../work-board/work-decision-authorit
 
 interface RunItemOptions {
   authority?: WorkDecisionAuthority;
+  remoteProvisional?: RemoteProvisionalStart;
   onTemplateRunAllocated?: (runId: string) => void;
-  onTemplateStarted?: (runId: string) => void;
+  onTemplateStarted?: (runId: string, handoffStored?: Promise<void>) => void;
   agentName?: string;
   /** Set by the host entrypoint, never copied from a renderer payload. */
   approvalSurface?: WebContents | null;
@@ -576,7 +577,10 @@ export function createWorkBoardEngine(
         inFlight.delete(itemId);
         return { status: "error", reason: "template-run-unavailable", reasonCode: "template-run-unavailable" };
       }
-      return stageRuns.start(itemId, { source: opts.templateSource, authority: opts.authority, onRunAllocated: opts.onTemplateRunAllocated, onStarted: opts.onTemplateStarted });
+      return stageRuns.start(itemId, {
+        source: opts.templateSource, authority: opts.authority, remoteProvisional: opts.remoteProvisional,
+        onRunAllocated: opts.onTemplateRunAllocated, onStarted: opts.onTemplateStarted,
+      });
     }
     return guarded(itemId, opts.approvalSurface, () => runItemGuarded(itemId, item, opts));
   }

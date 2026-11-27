@@ -103,7 +103,9 @@ it("rejects a stale template revision and starts only the exact confirmed remote
     expect(h.children).toHaveLength(0);
     const result = await decide(start);
     if (!result.ok || result.kind !== "create-and-run") throw new Error("Template not started");
-    expect(await h.runOf(result.runId)).toMatchObject({ pin: confirmed.pin, runStartedBy: { kind: "tailnet-create-and-run", pin: confirmed.pin } });
+    const run = await h.runOf(result.runId);
+    expect(run).toMatchObject({ pin: confirmed.pin, runStartedBy: { kind: "tailnet-create-and-run", pin: confirmed.pin } });
+    expect(run).not.toHaveProperty("remoteProvisional");
     const [child] = await h.untilLive(1, result.itemId);
     expect(child.input).not.toHaveProperty("remoteControllerAuthority");
     expect(log).toHaveBeenCalledTimes(2);

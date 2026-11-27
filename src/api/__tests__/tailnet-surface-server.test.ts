@@ -1906,10 +1906,16 @@ it("rejects a pairing body whose request evidence was suspended and replaced dur
   const { createTailnetOwnerIdentityPolicy } = await import("../../main/tailnet-owner-policy.js");
   let login: string | null = "owner@example.com";
   const policy = createTailnetOwnerIdentityPolicy({ getOwnerLogin: async () => login });
+  const admitted = deferred<void>();
   const probeOwnerIdentity = vi.fn(policy.probeOwnerIdentity);
+  const ownerIdentityError: NonNullable<FixtureOptions["ownerIdentityError"]> = (login, evidence) => {
+    const error = policy.ownerIdentityError(login, evidence);
+    if (error === null) admitted.resolve();
+    return error;
+  };
   const sharing = pairedSharing({ observe: true, control: true });
   const claimInvitation = vi.fn(async () => ({ expiresAt: Date.now() + 1_000 }));
-  const { server } = await fixture({ probeOwnerIdentity, ownerIdentityError: policy.ownerIdentityError, pairedSharing: sharing.authorizer, pairing: { claimInvitation } });
+  const { server } = await fixture({ probeOwnerIdentity, ownerIdentityError, pairedSharing: sharing.authorizer, pairing: { claimInvitation } });
   let finish!: () => void;
   const completed = new Promise<{ status: number; body: string }>((resolve, reject) => {
     const req = httpRequest({ hostname: "127.0.0.1", port: server.port, path: "/tailnet/v2/pairing/claim", method: "POST", headers: { ...observerHeaders("pairing"), "content-type": "application/json" } }, response => {
@@ -1921,7 +1927,8 @@ it("rejects a pairing body whose request evidence was suspended and replaced dur
     req.flushHeaders();
     finish = () => req.end(JSON.stringify({ code: "ave-pair-v1." + "a".repeat(43) }));
   });
-  await vi.waitFor(() => expect(probeOwnerIdentity).toHaveBeenCalledOnce());
+  await admitted.promise;
+  expect(probeOwnerIdentity).toHaveBeenCalledOnce();
   login = null;
   await policy.probeOwnerIdentity();
   login = "owner@example.com";
@@ -2014,10 +2021,16 @@ it("checks request identity before submitting a command after asynchronous body 
   let unavailable = false;
   const submit = vi.fn();
   const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com" }));
-  const { server } = await fixture({ probeOwnerIdentity, ownerIdentityError: () => unavailable ? "tailnet-owner-identity-unavailable" : null, controllerCommandPort: { submit, execute: vi.fn() } as unknown as ConversationCommandPort });
+  const ownerIdentityError = vi.fn<NonNullable<FixtureOptions["ownerIdentityError"]>>(() => unavailable ? "tailnet-owner-identity-unavailable" : null);
+  const { server } = await fixture({ probeOwnerIdentity, ownerIdentityError, controllerCommandPort: { submit, execute: vi.fn() } as unknown as ConversationCommandPort });
   const snapshot = await fetch(url(server, "/tailnet/v1/status"), { headers: observerHeaders() });
   const scope = (await snapshot.json() as { conversation: { scope: string } }).conversation.scope;
   probeOwnerIdentity.mockClear();
+  const admitted = deferred<void>();
+  ownerIdentityError.mockImplementationOnce(() => {
+    admitted.resolve();
+    return null;
+  });
   let finish!: () => void;
   const completed = new Promise<number>((resolve, reject) => {
     const req = httpRequest({ hostname: "127.0.0.1", port: server.port, path: "/tailnet/v1/commands", method: "POST", headers: { ...controllerHeaders(), "content-type": "application/json" } }, response => {
@@ -2028,7 +2041,8 @@ it("checks request identity before submitting a command after asynchronous body 
     req.flushHeaders();
     finish = () => req.end(JSON.stringify({ id: "denied-before-submission-0001", type: "conversation.send", input: "must not submit", scope }));
   });
-  await vi.waitFor(() => expect(probeOwnerIdentity).toHaveBeenCalledOnce());
+  await admitted.promise;
+  expect(probeOwnerIdentity).toHaveBeenCalledOnce();
   unavailable = true;
   finish();
   expect(await completed).toBe(403);
@@ -2339,6 +2353,70 @@ it.each(["revocation", "prepare failure", "prepare failure with a desktop edit"]
     });
   },
 );
+
+it.each([false, true])("retracts an unlaunched remote run after restart (desktop edit: %s)", async edited => {
+  const entered = deferred<{ itemId: number; runId: string }>();
+  const release = deferred<void>();
+  const spawn = vi.fn();
+  let restarted = false;
+  const h: Awaited<ReturnType<typeof stageRunHarness>> = await stageRunHarness({
+    observeRunWork: true,
+    onSpawn: spawn,
+    workspace: {
+      async prepare(ref, stage) {
+        if (!restarted) {
+          entered.resolve(ref);
+          await release.promise;
+        }
+        return { ok: true, workspace: { kind: "folder", root: join(h.dir, "runs", ref.runId, stage.id) } };
+      },
+    },
+  });
+  await h.runThenEnd(async () => {
+    await h.confirm([stageOf("a")]);
+    const { sharing, log, readReviews, postDecision } = await pairedWorkFixture(h);
+    const { scope, workReviews } = await readReviews();
+    const offered = workReviews?.find(review => review.kind === "create-and-run");
+    if (!offered) throw new Error("Missing start review");
+    const pending = postDecision({ id: crypto.randomUUID(), scope, kind: offered.kind, ...offered.binding });
+    try {
+      const { itemId, runId } = await Promise.race([entered.promise, pending.then(response => {
+        throw new Error(`Start completed before preparation: ${response.status}`);
+      })]);
+      expect(await h.runOf(runId)).toMatchObject({
+        remoteProvisional: { createdAt: (await h.item(itemId)).created_at, mutationRevision: expect.stringMatching(/^[a-f0-9]{64}$/) },
+        stageRuns: [{ stageId: "a", status: "running", attempt: 1 }],
+      });
+      if (edited) {
+        expect(await h.board.update(itemId, { title: "Desktop edit", priority: "high" })).toMatchObject({ status: "updated" });
+      }
+      sharing.revoke();
+
+      // The replacement reads the same files while the first process is still
+      // frozen at preparation, so its request cleanup cannot repair the disk first.
+      restarted = true;
+      const recovered = h.makeEngine();
+      await recovered.adoptParkedTemplateRuns();
+      const { items } = JSON.parse(readFileSync(h.boardPath, "utf8"));
+      expect.soft(items).toEqual(edited
+        ? [expect.objectContaining({ id: itemId, title: "Desktop edit", priority: "high" })] : []);
+      expect.soft(items[0]?.runId).toBeUndefined();
+      expect.soft(items[0]?.runHistory).toBeUndefined();
+      expect.soft(await h.runOf(runId)).toBeNull();
+      expect.soft(h.sweeps.at(-1)).not.toContain(runId);
+      const continued = await recovered.continueRun(itemId, { runId });
+      expect.soft(continued.ok).toBe(false);
+      const retry = await recovered.retryStage(itemId, { runId, stageId: "a", attempt: 1 });
+      expect.soft(retry.ok).toBe(false);
+      if (continued.ok || retry.ok) (await h.untilSpawned(1))[0].finish();
+      expect.soft(spawn).not.toHaveBeenCalled();
+      expect.soft(log).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await pending;
+    }
+  });
+});
 
 it("drops review payload when the paired share is revoked while projection is pending", async () => {
   const entered = deferred<void>();

@@ -11,6 +11,7 @@ import {
   readTailnetObserverConfigFile,
   restartTailnetObserverServer,
   setTailnetOwnDeviceAdmission,
+  tailnetObserverEnableOverride,
   tailnetWebOriginFor,
   tailscaleServeCommandText,
   writeTailnetObserverConfigFile,
@@ -175,6 +176,17 @@ export function createTailnetObserverConfigService(
   const writeOwnDeviceAdmission = options.writeOwnDeviceAdmission
     ?? ((enabled: boolean) => setTailnetOwnDeviceAdmission(enabled));
 
+  async function saveAndRestart(file: TailnetObserverConfigFile): Promise<void> {
+    const enableOverride = tailnetObserverEnableOverride(options.env);
+    if (file.enabled && enableOverride !== false) {
+      const { config } = await loadTailnetObserverConfig({ env: options.env, readConfigFile: async () => file });
+      if (config) await assertTailnetListenerPortAllowed(config.port);
+    }
+    await writeConfigFile(file);
+    // A forced-on observer keeps its current listener when the file is turned off.
+    if (file.enabled || enableOverride !== true) await restartListener();
+  }
+
   const service: TailnetObserverConfigService = Object.freeze({
     async snapshot(): Promise<TailnetObserverSnapshot> {
       // A damaged file is reported, not thrown. Throwing left the section with a Refresh button and no draft, so the one action that would have fixed it —
@@ -214,11 +226,8 @@ export function createTailnetObserverConfigService(
     },
 
     async apply(config: TailnetObserverConfigView): Promise<void> {
-      if (config.enabled || config.port !== DEFAULT_TAILNET_OBSERVER_PORT) await assertTailnetListenerPortAllowed(config.port);
       const environment = await probeEnvironment();
-      await writeConfigFile(proposalToFile(config, tailnetWebOriginFor(environment.dnsName)));
-      // The listener used to wait for the next launch, which is the step nobody knew to take: a toggle that does nothing for an hour reads as broken.
-      await restartListener();
+      await saveAndRestart(proposalToFile(config, tailnetWebOriginFor(environment.dnsName)));
     },
 
     // No restart: the listener reads this policy per request, so a running remote session is not dropped to change who may skip an approval click.
@@ -244,6 +253,7 @@ export function createTailnetObserverConfigService(
     },
 
     async guidedSetup(): Promise<TailnetGuidedSetupResult> {
+      if (tailnetObserverEnableOverride(options.env) === false) return guidedFailure("tailnet-serve-not-listening");
       const environment = await probeEnvironment();
       // Only `ready` can be set up. Every other state needs an action outside this app — install, sign in, start the daemon — and the surface that asked for
       // this already knows the sentence for each one.
@@ -268,11 +278,9 @@ export function createTailnetObserverConfigService(
       try {
         port = runtimeState().listeningPort === reusable ? reusable : await choosePort(preferred);
         if (port === null) return guidedFailure("tailnet-guided-setup-port-unavailable");
-        await assertTailnetListenerPortAllowed(port);
-        await writeConfigFile(
+        await saveAndRestart(
           proposalToFile(recommendedConfig(port), tailnetWebOriginFor(environment.dnsName)),
         );
-        await restartListener();
       } catch (err) {
         return guidedFailure(guidedErrorCode(err));
       }

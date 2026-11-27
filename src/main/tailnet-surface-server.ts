@@ -174,6 +174,11 @@ function envLayer(env: NodeJS.ProcessEnv): RawLayer {
   return layer;
 }
 
+export function tailnetObserverEnableOverride(env: NodeJS.ProcessEnv = process.env): boolean | undefined {
+  const enabled = env[ENV_KEY.enabled];
+  return enabled === undefined ? undefined : enabled === "1";
+}
+
 // Project the file onto the raw vocabulary. `false` becomes an ABSENT key rather than `"0"`: every boolean below accepts `"1"` or absence and rejects
 // anything else, and a file saying "controller off" has to mean the same thing as a file that never mentioned the controller.
 function fileLayer(file: TailnetObserverConfigFile): RawLayer {
@@ -326,9 +331,8 @@ export async function writeTailnetObserverConfigFile(
   namespace: FeatureNamespaceHandle = openFeatureNamespace(TAILNET_FEATURE_NAMESPACE),
 ): Promise<void> {
   const parsed = parseTailnetObserverConfigFile(file);
-  const { config } = resolveFromLayers(fileLayer(parsed), {});
-  const port = config?.port ?? parsed.port;
-  if (port !== undefined) await assertTailnetListenerPortAllowed(port);
+  if (parsed.port !== undefined) parseFixedPort(String(parsed.port));
+  resolveFromLayers(fileLayer(parsed), {});
   await namespace.writeJson(TAILNET_OBSERVER_CONFIG_FILE, file);
 }
 

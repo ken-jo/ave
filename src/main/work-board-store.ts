@@ -41,7 +41,7 @@ import { isMissingPathError } from "../lib/atomic-file.js";
 import { copyLegacyPluginBoard } from "../boot/steps/work-board-migration.js";
 import { WORK_DECISION_AUTHORITY_REVOKED, WorkDecisionAuthorityError, type WorkDecisionAuthority } from "../work-board/work-decision-authority.js";
 import { isTemplateId, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
-import type { TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
+import type { RemoteProvisionalStart, TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
 
 const log = createLogger("ave");
 
@@ -71,10 +71,10 @@ import {
   type WorkItemPriority,
   type WorkItemRunStatus,
   type WorkItemCreateInput,
+  type WorkItemCreateResult,
   type WorkItemUpdateInput,
   type WorkItemListFilter,
   type WorkItemListResult,
-  type WorkItemCreateResult,
   type WorkItemGetResult,
   type WorkItemUpdateResult,
   type WorkItemTransitionResult,
@@ -671,10 +671,11 @@ function mutationRevision(item: WorkItem): string {
 // are never marked.
 // What a settled run keeps once its row names a newer run: how it ended and each stage's status, times, result hash and output hash.
 function runSummary(run: WorkflowRunRecord): WorkflowRunRecord {
-  const { runId, itemId, pin, runStartedBy, startedAt, settled } = run;
+  const { runId, itemId, pin, runStartedBy, startedAt, settled, remoteProvisional } = run;
   const stageRuns = run.stageRuns.map(({ stageId, attempt, status, startedAt, endedAt, resultHash, outputHash }) =>
     ({ stageId, attempt, status, ...(startedAt === undefined ? {} : { startedAt }), ...(endedAt === undefined ? {} : { endedAt }), ...(resultHash === undefined ? {} : { resultHash }), ...(outputHash === undefined ? {} : { outputHash }) }));
-  return { runId, itemId, pin, runStartedBy, startedAt, stageRuns, ...(settled === undefined ? {} : { settled }) };
+  return { runId, itemId, pin, runStartedBy, startedAt, stageRuns, ...(settled === undefined ? {} : { settled }),
+    ...(remoteProvisional === undefined ? {} : { remoteProvisional }) };
 }
 
 const namesTemplateRun = (item: WorkItem): boolean => item.templateId !== undefined && item.runId !== undefined;
@@ -704,7 +705,7 @@ function endedInterrupted(it: WorkItem, iso: string): WorkItem {
 
 // A pending plan also carries whether the item changed since the plan was made; main judges it once, here, for every reader. A row whose
 // run has no record is shown ended, never in flight, until the user clears it; its revision is the stored row's.
-function decorate(item: WorkItem, nowMs: number, runError?: WorkItemResolved["templateRunError"]): WorkItemResolved {
+function decorate(item: WorkItem, nowMs: number, runError?: WorkItemResolved["templateRunError"]): WorkItemResolved & { mutationRevision: string } {
   const approval = item.planApproval;
   return {
     ...item,
@@ -1143,7 +1144,9 @@ export class WorkBoardStore {
     });
   }
 
-  async create(input: WorkItemCreateInput, canCommit?: () => boolean): Promise<WorkItemCreateResult> {
+  async create(input: WorkItemCreateInput, canCommit?: () => boolean): Promise<
+    Extract<WorkItemCreateResult, { status: "invalid" }> | { status: "created"; itemId: number; item: ReturnType<typeof decorate> }
+  > {
     await this.ensureLoaded();
     if (input.templateId !== undefined && !isTemplateId(input.templateId)) return { status: "invalid", reason: "invalid templateId" };
     const title = (input.title ?? "").trim();
@@ -1437,6 +1440,7 @@ export class WorkBoardStore {
         const stored = await this.runs.put(structuredClone({
           runId, itemId: id, pin: { templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash },
           runStartedBy: pin.source, startedAt, stageRuns: pin.stageRuns,
+          ...(pin.remoteProvisional === undefined ? {} : { remoteProvisional: pin.remoteProvisional }),
         }), retain, authority);
         if (stored.status !== "stored") {
           this.cache = cacheOf(board);
@@ -1741,13 +1745,13 @@ export class WorkBoardStore {
   }
 
   /** Retract only the run allocated for this remote create. Any independent edit keeps the row. */
-  async rollbackProvisionalTemplateStart(created: WorkItemResolved, runId: string | undefined): Promise<void> {
+  async rollbackProvisionalTemplateStart(itemId: number, created: RemoteProvisionalStart, runId?: string): Promise<void> {
     await this.ensureLoaded();
     await withInProcessFileQueue(this.filePath, async () => {
       const board = await this.readBoard();
-      const index = board.items.findIndex(item => item.id === created.id);
+      const index = board.items.findIndex(item => item.id === itemId);
       const current = board.items[index];
-      if (!current || current.created_at !== created.created_at
+      if (!current || current.created_at !== created.createdAt
         || (current.runId !== undefined && current.runId !== runId)
         || current.runHistory?.some(entry => entry.runId !== runId)) {
         this.cache = cacheOf(board);
@@ -1758,7 +1762,8 @@ export class WorkBoardStore {
       if (current.runId !== undefined) {
         const run = await this.runs.get(current.runId);
         if (run.status !== "found" || run.run.itemId !== current.id
-          || run.run.runStartedBy.kind !== "tailnet-create-and-run" || run.run.settled === undefined) {
+          || run.run.remoteProvisional?.createdAt !== created.createdAt
+          || run.run.remoteProvisional.mutationRevision !== created.mutationRevision || run.run.settled === undefined) {
           throw new Error("run-state-unavailable");
         }
         delete retained.runId;

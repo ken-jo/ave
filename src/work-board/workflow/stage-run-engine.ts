@@ -25,7 +25,7 @@ import {
 } from "../../shared/work-board-types.js";
 import { outputHashOf, resultHashOf } from "../../shared/workflow-template-output.js";
 import type {
-  EnvelopeToolRef, RequestedOutput, RunAuthoritySource, StageEnvelope, TemplateScope, TemplateStage, TemplateVersion, UnattendedQualification,
+  EnvelopeToolRef, RemoteProvisionalStart, RequestedOutput, RunAuthoritySource, StageEnvelope, TemplateScope, TemplateStage, TemplateVersion, UnattendedQualification,
   WorkItemStageRun,
 } from "../../shared/workflow-template-types.js";
 import { isUnattendedReadTool } from "../../tools/base.js";
@@ -72,7 +72,7 @@ interface RequestedOutputHooks {
 
 export interface StageRunEngineDeps {
   /** The board: the row of a run carries its id, its shown status and its final output. Nothing a run is decided from is read here. */
-  store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "clearMissingRun">;
+  store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "clearMissingRun" | "rollbackProvisionalTemplateStart">;
   /** Every run-authority field: the pin, the source, the stage runs, the joins, the gates and how the run ended. */
   runs: WorkflowRunState;
   /** The authorised registry root of a project path, or null when the registry does not hold it. */
@@ -117,10 +117,11 @@ export type ScheduledTemplateStart =
 interface StageRunStart {
   source: RunAuthoritySource;
   authority?: WorkDecisionAuthority;
+  remoteProvisional?: RemoteProvisionalStart;
   /** Identifies the provisional run before writes so its caller can retract only that run. */
   onRunAllocated?: (runId: string) => void;
   /** With live authority, reports acceptance when the first child is handed to the runner. */
-  onStarted?: (runId: string) => void;
+  onStarted?: (runId: string, handoffStored?: Promise<void>) => void;
 }
 
 export interface StageRunEngine {
@@ -1127,12 +1128,18 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
             },
           },
         );
+        let handoffStored: Promise<void> | undefined;
         if (state.pendingStart) {
           const { onStarted } = state.pendingStart;
           state.pendingStart = undefined;
-          onStarted?.(state.runId);
+          if (record.remoteProvisional) {
+            handoffStored = persistRemoteHandoff(state);
+          }
+          onStarted?.(state.runId, handoffStored);
         }
-        const result = await running;
+        const [result] = await Promise.all([running, handoffStored?.catch(error => {
+          log.warn("remote template handoff not stored (id=%d): %s", state.itemId, errorMessage(error));
+        })]);
         return { result, inputTaint: prompt.taint !== undefined };
       } finally {
         state.live.delete(stageId);
@@ -1145,6 +1152,14 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     } finally {
       state.starting.delete(stageId);
     }
+  }
+
+  async function persistRemoteHandoff(state: RunState): Promise<void> {
+    const stored = await records.update(state.itemId, state.runId, current => {
+      delete current.remoteProvisional;
+      return current;
+    });
+    if (!stored.ok) throw new WorkflowInvariantError("run-state-failed", writeFault(stored.reason));
   }
 
   function failureOf(state: RunState, stageId: string, result: SubAgentSpawnResult): StageFailure {
@@ -1401,7 +1416,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     try {
       const stageRuns = version.stages.map((stage): WorkItemStageRun => ({ stageId: stage.id, attempt: 1, status: "waiting" }));
       // The run file gets the pin, the source and the stage runs first; the board row then names the run by its id and nothing else.
-      const begun = await records.begin(itemId, runId, startedAt, { templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash, source, stageRuns }, authority);
+      const begun = await records.begin(itemId, runId, startedAt, {
+        templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash, source, stageRuns,
+        ...(start?.remoteProvisional === undefined ? {} : { remoteProvisional: start.remoteProvisional }),
+      }, authority);
       if (begun.status !== "updated") return await abandonStart(ref, false, begun.status === "invalid" ? refused(begun.reason) : { status: "not_found" });
       recorded = true;
       const placed = await records.update(itemId, runId, current => ({ ...current, runWorkspace: opened.workspace }), undefined, authority);
@@ -1518,6 +1536,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (got.item.runId !== runId) return "run_mismatch";
     const record = await records.get(itemId, runId);
     if (!record) return "run_mismatch";
+    if (record.remoteProvisional && runs.get(itemId)?.runId !== runId) return "not_pending";
     // Its record still reads unsettled: taking it over here would undo the end it was given.
     if (unconfirmed.has(runId)) return "run_end_unconfirmed";
     const state = await stateFor(record);
@@ -1662,6 +1681,16 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         active.push(run.runId);
         continue;
       }
+      if (run.remoteProvisional) {
+        if (run.settled === undefined) {
+          const at = new Date().toISOString();
+          const ended = await records.update(item.id, run.runId, current => endedAs(current, "stopped", at));
+          if (!ended.ok) return { ok: false, code: writeFault(ended.reason) };
+        }
+        await store.rollbackProvisionalTemplateStart(item.id, run.remoteProvisional, run.runId);
+        releaseWorkspace(run.runId);
+        continue;
+      }
       if (run.settled !== undefined) {
         if (item.runStatus !== run.settled.status) {
           const version = run.settled.status === "completed" ? await resolvePinned(run.pin).catch(() => null) : null;
@@ -1717,6 +1746,14 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     // A run whose row no longer names or holds it ends error, as it does live.
     for (const run of found.lost) {
       if (run.settled !== undefined || !wanted(run.runId) || held(run)) continue;
+      if (run.remoteProvisional) {
+        // The run file can land before the board row is written to name it.
+        await store.rollbackProvisionalTemplateStart(run.itemId, run.remoteProvisional, run.runId);
+        const ended = await records.settleUnstarted(run.itemId, run.runId);
+        if (ended !== "settled") return { ok: false, code: ended === "named" ? "run-state-unavailable" : writeFault(ended) };
+        releaseWorkspace(run.runId);
+        continue;
+      }
       const ended = await records.update(run.itemId, run.runId, current => endedAs(current, "lost", at), "lost");
       if (!ended.ok) {
         log.warn("a template run its row no longer names could not be ended (id=%d): %s", run.itemId, ended.reason);

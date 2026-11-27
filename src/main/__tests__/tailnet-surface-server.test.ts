@@ -2,7 +2,7 @@ async function runGuardedOwnerOperation<T>(guard: () => void, operation: () => P
 import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { createServer } from "node:net";
-import { occupyLoopbackPort as occupy } from "../../__tests__/test-helpers.js";
+import { occupyLoopbackPort as occupy, useTempDirs as trackTempDirs } from "../../__tests__/test-helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as windowsRuntime from "@anthropic-ai/sandbox-runtime";
 import * as windowsIntegrity from "../../permissions/srt-win-integrity.js";
@@ -11,7 +11,8 @@ import * as aveHome from "../../shared/ave-home.js";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import type { TailnetPairedSharingRuntime } from "../tailnet-paired-sharing-runtime.js";
-import type { FeatureNamespaceHandle } from "../storage/feature-namespace.js";
+import { writeJsonAtomic, type FeatureNamespaceHandle } from "../storage/feature-namespace.js";
+import { createTailnetObserverConfigService } from "../tailnet-observer-config-service.js";
 import type { TailnetShareActorId } from "../tailnet-pairing-share-store.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { TailnetPairingDeviceStatus } from "../../api/tailnet-surface-server.js";
@@ -28,6 +29,7 @@ import {
   isPrivateServeTarget,
   resetTailnetObserverServerForTests,
   isTailnetOwnDeviceAdmissionEnabled,
+  readTailnetObserverConfigFile,
   resolveTailnetObserverConfig,
   restartTailnetObserverServer,
   setTailnetOwnDeviceAdmission,
@@ -54,6 +56,7 @@ const CAPABILITY_ENV = "app-capability:" + CAPABILITY;
 const APP_CAPABILITY = Object.freeze({ kind: "app-capability" as const, capability: CAPABILITY });
 const TAILNET_IDENTITY = Object.freeze({ kind: "tailnet-identity" as const });
 const WEB_ORIGIN = "https://ave.example.ts.net";
+const makeTempDir = trackTempDirs("tailnet-observer-");
 
 function runtime(): ConversationSurfaceRuntime {
   return {
@@ -95,7 +98,7 @@ function options(
         startServer: startServer as never,
         // This matrix asks an environment question. Reading the real host-owned file would make the answer depend on whether the developer running it happens to
         // have an observer configured.
-        readConfigFile: async () => null,
+        readConfigFile: async (): Promise<TailnetObserverConfigFile | null> => null,
       },
     },
   };
@@ -107,16 +110,11 @@ afterEach(async () => {
 });
 
 describe("Tailnet observer lifecycle", () => {
-  it("refuses a saved or overridden port in the confined-worker loopback range before starting", async () => {
+  it("refuses an overridden port in the confined-worker loopback range before starting", async () => {
     const port = DEFAULT_TAILNET_OBSERVER_PORT;
     const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     const range = vi.spyOn(sandbox, "getWindowsProxyPortRange").mockReturnValue([port - 1, port]);
-    const namespace = { writeJson: vi.fn() };
     try {
-      await expect(writeTailnetObserverConfigFile({ enabled: true, authorization: TAILNET_IDENTITY, port }, namespace as unknown as FeatureNamespaceHandle))
-        .rejects.toThrow("tailnet-observer-port-confined-worker-range");
-      expect(namespace.writeJson).not.toHaveBeenCalled();
-
       const f = options({
         AVE_TAILNET_OBSERVER: "1",
         AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
@@ -135,7 +133,7 @@ describe("Tailnet observer lifecycle", () => {
     }
   });
 
-  it.each(["extended", "unreadable", "stock"] as const)("checks the %s installed Windows permit at listener startup", async installed => {
+  it.each(["extended", "unreadable", "stock", "disabled save", "environment-disabled save"] as const)("handles the %s Windows listener case", async installed => {
     const port = DEFAULT_TAILNET_OBSERVER_PORT;
     const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     const requested = vi.spyOn(sandboxCapability, "isPluginWorkerConfinementRequestedAtBoot").mockReturnValue(true);
@@ -149,13 +147,56 @@ describe("Tailnet observer lifecycle", () => {
     const privacy = vi.spyOn(aveHome, "getAveHomePrivacyFailure").mockReturnValue(undefined);
     const prepare = vi.spyOn(windowsIntegrity, "prepareSrtWinExecutable").mockReturnValue("srt-win.exe");
     vi.mocked(windowsRuntime.resolveSrtWin).mockReturnValue({ exe: "srt-win.exe", prependArgs: [] });
+    const unreadable = installed !== "stock" && installed !== "extended";
     const status = vi.mocked(windowsRuntime.checkWindowsSandboxStatusAsync).mockResolvedValue({
       user: { provisioned: false, groupExists: false, inBuiltinUsers: false, inSandboxGroup: false, hiddenFromLogon: false, credPresent: false, realUserSid: "S-1-5-21-1" },
-      wfp: installed === "unreadable" ? { state: "cannot-read", filters: 0 } : {
+      wfp: unreadable ? { state: "cannot-read", filters: 0 } : {
         state: "installed", filters: 2, portRange: installed === "stock" ? stock : [port, stock[1]],
       },
     });
     try {
+      if (installed === "disabled save" || installed === "environment-disabled save") {
+        const customPort = port - 1;
+        const dir = makeTempDir();
+        const namespace = {
+          dir, writeJson: (name: string, value: unknown) => writeJsonAtomic(dir, name, value),
+        } as FeatureNamespaceHandle;
+        const read = () => readTailnetObserverConfigFile(namespace);
+        await namespace.writeJson("observer.json", { enabled: true, authorization: TAILNET_IDENTITY, port: customPort });
+        const env = installed === "environment-disabled save" ? { AVE_TAILNET_OBSERVER: "0" } : {};
+        const f = options(env);
+        f.input.dependencies.readConfigFile = read;
+        const starting = maybeStartTailnetObserverServer(f.input);
+        if (installed === "disabled save") await expect(starting).rejects.toThrow("tailnet-observer-confined-range-unverified");
+        else await expect(starting).resolves.toBeNull();
+
+        const service = createTailnetObserverConfigService({
+          pairedSharingBootstrapFailed: () => false,
+          env, readConfigFile: read,
+          writeConfigFile: file => writeTailnetObserverConfigFile(file, namespace),
+          readOwnDeviceAdmission: async () => false,
+          probeEnvironment: async () => tailscaleEnvironment(null),
+        });
+        const saved = (await service.snapshot()).saved;
+        status.mockClear();
+        if (installed === "disabled save") {
+          await expect(service.apply(saved)).rejects.toThrow("tailnet-observer-confined-range-unverified");
+          expect(status).toHaveBeenCalledOnce();
+          status.mockClear();
+        }
+        const enabled = installed === "environment-disabled save";
+        await expect.soft(service.apply({ ...saved, enabled })).resolves.toBeUndefined();
+        expect.soft(status).not.toHaveBeenCalled();
+        expect.soft(await read()).toEqual({ ...(enabled ? { enabled } : {}), authorization: TAILNET_IDENTITY, port: customPort });
+        await stopTailnetObserverServer();
+        resetTailnetObserverServerForTests();
+        const rebooted = options(env);
+        rebooted.input.dependencies.readConfigFile = read;
+        await expect.soft(maybeStartTailnetObserverServer(rebooted.input)).resolves.toBeNull();
+        expect.soft(status).not.toHaveBeenCalled();
+        expect(rebooted.startServer).not.toHaveBeenCalled();
+        return;
+      }
       const f = options({
         AVE_TAILNET_OBSERVER: "1",
         AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
