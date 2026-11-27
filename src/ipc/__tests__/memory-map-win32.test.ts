@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import type { ClientRequest, IncomingMessage } from 'node:http';
+import type { RequestOptions } from 'node:https';
+import { Readable } from 'node:stream';
 import { promises as dns, type LookupAddress, type LookupAllOptions } from 'node:dns';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { deferred } from '../../__tests__/support/deferred.js';
@@ -9,9 +13,10 @@ import type { WindowsMemoryEmbeddingConfig } from '../../shared/memory-embedding
 import { CHANNELS } from '../../contract/app-contract.js';
 import { graphMemoryRevision, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 import { MemoryMapHostError } from '../../main/memory-map/errors.js';
-import { LOCAL_MODEL_ID, LOCAL_MODEL_REVISION, MODEL_FILES } from '../../main/memory-map/model-manifest.js';
+import { MODEL_FILES, modelFileUrl } from '../../main/memory-map/model-manifest.js';
 import type { MemoryWorkerRunner } from '../../main/memory-map/worker-client-win32.js';
 const state = vi.hoisted(() => ({
+  artifactRequest: vi.fn<(url: URL, options: RequestOptions, respond: (incoming: IncomingMessage) => void) => ClientRequest>(),
   handles: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>>(),
   get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null), build: vi.fn(async (_readCatalog?: ReadMemoryMapCatalog, _onAdmission?: (assertLive: () => void) => void) => ({ snapshotId: 'snapshot' })), cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
   status: vi.fn(async () => ({ status: 'unconfigured' })), download: vi.fn(async () => ({ status: 'ready' })), modelCancel: vi.fn(), adoptExistingFolder: vi.fn(async () => ({ status: 'ready' })),
@@ -23,6 +28,7 @@ const state = vi.hoisted(() => ({
   refreshAdmission: vi.fn<() => Promise<{ areSwitchesAvailable: () => boolean }>>(),
   dialog: vi.fn(async () => ({ canceled: true, filePaths: [] as string[] })), audit: vi.fn(), localConfined: true, releaseGateOpen: false,
 }));
+vi.mock('node:https', async importOriginal => ({ ...await importOriginal<typeof import('node:https')>(), request: state.artifactRequest }));
 vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, handler: never) => state.handles.set(channel, handler) }, dialog: { showOpenDialog: state.dialog } }));
 vi.mock('../../main/memory-map/host-win32.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/host-win32.js')>(), MemoryMapHost: class { constructor(options: { validatedModelPath: (signal: AbortSignal) => Promise<string>; runWorker: MemoryWorkerRunner }) { state.readModelPath = options.validatedModelPath; state.startWorker = options.runWorker; } get = state.get; build = state.build; cancel = state.cancel; invalidate = state.invalidate; retrieve = state.retrieve; } }));
 vi.mock('../../main/memory-map/model-manager-win32.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/model-manager-win32.js')>(), LocalModelManager: class { constructor(options: { downloadFile?: typeof state.downloadFile }) { state.downloadFile = options.downloadFile; } validatedPath = state.validatedPath; status = state.status; download = state.download; cancel = state.modelCancel; adoptExistingFolder = state.adoptExistingFolder; } }));
@@ -48,7 +54,7 @@ const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 if (!originalPlatform) throw new Error('Missing platform descriptor');
 beforeEach(() => {
   Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
-  vi.clearAllMocks(); state.handles.clear(); state.localConfined = true; state.releaseGateOpen = false;
+  vi.clearAllMocks(); state.artifactRequest.mockReset(); state.handles.clear(); state.localConfined = true; state.releaseGateOpen = false;
   state.downloadFile = undefined;
   state.readModelPath = undefined;
   state.startWorker = undefined;
@@ -62,53 +68,130 @@ afterEach(() => { Object.defineProperty(process, 'platform', originalPlatform); 
 describe('memory map host boundary', () => {
   const artifactDns: { lookup: (host: string, options: LookupAllOptions) => Promise<LookupAddress[]> } = dns;
 
-  it('streams the pinned artifact through the host transport and keeps cancellation attached', async () => {
-    const lookup = vi.spyOn(artifactDns, 'lookup').mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+  async function artifactDownloader(transport?: typeof fetch) {
+    registerWindowsMemoryMapHandlers({ singleHopNetworkFetch: transport, settingsService: { get: () => undefined } } as unknown as IpcDeps,
+      () => ({ ok: true, options: {} }));
+    await invoke('modelStatus');
+    assert.ok(state.downloadFile);
+    return state.downloadFile;
+  }
+
+  function mockArtifactHttps(
+    replies: { status: number; location?: string; body?: string }[],
+    beforeSecure?: () => void,
+  ) {
+    const dial = vi.fn<(address: string) => void>();
+    const send = vi.fn<(url: string) => void>();
+    state.artifactRequest.mockImplementation((url, options, respond) => {
+      const request = new EventEmitter();
+      const socket = new EventEmitter();
+      const destroy = (error: Error) => queueMicrotask(() => request.emit('error', error));
+      const end = () => {
+        send(url.href);
+        const reply = replies.shift();
+        assert.ok(reply);
+        const incoming = Readable.from(reply.body ? [Buffer.from(reply.body)] : []);
+        respond(Object.assign(incoming, {
+          statusCode: reply.status,
+          rawHeaders: reply.location ? ['Location', reply.location] : [],
+        }) as IncomingMessage);
+      };
+      queueMicrotask(() => {
+        assert.ok(options.lookup);
+        options.lookup(url.hostname, { all: true }, (error, answers) => {
+          assert.ifError(error);
+          assert.ok(Array.isArray(answers));
+          for (const answer of answers) dial(answer.address);
+          request.emit('socket', socket);
+          beforeSecure?.();
+          socket.emit('secureConnect');
+        });
+      });
+      return Object.assign(request, { destroy, end }) as unknown as ClientRequest;
+    });
+    return { dial, send };
+  }
+
+  it('refuses an artifact connection to a DNS answer outside the public network', async () => {
+    const publicAddress = { address: '93.184.216.34', family: 4 };
+    const refusedAddress = { address: '127.0.0.1', family: 4 };
+    const lookup = vi.spyOn(artifactDns, 'lookup')
+      .mockResolvedValueOnce([publicAddress]).mockResolvedValue([refusedAddress]);
     const redirectedUrl = 'https://artifacts.example.com/model';
-    const transport = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: redirectedUrl } }))
-      .mockResolvedValueOnce(new Response('artifact'));
+    const { dial, send } = mockArtifactHttps([{ status: 302, location: redirectedUrl }]);
+    const transport = vi.fn<typeof fetch>().mockImplementation(async input => {
+      const [answer] = await artifactDns.lookup(new URL(String(input)).hostname, { all: true });
+      if (answer) dial(answer.address);
+      return new Response('unexpected');
+    });
     try {
-      registerWindowsMemoryMapHandlers({ singleHopNetworkFetch: transport, settingsService: { get: () => undefined } } as unknown as IpcDeps,
-        () => ({ ok: true, options: {} }));
-      await invoke('modelStatus');
-      const downloadFile = state.downloadFile;
-      assert.ok(downloadFile);
-      const controller = new AbortController();
-      const file = MODEL_FILES[0].name;
-      const response = await downloadFile(file, controller.signal, vi.fn());
-      expect(await response.text()).toBe('artifact');
-      expect(transport.mock.calls.map(([url, init]) => [url, init?.redirect, init?.credentials])).toEqual([
-        [`https://huggingface.co/${LOCAL_MODEL_ID}/resolve/${LOCAL_MODEL_REVISION}/onnx/${file}`, 'manual', 'omit'],
-        [redirectedUrl, 'manual', 'omit'],
-      ]);
-      controller.abort();
-      expect(transport.mock.calls[1][1]?.signal?.aborted).toBe(true);
+      const download = await artifactDownloader(transport);
+      const result = await download(MODEL_FILES[0].name, new AbortController().signal, vi.fn()).catch(error => error);
+      expect(dial).not.toHaveBeenCalledWith(refusedAddress.address);
+      expect(dial).toHaveBeenCalledExactlyOnceWith(publicAddress.address);
+      expect(send).toHaveBeenCalledOnce();
+      expect(lookup.mock.calls.map(([host]) => host)).toEqual([new URL(modelFileUrl(MODEL_FILES[0].name)).hostname, 'artifacts.example.com']);
+      expect(result).toBeInstanceOf(Error);
     } finally {
       lookup.mockRestore();
     }
   });
 
-  it('checks artifact admission after resolving a redirect and before sending it', async () => {
+  it('streams the pinned artifact through HTTPS and keeps cancellation attached', async () => {
+    const address = { address: '93.184.216.34', family: 4 };
+    const lookup = vi.spyOn(artifactDns, 'lookup').mockResolvedValue([address]);
+    const redirectedUrl = 'https://artifacts.example.com/model';
+    const { dial, send } = mockArtifactHttps([{ status: 302, location: redirectedUrl }, { status: 200, body: 'artifact' }]);
+    try {
+      const download = await artifactDownloader();
+      const controller = new AbortController();
+      const file = MODEL_FILES[0].name;
+      const response = await download(file, controller.signal, vi.fn());
+      expect(await response.text()).toBe('artifact');
+      expect(send.mock.calls.map(([url]) => url)).toEqual([modelFileUrl(file), redirectedUrl]);
+      expect(dial.mock.calls).toEqual([[address.address], [address.address]]);
+      expect(lookup).toHaveBeenCalledTimes(2);
+      const requestOptions = state.artifactRequest.mock.calls[1][1];
+      expect(requestOptions).toMatchObject({ agent: false, rejectUnauthorized: true });
+      controller.abort();
+      expect(requestOptions.signal?.aborted).toBe(true);
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
+  it('checks artifact admission after resolving a redirect and before connecting', async () => {
     const revoked = new MemoryMapHostError('local-runtime-unavailable');
     let admitted = true;
     const lookup = vi.spyOn(artifactDns, 'lookup').mockImplementation(async host => {
       if (host === 'artifacts.example.com') admitted = false;
       return [{ address: '93.184.216.34', family: 4 }];
     });
-    const transport = vi.fn<typeof fetch>().mockResolvedValueOnce(
-      new Response(null, { status: 302, headers: { location: 'https://artifacts.example.com/model' } }),
-    );
+    const { send } = mockArtifactHttps([{ status: 302, location: 'https://artifacts.example.com/model' }]);
     try {
-      registerWindowsMemoryMapHandlers({ singleHopNetworkFetch: transport, settingsService: { get: () => undefined } } as unknown as IpcDeps,
-        () => ({ ok: true, options: {} }));
-      await invoke('modelStatus');
-      const downloadFile = state.downloadFile;
-      assert.ok(downloadFile);
-      await expect(downloadFile(MODEL_FILES[0].name, new AbortController().signal, () => {
+      const download = await artifactDownloader();
+      await expect(download(MODEL_FILES[0].name, new AbortController().signal, () => {
         if (!admitted) throw revoked;
       })).rejects.toBe(revoked);
-      expect(transport).toHaveBeenCalledOnce();
+      expect(state.artifactRequest).toHaveBeenCalledOnce();
+      expect(send).toHaveBeenCalledOnce();
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
+  it('checks artifact admission again at the HTTP send after TLS connects', async () => {
+    const revoked = new MemoryMapHostError('local-runtime-unavailable');
+    let admitted = true;
+    const lookup = vi.spyOn(artifactDns, 'lookup').mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+    const { dial, send } = mockArtifactHttps([], () => { admitted = false; });
+    try {
+      const download = await artifactDownloader();
+      await expect(download(MODEL_FILES[0].name, new AbortController().signal, () => {
+        if (!admitted) throw revoked;
+      })).rejects.toBe(revoked);
+      expect(dial).toHaveBeenCalledOnce();
+      expect(send).not.toHaveBeenCalled();
     } finally {
       lookup.mockRestore();
     }
