@@ -462,6 +462,11 @@ export async function appendToolInvocationAudit(
   emitToolDecision(entry);
 }
 
+const DENIAL_SOURCES = new Set([
+  "approval-gate", "directory-policy", "hook-input-mutation", "plugin-operation-execution",
+  "plugin-operation-grant", "rule", "script-hook", "sensitive-paths", "tool-executor",
+]);
+
 export function emitToolDecision(
   entry: PermissionAuditEntryInput,
   fields: Readonly<Record<string, string | number | boolean | undefined>> = {},
@@ -480,6 +485,9 @@ export function emitToolDecision(
     trustOrigin: entry.trustOrigin,
     sandboxRoute: entry.executionRoute?.route ?? entry.executionPlan?.substrate,
     reviewerRisk: entry.decision === "allow" ? entry.reviewer?.level : undefined,
+    denialSource: entry.decision === "deny"
+      ? entry.denyReasons.find(({ source }) => DENIAL_SOURCES.has(source))?.source
+      : undefined,
     answerTrustOrigin: entry.decision === "deny" ? entry.answerTrustOrigin : undefined,
   });
 }

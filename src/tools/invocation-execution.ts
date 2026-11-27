@@ -1074,7 +1074,7 @@ export async function executeAuthorizedToolInvocation(
     await services.auditWriter.auditPermissionAsk(
       toolUse.name, source, invocationCategory, finalInput,
       permissionResult, executionCwd,
-      invocationPermissionContext, targetFilePath, currentAuditMetadata(finalInput),
+      invocationPermissionContext, targetFilePath, currentAuditMetadata(finalInput), sessionId,
     );
     signal.throwIfAborted();
     assertLateApprovalPolicyCurrent();

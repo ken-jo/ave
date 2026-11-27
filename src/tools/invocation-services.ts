@@ -71,7 +71,10 @@ export function resolveEnforcedCategory(
 
 export function scriptHookRefusal(hook: Pick<HookDispatchResult, "reason" | "results">): PermissionCheckResult {
   const failure = hook.results.at(-1)?.commandAdmissionFailure;
-  return refusal(hook.reason, failure === "recheck-failed" ? HOST_PROVENANCE : RULE_PROVENANCE);
+  return {
+    ...refusal(hook.reason, failure === "recheck-failed" ? HOST_PROVENANCE : RULE_PROVENANCE),
+    denyReasons: [{ source: "script-hook", reason: hook.reason }],
+  };
 }
 
 export async function runScriptHook(

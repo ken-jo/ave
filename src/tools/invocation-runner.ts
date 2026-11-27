@@ -596,6 +596,7 @@ async function runToolInvocationAttempt(
       ...args: AuditPermissionAskArgs
     ): Promise<void> => {
       args[8] = currentAuditMetadata(args[3]);
+      args[9] = sessionId;
       return services.auditWriter.auditPermissionAsk(...args);
     };
 

@@ -129,10 +129,14 @@ export class AuditWriter {
     permissionContext?: ToolPermissionContext,
     _auditDirectory?: string,
     audit?: ToolExecutionAuditMetadata,
+    sessionId?: string,
   ): Promise<void> {
     logPermissionEvent("permission_decision", {
       tool: permissionLogId(toolName), toolUseId: permissionLogId(audit?.toolUseId),
-      attempt: audit?.attempt, source, category, decision: "ask",
+      sessionId: permissionLogId(sessionId ?? permission.pipelineRequest?.sessionId),
+      requestId: permissionLogId(permission.reviewer?.requestId),
+      attempt: audit?.attempt ?? 1, source, category, decision: "ask",
+      reasonCode: permissionLogId(permission.reasonCode),
       trustOrigin: auditTrustOrigin(permissionContext),
       provenance: permission.provenance?.kind,
       sandboxRoute: audit?.executionRoute?.route ?? audit?.executionPlan?.substrate,
@@ -176,7 +180,10 @@ export class AuditWriter {
       trust,
       elapsedMs: Date.now() - startTime,
       provenance: permission.provenance?.kind,
-      reasonCode: permission.decision === "deny" ? permission.reasonCode : undefined,
+      reasonCode: permissionLogId(permission.reasonCode),
+      requestId: permissionLogId(permission.provenance.kind === "answered"
+        ? answeredProvenanceRecord(permission.provenance).requestId
+        : permission.reviewer?.requestId),
       terminationReason,
       operation: permissionLogId(audit?.governedOperation),
     };

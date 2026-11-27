@@ -101,7 +101,7 @@ export function permissionAuditEntryFromToolCall(args: {
       ? permission.denyReasons
       : [{
         reason: permission.reason,
-        source: "tool-executor",
+        source: permission.reasonCode === "rule-deny" ? "rule" : "tool-executor",
       }];
     return {
       ...base,

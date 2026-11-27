@@ -11,6 +11,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
+import { AuditWriter } from "../pipeline/audit-writer.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { createDynamicTool } from "../base.js";
@@ -37,8 +38,8 @@ function fixture() {
   }
   const manager = new PermissionManager(join(root, "permissions.json"));
   manager.checkDetailed = (name) => name === "denied_tool"
-    ? { decision: "deny", provenance: RULE_PROVENANCE, reason: CANARY }
-    : { decision: "allow", provenance: RULE_PROVENANCE, reason: CANARY };
+    ? { decision: "deny", provenance: RULE_PROVENANCE, reason: CANARY, reasonCode: "rule-deny", denyReasons: [{ source: "rule", reason: CANARY }] }
+    : { decision: "allow", provenance: RULE_PROVENANCE, reason: CANARY, reasonCode: "rule-allow" };
   return { executor: new ToolExecutor(registry, undefined, manager), execute };
 }
 
@@ -58,10 +59,24 @@ it("logs one decision per attempt without recording nested arguments, output, or
   expect(execute).toHaveBeenCalledOnce();
   expect(records).toHaveLength(2);
   expect(records).toEqual(expect.arrayContaining([
-    expect.objectContaining({ toolUseId: "allow-1", decision: "allow", category: "read" }),
-    expect.objectContaining({ toolUseId: "deny-1", decision: "deny", terminalKind: "denied" }),
+    expect.objectContaining({ toolUseId: "allow-1", decision: "allow", category: "read", reasonCode: "rule-allow", sessionId: "permission-session", attempt: 1 }),
+    expect.objectContaining({ toolUseId: "deny-1", decision: "deny", terminalKind: "denied", reasonCode: "rule-deny", denialSource: "rule", sessionId: "permission-session", attempt: 1 }),
   ]));
   expect(JSON.stringify(records)).not.toContain(CANARY);
+});
+
+it("correlates an ask without recording its rule pattern", async () => {
+  const observed = vi.fn();
+  watchPermissionEvents(observed);
+  await new AuditWriter(undefined).auditPermissionAsk(
+    "allowed_tool", "builtin", "read", {},
+    { decision: "ask", reasonCode: "rule-ask", reason: CANARY, provenance: RULE_PROVENANCE },
+    "", opts.permissionContext, undefined, { toolUseId: "ask-1", attempt: 2 }, opts.sessionId,
+  );
+  expect(observed).toHaveBeenCalledWith(expect.objectContaining({
+    decision: "ask", reasonCode: "rule-ask", sessionId: "permission-session", toolUseId: "ask-1", attempt: 2,
+  }));
+  expect(JSON.stringify(observed.mock.calls)).not.toContain(CANARY);
 });
 
 it("does not change execution or repeat an effect when the logger throws", async () => {
