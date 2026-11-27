@@ -1059,7 +1059,18 @@ describe("Tailnet observer port state table", () => {
     { id: "C9 environment ON", file: "off", route: "background", enable: true, boot: legacyPort, draft: legacyPort, guided: legacyPort },
     { id: "C10 ready", file: "off", route: "failed", boot: null, draft: defaultPort, guided: defaultPort },
     { id: "C10 unavailable", file: "off", route: "unavailable", boot: null, draft: defaultPort, guided: "not-ready" },
-    { id: "C10 environment ON", file: "off", route: "failed", enable: true, boot: legacyPort, draft: legacyPort, guided: legacyPort },
+    {
+      id: "C10 environment ON with occupied legacy port", file: "off", route: "failed", enable: true, occupied: legacyPort,
+      boot: defaultPort, draft: defaultPort, guided: defaultPort,
+    },
+    {
+      id: "C10 environment ON with occupied default", file: "off", route: "failed", enable: true, occupied: defaultPort,
+      boot: defaultPort, draft: defaultPort, guided: "alternate",
+    },
+    {
+      id: "C10 environment ON with unavailable node", file: "off", route: "unavailable", enable: true,
+      boot: defaultPort, draft: defaultPort, guided: "not-ready",
+    },
     { id: "C11", file: savedPort, route: "foreground", boot: null, draft: savedPort, guided: savedPort },
     {
       id: "C11 B4", file: defaultPort, route: "absent", enable: true, occupied: defaultPort,

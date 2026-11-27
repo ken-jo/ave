@@ -272,7 +272,7 @@ export function resolveTailnetObserverPort(
     return { port: target, canChoosePort: false };
   }
   const environmentEnabled = tailnetObserverEnableOverride(env) === true;
-  if (environment?.serveStatusKnown === false && environmentEnabled) {
+  if (file === null && environment?.serveStatusKnown === false && environmentEnabled) {
     return { port: LEGACY_TAILNET_OBSERVER_PORT, canChoosePort: false };
   }
   return { port: DEFAULT_TAILNET_OBSERVER_PORT, canChoosePort: entryPoint === "guided-setup" };
