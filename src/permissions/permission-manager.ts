@@ -2474,7 +2474,7 @@ export class PermissionManager {
     logPermissionEvent("permission_reviewer_decision", {
       tool: permissionLogId(toolName), source: input.source, trustOrigin: input.trustOrigin,
       outcome, reviewerRisk: verdict.level, ruleRisk: ruleVerdictForAudit ?? verdict.level,
-      modelRisk: llmVerdictForAudit ?? undefined, cacheReason: cacheResult.reason,
+      modelRisk: llmVerdictForAudit ?? undefined, cacheReason: cacheResult?.reason ?? "miss-not-found",
       approvalMemoryHit: userApprovalUsed?.memoryHit,
       sandboxKind: sandboxStateForAudit.capability.kind,
     });

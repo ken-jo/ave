@@ -788,7 +788,7 @@ it.each(["explicit reviewer", "independent active chain"])("keeps warmed %s auth
   await withLiveReviewer("api", async ({ manager, dispatch, registerRouteSelection }) => {
     if (!explicitReviewer) {
       const { BuiltinLlmJudge } = await import("../../../permissions/judge/builtin-llm-judge.js");
-      const { judgeSettings, collectingAudit } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
+      const { judgeSettings } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
       const stage = { id: "independent", provider: "builtin-llm", model: { vendor: "openai", model: "fixture-independent" } } as const;
       manager.setJudge({
         settings: judgeSettings({ chain: [stage], categories: { shell: true, network: true, write: true } }),
@@ -798,7 +798,7 @@ it.each(["explicit reviewer", "independent active chain"])("keeps warmed %s auth
             return { ruleVerdict: verdict, finalVerdict: verdict, llmVerdict: verdict, outcome: "fresh" };
           },
         }, stage.model.model) }],
-        breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger,
+        breaker: manager.getJudgeBreaker(),
       });
     }
     const refreshStarted = deferred<void>();
@@ -899,7 +899,7 @@ it("preserves cache hits for an explicit independent model", async () => {
   await withLiveReviewer("grok-build", async ({ seedVerdict, manager, reply, dispatch }) => {
     await seedVerdict(true);
     const { BuiltinLlmJudge } = await import("../../../permissions/judge/builtin-llm-judge.js");
-    const { judgeSettings, collectingAudit } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
+    const { judgeSettings } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
     const stage = { id: "independent", provider: "builtin-llm", model: { vendor: "openai", model: "fixture-independent" } } as const;
     const classifyWithTrace = vi.fn(async () => {
       const verdict = { level: "low", reason: "Independent verdict" } as const;
@@ -908,7 +908,7 @@ it("preserves cache hits for an explicit independent model", async () => {
     manager.setJudge({
       settings: judgeSettings({ chain: [stage], categories: { shell: true, network: true, write: true } }),
       chain: [{ settings: stage, judge: new BuiltinLlmJudge({ classifyWithTrace }, stage.model.model) }],
-      breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger,
+      breaker: manager.getJudgeBreaker(),
     });
     reply.mockClear();
     reply.mockImplementation(() => { throw new Error("subscription-chat-unavailable"); });
@@ -925,13 +925,13 @@ it("preserves cache hits for an explicit independent model", async () => {
 it("does not replay the authoritative subscription baseline in shadow mode", async () => {
   await withLiveReviewer("grok-build", async ({ seedVerdict, manager, reply, dispatch, loseAuth }) => {
     await seedVerdict(true);
-    const { judgeSettings, scriptedStage, collectingAudit } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
+    const { judgeSettings, scriptedStage } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
     const stage = scriptedStage("observer");
     const judge = vi.fn(async () => ({ decision: "allow" as const, rationale: "Shadow observation" }));
     manager.setJudge({
       settings: judgeSettings({ chain: [stage], mode: "shadow", categories: { shell: true, network: true, write: true } }),
       chain: [{ settings: stage, judge: { id: "observer", version: "fixture", judge } }],
-      breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger,
+      breaker: manager.getJudgeBreaker(),
     });
 
     await loseAuth();
