@@ -1251,11 +1251,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
-          # The Class A test compares against origin/main, including on tag pushes.
-          fetch-depth: 0
+          fetch-depth: 2
+          fetch-tags: true
           persist-credentials: false
       - *windows-node
       - *windows-docs-impact
+      - &fetch-memory-main-baseline
+        name: Fetch the memory-map comparison baseline
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        shell: bash
+        working-directory: ave
+        run: git fetch --depth=2 --no-tags origin +refs/heads/main:refs/remotes/origin/main
       - *windows-bun
       - *windows-home
       - *windows-modules
@@ -1613,8 +1619,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
-          # The Class A test compares against origin/main, including on tag pushes.
-          fetch-depth: 0
+          fetch-depth: 2
           persist-credentials: false
       # Pin Node 24 rather than whichever Node the runner image ships. The
       # docs classifier below runs on it.
@@ -1632,6 +1637,7 @@ jobs:
           if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
             echo 'docs_only=false' >> "$GITHUB_OUTPUT"
           fi
+      - *fetch-memory-main-baseline
       # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
       # user's bun home; on Windows it is a checksum-verified release download
       # (see the action).
