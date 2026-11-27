@@ -1,4 +1,5 @@
 // Serialize read-modify-write operations within this process only; the scheduler owns timers and dispatch.
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isValidCronExpression } from "../routines/cron-evaluator.js";
@@ -6,7 +7,7 @@ import { readJsonFileOrEmpty, writeFileAtomicAtPath } from "./storage/feature-na
 import { createLogger } from "../lib/logger.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { errorMessage } from "../shared/error-message.js";
-import { isStringArray } from "../shared/is-record.js";
+import { isRecord, isStringArray } from "../shared/is-record.js";
 import { isValidPluginId } from "../plugins/public-contract.js";
 import { advanceRepeatAt, isMissedWhilePaused, isRoutineScheduleShape, scheduleIdentity } from "../routines/schedule-advance.js";
 import { projectRootEquals } from "../shared/project-identity.js";
@@ -14,6 +15,7 @@ import { assertHostDecisionProof, type HostDecisionProof } from "./workflow-temp
 import type { ScheduleAttachment, TemplateScope, WorkflowTemplate } from "../shared/workflow-template-types.js";
 import { isTemplateId, attachmentScopeMatches, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { isValidSessionId } from "../shared/session-id.js";
+import { nextScheduleState, SCHEDULE_BREAKER_THRESHOLD, type ScheduledRunOutcome } from "../work-board/workflow/schedule-breaker.js";
 const log = createLogger("ave");
 
 // Re-export from shared so callers that import from routines-store continue to work unchanged, while the renderer imports from shared/ (no Node built-ins).
@@ -142,7 +144,14 @@ function isValidRecord(r: unknown): r is StoredRoutine {
   if (x.projectRoot !== undefined && (typeof x.projectRoot !== "string" || x.projectRoot.length === 0 || x.projectRoot.length > MAX_PROJECT_ROOT_LENGTH)) return false;
   if (x.createdBy !== undefined && !isActor(x.createdBy)) return false;
   if (x.pausedAt !== undefined && typeof x.pausedAt !== "string") return false;
-  if ((x.pausedAt === undefined) !== (x.pausedBy === undefined) || (x.pausedBy !== undefined && !isActor(x.pausedBy))) return false;
+  if ((x.pausedAt === undefined) !== (x.pausedBy === undefined)
+    || (x.pausedBy !== undefined && !isActor(x.pausedBy) && !(x.execution === "template-run" && x.pausedBy === "schedule-breaker"))) return false;
+  if (x.scheduleBreaker !== undefined) {
+    const breaker = x.scheduleBreaker;
+    if (x.execution !== "template-run" || !isRecord(breaker) || typeof breaker.consecutiveBad !== "number"
+      || !Number.isInteger(breaker.consecutiveBad) || breaker.consecutiveBad < 0 || breaker.consecutiveBad > SCHEDULE_BREAKER_THRESHOLD
+      || typeof breaker.firedAt !== "string" || !Number.isFinite(Date.parse(breaker.firedAt))) return false;
+  }
   if (x.resumedAt !== undefined && typeof x.resumedAt !== "string") return false;
   for (const field of ["title", "prePrompt", "notificationTitle", "notificationBody"] as const) {
     if (x[field] !== undefined && typeof x[field] !== "string") return false;
@@ -248,6 +257,7 @@ interface StoredInvalidRoutine extends InvalidRoutine {
 interface StoredRoutine extends RoutineRecord {
   /** Keep both routes searchable while the attachment write and routine write settle. */
   pendingTemplateProjectRoot?: string | null;
+  scheduleBreaker?: { consecutiveBad: number; firedAt: string };
 }
 
 interface RoutinesFile {
@@ -333,7 +343,7 @@ async function writeFileAtomic(filePath: string, data: RoutinesFile): Promise<vo
 }
 
 // Deep clone a RoutineRecord to prevent callers from mutating shared cache refs.
-function cloneRecord({ pendingTemplateProjectRoot: _pendingProject, ...r }: StoredRoutine): RoutineRecord {
+function cloneRecord({ pendingTemplateProjectRoot: _pendingProject, scheduleBreaker: _scheduleBreaker, ...r }: StoredRoutine): RoutineRecord {
   return {
     ...r,
     ...(r.runs ? { runs: structuredClone(r.runs) } : {}),
@@ -375,11 +385,18 @@ function routineScopeRetention(
       && key !== rootKey
       && isWorkspaceKeyAtOrBelow(rootKey, key),
     );
+  if (process.platform !== "win32") {
+    return (directories) => directories.filter((directory) => {
+      if (!isDirectoryAtOrBelow(rootKey, directory)) return true;
+      return preservedRootKeys.some(
+        (preservedRootKey) => isDirectoryAtOrBelow(preservedRootKey, directory),
+      );
+    });
+  }
   return (directories) => directories.filter((directory) => {
-    if (!isDirectoryAtOrBelow(rootKey, directory)) return true;
-    return preservedRootKeys.some(
-      (preservedRootKey) => isDirectoryAtOrBelow(preservedRootKey, directory),
-    );
+    const key = workspaceRootKey(directory);
+    if (!key || !isWorkspaceKeyAtOrBelow(rootKey, key)) return true;
+    return preservedRootKeys.some((preservedRootKey) => isWorkspaceKeyAtOrBelow(preservedRootKey, key));
   });
 }
 
@@ -715,21 +732,27 @@ export class RoutinesStore {
     directoriesRemoved: number;
   }> {
     if (!this.loaded) await this.load();
-    const retainedOf = routineScopeRetention(root, options?.preserveRoots);
-    if (!retainedOf) return { routinesUpdated: 0, directoriesRemoved: 0 };
+    const isWindows = process.platform === "win32";
+    const posixRetention = isWindows ? undefined : routineScopeRetention(root, options?.preserveRoots);
+    if (!isWindows && !posixRetention) return { routinesUpdated: 0, directoriesRemoved: 0 };
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
-      let routinesUpdated = 0;
-      let directoriesRemoved = 0;
-      for (const routine of file.routines) {
-        if (!routine.scope) continue;
-        const retained = retainedOf(routine.scope.directories);
-        const removed = routine.scope.directories.length - retained.length;
-        if (removed === 0) continue;
-        routine.scope.directories = retained;
-        routinesUpdated += 1;
-        directoriesRemoved += removed;
-      }
+      const { routinesUpdated, directoriesRemoved } = withLocalityDecision(() => {
+        const retainedOf = posixRetention ?? routineScopeRetention(root, options?.preserveRoots);
+        if (!retainedOf) return { routinesUpdated: 0, directoriesRemoved: 0 };
+        let routinesUpdated = 0;
+        let directoriesRemoved = 0;
+        for (const routine of file.routines) {
+          if (!routine.scope) continue;
+          const retained = retainedOf(routine.scope.directories);
+          const removed = routine.scope.directories.length - retained.length;
+          if (removed === 0) continue;
+          routine.scope.directories = retained;
+          routinesUpdated += 1;
+          directoriesRemoved += removed;
+        }
+        return { routinesUpdated, directoriesRemoved };
+      });
       if (directoriesRemoved > 0) {
         await this.persist(file);
       }
@@ -745,13 +768,18 @@ export class RoutinesStore {
     options?: { preserveRoots?: readonly string[] },
   ): Promise<number> {
     if (!this.loaded) await this.load();
-    const retainedOf = routineScopeRetention(root, options?.preserveRoots);
-    if (!retainedOf) return 0;
+    const isWindows = process.platform === "win32";
+    const posixRetention = isWindows ? undefined : routineScopeRetention(root, options?.preserveRoots);
+    if (!isWindows && !posixRetention) return 0;
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
-      return file.routines.filter((routine) =>
-        routine.scope ? retainedOf(routine.scope.directories).length !== routine.scope.directories.length : false,
-      ).length;
+      return withLocalityDecision(() => {
+        const retainedOf = posixRetention ?? routineScopeRetention(root, options?.preserveRoots);
+        if (!retainedOf) return 0;
+        return file.routines.filter((routine) =>
+          routine.scope ? retainedOf(routine.scope.directories).length !== routine.scope.directories.length : false,
+        ).length;
+      });
     });
   }
 
@@ -857,6 +885,21 @@ export class RoutinesStore {
     });
   }
 
+  async recordTemplateScheduleOutcome(id: string, firedAt: string, outcome: ScheduledRunOutcome): Promise<RoutineRecord | null> {
+    if (!Number.isFinite(Date.parse(firedAt))) throw new Error("Invalid template schedule fire time");
+    return this.mutate(id, (r) => {
+      if (r.execution !== "template-run") throw new Error("Expected a template routine");
+      const previous = r.scheduleBreaker;
+      if (r.pausedAt || (previous && firedAt < previous.firedAt)) return false;
+      // A manual retry can complete the latest firing after its initial bad outcome was persisted.
+      if (previous?.firedAt === firedAt && (outcome !== "completed" || previous.consecutiveBad === 0)) return false;
+      const next = nextScheduleState({ consecutiveBad: previous?.consecutiveBad ?? 0 }, outcome);
+      r.scheduleBreaker = { consecutiveBad: next.consecutiveBad, firedAt };
+      if (next.consecutiveBad === SCHEDULE_BREAKER_THRESHOLD) pauseRoutine(r, "schedule-breaker");
+      return true;
+    }, { skipDismissed: true });
+  }
+
   // The fire at `firedAt` did not run because its connected chat was busy. A one-shot stays listed as skipped instead of done; it is not
   // fired again by itself. A later fire is left as it is; null when the item is gone.
   async markChatBusy(id: string, firedAt: string): Promise<RoutineRecord | null> {
@@ -942,12 +985,7 @@ export class RoutinesStore {
   }
 
   async pause(id: string, by: RoutineActor): Promise<RoutineRecord | null> {
-    return this.mutate(id, (r) => {
-      if (r.pausedAt) return false;
-      r.pausedAt = new Date().toISOString();
-      r.pausedBy = by;
-      return true;
-    }, { skipDismissed: true });
+    return this.mutate(id, r => pauseRoutine(r, by), { skipDismissed: true });
   }
 
   // Resuming does not replay what was paused: a repeating item's next fire moves past now, and a one-shot whose time passed is
@@ -958,6 +996,7 @@ export class RoutinesStore {
       const now = new Date().toISOString();
       delete r.pausedAt;
       delete r.pausedBy;
+      if (r.execution === "template-run" && r.lastFiredAt) r.scheduleBreaker = { consecutiveBad: 0, firedAt: r.lastFiredAt };
       r.resumedAt = now;
       advanceRepeatingSchedule(r, now);
       return true;
@@ -1064,6 +1103,13 @@ function inProject(record: Pick<RoutineRecord, "projectRoot">, projectRoot: stri
 function isOneShot(record: RoutineRecord): boolean {
   const repeat = record.schedule?.repeat;
   return !repeat || repeat.kind === "none";
+}
+
+function pauseRoutine(routine: RoutineRecord, by: NonNullable<RoutineRecord["pausedBy"]>): boolean {
+  if (routine.pausedAt) return false;
+  routine.pausedAt = new Date().toISOString();
+  routine.pausedBy = by;
+  return true;
 }
 
 function advanceRepeatingSchedule(routine: RoutineRecord, now: string): void {

@@ -8,12 +8,39 @@
 #include <vector>
 #include <string>
 
-// The control pipe is never inherited by the command. EOF means its owner died
-// or released the job; a blocking reader and kernel wait avoid polling.
+[[noreturn]] static void endHeld(const char* record, DWORD code, HANDLE jobToClose = nullptr);
+static const char kLost[] = "AVJ1 lost\n";
+static const char kUnconfirmed[] = "AVJ1 unconfirmed\n";
+static SRWLOCK startupLock = SRWLOCK_INIT;
+static CONDITION_VARIABLE startupChanged = CONDITION_VARIABLE_INIT;
+static HANDLE suspendedJob = nullptr;
+static bool isPipeOpenAndEmpty(HANDLE pipe) {
+  DWORD available = 0;
+  return PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr) && available == 0;
+}
+#ifdef AVE_TEST_POLICY_READER
+static bool policyFixtureFault(const wchar_t* fault);
+static bool waitForPolicyFixture(char phase);
+#endif
+// The owner pipe is private to the launcher. EOF means its owner died or released the job.
 static DWORD WINAPI watchOwner(void* pipe) {
+  const HANDLE ownerPipe = static_cast<HANDLE>(pipe);
+#ifdef AVE_TEST_POLICY_READER
+  const bool contendStartup = policyFixtureFault(L"contend startup lock");
+#endif
+  AcquireSRWLockExclusive(&startupLock);
+#ifdef AVE_TEST_POLICY_READER
+  if (suspendedJob && contendStartup && !waitForPolicyFixture('L')) endHeld(kUnconfirmed, 125);
+#endif
+  while (suspendedJob) {
+    if (!isPipeOpenAndEmpty(ownerPipe)) endHeld(kUnconfirmed, 125, suspendedJob);
+    // A blocking read on the synchronous handle could stall the final resume probe.
+    SleepConditionVariableSRW(&startupChanged, &startupLock, 25, 0);
+  }
+  ReleaseSRWLockExclusive(&startupLock);
   char byte;
   DWORD count;
-  while (ReadFile(static_cast<HANDLE>(pipe), &byte, 1, &count, nullptr) && count) {}
+  while (ReadFile(ownerPipe, &byte, 1, &count, nullptr) && count) {}
   return 0;
 }
 static int fail(const char* operation) {
@@ -83,6 +110,41 @@ static bool holdTransfer(HANDLE channel, bool write, void* target, DWORD size) {
   }
   return true;
 }
+struct PolicyReport { DWORD kind; DWORD pid; ULONGLONG admission; };
+static_assert(sizeof(PolicyReport) == 16);
+struct PolicyControl { HANDLE channel; HANDLE reportPipe; DWORD pid; ULONGLONG admission; };
+#ifdef AVE_TEST_POLICY_READER
+static bool policyFixtureFault(const wchar_t* fault) {
+  wchar_t value[32]{};
+  return GetEnvironmentVariableW(L"AVE_TEST_POLICY_FAULT", value, _countof(value)) != 0 && wcscmp(value, fault) == 0;
+}
+static bool waitForPolicyFixture(char phase) {
+  const HANDLE gate = inheritedHandle(7);
+  char next = 0;
+  return holdTransfer(gate, true, &phase, 1) && holdTransfer(gate, false, &next, 1) && next == '+';
+}
+#endif
+static DWORD WINAPI confirmPolicyReader(void* context) {
+  const auto& control = *static_cast<const PolicyControl*>(context);
+  PolicyReport report{0x31505641, control.pid, control.admission}; // AVP1
+  DWORD reply[2]{};
+  if (!isPipeOpenAndEmpty(control.channel) || !holdTransfer(control.reportPipe, true, &report, sizeof(report))) return 1;
+#ifdef AVE_TEST_POLICY_READER
+  if (policyFixtureFault(L"delayed trailer")) {
+    char extra = '+';
+    if (!waitForPolicyFixture('T') || !holdTransfer(control.reportPipe, true, &extra, 1)) return 1;
+  }
+#endif
+  if (!CloseHandle(control.reportPipe) || !holdTransfer(control.channel, false, reply, sizeof(reply)) ||
+      reply[0] != 0x31525641 || reply[1] != control.pid) return 1; // AVR1
+  // The reply is the only host frame. Anything after it is invalid, including a duplicate.
+  char extra;
+  DWORD count = 0;
+  if (ReadFile(control.channel, &extra, 1, &count, nullptr)) return count == 0 ? 0 : 1;
+  const DWORD error = GetLastError();
+  return error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED ? 0 : 1;
+}
+
 // One frame to the hold helper and its 9-byte reply; returns the reply kind, 0 on failure.
 static char holdAsk(HANDLE channel, DWORD kind, DWORD value, ULONGLONG* answer = nullptr) {
   struct { DWORD kind; DWORD value; } frame{kind, value};
@@ -95,8 +157,9 @@ static char holdAsk(HANDLE channel, DWORD kind, DWORD value, ULONGLONG* answer =
 // exit. Ending this process closes its job, which stops the command's tree.
 static HANDLE verdictPipe = INVALID_HANDLE_VALUE;
 static volatile LONG ending = 0;
-[[noreturn]] static void endHeld(const char* record, DWORD code) {
+[[noreturn]] static void endHeld(const char* record, DWORD code, HANDLE jobToClose) {
   if (InterlockedExchange(&ending, 1) != 0) Sleep(INFINITE);
+  if (jobToClose) CloseHandle(jobToClose);
   DWORD written = 0;
   WriteFile(verdictPipe, record, static_cast<DWORD>(strlen(record)), &written, nullptr);
   TerminateProcess(GetCurrentProcess(), code);
@@ -109,8 +172,6 @@ static DWORD WINAPI enforceDeadline(void* context) {
   if (WaitForSingleObject(deadline->met, deadline->milliseconds) == WAIT_TIMEOUT) endHeld(deadline->record, 125);
   return 0;
 }
-static const char kLost[] = "AVJ1 lost\n";
-static const char kUnconfirmed[] = "AVJ1 unconfirmed\n";
 // Members still running when the root exits, other than console hosts the system attaches.
 static bool jobHasLiveDescendants(HANDLE job, DWORD root) {
   std::vector<unsigned char> buffer(sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + 1024 * sizeof(ULONG_PTR));
@@ -161,7 +222,49 @@ static JobCleanup emptyJob(HANDLE job, bool requireCleanExit) {
   return cleanup;
 }
 
+#ifdef AVE_TEST_POLICY_READER
+static DWORD policyBytes(const wchar_t* name) {
+  HANDLE reader = CreateFileW(name, GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+  if (reader == INVALID_HANDLE_VALUE) return MAXDWORD;
+  DWORD total = 0;
+  char buffer[4096];
+  for (;;) {
+    DWORD read = 0;
+    if (!ReadFile(reader, buffer, sizeof(buffer), &read, nullptr)) {
+      const DWORD error = GetLastError();
+      if (error != ERROR_BROKEN_PIPE && error != ERROR_PIPE_NOT_CONNECTED && error != ERROR_NO_DATA) total = MAXDWORD;
+      break;
+    }
+    if (!read) break;
+    total += read;
+  }
+  CloseHandle(reader);
+  return total;
+}
+
+static void measureOtherReaders(const wchar_t* self, STARTUPINFOEXW& startup) {
+  wchar_t pipe[128]{};
+  const DWORD length = GetEnvironmentVariableW(L"AVE_TEST_POLICY_READER_PIPE", pipe, _countof(pipe));
+  if (!length || length >= _countof(pipe)) return;
+  const DWORD launcherBytes = policyBytes(pipe);
+  std::wstring command = L"\"" + std::wstring(self) + L"\" --test-policy-reader " + pipe;
+  PROCESS_INFORMATION sibling{};
+  DWORD siblingBytes = MAXDWORD;
+  if (CreateProcessW(self, command.data(), nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                     nullptr, nullptr, &startup.StartupInfo, &sibling)) {
+    if (WaitForSingleObject(sibling.hProcess, 5000) == WAIT_OBJECT_0) GetExitCodeProcess(sibling.hProcess, &siblingBytes);
+    CloseHandle(sibling.hProcess);
+    CloseHandle(sibling.hThread);
+  }
+  std::printf("other-readers %lu %lu\n", launcherBytes, siblingBytes);
+  std::fflush(stdout);
+}
+#endif
+
 int wmain(int argc, wchar_t** argv) {
+#ifdef AVE_TEST_POLICY_READER
+  if (argc == 3 && wcscmp(argv[1], L"--test-policy-reader") == 0) ExitProcess(policyBytes(argv[2]));
+#endif
   // `--receipt <absolute path>` appends "0" to an existing registered receipt only
   // after the closed job is proven empty.
   const bool contained = argc >= 2 && wcscmp(argv[1], L"--receipt") == 0;
@@ -170,7 +273,8 @@ int wmain(int argc, wchar_t** argv) {
   // the helper's exit stops both. It alone decides the run: `AVJ1 ok <exit code> <stopped>` once its
   // own job is proven empty and the helper confirms the held directory, `AVJ1 lost` (exit 125) when
   // the hold was refused or the directory changed, `AVJ1 unconfirmed` (exit 125) otherwise.
-  const bool held = argc >= 2 && wcscmp(argv[1], L"--hold") == 0;
+  const bool heldPolicy = argc >= 2 && wcscmp(argv[1], L"--hold-policy-v1") == 0;
+  const bool held = heldPolicy || (argc >= 2 && wcscmp(argv[1], L"--hold") == 0);
   const int first = contained ? 3 : held ? 2 : 1;
   if (contained && (argc < 3 || !absolutePath(argv[2]))) {
     std::fprintf(stderr, "Windows job launcher requires an absolute receipt path\n");
@@ -185,9 +289,21 @@ int wmain(int argc, wchar_t** argv) {
       return 125;
     }
   }
+  const HANDLE policyChannel = heldPolicy ? inheritedHandle(5) : INVALID_HANDLE_VALUE;
+  const HANDLE policyReport = heldPolicy ? inheritedHandle(6) : INVALID_HANDLE_VALUE;
+  if (heldPolicy && (GetFileType(GetStdHandle(STD_INPUT_HANDLE)) != FILE_TYPE_PIPE || !isPipeOpenAndEmpty(policyChannel) ||
+      GetFileType(policyReport) != FILE_TYPE_PIPE))
+    endHeld(kUnconfirmed, 125);
   if (argc <= first || !absolutePath(argv[first])) {
     std::fprintf(stderr, "Windows job launcher requires an absolute executable path\n");
     return 125;
+  }
+  if (held && !heldPolicy) {
+    constexpr wchar_t pipePrefix[] = L"\\\\.\\pipe\\";
+    for (int i = first + 1; i + 1 < argc; ++i) {
+      if (wcscmp(argv[i], L"--config") == 0 && _wcsnicmp(argv[i + 1], pipePrefix, _countof(pipePrefix) - 1) == 0)
+        endHeld(kUnconfirmed, 125);
+    }
   }
   // Strip only this launcher's own arguments. Forward the original command tail
   // so arguments undergo precisely the same quoting as a direct pipe spawn.
@@ -241,6 +357,15 @@ int wmain(int argc, wchar_t** argv) {
   startup.StartupInfo.hStdOutput = inherited[1];
   startup.StartupInfo.hStdError = inherited[2];
   startup.lpAttributeList = attributes;
+  ULONGLONG admissionProof = 0;
+#ifdef AVE_TEST_POLICY_READER
+  if (heldPolicy && policyFixtureFault(L"early report")) {
+    PolicyReport report{0x31505641, GetCurrentProcessId() + 1, 0};
+    if (!holdTransfer(policyReport, true, &report, sizeof(report)) || !CloseHandle(policyReport) ||
+        !waitForPolicyFixture('E')) endHeld(kUnconfirmed, 125);
+    endHeld(kUnconfirmed, 125);
+  }
+#endif
   if (held) {
     // The helper challenges the process named on the private channel. 'A' follows once that process
     // signals the duplicated event and joins the helper's job.
@@ -255,29 +380,89 @@ int wmain(int argc, wchar_t** argv) {
       std::fprintf(stderr, "Windows job launcher: the working directory hold is not available\n");
       endHeld(kLost, 125);
     }
+    memcpy(&admissionProof, reply + 1, sizeof(admissionProof));
     SetEvent(admission.met);
   }
   PROCESS_INFORMATION child{};
   // Assignment is atomic with creation, eliminating even an abandoned suspended
   // process if this launcher is terminated between creation and assignment.
   if (!CreateProcessW(argv[first], commandLine.data(), nullptr, nullptr, TRUE,
-                      EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                      EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | (heldPolicy ? CREATE_SUSPENDED : 0),
                       nullptr, nullptr, &startup.StartupInfo, &child)) {
     fail("CreateProcess in job");
     if (held) endHeld(kUnconfirmed, 125);
     return 125;
   }
-  DeleteProcThreadAttributeList(attributes);
-  for (HANDLE handle : inherited) CloseHandle(handle);
-  CloseHandle(child.hThread);
+  const auto closeStartup = [&]() {
+    DeleteProcThreadAttributeList(attributes);
+    for (HANDLE handle : inherited) CloseHandle(handle);
+  };
+#ifndef AVE_TEST_POLICY_READER
+  closeStartup();
+#endif
+  if (!heldPolicy) CloseHandle(child.hThread);
   // A NUL stdin has no owner to watch; a held command is then bound to the hold helper alone.
   const bool watched = !held || GetFileType(GetStdHandle(STD_INPUT_HANDLE)) == FILE_TYPE_PIPE;
-  HANDLE owner = watched ? CreateThread(nullptr, 0, watchOwner, GetStdHandle(STD_INPUT_HANDLE), 0, nullptr) : nullptr;
+  const HANDLE ownerPipe = GetStdHandle(STD_INPUT_HANDLE);
+  DWORD watcherFlags = 0;
+#ifdef AVE_TEST_POLICY_READER
+  const bool delayWatcher = heldPolicy && policyFixtureFault(L"delay owner watcher");
+  if (delayWatcher) watcherFlags = CREATE_SUSPENDED;
+#endif
+  if (heldPolicy) suspendedJob = job;
+  HANDLE owner = watched ? CreateThread(nullptr, 0, watchOwner, ownerPipe, watcherFlags, nullptr) : nullptr;
   if (watched && !owner) {
     fail("owner watcher");
     if (held) endHeld(kUnconfirmed, 125);
     return 125;
   }
+  if (heldPolicy) {
+    PolicyControl control{policyChannel, policyReport, child.dwProcessId, admissionProof};
+    HANDLE confirm = CreateThread(nullptr, 0, confirmPolicyReader, &control, 0, nullptr);
+    HANDLE startupWaits[]{owner, child.hProcess, confirm};
+    constexpr DWORD startupTimeoutMs = 10000;
+    const ULONGLONG startupDeadline = GetTickCount64() + startupTimeoutMs;
+    DWORD result = 1;
+    const bool confirmed = confirm && WaitForMultipleObjects(3, startupWaits, FALSE, startupTimeoutMs) == WAIT_OBJECT_0 + 2 &&
+        GetExitCodeThread(confirm, &result) && result == 0;
+    if (!confirmed) endHeld(kUnconfirmed, 125, job);
+#ifdef AVE_TEST_POLICY_READER
+    measureOtherReaders(argv[0], startup);
+    // Holds the resume decision until a stop requested at the gate reaches the owner watcher.
+    const bool stopBeforeResume = policyFixtureFault(L"stop before resume");
+    if (stopBeforeResume && waitForPolicyFixture('R')) WaitForSingleObject(owner, 5000);
+    if (delayWatcher) {
+      if (!waitForPolicyFixture('D')) return fail("fixture gate");
+      if (PeekNamedPipe(ownerPipe, nullptr, 0, nullptr, nullptr, nullptr)) return fail("fixture owner still connected");
+      const DWORD error = GetLastError();
+      if (error != ERROR_BROKEN_PIPE && error != ERROR_PIPE_NOT_CONNECTED) return fail("fixture owner pipe");
+    }
+#endif
+    while (!TryAcquireSRWLockExclusive(&startupLock)) {
+      if (GetTickCount64() >= startupDeadline) endHeld(kUnconfirmed, 125, job);
+      Sleep(1);
+    }
+    if (GetTickCount64() >= startupDeadline || !isPipeOpenAndEmpty(ownerPipe) ||
+        GetTickCount64() >= startupDeadline || ResumeThread(child.hThread) != 1)
+      endHeld(kUnconfirmed, 125, job);
+    suspendedJob = nullptr;
+    WakeConditionVariable(&startupChanged);
+    ReleaseSRWLockExclusive(&startupLock);
+#ifdef AVE_TEST_POLICY_READER
+    // A child resumed despite that stop gets time to show that it ran.
+    if (stopBeforeResume) WaitForSingleObject(child.hProcess, 5000);
+    if (delayWatcher) {
+      WaitForSingleObject(child.hProcess, 5000);
+      if (ResumeThread(owner) != 1) return fail("fixture owner watcher");
+    }
+#endif
+    CloseHandle(confirm);
+    CloseHandle(policyChannel);
+    CloseHandle(child.hThread);
+  }
+#ifdef AVE_TEST_POLICY_READER
+  closeStartup();
+#endif
   HANDLE waits[]{child.hProcess, owner};
   DWORD result = WaitForMultipleObjects(watched ? 2 : 1, waits, FALSE, INFINITE);
   DWORD code = 125;

@@ -5,6 +5,7 @@ import { join, resolve, win32 } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PermissionManager } from "../permission-manager.js";
 import type { ExecutionMode } from "../../shared/permission-mode.js";
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { canonicalizePathForMatch, createPathCanonicalizer, foldCanonicalPathSeparators, isSensitivePath } from "../sensitive-paths.js";
 import { isWindowsNetworkOrDevicePath } from "../../shared/shell-native-path.js";
 import { inspectPhysicalFilesystemPath, physicalParentReading, resolvePhysicalFilesystemPath, resolveShellFilesystemPath, verifyLocalFilesystemChain } from "../../shared/shell-filesystem-path.js";
@@ -476,7 +477,7 @@ describe("network operands before approval", () => {
     }
   });
 
-  it("reuses verified local ancestors while checking a new network link", () => {
+  it("reuses verified local ancestors while checking a new network link", () => withLocalityDecision(() => {
     const parent = join(directory, "project");
     const canonicalize = createPathCanonicalizer();
     canonicalize(parent);
@@ -493,7 +494,7 @@ describe("network operands before approval", () => {
         expect(isWindowsNetworkOrDevicePath(String.raw`\\e\s`)).toBe(false);
       }
     } finally { probes.links.clear(); }
-  });
+  }));
 
   it("observes filesystem resolution for an ordinary destination", () => {
     probes.calls.length = 0;

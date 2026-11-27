@@ -2661,6 +2661,7 @@ it("builds the native path classifier before the Windows permission boundaries",
   const artifact = preparation?.find(step => step.name === "Upload the checked Windows native helpers");
   expect(artifact?.with?.path?.split("\n")).toEqual(expect.arrayContaining([
     "ave/resources/windows-job/x64/ave-job-query-failure.exe",
+    "ave/resources/windows-job/x64/ave-job-policy-reader-test.exe",
     "ave/resources/windows-path-kind/x64/ave-path-kind.exe.build.json",
     "ave/resources/windows-path-kind/x64/ave-path-kind-hold-fixture.exe",
   ]));

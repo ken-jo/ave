@@ -1,4 +1,5 @@
 // Keep the workspace-root lock, host-owned lifecycle holder and revocation predicate together so add/remove uses one coordinated sweep.
+import { matcherMemo, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import type { PermissionDirectoryLifecycle } from "./permission-slash.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { projectRootEquals } from "../shared/project-identity.js";
@@ -48,7 +49,8 @@ function isPathAtOrBelow(root: string, candidate: string): boolean {
     if (!canonicalRoot || !canonicalCandidate) return false;
     return canonicalCandidate === canonicalRoot
       || canonicalCandidate.startsWith(`${canonicalRoot}/`);
-  } catch {
+  } catch (error) {
+    rethrowLocalityFailure(error);
     return projectRootEquals(root, candidate);
   }
 }
@@ -58,12 +60,19 @@ export function createWorkspaceRootRevocationFilter(
   removedRoot: string,
   preserveRoots: readonly string[] = [],
 ): (directory: string) => boolean {
-  const preserved = preserveRoots.filter(
-    (preserveRoot) =>
-      !projectRootEquals(removedRoot, preserveRoot)
-      && isPathAtOrBelow(removedRoot, preserveRoot),
-  );
-  return (directory: string): boolean =>
+  const memoOwner = {};
+  const preservedRoots = () => withLocalityDecision(() => {
+    const memo = matcherMemo<readonly string[]>(memoOwner);
+    let preserved = memo.get("preserved");
+    if (preserved === undefined) {
+      preserved = preserveRoots.filter(preserveRoot =>
+        !projectRootEquals(removedRoot, preserveRoot) && isPathAtOrBelow(removedRoot, preserveRoot));
+      memo.set("preserved", preserved);
+    }
+    return preserved;
+  });
+  if (process.platform !== "win32") preservedRoots();
+  return (directory: string): boolean => withLocalityDecision(() =>
     isPathAtOrBelow(removedRoot, directory)
-    && !preserved.some((preserveRoot) => isPathAtOrBelow(preserveRoot, directory));
+    && !preservedRoots().some(preserveRoot => isPathAtOrBelow(preserveRoot, directory)));
 }

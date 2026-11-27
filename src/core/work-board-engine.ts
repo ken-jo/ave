@@ -36,6 +36,8 @@ import type {
   WorkItemUpdateResult,
 } from "../shared/work-board-types.js";
 import type { EnvelopeToolRef, RemoteProvisionalStart, RunAuthoritySource } from "../shared/workflow-template-types.js";
+import type { RunRecord } from "../work-board/workflow/run-state.js";
+import type { ScheduledRunOutcome } from "../work-board/workflow/schedule-breaker.js";
 import { createStageRunEngine, type StageRunEngineDeps, type ScheduledTemplateSource, type ScheduledTemplateStart } from "../work-board/workflow/stage-run-engine.js";
 import {
   MAX_PLAN_NOTE_LENGTH,
@@ -181,6 +183,7 @@ interface DecidePlanOutcome {
 
 export interface WorkBoardEngine {
   startScheduledTemplate(source: ScheduledTemplateSource, title: string): Promise<ScheduledTemplateStart>;
+  readScheduledOutcome(record: RunRecord): Promise<ScheduledRunOutcome | null>;
   /** Combine in-process and persisted active-status guards per item; finished reruns start clean while preserving history. Returns
    * awaiting_approval once the plan is stored; nothing waits for the user here. */
   runItem(itemId: number, opts?: RunItemOptions): Promise<RunItemResult>;
@@ -1078,6 +1081,7 @@ export function createWorkBoardEngine(
     executingChildSessionId: (itemId) => executingChildByItem.get(itemId),
     steerRun,
     cancelRun,
+    readScheduledOutcome: async (record) => stageRuns?.readScheduledOutcome(record) ?? null,
     decideStageGate: async (itemId, input, authority) => { await recover(); return stageRuns?.decideGate(itemId, input, authority) ?? { ok: false, reason: "not_found" }; },
     decideStageJoin: async (itemId, input, authority) => { await recover(); return stageRuns?.decideJoin(itemId, input, authority) ?? { ok: false, reason: "not_found" }; },
     openStageJoin: async (itemId, input, open) => stageRuns?.openJoin(itemId, input, open) ?? { ok: false, reason: "not_found" },

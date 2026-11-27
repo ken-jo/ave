@@ -116,7 +116,7 @@ export function linuxRawIpVerdict(measurement: LinuxRawIpMeasurement): Container
   if (t4.class === "refused-local" && (t6.class === "refused-local" || t6Structural) && tl !== undefined) {
     const evidence = t6.class === "refused-local" ? "measured" : "structural";
     log.info(`raw-ip blocked, evidence ${evidence}`);
-    return { verdict: "blocked", evidence };
+    return { verdict: "blocked", evidenceKind: evidence };
   }
   // Rule 4.
   if (tl === undefined) return unknown("no-evidence");

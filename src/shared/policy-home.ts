@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "./local-path-io.js";
 import { homedir, userInfo } from "node:os";
 import path, { posix, win32 } from "node:path";
 import { canonicalizePathForMatch } from "../permissions/sensitive-paths.js";
@@ -32,18 +33,20 @@ export function policyHomeAnchors(
   const profile = platform !== "win32" || isHomeAnchor(os, platform) ? undefined
     : isHomeAnchor(environment.USERPROFILE, platform) ? environment.USERPROFILE
       : (environment.HOMEDRIVE ?? "") + (environment.HOMEPATH ?? "");
-  const candidates = [os, environment.HOME, profile, accountHome()];
-  const seen = new Set<string>();
-  const homes = candidates.filter((home): home is string => {
-    if (!isHomeAnchor(home, platform)) return false;
-    const canonical = canonicalizePathForMatch(home);
-    const key = platform === "win32" ? canonical.toLowerCase() : canonical;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+  return withLocalityDecision(() => {
+    const candidates = [os, environment.HOME, profile, accountHome()];
+    const seen = new Set<string>();
+    const homes = candidates.filter((home): home is string => {
+      if (!isHomeAnchor(home, platform)) return false;
+      const canonical = canonicalizePathForMatch(home);
+      const key = platform === "win32" ? canonical.toLowerCase() : canonical;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (homes.length === 0) throw new Error("Cannot resolve home for path policy");
+    return homes;
   });
-  if (homes.length === 0) throw new Error("Cannot resolve home for path policy");
-  return homes;
 }
 
 /** Resolve policy roots without changing the environment passed to children. */

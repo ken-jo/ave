@@ -96,9 +96,11 @@ import { holdHostShellSpawnDirectory } from "../../permissions/host-shell-execut
 import type { WindowsHoldVerdict } from "../../shared/windows-path-facts.js";
 import { isWatchedWorkspaceConsumable, listWatchedQuarantine, pruneWatchedRows, WATCHED_ROW_VIOLATION } from "../../permissions/windows-watched-rows.js";
 import * as asrtSandbox from "../../permissions/asrt-sandbox.js";
+import * as sandboxWritePolicy from "../../permissions/sandbox-write-policy.js";
 import { getConfiguredSessionReadRoot } from "../../permissions/sensitive-paths.js";
 import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
 import * as chatOrigin from "../../shared/chat-origin.js";
+import * as windowsDriveLocality from "../../shared/windows-drive-locality.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
@@ -316,6 +318,36 @@ describe("builtin shell — Windows MXC containers", () => {
     installationMock.resolve.mockReset();
     vi.mocked(holdHostShellSpawnDirectory).mockReset();
     vi.restoreAllMocks();
+  });
+
+  it.runIf(ORIGINAL_PLATFORM === "win32")("queries each drive once per mandatory write-policy pass", async () => {
+    bootMxcShells();
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-write-policy-")));
+    const compose = sandboxWritePolicy.buildMandatorySandboxWritePolicy;
+    const driveQueries: string[][] = [];
+    vi.spyOn(sandboxWritePolicy, "buildMandatorySandboxWritePolicy").mockImplementation((...args) => {
+      const drives: string[] = [];
+      driveQueries.push(drives);
+      const query = vi.spyOn(windowsDriveLocality, "queryDriveIdentity").mockImplementation((drive) => {
+        drives.push(drive);
+        return { local: true };
+      });
+      try { return compose(...args); }
+      finally { query.mockRestore(); }
+    });
+    try {
+      const result = await executePowerShell({ ...context("write-policy-drive-queries"), cwd: root, extraAllowedDirectories: [root] });
+      expect(result.isError).toBe(false);
+      expect(driveQueries).toHaveLength(2);
+      for (const drives of driveQueries) {
+        expect(drives).toContain(win32.parse(root).root.slice(0, 2).toUpperCase());
+        expect(drives).toHaveLength(new Set(drives).size);
+      }
+      const launch = mxcLaunchMock.prepare.mock.lastCall?.[0] as PrepareMxcShellLaunchInput | undefined;
+      expect(launch?.filesystem.denyWrite.map(path => path.toLowerCase())).toContain(join(root, ".envrc").toLowerCase());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("observes only the approved command container and excludes its internal parser", async () => {
@@ -674,6 +706,55 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE, notice: expect.stringContaining("cwd-pin-unconfirmed") });
     expect(result.output).toMatch(/^PowerShell spawn failed: container launcher error ENOENT\ncwd-pin-unconfirmed:/u);
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the held policy mode and binds the reported reader PID", async () => {
+    bootMxcShells();
+    const hold = vi.mocked(holdHostShellSpawnDirectory);
+    const holdDirectory = hold.getMockImplementation();
+    const prepare = mxcLaunchMock.prepare.getMockImplementation();
+    if (holdDirectory === undefined || prepare === undefined) throw new Error("missing shell mocks");
+    const command = vi.fn((_executable: string, args: readonly string[], heldPolicy?: boolean) => ({
+      executable: "ave-job.exe",
+      args: [heldPolicy ? "--hold-policy-v1" : "--hold", WXC_EXEC, ...args],
+    }));
+    const bindHeldPolicy = vi.fn(async () => {});
+    const bindDirect = vi.fn();
+    const stop = vi.fn();
+    hold.mockImplementationOnce(holdDirectory);
+    hold.mockResolvedValueOnce({
+      assertHeld() {}, dispose() {},
+      command, launcherArgs: ["--hold"], stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
+      bind(launcher, policy) {
+        const verdict = deferred<WindowsHoldVerdict>();
+        launcher.once("exit", () => { verdict.resolve({ kind: "ok", stopped: false }); });
+        if (policy === undefined) throw new Error("held policy binder was not supplied");
+        void policy.bindReader(5151, stop);
+        return { verdict: verdict.promise, stop: () => verdict.promise };
+      },
+    });
+    mxcLaunchMock.prepare.mockImplementation(async (input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle) => {
+      const launch = await prepare(input, lifecycle);
+      if (isParserLaunch(input)) return launch;
+      expect(input.directoryHeld).toBe(true);
+      return { ...launch, argv: [WXC_EXEC, "--config", "policy-pipe"], bindHeldPolicy, bindChild: bindDirect };
+    });
+    let launcher: ReturnType<typeof fakeChild> | undefined;
+    childProcessMock.spawn.mockImplementation((_file: string, args: readonly string[]) => {
+      if (args.includes(PARSER_REQUEST)) return fakeChild(PARSED, 0);
+      launcher = fakeChild(CONTAINER_OUTPUT, 0);
+      return launcher;
+    });
+
+    const result = await executePowerShell(context("held-policy-reader"));
+    expect(result.isError).toBe(false);
+    expect(command).toHaveBeenCalledWith(WXC_EXEC, ["--config", "policy-pipe"], true);
+    expect(childProcessMock.spawn).toHaveBeenLastCalledWith(
+      "ave-job.exe", ["--hold-policy-v1", WXC_EXEC, "--config", "policy-pipe"],
+      expect.objectContaining({ stdio: ["pipe", "pipe", "pipe", "pipe", "pipe", "pipe", "pipe"] }),
+    );
+    expect(bindHeldPolicy).toHaveBeenCalledExactlyOnceWith(launcher, 5151, stop);
+    expect(bindDirect).not.toHaveBeenCalled();
   });
 
   it.each(["parser", "command"] as const)("omits the launcher exit code when the held container %s has no verdict", async (phase) => {

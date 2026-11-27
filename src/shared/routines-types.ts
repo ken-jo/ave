@@ -120,7 +120,7 @@ export interface RoutineRecord {
   createdBy?: RoutineActor;
   /** Pause is reversible, unlike dismissedAt: a paused item is never due and does not catch up when resumed. */
   pausedAt?: string;
-  pausedBy?: RoutineActor;
+  pausedBy?: RoutineActor | "schedule-breaker";
   /** When the item was last resumed. A one-shot whose time is at or before it was missed while paused: it is not due, the grid
    * shows it as missed, and only 지금 실행 or a new time runs it. */
   resumedAt?: string;

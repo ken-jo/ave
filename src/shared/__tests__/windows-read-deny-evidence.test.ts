@@ -9,8 +9,14 @@ import { win32SystemBinary } from "../ave-home.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { resolve } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { localDrive } from "../../__tests__/support/windows-drive-locality.js";
 import { readWindowsReadDenyEvidence, recheckWindowsReadDenyEvidence, windowsReadDenyEvidence, windowsReadDenyKey, type WindowsReadDenySnapshot } from "../windows-read-deny-evidence.js";
+import { setWindowsDriveQueryForTest } from "../windows-drive-locality.js";
 import * as windowsPathFacts from "../windows-path-facts.js";
+
+vi.unmock("../windows-drive-locality.js");
+
+setWindowsDriveQueryForTest(localDrive);
 
 describe.runIf(process.platform === "win32")("Windows read deny native evidence", () => {
   let fixture: string;
@@ -153,6 +159,49 @@ describe.runIf(process.platform === "win32")("Windows read deny native evidence"
 });
 
 describe("Windows read deny evidence admission", () => {
+  it.runIf(process.platform === "win32").each(["read", "recheck"] as const)("blocks native %s evidence after a later drive query fails", mode => {
+    const first = join(tmpdir(), "ordinary-local-target");
+    const firstDrive = first.slice(0, 2).toUpperCase();
+    const laterDrive = firstDrive === "Q:" ? "R:" : "Q:";
+    const later = `${laterDrive}/later-target`;
+    const failure = new Error("Drive query failed");
+    const query = vi.fn((drive: string) => {
+      if (drive === laterDrive) throw failure;
+      return localDrive();
+    });
+    setWindowsDriveQueryForTest(query);
+    const read = vi.spyOn(windowsPathFacts, "readWindowsDacls").mockReturnValue([]);
+    const pin = vi.spyOn(windowsPathFacts, "pinWindowsPaths").mockReturnValue([]);
+    try {
+      const snapshot: WindowsReadDenySnapshot = new Map([[windowsReadDenyKey(first), { status: "private" }]]);
+      const paths = [first, later];
+      expect(() => mode === "read" ? readWindowsReadDenyEvidence(paths) : recheckWindowsReadDenyEvidence(paths, snapshot)).toThrow(failure);
+      expect(query.mock.calls.map(([drive]) => drive)).toEqual([firstDrive, laterDrive]);
+      expect(read).not.toHaveBeenCalled();
+      expect(pin).not.toHaveBeenCalled();
+    } finally {
+      setWindowsDriveQueryForTest(localDrive);
+      read.mockRestore();
+      pin.mockRestore();
+    }
+  });
+  it("keeps denying a target that appears after a missing observation", async () => {
+    const fixture = mkdtempSync(join(tmpdir(), "ave-appeared-deny-"));
+    try {
+      const path = join(fixture, "secret");
+      const snapshot: WindowsReadDenySnapshot = new Map([[windowsReadDenyKey(path), { status: "missing" }]]);
+      expect(windowsReadDenyEvidence(path, snapshot).status).toBe("missing");
+
+      writeFileSync(path, "fixture");
+      expect(windowsReadDenyEvidence(path, snapshot)).toEqual({
+        status: "error",
+        reason: "DACL snapshot target now exists",
+      });
+    } finally {
+      await cleanupTmpDir(fixture);
+    }
+  });
+
   it("keeps a private target whose path is now missing", async () => {
     const fixture = mkdtempSync(join(tmpdir(), "ave-missing-private-"));
     const pins = vi.spyOn(windowsPathFacts, "pinWindowsPaths").mockReturnValue([]);

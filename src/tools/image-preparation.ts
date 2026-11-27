@@ -5,9 +5,11 @@ import { spawnManaged, forceKillManagedChildProcess } from "../main/managed-chil
 import { buildSafeChildEnv } from "./safe-env.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
+import type { TargetSeal } from "../permissions/target-seal.js";
+import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import {
   IMAGE_PREPARATION_POLICY, ImagePreparationBytesRequestSchema,
-  ImagePreparationRequestSchema, PreparedImageSchema,
+  ImagePreparationPosixFileRequestSchema, PreparedImageSchema,
   type ImagePreparationChildRequest, type ImagePreparationOptions,
   type ImageReadScope, type PreparedImage,
 } from "../shared/image-preparation-policy.js";
@@ -123,7 +125,7 @@ function runImageChild(
 }
 
 async function prepareImageRequest(
-  request: ImagePreparationChildRequest,
+  request: ImagePreparationChildRequest | (() => ImagePreparationChildRequest),
   stdinBytes: Buffer | undefined,
   callerSignal?: AbortSignal,
 ): Promise<PreparedImage> {
@@ -135,6 +137,10 @@ async function prepareImageRequest(
   let release: (() => void) | undefined;
   try {
     release = await acquireImageSlot(controller.signal);
+    if (typeof request === "function") {
+      controller.signal.throwIfAborted();
+      request = request();
+    }
     return await runImageChild(request, controller.signal, stdinBytes);
   } finally {
     clearTimeout(timer);
@@ -148,10 +154,15 @@ export async function prepareImageFile(
   readScope: ImageReadScope,
   requested: Partial<ImagePreparationOptions> = {},
   callerSignal?: AbortSignal,
+  seal?: TargetSeal,
 ): Promise<PreparedImage> {
   // Parsing copies the scope/options before admission; callers cannot mutate a queued request.
-  const request = ImagePreparationRequestSchema.parse({ path, options: requested, scope: readScope });
-  return prepareImageRequest(request, undefined, callerSignal);
+  const request = ImagePreparationPosixFileRequestSchema.parse({ path, options: requested, scope: readScope });
+  if (process.platform !== "win32") return prepareImageRequest(request, undefined, callerSignal);
+  return prepareImageRequest(() => withLocalityDecision(() => {
+    seal?.verify();
+    return { ...request, expectedPath: localFs.realpathNative(admitLocalRoute(request.path).verdict) };
+  }), undefined, callerSignal);
 }
 
 // Copy and bound broker input before queuing; pass bytes through stdin to the isolated decoder, never argv or base64.

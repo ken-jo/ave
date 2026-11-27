@@ -10,7 +10,7 @@ import {
   isHomePrivacyHelperUnavailablePlan,
   requiresUnsandboxedShellAsk,
 } from "../host-shell-execution-plan.js";
-import type { ContainerRawIpVerdict } from "../../shared/sandbox-capability-info.js";
+import { posixContainerMeasuredEgress, type ContainerRawIpVerdict } from "../../shared/sandbox-capability-info.js";
 
 const FULL_ASRT = {
   kind: "asrt" as const,
@@ -37,6 +37,46 @@ const NONE = {
 };
 
 describe("host shell execution plan", () => {
+  it("applies measured coverage only to a sandboxed Windows container plan", () => {
+    const input = { platform: "win32", shellSubstrate: "mxc", requestedSandbox: true,
+      activeCapability: { ...FULL_ASRT, platform: "win32" } } as const;
+    const measuredContainerEgress = { dns: "host-resolver", rawIp: "blocked" } as const;
+    expect(buildHostShellExecutionPlan({ ...input, measuredContainerEgress })).toEqual({
+      ...buildHostShellExecutionPlan(input), egressProtocolCoverage: measuredContainerEgress,
+    });
+    for (const overrides of [{ executionMode: "host" }, { requestedSandbox: false },
+      { activeCapability: NONE }, { shellSubstrate: "asrt" }, { shellSubstrate: "none" }] as const) {
+      expect(buildHostShellExecutionPlan({ ...input, ...overrides, measuredContainerEgress }))
+        .toEqual(buildHostShellExecutionPlan({ ...input, ...overrides }));
+    }
+    for (const invalid of [{ dns: "unknown", rawIp: "blocked" }, { dns: "host-resolver", rawIp: "unknown" },
+      { ...measuredContainerEgress, extra: true }] as const) {
+      expect(buildHostShellExecutionPlan({ ...input, measuredContainerEgress: invalid }))
+        .toEqual(buildHostShellExecutionPlan(input));
+    }
+  });
+
+  it.each([
+    // A POSIX container publishes raw IP only from this boot's own measurement, so unmeasured is `unknown`.
+    ["darwin", "mxc", { dns: "blocked", rawIp: "unknown" }],
+    ["darwin", "asrt", { dns: "unknown", rawIp: "unknown" }],
+    ["linux", "asrt", { dns: "unknown", rawIp: "unknown" }],
+    ["linux", "mxc", { dns: "blocked", rawIp: "unknown" }],
+  ] as const)("preserves the complete %s %s plan from before measured coverage", (platform, shellSubstrate, egressProtocolCoverage) => {
+    const activeCapability = { ...FULL_ASRT, platform };
+    const input = { platform, shellSubstrate, requestedSandbox: true, activeCapability } as const;
+    const expected = {
+      version: "host-shell-execution-plan/v4", platform, requestedSandbox: true, executionRequest: "default",
+      mode: "asrt", sandboxed: true, substrate: shellSubstrate, egressProtocolCoverage,
+      capability: activeCapability, fallbackReason: "none", requiresExplicitUserApproval: false,
+      identity: `host-shell-execution-plan/v4:${platform}:${shellSubstrate}`,
+    };
+    expect(buildHostShellExecutionPlan(input)).toStrictEqual(expected);
+    expect(JSON.stringify(buildHostShellExecutionPlan(input))).toBe(JSON.stringify(expected));
+    expect(buildHostShellExecutionPlan({ ...input, measuredContainerEgress: { dns: "host-resolver", rawIp: "blocked" } }))
+      .toStrictEqual(expected);
+  });
+
   it("reports the protocol limits of the selected MXC route", () => {
     const plan = buildHostShellExecutionPlan({
       platform: "win32",
@@ -442,14 +482,24 @@ describe("host shell execution plan — Windows MXC substrate", () => {
     ["darwin", "host-shell-execution-plan/v4:darwin:mxc"],
     ["linux", "host-shell-execution-plan/v4:linux:mxc"],
   ] as const)("describes the container egress evidence on %s only from this boot's measurement", (platform, identity) => {
-    const plan = (containerRawIp?: ContainerRawIpVerdict) => buildHostShellExecutionPlan({
-      platform, requestedSandbox: true, activeCapability: { ...FULL_ASRT, platform }, shellSubstrate: "mxc",
-      ...(containerRawIp === undefined ? {} : { containerRawIp }),
+    const plan = (rawIp?: ContainerRawIpVerdict, on: NodeJS.Platform = platform) => buildHostShellExecutionPlan({
+      platform: on, requestedSandbox: true, activeCapability: { ...FULL_ASRT, platform: on }, shellSubstrate: "mxc",
+      ...(rawIp === undefined ? {} : { measuredContainerEgress: posixContainerMeasuredEgress(rawIp) }),
     });
     expect(plan()).toMatchObject({ identity, mode: "asrt", substrate: "mxc", sandboxed: true,
       egressProtocolCoverage: { dns: "blocked", rawIp: "unknown" } });
     expect(plan({ verdict: "unknown", reason: "timeout" }).egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "unknown" });
-    expect(plan({ verdict: "blocked", evidence: "measured" }).egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "blocked" });
+    expect(plan({ verdict: "blocked", evidenceKind: "measured" }).egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "blocked" });
+    expect(plan({ verdict: "blocked", evidenceKind: "arrival" }).egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "blocked" });
+    // A POSIX measurement counts only for the host's own backend, and a forged shape counts nowhere.
+    expect(buildHostShellExecutionPlan({
+      platform, requestedSandbox: true, activeCapability: { ...FULL_ASRT, platform }, shellSubstrate: "mxc",
+      measuredContainerEgress: { dns: "host-resolver", rawIp: "blocked" },
+    }).egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "unknown" });
+    expect(buildHostShellExecutionPlan({
+      platform, requestedSandbox: true, activeCapability: { ...FULL_ASRT, platform }, shellSubstrate: "mxc",
+      measuredContainerEgress: Object.assign({ dns: "blocked", rawIp: "blocked" } as const, { extra: true }),
+    }).egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "unknown" });
   });
 
   it.each([

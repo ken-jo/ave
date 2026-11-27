@@ -385,7 +385,7 @@ const EXEMPTIONS = [
   "node .github/scripts/python-archive-cache.mjs",
   "node .github/scripts/install-windows-path-kind-rust.mjs x64",
   "node scripts/build-windows-path-kind.mjs --arch x64 --fixture",
-  ...["", " -FailureFixture", " -QueryFailureFixture"]
+  ...["", " -FailureFixture", " -QueryFailureFixture", " -PolicyReaderFixture"]
     .map(option => `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1${option}`),
   "bun run check:plugin-host-protocol-schema",
   "node scripts/check-srt-win-integrity.cjs --upstream --inputs",

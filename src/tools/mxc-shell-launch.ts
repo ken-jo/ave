@@ -1,7 +1,10 @@
 // Prepare invocation-scoped container launch resources. The invocation's lifecycle closes the proxy only after the launcher and its job
 // have exited, so a surviving process can never reach a port reused by another invocation.
+import { sealTargetObservation } from "../permissions/target-seal.js";
+import { resolvePathForPolicy } from "../permissions/sensitive-paths.js";
+import { captureShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { win32 as winPath } from "node:path";
-import type { ChildProcess } from "node:child_process";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
 import { appOwnedSandboxPrivateRoots, aveHomeReadBoundaryCovering, getProtectedReadDenyFloor, getUserReadDenies, insideOwnWindowsSandboxHome, protectedReadDenyMatcher } from "../permissions/asrt-sandbox.js";
@@ -12,7 +15,9 @@ import { egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationR
 import { detectMxcShellCapability, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
 import {
   buildMxcShellRequest,
+  mxcRankedGrantIdentity,
   openMxcRequestTransport,
+  type MxcRequestTransport,
   rankMxcFilesystem,
   resolveHostWxcExecPath,
 } from "../permissions/mxc-windows.js";
@@ -22,15 +27,13 @@ import { assertIssuedContainerHomeInPlace, heldIssuedContainerHome, isIssuedCont
 import { claimMxcWatchedRows, hasWatchedWork, sweepWatchedRows, WatchedQuarantineError } from "../permissions/windows-watched-rows.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 
-export interface MxcShellLaunch {
+export interface MxcShellLaunch extends Pick<MxcRequestTransport, "bindChild" | "bindHeldPolicy"> {
   /** `wxc-exec.exe` followed by its arguments; spawn with `shell: false`. */
   readonly argv: readonly string[];
   readonly proxyPort: number;
   readonly watchedNotice?: string | undefined;
   /** Admit connections after the final shell admission checks, immediately before spawn. */
-  activate(): void;
-  /** Bind policy delivery immediately after spawning the launcher. */
-  bindChild(child: ChildProcess): void;
+  activate(assertSpawnDirectory?: () => void): void;
 }
 
 /** A shell command's policy as the lists the shell composes. */
@@ -78,6 +81,8 @@ export function shellPolicyModel(lists: MxcShellPolicyLists, literalAndPatternFl
   });
 }
 
+export type MxcShellPreparationStage = "sandbox-prep" | "egress-prep" | "inline-policy-ready" | "policy-pipe-ready";
+
 export interface PrepareMxcShellLaunchInput {
   /** The invocation's egress token (`egress-invocations.ts`): the identity its listener stamps. */
   readonly egressToken: string;
@@ -90,7 +95,9 @@ export interface PrepareMxcShellLaunchInput {
   /** The child's secret-stripped environment. */
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
+  readonly directoryHeld?: boolean;
   readonly exists: (path: string) => boolean;
+  readonly markTiming?: (stage: MxcShellPreparationStage) => void;
 }
 
 /** Margin MXC's own timeout keeps behind the host's lifetime watch. */
@@ -152,31 +159,46 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   if (!input.exists(wxcExec)) {
     throw new Error("Contained shell launcher is missing from this installation");
   }
-  // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.
-  const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;
-  // The container runtime root is closed to reads and writes alike: a grant inside it would outrank its deny. Only this invocation's own HOME is granted there, and the deny is restated so it holds beneath a granted ancestor.
-  const privateRoots = appOwnedSandboxPrivateRoots();
-  const privateRootCovering = protectedReadDenyMatcher(privateRoots);
-  const insideClosedRoot = (path: string): boolean =>
-    privateRootCovering(path) !== undefined && !insideOwnWindowsSandboxHome(path, input.sandboxHome);
-  assertIssuedContainerHomeInPlace(input.sandboxHome);
-  // No working directory inside the root except the invocation's own issued HOME itself, by identity.
-  if (privateRootCovering(input.cwd) !== undefined && !isIssuedContainerHome(input.cwd, input.sandboxHome)) throw new Error("Container shell working directory is inside the sandbox runtime root");
   // The invocation's own HOME lies in the runtime root's state; it is passed only while live and still the issuance held.
   const ownHome = (): string | undefined => {
     if (issuedHome === undefined) return undefined;
     const held = heldIssuedContainerHome(issuedHome);
     return insideOwnWindowsSandboxHome(issuedHome.home, issuedHome.home) ? held : undefined;
   };
-  // Before ranking: the runtime root is only an ordinary read deny there, which an equal or enclosing write survives.
-  assertWriteGrantsOutsideConfinementState(input.filesystem.allowWrite, declaredConfinementStatePaths(), undefined, ownHome());
-  const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
-  const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
-  const denyRead = [...new Set([...input.filesystem.denyRead, ...privateRoots])];
-  const userDenyRead = getUserReadDenies();
-  const protectedFloor = getProtectedReadDenyFloor().filter((path) => !userDenyRead.includes(path));
-  const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, denyRead, protectedFloor, userDenyRead }));
+  // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.
+  const { observation: { grants }, seal } = sealTargetObservation(() => {
+    const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;
+    // The container runtime root is closed to reads and writes alike: a grant inside it would outrank its deny. Only this invocation's own HOME is granted there, and the deny is restated so it holds beneath a granted ancestor.
+    const privateRoots = appOwnedSandboxPrivateRoots();
+    const privateRootCovering = protectedReadDenyMatcher(privateRoots);
+    const insideClosedRoot = (path: string): boolean =>
+      privateRootCovering(path) !== undefined && !insideOwnWindowsSandboxHome(path, input.sandboxHome);
+    assertIssuedContainerHomeInPlace(input.sandboxHome);
+    // No working directory inside the root except the invocation's own issued HOME itself, by identity.
+    if (privateRootCovering(input.cwd) !== undefined && !isIssuedContainerHome(input.cwd, input.sandboxHome)) throw new Error("Container shell working directory is inside the sandbox runtime root");
+    // Before ranking: the runtime root is only an ordinary read deny there, which an equal or enclosing write survives.
+    const home = ownHome();
+    const statePaths = declaredConfinementStatePaths();
+    assertWriteGrantsOutsideConfinementState(input.filesystem.allowWrite, statePaths, undefined, home);
+    const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
+    const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
+    const denyRead = [...new Set([...input.filesystem.denyRead, ...privateRoots])];
+    const userDenyRead = getUserReadDenies();
+    const protectedFloor = getProtectedReadDenyFloor().filter((path) => !userDenyRead.includes(path));
+    const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, denyRead, protectedFloor, userDenyRead }));
+    assertWriteGrantsOutsideConfinementState(grants.readwrite, statePaths, undefined, home);
+    const cwd = resolvePathForPolicy(input.cwd);
+    const directory = process.platform === "win32" ? captureShellWorkingDirectoryIdentity(input.cwd) : undefined;
+    return {
+      cwd,
+      cwdIdentity: directory === undefined ? undefined : [directory.realpath, String(directory.dev), String(directory.ino)],
+      home,
+      grants,
+      grantIdentity: mxcRankedGrantIdentity(grants),
+    };
+  }, JSON.stringify);
   assertAdmission();
+  input.markTiming?.("sandbox-prep");
   const relay = await openHostEgressListener(token, admission);
   assertAdmission();
   const listener = await openInvocationProxyListener({
@@ -188,9 +210,8 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   });
   assertAdmission();
   relay.registerPort(listener.port);
-  // Again on what the request grants, after the waits above: no pin holds a shell root, so this is the last check.
-  assertIssuedContainerHomeInPlace(input.sandboxHome);
-  assertWriteGrantsOutsideConfinementState(grants.readwrite, declaredConfinementStatePaths(), undefined, ownHome());
+  input.markTiming?.("egress-prep");
+  seal.verify();
   const systemRoot = windowsSystemRoot();
   const env: Record<string, string> = { ...input.env };
   if (!Object.keys(env).some((key) => key.toUpperCase() === "SYSTEMROOT")) env["SYSTEMROOT"] = systemRoot;
@@ -202,9 +223,10 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     proxyUrl: listener.url,
     timeoutMs: input.timeoutMs + MXC_TIMEOUT_MARGIN_MS,
   });
-  const transport = await openMxcRequestTransport(request, wxcExec);
+  const transport = await openMxcRequestTransport(request, wxcExec, input.directoryHeld);
   lifecycle.defer(() => transport.release());
   assertAdmission();
+  input.markTiming?.(transport.args[0] === "--config" ? "policy-pipe-ready" : "inline-policy-ready");
   let watchedNotice: string | undefined;
   const claim = grants.watched === undefined ? undefined : claimMxcWatchedRows(grants.watched, { commandId: token });
   // Command end is a detection point: this launch's own names first, then every watched name and the receipts no result carried yet.
@@ -230,12 +252,17 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     argv: [wxcExec, ...transport.args],
     proxyPort: listener.port,
     get watchedNotice() { return watchedNotice; },
-    activate: () => {
+    activate: (assertSpawnDirectory) => {
       assertAdmission();
-      // The last synchronous check before the launcher is spawned: a watched name that appeared since ranking refuses the launch.
-      claim?.start();
+      const assertStillValid = (): void => {
+        seal.verify();
+        assertSpawnDirectory?.();
+      };
+      if (claim === undefined) withLocalityDecision(assertStillValid);
+      else claim.start(assertStillValid);
       active = true;
     },
     bindChild: transport.bindChild,
+    ...(transport.bindHeldPolicy !== undefined && { bindHeldPolicy: transport.bindHeldPolicy }),
   };
 }

@@ -47,7 +47,7 @@ export function queryDriveIdentity(drive: string, resourcePath?: string): DriveI
   const letter = drive.toUpperCase();
   const opaque = `\\\\?\\GLOBALROOT\\??\\${letter}`;
   let mapping: string | null;
-  try { mapping = query(letter, resourcePath); } catch (error) {
+  try { mapping = resourcePath === undefined ? query(letter) : query(letter, resourcePath); } catch (error) {
     if (!isWindowsPathKindHelperUnavailable(error)) throw error;
     return { local: false, root: opaque, absent: false, unavailable: error as Error };
   }

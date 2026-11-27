@@ -78,7 +78,7 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
     setContainerShellSubstrate("linux", { state: "available", rawIp: { verdict: "unknown", reason: "timeout" } });
     expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "unknown" });
     expect(getContainerShellInfo()).toMatchObject({ rawIp: { verdict: "unknown", reason: "timeout" } });
-    setContainerShellSubstrate("linux", { state: "available", rawIp: { verdict: "blocked", evidence: "measured" } });
+    setContainerShellSubstrate("linux", { state: "available", rawIp: { verdict: "blocked", evidenceKind: "measured" } });
     expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "blocked" });
     expect(getContainerShellInfo()?.egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "blocked" });
     // The hook wrap is not the container, so it never carries the container's measurement.

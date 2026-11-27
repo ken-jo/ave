@@ -1,5 +1,6 @@
 /** Spawn isolated child history with scoped tools, a host-assigned round budget, labeled approval prompts, and streamed status.
  * Only an opted-in workflow stage can expose agent_spawn inside a child loop. */
+import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import type { ListSessionsOptions, RestoredSubAgentSession, SessionListEntry } from "../memory/session-repository.js";
 import {
   SUBAGENT_MAX_ROUNDS_DEFAULT,
@@ -199,6 +200,8 @@ export interface SubAgentSpawnInput {
   /** Host-assigned round budget for the child loop, in assistant rounds. The LLM cannot pick this: the `agent_spawn` tool no longer exposes a `maxTurns` schema field. It is set ONLY by host callers that run a sub-agent for a FIXED-shape task (e.g. WorkBoardEngine's plan/execute
    * phases) and know the right budget for that phase. When absent, the budget is the user's configured `chat.subAgentMaxRounds` and finally `MAX_TURNS_DEFAULT`; see `spawn()`. This is host policy, not an LLM-tunable knob, so it is intentionally not surfaced in the tool schema. */
   maxRounds?: number;
+  /** Host-only round admission for an unattended stage and its descendants. */
+  claimRound?: () => boolean;
   /** Origin session id; audit attribution, and the conversation a tier-2 approval answer is attributed to when this run has one. */
   originSessionId?: string;
   /** The task the PARENT wrote, before any agent-profile body is rendered around it. Only a caller that can vouch for that sets it, and only a run that has it can have its child's approvals routed to its parent. Separate from `instructions`
@@ -609,6 +612,7 @@ interface ActiveSubAgentChild {
   lease: symbol;
   childSessionId: string;
   originSessionId?: string;
+  claimRound?: SubAgentSpawnInput["claimRound"];
   /** Filesystem-canonical root frozen before any live workspace revocation. */
   wireProjectRoot?: string;
   title: string;
@@ -1013,13 +1017,22 @@ export class SubAgentRunner {
    * matching live wire child before returning so the workspace coordinator's later settings write cannot leave a removed project executing in between. */
   async detachSessionsFromProject(root: string): Promise<number> {
     const detached = await this.deps.subAgentMemoryManager.sessions.detachSessionsFromProject(root);
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = canonicalizePathForMatch(root);
-    } catch {
+    if (process.platform !== "win32") {
+      let canonicalRoot: string;
+      try {
+        canonicalRoot = canonicalizePathForMatch(root);
+      } catch {
+        return detached;
+      }
+      this.cancelActiveWireChildrenForWorkspaceRoot(canonicalRoot);
       return detached;
     }
-    this.cancelActiveWireChildrenForWorkspaceRoot(canonicalRoot);
+    const cancellations = withLocalityDecision(() => {
+      const canonicalRoot = canonicalizePathForMatch(root);
+      return [...this.activeChildren.values()].filter((child) => this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot));
+    });
+    const errors = this.cancelActiveWireChildren(cancellations);
+    if (errors.length > 0) throw new AggregateError(errors, "Sub-agent wire cancellation failed");
     return detached;
   }
 
@@ -1036,28 +1049,38 @@ export class SubAgentRunner {
    * removed project is cancelled, and any child loop is asked the test its revocation aborts by.
    */
   countTurnsAbortedByWorkspaceRootRemoval(root: string, options?: WorkspaceRootRevocationOptions): number {
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = canonicalizePathForMatch(root);
-    } catch {
-      return 0;
+    if (process.platform !== "win32") {
+      let canonicalRoot: string;
+      try {
+        canonicalRoot = canonicalizePathForMatch(root);
+      } catch {
+        return 0;
+      }
+      let count = 0;
+      for (const child of this.activeChildren.values()) {
+        // Cancelling a tracked run stops it; without one the cancel aborts the loop's turn, which stops something only if running.
+        const running = Boolean(this.inFlight.get(child.childSessionId)?.run ?? this.trackedRuns.get(child.childSessionId))
+          || child.loop.hasActiveTurn();
+        if ((running && this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot))
+          || child.loop.wouldWorkspaceRootRemovalAbortTurn(canonicalRoot, options)) count += 1;
+      }
+      return count;
     }
-    let count = 0;
-    for (const child of this.activeChildren.values()) {
-      // Cancelling a tracked run stops it; without one the cancel aborts the loop's turn, which stops something only if running.
-      const running = Boolean(this.inFlight.get(child.childSessionId)?.run ?? this.trackedRuns.get(child.childSessionId))
-        || child.loop.hasActiveTurn();
-      if ((running && this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot))
-        || child.loop.wouldWorkspaceRootRemovalAbortTurn(canonicalRoot, options)) count += 1;
-    }
-    return count;
+    return withLocalityDecision(() => {
+      const canonicalRoot = canonicalizePathForMatch(root);
+      let count = 0;
+      for (const child of this.activeChildren.values()) {
+        // Cancelling a tracked run stops it; otherwise only a running loop can be stopped.
+        const running = Boolean(this.inFlight.get(child.childSessionId)?.run ?? this.trackedRuns.get(child.childSessionId))
+          || child.loop.hasActiveTurn();
+        if ((running && this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot))
+          || child.loop.wouldWorkspaceRootRemovalAbortTurn(canonicalRoot, options)) count += 1;
+      }
+      return count;
+    });
   }
 
-  private cancelActiveWireChildForWorkspaceRoot(
-    child: ActiveSubAgentChild,
-    canonicalRoot: string,
-  ): void {
-    if (!this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot)) return;
+  private cancelActiveWireChild(child: ActiveSubAgentChild): void {
     const trackedRun = this.inFlight.get(child.childSessionId)?.run
       ?? this.trackedRuns.get(child.childSessionId);
     if (trackedRun?.abort) trackedRun.abort();
@@ -1072,10 +1095,16 @@ export class SubAgentRunner {
   }
 
   private cancelActiveWireChildrenForWorkspaceRoot(canonicalRoot: string): unknown[] {
+    return this.cancelActiveWireChildren([...this.activeChildren.values()], canonicalRoot);
+  }
+
+  private cancelActiveWireChildren(children: readonly ActiveSubAgentChild[], canonicalRoot?: string): unknown[] {
     const errors: unknown[] = [];
-    for (const child of [...this.activeChildren.values()]) {
+    for (const child of children) {
       try {
-        this.cancelActiveWireChildForWorkspaceRoot(child, canonicalRoot);
+        if (canonicalRoot === undefined || this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot)) {
+          this.cancelActiveWireChild(child);
+        }
       } catch (error: unknown) {
         errors.push(error);
         log.warn(
@@ -1099,20 +1128,69 @@ export class SubAgentRunner {
     activeChildrenVisited: number;
     liveScopesRevoked: number;
   } {
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = canonicalizePathForMatch(root);
-    } catch {
-      return { activeChildrenVisited: 0, liveScopesRevoked: 0 };
-    }
-
-    const errors = this.cancelActiveWireChildrenForWorkspaceRoot(canonicalRoot);
-    let activeChildrenVisited = 0;
-    let liveScopesRevoked = 0;
-    for (const child of [...this.activeChildren.values()]) {
-      activeChildrenVisited += 1;
+    if (process.platform !== "win32") {
+      let canonicalRoot: string;
       try {
-        const result = child.loop.revokeWorkspaceRoot(canonicalRoot, options);
+        canonicalRoot = canonicalizePathForMatch(root);
+      } catch {
+        return { activeChildrenVisited: 0, liveScopesRevoked: 0 };
+      }
+
+      const errors = this.cancelActiveWireChildrenForWorkspaceRoot(canonicalRoot);
+      let activeChildrenVisited = 0;
+      let liveScopesRevoked = 0;
+      for (const child of [...this.activeChildren.values()]) {
+        activeChildrenVisited += 1;
+        try {
+          const result = child.loop.revokeWorkspaceRoot(canonicalRoot, options);
+          liveScopesRevoked += result.sessionDirectoriesRemoved + result.turnDirectoriesRemoved;
+        } catch (error: unknown) {
+          errors.push(error);
+          log.warn(
+            {
+              childSessionId: child.childSessionId,
+              errorName: error instanceof Error ? error.name : "UnknownError",
+            },
+            "sub-agent workspace scope revocation failed",
+          );
+        }
+      }
+      if (errors.length > 0) {
+        throw Object.assign(
+          new AggregateError(errors, "sub-agent-workspace-root-revoke-failed"),
+          { code: "SUBAGENT_WORKSPACE_ROOT_REVOKE_FAILED" },
+        );
+      }
+      return { activeChildrenVisited, liveScopesRevoked };
+    }
+    const plan = withLocalityDecision(() => {
+      let canonicalRoot: string;
+      try {
+        canonicalRoot = canonicalizePathForMatch(root);
+      } catch (error) {
+        rethrowLocalityFailure(error);
+        return undefined;
+      }
+      const children = [...this.activeChildren.values()];
+      const cancellations = children.filter((child) => this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot));
+      const errors: unknown[] = [];
+      const changes = children.flatMap((child) => {
+        try {
+          return [{ child, apply: child.loop.planWorkspaceRootRevocation(canonicalRoot, options) }];
+        } catch (error) {
+          rethrowLocalityFailure(error);
+          errors.push(error);
+          return [];
+        }
+      });
+      return { cancellations, changes, errors, activeChildrenVisited: children.length };
+    });
+    if (!plan) return { activeChildrenVisited: 0, liveScopesRevoked: 0 };
+    const errors = [...this.cancelActiveWireChildren(plan.cancellations), ...plan.errors];
+    let liveScopesRevoked = 0;
+    for (const { child, apply } of plan.changes) {
+      try {
+        const result = apply();
         liveScopesRevoked += result.sessionDirectoriesRemoved + result.turnDirectoriesRemoved;
       } catch (error: unknown) {
         errors.push(error);
@@ -1131,7 +1209,7 @@ export class SubAgentRunner {
         { code: "SUBAGENT_WORKSPACE_ROOT_REVOKE_FAILED" },
       );
     }
-    return { activeChildrenVisited, liveScopesRevoked };
+    return { activeChildrenVisited: plan.activeChildrenVisited, liveScopesRevoked };
   }
 
 
@@ -1925,6 +2003,7 @@ export class SubAgentRunner {
   private registerActiveChild(args: {
     childSessionId: string;
     originSessionId?: string;
+    claimRound?: SubAgentSpawnInput["claimRound"];
     wireProjectRoot?: string;
     title: string;
     loop: ConversationLoop;
@@ -2747,6 +2826,8 @@ export class SubAgentRunner {
     stageParent?: { stage: StageSubAgentScope; abortSignal?: AbortSignal; activePluginIds: ReadonlySet<string> },
   ): Promise<SubAgentSpawnResult> {
     const childSessionId = buildChildSessionId(input.originSessionId);
+    const parent = input.originSessionId === undefined ? undefined : this.activeChildren.get(input.originSessionId);
+    const claimRound = parent?.claimRound ?? (input.unattendedStage ? input.claimRound : undefined);
     if (inheritUnattendedStage(childSessionId, input.originSessionId)) {
       checkpointChild.endLane = () => endUnattendedStage(childSessionId);
     }
@@ -2916,6 +2997,7 @@ export class SubAgentRunner {
     const activeLease = this.registerActiveChild({
       childSessionId,
       originSessionId: input.originSessionId,
+      claimRound,
       ...(executionPolicy && input.projectRoot ? { wireProjectRoot: input.projectRoot } : {}),
       title: input.title,
       loop: child,
@@ -3169,6 +3251,7 @@ export class SubAgentRunner {
         signal,
         {
           maxRounds: cappedRounds,
+          claimRound,
           sessionIdOverride: childSessionId,
           spawnDepth: stageParent ? 2 : 1,
           ...(stageScope ? { stageSubAgents: true as const } : {}),
@@ -3946,9 +4029,11 @@ export class SubAgentRunner {
     }
     // A resumed child is live as soon as its loop and project scope exist. Register it before mailbox or metadata I/O so
     // workspace removal cannot snapshot activeChildren in the construction-to-run gap and leave stale directories on the child loop.
+    const claimRound = originSessionId === undefined ? undefined : this.activeChildren.get(originSessionId)?.claimRound;
     activeLease = this.registerActiveChild({
       childSessionId: resumeId,
       originSessionId: meta.originSessionId,
+      claimRound,
       ...(executionPolicy && meta.projectRoot ? { wireProjectRoot: meta.projectRoot } : {}),
       title: meta.subAgentTitle,
       loop: child,
@@ -4125,6 +4210,7 @@ export class SubAgentRunner {
         cancellation.signal,
         {
           maxRounds: cappedRounds,
+          claimRound,
           sessionIdOverride: resumeId,
           spawnDepth: 1,
           ...(initialGuidance.length > 0 ? { initialGuidance } : {}),

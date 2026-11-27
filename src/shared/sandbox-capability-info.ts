@@ -234,24 +234,50 @@ export type EgressIdentityStrength = "kernel-channel" | "shared";
 /** Protocol coverage is independent of proxy endpoint scoping and identity. */
 export interface EgressProtocolCoverage {
   readonly dns: "host-resolver" | "brokered" | "blocked" | "unknown";
+  /** Every platform's boot measurement checks UDP by arrival only (`ContainerRawIpVerdict`). */
   readonly rawIp: "unknown" | "blocked";
 }
 
 const MXC_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "host-resolver", rawIp: "unknown" });
+const MEASURED_MXC_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "host-resolver", rawIp: "blocked" });
 const UNKNOWN_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "unknown", rawIp: "unknown" });
 
 export function egressProtocolCoverageFor(substrate: "mxc" | "asrt" | "srt-win" | "approved-host" | "none"): EgressProtocolCoverage {
   return substrate === "mxc" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
 }
 
+const POSIX_UNMEASURED_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "unknown" });
+const POSIX_MEASURED_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "blocked" });
+
 /**
- * A container backend's coverage. A POSIX container has no raw-IP constant: its `rawIp` is what this boot's canary
- * measured, passed in as `rawIp`, and anything unmeasured is `unknown`.
+ * The coverage a boot measurement may publish for a container backend, or undefined when it may publish none. Only the
+ * host's own backend counts, and only the exact measured-blocked shape: Windows MXC (`process-container`) resolves
+ * names on the host, and a POSIX container's only egress is its proxy endpoint, so DNS does not leave it.
  */
-export function containerEgressProtocolCoverage(backend: ContainerBackend, rawIp?: ContainerRawIpVerdict): EgressProtocolCoverage {
+export function acceptMeasuredContainerEgress(
+  platform: NodeJS.Platform, backend: ContainerBackend, coverage: EgressProtocolCoverage | undefined,
+): EgressProtocolCoverage | undefined {
+  const accepted = platform === "win32" && backend === "process-container" ? MEASURED_MXC_EGRESS_PROTOCOL_COVERAGE
+    : (platform === "linux" && backend === "bubblewrap") || (platform === "darwin" && backend === "seatbelt")
+      ? POSIX_MEASURED_EGRESS_PROTOCOL_COVERAGE : undefined;
+  if (accepted === undefined || typeof coverage !== "object" || coverage === null
+      || Reflect.ownKeys(coverage).length !== 2 || !Object.hasOwn(coverage, "dns") || !Object.hasOwn(coverage, "rawIp")
+      || coverage.dns !== accepted.dns || coverage.rawIp !== accepted.rawIp) return undefined;
+  return accepted;
+}
+
+/**
+ * A container backend's coverage when this boot published no accepted measurement. A POSIX container has no raw-IP
+ * constant: its `rawIp` is `blocked` only through `acceptMeasuredContainerEgress`, so anything unmeasured is `unknown`.
+ */
+export function containerEgressProtocolCoverage(backend: ContainerBackend): EgressProtocolCoverage {
   if (backend === "process-container") return MXC_EGRESS_PROTOCOL_COVERAGE;
-  // The container's only egress is the proxy endpoint, so DNS does not leave it. The shared rules measure raw IP only.
-  return Object.freeze({ dns: "blocked", rawIp: rawIp?.verdict === "blocked" ? "blocked" : "unknown" });
+  return POSIX_UNMEASURED_EGRESS_PROTOCOL_COVERAGE;
+}
+
+/** The coverage a container raw-IP verdict measures for a POSIX backend, for `acceptMeasuredContainerEgress`. */
+export function posixContainerMeasuredEgress(rawIp: ContainerRawIpVerdict): EgressProtocolCoverage {
+  return rawIp.verdict === "blocked" ? POSIX_MEASURED_EGRESS_PROTOCOL_COVERAGE : POSIX_UNMEASURED_EGRESS_PROTOCOL_COVERAGE;
 }
 
 /** Why a container's raw-IP verdict is not `blocked`: the reasons the shared verdict rules name. */
@@ -259,14 +285,22 @@ export type ContainerRawIpUnknownReason =
   | "raw-ip-reachable" | "ipv6-unmeasured" | "no-route" | "timeout" | "unclassified" | "no-evidence" | "control-failed";
 
 /**
+ * What a `blocked` raw-IP verdict rests on, shared by every platform's boot measurement:
+ * - `measured`: every target was refused locally;
+ * - `structural`: IPv6 had no route and the container's own structure stood in for its measurement;
+ * - `arrival`: on a backend that drops direct connects, a host-side listener proven reachable by an unconfined control
+ *   recorded nothing from the container, and the container's interfaces and firewall structure were read.
+ */
+export type ContainerRawIpEvidenceKind = "measured" | "structural" | "arrival";
+
+/**
  * Whether a process in the shell container can reach an IP address directly, as this boot's canary measured it inside
- * a real container. TCP is classified by its connect result. UDP is checked by arrival only: a datagram that reaches a
- * host-side listener makes the verdict `unknown`; one that does not arrive leaves the TCP verdict standing.
- * `evidence` is `structural` when IPv6 had no route and the container's own structure stood in for its measurement.
- * Memory only, never persisted, re-measured every boot.
+ * a real container. TCP is classified by its connect result, or by arrival on a drop-type backend. UDP is checked by
+ * arrival only: a datagram that reaches a host-side listener makes the verdict `unknown`; one that does not arrive
+ * leaves the TCP verdict standing. Memory only, never persisted, re-measured every boot.
  */
 export type ContainerRawIpVerdict =
-  | { readonly verdict: "blocked"; readonly evidence: "measured" | "structural" }
+  | { readonly verdict: "blocked"; readonly evidenceKind: ContainerRawIpEvidenceKind }
   | { readonly verdict: "unknown"; readonly reason: ContainerRawIpUnknownReason };
 
 /** The scopes an egress grant can be given. A shell tool call's card offers Deny plus once, session, project, always (owner 2026-10-25, five-choice network card); a workspace terminal
@@ -389,6 +423,8 @@ export interface SandboxWindowsSubstrateInfo {
   /** Absent only in older snapshots; absence cannot establish MXC readiness. New boot producers always set it. */
   readonly extensionPlan?: SandboxWindowsExtensionPlan;
   readonly shellEgressIdentity: EgressIdentityStrength;
+  /** Boot measurement for the Windows shell route, when published. */
+  readonly shellEgressProtocolCoverage?: EgressProtocolCoverage;
   readonly extensionEgressIdentity: EgressIdentityStrength;
 }
 

@@ -34,6 +34,27 @@ async function write(content: string, path = file) {
 }
 
 describe("native file-tool code checkpoints", () => {
+  it.skipIf(process.platform === "win32")("checks every prepared POSIX move target after a failed mutation", async () => {
+    const destination = join(root, "destination.txt");
+    await writeFile(file, "before");
+    const copy = vi.spyOn(fsPromises, "copyFile").mockImplementationOnce(async () => {
+      await writeFile(file, "changed by another writer");
+      throw Object.assign(new Error("destination already exists"), { code: "EEXIST" });
+    });
+    syncBuiltinESMExports();
+    try {
+      await turn("failed-posix-move", async () => {
+        const result = await new MoveFileTool().execute({ sourcePath: file, destinationPath: destination }, ctx);
+        expect(result.isError).toBe(true);
+      });
+      expect(copy).toHaveBeenCalledOnce();
+      expect(await restoreCodeCheckpoint(sessionId, "failed-posix-move")).toMatchObject({ ok: false, conflictingFiles: [file] });
+    } finally {
+      copy.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
+
   it("admits automatic writes only in an active healthy checkpoint turn", async () => {
     expect(await isCodeCheckpointAvailable([file])).toBe(false);
     await writeFile(file, "before");

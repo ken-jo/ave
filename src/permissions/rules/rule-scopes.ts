@@ -4,6 +4,7 @@ import { isCurrentShellRule, withCurrentShellRuleVersion } from "../../shared/sh
 import { analyzeShell, type ShellStatement } from "../../shared/shell-analysis.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { stat } from "node:fs/promises";
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { capturePersistedPolicyVersion, isPersistedPolicyVersionCurrent, persistedPolicyVersionForContent, type PersistedPolicyVersion } from "../persisted-policy-version.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
@@ -127,12 +128,12 @@ export class ProjectRuleScopes {
     const location = projectRulesLocation(this.baseDir, projectCwd);
     let writeAuthority = authority;
     if (expectedProjectRoot !== undefined) {
-      const isCurrent = () => {
+      const isCurrent = () => withLocalityDecision(() => {
         if (location.projectRoot !== expectedProjectRoot.path || !matchesProjectRuleRootBinding(projectCwd, expectedProjectRoot)) {
           throw new ProjectRuleScopeChangedError();
         }
         return authority?.isCurrent() ?? true;
-      };
+      });
       writeAuthority = {
         isCurrent,
         refresh: async () => await (authority?.refresh() ?? true) && isCurrent(),

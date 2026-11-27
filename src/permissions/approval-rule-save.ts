@@ -4,6 +4,7 @@ import type { PermissionManager } from "./permission-manager.js";
 import { RuleSpecifierError, canonicalRuleSpecifier, matchesWebFetchHost, normalizeRuleSpecifierInput, parseRuleSpecifier } from "./rules/rule-specifier.js";
 import { isWildcardShellRule, shellRuleCoversCommand } from "./rules/shell-rule-approval.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { isShellRuleSaveScope, type ShellRuleSaveScope } from "../shared/permissions-events.js";
 import { errorMessage } from "../shared/error-message.js";
 import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
@@ -217,14 +218,15 @@ export function planApprovalCardRule(
     try {
       await refreshApprovalPersistence(authority);
       if (!checkOnly) await beforePersist?.(saved);
-      assertApprovalPersistenceCurrent(authority);
-      if (checkOnly) {
+      if (checkOnly) return withLocalityDecision(() => {
+        assertApprovalPersistenceCurrent(authority);
         // The write binds a project rule to its issued root; the check asks the same of the directory as it is now.
         const root = target.snapshot.shellRuleProjectRoot;
         if (scope === "project" && target.kind === "shell" && target.context.projectCwd !== undefined &&
             (root === undefined || !matchesProjectRuleRootBinding(target.context.projectCwd, root))) return fail("project-scope-changed");
         return saved;
-      }
+      });
+      assertApprovalPersistenceCurrent(authority);
       if (scope === "session") {
         if (snapshot.sessionId === undefined) return fail("missing-session", "This request has no conversation session");
         await refreshApprovalPersistence(authority);

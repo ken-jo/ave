@@ -33,6 +33,7 @@ import {
   getWindowsSandboxSubstrate,
   getWindowsExtensionBackendPlan,
   detectMxcShellCapability,
+  getSandboxGeneration,
   detectPluginWorkerSandboxCapability,
   __resetWindowsSandboxSubstrateForTest,
   type SandboxCapability,
@@ -589,8 +590,14 @@ describe("sandbox-capability — shell sandbox and plugin-worker confinement are
     expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
     expect(detectShellSandboxCapability().kind).toBe("asrt");
     expect(isActiveSandboxShellContained()).toBe(true);
-    expect(getHostShellExecutionPlan()).toMatchObject({ mode: "asrt", requestedSandbox: true });
-    expect(resolveReviewerSandboxCapability("builtin", "bash").kind).toBe("asrt");
+    // Linux host shells run in the container route; with no live container they take the requested-sandbox floor,
+    // never the disabled-by-setting plan that worker confinement alone would leave.
+    expect(getHostShellExecutionPlan()).toMatchObject({
+      mode: "plain", requestedSandbox: true, substrate: "none", fallbackReason: "active-sandbox-not-shell-contained",
+      requiresExplicitUserApproval: true,
+    });
+    // No live container confines the shell, so the reviewer gets no isolation credit for it.
+    expect(resolveReviewerSandboxCapability("builtin", "bash").kind).toBe("none");
   });
 
   it("each seal changes only its own scope", () => {
@@ -678,6 +685,29 @@ describe("sandbox-capability — Windows MXC substrate", () => {
     // The workspace terminal reads the process-wide capability, which must not inherit the containers' confinement.
     expect(detectShellSandboxCapability().confines).toEqual({ filesystem: false, process: false, network: false });
     expect(isActiveSandboxShellContained()).toBe(false);
+  });
+
+  it("publishes measured egress without replacing the live MXC capability", () => {
+    bootProxyOnly();
+    const substrate = getWindowsSandboxSubstrate();
+    if (substrate === null) throw new Error("Windows substrate was not published");
+    const capability = detectMxcShellCapability();
+    const generation = getSandboxGeneration();
+    const before = getHostShellExecutionPlan();
+    const measured = { dns: "host-resolver", rawIp: "blocked" } as const;
+    const measurement = { coverage: measured, evidenceKind: "measured" } as const;
+    setWindowsSandboxSubstrate({ ...substrate }, mxcShellCapability(), measurement);
+    expect(detectMxcShellCapability()).toBe(capability);
+    expect(getSandboxGeneration()).toBe(generation);
+    expect(getWindowsSandboxSubstrate()?.shellEgressProtocolCoverage).toEqual(measured);
+    expect(getHostShellExecutionPlan()).toEqual({ ...before, egressProtocolCoverage: measured });
+    expect(before.egressProtocolCoverage.rawIp).toBe("unknown");
+
+    const nonMxc = { ...substrate, shells: "approved-host", shellEgressIdentity: "shared" } as const;
+    expect(() => setWindowsSandboxSubstrate(nonMxc, undefined, measurement)).toThrow(/egress/);
+    setWindowsSandboxSubstrate(nonMxc);
+    setWindowsSandboxSubstrate(substrate, mxcShellCapability());
+    expect(getHostShellExecutionPlan().egressProtocolCoverage.rawIp).toBe("unknown");
   });
 
   it("reports extensions unconfined when ASRT runs only as the containers' proxy", () => {

@@ -29,7 +29,7 @@ function installedSrtInputs(root) {
 function nativeFiles(arch) {
   // The Rust helper and its hold fixture come from the current preparation build.
   return [
-    ...["ave-job", "ave-job-failure", "ave-job-query-failure"].map(name => `resources/windows-job/${arch}/${name}.exe`),
+    ...["ave-job", "ave-job-failure", "ave-job-query-failure", "ave-job-policy-reader-test"].map(name => `resources/windows-job/${arch}/${name}.exe`),
     ...ARCHES.flatMap(target => ["upstream-srt-win.exe", "srt-win.exe", "build-receipt.json"]
       .map(name => `${VENDOR}/srt-win/${target}/${name}`)),
     `${RECEIPTS}.js`,

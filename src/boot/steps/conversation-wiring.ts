@@ -616,7 +616,8 @@ export async function wireConversation(
   // Skill bodies are tool results; skill_load records authorization for later skill_read calls.
 
   // Create the Work Board engine after its runner dependency exists.
-  permissionManager.setUnattendedToolEffectResolver(createToolEffectResolver(ctx.toolRegistry));
+  const unattendedEffects = createToolEffectResolver(ctx.toolRegistry);
+  permissionManager.setUnattendedToolEffectResolver(unattendedEffects);
   const workBoardEngine: WorkBoardEngine = createWorkBoardEngine({
     store: workBoardStore,
     getRunner: () => subAgentRunnerRef.fn,
@@ -639,7 +640,7 @@ export async function wireConversation(
     // Persist each run’s conversations so context survives restart and accumulates across reruns.
     transcriptStorage: workBoardStorage,
     workflow: {
-      ...workflowEngineExtensions(workBoardStore, ctx.workflowTemplateStore, permissionManager),
+      ...workflowEngineExtensions(workBoardStore, ctx.workflowTemplateStore, permissionManager, unattendedEffects),
       resolveProjectRoot: (projectRoot) => {
         const resolved = resolveAuthorizedWorkspaceProject(projectRoot);
         return resolved.authorized && resolved.project ? resolved.project.projectRoot : null;

@@ -2,6 +2,7 @@ import { isRecord } from "../shared/is-record.js";
 import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
 import type { WorkflowRunRecord } from "../shared/workflow-template-types.js";
 import { hasTemplateKeys, parseRequestedOutputDecl, isGraphHash, isStageId, isTemplateId, isTemplateVersion, isWorkspaceGlob, requireTemplate, WorkflowTemplateError } from "./template-graph.js";
+import { MAX_LANE_DENIALS_PER_STAGE } from "./workflow/run-budget.js";
 const STAGE_STATUSES = ["waiting", "running", "awaiting_gate", "passed", "failed", "cancelled", "rejected"];
 function text(value: unknown, max = 2048): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && !value.includes("\0"); }
 function timestamp(value: unknown): boolean { return text(value, 64) && Number.isFinite(Date.parse(value)); }
@@ -51,6 +52,9 @@ function validStage(value: unknown): boolean {
     || !optional(value, "blocked", v => isRecord(v) && ["envelope-missing", "isolation-unproven", "lane-unavailable"].includes(v.code as string) && timestamp(v.at))
     || !optional(value, "requestedOutputs", v => uniqueEntries(v, 10, requestedOutput))
     || !optional(value, "outputExecutions", v => uniqueEntries(v, 10, e => isRecord(e) && isTemplateId(e.id) && ["pending", "done", "failed", "denied"].includes(e.status as string) && optional(e, "at", timestamp) && optional(e, "detail", d => typeof d === "string" && d.length <= 8192)))
+    || !optional(value, "deniedCalls", v => list(v, MAX_LANE_DENIALS_PER_STAGE, call =>
+      hasTemplateKeys(call, ["toolName", "code"]) && text(call.toolName, 500)
+        && (call.code === "outside-envelope" || call.code === "no-approver")))
     || !optional(value, "usage", v => isRecord(v) && count(v.rounds) && timestamp(v.startedAt) && count(v.denials) && optional(v, "costUsd", c => typeof c === "number" && Number.isFinite(c) && c >= 0))) return false;
   if (value.gate === undefined) return true;
   const g = value.gate;
