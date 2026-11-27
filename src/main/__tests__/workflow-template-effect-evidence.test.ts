@@ -6,6 +6,8 @@ import { requiredValue } from "../../__tests__/support/required-value.js";
 import { en } from "../../i18n/messages/en.js";
 import { ko } from "../../i18n/messages/ko.js";
 import { mcpToolToTool } from "../../mcp/mcp-tool-adapter.js";
+import { mcpToolToPluginTool } from "../../mcp/plugin-tool-from-mcp.js";
+import { decidePermission } from "../../permissions/decision-pipeline.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import { createDynamicTool } from "../../tools/base.js";
@@ -109,6 +111,27 @@ it("refuses a marked version at attach under the interim limit", async () => {
   await expect(store.attachSchedule({ templateId, version, graphHash, scheduleId: "daily" },
     mintHostDecisionProof("local-desktop"), { kind: "all" })).rejects.toMatchObject({ code: "schedule-requires-read-only" });
   expect(await readFile(path())).toEqual(before);
+});
+
+it("marks a plugin tool with only a false read declaration unknown and denies unattended use", async () => {
+  const tool = mcpToolToPluginTool("example", {
+    name, inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: false },
+    _meta: { ui: { visibility: ["model"] } },
+  }, call);
+  registry.register(tool);
+  const { response } = await confirmVersion(draft("pluginGenerationTools"));
+  expect(response.unattended).toEqual({ ok: false, code: "tool-effect-unknown", tool: { stageId: "report", collection: "pluginGenerationTools", name } });
+
+  expect(decidePermission({
+    mode: "default", headless: true, tool: { name: tool.name, kind: tool.category, source: "plugin" },
+    unattended: {
+      runKey: "run", stageId: "report", workspaceRoot: directory, isolation: { proven: true },
+      envelope: requiredValue(response.version.stages[0].envelope),
+    },
+    unattendedEffect: tool.unattendedEffect,
+    reviewer: { status: "success", level: "low" },
+  })).toMatchObject({ outcome: "deny", reasonCode: "outside-envelope" });
+  expect(call).not.toHaveBeenCalled();
 });
 
 it("keeps an external tool that failed qualification eligible for an attended approval card", async () => {
