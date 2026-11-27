@@ -23,13 +23,14 @@ import {
   GUIDE_MAX_CHARS,
 } from "./turn/guidance-limits.js";
 import { createReadToolResultChunkTool } from "../tools/tool-result-chunk.js";
+import { boundStageWorkspace, isOwnStageWorkspacePath } from "../permissions/stage-workspace-binding.js";
 import { isUnattendedReadTool } from "../tools/base.js";
 import type { Tool } from "../tools/base.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { type MemoryManager } from "../memory/memory-manager.js";
 import { errorMessage } from "../shared/error-message.js";
 import { isValidSessionId } from "../shared/session-id.js";
-import { projectRootEquals } from "../shared/project-identity.js";
+import { projectBasename, projectRootEquals } from "../shared/project-identity.js";
 import type {
   ApprovalGate,
   ApprovalDecision,
@@ -2921,13 +2922,26 @@ export class SubAgentRunner {
           }),
         });
 
+        const stageRoot = boundStageWorkspace(childSessionId);
+        if (stageRoot !== undefined) {
+          if (input.projectRoot === undefined || !isOwnStageWorkspacePath(childSessionId, input.projectRoot)) {
+            throw new Error("Workflow stage workspace binding rejected");
+          }
+          childDeps.authorizeProject = (root, name) => {
+            if (boundStageWorkspace(childSessionId) !== stageRoot || !projectRootEquals(root, stageRoot)
+              || !isOwnStageWorkspacePath(childSessionId, stageRoot)) {
+              throw new Error("Workflow stage workspace binding rejected");
+            }
+            return { projectRoot: stageRoot, projectName: name ?? projectBasename(stageRoot), isDefault: false };
+          };
+        }
         const child = new ConversationLoop(childDeps);
         childForAbort = child;
         child.initializeConversation(
           "subagent",
           input.projectRoot
             ? {
-                projectRoot: input.projectRoot,
+                projectRoot: stageRoot ?? input.projectRoot,
                 ...(input.projectName ? { projectName: input.projectName } : {}),
               }
             : childDeps.getDefaultProject?.(),

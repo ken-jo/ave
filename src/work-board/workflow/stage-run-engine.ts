@@ -1411,7 +1411,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         : undefined;
       const gateSuffix = stage.gate.type === "auto" ? deps.passConditions.promptSuffix(stage.gate.pass.kind) : undefined;
       const prompt = buildStagePrompt({
-        item, stage, inputs: stageInputsOf(version, stage, record.stageRuns),
+        item, stage, workspaceRoot: stageRoot, inputs: stageInputsOf(version, stage, record.stageRuns),
         ...(revision ? { revision } : {}), ...(version.setupCommands ? { setupCommands: version.setupCommands } : {}), ...(gateSuffix ? { gateSuffix } : {}),
       });
       const stored = await beforeDeadline(() => serializeWrite(state, () => writeRun(state, current => {

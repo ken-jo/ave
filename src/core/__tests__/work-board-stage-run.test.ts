@@ -32,6 +32,7 @@ it("spawns only the pinned version's stages with the stage's tool scope", () => 
   expect(a.input.title).toContain("Stage a");
   expect(a.input.toolScope).toEqual({ kind: "exactly", names: ["read_file", "grep_files", "sample_lookup"] });
   expect(a.input.profileMode).toBe("plan");
+  expect(a.input.instructions).toContain(`Working folder: ${JSON.stringify(a.input.projectRoot)}`);
   a.finish();
   // The launch call settles once the run waits at its first gate; nothing is decided before it has.
   expect(await run).toMatchObject({ status: "awaiting_approval" });

@@ -5,7 +5,7 @@ import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@open
 import { beforeAll, describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync, existsSync, readdirSync } from "node:fs";
-import { readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { AsyncResource } from "node:async_hooks";
 import { tmpdir } from "node:os";
@@ -16,7 +16,7 @@ import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { createReadToolResultChunkTool } from "../../tools/tool-result-chunk.js";
-import { ReadFileTool } from "../../tools/file-tools.js";
+import { ReadFileTool, WriteFileTool } from "../../tools/file-tools.js";
 import { sessionAuthorityWithheld } from "../../shared/turn-extension-policy.js";
 import { BROWSER_TOOL } from "../../shared/browser-tools.js";
 import { workBoardOriginSessionId } from "../../shared/work-board-types.js";
@@ -68,6 +68,7 @@ import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import { endUnattendedStage, registerUnattendedStage, unattendedStageOf, type UnattendedStageEntry } from "../../permissions/unattended-lane-registry.js";
+import { bindStageWorkspace, unbindStageWorkspace } from "../../permissions/stage-workspace-binding.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
@@ -442,6 +443,82 @@ describe("unattended sub-agent lifetime", () => {
       await cleanupTmpDir(dir);
     }
   });
+});
+
+it.each(["attended", "scheduled"] as const)("uses the bound stage folder for %s relative tool calls", async lane => {
+  const dir = mkdtempSync(join(tmpdir(), "ave-stage-cwd-"));
+  const home = join(await realpath(dir), "home");
+  const stage = join(home, "worktrees", "project", "abcdefghijkl", "gather");
+  const otherStage = join(stage, "..", "other");
+  const defaultRoot = join(home, "workspace");
+  for (const folder of [stage, otherStage, defaultRoot]) await mkdir(folder, { recursive: true });
+  await writeFile(join(stage, "input.txt"), "stage input");
+  vi.stubEnv("AVE_HOME", home);
+  const manager = new PermissionManager(join(dir, "permissions.json"));
+  manager.setMode("default");
+  const check = vi.spyOn(manager, "checkDetailed");
+  const contents = makeMockWebContents();
+  const gate = new ApprovalGate(contents as never);
+  const originSessionId = workBoardOriginSessionId(97);
+  const cards: ApprovalRequest[] = [];
+  contents.send.mockImplementation((channel, value) => {
+    if (channel !== IPC_APPROVAL_REQUEST) return;
+    const request = value as ApprovalRequest;
+    cards.push(request);
+    const path = (request.args as { path?: string }).path;
+    queueMicrotask(() => gate.resolveFromDesktopRenderer(request.id, {
+      requestId: request.id, choice: path?.endsWith("output.txt") ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac,
+    }, contents as never));
+  });
+  const registry = new ToolRegistry();
+  registry.register(new ReadFileTool());
+  registry.register(new WriteFileTool());
+  const provider = new ScriptedProvider([
+    [{ type: "tool_call", id: "read", name: "read_file", input: { path: "input.txt" } }, { type: "message_complete", stopReason: "tool_use" }],
+    ...(lane === "attended" ? [
+      [{ type: "tool_call", id: "inside", name: "write_file", input: { path: "output.txt", content: "stage output" } }, { type: "message_complete", stopReason: "tool_use" }],
+      [{ type: "tool_call", id: "outside", name: "write_file", input: { path: join(otherStage, "outside.txt"), content: "outside" } }, { type: "message_complete", stopReason: "tool_use" }],
+    ] as StreamEvent[][] : []),
+    ...endTurnScript("Finished"),
+  ]);
+  const runner = new SubAgentRunner({
+    parentDeps: buildLoopDeps(registry, {
+      approvalGate: gate, permissionManager: manager, authorizeProject: () => null,
+      getDefaultProject: () => ({ projectRoot: defaultRoot, isDefault: true }),
+    }),
+    toolRegistry: registry, subAgentMemoryManager: fakeSubAgentMemoryManager(),
+  });
+  const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
+  let sessionId: string | undefined;
+  try {
+    updateApprovalSurface({ kind: "attach", sessionId: originSessionId, surface: contents as never });
+    await runner.spawn({
+      title: "Gather stage", instructions: "Read the input", toolScope: exactToolScope(["read_file", "write_file"]),
+      originSessionId, projectRoot: stage,
+      ...(lane === "scheduled" ? { unattendedStage: { runKey: "scheduled-run", stageId: "gather" } } : {}),
+    }, { onLinked: ({ childSessionId }) => {
+      sessionId = childSessionId;
+      bindStageWorkspace(childSessionId, stage);
+    } });
+    expect(provider.observedMessages[1]).toContainEqual(expect.objectContaining({
+      role: "tool_result", toolUseId: "read", content: expect.stringContaining("stage input"),
+    }));
+    if (lane === "attended") {
+      await expect(readFile(join(stage, "output.txt"), "utf8")).resolves.toBe("stage output");
+      expect(check.mock.calls.some(([, , , , context]) => context?.sessionId === sessionId && context.fileWritePolicy?.insideProject === true)).toBe(true);
+      expect(cards).toContainEqual(expect.objectContaining({ args: expect.objectContaining({ path: join(otherStage, "outside.txt") }) }));
+      expect(existsSync(join(otherStage, "outside.txt"))).toBe(false);
+      expect(existsSync(join(defaultRoot, "output.txt"))).toBe(false);
+    }
+  } finally {
+    gate.disposeAll();
+    updateApprovalSurface({ kind: "release", sessionId: originSessionId });
+    if (sessionId) unbindStageWorkspace(sessionId);
+    hasProviderSpy.mockRestore();
+    refreshProviderSpy.mockRestore();
+    vi.unstubAllEnvs();
+    await cleanupTmpDir(dir);
+  }
 });
 
 describe("SubAgentRunner — authorization terminal propagation", () => {
