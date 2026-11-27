@@ -1,5 +1,8 @@
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { _detectMxcMacShellSupportForTest, _seatbeltCanaryPassedForTest, buildSeatbeltShellRequest } from "../mxc-macos.js";
+import { _detectMxcMacShellSupportForTest, _seatbeltCanaryPassedForTest, buildSeatbeltShellRequest, mapSeatbeltShellRequest } from "../mxc-macos.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-model.js";
 
 describe("macOS container shell detector", () => {
@@ -105,6 +108,36 @@ describe("macOS container shell request", () => {
     lookups: { home: "/fixture", foldsCase: true, exists: () => true, canonical: (path: string) => path, children: () => [] },
     commandLine: "exec '/bin/sh' '-c' 'printf control'",
   };
+
+  const documentedProcessDefaults = {
+    // SDK docs/containment-policy/dev/policy.md:58 specifies false when omitted.
+    inheritDefaultEnv: false,
+  };
+
+  function normalizeProcessDefaults(process: Record<string, unknown>) {
+    return { ...documentedProcessDefaults, ...process };
+  }
+
+  async function preparedMapping() {
+    const { request } = buildSeatbeltShellRequest(input);
+    const sdk = dirname(createRequire(import.meta.url).resolve("@microsoft/mxc-sdk/package.json"));
+    const { prepareContainerRequest } = await import(pathToFileURL(join(sdk, "dist/v1/container.js")).href);
+    const { containerId, lifecycle, ...wire } = JSON.parse(JSON.stringify(prepareContainerRequest(mapSeatbeltShellRequest(request))));
+    return { request, wire };
+  }
+
+  it("maps every wire field, accepting only documented omitted process defaults", async () => {
+    const { request, wire } = await preparedMapping();
+    expect(wire.process).not.toHaveProperty("inheritDefaultEnv");
+    expect(request.process.inheritDefaultEnv).toBe(false);
+    expect({ ...wire, process: normalizeProcessDefaults(wire.process) }).toStrictEqual(request);
+  });
+
+  it("rejects omission of a wire field outside the documented default allow-list", async () => {
+    const { request, wire } = await preparedMapping();
+    delete wire.process.commandLine;
+    expect(() => expect({ ...wire, process: normalizeProcessDefaults(wire.process) }).toStrictEqual(request)).toThrow();
+  });
 
   it("serializes one profile override and admits the carved cwd with an explicit environment", () => {
     const { request } = buildSeatbeltShellRequest(input);

@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { createLogger } from "../lib/logger.js";
 import { raceWithTimeout } from "../shared/abortable-deadline.js";
 import type { SandboxMacContainerShellSupport, SandboxMacContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
@@ -19,7 +20,7 @@ import { quoteSandboxWrappedWord } from "./sandbox-wrapped-command.js";
 const PROXY_ENV_KEYS = new Set(["http_proxy", "https_proxy", "all_proxy", "no_proxy", "ftp_proxy"]);
 
 class SeatbeltShellRequestError extends Error {
-  constructor(readonly code: "cwd-ungranted" | "proxy-invalid", message: string) {
+  constructor(readonly code: "cwd-ungranted" | "proxy-invalid" | "env-invalid", message: string) {
     super(message);
     this.name = "SeatbeltShellRequestError";
   }
@@ -62,6 +63,29 @@ export function buildSeatbeltShellRequest(input: {
       seatbelt: { profileOverride, nestedPty: false },
       ui: { disable: true, clipboard: "none", injection: false },
     },
+  };
+}
+
+export function mapSeatbeltShellRequest(wire: ReturnType<typeof buildSeatbeltShellRequest>["request"]): ContainerRequest {
+  const { process, seatbelt, filesystem, network, runtimeConfig, ui } = wire;
+  return {
+    command: process.commandLine,
+    workingDirectory: process.cwd,
+    timeoutMs: process.timeout,
+    environment: Object.fromEntries(process.env.map((entry) => {
+      const separator = entry.indexOf("=");
+      if (separator <= 0) throw new SeatbeltShellRequestError("env-invalid", "Invalid container environment entry");
+      return [entry.slice(0, separator), entry.slice(separator + 1)];
+    })),
+    inheritDefaultEnvironment: process.inheritDefaultEnv,
+    containment: { type: "seatbelt", config: seatbelt },
+    filesystem: {
+      readwritePaths: [...filesystem.readwritePaths],
+      readonlyPaths: [...filesystem.readonlyPaths],
+      deniedPaths: [...filesystem.deniedPaths],
+    },
+    network: { ...network as ContainerRequest["network"], runtimeConfig },
+    ui: { disable: ui.disable, clipboard: ui.clipboard as NonNullable<ContainerRequest["ui"]>["clipboard"], allowInputInjection: ui.injection },
   };
 }
 

@@ -44,6 +44,7 @@ export const TOOL_TIMEOUT_POLICY = {
   // The canary's backend timeout fires before the host bounds a stalled launcher.
   mxcMacShellProbeMs: 5_000,
   mxcMacShellProbeGraceMs: 2_000,
+  mxcMacShellStopMs: 12_000,
   // Give the supervisor time to reap descendants after its own deadline or a child signal.
   mxcMacShellReapGraceMs: 2_000,
   mxcMacShellChildLookupMs: 250,

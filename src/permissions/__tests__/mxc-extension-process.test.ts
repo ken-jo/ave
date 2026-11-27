@@ -1,9 +1,13 @@
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { createMxcNativeProcess } from "../../__tests__/support/mxc-supervisor.js";
 import { describe, expect, it, vi } from "vitest";
 import { MxcNativeProcess } from "../mxc-native-process.js";
 import { MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "../mxc-extension-errors.js";
 import { mxcModuleDiagnostics, encodeMxcFrame, MxcFrameDecoder, MXC_FRAME_MAX_BYTES, MXC_START_EVIDENCE_FIELDS, MXC_STREAM_CHUNK_BYTES, type MxcStreamFrame } from "../mxc-extension-protocol.js";
+import PINS from "../mxc-launcher-pins.json" with { type: "json" };
+import { SEATBELT_CLEANUP_WARNING } from "../mxc-shell-supervisor-service.js";
 
 const GENERATION = "a".repeat(64);
 const KEY = Buffer.alloc(32, 1);
@@ -11,6 +15,34 @@ const encode = (frame: MxcStreamFrame) => encodeMxcFrame(frame, KEY, "supervisor
 // What a ready frame must carry beside its diagnostics: the request it started and contract fields 1-5.
 const STARTED = { requestDigest: "c".repeat(64), startEvidence: { installedPayloadVerified: true, baseContainerReady: true,
   exactRequestAccepted: true, uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true } };
+
+describe("native shell supervisor protocol", () => {
+  const header = { version: 1, generation: GENERATION, sequence: 0 } as const;
+  const requestPath = resolve("request.json");
+  const shellStart = { ...header, type: "shell-start", requestPath, requestSha256: "c".repeat(64) } as const;
+
+  it("authenticates the staged start and native child receipts", () => {
+    const shellReady = { ...header, type: "shell-ready", id: 42 } as const;
+    const decoder = new MxcFrameDecoder(GENERATION, KEY, "host");
+    expect([...decoder.read(encodeMxcFrame(shellStart, KEY, "host"))]).toEqual([shellStart]);
+    const receipt = new MxcFrameDecoder(GENERATION, KEY, "supervisor");
+    expect([...receipt.read(encode(shellReady))]).toEqual([shellReady]);
+    expect(() => encode({ ...shellStart, requestSha256: "invalid" })).toThrow(MxcProcessContractError);
+    expect(() => encode({ ...shellStart, requestPath: "relative.json" })).toThrow(MxcProcessContractError);
+    expect(() => encode({ ...shellReady, id: 0 })).toThrow(MxcProcessContractError);
+  });
+
+  it("retains the SDK refusal code in the terminal frame", () => {
+    const refusal = { ...header, type: "error", code: "start-refused", sdkCode: "malformed_request", message: "Start refused" } as const;
+    const decoder = new MxcFrameDecoder(GENERATION, KEY, "supervisor");
+    expect([...decoder.read(encode(refusal))]).toEqual([refusal]);
+  });
+
+  it("matches the exit cleanup warning in the pinned native library", () => {
+    const library = join("node_modules", PINS.package, PINS.targets["darwin-arm64"].library.member);
+    expect(readFileSync(library).includes(SEATBELT_CLEANUP_WARNING)).toBe(true);
+  });
+});
 
 describe("owned native process state machine", () => {
   it("takes every stream before wait and disposes once after terminal drain", async () => {
