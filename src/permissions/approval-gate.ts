@@ -2666,8 +2666,8 @@ export class ApprovalGate {
       requestId: permissionLogId(requestId),
       sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
       choice: approvalLogChoice(resolvedDecision.choice),
-      answeredBy: approvalAnswererAuditToken(answeredBy),
       ...(outputBinding && {
+        answeredBy: approvalAnswererAuditToken(answeredBy),
         itemId: outputBinding.itemId,
         runId: permissionLogId(outputBinding.runId),
         stageId: permissionLogId(outputBinding.stageId),
