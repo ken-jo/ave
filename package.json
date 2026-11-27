@@ -514,6 +514,14 @@
           "to": "mxc/${arch}/lxc-exec"
         },
         {
+          "from": "resources/linux-shell-seccomp/${arch}/apply-seccomp",
+          "to": "linux-shell-seccomp/${arch}/apply-seccomp"
+        },
+        {
+          "from": "resources/licenses/linux-shell-seccomp",
+          "to": "licenses/linux-shell-seccomp"
+        },
+        {
           "from": "resources/licenses/mxc",
           "to": "licenses/mxc"
         }

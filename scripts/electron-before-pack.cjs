@@ -1,4 +1,5 @@
 const { execFileSync } = require("node:child_process");
+const { createHash } = require("node:crypto");
 const { join } = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { readFileSync } = require("node:fs");
@@ -23,6 +24,12 @@ module.exports = async function beforePack(context) {
   }
   if (platform === "linux") {
     const arch = { 1: "x64", 3: "arm64" }[context.arch];
+    if (!arch) throw new Error(`Unsupported Linux package architecture: ${context.arch}`);
+    const filter = join(projectRoot, "resources", "linux-shell-seccomp", arch, "apply-seccomp");
+    const filterPins = require("../src/permissions/mxc-linux-seccomp-pins.json");
+    if (createHash("sha256").update(readFileSync(filter)).digest("hex") !== filterPins[arch]) {
+      throw new Error(`Linux shell filter does not match its ${arch} pin`);
+    }
     const { stageMxcLauncher } = await import("./fetch-mxc.mjs");
     await stageMxcLauncher({ target: `linux-${arch}`, projectRoot });
     return;

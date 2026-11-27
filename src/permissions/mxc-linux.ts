@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { posix } from "node:path";
 import { promisify } from "node:util";
+import { createLogger } from "../lib/logger.js";
 import type { HostResources } from "../main/host-resources.js";
 import { containerTarget } from "../shared/container-platform.js";
 import { isRecord } from "../shared/is-record.js";
@@ -12,12 +13,14 @@ import type { SandboxContainerShellSupport, SandboxContainerShellUnavailableReas
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
 import { holdMxcLinuxPlaceholders } from "./mxc-linux-placeholders.js";
+import filterPins from "./mxc-linux-seccomp-pins.json" with { type: "json" };
 import { atOrUnder, canonicalPath, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants, type PosixPolicyLookups } from "./mxc-posix.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow } from "./policy-model.js";
 import { quoteSandboxWrappedWord as quote } from "./sandbox-wrapped-command.js";
 
 const runFile = promisify(execFile);
+const log = createLogger("mxc-linux");
 const SYSTEM_TOOL_DIRS = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 const LINUX_TOOLS = ["bwrap", "slirp4netns", "unshare", "nsenter", "ip", "iptables", "ip6tables", "iptables-restore", "ip6tables-restore"];
 const PROXY_VARIABLES = /^(?:https?|all|no|ftp)_proxy$/iu;
@@ -93,13 +96,14 @@ export interface MxcLinuxShellPrograms {
   readonly env: Readonly<Record<string, string>>;
 }
 
-const launcherChecks = new Map<string, Promise<boolean>>();
+const executableChecks = new Map<string, Promise<boolean>>();
 
-function verifyLinuxLauncher(launcher: string, expected: string): Promise<boolean> {
-  let verified = launcherChecks.get(launcher);
+function verifyLinuxExecutable(path: string, expected: string): Promise<boolean> {
+  const key = `${path}\0${expected}`;
+  let verified = executableChecks.get(key);
   if (verified === undefined) {
-    verified = readFile(launcher).then((bytes) => createHash("sha256").update(bytes).digest("hex") === expected, () => false);
-    launcherChecks.set(launcher, verified);
+    verified = readFile(path).then((bytes) => createHash("sha256").update(bytes).digest("hex") === expected, () => false);
+    executableChecks.set(key, verified);
   }
   return verified;
 }
@@ -107,23 +111,30 @@ function verifyLinuxLauncher(launcher: string, expected: string): Promise<boolea
 function linuxShellPrograms(resources: HostResources, arch: string) {
   const target = containerTarget("linux", arch);
   const launcher = launcherPathFor(resources.resourcePath, "linux", arch);
-  const helper = target === undefined ? undefined : posix.join(resources.resourcePath, "linux-shell-seccomp", arch, "apply-seccomp");
+  const helperArch = arch === "arm64" || arch === "x64" ? arch : undefined;
+  const helper = helperArch === undefined ? undefined : posix.join(resources.resourcePath, "linux-shell-seccomp", helperArch, "apply-seccomp");
   const directories = trustedLinuxPath(process.env.PATH);
   return {
-    target, launcher, helper, directories,
+    target, launcher, helper, helperArch, directories,
     env: { PATH: directories.join(":"), LC_ALL: "C" },
   };
 }
 
 export async function detectHostMxcLinuxShellSupport(resources: HostResources, signal?: AbortSignal): Promise<SandboxContainerShellSupport> {
   signal?.throwIfAborted();
-  const { target, launcher, helper, directories, env } = linuxShellPrograms(resources, process.arch);
+  const { target, launcher, helper, helperArch, directories, env } = linuxShellPrograms(resources, process.arch);
   const probeOptions = { env, signal, timeout: TOOL_TIMEOUT_POLICY.mxcLinuxShellProbeMs, killSignal: "SIGKILL" as const };
   return detectMxcLinuxShellSupport({
     supportedHelper: helper !== undefined && executable(helper),
     launcherExists: launcher !== undefined && executable(launcher),
-    verifyLauncher: () => launcher !== undefined && target !== undefined
-      ? verifyLinuxLauncher(launcher, pinnedLauncherSha256(target)) : Promise.resolve(false),
+    async verifyLauncher() {
+      if (launcher === undefined || target === undefined || helper === undefined || helperArch === undefined) return false;
+      const [launcherVerified, helperVerified] = await Promise.all([
+        verifyLinuxExecutable(launcher, pinnedLauncherSha256(target)),
+        verifyLinuxExecutable(helper, filterPins[helperArch]),
+      ]);
+      return launcherVerified && helperVerified;
+    },
     requireRuntimeRoot: requireMxcContainerStartRoot,
     missingTools: () => LINUX_TOOLS.filter(tool => {
       const candidate = directories.map(directory => posix.join(directory, tool)).find(executable);
@@ -226,14 +237,16 @@ async function runLinuxCanary(root: string, programs: MxcLinuxShellPrograms, sig
     const lookups = posixPolicyLookups(working, false);
     const held = await holdMxcLinuxPlaceholders(lookups, (current) => rankPosixContainerRows(model, "bubblewrap", current));
     try {
+      const connectTimeout = TOOL_TIMEOUT_POLICY.mxcLinuxShellProbeConnectionMs / 1000;
+      const connect = (port: number) => `/usr/bin/timeout ${connectTimeout} /bin/bash -c 'exec 3<>/dev/tcp/10.0.2.2/${port}'`;
       const commandLine = [
         "printf 'boundary-control\\n' > control && /bin/cat control || exit 11",
         `if /bin/cat ${quote(posix.join(sealed, "secret"))}; then exit 12; fi`,
         `if (printf x > ${quote(posix.join(sealed, "new"))}); then exit 13; fi`,
         "if /bin/mv -T control-parent renamed; then exit 14; fi",
         "printf sibling > control-parent/sibling || exit 15",
-        `/bin/bash -c 'exec 3<>/dev/tcp/10.0.2.2/${proxyPort}' || exit 16`,
-        `if /bin/bash -c 'exec 3<>/dev/tcp/10.0.2.2/${otherPort}'; then exit 17; fi`,
+        `${connect(proxyPort)} || exit 16`,
+        `if ${connect(otherPort)}; then exit 17; fi`,
         `${quote(programs.helper)} --check-unix-socket u || exit 18`,
         "if unshare -Ur /bin/true; then exit 19; fi",
       ].join("\n");
@@ -260,8 +273,10 @@ async function runLinuxCanary(root: string, programs: MxcLinuxShellPrograms, sig
     } finally {
       await held.release();
     }
-  } catch {
+  } catch (error) {
     signal?.throwIfAborted();
+    log.warn("Linux container canary failed (%s): %s", isRecord(error) ? error.code : undefined,
+      error instanceof Error ? error.message : String(error));
     return "shell-start-failed" as const;
   } finally {
     proxy.close();
