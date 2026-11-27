@@ -1,6 +1,8 @@
 import { createSocket } from "node:dgram";
-import { createServer } from "node:net";
+import { lstat, readdir, readFile } from "node:fs/promises";
+import { connect, createServer } from "node:net";
 import { networkInterfaces } from "node:os";
+import { posix } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import type { ContainerRawIpUnknownReason, ContainerRawIpVerdict } from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
@@ -44,7 +46,7 @@ export function classifyLinuxRawIpTarget(result: string | undefined): RawIpTarge
   return { class: "inconclusive", kind: "unclassified" };
 }
 
-type RawIpTargetName = "T4" | "T6" | "TL" | "UA";
+type RawIpTargetName = "T4" | "T6" | "TL" | "TA" | "UA";
 
 /** What the prober printed; a missing or malformed line is absent. */
 export interface LinuxRawIpProbeOutput {
@@ -59,7 +61,7 @@ export function parseLinuxRawIpProbeOutput(text: string): LinuxRawIpProbeOutput 
   let control: LinuxRawIpProbeOutput["control"];
   let interfaces: string[] | undefined;
   for (const line of text.split("\n")) {
-    const [, name, value] = /^(T4|T6|TL|UA) (\S.*)$/u.exec(line) ?? [];
+    const [, name, value] = /^(T4|T6|TL|TA|UA) (\S.*)$/u.exec(line) ?? [];
     if (name !== undefined && value !== undefined && targets[name as RawIpTargetName] === undefined) {
       targets[name as RawIpTargetName] = value;
     }
@@ -83,6 +85,13 @@ export interface LinuxRawIpMeasurement {
   readonly tlRan: boolean;
   /** The UDP nonce reached the host-side listener. */
   readonly udpArrived: boolean;
+  /**
+   * The host-side TCP arrival listener on the host's primary IPv4, absent when it could not be opened: whether an
+   * unconfined connect from this process reached it before the run, and whether anything else connected to it.
+   */
+  readonly arrival?: { readonly controlPassed: boolean; readonly arrived: boolean };
+  /** The launcher's firewall for this container, read while it ran, drops every egress but loopback and the proxy. */
+  readonly firewallDrops: boolean;
 }
 
 function unknown(reason: ContainerRawIpUnknownReason): ContainerRawIpVerdict {
@@ -101,22 +110,40 @@ export function linuxRawIpVerdict(measurement: LinuxRawIpMeasurement): Container
   const t4 = classifyLinuxRawIpTarget(output.targets.T4);
   const t6 = classifyLinuxRawIpTarget(output.targets.T6);
   const tl = measurement.tlRan ? classifyLinuxRawIpTarget(output.targets.TL) : undefined;
-  // Rule 2: anything that reached a peer, by TCP or by the UDP arrival check.
-  const reached = ([["T4", t4], ["T6", t6], ["TL", tl]] as const).filter(([, result]) => result?.class === "allowed")
+  const ta = measurement.arrival === undefined ? undefined : classifyLinuxRawIpTarget(output.targets.TA);
+  // Rule 2: anything that reached a peer, by TCP, by the TCP arrival listener or by the UDP arrival check.
+  const reached = ([["T4", t4], ["T6", t6], ["TL", tl], ["TA", ta]] as const).filter(([, result]) => result?.class === "allowed")
     .map(([name]) => name as string);
+  if (measurement.arrival?.arrived === true) reached.push("tcp-arrival");
   if (measurement.udpArrived) reached.push("udp");
   if (reached.length > 0) {
     log.warn(`raw-ip-reachable (${reached.join(", ")})`);
     return unknown("raw-ip-reachable");
   }
   // Owner ruling: with no IPv6 route, a network namespace holding nothing but `lo` is structural evidence for T6.
-  const onlyLoopback = output.interfaces !== undefined && output.interfaces.length === 1 && output.interfaces[0] === "lo";
+  const interfaces = output.interfaces;
+  const onlyLoopback = interfaces !== undefined && interfaces.length === 1 && interfaces[0] === "lo";
   const t6Structural = t6.class === "inconclusive" && t6.kind === "no-route" && onlyLoopback;
+  // Owner ruling (2): on a backend that drops direct TCP, a dropped target is refused-arrival only when the arrival
+  // listener took the unconfined control, recorded nothing from the container, and the structure holds: the netns has
+  // only `lo` and the backend's `tap0`, and the launcher's firewall drops egress by default.
+  const structure = interfaces !== undefined && interfaces.length === 2 && interfaces[0] === "lo" && interfaces[1] === "tap0"
+    && measurement.firewallDrops;
+  const arrivalHolds = measurement.arrival?.controlPassed === true && structure;
+  const refusedArrival = (result: RawIpTargetResult) =>
+    arrivalHolds && result.class === "inconclusive" && (result.kind === "timeout" || result.kind === "no-route");
+  const t4Refused = t4.class === "refused-local" || refusedArrival(t4);
+  const t6Refused = t6.class === "refused-local" || t6Structural || refusedArrival(t6);
   // Rule 3.
-  if (t4.class === "refused-local" && (t6.class === "refused-local" || t6Structural) && tl !== undefined) {
-    const evidence = t6.class === "refused-local" ? "measured" : "structural";
-    log.info(`raw-ip blocked, evidence ${evidence}`);
-    return { verdict: "blocked", evidenceKind: evidence };
+  if (t4Refused && t6Refused && tl !== undefined) {
+    const evidenceKind = t4.class !== "refused-local" || (t6.class !== "refused-local" && !t6Structural) ? "arrival"
+      : t6.class === "refused-local" ? "measured" : "structural";
+    log.info(`raw-ip blocked, evidence ${evidenceKind}`);
+    return { verdict: "blocked", evidenceKind };
+  }
+  if (measurement.arrival !== undefined && (t4.class === "inconclusive" || t6.class === "inconclusive")) {
+    log.info(`raw-ip arrival evidence incomplete (control ${measurement.arrival.controlPassed ? "passed" : "failed"}, `
+      + `interfaces ${interfaces?.join(",") ?? "unread"}, firewall ${measurement.firewallDrops ? "drops" : "unread"})`);
   }
   // Rule 4.
   if (tl === undefined) return unknown("no-evidence");
@@ -179,18 +206,167 @@ async function openUdpArrival(address: string, nonce: string) {
 }
 
 /**
- * The host-side TL and UDP targets on the host's primary IPv4. A host whose address cannot be bound runs neither, so
- * the verdict is `unknown`; it never makes the container itself unavailable.
+ * A host-side TCP listener for the arrival evidence. `control()` proves it reachable by an unconfined connect from this
+ * process; every other connection it accepts, with or without a payload, is an arrival. The container's address is
+ * not told apart by its source, since the backend translates it; only the control's own source port is excluded.
+ */
+async function openTcpArrival(address: string) {
+  const accepts: { readonly address: string | undefined; readonly port: number | undefined }[] = [];
+  let control: { readonly address: string; readonly port: number } | undefined;
+  let notify: (() => void) | undefined;
+  const isControl = (accept: (typeof accepts)[number]) => control !== undefined && accept.address === control.address
+    && accept.port === control.port;
+  const server = createServer((socket) => {
+    accepts.push({ address: socket.remoteAddress, port: socket.remotePort });
+    socket.destroy();
+    notify?.();
+  });
+  const port = await new Promise<number>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, address, () => {
+      const bound = server.address();
+      if (bound === null || typeof bound === "string") reject(new Error("Invalid raw-IP arrival port"));
+      else resolve(bound.port);
+    });
+  });
+  return {
+    port,
+    /** Whether any connection but the control's reached the listener; one before the control is an arrival too. */
+    get arrived() { return accepts.some((accept) => !isControl(accept)); },
+    /** Connects from this unconfined process and waits, up to the per-target deadline, for the listener to take it. */
+    async control(): Promise<boolean> {
+      await new Promise<void>((resolve) => {
+        const client = connect({ host: address, port });
+        const timer = setTimeout(done, TOOL_TIMEOUT_POLICY.mxcLinuxRawIpTargetMs);
+        function done() { clearTimeout(timer); notify = undefined; client.destroy(); resolve(); }
+        const check = () => { if (accepts.some(isControl)) done(); };
+        client.once("connect", () => {
+          if (client.localAddress !== undefined && client.localPort !== undefined) {
+            control = { address: client.localAddress, port: client.localPort };
+          }
+          notify = check;
+          check();
+        });
+        client.once("error", done);
+      });
+      return accepts.some(isControl);
+    },
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+/**
+ * The host-side TL, TCP arrival and UDP targets on the host's primary IPv4. A host whose address cannot be bound runs
+ * none of them, so the verdict is `unknown`; it never makes the container itself unavailable.
  */
 export async function openLinuxRawIpHostTargets(address: string | undefined, nonce: string) {
   if (address === undefined) return undefined;
+  const opened: { close(): Promise<void> }[] = [];
   try {
     const closedPort = await closedPortOn(address);
+    const tcp = await openTcpArrival(address);
+    opened.push(tcp);
     const udp = await openUdpArrival(address, nonce);
-    return { address, closedPort, udp };
+    opened.push(udp);
+    return { address, closedPort, tcp, udp, close: async () => { await Promise.all(opened.map((target) => target.close())); } };
   } catch (error) {
+    await Promise.all(opened.map((target) => target.close()));
     log.warn(`raw-ip host targets unavailable on ${address}: ${(error as NodeJS.ErrnoException).code ?? "error"}`);
     return undefined;
+  }
+}
+
+/** The slirp4netns gateway, where the launcher's firewall lets the container reach its proxy. */
+const SLIRP_GATEWAY = "10.0.2.2";
+
+/**
+ * Whether one address family's `iptables-restore` payload, as the pinned launcher writes it, drops every egress
+ * except loopback and, for IPv4, TCP to the proxy port. Only the payload shape this launcher writes is understood:
+ * any other table, chain, policy or rule, or an egress chain that does not end in DROP, is no evidence.
+ */
+export function linuxFirewallPayloadDrops(payload: string, family: 4 | 6, proxyPort: number): boolean {
+  // Rules before the closing DROP may only accept loopback or the proxy, or drop.
+  const allowed = new Set(["-o lo -j ACCEPT", "-j DROP", ...(family === 4 ? [`-p tcp -d ${SLIRP_GATEWAY} --dport ${proxyPort} -j ACCEPT`] : [])]);
+  const egress: string[] = [];
+  let outputJumps = 0;
+  let inFilter = false;
+  let committed = 0;
+  for (const raw of payload.split("\n")) {
+    const line = raw.trim();
+    if (line === "") continue;
+    if (line === "*filter" && !inFilter) { inFilter = true; continue; }
+    if (!inFilter) return false;
+    if (line === "COMMIT") { inFilter = false; committed += 1; continue; }
+    if (line === ":MXC_EGRESS - [0:0]" || line === ":MXC_INGRESS - [0:0]" || line === "-A INPUT -j MXC_INGRESS") continue;
+    if (line.startsWith("-A MXC_INGRESS ")) continue;
+    if (line === "-A OUTPUT -j MXC_EGRESS") { outputJumps += 1; continue; }
+    if (line.startsWith("-A MXC_EGRESS ")) { egress.push(line.slice("-A MXC_EGRESS ".length)); continue; }
+    return false;
+  }
+  return !inFilter && committed > 0 && outputJumps === 1 && egress.at(-1) === "-j DROP"
+    && egress.slice(0, -1).every((rule) => allowed.has(rule));
+}
+
+const SUPERVISOR_NAME = "mxc-bwrap-proxy-supervisor";
+const STATE_DIR = /^mxc-bwrap-proxy-[A-Za-z0-9]+$/u;
+
+async function ownedBy(path: string, kind: "directory" | "file"): Promise<boolean> {
+  const stats = await lstat(path);
+  return stats.uid === process.getuid?.() && (kind === "directory" ? stats.isDirectory() : stats.isFile());
+}
+
+/** The pinned launcher's network supervisor among `launcherPid`'s children, and the state folder it was handed. */
+async function supervisorStateDir(launcherPid: number): Promise<string | undefined> {
+  const tasks = await readdir(`/proc/${launcherPid}/task`);
+  for (const task of tasks) {
+    const children = (await readFile(`/proc/${launcherPid}/task/${task}/children`, "utf8")).trim().split(/\s+/u);
+    for (const child of children) {
+      if (!/^\d+$/u.test(child)) continue;
+      const argv = (await readFile(`/proc/${child}/cmdline`, "utf8").catch(() => "")).split("\0");
+      // `sh -c <script> mxc-bwrap-proxy-supervisor <state dir> ...`: the script's `$0` and `$1`.
+      if (argv[1] !== "-c" || argv[3] !== SUPERVISOR_NAME) continue;
+      const dir = argv[4];
+      if (dir !== undefined && posix.isAbsolute(dir) && STATE_DIR.test(posix.basename(dir))) return dir;
+    }
+  }
+  return undefined;
+}
+
+/** One family's payload files in transaction order, or undefined when the folder holds none. */
+async function familyPayload(dir: string, family: 4 | 6): Promise<string | undefined> {
+  const names = (await readdir(dir)).filter((name) => new RegExp(`^rules\\.v${family}\\.\\d{3}$`, "u").test(name)).sort();
+  if (names.length === 0) return undefined;
+  const parts: string[] = [];
+  for (const name of names) {
+    const path = posix.join(dir, name);
+    if (!await ownedBy(path, "file")) return undefined;
+    parts.push(await readFile(path, "utf8"));
+  }
+  return parts.join("\n");
+}
+
+/**
+ * Reads the firewall the launcher programmed for this container, from the payloads its network supervisor applied,
+ * once `started()` says the contained command runs (so the rules are in force). The container itself cannot read
+ * them: it holds no capability in its network namespace. Anything unexpected, or the run ending first, is no evidence.
+ */
+export async function readLinuxLauncherFirewall(
+  launcherPid: number, proxyPort: number, started: () => Promise<boolean>, ended: () => boolean,
+): Promise<boolean> {
+  try {
+    for (;;) {
+      if (ended()) return false;
+      if (await started()) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const dir = await supervisorStateDir(launcherPid);
+    if (dir === undefined || !await ownedBy(dir, "directory")) return false;
+    const [v4, v6] = await Promise.all([familyPayload(dir, 4), familyPayload(dir, 6)]);
+    return v4 !== undefined && v6 !== undefined && !ended()
+      && linuxFirewallPayloadDrops(v4, 4, proxyPort) && linuxFirewallPayloadDrops(v6, 6, proxyPort);
+  } catch (error) {
+    log.warn(`raw-ip launcher firewall unreadable: ${(error as NodeJS.ErrnoException).code ?? "error"}`);
+    return false;
   }
 }
 
@@ -198,12 +374,13 @@ export async function openLinuxRawIpHostTargets(address: string | undefined, non
  * The in-container prober: bash only, since the canary may not assume any interpreter beyond the shell. Every target
  * runs at once and each one has the per-target deadline, so the whole probe takes about one deadline. A target with
  * no result by then prints `deadline`. Results go to stdout only, which the canary sends to the prober's own file.
- * Arguments: deadline seconds, nonce, TL and UDP host (or "-" for none), TL port, UDP port. The control CONNECT goes
+ * Arguments: deadline seconds, nonce, host-side target host (or "-" for none), TL port, UDP port, TCP arrival port. The
+ * control CONNECT goes
  * to the container's own `HTTPS_PROXY`, which the launcher sets to the invocation listener.
  */
 export const LINUX_RAW_IP_PROBER = String.raw`set -u
 export LC_ALL=C
-deadline=$1 nonce=$2 host=$3 closed=$4 udp=$5
+deadline=$1 nonce=$2 host=$3 closed=$4 udp=$5 arrival=$6
 mkdir raw-ip.d || exit 0
 result() { printf '%s %s\n' "$1" "$2" > "raw-ip.d/$1.t" && mv "raw-ip.d/$1.t" "raw-ip.d/$1"; }
 failure() { local e; e=$(< "raw-ip.d/$1.err"); e=${"$"}{e##*: }; e=${"$"}{e//$'\n'/ }; result "$1" "${"$"}{e:-unclassified}"; }
@@ -229,8 +406,9 @@ control & pids=$!
 tcp T4 /dev/tcp/192.0.2.1/443 & pids="$pids $!"
 tcp T6 /dev/tcp/2001:db8::1/443 & pids="$pids $!"
 if [ "$host" != - ]; then
-  names="$names TL UA"
+  names="$names TL TA UA"
   tcp TL "/dev/tcp/$host/$closed" & pids="$pids $!"
+  tcp TA "/dev/tcp/$host/$arrival" & pids="$pids $!"
   datagram "/dev/udp/$host/$udp" & pids="$pids $!"
 fi
 for ((i = 0; i < deadline * 10; i++)); do
@@ -256,6 +434,8 @@ printf 'IF %s\n' "$interfaces"
 /** The prober's arguments, in its order. */
 export function linuxRawIpProberArguments(input: {
   readonly nonce: string; readonly host: string | undefined; readonly closedPort: number | undefined; readonly udpPort: number | undefined;
+  readonly arrivalPort: number | undefined;
 }): readonly string[] {
-  return [String(TARGET_DEADLINE_S), input.nonce, input.host ?? "-", String(input.closedPort ?? 0), String(input.udpPort ?? 0)];
+  return [String(TARGET_DEADLINE_S), input.nonce, input.host ?? "-", String(input.closedPort ?? 0), String(input.udpPort ?? 0),
+    String(input.arrivalPort ?? 0)];
 }

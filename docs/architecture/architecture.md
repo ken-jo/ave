@@ -3461,13 +3461,24 @@ to its own file, so it cannot change availability. The control is a CONNECT
 through the container's proxy to a per-boot `<nonce>.localhost`. The
 container must read the listener's 403 refusal, and the host must record the
 nonce. The other targets are `192.0.2.1:443` and `[2001:db8::1]:443`, a
-just-closed port on the host's primary IPv4, and a UDP nonce sent to a
-host-side listener, which is checked by arrival only. `rawIp` is `blocked`
-only when the control passed, both documentation addresses were refused
-locally (EPERM or EACCES), and nothing reached the host. With no IPv6 route, a
-network namespace holding only `lo` stands in for the IPv6 target. The
-launcher's slirp4netns network drops direct connects rather than refusing them,
-and its namespace has `tap0`, so this backend measures `unknown` (timeout).
+just-closed port and a TCP arrival listener on the host's primary IPv4, and a
+UDP nonce sent to a host-side listener, which is checked by arrival only. `rawIp` is `blocked`
+only when the control passed, both documentation addresses were refused, and
+nothing reached the host. A refusal is local (EPERM or EACCES), or, for the IPv6
+target with no route, a network namespace holding only `lo`.
+The launcher's slirp4netns network drops direct connects rather than refusing
+them, so on it a timeout alone is never evidence. A dropped target counts as
+refused by arrival only when all of these hold:
+- a TCP listener on the host's primary IPv4 took an unconfined connect from Ave;
+- the listener recorded nothing else while the container also connected to it;
+- the namespace holds only `lo` and `tap0`;
+- the firewall the launcher programmed drops all egress but loopback and the
+  proxy. The container cannot read its own firewall, so Ave reads the restore
+  payloads the launcher's network supervisor applied while the container runs.
+
+Any arrival, at either listener, makes the verdict `unknown`, and a listener
+that cannot bind leaves it `unknown` without making the container unavailable.
+The published evidence kind is `measured`, `structural` or `arrival`.
 The verdict lives in memory for the boot. An unmeasured or unavailable
 container reports `unknown`. Settings names
 missing packages and provides distribution-specific install commands. An

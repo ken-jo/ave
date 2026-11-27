@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { posix } from "node:path";
 import { promisify } from "node:util";
@@ -19,6 +19,7 @@ import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
 import { holdMxcLinuxPlaceholders } from "./mxc-linux-placeholders.js";
 import {
   LINUX_RAW_IP_PROBER, linuxRawIpProberArguments, linuxRawIpVerdict, openLinuxRawIpHostTargets, parseLinuxRawIpProbeOutput, primaryIpv4,
+  readLinuxLauncherFirewall,
 } from "./mxc-linux-raw-ip.js";
 import filterPins from "./mxc-linux-seccomp-pins.json" with { type: "json" };
 import { atOrUnder, canonicalPath, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants, type PosixPolicyLookups } from "./mxc-posix.js";
@@ -299,9 +300,14 @@ async function listenLoopback(server: Server): Promise<number> {
   return address.port;
 }
 
-/** Native tests only: replace the prober text to drive the raw-IP failure and control cases. */
+/** Native tests only: drive the raw-IP failure and control cases. */
 interface LinuxCanaryTestOverrides {
+  /** Replaces the prober text. */
   readonly prober?: string;
+  /** Replaces the host's primary IPv4 the host-side targets bind. */
+  readonly hostAddress?: string;
+  /** Runs while the container runs, with the TCP arrival listener's address, to force an arrival. */
+  readonly duringRun?: (arrival: { readonly address: string; readonly port: number }) => Promise<void>;
 }
 
 async function runLinuxCanary(
@@ -340,8 +346,10 @@ async function runLinuxCanary(
       unix.once("error", reject);
       unix.listen(posix.join(working, "u"), resolve);
     });
-    targets = await openLinuxRawIpHostTargets(primaryIpv4(), nonce);
+    targets = await openLinuxRawIpHostTargets(overrides.hostAddress ?? primaryIpv4(), nonce);
     const udp = targets?.udp;
+    // Measured, not assumed: the arrival listener must take an unconfined connect before the container runs.
+    const arrivalControl = targets === undefined ? false : await targets.tcp.control();
     const lookups = posixPolicyLookups(working, false);
     const held = await holdMxcLinuxPlaceholders(lookups, (current) => rankPosixContainerRows(model, "bubblewrap", current));
     try {
@@ -361,8 +369,9 @@ async function runLinuxCanary(
       // Availability is decided by the checks above alone: their status is taken first, and the raw-IP prober writes
       // only to its own file, so nothing it does or prints can change it. It runs only after availability passed, and
       // the watcher bounds it, so a stalled prober leaves only missing lines.
-      const proberArguments = linuxRawIpProberArguments({ nonce, host: targets?.address, closedPort: targets?.closedPort, udpPort: udp?.port })
-        .map(quote).join(" ");
+      const proberArguments = linuxRawIpProberArguments({
+        nonce, host: targets?.address, closedPort: targets?.closedPort, udpPort: udp?.port, arrivalPort: targets?.tcp.port,
+      }).map(quote).join(" ");
       const commandLine = [
         "(", ...availability, ")",
         "status=$?",
@@ -386,7 +395,16 @@ async function runLinuxCanary(
       held.validate();
       const execution = runFile(programs.launcher, ["--config", config], options);
       const pid = execution.child.pid;
-      const [{ stdout }] = await Promise.all([execution, pid === undefined ? undefined : held.recordLauncher(pid)]);
+      let ended = false;
+      const settled = execution.then(() => { ended = true; }, () => { ended = true; });
+      // The availability checks write `control` first, inside the running container, so the rules are in force by then.
+      const firewall = pid === undefined ? Promise.resolve(false) : readLinuxLauncherFirewall(pid, proxyPort,
+        () => stat(posix.join(working, "control")).then(() => true, () => false), () => ended);
+      const forced = targets === undefined || overrides.duringRun === undefined ? undefined
+        : overrides.duringRun({ address: targets.address, port: targets.tcp.port });
+      const [{ stdout }, firewallDrops] = await Promise.all([
+        execution, firewall, pid === undefined ? undefined : held.recordLauncher(pid), forced, settled,
+      ]);
       const control = await readFile(posix.join(working, "control"), "utf8");
       if (hostConnected || stdout !== "boundary-control\n" || control !== stdout) return { state: "shell-start-failed" };
       // A prober that left no readable output is no evidence; it never makes the container unavailable.
@@ -397,7 +415,8 @@ async function runLinuxCanary(
       const udpArrived = udp !== undefined && output?.targets.UA === "0" ? await udp.settle() : udp?.arrived === true;
       const rawIp = linuxRawIpVerdict({
         ran: true, ...(output === undefined ? {} : { output }), expectedStatus: INVOCATION_PROXY_REFUSED_STATUS,
-        nonceRecorded, tlRan: targets !== undefined, udpArrived,
+        nonceRecorded, tlRan: targets !== undefined, udpArrived, firewallDrops,
+        ...(targets === undefined ? {} : { arrival: { controlPassed: arrivalControl, arrived: targets.tcp.arrived } }),
       });
       return { state: "available", rawIp };
     } finally {
@@ -409,7 +428,7 @@ async function runLinuxCanary(
     return { state: "shell-start-failed" };
   } finally {
     await proxy?.close();
-    await targets?.udp.close();
+    await targets?.close();
     host.close();
     unix.close();
     await rm(scratch, { recursive: true, force: true });
