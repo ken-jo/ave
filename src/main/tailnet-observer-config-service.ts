@@ -160,7 +160,7 @@ function recommendedConfig(port: number): TailnetObserverConfigView {
 export function createTailnetObserverConfigService(
   options: TailnetObserverConfigServiceOptions,
 ): TailnetObserverConfigService {
-  const readConfigFile = options.readConfigFile ?? (() => readTailnetObserverConfigFile());
+  const readConfigFile = options.readConfigFile ?? (() => readTailnetObserverConfigFile(undefined, options.env));
   const writeConfigFile = options.writeConfigFile
     ?? ((file: TailnetObserverConfigFile) => writeTailnetObserverConfigFile(file));
   const runtimeState = options.runtimeState ?? getTailnetObserverRuntimeState;

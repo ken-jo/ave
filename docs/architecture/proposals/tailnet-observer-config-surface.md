@@ -184,7 +184,8 @@ the controller are only reachable there.
 
 **The port rule.** Guided setup uses the saved port or the shared default for a
 fresh configuration. A saved file without a port inherits the previous default
-of 46173 and is migrated to record that port explicitly. The listener attempts
+of 46173. The file records that port when the observer is enabled or the owner
+saves Settings. The listener attempts
 one fixed port. A blocked bind reports its code and port in the Settings
 snapshot so the owner can choose another port in the manual form.
 

@@ -309,6 +309,7 @@ export function resolveTailnetObserverConfig(
 
 export async function readTailnetObserverConfigFile(
   namespace: FeatureNamespaceHandle = openFeatureNamespace(TAILNET_FEATURE_NAMESPACE),
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<TailnetObserverConfigFile | null> {
   const path = join(namespace.dir, TAILNET_OBSERVER_CONFIG_FILE);
   return withInProcessFileQueue(path, async () => {
@@ -316,6 +317,7 @@ export async function readTailnetObserverConfigFile(
     if (file === null || file.port !== undefined) return file;
 
     const migrated = Object.freeze({ ...file, port: LEGACY_TAILNET_OBSERVER_PORT });
+    if (!(tailnetObserverEnableOverride(env) ?? file.enabled)) return migrated;
     try {
       await namespace.writeJson(TAILNET_OBSERVER_CONFIG_FILE, migrated);
     } catch {
@@ -364,7 +366,7 @@ export async function loadTailnetObserverConfig(options: {
   // @internal deterministic injection; production reads the host-owned file.
   readonly readConfigFile?: () => Promise<TailnetObserverConfigFile | null>;
 } = {}): Promise<TailnetObserverResolution> {
-  const read = options.readConfigFile ?? (() => readTailnetObserverConfigFile());
+  const read = options.readConfigFile ?? (() => readTailnetObserverConfigFile(undefined, options.env));
   const file = await read();
   return resolveFromLayers(
     file === null ? {} : fileLayer(file),
@@ -416,10 +418,11 @@ export function getTailnetObserverRuntimeState(): TailnetObserverRuntimeState {
 
 function dependencies(
   overrides: Partial<TailnetObserverServerDependencies> | undefined,
+  env: NodeJS.ProcessEnv | undefined,
 ): TailnetObserverServerDependencies {
   return {
     startServer: startTailnetSurfaceServer,
-    readConfigFile: () => readTailnetObserverConfigFile(),
+    readConfigFile: () => readTailnetObserverConfigFile(undefined, env),
     probeEnvironment: () => probeTailscaleEnvironment(),
     openTailnetNamespace: () => openFeatureNamespace(TAILNET_FEATURE_NAMESPACE),
     ...overrides,
@@ -601,7 +604,7 @@ async function startForBoot(
 ): Promise<TailnetObserverServer | null> {
   portBlock = null;
   // This must run before listener construction. A disabled observer opens no port and starts no Tailnet-specific transport side effect.
-  const resolved = dependencies(options.dependencies);
+  const resolved = dependencies(options.dependencies, options.env);
   const { config } = await loadTailnetObserverConfig({
     ...(options.env === undefined ? {} : { env: options.env }),
     readConfigFile: resolved.readConfigFile,

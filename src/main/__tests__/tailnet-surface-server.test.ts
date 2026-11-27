@@ -1,5 +1,5 @@
 async function runGuardedOwnerOperation<T>(guard: () => void, operation: () => Promise<T>): Promise<T> { guard(); const result = await operation(); guard(); return result; }
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 import { DEFAULT_TAILNET_OBSERVER_PORT, TAILNET_OBSERVER_PORT_BLOCKED } from "../../shared/tailnet-observer-config.js";
@@ -732,6 +732,48 @@ describe("Tailnet observer configuration surface", () => {
       environment: { serveConfigured: true, serveTargetPort: port },
     });
     expect(JSON.parse(await readFile(join(dir, "observer.json"), "utf8"))).toEqual({ ...legacy, port });
+  });
+
+  it.each([
+    { enabled: undefined, env: {} },
+    { enabled: true, env: { AVE_TAILNET_OBSERVER: "0" } },
+  ])("preserves disabled legacy file bytes across boot and Settings refresh (%j)", async ({ enabled, env }) => {
+    const port = 46_173;
+    const dir = makeTempDir();
+    const configPath = join(dir, "observer.json");
+    const namespace = {
+      dir, writeJson: (name: string, value: unknown) => writeJsonAtomic(dir, name, value),
+    } as FeatureNamespaceHandle;
+    const original = Buffer.from(JSON.stringify({ authorization: TAILNET_IDENTITY, enabled }, null, 4) + "\r\n");
+    await writeFile(configPath, original);
+    const readConfigFile = () => readTailnetObserverConfigFile(namespace, env);
+    const { input, startServer } = options(env);
+    const settings = createTailnetObserverConfigService({
+      pairedSharingBootstrapFailed: () => false,
+      env,
+      readConfigFile,
+      writeConfigFile: file => writeTailnetObserverConfigFile(file, namespace),
+      readOwnDeviceAdmission: async () => false,
+      probeEnvironment: () => probeTailscaleEnvironment({
+        platform: "linux",
+        runCommand: async () => ({ kind: "not-found" }),
+      }),
+      restartListener: async () => undefined,
+    });
+
+    await expect(maybeStartTailnetObserverServer({
+      ...input, dependencies: { ...input.dependencies, readConfigFile },
+    })).resolves.toBeNull();
+    expect(startServer).not.toHaveBeenCalled();
+    expect.soft((await readFile(configPath)).equals(original)).toBe(true);
+
+    const snapshot = await settings.snapshot();
+    expect(snapshot.saved.port).toBe(port);
+    expect(snapshot.effective).toMatchObject({ port, enabled: false });
+    expect.soft((await readFile(configPath)).equals(original)).toBe(true);
+
+    await settings.apply(snapshot.saved);
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({ port });
   });
 
   it("starts the listener from a file-only configuration", async () => {
