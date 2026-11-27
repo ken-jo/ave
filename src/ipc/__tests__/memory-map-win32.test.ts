@@ -22,8 +22,7 @@ const state = vi.hoisted(() => ({
   artifactRequest: vi.fn<(url: URL, options: RequestOptions, respond: (incoming: IncomingMessage) => void) => ClientRequest>(),
   handles: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>>(),
   get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null),
-  build: vi.fn(async (_readCatalog: ReadMemoryMapCatalog, _onAdmission: (assertLive: () => void) => void,
-    _owner: BuildOwner, _assertLocal: () => void) => ({ snapshotId: 'snapshot' })),
+  build: vi.fn(async (_readCatalog: ReadMemoryMapCatalog, _owner: BuildOwner, _assertLocal: () => void) => ({ snapshotId: 'snapshot' })),
   cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
   status: vi.fn(async () => ({ status: 'unconfigured' })), download: vi.fn(async () => ({ status: 'ready' })), modelCancel: vi.fn(), adoptExistingFolder: vi.fn(async () => ({ status: 'ready' })),
   downloadFile: undefined as ConstructorParameters<typeof import('../../main/memory-map/model-manager-win32.js').LocalModelManager>[0]['downloadFile'],
@@ -84,7 +83,7 @@ describe('memory map host boundary', () => {
     const secondStarted = deferred<{ owner: BuildOwner; exit: MemoryWorkerExit }>();
     const firstSettled = deferred<void>();
     const secondSettled = deferred<void>();
-    state.build.mockImplementationOnce(async (_catalog, _onAdmission, owner, assertLocal) => {
+    state.build.mockImplementationOnce(async (_catalog, owner, assertLocal) => {
       owner.takeover(assertLocal);
       const exit = owner.beginWorker('account');
       firstStarted.resolve(owner);
@@ -92,7 +91,7 @@ describe('memory map host boundary', () => {
       exit.lost();
       owner.settle({ kind: 'cancelled' });
       throw new MemoryMapHostError('local-runtime-unavailable');
-    }).mockImplementationOnce(async (_catalog, _onAdmission, owner, assertLocal) => {
+    }).mockImplementationOnce(async (_catalog, owner, assertLocal) => {
       owner.takeover(assertLocal);
       const exit = owner.beginWorker('account');
       secondStarted.resolve({ owner, exit });
@@ -335,31 +334,25 @@ describe('memory map host boundary', () => {
     }
   });
 
-  it('refuses a completed build whose publication receipt expires before the IPC reply', async () => {
-    state.build.mockImplementationOnce(async (_catalog, onAdmission) => {
-      let live = true;
-      onAdmission?.(() => { if (!live) throw new MemoryMapHostError('local-runtime-unavailable'); });
-      queueMicrotask(() => { live = false; });
-      return { snapshotId: 'snapshot' };
-    });
-    await expect(invokeBuild()).resolves.toEqual({ ok: false, error: 'local-runtime-unavailable' });
-  });
-
-  it.each(['sender', 'scope'] as const)('checks the original %s again before delivering a result', async change => {
+  it.each(['sender', 'scope'] as const)('checks the original %s before delivering its protected result', async change => {
     let live = true;
     const senderFrame = { url: 'file:///app/index.html' };
     const event = { ...hostEvent, senderFrame } as unknown as IpcMainInvokeEvent;
     registerWindowsMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: { get: () => undefined } } as unknown as IpcDeps,
       () => ({ ok: true, options: { projectRoot: live ? '/example/first' : '/example/replacement' } }));
-    state.build.mockImplementationOnce(async () => {
-      queueMicrotask(() => {
-        if (change === 'sender') senderFrame.url = 'ave-mcp-app://isolated/index.html';
-        else live = false;
+    if (change === 'sender') {
+      state.build.mockImplementationOnce(async () => {
+        queueMicrotask(() => { senderFrame.url = 'ave-mcp-app://isolated/index.html'; });
+        return { snapshotId: 'snapshot' };
       });
-      return { snapshotId: 'snapshot' };
-    });
-    const expected = change === 'sender' ? { ok: false, error: 'unauthorized-frame' } : { ok: false, error: 'project-not-allowed' };
-    await expect(invokeBuild(undefined, event)).resolves.toMatchObject(expected);
+      await expect(invokeBuild(undefined, event)).resolves.toMatchObject({ ok: false, error: 'unauthorized-frame' });
+    } else {
+      state.get.mockImplementationOnce(async () => {
+        queueMicrotask(() => { live = false; });
+        return null;
+      });
+      await expect(invoke('get', undefined, event)).resolves.toMatchObject({ ok: false, error: 'project-not-allowed' });
+    }
   });
 
   it('rechecks switch eligibility when a queued settings write runs', async () => {

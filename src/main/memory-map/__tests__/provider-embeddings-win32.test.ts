@@ -85,7 +85,7 @@ describe('provider memory embeddings', () => {
     });
     f.consent();
     const owner = f.registry.register('provider-build', { scopeId: f.catalog.authorizationScopeId, assertAdmitted: () => {} });
-    const build = f.host.build(() => f.catalog, undefined, owner).catch((error: unknown) => error);
+    const build = f.host.build(() => f.catalog, owner).catch((error: unknown) => error);
     try {
       const thread = await Promise.race([projected.promise, build.then(() => { throw new Error('Projection did not start'); })]);
       const replied = vi.fn();

@@ -41,11 +41,14 @@ export function registerWindowsMemoryMapHandlers(deps: IpcDeps, resolveScope: Me
       const original = scoped ? resolveScope(scope) : undefined;
       const projectDenied = { ok: false, error: 'project-not-allowed' } as const;
       if (original?.ok === false) return projectDenied;
-      const assertRequestAdmitted = () => {
+      const assertSender = () => {
         if (!validateHostRendererSender(event)) {
           auditUnauthorized(deps.auditLogger, channel, event);
           throw new MemoryMapHostError('unauthorized-frame');
         }
+      };
+      const assertRequestAdmitted = () => {
+        assertSender();
         if (original?.ok) {
           const latest = resolveScope(scope);
           if (!latest.ok || !isDeepStrictEqual(latest.options, original.options)) throw new MemoryMapHostError('project-not-allowed');
@@ -58,7 +61,12 @@ export function registerWindowsMemoryMapHandlers(deps: IpcDeps, resolveScope: Me
         let assertReply: (() => void) | undefined;
         const value = await action(current, parsed.data, event, assertLive => { assertReply = assertLive; },
           { options: original?.options, assert: assertRequestAdmitted });
-        return commitUnderAdmission(() => { assertRequestAdmitted(); assertReply?.(); }, () => ({ ok: true, value }));
+        // A successful Build action has already committed under the captured scope.
+        const assertDelivery = channel === CHANNELS.memoryMap.build ? assertSender : () => {
+          assertRequestAdmitted();
+          assertReply?.();
+        };
+        return commitUnderAdmission(assertDelivery, () => ({ ok: true, value }));
       } catch (error) {
         if (error instanceof MemoryMapHostError && error.code === 'unauthorized-frame') return UNAUTHORIZED_FRAME;
         try { assertRequestAdmitted(); } catch (denial) {
@@ -71,9 +79,9 @@ export function registerWindowsMemoryMapHandlers(deps: IpcDeps, resolveScope: Me
   }
   handle(CHANNELS.memoryMap.get, MemoryMapScopeSchema.optional(), (current, scope) => current.get(scope));
   handle(CHANNELS.memoryMap.buildView, MemoryMapScopeSchema.optional(), (current, scope) => current.buildView(scope));
-  handle(CHANNELS.memoryMap.build, MemoryBuildRequestSchema, (current, { scope, buildId }, event, onAdmission, { options, assert }) => {
+  handle(CHANNELS.memoryMap.build, MemoryBuildRequestSchema, (current, { scope, buildId }, event, _onAdmission, { options, assert }) => {
     if (!options) throw new MemoryMapHostError('project-not-allowed');
-    return current.build(scope, buildId, event, onAdmission, options, assert);
+    return current.build(scope, buildId, event, options, assert);
   });
   handle(CHANNELS.memoryMap.cancel, MemoryBuildIdSchema, (current, buildId) => current.cancel(buildId));
   handle(CHANNELS.memoryMap.facets, MemoryMapScopeSchema.optional(), (current, scope) => current.facets(scope));

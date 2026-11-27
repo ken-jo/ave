@@ -1,4 +1,5 @@
 import { lstat } from 'node:fs/promises';
+import { isCommittedAtomicWriteError } from '../../lib/atomic-file.js';
 import { StoredMemoryGraphSchema } from '../../shared/memory-map-validation.js';
 import { retrieveMatches } from './retrieval.js';
 import { randomUUID } from 'node:crypto';
@@ -235,15 +236,14 @@ export class MemoryMapHost {
     }
     return cache;
   }
-  async build(readCatalog: ReadMemoryMapCatalog, onAdmission?: (assertLive: () => void) => void,
-    owner?: BuildOwner, assertLocal = () => {}): Promise<GraphSnapshot> {
+  async build(readCatalog: ReadMemoryMapCatalog, owner?: BuildOwner, assertLocal = () => {}): Promise<GraphSnapshot> {
     const catalog = readCatalog();
     owner ??= this.registry.register(randomUUID(), { scopeId: catalog.authorizationScopeId, assertAdmitted: () => {} });
-    return this.buildOwned(owner, catalog, readCatalog, assertLocal, onAdmission);
+    return this.buildOwned(owner, catalog, readCatalog, assertLocal);
   }
 
   private async buildOwned(owner: BuildOwner, catalog: MemoryMapCatalog, readCatalog: ReadMemoryMapCatalog,
-    assertLocal: () => void, onAdmission?: (assertLive: () => void) => void): Promise<GraphSnapshot> {
+    assertLocal: () => void): Promise<GraphSnapshot> {
     const runWorker: MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal,
       onProgress?: (progress: MemoryMapProgress) => void, onAdmission?: OnInferenceAdmission) =>
       this.runWorker<T>(folder, task, signal, onProgress, onAdmission, owner.beginWorker);
@@ -346,23 +346,18 @@ export class MemoryMapHost {
       this.validateSnapshot(result.snapshot, catalog);
       await this.namespace.childDir('', { assertStillValid: assertCanPublish });
       const canPublish = () => { assertCanPublish(); return true; };
-      // The ready state is published in the step that replaces the file, under the same check.
+      // The admitted rename commits the graph and its build outcome together.
       const committed = await writeFileAtomicAtPathAdmitted(join(this.namespace.dir, 'snapshot.json'), JSON.stringify(result), canPublish, () => {
         this.activate(catalog);
         this.graphScope = scope;
         this.cache = result.cache; this.snapshot = result.snapshot; owner.snapshot = null;
-        this.registry.changed();
+        owner.settle({ kind: 'ready' });
+      }).catch(error => {
+        if (isCommittedAtomicWriteError(error)) return true;
+        throw error;
       });
       if (!committed) throw new MemoryMapHostError('request-stale');
-      return commitUnderAdmission(assertCanPublish, () => {
-        onAdmission?.(() => {
-          signal.throwIfAborted();
-          if (this.graphScope !== scope || this.readySnapshot(readCatalog()) !== result.snapshot) throw new MemoryMapHostError('request-stale');
-          assertBuildAdmission?.();
-        });
-        outcome = { kind: 'ready' };
-        return result.snapshot;
-      });
+      return result.snapshot;
     } catch (error) {
       if (signal.aborted) {
         if (error instanceof ManagedExitUnconfirmedError || error instanceof MxcProcessCleanupError) throw error;

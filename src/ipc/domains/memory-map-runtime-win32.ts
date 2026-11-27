@@ -6,7 +6,7 @@ import { permissionSettingsPath } from '../../permissions/permission-settings-st
 import { CHANNELS } from '../../contract/app-contract.js';
 import { validateHostRendererSender } from '../gated.js';
 import type { IpcDeps } from '../types.js';
-import type { MemoryMapScope, MemoryEmbeddingSettings } from '../../shared/memory-map.js';
+import type { GraphSnapshot, MemoryMapScope, MemoryEmbeddingSettings } from '../../shared/memory-map.js';
 import type { MemoryModelStatus } from '../../shared/memory-model.js';
 import type { z } from 'zod';
 import type { WindowsMemoryEmbeddingSettingsSchema, MemoryRetrievalSchema } from '../../shared/memory-map-validation.js';
@@ -47,8 +47,8 @@ type OnReplyAdmission = (assertLive: () => void) => void;
 export interface MemoryMapRuntime {
   get(scope: MemoryMapScope | undefined): unknown;
   buildView(scope: MemoryMapScope | undefined): unknown;
-  build(scope: MemoryMapScope | undefined, buildId: string, event: IpcMainInvokeEvent, onAdmission: OnReplyAdmission,
-    options: ProjectScopedMemoryOptions, assertRequestAdmitted: () => void): unknown;
+  build(scope: MemoryMapScope | undefined, buildId: string, event: IpcMainInvokeEvent,
+    options: ProjectScopedMemoryOptions, assertRequestAdmitted: () => void): Promise<GraphSnapshot>;
   cancel(buildId: string): Promise<null>;
   facets(scope: MemoryMapScope | undefined): unknown;
   retrieve(request: MemoryRetrievalRequest, onAdmission: OnReplyAdmission): unknown;
@@ -183,7 +183,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   return {
     get: scope => host.get(catalog(scope)),
     buildView: scope => host.buildView(catalog(scope)),
-    build: async (scope, buildId, event, onAdmission, options, assertRequestAdmitted) => {
+    build: async (scope, buildId, event, options, assertRequestAdmitted) => {
       const owner = registry.register(buildId, {
         scopeId: memoryMapScopeId(options),
         assertAdmitted: assertRequestAdmitted,
@@ -199,7 +199,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
           assertLocal = await refreshLocalAdmission();
         }
         owner.assertAdmitting();
-        return await host.build(catalog(scope, () => owner.stop('scope-denied')), onAdmission, owner, assertLocal);
+        return await host.build(catalog(scope, () => owner.stop('scope-denied')), owner, assertLocal);
       } catch (error) {
         owner.fail(error instanceof MemoryMapHostError ? error.code : 'graph-build-failed');
         throw error;

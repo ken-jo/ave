@@ -135,7 +135,8 @@ export class BuildOwner {
         if (remaining <= 0) this.transition({ type: 'deadline' });
         else deadline.timer = setTimeout(onTimer, Math.ceil(remaining)).unref();
       };
-      const deadline = this.deadline = { cutoff, timer: setTimeout(onTimer, delay).unref() };
+      const deadline = { cutoff, timer: setTimeout(onTimer, delay).unref() };
+      this.deadline = deadline;
     }
     if (stopped) this.controller?.abort(new MemoryMapHostError('request-stale'));
   }

@@ -1,3 +1,4 @@
+import * as atomicFile from '../../lib/atomic-file.js';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -378,6 +379,56 @@ it('keeps the replacement running while a superseded scope polls status and face
     exitA.resolve();
     exitB.resolve();
     await Promise.all([first, replacement]);
+  }
+});
+
+it('returns the graph committed before resolved scope options change', async () => {
+  state.root = roots.track(await mkdtemp(join(tmpdir(), 'memory-map-admission-')));
+  setProcessPlatform('win32');
+  state.account = true;
+  state.operational = true;
+  state.beforeCommit = state.afterRead = undefined;
+  state.plan = { selectedBackend: 'none', readiness: 'off' };
+  state.substrate = { srtWinReady: true, shells: 'approved-host' };
+
+  state.runWorker.mockReset().mockImplementation(async (_folder, task) => {
+    if (task.kind === 'embed-batch') return task.texts.map(() => [1, ...Array<number>(383).fill(0)]);
+    if (task.kind !== 'project') throw new Error('Expected projection');
+    return buildGraph(task.input, { embed: async () => [], dispose: async () => {} }, () => {});
+  });
+  const note = { id: randomUUID(), filename: 'example.md', title: 'Example', content: 'Original' };
+  const scope = { projectRoot: 'D:/example/project' };
+  let projectName = 'project';
+  registerWindowsMemoryMapHandlers({
+    auditLogger: { log: vi.fn() },
+    settingsService: { get: (key: string) => key === 'memoryEmbedding' ? { localModelPath: state.root } : undefined },
+    memoryManager: { readMemoryPanelCatalog: () => ({ notes: [note] }) },
+  } as unknown as IpcDeps, () => ({ ok: true, options: { ...scope, projectName } }));
+  const event = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
+  const { handle, buildView } = state;
+  if (!handle || !buildView) throw new Error('Memory-map IPC is not registered');
+  const build = () => handle(event, { scope, buildId: randomUUID() });
+  expect(await build()).toMatchObject({ ok: true, value: { status: 'ready' } });
+  const path = join(state.root, 'memory-map', 'snapshot.json');
+  const previous = await readFile(path, 'utf8');
+
+  note.content = 'Replacement';
+  const replace = atomicFile.replaceUtf8FileAtomicSyncIf;
+  const rename = vi.spyOn(atomicFile, 'replaceUtf8FileAtomicSyncIf').mockImplementationOnce((...args) => {
+    const committed = replace(...args);
+    if (committed) projectName = 'project (additional)';
+    return committed;
+  });
+  try {
+    const reply = await build();
+    const written = await readFile(path, 'utf8');
+    expect(projectName).toBe('project (additional)');
+    expect(written).not.toBe(previous);
+    const graph = JSON.parse(written).snapshot;
+    expect.soft(reply).toEqual({ ok: true, value: graph });
+    expect(await buildView(event, scope)).toMatchObject({ ok: true, value: { snapshot: graph, builds: [{ outcome: { kind: 'ready' } }] } });
+  } finally {
+    rename.mockRestore();
   }
 });
 

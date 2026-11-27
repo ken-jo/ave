@@ -427,11 +427,9 @@ describe('memory graph publication', () => {
         queueMicrotask(() => registry.stopCurrent('user'));
         return allowed;
       }, mode));
-    try {
-      await expect(host.build(() => f.catalog)).rejects.toMatchObject({ code: 'request-stale' });
-    } finally { replace.mockRestore(); }
+    const reply = await host.build(() => f.catalog).finally(() => replace.mockRestore());
     const stored: unknown = JSON.parse(await readFile(join(f.root, 'snapshot.json'), 'utf8')).snapshot;
-    expect(stored).not.toBeNull();
+    expect(stored).toEqual(reply);
     expect(await host.get(() => f.catalog)).toEqual(stored);
   });
   it('refuses when model admission expires during the saved graph read', async () => {
