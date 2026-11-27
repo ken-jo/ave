@@ -1,11 +1,18 @@
 import { expect, it, vi } from "vitest";
 import type { WebContents } from "electron";
+import { deferred } from "../../../__tests__/support/deferred.js";
+import { within } from "../../../__tests__/support/signal-wait.js";
 import { stageRunHarness } from "../../../work-board/workflow/__tests__/stage-run-harness.js";
 import { autoStageOf } from "../../../work-board/workflow/__tests__/stage-fixtures.js";
 import { observeWorkflowSkillMemory } from "../skill-memory-work-board.js";
 
 it("uses the child recorded in the committed local workflow and ignores descendant links", async () => {
-  const memory = { linkWorkBoardSession: vi.fn(), unlinkWorkBoardSession: vi.fn(), queueWorkBoard: vi.fn(async () => {}) };
+  const queued = deferred<void>();
+  const memory = {
+    linkWorkBoardSession: vi.fn(),
+    unlinkWorkBoardSession: vi.fn(),
+    queueWorkBoard: vi.fn(async () => queued.resolve()),
+  };
   let observe: ReturnType<typeof observeWorkflowSkillMemory> | undefined;
   const h = await stageRunHarness({
     observeRunWork: true,
@@ -25,9 +32,10 @@ it("uses the child recorded in the committed local workflow and ignores descenda
     expect(memory.queueWorkBoard).not.toHaveBeenCalled();
     child.finish();
     await starting;
-    await vi.waitFor(() => expect(memory.queueWorkBoard).toHaveBeenCalledExactlyOnceWith(
+    await within(queued.promise, "the committed workflow to queue skill memory");
+    expect(memory.queueWorkBoard).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ id, runStatus: "completed" }), expect.any(String), [child.sessionId], expect.any(Function),
-    ));
+    );
     expect(memory.unlinkWorkBoardSession).toHaveBeenCalledExactlyOnceWith(child.sessionId);
   });
 });

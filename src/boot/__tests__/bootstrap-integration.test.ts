@@ -1,6 +1,7 @@
 import { TEST_OWNER } from "../../main/__tests__/routines-fixture.js";
-import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__/support/host-runtime.js";
+import { createBootHostFixture, createDesktopHostFixture, unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { SettingsService } from "../../data/settings-store.js";
 import * as tracing from "../../engine/telemetry/tracing.js";
 /** Boot integration checks service shape and construction order with heavy dependencies mocked.
  * It does not verify the behavior of closures wired to those mocks. */
@@ -72,32 +73,21 @@ vi.mock("../../main/app-shutdown.js", () => ({
 vi.mock("../services.js", () => ({
   bootstrapCoreServices: vi.fn(async () => {
     h.rec("core");
+    const settingsService = new SettingsService({
+      userDataPath: `${h.root}/settings`,
+      encryption: unavailableSecretEncryption,
+    });
+    await settingsService.set("features", {
+      ...settingsService.get("features"),
+      osToolSandbox: false,
+      idlePreferenceRefresh: true,
+    });
     return {
       pythonPath: "/usr/bin/python3",
       pythonRuntime: { kind: "python-runtime-stub" },
       bashAstValidator: {},
       auditService: { stop: vi.fn(async () => {}) },
-      settingsService: {
-        get: vi.fn((key: string) => {
-          switch (key) {
-            case "marketplace":
-              return {};
-            case "llm":
-              return { provider: "openai", vendors: { openai: { model: "gpt", baseUrl: undefined } },
-              };
-            case "features":
-              return { osToolSandbox: false, idlePreferenceRefresh: true,
-              };
-            default:
-              return {};
-          }
-        }),
-        onChanged: vi.fn(() => () => {}),
-        getSecret: vi.fn(() => undefined),
-        getAll: vi.fn(() => ({})),
-        deletePluginConfig: vi.fn(async () => undefined),
-        deletePluginSecrets: vi.fn(async () => 0),
-      },
+      settingsService,
       memoryManager: {},
       // The capture gateway reviewer is late-bound after the active loop exists.
       memoryCaptureService: { setMemoryReviewer: vi.fn() },

@@ -446,8 +446,11 @@ describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)",
       release();
       expect((await run).status).toBe("completed");
       expect(skillMemory.unlinkWorkBoardSession).toHaveBeenCalledWith(child);
-      await vi.waitFor(() => expect(skillMemory.queueWorkBoard)
-        .toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: created.itemId }), expect.any(String), [child], expect.any(Function)));
+      expect(skillMemory.queueWorkBoard)
+        .toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: created.itemId }), expect.any(String), [child], expect.any(Function));
+      const [queued] = skillMemory.queueWorkBoard.mock.results;
+      if (!queued) throw new Error("The skill memory queue result was not recorded");
+      await within(queued.value, "the skill memory queue to read the committed item");
     } finally {
       await cleanupTmpDir(dir);
     }
