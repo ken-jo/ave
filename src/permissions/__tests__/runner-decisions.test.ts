@@ -75,6 +75,7 @@ beforeAll(async () => {
   });
   savedCorpusManager = runnerManager(savedCorpusPath);
   await savedCorpusManager.loadRulesFromFile();
+  savedCorpusRules = new Map(savedCorpusManager["rules"].map((rule) => [rule.pattern, rule]));
   savedCorpusManager.setMode("allow");
 });
 afterAll(() => { rmSync(directory, { recursive: true, force: true }); });
@@ -198,6 +199,7 @@ function managerState(manager: PermissionManager) {
 const EMPTY_MANAGER_STATE = { epoch: expect.any(String), alwaysAllowed: [], sessionRules: [], floorSessionGrants: [], rules: 0, verdictCache: null, recentlyDenied: null };
 let corpusManagers: { manager: PermissionManager; state: ReturnType<typeof managerState> }[];
 let savedCorpusManager: PermissionManager;
+let savedCorpusRules: ReadonlyMap<string, PermissionRule>;
 
 function expectDefaultHostDecision(dialect: ShellDialect, command: string): void {
   const credential = dialect === "powershell" && CREDENTIAL_COMMANDS.has(command);
@@ -269,7 +271,9 @@ describe("shared runner decisions", () => {
     }
     // The remembered approvals are keyed by exact action. Test only this row's active allow rule.
     const manager = savedCorpusManager;
-    manager.setRules(([{ pattern: actionKey(dialect, command), action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
+    const pattern = actionKey(dialect, command);
+    expect(savedCorpusRules.get(pattern)).toMatchObject({ pattern, action: "allow", tier: "write" });
+    manager.setRules(([{ pattern, action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
     if (disposition === "ordinary") {
       expect(dialect === "bash" ? shellExfiltrationSignal(command, CWD) : inspectPowerShellCommand(command, CWD).exfiltration).toBeNull();
       expect(checkCommand(manager, dialect, command).decision).toBe("allow");
