@@ -170,7 +170,7 @@ export async function spawnMxcPluginChild(
   try {
     launch.assertCurrent();
     if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
-    const staging = assertMxcHolderStaging({ stagingParent: mxcStagingParent("win32"), home: launch.home, temp: launch.temp });
+    const staging = assertMxcHolderStaging({ stagingParent: mxcStagingParent(process.platform), home: launch.home, temp: launch.temp });
     const args = Object.freeze([...intent.args]);
     const allowRead = pluginChildReadRoots(intent.envelope.read, intent.command, args[0]);
     admitted = await spawnMxcConfinedChild({

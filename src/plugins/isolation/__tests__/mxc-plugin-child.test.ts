@@ -26,7 +26,7 @@ vi.mock("../../../permissions/mxc-runtime-root.js", async (importOriginal) => {
   const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../../__tests__/support/mxc-staging-parent.js");
   return {
     ...await importOriginal<typeof import("../../../permissions/mxc-runtime-root.js")>(),
-    mxcStagingParent: () => SYNTHETIC_MXC_STAGING_PARENT,
+    mxcStagingParent: (platform: NodeJS.Platform) => platform === "darwin" ? "/ave-runtime/staging" : SYNTHETIC_MXC_STAGING_PARENT,
   };
 });
 vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
@@ -442,5 +442,51 @@ describe("plugin stderr diagnostics", () => {
       expect(JSON.stringify(records)).not.toContain("private-token-123");
       expect(JSON.stringify(records)).toContain("REDACTED");
     });
+  });
+});
+
+describe("macOS plugin child admission", () => {
+  const hostPlatform = process.platform;
+  beforeEach(() => { setProcessPlatform("darwin"); });
+  afterEach(() => { setProcessPlatform(hostPlatform); });
+
+  it("stages under the macOS parent, ranks POSIX read roots, sends no Windows request check and reports macos-seatbelt", async () => {
+    const { owned } = fixture();
+    const staging = "/ave-runtime/staging/0123456789abcdef0123456789abcdef";
+    const launch = {
+      home: `${staging}/home`, temp: `${staging}/temp`,
+      filesystemOwnership: { readRoots: [], writeRoots: [staging], hostStorageRoots: [] },
+      signal: new AbortController().signal, assertCurrent: vi.fn(), release: vi.fn(),
+    };
+    const intent = {
+      pluginId: "mac-probe", command: "/Applications/Ave.app/Contents/MacOS/Ave",
+      args: ["/Applications/Ave.app/Contents/Resources/app.asar/dist/plugin-child-main.js"], cwd: "/Users/u/.ave/plugins/Kit",
+      envelope: { read: ["/Users/u/.ave/plugins/Kit"], write: ["/Users/u/.ave/plugins/Kit/data"] }, floorPierces: [], baseEnv: { ELECTRON_RUN_AS_NODE: "1" },
+    };
+    spawn.mockReset().mockImplementation(async () => ({ process: owned, confinement: "macos-seatbelt", release: vi.fn(async () => {}) }));
+    const child = await spawnMxcPluginChild(launch, intent);
+    const spec = spawn.mock.calls[0]?.[0] as MxcConfinedChildSpec;
+    expect(spec).toMatchObject({ stagingRoot: staging, allowWrite: ["/Users/u/.ave/plugins/Kit/data", staging],
+      // The entry sits in the packaged archive, which the runtime's own directory covers.
+      allowRead: ["/Users/u/.ave/plugins/Kit", "/Applications/Ave.app/Contents/MacOS"] });
+    expect(spec).not.toHaveProperty("assertRequest");
+    expect(child.containerConfinement).toBe("macos-seatbelt");
+    child.link.terminate("done");
+    await child.waitForExit();
+  });
+
+  it("grants an entry directory outside every read root once, with POSIX containment", async () => {
+    const { owned } = fixture();
+    const staging = "/ave-runtime/staging/0123456789abcdef0123456789abcdef";
+    spawn.mockReset().mockImplementation(async () => ({ process: owned, confinement: "macos-seatbelt", release: vi.fn(async () => {}) }));
+    const child = await spawnMxcPluginChild({ home: `${staging}/home`, temp: `${staging}/temp`,
+      filesystemOwnership: { readRoots: [], writeRoots: [staging], hostStorageRoots: [] },
+      signal: new AbortController().signal, assertCurrent: vi.fn(), release: vi.fn() }, {
+      pluginId: "mac-probe", command: "/opt/ave/runtime", args: ["/srv/ave-dev/dist/plugin-child-main.js"], cwd: "/srv/kit",
+      envelope: { read: ["/srv/kit"], write: [] }, floorPierces: [], baseEnv: {},
+    });
+    expect(spawn.mock.calls[0]?.[0]).toMatchObject({ allowRead: ["/srv/kit", "/opt/ave", "/srv/ave-dev/dist"] });
+    child.link.terminate("done");
+    await child.waitForExit();
   });
 });

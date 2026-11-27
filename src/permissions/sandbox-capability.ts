@@ -1,7 +1,7 @@
 // Reviewer relaxation requires live OS isolation; none forbids intent-only downgrades from MEDIUM/HIGH to LOW. Inactive gates publish verified none; audit stores the resulting verdict rather than the full capability (docs/architecture/permission-policy-design.md).
 
 import { acceptMeasuredContainerEgress, assertSandboxMacExtensionPlan, assertSandboxWindowsExtensionPlan, containerEgressProtocolCoverage, egressProtocolCoverageFor } from "../shared/sandbox-capability-info.js";
-import { isContainerShellRouteEnabled } from "../shared/container-platform.js";
+import { isContainerHolderRouteEnabled, isContainerShellRouteEnabled } from "../shared/container-platform.js";
 import { getAveHomePrivacyFailure, isAveHomePrivacyApprovable, isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
 import { windowsDenyUnenforceableAtBoot } from "./admitted-obligation.js";
 import { t } from "../i18n/index.js";
@@ -478,8 +478,13 @@ export function getHostShellExecutionPlan(
 ): HostShellExecutionPlan {
   const generation = getSandboxGeneration();
   const darwin = process.platform === "darwin";
-  const selectsMacContainer = darwin && consumer === "shell" && isContainerShellRouteEnabled("darwin");
-  const mxc = darwin && consumer === "hook" ? undefined : detectMxcShellCapability();
+  // A macOS hook runs in a container once the holder route is on: as its own holder, so only when the shell container
+  // AND the holder capability are both proven. Otherwise its plan has no substrate (the no-confinement floor), never
+  // the wrap. Before the route is on, a hook stays on the existing sandbox.
+  const holderHook = darwin && consumer === "hook" && isContainerHolderRouteEnabled("darwin");
+  const selectsMacContainer = darwin && (consumer === "shell" || holderHook) && isContainerShellRouteEnabled("darwin");
+  const shellContainer = darwin && consumer === "hook" && !holderHook ? undefined : detectMxcShellCapability();
+  const mxc = holderHook && _macHolderCapability?.state !== "ready" ? undefined : shellContainer;
   const privacyFailure = getAveHomePrivacyFailure();
   // Only a live macOS container route carries its own measurement; every other route is unmeasured.
   const macMeasuredContainerEgress = darwin && mxc !== undefined ? macContainerMeasuredEgress(_containerShellSubstrate) : undefined;
