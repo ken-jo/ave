@@ -85,8 +85,6 @@ export function tailnetObserverErrorText(code: string, t: (key: string) => strin
       return t("tailnetObserver.errorListenerUnreachable");
     case "tailnet-serve-not-listening":
       return t("tailnetObserver.errorServeNotListening");
-    case "tailnet-serve-port-override-conflict":
-      return t("tailnetObserver.errorServePortOverride");
     case "tailnet-serve-tailscale-cli-not-found":
       return t("tailnetObserver.environmentCliNotFound");
     case "tailnet-serve-tailscale-logged-out":
@@ -283,8 +281,6 @@ export function TailnetObserverSection({ api, onHostStateChanged }: TailnetObser
     (key) => snapshot.provenance[key] === "env-override",
   );
   const environment = snapshot.environment;
-  const servePortOverrideConflict = snapshot.listeningPort !== null
-    && snapshot.provenance.port === "env-override" && snapshot.saved.port !== snapshot.listeningPort;
   const webOriginUnavailable = snapshot.derivedWebOrigin === null;
 
   return (
@@ -504,9 +500,7 @@ export function TailnetObserverSection({ api, onHostStateChanged }: TailnetObser
       {/* Tailscale Serve is what puts the loopback listener on the tailnet and
           is where the identity headers come from. The command is shown in full
           before anything runs; approving it is the only way it runs. */}
-      {servePortOverrideConflict ? (
-        <p className="mt-4 text-xs text-muted-foreground">{t("tailnetObserver.errorServePortOverride")}</p>
-      ) : snapshot.serveCommand !== null ? (
+      {snapshot.serveCommand !== null ? (
         <div className="mt-4 border-t border-border pt-3" data-testid="tailnet-observer-serve">
           <p className="text-sm font-medium">{t("tailnetObserver.serveTitle")}</p>
           <p className="mt-1 text-xs text-muted-foreground">

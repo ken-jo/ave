@@ -359,23 +359,6 @@ describe("TailnetObserverSection", () => {
       expect(configureServe).not.toHaveBeenCalled();
     });
 
-    it("E5 shows recovery guidance when the port override differs from the saved port", async () => {
-      const snapshot = listening();
-      const override = 29_999;
-      const { api } = makeApi({
-        ...snapshot,
-        effective: { ...snapshot.effective, port: override },
-        listeningPort: override,
-        provenance: { ...snapshot.provenance, port: "env-override" },
-      });
-
-      render(<TailnetObserverSection api={api} />);
-
-      await screen.findByText(t("tailnetObserver.errorServePortOverride"));
-      expect(screen.queryByTestId("tailnet-observer-serve-command")).toBeNull();
-      expect(screen.queryByTestId("tailnet-observer-serve-run")).toBeNull();
-    });
-
     it("offers no command while nothing is listening", async () => {
       const { api } = makeApi(snapshotOf());
 

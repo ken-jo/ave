@@ -40,7 +40,7 @@ describe("operator attestation boot ordering", () => {
     const gate = text.indexOf(".startAfterOperatorAttestation(attestationPath, createHost)");
     expect(gate).toBeGreaterThan(-1);
     expect(text.indexOf("const createHost = () => createNodeBootHost({")).toBeLessThan(gate);
-    expect(text.indexOf("createWindowlessHost(projectRoot, host, freshTailnetAveHome)", gate)).toBeGreaterThan(gate);
+    expect(text.indexOf("createWindowlessHost(projectRoot, host)", gate)).toBeGreaterThan(gate);
   });
 
   it("wraps Electron window and bootstrap construction in the attestation gate", () => {

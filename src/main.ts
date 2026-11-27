@@ -50,7 +50,6 @@ import { createConversationCommandPort } from "./main/conversation-command-port.
 import { createA2ALoopbackRuntime } from "./main/a2a-loopback-runtime.js";
 import { maybeStartRemoteA2AReceiverServer } from "./main/a2a-remote-receiver-server.js";
 import {
-  isNewTailnetObserverHome,
   maybeStartTailnetObserverServer,
   loadTailnetObserverConfig,
 } from "./main/tailnet-surface-server.js";
@@ -110,7 +109,6 @@ const log = createLogger("ave");
 // Read only for a headless launch: a desktop launch from an unlinked directory
 // must not fail here, before the anchor gives the process a directory again.
 const launchCwd = execModeRequested(process.argv) ? process.cwd() : null;
-const freshTailnetAveHome = isNewTailnetObserverHome();
 runEarlyBootEnv();
 
 /**
@@ -469,7 +467,6 @@ async function main() {
   // controller capability; it never exposes Local API/A2A or configures Serve.
   try {
     const observer = await maybeStartTailnetObserverServer({
-      freshAveHome: freshTailnetAveHome,
       encryption: desktopSecretEncryption,
       conversationSurfaceRuntime,
       conversationCommandPort,

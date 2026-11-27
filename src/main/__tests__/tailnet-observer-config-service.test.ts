@@ -1,9 +1,7 @@
 import { DEFAULT_TAILNET_OBSERVER_PORT, TAILNET_OBSERVER_PORT_BLOCKED } from "../../shared/tailnet-observer-config.js";
-import { createServer } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
 import { createTailnetObserverConfigService } from "../tailnet-observer-config-service.js";
-import { loadTailnetObserverConfig } from "../tailnet-surface-server.js";
 import type {
   TailnetObserverConfigFile,
   TailscaleEnvironment,
@@ -28,7 +26,6 @@ function readyEnvironment(overrides: Partial<TailscaleEnvironment> = {}): Tailsc
     tailnetName: "example-tailnet.ts.net",
     serveConfigured: false,
     serveTargetPort: null,
-    serveStatusKnown: true,
     detail: null,
     ...overrides,
   };
@@ -64,7 +61,6 @@ function service(options: {
     env: options.env ?? {},
     runtimeState: () => ({
       listeningPort: options.listeningPort ?? null,
-      establishedPort: options.listeningPort ?? null,
       activeConfig: options.activeConfig ?? null,
       lastStartError: options.lastStartError ?? null,
       portBlock: null,
@@ -395,196 +391,6 @@ describe("Tailnet observer configuration service", () => {
         serve: "configured",
         webOrigin: WEB_ORIGIN,
       }));
-    });
-
-    it.each((["darwin", "linux", "win32"] as const).flatMap(hostPlatform =>
-      [
-        { hostPlatform, bootFailed: false, legacyOff: false, scenario: "before boot" },
-        { hostPlatform, bootFailed: true, legacyOff: false, scenario: "after an implicit boot bind failure" },
-        { hostPlatform, bootFailed: false, legacyOff: true, scenario: "with a portless OFF file" },
-      ],
-    ))(
-      "selects and saves a free port on $hostPlatform $scenario",
-      async ({ hostPlatform, bootFailed, legacyOff }) => {
-        const defaultPort = DEFAULT_TAILNET_OBSERVER_PORT;
-        const blocker = createServer();
-        await new Promise<void>((resolve, reject) => {
-          blocker.once("error", (error: NodeJS.ErrnoException) => {
-            if (error.code === "EADDRINUSE" || error.code === "EACCES") resolve();
-            else reject(error);
-          });
-          blocker.listen({ host: "127.0.0.1", port: defaultPort, exclusive: true }, resolve);
-        });
-        const platform = vi.spyOn(process, "platform", "get").mockReturnValue(hostPlatform);
-        const isWindows = hostPlatform === "win32";
-        const excludedRange = vi.spyOn(sandbox, "getWindowsProxyPortRange").mockReturnValue([40_000, 50_000]);
-        try {
-          let saved: TailnetObserverConfigFile | null = legacyOff ? { authorization: TAILNET_IDENTITY } : null;
-          let listeningPort: number | null = null;
-          const writeConfigFile = vi.fn(async (file: TailnetObserverConfigFile) => { saved = file; });
-          const runServe = vi.fn(async () => ({ ok: true as const }));
-          const result = await createTailnetObserverConfigService({
-            pairedSharingBootstrapFailed: () => false,
-            env: bootFailed ? { AVE_TAILNET_OBSERVER: "1" } : {},
-            readConfigFile: async () => saved,
-            writeConfigFile,
-            runtimeState: () => {
-              const blocked = bootFailed && listeningPort === null;
-              return {
-                listeningPort, establishedPort: listeningPort, activeConfig: null,
-                freshPortSelection: bootFailed,
-                lastStartError: blocked ? TAILNET_OBSERVER_PORT_BLOCKED : null,
-                portBlock: blocked ? { code: "EADDRINUSE", port: defaultPort, hint: null } : null,
-              };
-            },
-            probeEnvironment: async () => readyEnvironment(),
-            restartListener: async () => {
-              const port = saved?.port;
-              if (port === undefined || port === defaultPort) throw new Error(TAILNET_OBSERVER_PORT_BLOCKED);
-              listeningPort = port;
-            },
-            readOwnDeviceAdmission: async () => false,
-            runServe,
-          }).guidedSetup();
-
-          expect(result.ok).toBe(true);
-          if (!result.ok) return;
-          expect(result.port).not.toBe(defaultPort);
-          if (isWindows) expect(result.port >= 40_000 && result.port <= 50_000).toBe(false);
-          expect(writeConfigFile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port: result.port }));
-          expect(runServe).toHaveBeenCalledExactlyOnceWith({ cliPath: "tailscale", port: result.port });
-          expect(result.snapshot.saved.port).toBe(result.port);
-        } finally {
-          excludedRange.mockRestore();
-          platform.mockRestore();
-          if (blocker.listening) await new Promise<void>(resolve => blocker.close(() => resolve()));
-        }
-      },
-    );
-
-    it("keeps an established legacy Serve port when guided setup cannot bind it", async () => {
-      const port = 46_173;
-      const writeConfigFile = vi.fn(async () => undefined);
-      const runServe = vi.fn();
-      const result = await service({
-        env: { AVE_TAILNET_OBSERVER: "1" },
-        environment: readyEnvironment({ serveConfigured: true, serveTargetPort: port }),
-        writeConfigFile,
-        runServe,
-        restartListener: async () => { throw new Error(TAILNET_OBSERVER_PORT_BLOCKED); },
-      }).guidedSetup();
-
-      expect(result).toEqual({ ok: false, error: TAILNET_OBSERVER_PORT_BLOCKED, output: null });
-      expect(writeConfigFile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port }));
-      expect(runServe).not.toHaveBeenCalled();
-    });
-
-    it.each([
-      { name: "temporary override with a blocked bind", blocked: true },
-      { name: "persistent override with a successful bind", blocked: false },
-    ])("keeps the guided file choice independent of a $name", async ({ blocked }) => {
-      const override = 29_999;
-      const env: NodeJS.ProcessEnv = { AVE_TAILNET_OBSERVER_PORT: String(override) };
-      let saved: TailnetObserverConfigFile | null = null;
-      let listeningPort: number | null = null;
-      const readConfigFile = async () => saved;
-      const writeConfigFile = vi.fn(async (file: TailnetObserverConfigFile) => { saved = file; });
-      const runServe = vi.fn(async () => ({ ok: true as const }));
-      const restartListener = vi.fn(async () => {
-        const { config } = await loadTailnetObserverConfig({ env, readConfigFile });
-        expect(config?.port).toBe(override);
-        if (blocked) throw new Error(TAILNET_OBSERVER_PORT_BLOCKED);
-        listeningPort = override;
-      });
-      const settings = createTailnetObserverConfigService({
-        pairedSharingBootstrapFailed: () => false,
-        env,
-        readConfigFile,
-        writeConfigFile,
-        runtimeState: () => ({
-          listeningPort, establishedPort: null, activeConfig: null, lastStartError: null, portBlock: null,
-        }),
-        probeEnvironment: async () => readyEnvironment(),
-        restartListener,
-        readOwnDeviceAdmission: async () => false,
-        runServe,
-      });
-
-      const result = await settings.guidedSetup();
-      expect.soft(writeConfigFile).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ port: DEFAULT_TAILNET_OBSERVER_PORT }),
-      );
-      expect.soft(restartListener).toHaveBeenCalledOnce();
-      if (blocked) {
-        expect.soft(result).toMatchObject({ ok: false, error: TAILNET_OBSERVER_PORT_BLOCKED });
-        expect.soft(runServe).not.toHaveBeenCalled();
-        delete env.AVE_TAILNET_OBSERVER_PORT;
-        await expect(loadTailnetObserverConfig({ env, readConfigFile })).resolves.toMatchObject({
-          config: { port: DEFAULT_TAILNET_OBSERVER_PORT },
-        });
-      } else {
-        expect.soft(result).toMatchObject({ ok: false, error: "tailnet-serve-port-override-conflict" });
-        expect(runServe).not.toHaveBeenCalled();
-      }
-    });
-
-    it("keeps the saved port under an explicit environment override", async () => {
-      const savedPort = 46_500;
-      const override = 28_999;
-      const writeConfigFile = vi.fn();
-      const runServe = vi.fn(async () => ({ ok: true as const }));
-      const result = await service({
-        file: { port: savedPort },
-        env: { AVE_TAILNET_OBSERVER_PORT: String(override) },
-        listeningPort: override,
-        writeConfigFile,
-        runServe,
-      }).guidedSetup();
-
-      expect(writeConfigFile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port: savedPort }));
-      expect(runServe).not.toHaveBeenCalled();
-      expect(result).toMatchObject({ ok: false, error: "tailnet-serve-port-override-conflict" });
-    });
-
-    it("keeps a saved port this process is already listening on", async () => {
-      const writeConfigFile = vi.fn(async () => undefined);
-      const result = await service({
-        file: { port: 46_500 },
-        listeningPort: 46_500,
-        writeConfigFile,
-        runServe: async () => ({ ok: true as const }),
-      }).guidedSetup();
-
-      expect(writeConfigFile).toHaveBeenCalledWith(expect.objectContaining({ port: 46_500 }));
-      expect(result).toEqual(expect.objectContaining({ ok: true, port: 46_500 }));
-    });
-
-    it("keeps the saved port and leaves Serve alone when the bind is blocked", async () => {
-      const blocker = createServer();
-      await new Promise<void>((resolve, reject) => {
-        blocker.once("error", reject);
-        blocker.listen(0, "127.0.0.1", resolve);
-      });
-      try {
-        const address = blocker.address();
-        if (address === null || typeof address === "string") throw new Error("Missing port");
-        const { port } = address;
-        const writeConfigFile = vi.fn(async () => undefined);
-        const runServe = vi.fn();
-        const result = await service({
-          file: { port },
-          writeConfigFile,
-          runServe,
-          restartListener: async () => { throw new Error(TAILNET_OBSERVER_PORT_BLOCKED); },
-        }).guidedSetup();
-
-        expect(result).toEqual({ ok: false, error: TAILNET_OBSERVER_PORT_BLOCKED, output: null });
-        expect(writeConfigFile).toHaveBeenCalledOnce();
-        expect(writeConfigFile).toHaveBeenCalledWith(expect.objectContaining({ port }));
-        expect(runServe).not.toHaveBeenCalled();
-      } finally {
-        await new Promise<void>(resolve => blocker.close(() => resolve()));
-      }
     });
 
     it("leaves Serve alone when it already forwards to this exact port", async () => {

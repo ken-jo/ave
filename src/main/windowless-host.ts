@@ -9,7 +9,7 @@ import { setServices } from "./app-state.js";
 import { maybeStartTailnetObserverServer } from "./tailnet-surface-server.js";
 
 // One service graph, command owner and event timeline for every attached client.
-export async function createWindowlessHost(projectRoot: string, host: BootHost, freshTailnetAveHome: boolean) {
+export async function createWindowlessHost(projectRoot: string, host: BootHost) {
   const services = await bootstrap(projectRoot, null, () => null, "headless", host);
   setServices(services);
   const conversationSurfaceRuntime = createConversationSurfaceRuntime();
@@ -29,7 +29,6 @@ export async function createWindowlessHost(projectRoot: string, host: BootHost, 
     conversationSurfaceRuntime,
     conversationCommandPort,
     startTailnetSurface: () => maybeStartTailnetObserverServer({
-      freshAveHome: freshTailnetAveHome,
       encryption: host.encryption,
       conversationSurfaceRuntime,
       conversationCommandPort,

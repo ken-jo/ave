@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getTailnetObserverRuntimeState } from "../main/tailnet-surface-server.js";
+import { TAILNET_OBSERVER_PORT_BLOCKED } from "../shared/tailnet-observer-config.js";
 import { cleanupTmpDir } from "./support/tmp-dir-teardown.js";
 
 const startTailnetSurface = vi.fn<() => Promise<unknown>>();
@@ -13,7 +15,7 @@ vi.mock("../boot/node-host-runtime.js", () => ({ createNodeBootHost: vi.fn(async
 vi.mock("../boot/dev-flags.js", () => ({ getIsPackaged: () => false, isPackagedElectronProcess: () => false }));
 vi.mock("../main/main-paths.js", () => ({ projectRoot: "/project" }));
 vi.mock("../main/ensure-workspace-cwd.js", () => ({ ensureWorkspaceCwd: vi.fn() }));
-vi.mock("../main/tailnet-surface-server.js", () => ({ isNewTailnetObserverHome: vi.fn(() => true) }));
+vi.mock("../main/tailnet-surface-server.js", () => ({ getTailnetObserverRuntimeState: vi.fn() }));
 vi.mock("../main/project-root-authorization.js", () => ({ isAuthorizedWorkspaceProjectRoot: vi.fn(() => true) }));
 vi.mock("../main/host-instance-lock.js", () => ({ acquireHostInstanceLock: vi.fn(async () => undefined) }));
 vi.mock("../main/host-runtime-probe.js", () => ({ probeHostRuntimeResources: vi.fn() }));
@@ -117,15 +119,12 @@ describe("headless --serve", () => {
     // ensureWorkspaceCwd only creates a missing home (create-only helper); repair runs in bootstrap() under the lock.
     startTailnetSurface.mockResolvedValue({ ok: true, enabled: false });
     const { ensureWorkspaceCwd } = await import("../main/ensure-workspace-cwd.js");
-    const { isNewTailnetObserverHome } = await import("../main/tailnet-surface-server.js");
     const { acquireHostInstanceLock } = await import("../main/host-instance-lock.js");
     const { createWindowlessHost } = await import("../main/windowless-host.js");
     await serveUntilReady();
     const first = vi.mocked(ensureWorkspaceCwd).mock.invocationCallOrder[0]!;
-    expect(vi.mocked(isNewTailnetObserverHome).mock.invocationCallOrder[0]!).toBeLessThan(first);
     expect(first).toBeLessThan(vi.mocked(acquireHostInstanceLock).mock.invocationCallOrder[0]!);
     expect(first).toBeLessThan(vi.mocked(createWindowlessHost).mock.invocationCallOrder[0]!);
-    expect(createWindowlessHost).toHaveBeenLastCalledWith("/project", expect.anything(), true);
   });
 
   it("keeps serving the local API when the Tailnet surface fails to start", async () => {
@@ -138,6 +137,23 @@ describe("headless --serve", () => {
     expect(stderr.join("")).toBe("headless: tailnet surface failed to start; serving the local API without it\n");
     // Start errors may contain configuration paths; report a fixed line.
     expect(stderr.join("")).not.toContain("/Users/");
+  });
+
+  it("prints the blocked observer port and keeps serving the local API", async () => {
+    const port = 46_173;
+    vi.mocked(getTailnetObserverRuntimeState).mockReturnValueOnce({
+      listeningPort: null,
+      activeConfig: null,
+      lastStartError: TAILNET_OBSERVER_PORT_BLOCKED,
+      portBlock: { code: "EADDRINUSE", port, hint: null },
+    });
+    startTailnetSurface.mockRejectedValue(new Error(TAILNET_OBSERVER_PORT_BLOCKED));
+
+    expect(await serveUntilReady()).toBe(0);
+    expect(stdout.join("")).toContain("server-ready");
+    expect(stderr.join("")).toBe(
+      "headless: tailnet observer port 46173 is blocked or in use; set AVE_TAILNET_OBSERVER_PORT\n",
+    );
   });
 
   it("serves silently when the Tailnet surface starts or stays off", async () => {
