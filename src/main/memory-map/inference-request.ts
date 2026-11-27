@@ -5,6 +5,11 @@ import { MODEL_FILES } from './model-manifest.js';
 export const INFERENCE_PREFIX_BYTES = 16;
 export const INFERENCE_ACCOUNT_RELAY_ARG = '--ave-inference-account-relay';
 export const INFERENCE_ACCOUNT_EXIT_RECEIPT = 'AVE_INFERENCE_TARGET_TREE_EMPTY';
+export function writeInferenceAccountExitReceipt(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    process.stderr.write(`${INFERENCE_ACCOUNT_EXIT_RECEIPT}\n`, error => error ? reject(error) : resolve());
+  });
+}
 export const INFERENCE_FILES = MODEL_FILES.slice(0, 3);
 // JSON uses up to six bytes per UTF-16 unit, plus the escaped newline, quotes and comma.
 // The budget covers 4,000 managed notes at the 120-unit title and 8,000-unit body limits.

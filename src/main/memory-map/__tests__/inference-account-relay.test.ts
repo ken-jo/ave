@@ -1,3 +1,5 @@
+import type { ChildProcess } from 'node:child_process';
+import { createManagedResources, observeManagedWindowsRelayTreeExit } from '../../managed-child-processes.js';
 import { EventEmitter } from 'node:events';
 import type { Socket } from 'node:net';
 import { duplexPair, PassThrough } from 'node:stream';
@@ -81,6 +83,54 @@ describe('account relay job evidence', () => {
       peer.destroy();
     }
   });
+  it.each(['bootstrap query failure', 'post-bind spawn failure'] as const)('requires the applicable exit proof for %s', async failure => {
+    const wrapper = Object.assign(new EventEmitter(), { stderr: new PassThrough(), pid: 1 });
+    const namespace = createManagedResources();
+    const observed = observeManagedWindowsRelayTreeExit(wrapper as unknown as ChildProcess, namespace, INFERENCE_ACCOUNT_EXIT_RECEIPT);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation((line, encoding, callback) => {
+      wrapper.stderr.write(line);
+      const done = typeof encoding === 'function' ? encoding : callback;
+      done?.();
+      return true;
+    });
+    const [socket, peer] = duplexPair();
+    try {
+      if (failure === 'bootstrap query failure') query.mockReturnValue(false);
+      else {
+        job(0x2000, [process.pid]);
+        accept.mockResolvedValue(socket);
+        spawn.mockImplementation(() => {
+          query.mockReturnValue(false);
+          throw new Error('Target creation attempt failed');
+        });
+        peer.write('request');
+      }
+
+      await expect(serveInferenceAccountRelay({})).rejects.toThrow();
+      await afterQueuedCallbacks();
+      const replied = vi.fn();
+      void observed.then(replied);
+      await afterQueuedCallbacks();
+      expect.soft(replied).not.toHaveBeenCalled();
+      wrapper.stderr.end();
+      wrapper.emit('close');
+      const receipt = await observed;
+      if (failure === 'bootstrap query failure') {
+        expect(accept).not.toHaveBeenCalled();
+        expect(spawn).not.toHaveBeenCalled();
+        expect(receipt).toBeDefined();
+      } else {
+        expect(spawn).toHaveBeenCalledOnce();
+        expect(receipt).toBeUndefined();
+      }
+    } finally {
+      stderr.mockRestore();
+      socket.destroy();
+      peer.destroy();
+      wrapper.emit('close');
+    }
+  });
+
   it('pins preexisting infrastructure and refuses live target processes', async () => {
     const relay = process.pid;
     const parent = process.ppid;

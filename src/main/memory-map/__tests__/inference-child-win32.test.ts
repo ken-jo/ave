@@ -415,7 +415,7 @@ it.each(['abort before authentication', 'admission lost before authentication'] 
   owner.takeover(() => {});
   const result = runInferenceChild(folder, TASK, owner.signal, undefined, undefined, undefined, owner.beginWorker).catch(error => error);
   await connecting.promise;
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
   try {
     if (reason.startsWith('admission')) helperIdentity.mockReturnValue('replacement-helper');
     const reply = vi.fn();
@@ -437,6 +437,7 @@ it.each(['abort before authentication', 'admission lost before authentication'] 
     expect(cleanup).not.toHaveBeenCalled();
     wrapper.emit('close', 0, null);
     await cancel;
+    if (reason.startsWith('abort')) expect(reply).toHaveBeenCalledExactlyOnceWith(null);
     await result;
     expect(cleanup).toHaveBeenCalledOnce();
     expect(cleanupAsrtSandboxAfterCommand).toHaveBeenCalledOnce();

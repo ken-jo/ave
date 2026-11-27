@@ -4,7 +4,7 @@ import type { MemoryMapProgress } from '../../shared/memory-map.js';
 import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import type { LocalModelBytes } from './embedding.js';
 import { MemoryMapHostError } from './errors.js';
-import { checkedInferenceFrameBytes, INFERENCE_ACCOUNT_RELAY_ARG, INFERENCE_PREFIX_BYTES } from './inference-request.js';
+import { checkedInferenceFrameBytes, INFERENCE_ACCOUNT_RELAY_ARG, INFERENCE_PREFIX_BYTES, writeInferenceAccountExitReceipt } from './inference-request.js';
 import type { MemoryInferenceTask } from './worker-client.js';
 
 export type InferenceHandler = (task: MemoryInferenceTask, files: LocalModelBytes, onProgress: (progress: MemoryMapProgress) => void) => Promise<unknown>;
@@ -56,12 +56,21 @@ async function serve(input: Readable, output: Writable, handle: InferenceHandler
 export async function serveInferenceChild(handle: InferenceHandler): Promise<void> {
   const args = process.argv.slice(2);
   const accountRelay = args[0] === INFERENCE_ACCOUNT_RELAY_ARG;
-  const mode = parseChildLaunchArgs(accountRelay ? args.slice(1) : args);
   if (accountRelay) {
-    if (mode.transport !== 'loopback') throw new Error('Inference account relay requires loopback');
-    const { serveInferenceAccountRelay } = await import('./inference-account-relay.js');
-    return serveInferenceAccountRelay(mode.env);
+    let serveRelay: typeof import('./inference-account-relay.js').serveInferenceAccountRelay;
+    let env: Readonly<Record<string, string>>;
+    try {
+      const mode = parseChildLaunchArgs(args.slice(1));
+      if (mode.transport !== 'loopback') throw new Error('Inference account relay requires loopback');
+      ({ serveInferenceAccountRelay: serveRelay } = await import('./inference-account-relay.js'));
+      env = mode.env;
+    } catch (error) {
+      if (process.platform === 'win32') await writeInferenceAccountExitReceipt();
+      throw error;
+    }
+    return serveRelay(env);
   }
+  const mode = parseChildLaunchArgs(args);
   if (mode.transport === 'relay') throw new Error('The inference child has no relay transport');
   if (mode.transport === 'stdio') return serve(process.stdin, process.stdout, handle);
   for (const [name, value] of Object.entries(mode.env)) process.env[name] = value;

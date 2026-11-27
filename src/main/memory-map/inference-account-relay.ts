@@ -5,7 +5,7 @@ import { acceptHostOverLoopback } from '../../plugins/isolation/child-loopback-l
 import { raceWithAbort, sleep } from '../../shared/abortable-deadline.js';
 import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import { runWithCeiling } from '../../tools/executor-ceiling.js';
-import { INFERENCE_ACCOUNT_EXIT_RECEIPT } from './inference-request.js';
+import { writeInferenceAccountExitReceipt } from './inference-request.js';
 
 const BASIC_LIMIT_INFORMATION = 2;
 const BASIC_PROCESS_ID_LIST = 3;
@@ -141,7 +141,10 @@ export async function runInferenceAccountTarget(socket: Socket, env: Readonly<Re
 }
 
 export async function serveInferenceAccountRelay(env: Readonly<Record<string, string>>): Promise<void> {
-  const job = await bindInferenceAccountJob();
+  const job = await bindInferenceAccountJob().catch(async error => {
+    if (process.platform === 'win32') await writeInferenceAccountExitReceipt();
+    throw error;
+  });
   let socket: Socket | undefined;
   let confirmed = false;
   try {
@@ -155,11 +158,7 @@ export async function serveInferenceAccountRelay(env: Readonly<Record<string, st
     socket?.destroy();
     try {
       confirmed = job.targetTreeGone();
-      if (confirmed) {
-        await new Promise<void>((resolve, reject) => {
-          process.stderr.write(`${INFERENCE_ACCOUNT_EXIT_RECEIPT}\n`, error => error ? reject(error) : resolve());
-        });
-      }
+      if (confirmed) await writeInferenceAccountExitReceipt();
     } finally { job.release(); }
   }
   if (!confirmed) throw new Error('Inference relay job membership is unverified');
