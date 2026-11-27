@@ -147,7 +147,9 @@ describe("optional document engine installation", () => {
     const installation = (await installer.getVerifiedDocumentEngineInstallation(signal))!;
     const dependency = join(installation.root, "program", "library");
     const before = await lstat(dependency, { bigint: true });
-    await writeFile(dependency, "altered bytes!");
+    const replacement = Buffer.from("altered bytes!");
+    expect(BigInt(replacement.byteLength)).toBe(before.size);
+    await writeFile(dependency, replacement);
     const readStat = fs.lstat;
     vi.spyOn(fs, "lstat").mockImplementation(((path, options) =>
       path === dependency && options?.bigint ? Promise.resolve(before) : readStat(path, options)) as typeof fs.lstat);
@@ -160,9 +162,11 @@ describe("optional document engine installation", () => {
       }
       return handle;
     });
-    const after = await fs.lstat(dependency, { bigint: true });
-    expect([after.size, after.mtimeNs, after.ctimeNs]).toEqual([before.size, before.mtimeNs, before.ctimeNs]);
-    expect(await readFile(dependency, "utf8")).toBe("altered bytes!");
+    expect(await readFile(dependency)).toEqual(replacement);
+    expect(await fs.lstat(dependency, { bigint: true })).toBe(before);
+    const handle = await fs.open(dependency, "r");
+    try { expect(await handle.stat({ bigint: true })).toBe(before); }
+    finally { await handle.close(); }
     await expect(installation.verifyBeforeSpawn(signal)).rejects.toMatchObject({
       code: "integrity-failed", message: "Document engine payload bytes changed after verification",
     });

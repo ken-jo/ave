@@ -31,6 +31,8 @@ export interface VerifiedDocumentEngineInstallation {
   readonly extensionPath: string;
   readonly extensionSha256: string;
   assertCurrent(): void;
+  /** Verifies the payload and extension bytes read during the recheck. Same-user in-place writes
+   * between the recheck and process creation are outside this guarantee on every platform. */
   verifyBeforeSpawn(signal: AbortSignal): Promise<void>;
 }
 
@@ -269,7 +271,7 @@ function bindInstallation(receipt: InstallationReceipt, release: DocumentEngineR
     installations.set(slot, { promise: rejected, settled: true });
     return failure;
   };
-  // Synchronous and constant-size: the whole tree is compared asynchronously in verifyBeforeSpawn.
+  // The synchronous check covers only the recorded anchors. The tree and extension bytes are checked separately.
   const assertCurrent = (): void => {
     if (!current()) throw new DocumentEngineInstallError("integrity-failed", "Document engine installation is no longer current");
     if (failure) throw failure;
