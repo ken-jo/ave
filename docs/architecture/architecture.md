@@ -3695,12 +3695,24 @@ in its directory.
   resolved and an unknown name returned NXDOMAIN. The host DNS client cache can
   answer both lookups, so these results establish access to the host resolver.
   The resolver remains a potential egress path outside the proxy. MXC shell
-  and extension plans report `dns: "host-resolver"` and `rawIp: "unknown"`.
-  The direct port 53 refusal above lacks protocol attribution. Direct UDP port
-  53 and ICMP blocking remain unverified. Host-side WFP observation can identify
-  filtering decisions, and receiver-side evidence can confirm traffic arrival.
-  Plan coverage is reporting metadata. Settings uses it to disclose both limits.
-  Launch and admission policies do not enforce this coverage metadata.
+  and extension plans report `dns: "host-resolver"`.
+- **Shell TCP egress measurement.** The existing post-boot shell start check
+  runs once in a container with the same network policy as a user shell.
+  The control requires a `403` with the `x-ave-egress-refused` header for a
+  random loopback destination and a matching refusal recorded by the host
+  invocation proxy. The script attempts direct TCP connections to
+  `192.0.2.1:443`, `[2001:db8::1]:443`, and the host's primary LAN IPv4 on a
+  port selected from those without a listener. The budget is three seconds
+  per target and twelve seconds for the script's measurements.
+  `rawIp: "blocked"` requires the control to pass and a local `10013` refusal
+  for both public test addresses. A successful connection or remote refusal
+  on any target yields `rawIp: "unknown"` and a `raw-ip-reachable` warning.
+  Missing evidence, a failed control, and an IPv6 no-route result also leave
+  coverage unknown. Shell availability follows the PowerShell exit result.
+  Coverage stays in memory for the current boot and is reported on Windows
+  MXC shell plans and in the Windows substrate snapshot. The container request
+  and host proxy enforce the network policy. Extension plans retain
+  `rawIp: "unknown"`. Direct UDP and ICMP remain unverified.
 - **Inbound.** Proxy mode requires `ingress.default: "allow"`, which grants
   the container `privateNetworkClientServer`. The pinned SDK describes
   host-loopback allow as stateful outbound connectivity at baseline; native
