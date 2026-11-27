@@ -994,13 +994,17 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
     if (files.length > 0) return conflictOf(run, joinId, "same-path", files, Object.fromEntries(stageIds.map(id => [id, file.stages[id]?.manifest ?? []])));
     const wanted: typeof copies = [];
+    const keepUserOutput = (copy: (typeof copies)[number], there: { sha256: string; size: number }): boolean => {
+      if (there.sha256 === copy.sha256 || there.sha256 === file.out[copy.path]?.sha256) return false;
+      next.set(copy.path, { ...there, stageId: copy.stageId });
+      return true;
+    };
     // Checked before anything is written: each sealed file is still what was sealed, and a file the host did not put in the output folder stays.
     for (const copy of copies) {
       if (contested.has(copy.path)) continue;
       if ((await hashSeedFile(stageDir(copy.stageId), copy.path)).sha256 !== copy.sha256) throw new Error("a sealed stage file changed before it was collected");
       const there = fileInOut(copy.path) ? await hashSeedFile(out, copy.path) : undefined;
-      if (there !== undefined && there.sha256 !== copy.sha256 && there.sha256 !== file.out[copy.path]?.sha256) next.set(copy.path, { ...there, stageId: copy.stageId });
-      else wanted.push(copy);
+      if (there === undefined || !keepUserOutput(copy, there)) wanted.push(copy);
     }
     const assertAuthority = () => authority?.throwIfAborted();
     assertAuthority();
@@ -1017,11 +1021,22 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
           prepared.push({ copy, source });
         }
         // Publish without yielding. A failed rename leaves the last destination intact.
+        const keptUserOutput = Symbol();
         for (const { copy, source } of prepared) {
           const segments = copy.path.split("/");
           const leaf = segments.pop() as string;
           assertAuthority();
-          out.ensurePath(segments).replaceFileFrom(leaf, source.directory, leaf, source.id, assertAuthority);
+          const destination = out.ensurePath(segments);
+          try {
+            destination.replaceFileFrom(leaf, source.directory, leaf, source.id, () => {
+              const there = destination.hashFile(leaf);
+              if (there !== undefined && keepUserOutput(copy, there)) throw keptUserOutput;
+              assertAuthority();
+            });
+          } catch (error) {
+            if (error === keptUserOutput) continue;
+            throw error;
+          }
           published.set(copy.path, { sha256: copy.sha256, size: copy.size, stageId: copy.stageId });
         }
       }

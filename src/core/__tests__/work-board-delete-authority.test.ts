@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { within } from "../../__tests__/support/signal-wait.js";
+import * as homeTrust from "../../shared/ave-home-trust.js";
 import * as hostGitLaunch from "../../shared/host-git.js";
 import { discoverHostGitAsync } from "../../shared/host-git-executable.js";
 import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
@@ -127,6 +128,42 @@ it("a delete whose board write fails leaves its row with the run revoked and sto
   // The run is stopped as by Stop, not left live without authority.
   await h.until(itemId, row => row.runStatus === "cancelled");
   expect(h.board.runAuthority(itemId, runId).aborted).toBe(true);
+});
+
+it("stops the revoked run when read-back later confirms its row survived a failed delete", async () => {
+  const { h, itemId, runId, boardPath } = await liveRun();
+  const authority = h.board.runAuthority(itemId, runId);
+  const readBoard = homeTrust.readAveHomeInput;
+  const rename = fsPromises.rename.bind(fsPromises);
+  let failed = false;
+  const renames = vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
+    if (to !== boardPath) return rename(from, to);
+    failed = true;
+    throw Object.assign(new Error("board replacement failed"), { code: "EIO" });
+  });
+  const reads = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async target => {
+    if (target === boardPath && failed) throw Object.assign(new Error("board read-back failed"), { code: "EIO" });
+    return readBoard(target);
+  });
+  const stopped = vi.fn();
+  const unsubscribe = h.board.revokedRowKept.subscribe(stopped);
+  try {
+    await expect(h.board.remove(itemId)).rejects.toThrow("board replacement failed");
+    expect(authority.aborted).toBe(true);
+    expect(await h.board.runs.hasUnknown()).toBe(true);
+    expect(stopped).not.toHaveBeenCalled();
+    reads.mockRestore();
+    renames.mockRestore();
+
+    await h.board.runBoardSnapshot();
+    expect(stopped).toHaveBeenCalledExactlyOnceWith({ itemId, runId });
+    await h.until(itemId, row => row.runStatus === "cancelled");
+    expect(await h.board.runs.hasUnknown()).toBe(false);
+  } finally {
+    unsubscribe();
+    reads.mockRestore();
+    renames.mockRestore();
+  }
 });
 
 it("does not launch a stage when deletion lands during its final source check", async () => {

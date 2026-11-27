@@ -1,4 +1,5 @@
-import { type BigIntStats, chmodSync, closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { type BigIntStats, chmodSync, closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { replaceStagedFile } from "../../lib/atomic-file.js";
@@ -189,6 +190,8 @@ export interface OwnedDir {
   replaceFileFrom(name: string, staged: OwnedDir, stagedName: string, id: NodeId, canReplace?: () => void): void;
   /** A regular file with one name, verified by identity; undefined when nothing is there. */
   readFile(name: string): Buffer | undefined;
+  /** Hash a regular file by identity without following links. Undefined for a missing or non-file entry. */
+  hashFile(name: string): { sha256: string; size: number } | undefined;
   /** Removes one entry and everything below it without following a link. With `expect`, only while the entry is what that id names. */
   remove(name: string, expect?: FolderId): Promise<void>;
   removeSelfIfEmpty(): boolean;
@@ -353,18 +356,48 @@ class Dir implements OwnedDir {
   }
 
   readFile(name: string): Buffer | undefined {
+    const file = this.openFile(name, true);
+    if (file === undefined) return undefined;
+    try { return readFileSync(file.fd); } finally { closeSync(file.fd); }
+  }
+
+  hashFile(name: string): { sha256: string; size: number } | undefined {
+    const file = this.openFile(name, false);
+    if (file === undefined) return undefined;
+    const { fd, stat } = file;
+    try {
+      const hash = createHash("sha256");
+      const buffer = Buffer.allocUnsafe(1024 * 1024);
+      let size = 0;
+      for (let read = readSync(fd, buffer); read > 0; read = readSync(fd, buffer)) {
+        hash.update(buffer.subarray(0, read));
+        size += read;
+      }
+      const after = fstatSync(fd, { bigint: true });
+      if (after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs || this.entryId(name) !== idOf(stat)) {
+        throw new OwnedFsError("changed", "the file changed while it was read");
+      }
+      return { sha256: hash.digest("hex"), size };
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  private openFile(name: string, singleLink: boolean): { fd: number; stat: BigIntStats } | undefined {
     const path = join(this.path, entryName(name));
     this.check();
     const stat = stats(path);
-    if (stat === undefined) return undefined;
-    if (!stat.isFile() || stat.nlink !== 1n) throw new OwnedFsError("not-plain", "the entry is not a regular file with one name");
+    if (stat === undefined || (!singleLink && !stat.isFile())) return undefined;
+    if (singleLink && (!stat.isFile() || stat.nlink !== 1n)) throw new OwnedFsError("not-plain", "the entry is not a regular file with one name");
     const id = idOf(stat);
     const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
-      if (idOf(fstatSync(fd, { bigint: true })) !== id) throw new OwnedFsError("changed", "the file changed while it was opened");
-      return readFileSync(fd);
-    } finally {
+      const opened = fstatSync(fd, { bigint: true });
+      if (idOf(opened) !== id) throw new OwnedFsError("changed", "the file changed while it was opened");
+      return { fd, stat: opened };
+    } catch (error) {
       closeSync(fd);
+      throw error;
     }
   }
 

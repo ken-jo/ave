@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -84,4 +84,60 @@ it("a queued integration whose run authority is revoked before it starts collect
   expect(await provider.integrate(run, "j1", ["s1"], new AbortController().signal)).toEqual({ ok: true });
   expect(existsSync(join(out, "plan.md"))).toBe(true);
   expect(existsSync(join(out, "summary.md"))).toBe(true);
+});
+
+it.each([
+  ["before collection", false],
+  ["during staging", false],
+  ["during staging through a hard link", true],
+] as const)("keeps and records a user edit made %s", async (timing, hardLinked) => {
+  const base = mkdtempSync(join(tmpdir(), "rie-"));
+  const project = join(base, "project");
+  mkdirSync(project);
+  const run: RunRef = { itemId: 8, runId: "run-output-edit", runKey: "key", projectRoot: project };
+  const provider = createStageWorkspaceProvider({ plainCeiling: base });
+  cleanups.push(async () => {
+    await provider.release(run, "all");
+    removeTree(base);
+  });
+  const opened = await provider.open(run, project);
+  if (!opened.ok || opened.workspace.kind !== "folder" || opened.workspace.outputDir === undefined) throw new Error("expected a folder workspace");
+  const path = "report.txt";
+  const destination = join(opened.workspace.outputDir, path);
+  const initial = await provider.prepare(run, stageOf("initial", { outputs: [path] }), 1);
+  if (!initial.ok) throw new Error(`prepare refused: ${initial.code}`);
+  write(initial.workspace.root, path, "old report\n");
+  expect(await provider.seal(run, "initial")).toEqual({ ok: true });
+  expect(await provider.integrate(run, "first", ["initial"])).toEqual({ ok: true });
+
+  const revision = await provider.prepare(run, stageOf("revision", { outputs: [path], inputFiles: [{ from: "stage", stageId: "initial" }] }), 1);
+  if (!revision.ok) throw new Error(`prepare refused: ${revision.code}`);
+  write(revision.workspace.root, path, "new report\n");
+  expect(await provider.seal(run, "revision")).toEqual({ ok: true });
+
+  const edited = "user report\n";
+  const editPath = hardLinked ? join(base, "linked-report.txt") : destination;
+  if (hardLinked) linkSync(destination, editPath);
+  const openSource = ownedFs.openSource;
+  let editedDuringStaging = false;
+  const source = vi.spyOn(ownedFs, "openSource").mockImplementation(async (root, segments) => {
+    const handle = await openSource(root, segments);
+    if (timing !== "before collection" && root.path === revision.workspace.root
+      && readdirSync(opened.workspace.runRoot).some(name => name.startsWith("collect-"))) {
+      writeFileSync(editPath, edited);
+      editedDuringStaging = true;
+    }
+    return handle;
+  });
+  try {
+    if (timing === "before collection") writeFileSync(destination, edited);
+    expect(await provider.integrate(run, "second", ["revision"])).toEqual({ ok: true });
+    expect(editedDuringStaging).toBe(timing !== "before collection");
+    expect(readFileSync(destination, "utf8")).toBe(edited);
+  } finally {
+    source.mockRestore();
+  }
+  const downstream = await provider.prepare(run, stageOf("downstream", { inputFiles: [{ from: "stage", stageId: "revision" }] }), 1);
+  if (!downstream.ok) throw new Error(`prepare refused: ${downstream.code}`);
+  expect(readFileSync(join(downstream.workspace.root, path), "utf8")).toBe(edited);
 });

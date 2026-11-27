@@ -498,8 +498,9 @@ export class WorkflowRunStore {
 
   /** Resolve every delete whose outcome is unknown (see markerOutcome): `unlanded` takes back its intent with the marker, `landed` drops
    * only the marker, `held` keeps both. Each decided one counts once a read of the file again holds no such marker (and, not landed, no
-   * intent); the rest stay unknown. */
-  async resolveUnknown(outcome: (marker: DeleteMarker) => "unlanded" | "landed" | "held"): Promise<void> {
+   * intent); the rest stay unknown. Returns the confirmed withdrawals. */
+  async resolveUnknown(outcome: (marker: DeleteMarker) => "unlanded" | "landed" | "held"): Promise<DeleteMarker[]> {
+    const withdrawn: DeleteMarker[] = [];
     await withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
       if (file === undefined) return;
@@ -521,13 +522,16 @@ export class WorkflowRunStore {
         if (current === undefined) return;
         const stored = markersIn(current);
         this.unknown = this.unknown.filter(marker => {
+          const unlanded = outcomes.get(marker) === "unlanded";
           if (!decided.has(marker) || stored.some(sameMarker(marker))
-            || (back.includes(marker) && (current.deleteIntents ?? []).some(sameIntent(marker)))) return true;
+            || (unlanded && (current.deleteIntents ?? []).some(sameIntent(marker)))) return true;
+          if (unlanded) withdrawn.push(marker);
           runIds?.add(marker.runId);
           return false;
         });
       } });
     }).catch(() => undefined);
+    return withdrawn;
   }
 
   /** Holds a scheduler event of a run (work-board-run-ending.md, Held events), stored once by its identity; one of a run that is not open

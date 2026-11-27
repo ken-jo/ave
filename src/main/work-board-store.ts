@@ -944,7 +944,16 @@ export class WorkBoardStore {
     if (!(await this.runs.hasUnknown())) return;
     await withInProcessFileQueue(this.filePath, async () => {
       const onDisk = await readBoardOnDisk(this.filePath).catch(() => undefined);
-      if (onDisk) await this.runs.resolveUnknown(marker => markerOutcome(marker.operation, markerBoard(onDisk, marker)));
+      if (!onDisk) return;
+      const withdrawn = await this.runs.resolveUnknown(marker => markerOutcome(marker.operation, markerBoard(onDisk, marker)));
+      for (const intent of withdrawn) {
+        const key = `${intent.itemId}#${intent.runId}`;
+        // A marker restored at startup carries no in-process revocation.
+        if (this.authorities.get(key)?.signal.aborted
+          && (onDisk.standing(intent) === "named" || intent.operation?.op === "card")) {
+          this.finishKeptDelete(intent);
+        }
+      }
     });
   }
 
@@ -2024,18 +2033,20 @@ export class WorkBoardStore {
     const onDisk = refused ? undefined : await readBoardOnDisk(this.filePath).catch(() => undefined);
     if (refused || (onDisk && unlanded(onDisk))) {
       if (hasIntent && operation.ownIntent && !(await this.runs.withdrawIntent(intent, operation))) log.warn("[work-board-store] a delete intent was not taken back: its outcome is held as unknown");
-      // Existing retry cards retain the aborted signal. A new gesture can authorize a settled output again.
-      const key = `${intent.itemId}#${intent.runId}`;
-      if (this.settledOutputAuthorities.get(key)?.signal.aborted) {
-        this.settledOutputAuthorities.delete(key);
-        this.revokedRowKept.emit(intent);
-      }
+      this.finishKeptDelete(intent);
       return;
     }
     if (!hasIntent) return;
     if (!onDisk && operation.ownIntent) await this.runs.markUnknown(intent, operation);
     this.revokeRun(intent.itemId, intent.runId);
     this.rowDeleted.emit(intent);
+  }
+
+  private finishKeptDelete({ itemId, runId }: DeleteIntent): void {
+    // Existing retry cards retain the aborted signal. A new gesture can authorize a settled output again.
+    const key = `${itemId}#${runId}`;
+    if (this.settledOutputAuthorities.get(key)?.signal.aborted) this.settledOutputAuthorities.delete(key);
+    this.revokedRowKept.emit({ itemId, runId });
   }
 
   // The intent an invalid card's delete goes through, for the one open run bound to the entry's row id: the intent of that row's delete,
