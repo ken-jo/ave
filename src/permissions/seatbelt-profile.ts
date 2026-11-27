@@ -132,12 +132,20 @@ const RESERVED_PROFILE_TEXT = ["com.microsoft.mxc.run.", "dev.ave.holder."] as c
 export const HOLDER_LABEL_PREFIX = "dev.ave.holder.";
 const HOLDER_LABEL = /^dev\.ave\.holder\.[a-z0-9.]{1,96}$/u;
 /**
- * A holder profile, label included, larger than this is refused before anything is spawned. The kernel's compile time
- * grows faster than linearly with profile size (probe V-P1, this Mac: 128 KiB 1.2-2.4 s, 256 KiB 5-10 s, 512 KiB
- * about 20 s), and the start deadline is `mxcMacHolderStartMs`, so a larger bound would turn an oversized policy into
- * a stalled start instead of naming it. The carve's own limits keep real profiles far below this.
+ * A shell or holder profile (a holder's label included) larger than this is refused before anything is spawned. The
+ * kernel's compile time grows with profile size, faster than linearly for the write-root rules (probe V-P1, this Mac:
+ * 290 KB of rows for 380 write roots 1.2 s; synthetic 256 KiB 5-10 s, 512 KiB about 20 s), and longer profiles are
+ * refused by the kernel outright, so a larger bound would turn an oversized policy into a stalled or unnamed failure.
+ * Real holder profiles measured 25-32 KB on a real account.
  */
-const SEATBELT_HOLDER_PROFILE_MAX_BYTES = 128 * 1024;
+const SEATBELT_PROFILE_MAX_BYTES = 128 * 1024;
+
+function assertSeatbeltProfileSize(profile: string, what: string): string {
+  if (Buffer.byteLength(profile) > SEATBELT_PROFILE_MAX_BYTES) {
+    throw new SeatbeltDenyError("profile-string-too-long", `${what} profile exceeds the size limit`);
+  }
+  return profile;
+}
 
 function checkProfileString(value: string): void {
   if (CONTROL_CHARACTER.test(value)) {
@@ -272,7 +280,7 @@ interface SeatbeltProfileInput {
 }
 
 export function buildSeatbeltShellProfile(input: SeatbeltProfileInput & { readonly proxyPort: number }): string {
-  return buildSeatbeltProfile(input, input.proxyPort);
+  return assertSeatbeltProfileSize(buildSeatbeltProfile(input, input.proxyPort), "Container shell");
 }
 
 /** One holder start's label names (`holder-label-sweep.ts`): its own, its app run's, and its instance's. */
@@ -300,10 +308,7 @@ export function buildSeatbeltHolderProfile(input: SeatbeltProfileInput & {
   const withLabels = `${profile}(deny mach-lookup (global-name-prefix ${JSON.stringify(HOLDER_LABEL_PREFIX)}))
 (allow mach-lookup ${names.map(name => `(global-name ${JSON.stringify(name)})`).join(" ")})
 `;
-  if (Buffer.byteLength(withLabels) > SEATBELT_HOLDER_PROFILE_MAX_BYTES) {
-    throw new SeatbeltDenyError("profile-string-too-long", "Container holder profile exceeds the size limit");
-  }
-  return withLabels;
+  return assertSeatbeltProfileSize(withLabels, "Container holder");
 }
 
 function buildSeatbeltProfile(input: SeatbeltProfileInput, proxyPort: number | null): string {

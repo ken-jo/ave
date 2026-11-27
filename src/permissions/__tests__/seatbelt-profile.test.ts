@@ -190,7 +190,7 @@ describe("Seatbelt structural IP egress evidence", () => {
   });
 });
 
-describe("Seatbelt holder profile size", () => {
+describe("Seatbelt shell and holder profile size", () => {
   const labels = { holder: "dev.ave.holder.i0.b0.h1", boot: "dev.ave.holder.i0.b0.all", instance: "dev.ave.holder.i0.any" };
   const withDenies = (count: number) => {
     const model = buildPolicyModel({
@@ -205,5 +205,11 @@ describe("Seatbelt holder profile size", () => {
   it("builds a profile within the bound and refuses one past it by name, before the kernel compiles it", () => {
     expect(Buffer.byteLength(buildSeatbeltHolderProfile(withDenies(100)))).toBeLessThan(128 * 1024);
     expect(() => buildSeatbeltHolderProfile(withDenies(3_000))).toThrow(expect.objectContaining({ code: "profile-string-too-long" }));
+  });
+
+  it("bounds a shell profile the same way: a policy within the bound builds, one past it is refused by name", () => {
+    const shell = (count: number) => ({ ...withDenies(count), proxyPort: 4100 });
+    expect(Buffer.byteLength(buildSeatbeltShellProfile(shell(100)))).toBeLessThan(128 * 1024);
+    expect(() => buildSeatbeltShellProfile(shell(3_000))).toThrow(expect.objectContaining({ code: "profile-string-too-long", message: expect.stringContaining("shell") }));
   });
 });
