@@ -14,7 +14,8 @@ vi.mock("../../shared/container-platform.js", async (actual) => {
 });
 
 import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
-import { spawnMxcBundledHolder, type MxcBundledHolder } from "../../sandbox/wrap-bundled-command.js";
+import { prepareMxcHolderStart, spawnMxcBundledHolder, type MxcBundledHolder } from "../../sandbox/wrap-bundled-command.js";
+import { spawnMxcConfinedChild } from "../confined-child.js";
 import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
 import { verifyHolderSweepHelper } from "../holder-label-sweep.js";
 import { MxcProcessContractError } from "../mxc-extension-errors.js";
@@ -192,6 +193,37 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     await new Promise(r => setTimeout(r, 300));
     expect(survivors(3320)).toEqual([]);
     expect(() => process.kill(target.process.id, 0)).toThrow();
+  });
+
+  it("N15: a worker under a plugin child is released with it when the parent goes first; a sibling worker's control is a fresh start", async () => {
+    const parentData = join(root, "plugin-data");
+    const workerData = join(root, "worker-data");
+    mkdirSync(parentData);
+    mkdirSync(workerData);
+    const staging = prepareMxcHolderStart({ label: "plugin-child:p15", executable: "/bin/sh", baseEnv: { PATH }, allowWrite: [parentData] });
+    const parent = await spawnMxcConfinedChild({
+      command: "/bin/sh", args: ["-c", "echo parent; exec /bin/cat"], cwd: staging.home, home: staging.home, temp: staging.temp,
+      stagingRoot: staging.root, holder: {}, label: "plugin-child:p15",
+      filesystemOwnership: { readRoots: [], writeRoots: [parentData, staging.root], hostStorageRoots: [] },
+      egressOwner: { kind: "worker", role: "plugin-child", pluginId: "p15" }, allowRead: [], allowWrite: [parentData, staging.root], baseEnv: { PATH },
+    });
+    expect(parent.confinement).toBe("macos-seatbelt");
+    expect(await line(parent.process.stdout)).toBe("parent");
+    const worker = await holder("echo worker; exec /bin/sleep 3315", {
+      label: "worker:p15:w", egressOwner: { kind: "worker", role: "worker", pluginId: "p15", instanceId: "w" } as never,
+      workerTransport: "output-only-v1", parent, allowWrite: [workerData],
+    });
+    expect(await line(worker.process.stdout)).toBe("worker");
+    const running = (): boolean => execFileSync("/bin/ps", ["-Ao", "command="]).toString().includes("sleep 3315");
+    expect(running()).toBe(true);
+    await parent.release();
+    await staging.release();
+    await new Promise(r => setTimeout(r, 300));
+    expect(running()).toBe(false);
+    await expect(worker.process.completion).resolves.toBeDefined();
+    // Control: with its parent gone, a new worker under it is refused, never started unparented.
+    await expect(holder("true", { label: "worker:p15:w2", egressOwner: { kind: "worker", role: "worker", pluginId: "p15", instanceId: "w2" } as never,
+      workerTransport: "output-only-v1", parent, allowWrite: [workerData] })).rejects.toThrow("Extension parent backend is no longer admitted");
   });
 
   it("N13: a kernel-refused start runs nothing and leaves no staging tree", async () => {

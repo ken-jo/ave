@@ -244,7 +244,7 @@ describe("contained MCP stdio server", () => {
     state.holderSpawn.mockResolvedValue(server.holder);
     const mcp = client({ command: "bash" });
     await mcp.connect();
-    expect(state.holderSpawn.mock.calls[0]![0]).toMatchObject({ label: "mcp:fs", command: "bash" });
+    expect(state.holderSpawn.mock.calls[0]?.[0]).toMatchObject({ label: "mcp:fs", command: "bash" });
     expect(state.legacySpawn).not.toHaveBeenCalled();
     await mcp.disconnect();
   });

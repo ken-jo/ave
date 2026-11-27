@@ -1,6 +1,7 @@
+import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { win32 as winPath } from "node:path";
 import { PassThrough } from "node:stream";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { createMxcExtensionRequest } from "../../../__tests__/support/mxc-supervisor.js";
 import type { MxcConfinedChildSpawn, MxcConfinedChildSpec } from "../../../permissions/confined-child.js";
@@ -74,9 +75,13 @@ function fixture() {
 }
 
 describe("native plugin stream ownership", () => {
+  // Windows-shaped launches: the adapter branches on the platform it runs on.
+  const hostPlatform = process.platform;
+  beforeEach(() => { setProcessPlatform("win32"); });
+  afterEach(() => { setProcessPlatform(hostPlatform); });
   it("uses native streams and the container identity without a relay or process facade", async () => {
     const { owned, launch, resolve } = fixture();
-    const child = attachMxcPluginChild(owned, launch, "native-probe");
+    const child = attachMxcPluginChild(owned, launch, "native-probe", "windows-mxc");
     const request = Buffer.from("request\n");
     const response = Buffer.from("response\n");
     const sent = new Promise<Buffer>((done) => owned.stdin.once("data", done));
@@ -106,7 +111,7 @@ describe("native plugin stream ownership", () => {
     const { owned, launch, controller, resolve } = fixture();
     let settleDisposal!: () => void;
     vi.mocked(owned.dispose).mockImplementation(() => new Promise<void>((yes) => { settleDisposal = yes; }));
-    const child = attachMxcPluginChild(owned, launch, "native-probe");
+    const child = attachMxcPluginChild(owned, launch, "native-probe", "windows-mxc");
     const fault = vi.fn(); const gone = vi.fn();
     child.link.onFault(fault); child.link.onGone(gone);
     controller.abort();
@@ -125,7 +130,7 @@ describe("native plugin stream ownership", () => {
     const { owned, launch, reject } = fixture();
     const error = new MxcProcessCleanupError("Termination unverified");
     vi.mocked(owned.dispose).mockRejectedValue(error);
-    const child = attachMxcPluginChild(owned, launch, "native-probe");
+    const child = attachMxcPluginChild(owned, launch, "native-probe", "windows-mxc");
     const gone = vi.fn(); child.link.onGone(gone);
     reject(error);
     await expect(child.waitForExit()).rejects.toBe(error);
@@ -136,7 +141,7 @@ describe("native plugin stream ownership", () => {
     const { owned, launch } = fixture();
     const error = new MxcProcessCleanupError("No terminal receipt");
     vi.mocked(owned.dispose).mockRejectedValue(error);
-    const child = attachMxcPluginChild(owned, launch, "native-probe");
+    const child = attachMxcPluginChild(owned, launch, "native-probe", "windows-mxc");
     const gone = vi.fn(); child.link.onGone(gone);
     child.link.terminate("revoke");
     await expect(child.waitForExit()).rejects.toBe(error);
@@ -145,7 +150,7 @@ describe("native plugin stream ownership", () => {
 
   it("reports the start of termination once, synchronously, and replays it to late listeners", async () => {
     const { owned, launch } = fixture();
-    const child = attachMxcPluginChild(owned, launch, "native-probe");
+    const child = attachMxcPluginChild(owned, launch, "native-probe", "windows-mxc");
     const early = vi.fn();
     child.onTerminating(early);
     child.link.terminate("first"); child.link.terminate("second");
@@ -157,7 +162,7 @@ describe("native plugin stream ownership", () => {
 
   it("remembers faults for listeners attached after process failure", async () => {
     const { owned, launch, reject } = fixture();
-    const child = attachMxcPluginChild(owned, launch, "native-probe");
+    const child = attachMxcPluginChild(owned, launch, "native-probe", "windows-mxc");
     reject(new Error("Supervisor lost"));
     await child.waitForExit();
     const fault = vi.fn(); child.link.onFault(fault);
@@ -371,7 +376,7 @@ describe("plugin stderr diagnostics", () => {
     const log = vi.spyOn(console, "log").mockImplementation((...args) => { records.push(args); });
     const warn = vi.spyOn(console, "warn").mockImplementation((...args) => { records.push(args); });
     const error = vi.spyOn(console, "error").mockImplementation((...args) => { records.push(args); });
-    const child = attachMxcPluginChild(owned, launch, "diagnostic-probe");
+    const child = attachMxcPluginChild(owned, launch, "diagnostic-probe", "windows-mxc");
     try {
       await run(owned.stderr, records);
     } finally {

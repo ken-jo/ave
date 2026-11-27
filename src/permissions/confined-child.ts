@@ -237,11 +237,12 @@ export function assertMxcDescendantOutsideParent(parent: MxcConfinedChildSpawn, 
     if (binding === undefined) return;
     if (!binding.active) throw new MxcProcessContractError("Extension parent backend is no longer admitted");
     // The lexical spelling and the admitted target, as for the holder's own footprint.
-    const admittedPaths = admitWindowsLookupPaths([...grants.read, ...grants.write], "mxc-launch");
-    const forms = (paths: readonly string[]): readonly string[] => [...new Set(paths.flatMap(path => {
-      const target = admittedPaths.get(path)?.target;
+    const paths = holderPaths();
+    const admittedPaths = paths.targets([...grants.read, ...grants.write]);
+    const forms = (list: readonly string[]): readonly string[] => [...new Set(list.flatMap(path => {
+      const target = admittedPaths.get(path);
       if (target === undefined) throw new MxcProcessContractError("Container filesystem footprint could not be admitted");
-      return [winPath.normalize(path), target];
+      return [paths.normalize(path), target];
     }))];
     const declared: LiveHolderFootprint = { writable: forms(grants.write), paths: forms([...grants.read, ...grants.write]), privateDirectories: [], command: [] };
     const refusal = writableContains(binding.footprint, declared) ?? writableContains(declared, binding.footprint);
@@ -434,10 +435,12 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       // The same rows the launch renders; the proxy port does not change them.
       const composed = composeSeatbeltHolderLaunch(seatbeltInput("offline", labels), seatbeltFloors).grants;
       grants = composed;
-      const ranked = JSON.stringify([composed.readwrite, composed.readonly, composed.denied]);
+      // The grants the footprint was measured on. The carve's denied siblings may change with unrelated entries (another
+      // holder's staging directory); the launch renders the carve as it is at the launch pass.
+      const ranked = JSON.stringify([composed.readwrite, composed.readonly]);
       admitted = { assertStillValid: () => {
         const now = composeSeatbeltHolderLaunch(seatbeltInput("offline", labels), seatbeltFloors).grants;
-        if (JSON.stringify([now.readwrite, now.readonly, now.denied]) !== ranked) throw new MxcProcessContractError("Container filesystem changed after admission");
+        if (JSON.stringify([now.readwrite, now.readonly]) !== ranked) throw new MxcProcessContractError("Container filesystem changed after admission");
       } };
     } else {
       const windows = admitMxcExtensionFilesystem({
