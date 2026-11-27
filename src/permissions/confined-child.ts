@@ -435,13 +435,15 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       // The same rows the launch renders; the proxy port does not change them.
       const composed = composeSeatbeltHolderLaunch(seatbeltInput("offline", labels), seatbeltFloors).grants;
       grants = composed;
-      // The write grants the footprint was measured on. The carve's read and deny siblings change with unrelated
-      // entries (another holder's staging directory appears in a carved folder); the launch renders the carve as it is
-      // at the launch pass.
-      const ranked = JSON.stringify(composed.readwrite);
+      // What the footprint was measured on: the write grants and the targets of every declared read root and pierce.
+      // The carve's enumerated read and deny siblings are left out: they change with unrelated entries (another
+      // holder's staging directory appears in a carved folder), and the launch renders the carve as it is at the launch pass.
+      const declared = [...(spec.allowRead ?? []), ...(spec.floorPierces ?? []), spec.cwd];
+      const measured = (readwrite: readonly string[]): string => JSON.stringify([readwrite, [...paths.targets(declared)]]);
+      const ranked = measured(composed.readwrite);
       admitted = { assertStillValid: () => {
         const now = composeSeatbeltHolderLaunch(seatbeltInput("offline", labels), seatbeltFloors).grants;
-        if (JSON.stringify(now.readwrite) !== ranked) throw new MxcProcessContractError("Container filesystem changed after admission");
+        if (measured(now.readwrite) !== ranked) throw new MxcProcessContractError("Container filesystem changed after admission");
       } };
     } else {
       const windows = admitMxcExtensionFilesystem({

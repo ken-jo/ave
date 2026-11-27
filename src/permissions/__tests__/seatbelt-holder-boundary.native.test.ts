@@ -1,7 +1,7 @@
 // The macOS holder boundary, natively: row 2 and the bundled-holder adapter driving the real chain (launch gate,
 // /usr/bin/sandbox-exec, ready shim) and the real label helper (built by test:prepare). Every case has a control.
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Readable } from "node:stream";
@@ -238,6 +238,35 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     const echoed = line(started.process.stdout);
     started.process.stdin.write("hello\n");
     expect(await echoed).toBe("node:hello");
+  });
+
+  it("T12: refuses a start whose declared read root was retargeted after admission; the unchanged control starts", async () => {
+    const [a, b] = [join(root, "read-a"), join(root, "read-b")];
+    mkdirSync(a);
+    mkdirSync(b);
+    const start = async (swap: boolean) => {
+      const link = join(root, swap ? "read-link-swapped" : "read-link");
+      symlinkSync(a, link);
+      const staging = prepareMxcHolderStart({ label: "test:retarget", executable: "/bin/sh", baseEnv: { PATH }, allowWrite: [data] });
+      let calls = 0;
+      try {
+        const started = await spawnMxcConfinedChild({
+          command: "/bin/sh", args: ["-c", "echo up; exec /bin/cat"], cwd: staging.home, home: staging.home, temp: staging.temp,
+          stagingRoot: staging.root, holder: {}, label: "test:retarget",
+          filesystemOwnership: { readRoots: [link], writeRoots: [data, staging.root], hostStorageRoots: [] },
+          egressOwner: { kind: "worker", role: "plugin-child", pluginId: "retarget" }, allowRead: [link], allowWrite: [data, staging.root], baseEnv: { PATH },
+          // The first call is admission's own; the second is the recheck after it.
+          assertStillValid: () => {
+            if (swap && ++calls === 2) { rmSync(link); symlinkSync(b, link); }
+          },
+        });
+        await started.release();
+      } finally {
+        await staging.release();
+      }
+    };
+    await expect(start(false)).resolves.toBeUndefined();
+    await expect(start(true)).rejects.toThrow("Container filesystem changed after admission");
   });
 
   it("N13: a kernel-refused start runs nothing and leaves no staging tree", async () => {
