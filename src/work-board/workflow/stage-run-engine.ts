@@ -120,6 +120,7 @@ export type ScheduledTemplateStart =
 export interface StageRunEngine {
   /** Resolves once admission writes the run. The result observes its first quiescent state separately. */
   startScheduled(source: ScheduledTemplateSource, title: string): Promise<ScheduledTemplateStart>;
+  readScheduledOutcome(record: RunRecord): Promise<ScheduledRunOutcome | null>;
   /** Resolves with the run's first quiescent state, or with the start's refusal (error, already_running, not_found). That state may already
    * be past a gate: a decision queued before then is part of it. Gate state comes from events, not from this value. */
   start(itemId: number, a: { source: RunAuthoritySource }): Promise<WorkItemRunResult>;
@@ -159,6 +160,13 @@ interface RunState {
   writes: Promise<void>;
   /** Launches between the reducer's spawn effect and the child's end event. */
   busy: number;
+  effectsPending: number;
+  /** Each stage's latest provider operation. A join or release reserves every stage it touches. */
+  workspaceTails: Map<string, Promise<void>>;
+  /** Committed held ends whose gate evaluation can still be retried. */
+  gateRetries: Map<Held, () => void>;
+  gateTail: Promise<void>;
+  finishing?: Promise<void>;
   /** Launches (through the child's end) and queued events, counted by stage and attempt within this run. */
   pendingStages: Map<string, number>;
   waiters: Set<() => void>;
@@ -198,7 +206,7 @@ interface RunState {
   parked: boolean;
   /** Block admission as soon as a denial interrupts the child, until that stage's failed attempt is persisted. */
   endingOnDenials: Set<string>;
-  sealOutcomes: Map<string, boolean>;
+  sealOutcomes: Map<string, Promise<boolean>>;
   integrating: Set<string>;
 }
 
@@ -208,6 +216,7 @@ interface Held {
   attempt: number;
   kind: RunEvent["type"];
   event: RunEvent;
+  gatePending?: boolean;
   effects: Set<string>;
   notifications: Set<string>;
 }
@@ -246,8 +255,8 @@ function staleness(record: RunRecord, held: Held): string | null {
 type Precheck<R extends string> = (record: RunRecord) => R | null;
 type Settled = NonNullable<RunRecord["settled"]>["status"];
 
-function isWinding(state: RunState, record: RunRecord): boolean {
-  return state.stopping || state.faulted !== null || state.refused !== null
+function isWinding(state: RunState | undefined, record: RunRecord): boolean {
+  return (state !== undefined && (state.stopping || state.faulted !== null || state.refused !== null))
     || hasRejectedWork(record.stageRuns, record.stageJoins ?? []);
 }
 /** The cause of a run's end while its row names it, by the status the run reached. */
@@ -332,6 +341,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       stopping: false, rowGone: false, removedAs: "item-removed", lost: false, faulted: null, refused: null, live: new Map(), due: new Set(), starting: new Set(), interruptAsked: new Set(),
       revoked: new Set(), results: new Map(), held: [], heldAgain: false, draining: false, boardUnread: false, parked,
       endingOnDenials: new Set(), sealOutcomes: new Map(), integrating: new Set(),
+      effectsPending: 0, workspaceTails: new Map(), gateRetries: new Map(), gateTail: Promise.resolve(),
     };
     runs.set(itemId, state);
     deps.holdItem(itemId);
@@ -431,6 +441,22 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return next;
   }
 
+  function queueEffect<T>(state: RunState, work: () => Promise<T>, stageIds: readonly string[] = [], launchOwned = false): Promise<T> {
+    const previous = stageIds.map(stageId => state.workspaceTails.get(stageId));
+    state.effectsPending += 1;
+    const effect = Promise.all(previous).then(work);
+    const tail = effect.then(() => undefined, () => undefined).finally(() => {
+      for (const stageId of stageIds) {
+        if (state.workspaceTails.get(stageId) === tail) state.workspaceTails.delete(stageId);
+      }
+      state.effectsPending -= 1;
+      wake(state);
+    });
+    for (const stageId of stageIds) state.workspaceTails.set(stageId, tail);
+    if (!launchOwned) detach(() => tail);
+    return effect;
+  }
+
   function trackStageWork(state: RunState, stageId: string, attempt: number): () => void {
     const key = `${stageId}#${attempt}`;
     state.pendingStages.set(key, (state.pendingStages.get(key) ?? 0) + 1);
@@ -450,7 +476,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   function postPriorityEnd(state: RunState, event: StageEnded, version: TemplateVersion, deadline: boolean): void {
     const done = trackStageWork(state, event.stageId, event.attempt);
     state.busy += 1;
-    // A workspace effect may be waiting for this same launch. The covered run-store write serializes the transition.
+    // The deadline can reach the write lane without waiting for another handler's pin lookup.
     detach(() => handle(state, event, undefined, undefined, event.attempt, { version, deadline }).catch((error: unknown) => {
       log.warn("stage end could not be recorded (id=%d, stage=%s): %s", state.itemId, event.stageId, errorMessage(error));
     }).finally(() => {
@@ -507,8 +533,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (!stored) log.warn("a held stage run event is kept in memory only (id=%d, event=%s)", state.itemId, kind);
   }
 
+  function dropHeld(state: RunState, { stage, attempt, kind }: Held): Promise<void> {
+    return records.dropHeld(state.ref, { stage, attempt, kind })
+      .catch((error: unknown) => log.warn("a replayed stage run event stays in the run file (id=%d): %s", state.itemId, errorMessage(error)));
+  }
+
   function pendingSeals(state: RunState, record: RunRecord): Extract<RunEffect, { type: "seal" }>[] {
-    if (record.settled !== undefined || state.stopping || state.faulted !== null || state.refused !== null) return [];
+    if (record.settled !== undefined || isWinding(state, record)) return [];
     const collected = new Set((record.stageJoins ?? []).filter(join => join.status === "integrated").flatMap(join => join.stageIds));
     return record.stageRuns.filter(run => run.status === "passed" && !collected.has(run.stageId) && !state.sealOutcomes.has(`${run.stageId}#${run.attempt}`))
       .map(run => ({ type: "seal", stageId: run.stageId }));
@@ -520,6 +551,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (state.draining) return;
     state.draining = true;
     detach(() => enqueue(state, async () => {
+      if (runs.get(state.itemId) !== state || state.rowGone || state.lost) return;
+      for (const retry of state.gateRetries.values()) retry();
       while (state.held.length > 0) {
         if (runs.get(state.itemId) !== state || state.rowGone || state.lost) return;
         const record = await records.get(state.itemId, state.runId);
@@ -533,29 +566,28 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
             await handle(state, first.event, undefined, first);
           } catch (error) {
             log.warn("held stage run event threw (id=%d, event=%s): %s", state.itemId, first.kind, errorMessage(error));
-            // A progress notification can precede a gate that throws before claiming its effect.
-            if (first.effects.size === 0) break;
+            break;
           }
           if (state.heldAgain) break;
         }
-        state.held = state.held.filter(held => held !== first);
-        const { stage, attempt, kind } = first;
-        await records.dropHeld(state.ref, { stage, attempt, kind })
-          .catch((error: unknown) => log.warn("a replayed stage run event stays in the run file (id=%d): %s", state.itemId, errorMessage(error)));
+        state.held.shift();
+        if (!first.gatePending) await dropHeld(state, first);
       }
       const record = await records.get(state.itemId, state.runId);
       if (!record || runs.get(state.itemId) !== state || state.rowGone || state.lost) return;
       const missing = record.stageRuns.filter(run => run.status === "running"
-        && !state.pendingStages.has(`${run.stageId}#${run.attempt}`) && !state.held.some(held => held.stage === run.stageId && held.attempt === run.attempt));
+        && !state.pendingStages.has(`${run.stageId}#${run.attempt}`)
+        && ![...state.held, ...state.gateRetries.keys()].some(held => held.stage === run.stageId && held.attempt === run.attempt));
       const joining = (record.stageJoins ?? []).filter(join => join.status === "integrating" && !state.integrating.has(join.joinId)
         && join.stageIds.every(stageId => record.stageRuns.some(run => run.stageId === stageId && run.status === "passed")));
       const seals = pendingSeals(state, record);
       if (missing.length === 0 && joining.length === 0 && seals.length === 0) return;
       const classOf = await records.classes();
       if (typeof classOf !== "function" || classOf(state) !== "live") return;
-      if ((seals.length > 0 || joining.length > 0) && !state.stopping && state.faulted === null && state.refused === null) {
-        const version = await resolvePinned(record.pin);
-        await runEffects(state, record, version, [...seals, ...joining.map(join => ({ type: "integrate" as const, joinId: join.joinId, stageIds: [...join.stageIds] }))]);
+      if ((seals.length > 0 || joining.length > 0) && !isWinding(state, record)) {
+        await resolvePinned(record.pin);
+        for (const seal of seals) sealStage(state, record, seal.stageId);
+        for (const join of joining) integrateStages(state, record, join.joinId, join.stageIds);
       }
       for (const run of missing) {
         log.info("a running stage with nothing left to end it ends interrupted (id=%d, stage=%s)", state.itemId, run.stageId);
@@ -563,6 +595,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       }
     }).finally(() => {
       state.draining = false;
+      observeFire(state);
       observeIdleFire(state);
     }).catch(() => undefined));
   }
@@ -728,25 +761,29 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     // Every cancelled end names its cause: the authority's code, or the stop or the row's removal.
     const told = message ?? (runStatus !== "cancelled" || byAuthority ? undefined : state.rowGone ? "item-removed" : "user-stopped");
     emit({ itemId: state.itemId, phase, ...(told ? { message: told } : {}), ...reason });
-    state.resolveScheduleOutcome?.(settled && runStatus === "completed" ? "completed" : settled && runStatus === "error" ? "failed" : null);
-    state.resolveScheduleCompletion?.(settled && runStatus === "completed");
-    if (state.resolveFire) {
-      const result = !settled && runStatus !== "cancelled" ? endedError(state) : settledResult(state, runStatus, output);
-      observeFire(state, state.scheduledStart?.refusal ?? result);
-    }
+    const result = !settled && runStatus !== "cancelled" ? endedError(state) : settledResult(state, runStatus, output);
+    observeFire(state, { result: state.scheduledStart?.refusal ?? result, record: settled ? record : null });
     closeState(state);
     notifyItemChanged(state.itemId);
   }
 
+  function finishAfterCommit(state: RunState, record: RunRecord | null, status: Settled, graph: TemplateVersion | null, message?: string, settled = true): Promise<void> {
+    state.finishing = queueEffect(state, () => finish(state, record, status, graph, message, settled)).catch((error: unknown) => {
+      log.warn("stage run finish failed (id=%d): %s", state.itemId, errorMessage(error));
+    });
+    return state.finishing;
+  }
+
   /** Ends a run without its graph: the pin no longer resolves, or the run file cannot be written. Every live child is interrupted from the
    * host's own record of them, and the run is over only when the last one has unwound. A stop stays `cancelled`; anything else is `error`. */
-  async function unwind(state: RunState, event: RunEvent, cause: string, deferWorkspace = false): Promise<void> {
+  async function unwind(state: RunState, event: RunEvent, cause: string): Promise<void> {
+    if (state.finishing) return;
     if (!state.stopping) state.faulted ??= cause;
     interruptAll(state);
     const idle = state.due.size === 0 && state.starting.size === 0 && state.live.size === 0;
     const runStatus: Settled = state.stopping ? "cancelled" : "error";
     const now = new Date().toISOString();
-    const written = await writeRun(state, (current) => {
+    const written = await serializeWrite(state, () => writeRun(state, (current) => {
       if (current.settled !== undefined) return null;
       const stageRuns = current.stageRuns.map((run): WorkItemStageRun => {
         if (event.type === "stage_ended" && run.stageId === event.stageId && run.attempt === event.attempt && run.status === "running") {
@@ -758,24 +795,24 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       });
       const next = { ...current, stageRuns };
       return idle ? endOf(state, next, runStatus, now) : next;
-    }).catch((error: unknown) => { log.warn("stage run could not be ended in the run file (id=%d): %s", state.itemId, errorMessage(error)); return { run: null, reason: "unavailable" as const }; });
-    if (!idle) return;
+    })).catch((error: unknown) => { log.warn("stage run could not be ended in the run file (id=%d): %s", state.itemId, errorMessage(error)); return { run: null, reason: "unavailable" as const }; });
+    if (!idle || state.finishing) return;
     // A write refused because the run is already over confirms it. Otherwise the record still owns its workspace, nothing is shown on
     // the row or pruned, and the next start, decision or reader writes the end again first.
     const settled = written.run !== null || written.reason === "refused";
-    const release = () => workspace.release(state.ref, "all").catch(() => undefined);
-    if (settled && !deferWorkspace) await release();
     // As stored: a lost run ends error, a Stop or not.
     const status = written.run?.settled?.status ?? runStatus;
-    await finish(state, written.run, status, null, status === "cancelled" ? undefined : state.faulted ?? cause, settled);
-    if (settled && deferWorkspace) detach(() => enqueue(state, release));
+    if (written.run && state.committed) state.committed = { ...state.committed, record: written.run };
+    const finished = finishAfterCommit(state, written.run, status, null, status === "cancelled" ? undefined : state.faulted ?? cause, settled);
+    if (settled) releaseAfter(state, "all", [...state.workspaceTails.keys()], finished);
   }
 
   /** One event: resolve the pin, then one atomic write that checks, reduces and stores the run as it is at that moment, then the effects.
    * `precheck` refuses a user decision before anything is written: on the run as read, before the pin is resolved, and again inside the
    * write. */
-  async function handle<R extends string = never>(state: RunState, event: RunEvent, precheck?: Precheck<R>, replay?: Held, knownAttempt?: number, priority?: { version: TemplateVersion; deadline: boolean }): Promise<R | PinRefusal | "run_mismatch" | "not_found" | null> {
-    if (runs.get(state.itemId) !== state) {
+  async function handle<R extends string = never>(state: RunState, event: RunEvent, decision?: { precheck: Precheck<R>; effects: Promise<unknown>[] }, replay?: Held, knownAttempt?: number, priority?: { version: TemplateVersion; deadline: boolean }): Promise<R | PinRefusal | "run_mismatch" | "not_found" | null> {
+    const precheck = decision?.precheck;
+    if (event.type !== "seal_failed" && (runs.get(state.itemId) !== state || state.finishing)) {
       log.warn("dropped a stage event of another run (id=%d, event=%s)", state.itemId, event.type);
       return "run_mismatch";
     }
@@ -795,18 +832,18 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         await unwind(state, event, "run-state-unavailable");
         return "not_found";
       }
-      if (read.settled !== undefined) return "run_mismatch";
+      if (read.settled !== undefined && event.type !== "seal_failed") return "run_mismatch";
       // A stale decision is refused for its binding before any pin refusal.
       const stale = precheck?.(read) ?? null;
       if (stale !== null) return stale;
     }
     // While the run holds events, a decision is refused and each later scheduler event is held behind them, until the class ends the run.
-    if (state.held.length > 0 && !replay && !state.rowGone && !state.lost) {
+    if (state.held.length > 0 && !replay && !state.finishing && !state.rowGone && !state.lost) {
       if (!precheck) await hold(state, event, read, knownAttempt);
       return "run_mismatch";
     }
     let version = priority?.version;
-    if (read) {
+    if (read && read.settled === undefined) {
       try {
         version = await resolvePinned(read.pin);
         stepsOf(version);
@@ -818,7 +855,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         return null;
       }
     }
-    if (!version) throw new WorkflowInvariantError("version-missing");
+    if (!version && read?.settled === undefined) throw new WorkflowInvariantError("version-missing");
     const graph = version;
 
     const now = new Date().toISOString();
@@ -829,6 +866,14 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     let effects: RunEffect[] = [];
     const commit = () => writeRun(state, (current) => {
       // Reduced from the run as stored now, inside the write: a field another write stored meanwhile is never lost.
+      if (current.settled !== undefined && event.type === "seal_failed") {
+        const stage = current.stageRuns.find(run => run.stageId === event.stageId);
+        if (stage?.attempt !== knownAttempt || stage?.status !== "passed") {
+          refusal = "run_mismatch";
+          return null;
+        }
+        return { ...current, stageRuns: current.stageRuns.map(run => run === stage ? { ...run, status: "failed", failure: "error" } : run) };
+      }
       refusal = current.settled !== undefined ? "run_mismatch" : precheck?.(current) ?? null;
       if (refusal !== null) return null;
       if (priority?.deadline && isWinding(state, current)) {
@@ -836,6 +881,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         refusal = "run_mismatch";
         return null;
       }
+      if (!graph) throw new WorkflowInvariantError("version-missing");
       if (priority) assertPinnedVersion(graph, current.pin);
       const expectedAttempt = knownAttempt ?? replay?.attempt ?? ("attempt" in event ? event.attempt : undefined);
       const stage = "stageId" in event ? current.stageRuns.find(run => run.stageId === event.stageId) : undefined;
@@ -865,7 +911,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     try {
       written = await serializeWrite(state, async () => {
         // A priority end can reach this point while the chain is deciding whether to hold an earlier write.
-        if (state.held.length > 0 && !replay && !state.rowGone && !state.lost) {
+        if (state.held.length > 0 && !replay && !state.finishing && !state.rowGone && !state.lost) {
           if (!precheck) storedHold = hold(state, event, read, knownAttempt);
           return;
         }
@@ -883,7 +929,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           return;
         }
         if (result?.run) {
-          if (state.resolveFire || state.resolveScheduleOutcome) state.committed = { record: result.run, graph };
+          if (graph) state.committed = { record: result.run, graph };
           if (event.type === "stage_ended") state.endingOnDenials.delete(event.stageId);
           if (resumes) state.parked = false;
           if (event.type === "join_integrated" || event.type === "join_conflict") state.integrating.delete(event.joinId);
@@ -896,23 +942,27 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       // Whether the write landed is not known: the run ends as a fault, and an end its write does not confirm is written again by the next
       // permitted event.
       log.warn("stage run write threw (id=%d, event=%s): %s", state.itemId, event.type, errorMessage(error));
-      await unwind(state, event, "run-state-unavailable", priority !== undefined);
+      await unwind(state, event, "run-state-unavailable");
       return null;
     }
     if (!written) return "run_mismatch";
     if (written.run === null) {
       if (refusal !== null) return refusal;
       log.warn("stage run write failed (id=%d, event=%s): %s", state.itemId, event.type, written.reason);
-      if (precheck) return "run_mismatch";
+      if (precheck || state.finishing) return "run_mismatch";
       // Its class holds the run: the end is not written, and the next permitted event writes it again first.
       if (written.reason === "cause-refused" && ending !== null) {
-        await finish(state, null, ending, version, undefined, false);
+        void finishAfterCommit(state, null, ending, graph ?? null, undefined, false);
         return null;
       }
-      await unwind(state, event, writeFault(written.reason), priority !== undefined);
+      await unwind(state, event, writeFault(written.reason));
       return null;
     }
     const record = written.run;
+    if (!graph || state.finishing) {
+      if (event.type === "seal_failed") notifyItemChanged(state.itemId);
+      return null;
+    }
     let shown = false;
     for (const run of record.stageRuns) {
       const prior = before.find(candidate => candidate.stageId === run.stageId);
@@ -934,24 +984,16 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       && claimReplay(replay?.notifications, "run-snapshot") && canShowRun(state)) {
       emit({
         itemId: state.itemId, phase: "executing",
-        workflowRun: projectWorkflowRun(record, version, stage =>
+        workflowRun: projectWorkflowRun(record, graph, stage =>
           stage.childSessionId && state.live.get(stage.stageId) === stage.childSessionId
             ? { breaker: deps.readBreaker?.(stage.childSessionId) } : {}),
       });
     }
     if ((shown || joinChanged || (record.stageJoins ?? []).some(join => join.status === "conflict")) && deps.itemChanged && claimReplay(replay?.notifications, "item-changed")) notifyItemChanged(state.itemId);
     observeFire(state);
-    if (priority) {
-      // Other effects belong to the ordinary event queue. Newly running attempts must arm their timers now.
-      startStages(state, record, graph, effects);
-      const status = record.settled?.status;
-      if (status !== undefined) await finish(state, record, status, graph, status === "error" ? state.faulted ?? undefined : undefined);
-      const followups = effects.filter(effect => effect.type !== "spawn" && effect.type !== "settle");
-      if (followups.length > 0) detach(() => enqueue(state, () => runEffects(state, record, graph, followups)).catch(() => undefined));
-      return null;
-    }
-    const seals = pendingSeals(state, record).filter(seal => !effects.some(effect => effect.type === "seal" && effect.stageId === seal.stageId));
-    await runEffects(state, record, version, [...effects, ...seals], replay);
+    const work = dispatchEffects(state, record, graph, effects, replay);
+    if (decision) decision.effects = work;
+    for (const seal of pendingSeals(state, record)) sealStage(state, record, seal.stageId);
     return null;
   }
 
@@ -976,46 +1018,121 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }
   }
 
-  async function runEffects(state: RunState, record: RunRecord, version: TemplateVersion, effects: RunEffect[], replay?: Held): Promise<void> {
-    startStages(state, record, version, effects, replay);
-    async function sealStage(stageId: string): Promise<boolean> {
-      const run = record.stageRuns.find(candidate => candidate.stageId === stageId);
-      if (run?.status !== "passed") return false;
-      const sealKey = `${stageId}#${run.attempt}`;
-      const outcome = state.sealOutcomes.get(sealKey);
-      if (outcome !== undefined) return outcome;
+  function sealStage(state: RunState, record: RunRecord, stageId: string): Promise<boolean> {
+    const stage = record.stageRuns.find(candidate => candidate.stageId === stageId);
+    if (stage?.status !== "passed") return Promise.resolve(false);
+    const key = `${stageId}#${stage.attempt}`;
+    const pending = state.sealOutcomes.get(key);
+    if (pending) return pending;
+    const seal = queueEffect(state, async () => {
       const sealed = await workspace.seal(state.ref, stageId).catch((): { ok: false } => ({ ok: false }));
       if (!sealed.ok) {
-        state.sealOutcomes.set(sealKey, false);
-        post(state, { type: "seal_failed", stageId }, run.attempt);
+        await enqueue(state, () => handle(state, { type: "seal_failed", stageId }, undefined, undefined, stage.attempt))
+          .catch(() => undefined);
         return false;
       }
-      state.sealOutcomes.set(sealKey, true);
       if (sealed.sealCommit !== undefined) {
-        const sealCommit = sealed.sealCommit;
-        await writeRun(state, current => ({
-          ...current,
-          stageRuns: current.stageRuns.map(candidate => candidate.stageId === stageId && candidate.attempt === run.attempt && candidate.workspace
-            ? { ...candidate, workspace: { ...candidate.workspace, sealCommit } } : candidate),
-        }));
+        const { sealCommit } = sealed;
+        await enqueue(state, () => serializeWrite(state, async () => {
+          const written = await writeRun(state, current => ({
+            ...current,
+            stageRuns: current.stageRuns.map(candidate => candidate.stageId === stageId && candidate.attempt === stage.attempt && candidate.workspace
+              ? { ...candidate, workspace: { ...candidate.workspace, sealCommit } } : candidate),
+          }));
+          if (written.run === null) log.warn("stage seal receipt could not be stored (id=%d, stage=%s): %s", state.itemId, stageId, written.reason);
+          else if (written.run.settled !== undefined) notifyItemChanged(state.itemId);
+        })).catch(() => undefined);
       }
       return true;
-    }
+    }, [stageId]);
+    state.sealOutcomes.set(key, seal);
+    return seal;
+  }
+
+  function integrateStages(state: RunState, record: RunRecord, joinId: string, stageIds: readonly string[]): Promise<void> | undefined {
+    if (state.integrating.has(joinId)) return;
+    state.integrating.add(joinId);
+    const seals = stageIds.map(stageId => sealStage(state, record, stageId));
+    return queueEffect(state, async () => {
+      if (!(await Promise.all(seals)).every(Boolean) || state.finishing || isWinding(state, state.committed?.record ?? record)) {
+        state.integrating.delete(joinId);
+        return;
+      }
+      try {
+        const merged = await workspace.integrate(state.ref, joinId, stageIds);
+        post(state, merged.ok ? { type: "join_integrated", joinId } : { type: "join_conflict", joinId, conflict: merged.conflict });
+      } catch (error) {
+        log.warn("stage join failed (id=%d): %s", state.itemId, errorMessage(error));
+        fault(state, "join-failed");
+      }
+    }, stageIds);
+  }
+
+  function releaseAfter(state: RunState, release: readonly string[] | "all", stages: readonly string[], finished?: Promise<void>): void {
+    void queueEffect(state, async () => {
+      await finished;
+      await workspace.release(state.ref, release).catch((error: unknown) => log.warn("stage workspace release failed (id=%d): %s", state.itemId, errorMessage(error)));
+    }, stages);
+  }
+
+  function evaluateGate(state: RunState, version: TemplateVersion, effect: Extract<RunEffect, { type: "evaluate_gate" }>, key: string, replay?: Held): void {
+    const { stageId, attempt } = effect;
+    const stage = version.stages.find(candidate => candidate.id === stageId);
+    const result = state.results.get(stageId);
+    const retire = async () => {
+      if (!replay) return;
+      state.gateRetries.delete(replay);
+      await dropHeld(state, replay);
+    };
+    const evaluate = () => {
+      if (replay) state.gateRetries.delete(replay);
+      const done = trackStageWork(state, stageId, attempt);
+      const previous = state.gateTail;
+      state.gateTail = queueEffect(state, async () => {
+        await previous;
+        try {
+          const record = state.committed?.record;
+          const active = record?.stageRuns.find(run => run.stageId === stageId);
+          if (!record || state.finishing || isWinding(state, record) || active?.attempt !== attempt || active.status !== "running") {
+            await retire();
+            return;
+          }
+          const verdict = stage?.gate.type === "auto" && result
+            ? await deps.passConditions.evaluate(stage.gate.pass, { result, stage, claimEffect: () => claimReplay(replay?.effects, key), effectConsumed: () => replay?.effects.has(key) ?? false })
+            : { passed: false, evidence: "the stage result is not available to the host", judgedBy: "host" as const };
+          claimReplay(replay?.effects, key);
+          await retire();
+          post(state, { type: "gate_evaluated", stageId, attempt, ...verdict });
+        } catch (error) {
+          log.warn("stage gate evaluation failed (id=%d, stage=%s): %s", state.itemId, stageId, errorMessage(error));
+          if (replay) {
+            if (replay.effects.has(key)) {
+              await retire();
+              // The evaluator consumed its one effect but returned no verdict. End the current attempt through the ordinary event path.
+              post(state, { type: "stage_ended", stageId, attempt, ok: false, interrupted: true });
+            } else state.gateRetries.set(replay, evaluate);
+          }
+        } finally {
+          done();
+        }
+      }).catch((error: unknown) => log.warn("stage gate receipt failed (id=%d): %s", state.itemId, errorMessage(error)));
+    };
+    if (replay) replay.gatePending = true;
+    evaluate();
+  }
+
+  function dispatchEffects(state: RunState, record: RunRecord, version: TemplateVersion, effects: RunEffect[], replay?: Held): Promise<unknown>[] {
+    const work: Promise<unknown>[] = [];
+    startStages(state, record, version, effects, replay);
+    let finished: Promise<void> | undefined;
     for (const [index, effect] of effects.entries()) {
       const key = `effect:${index}`;
       if (effect.type === "spawn" || replay?.effects.has(key)) continue;
       if (effect.type !== "evaluate_gate" && !claimReplay(replay?.effects, key)) continue;
       switch (effect.type) {
-        case "evaluate_gate": {
-          const stage = version.stages.find(candidate => candidate.id === effect.stageId);
-          const result = state.results.get(effect.stageId);
-          const verdict = stage?.gate.type === "auto" && result
-            ? await deps.passConditions.evaluate(stage.gate.pass, { result, stage, claimEffect: () => claimReplay(replay?.effects, key), effectConsumed: () => replay?.effects.has(key) ?? false })
-            : { passed: false, evidence: "the stage result is not available to the host", judgedBy: "host" as const };
-          claimReplay(replay?.effects, key);
-          post(state, { type: "gate_evaluated", stageId: effect.stageId, attempt: effect.attempt, ...verdict });
+        case "evaluate_gate":
+          evaluateGate(state, version, effect, key, replay);
           break;
-        }
         case "interrupt": {
           state.interruptAsked.add(effect.stageId);
           const child = state.live.get(effect.stageId);
@@ -1027,35 +1144,23 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           }
           break;
         }
-        case "seal": {
-          await sealStage(effect.stageId);
+        case "seal":
+          work.push(sealStage(state, record, effect.stageId));
           break;
-        }
         case "integrate": {
-          if (state.integrating.has(effect.joinId)) break;
-          let complete = true;
-          for (const stageId of effect.stageIds) if (!(await sealStage(stageId))) complete = false;
-          // A failed seal drops the open join through `seal_failed`; incomplete inputs never reach integration.
-          if (!complete) break;
-          state.integrating.add(effect.joinId);
-          try {
-            const merged = await workspace.integrate(state.ref, effect.joinId, effect.stageIds);
-            post(state, merged.ok ? { type: "join_integrated", joinId: effect.joinId } : { type: "join_conflict", joinId: effect.joinId, conflict: merged.conflict });
-          } catch (error) {
-            log.warn("stage join failed (id=%d): %s", state.itemId, errorMessage(error));
-            fault(state, "join-failed");
-          }
+          const integration = integrateStages(state, record, effect.joinId, effect.stageIds);
+          if (integration) work.push(integration);
           break;
         }
         case "settle":
-          // The run file already says so (the write above). The row follows; a crash here is repaired from the record at boot.
-          await finish(state, record, record.settled?.status ?? effect.runStatus, version, effect.runStatus === "error" ? state.faulted ?? undefined : undefined);
+          finished = finishAfterCommit(state, record, record.settled?.status ?? effect.runStatus, version, effect.runStatus === "error" ? state.faulted ?? undefined : undefined);
           break;
         case "release_workspace":
-          await workspace.release(state.ref, effect.stageIds).catch((error: unknown) => log.warn("stage workspace release failed (id=%d): %s", state.itemId, errorMessage(error)));
+          releaseAfter(state, effect.stageIds, effect.stageIds, finished);
           break;
       }
     }
+    return work;
   }
 
   const halted = (state: RunState, stageId: string): boolean =>
@@ -1160,15 +1265,21 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const lane = (await authorise()).lane;
       if ((stage.requestedOutputs?.length ?? 0) > 0 && !deps.outputs) throw new WorkflowInvariantError("outputs-unavailable");
 
+      const stageWorkspaceEffect = <T>(work: () => Promise<T>) => queueEffect(state, () => {
+        checkDeadline();
+        if (halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");
+        return work();
+      }, [stageId], true);
+
       // `Retry` starts from a fresh folder; a rerun after `Request changes` keeps the one it has.
       const revising = run.gate?.type === "human" && run.gate.status === "changes_requested";
       if (attempt > 1 && !revising) {
         // A folder that is no longer the run's own is not removed, and the stage is not started in it.
-        await beforeDeadline(() => workspace.release(state.ref, [stageId], isCurrent).catch((error: unknown) => {
+        await beforeDeadline(() => stageWorkspaceEffect(() => workspace.release(state.ref, [stageId], isCurrent)).catch((error: unknown) => {
           throw new WorkflowInvariantError("workspace-missing", error instanceof OwnedFsError ? "workspace-identity-changed" : "workspace-unavailable");
         }));
       }
-      const prepared = await beforeDeadline(() => workspace.prepare(state.ref, stage, attempt, isCurrent));
+      const prepared = await beforeDeadline(() => stageWorkspaceEffect(() => workspace.prepare(state.ref, stage, attempt, isCurrent)));
       const runRoot = record.runWorkspace?.runRoot;
       if (!prepared.ok) {
         if (state.scheduledStart) await authorise();
@@ -1203,11 +1314,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         item, stage, inputs: stageInputsOf(version, stage, record.stageRuns),
         ...(revision ? { revision } : {}), ...(version.setupCommands ? { setupCommands: version.setupCommands } : {}), ...(gateSuffix ? { gateSuffix } : {}),
       });
-      const stored = await beforeDeadline(() => writeRun(state, current => {
+      const stored = await beforeDeadline(() => serializeWrite(state, () => writeRun(state, current => {
         const active = current.stageRuns.find(candidate => candidate.stageId === stageId);
         if (!isCurrent() || current.settled !== undefined || active?.attempt !== attempt || active.status !== "running") return null;
         return { ...current, stageRuns: current.stageRuns.map(candidate => candidate === active ? { ...candidate, workspace: { ...prepared.workspace } } : candidate) };
-      }));
+      })));
       if (stored.run === null) {
         if (halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");
         if (holdsWrite(state, stored.reason)) throw new WorkflowInvariantError("run-write-held");
@@ -1421,7 +1532,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const chain = state.chain;
       await chain;
       if (state.chain !== chain) continue;
-      if (state.busy === 0 || runs.get(state.itemId) !== state) return;
+      if (state.busy === 0 && state.effectsPending === 0) return;
       await new Promise<void>(resolve => { state.waiters.add(resolve); });
     }
   }
@@ -1430,27 +1541,61 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (state.resolveFire) void idle(state).then(() => observeFire(state, "idle"));
   }
 
-  /** Only a committed park or finish can report a scheduled fire. Ordinary idle also reports a gate or join wait. */
-  function observeFire(state: RunState, observation?: "idle" | WorkItemRunResult): void {
+  /** Undefined means that the run still has work which could change its first outcome. */
+  function committedScheduleOutcome(record: RunRecord, state?: RunState): ScheduledRunOutcome | null | undefined {
+    if (record.settled) {
+      if (record.settled.status === "completed") return "completed";
+      if (record.settled.status === "error") return "failed";
+      return null;
+    }
+    if (isWinding(state, record) || record.stageRuns.some(stage => stage.status === "running")) return undefined;
+    if (state && (state.finishing || state.held.length > 0 || state.live.size > 0 || state.starting.size > 0 || state.due.size > 0)) return undefined;
+    const outcome = parkedStageOutcome(record);
+    const graph = state?.committed?.graph;
+    if (graph && outcome !== "parked-on-denials" && !state.parked && readyStages(graph, record.stageRuns, record.stageJoins ?? []).length > 0) return undefined;
+    return outcome ?? null;
+  }
+
+  async function readScheduledOutcome(record: RunRecord): Promise<ScheduledRunOutcome | null> {
+    if (record.settled) return committedScheduleOutcome(record) ?? null;
+    const active = () => {
+      const state = runs.get(record.itemId);
+      return state?.runId === record.runId ? state : undefined;
+    };
+    let state = active();
+    if (!state) {
+      const held = await records.heldEvents(record).catch((error: unknown) => {
+        log.warn("scheduled run held events could not be read (id=%d): %s", record.itemId, errorMessage(error));
+        return null;
+      });
+      state = active();
+      if (!state && (held === null || held.length > 0 || unconfirmed.has(record.runId))) return null;
+    }
+    return committedScheduleOutcome(state?.committed?.record ?? record, state) ?? null;
+  }
+
+  /** The fire and breaker recovery share the same decision about committed run evidence. */
+  function observeFire(state: RunState, observation?: "idle" | { result: WorkItemRunResult; record: RunRecord | null }): void {
     const resolve = state.resolveFire;
-    if (!resolve && !state.resolveScheduleOutcome) return;
+    if (!resolve && !state.resolveScheduleOutcome && !state.resolveScheduleCompletion) return;
     let result: WorkItemRunResult;
+    let outcome: ScheduledRunOutcome | null;
     if (observation && observation !== "idle") {
-      result = observation;
+      result = observation.result;
+      outcome = observation.record ? committedScheduleOutcome(observation.record, state) ?? null : null;
+      state.resolveScheduleCompletion?.(outcome === "completed");
+      state.resolveScheduleCompletion = undefined;
     } else {
       const committed = state.committed;
-      if (!committed || state.held.length > 0 || state.live.size > 0 || state.starting.size > 0 || state.due.size > 0) return;
-      const { record, graph } = committed;
-      if (record.settled !== undefined || isWinding(state, record) || record.stageRuns.some(stage => stage.status === "running")) return;
-      const outcome = parkedStageOutcome(record);
-      if (outcome !== "parked-on-denials" && !state.parked && readyStages(graph, record.stageRuns, record.stageJoins ?? []).length > 0) return;
-      if (outcome) {
-        state.resolveScheduleOutcome?.(outcome);
-        state.resolveScheduleOutcome = undefined;
-        result = { status: "awaiting_approval", reasonCode: outcome === "failed" ? "stage-failed" : outcome };
-      } else if (observation === "idle") {
-        result = { status: "awaiting_approval" };
-      } else return;
+      if (!committed || committed.record.settled !== undefined) return;
+      const observed = committedScheduleOutcome(committed.record, state);
+      if (observed === undefined || (observed === null && observation !== "idle")) return;
+      outcome = observed;
+      result = { status: "awaiting_approval", ...(observed ? { reasonCode: observed === "failed" ? "stage-failed" : observed } : {}) };
+    }
+    if (outcome !== null || result.status !== "awaiting_approval") {
+      state.resolveScheduleOutcome?.(outcome);
+      state.resolveScheduleOutcome = undefined;
     }
     if (resolve) {
       state.resolveFire = undefined;
@@ -1489,11 +1634,6 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const runStatus = record.settled?.status;
     const output = got.status === "found" && got.item.runId === state.runId ? got.item.output : undefined;
     if (runStatus !== undefined) return settledResult(state, runStatus, output);
-    // Unsettled with nothing live: the run waits for the user (a gate, a join, Retry or Stop).
-    if (record.runStartedBy.kind === "schedule-attachment") {
-      const parked = parkedStageOutcome(record);
-      if (parked) return { status: "awaiting_approval", reasonCode: parked === "failed" ? "stage-failed" : parked };
-    }
     return { status: "awaiting_approval" };
   }
 
@@ -1736,7 +1876,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (unconfirmed.has(runId)) return "run_end_unconfirmed";
     const state = await stateFor(record);
     if (!state) return "not_pending";
-    return enqueue(state, () => handle(state, event, precheck));
+    const decision = { precheck, effects: [] as Promise<unknown>[] };
+    const result = await enqueue(state, () => handle(state, event, decision));
+    // The caller sees its decision's effects complete without occupying the write chain.
+    if (result === null) await Promise.all([...decision.effects, state.finishing]);
+    return result;
   }
 
   function noteRefusal(i: StageGateDecideInput): "note_required" | "note_too_long" | "note_invalid" | null {
@@ -1814,7 +1958,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   function stop(itemId: number): WorkBoardCancelResult {
     const state = runs.get(itemId);
-    if (!state) return { ok: false, reason: "not-executing" };
+    if (!state || state.finishing) return { ok: false, reason: "not-executing" };
     // A second stop while the first unwinds is the same stop.
     if (state.stopping) return { ok: true };
     state.stopping = true;
@@ -2134,7 +2278,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   return {
-    start, startScheduled, decideGate, decideJoin, openJoin, retryStage, continueRun, projectRootRevoked, steer, stop, projectRuns, readRuns, clearMissingRun, reconsider,
+    start, startScheduled, readScheduledOutcome, decideGate, decideJoin, openJoin, retryStage, continueRun, projectRootRevoked, steer, stop, projectRuns, readRuns, clearMissingRun, reconsider,
     adoptParkedRuns: async () => {
       const done = await adopted();
       if (!done.ok) log.warn("template runs not adopted at boot: %s", done.code);

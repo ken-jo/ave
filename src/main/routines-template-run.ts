@@ -5,14 +5,13 @@ import type { RoutinesStore, TemplateRoutineFire } from "./routines-store.js";
 import type { WorkBoardStore } from "./work-board-store.js";
 import type { WorkflowTemplateStore } from "./workflow-template-store.js";
 import { createLogger } from "../lib/logger.js";
-import { parkedStageOutcome } from "../work-board/workflow/run-state.js";
 import type { mayFire, ScheduledRunOutcome } from "../work-board/workflow/schedule-breaker.js";
 
 interface ScheduledTemplateDeps {
   routinesStore: RoutinesStore;
   workflowTemplateStore: WorkflowTemplateStore;
   workBoardStore: WorkBoardStore;
-  workBoardEngine: Pick<WorkBoardEngine, "startScheduledTemplate">;
+  workBoardEngine: Pick<WorkBoardEngine, "startScheduledTemplate" | "readScheduledOutcome">;
 }
 
 const failed = (reason: string): RoutineRunOutcome => ({ ok: false, kind: "error", reason });
@@ -53,8 +52,7 @@ export async function fireScheduledTemplate(deps: ScheduledTemplateDeps, { routi
       const { runStartedBy, settled } = run;
       if (runStartedBy.kind !== "schedule-attachment" || !ids.has(runStartedBy.attachmentId)) continue;
       if (settled === undefined) unsettledRun = true;
-      const outcome = settled?.status === "completed" ? "completed" : settled?.status === "error" ? "failed"
-        : settled === undefined ? parkedStageOutcome(run) : undefined;
+      const outcome = await workBoardEngine.readScheduledOutcome(run);
       if (outcome && (!latestEnd || runStartedBy.firedAt > latestEnd.firedAt)) latestEnd = { firedAt: runStartedBy.firedAt, outcome };
     }
     // Recover a late outcome from the run file if this process did not observe it.
@@ -87,11 +85,8 @@ export async function fireScheduledTemplate(deps: ScheduledTemplateDeps, { routi
     const completed = result.status === "completed";
     const parked = result.status === "awaiting_approval" && result.reasonCode === undefined;
     const outcome = completed || parked ? { ok: true } as const : failed(result.reasonCode ?? "template-run-unavailable");
+    const breakerOutcome = parked ? null : await admitted.breakerOutcome;
     await routinesStore.withTemplateSchedule(id, async () => {
-      const breakerOutcome = completed ? "completed"
-        : result.reasonCode === "parked-on-denials" ? "parked-on-denials"
-        : (result.status === "error" && result.reasonTool === undefined) || result.reasonCode === "stage-failed" ? "failed"
-        : undefined;
       if (breakerOutcome) await routinesStore.recordTemplateScheduleOutcome(id, firedAt, breakerOutcome);
       await routinesStore.recordRunOutcome(id, firedAt, outcome);
     });

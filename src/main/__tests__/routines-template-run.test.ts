@@ -653,3 +653,46 @@ it("counts a stage that fails after a human gate against the same routine", asyn
     }, "the routine to pause after the later stage fails");
   }, { workflow: { unattendedAllowed: () => available ? { ok: true } : { ok: false, code: "tool-effect-unknown", tool } } });
 });
+
+it("defers a timed-out failure during Stop when a later dispatch scans the run", async () => {
+  let available = false;
+  await fixture(async f => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const routine = await f.add();
+      const envelope = {
+        tools: [], writePaths: [], readRoots: [], network: [], commands: [], mcpReadOnlyTools: [],
+        mcpGenerationTools: [], pluginGenerationTools: [], outputs: [], budget: { rounds: 2, minutes: 1, costUsd: 0 },
+      };
+      await f.attach(routine.id, await f.h.confirm([stageOf("first"), autoStageOf("later", { inputs: ["first"], envelope })]));
+      await (await f.dispatch(routine.id)).result;
+      expect(f.store.list()[0].pausedAt).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1_000);
+      available = true;
+      const fire = await f.dispatch(routine.id);
+      (await f.h.untilLive(1))[0].finish();
+      await fire.result;
+      const [row] = await f.rows();
+      expect(await f.h.decide(row.id, "first", "approve")).toMatchObject({ ok: true });
+      const [later] = await f.h.untilLive(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await f.h.untilStage(row.id, "later", "failed");
+      expect(f.h.engine.cancelRun(row.id)).toEqual({ ok: true });
+      await f.h.drainRunWork();
+      expect(later.ended).toBe(false);
+      await (await f.dispatch(routine.id)).result;
+      expect(f.store.list()[0]).toMatchObject({ lastTemplateSkip: { code: "run-unsettled" } });
+      expect(f.store.list()[0].pausedBy).toBeUndefined();
+      later.finish({ ok: false, stopReason: "interrupted" });
+      await f.h.drainRunWork();
+      expect((await f.h.item(row.id)).record?.settled?.status).toBe("cancelled");
+    } finally {
+      vi.useRealTimers();
+    }
+  }, {
+    interruptChild: vi.fn(),
+    workflow: { unattendedAllowed: () => available ? { ok: true } : {
+      ok: false, code: "tool-effect-unknown", tool: { stageId: "first", collection: "mcpReadOnlyTools", name: "lookup" },
+    } },
+  });
+});

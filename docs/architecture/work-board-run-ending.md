@@ -250,17 +250,13 @@ superseded attempt is dropped before any new preparation.
   (including stage and item notifications). The auto-gate evaluator checks
   that token at its effect boundary; calling the evaluator does not consume
   the event. Spawn, interrupt, seal, integrate, settle and workspace release
-  also check their tokens. A throw before the effect leaves the event held
-  with no consumed token, so a later replay can apply it once. Once an effect
-  applies, that effect stays consumed even if evaluation later throws; the
-  throw is logged. A running stage with no remaining child or event still
-  takes the lost path below.
-  The real registry leaves the token unclaimed when an entry throws before
-  applying its effect and propagates the error to the drain. An entry claims
-  immediately at its application boundary; a successful pure evaluation claims
-  on return. A post-effect error propagates too, so the drain logs it without
-  repeating that effect. Notification failures are logged independently and
-  cannot abort the remaining seal, integrate or release work.
+  also check their tokens. Once a held transition commits, replay advances
+  to the next write. An unfinished auto-gate evaluation keeps its receipt
+  until it returns a verdict or consumes its effect. If evaluation throws
+  before claiming, the next permitted read retries the evaluation. If it
+  throws after claiming, the engine retires the receipt and sends the running
+  attempt down the interrupted path. Notification failures are logged
+  independently and cannot abort the remaining work.
 
   Every replayable effect uses one of the durability arguments below. A memory
   token is only a cache of consumption, never the restart authority. **(a)**
@@ -317,6 +313,10 @@ superseded attempt is dropped before any new preparation.
   the run, so none overtakes an earlier one. A user decision is refused
   (`run_mismatch`) while its run holds events, and while its write cannot be
   stored, as before.
+  The chain advances after each covered write. Workspace effects run
+  separately and reserve each stage they touch. A join waits for its input
+  seals. Winding settles after the last observed child exit, and pending
+  seals can record attempt-bound results after settlement.
 - Stop: a Stop takes effect when it is given: the engine marks the run
   stopping at once, and a Stop whose event is held interrupts the run's live
   children then. So a later Stop wins over an earlier completion still held:
