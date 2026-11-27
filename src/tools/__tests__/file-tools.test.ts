@@ -733,8 +733,12 @@ describe("file native tools", () => {
     expect(readFileSync(join(workDir, target), "utf8")).toBe("created\n");
   });
 
-  it.skipIf(process.platform === "win32")("keeps the POSIX file-tree root classification across directory I/O", async () => {
-    const home = join(workDir, "next-home");
+  it.skipIf(process.platform === "win32").each([
+    ["keeps listing a POSIX file-tree root that stops being sensitive during directory I/O", true, [{ relativePath: "notes.txt" }]],
+    ["hides rows when a POSIX file-tree root becomes sensitive during directory I/O", false, []],
+  ] as const)("%s", async (_name, sensitiveAtSetup, files) => {
+    const home = join(workDir, "listing-home");
+    const otherHome = join(workDir, "other-home");
     const root = join(home, "config");
     mkdirSync(root, { recursive: true });
     writeFileSync(join(root, "notes.txt"), "ordinary report text");
@@ -743,13 +747,15 @@ describe("file native tools", () => {
     const release = allowKeyMaterialInspectionUnder(() => [root]);
     const readdir = fsPromises.readdir;
     const directoryRead = vi.spyOn(fsPromises, "readdir").mockImplementationOnce((...args) => {
-      process.env.AVE_HOME = home;
+      process.env.AVE_HOME = sensitiveAtSetup ? otherHome : home;
       return readdir(...args);
     });
     syncBuiltinESMExports();
     try {
+      process.env.AVE_HOME = sensitiveAtSetup ? home : otherHome;
       const listed = await collectFiles(root, 10);
-      expect(listed).toMatchObject({ ok: true, value: { files: [{ relativePath: "notes.txt" }] } });
+      expect(directoryRead).toHaveBeenCalledTimes(1);
+      expect(listed).toMatchObject({ ok: true, value: { files } });
     } finally {
       directoryRead.mockRestore();
       syncBuiltinESMExports();
