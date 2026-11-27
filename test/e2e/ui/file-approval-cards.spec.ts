@@ -159,7 +159,10 @@ test("file tools raise cards that name the reason, the real target and each choi
     // Outside-project write: one folder card. Each choice is worded as a condition; nothing reads as decided beforehand.
     await raise("outside");
     const target = dock.getByTestId("approval-decision-target");
-    await expect(dock.getByTestId(TEST_IDS.denyButton)).toBeFocused();
+    await expect(composer).toBeFocused();
+    await composer.pressSequentially("Follow-up draft");
+    await page.keyboard.press("Enter");
+    await expect(composer).toHaveValue("Follow-up draft");
     await expect(target).toHaveText("If denied: the tool gets no access to this path.");
     await expect(dock.getByText("Access will be denied")).toHaveCount(0);
     await dock.getByTestId(TEST_IDS.allowSessionButton).focus();

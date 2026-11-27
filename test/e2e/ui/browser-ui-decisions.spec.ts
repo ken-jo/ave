@@ -5,6 +5,7 @@ import { inspectBrowserTarget } from "./browser-native-target.js";
 import { launchDecisionFixture, moveDecisionPageToMain } from "./browser-ui-decision-fixture.js";
 import { captureOverlay, clickExposedAction, nativePageHole, scrollExposedPage, typeExposedEditor } from "./browser-ui-overlay-fixtures.js";
 import { prepareNativeWindowCapture } from "./native-window-capture.js";
+import { waitForApprovalArming } from "./approval-keyboard.js";
 
 function allowSiteButton(dock: Locator) {
   return dock.getByTestId("browser-site-approval-card")
@@ -18,7 +19,7 @@ async function takeOverPendingNavigation(fixture: Awaited<ReturnType<typeof laun
   const allow = allowSiteButton(dock);
   await allow.focus();
   await expect(allow).toBeFocused();
-  await allow.press("Tab");
+  await fixture.page.keyboard.press("Tab");
   await expect(dock.getByRole("button", { name: /^(Allow any site|모든 사이트 허용)$/ })).toBeFocused();
   const bounds = await dock.boundingBox();
   assert(bounds);
@@ -201,9 +202,10 @@ if (process.platform === "darwin") {
         await expect(lane).toBeVisible();
         await expect(readRecord()).rejects.toMatchObject({ code: "ENOENT" });
         const approve = lane.getByTestId(TEST_IDS.approveButton);
+        await waitForApprovalArming();
         await approve.focus();
         await expect(approve).toBeFocused();
-        await approve.press("Enter");
+        await fixture.page.keyboard.press("Enter");
         await expect(lane).toHaveCount(0);
         expect(await readResult()).toEqual({ recorded: true });
         expect(await readRecord()).toEqual({ recorded: true });
