@@ -4,6 +4,7 @@ import {
   chooseObserverPort,
   configureTailscaleServe,
   getTailnetObserverRuntimeState,
+  IMPLICIT_TAILNET_OBSERVER_PORT,
   isTailnetOwnDeviceAdmissionEnabled,
   loadTailnetObserverConfig,
   probeTailscaleEnvironment,
@@ -27,7 +28,6 @@ import {
   type TailnetServeResult,
   type TailscaleEnvironmentView,
 } from "../shared/tailnet-observer-config.js";
-
 
 export interface TailnetObserverConfigService {
   snapshot(): Promise<TailnetObserverSnapshot>;
@@ -63,6 +63,11 @@ export interface TailnetObserverConfigServiceOptions {
   readonly readOwnDeviceAdmission?: () => Promise<boolean>;
   // @internal deterministic injection for tests.
   readonly writeOwnDeviceAdmission?: (enabled: boolean) => Promise<void>;
+}
+
+function observerDraftPort(file: TailnetObserverConfigFile | null, env: NodeJS.ProcessEnv): number {
+  const inForce = file?.enabled === true || tailnetObserverEnableOverride(env) === true;
+  return file?.port ?? (inForce ? IMPLICIT_TAILNET_OBSERVER_PORT : DEFAULT_TAILNET_OBSERVER_PORT);
 }
 
 // Display saved settings with a port for the draft.
@@ -164,6 +169,7 @@ function recommendedConfig(port: number): TailnetObserverConfigView {
 export function createTailnetObserverConfigService(
   options: TailnetObserverConfigServiceOptions,
 ): TailnetObserverConfigService {
+  const env = options.env ?? process.env;
   const readConfigFile = options.readConfigFile ?? (() => readTailnetObserverConfigFile());
   const writeConfigFile = options.writeConfigFile
     ?? ((file: TailnetObserverConfigFile) => writeTailnetObserverConfigFile(file));
@@ -178,10 +184,10 @@ export function createTailnetObserverConfigService(
     ?? ((enabled: boolean) => setTailnetOwnDeviceAdmission(enabled));
 
   async function saveAndRestart(file: TailnetObserverConfigFile): Promise<void> {
-    const enableOverride = tailnetObserverEnableOverride(options.env);
+    const enableOverride = tailnetObserverEnableOverride(env);
     const forceOn = !file.enabled && enableOverride === true;
     const { config } = (file.enabled && enableOverride !== false) || forceOn
-      ? await loadTailnetObserverConfig({ env: options.env, readConfigFile: async () => file })
+      ? await loadTailnetObserverConfig({ env, readConfigFile: async () => file })
       : { config: null };
     if (file.enabled && config) await assertTailnetListenerPortAllowed(config.port);
     await writeConfigFile(file);
@@ -203,10 +209,10 @@ export function createTailnetObserverConfigService(
           : "tailnet-observer-config-file-unreadable";
       }
       const resolution = await loadTailnetObserverConfig({
-        env: options.env,
+        env,
         readConfigFile: async () => file,
       });
-      const saved = savedView(file, file?.port ?? DEFAULT_TAILNET_OBSERVER_PORT);
+      const saved = savedView(file, observerDraftPort(file, env));
       const effective = effectiveView(resolution, saved);
       const state = runtimeState();
       const environment = await probeEnvironment();
@@ -256,7 +262,7 @@ export function createTailnetObserverConfigService(
     },
 
     async guidedSetup(): Promise<TailnetGuidedSetupResult> {
-      const enableOverride = tailnetObserverEnableOverride(options.env);
+      const enableOverride = tailnetObserverEnableOverride(env);
       if (enableOverride === false) return guidedFailure("tailnet-serve-not-listening");
       const environment = await probeEnvironment();
       // Only `ready` can be set up. Every other state needs an action outside this app — install, sign in, start the daemon — and the surface that asked for
@@ -274,12 +280,12 @@ export function createTailnetObserverConfigService(
         file = null;
       }
 
-      const preferred = file?.port ?? null;
-      const reusable = preferred ?? DEFAULT_TAILNET_OBSERVER_PORT;
-      // A port this process is already listening on is not a conflict — the restart below releases it — and probing it would move a working setup to a new
-      // port every time the owner pressed the button.
+      const preferred = observerDraftPort(file, env);
       try {
-        const port = runtimeState().listeningPort === reusable ? reusable : await choosePort(preferred);
+        const port = await choosePort(preferred, {
+          explicit: file?.port !== undefined,
+          listeningPort: runtimeState().listeningPort,
+        });
         if (port === null) return guidedFailure("tailnet-guided-setup-port-unavailable");
         await saveAndRestart(
           proposalToFile(recommendedConfig(port), tailnetWebOriginFor(environment.dnsName)),

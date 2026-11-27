@@ -1,4 +1,6 @@
 async function runGuardedOwnerOperation<T>(guard: () => void, operation: () => Promise<T>): Promise<T> { guard(); const result = await operation(); guard(); return result; }
+import { EventEmitter } from "node:events";
+import { createServer, type Server } from "node:net";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
@@ -52,6 +54,11 @@ vi.mock(import("@anthropic-ai/sandbox-runtime"), async importOriginal => {
     resolveSrtWin: vi.fn(runtime.resolveSrtWin),
     checkWindowsSandboxStatusAsync: vi.fn(runtime.checkWindowsSandboxStatusAsync),
   };
+});
+
+vi.mock(import("node:net"), async importOriginal => {
+  const net = await importOriginal();
+  return { ...net, createServer: vi.fn(net.createServer) };
 });
 
 const CAPABILITY = "ave.example.com/cap/conversation-observer";
@@ -716,31 +723,107 @@ describe("Tailnet observer configuration surface", () => {
 });
 
 const PORT_INPUTS = [
-  { name: "I1 fileless and off", file: null, env: {}, boot: null },
-  { name: "I2 fileless and env enabled", file: null, env: { AVE_TAILNET_OBSERVER: "1" }, boot: 46_173 },
-  { name: "I3 portless and saved on", file: { enabled: true }, env: {}, boot: 46_173 },
-  { name: "I4 portless and saved off", file: {}, env: {}, boot: null },
-  { name: "I5 portless and env enabled", file: {}, env: { AVE_TAILNET_OBSERVER: "1" }, boot: 46_173 },
-  { name: "I6 explicit port", file: { enabled: true, port: 29_123 }, env: {}, boot: 29_123 },
-  { name: "environment disabled", file: { enabled: true }, env: { AVE_TAILNET_OBSERVER: "0" }, boot: null },
+  { name: "I1 fileless and off", file: null, env: {}, boot: null, draft: 28_173, probes: [28_173] },
+  { name: "I2 fileless and env enabled", file: null, env: { AVE_TAILNET_OBSERVER: "1" }, boot: 46_173, draft: 46_173, probes: [] },
+  { name: "I3 portless and saved on", file: { enabled: true }, env: {}, boot: 46_173, draft: 46_173, probes: [] },
+  { name: "I4 portless and saved off", file: {}, env: {}, boot: null, draft: 28_173, probes: [28_173] },
+  { name: "I5 portless and env enabled", file: {}, env: { AVE_TAILNET_OBSERVER: "1" }, boot: 46_173, draft: 46_173, probes: [] },
+  { name: "I6 explicit port", file: { enabled: true, port: 29_123 }, env: {}, boot: 29_123, draft: 29_123, probes: [] },
+  { name: "environment disabled", file: { enabled: true }, env: { AVE_TAILNET_OBSERVER: "0" }, boot: null, draft: 46_173, probes: [] },
   {
     name: "environment port override",
     file: { enabled: true, port: 29_123 },
     env: { AVE_TAILNET_OBSERVER_PORT: "29999" },
     boot: 29_999,
+    draft: 29_123,
+    probes: [29_123],
+  },
+  {
+    name: "fileless with environment port override",
+    file: null,
+    env: { AVE_TAILNET_OBSERVER: "1", AVE_TAILNET_OBSERVER_PORT: "29999" },
+    boot: 29_999,
+    draft: 46_173,
+    probes: [46_173],
   },
 ] satisfies {
   name: string;
   file: TailnetObserverConfigFile | null;
   env: NodeJS.ProcessEnv;
   boot: number | null;
+  draft: number;
+  probes: number[];
 }[];
+
+function settingsForPortTest(
+  initialFile: TailnetObserverConfigFile | null,
+  env: NodeJS.ProcessEnv,
+  initialListener: number | null,
+  steps: (number | string)[],
+  initialServePort = initialListener,
+) {
+  let file = initialFile;
+  let listeningPort = initialListener;
+  let servePort = initialServePort;
+  const bootEnv = { AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV, ...env };
+  const readConfigFile = async () => file;
+  const writeConfigFile = vi.fn(async (next: TailnetObserverConfigFile) => {
+    steps.push("write");
+    file = next;
+  });
+  const runServe = vi.fn(async ({ port }: { port: number }) => {
+    steps.push("serve");
+    servePort = port;
+    return { ok: true as const };
+  });
+  const settings = createTailnetObserverConfigService({
+    pairedSharingBootstrapFailed: () => false,
+    env: bootEnv,
+    readConfigFile,
+    writeConfigFile,
+    restartListener: async () => {
+      steps.push("restart");
+      const { config } = await loadTailnetObserverConfig({ env: bootEnv, readConfigFile });
+      listeningPort = config?.port ?? null;
+    },
+    runtimeState: () => ({ listeningPort, activeConfig: null, lastStartError: null, portBlock: null }),
+    probeEnvironment: async () => ({
+      ...tailscaleEnvironment(null),
+      dnsName: "desk.example-tailnet.ts.net",
+      serveConfigured: servePort !== null,
+      serveTargetPort: servePort,
+    }),
+    readOwnDeviceAdmission: async () => false,
+    runServe,
+  });
+  return { settings, writeConfigFile, runServe, readConfigFile };
+}
+
+function recordPortProbes(steps: (number | string)[], answers: ReadonlyMap<number, number | null>) {
+  vi.mocked(createServer).mockImplementation(() => {
+    const probe = new EventEmitter();
+    let boundPort = 0;
+    return Object.assign(probe, {
+      listen: ({ port }: { port: number }, onListening: () => void) => {
+        steps.push(port);
+        const answer = answers.has(port) ? answers.get(port) : port;
+        if (answer == null) queueMicrotask(() => probe.emit("error", new Error("Port in use")));
+        else {
+          boundPort = answer;
+          queueMicrotask(onListening);
+        }
+      },
+      address: () => ({ port: boundPort }),
+      close: (done: () => void) => done(),
+    }) as unknown as Server;
+  });
+}
 
 describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer port state table on %s", platform => {
   it.each(PORT_INPUTS)("boots without writing or probing Serve for $name", async ({ file, env, boot }) => {
     const dir = await makeTempDir();
     const path = join(dir, "observer.json");
-    const original = file === null ? null : JSON.stringify({ ...file, authorization: APP_CAPABILITY }, null, 2) + "\n";
+    const original = file === null ? null : `${JSON.stringify({ ...file, authorization: APP_CAPABILITY }, null, 2)}\n`;
     if (original !== null) await writeFile(path, original);
 
     const namespace = {
@@ -771,6 +854,137 @@ describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer port stat
       expect.soft(probeEnvironment).not.toHaveBeenCalled();
       if (original === null) await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
       else expect(await readFile(path, "utf8")).toBe(original);
+    } finally {
+      policy.mockRestore();
+      host.mockRestore();
+    }
+  });
+
+  it.each(PORT_INPUTS)("uses the Settings draft and persists its port for $name", async ({ file, env, draft }) => {
+    const steps: (number | string)[] = [];
+    const initial = file === null ? null : { ...file, authorization: APP_CAPABILITY };
+    const policy = vi.spyOn(listenerPortPolicy, "assertTailnetListenerPortAllowed").mockResolvedValue(undefined);
+    const host = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+    try {
+      const { settings, writeConfigFile } = settingsForPortTest(initial, env, null, steps);
+      const { saved } = await settings.snapshot();
+      expect(saved.port).toBe(draft);
+      expect(writeConfigFile).not.toHaveBeenCalled();
+      await settings.apply({ ...saved, pairedSharingEnabled: true });
+      expect(writeConfigFile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port: draft, pairedSharingEnabled: true }));
+      await expect(settings.snapshot()).resolves.toMatchObject({ saved: { port: draft }, provenance: { port: env.AVE_TAILNET_OBSERVER_PORT ? "env-override" : "file" } });
+    } finally {
+      host.mockRestore();
+      policy.mockRestore();
+    }
+  });
+
+  it.each(PORT_INPUTS)("uses the guided choice for $name", async ({ file, env, boot, draft, probes }) => {
+    const steps: (number | string)[] = [];
+    const initial = file === null ? null : { ...file, authorization: APP_CAPABILITY };
+    const host = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+    const assertAllowed = vi.spyOn(listenerPortPolicy, "assertTailnetListenerPortAllowed").mockResolvedValue(undefined);
+    const policy = vi.spyOn(listenerPortPolicy, "readTailnetListenerPortPolicy").mockResolvedValue(() => true);
+    recordPortProbes(steps, new Map());
+    try {
+      const initialServe = env.AVE_TAILNET_OBSERVER_PORT ? draft : boot;
+      const { settings, writeConfigFile, runServe } = settingsForPortTest(initial, env, boot, steps, initialServe);
+      const result = await settings.guidedSetup();
+      if (env.AVE_TAILNET_OBSERVER === "0") {
+        expect(result).toMatchObject({ ok: false, error: "tailnet-serve-not-listening" });
+        expect(steps).toEqual([]);
+        return;
+      }
+
+      const active = env.AVE_TAILNET_OBSERVER_PORT ? boot : draft;
+      expect(result).toMatchObject({ ok: true, port: active });
+      expect(writeConfigFile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port: draft }));
+      if (active === initialServe) {
+        expect(runServe).not.toHaveBeenCalled();
+        expect(steps).toEqual([...probes, "write", "restart"]);
+      } else {
+        expect(runServe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port: active }));
+        expect(steps).toEqual([...probes, "write", "restart", "serve"]);
+      }
+    } finally {
+      vi.mocked(createServer).mockReset();
+      assertAllowed.mockRestore();
+      policy.mockRestore();
+      host.mockRestore();
+    }
+  });
+
+  it.each([
+    { name: "I1 new default blocked", file: null, env: {}, blocked: [28_173], probes: [28_173, 0], port: 30_001 },
+    { name: "I4 new default blocked", file: {}, env: {}, blocked: [28_173], probes: [28_173, 0], port: 30_001 },
+    { name: "I2 implicit port blocked", file: null, env: { AVE_TAILNET_OBSERVER: "1" }, blocked: [46_173], probes: [46_173, 28_173], port: 28_173 },
+    { name: "I5 implicit port blocked", file: {}, env: { AVE_TAILNET_OBSERVER: "1" }, blocked: [46_173], probes: [46_173, 28_173], port: 28_173 },
+    { name: "I6 saved port blocked", file: { port: 29_123 }, env: {}, blocked: [29_123], probes: [29_123, 28_173], port: 28_173 },
+    { name: "implicit port disallowed", file: null, env: { AVE_TAILNET_OBSERVER: "1" }, blocked: [], probes: [28_173], port: 28_173 },
+    { name: "ephemeral port disallowed", file: null, env: {}, blocked: [28_173], probes: [28_173, 0, 1024], port: 1024 },
+    { name: "ephemeral bind refused", file: null, env: {}, blocked: [28_173, 0], probes: [28_173, 0], port: null },
+  ] satisfies {
+    name: string;
+    file: TailnetObserverConfigFile | null;
+    env: NodeJS.ProcessEnv;
+    blocked: number[];
+    probes: number[];
+    port: number | null;
+  }[])("chooses before writing when $name", async ({ name, file, env, blocked, probes, port }) => {
+    const steps: (number | string)[] = [];
+    const host = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+    const assertAllowed = vi.spyOn(listenerPortPolicy, "assertTailnetListenerPortAllowed").mockResolvedValue(undefined);
+    const policy = vi.spyOn(listenerPortPolicy, "readTailnetListenerPortPolicy").mockResolvedValue(
+      candidate => candidate !== (name === "ephemeral port disallowed" ? 30_001 : name === "implicit port disallowed" ? 46_173 : null),
+    );
+    const answers = new Map<number, number | null>([[0, 30_001]]);
+    for (const held of blocked) answers.set(held, null);
+    recordPortProbes(steps, answers);
+    try {
+      const { settings, writeConfigFile, runServe } = settingsForPortTest(file, env, null, steps, blocked[0]);
+      const result = await settings.guidedSetup();
+      if (port === null) {
+        expect(result).toMatchObject({ ok: false, error: "tailnet-guided-setup-port-unavailable" });
+        expect(steps).toEqual(probes);
+        return;
+      }
+
+      expect(result).toMatchObject({ ok: true, port });
+      expect(writeConfigFile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port }));
+      expect(runServe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port }));
+      expect(steps).toEqual([...probes, "write", "restart", "serve"]);
+    } finally {
+      vi.mocked(createServer).mockReset();
+      assertAllowed.mockRestore();
+      policy.mockRestore();
+      host.mockRestore();
+    }
+  });
+
+  it("manually enables I4 on 28173 while 46173 is blocked", async () => {
+    const steps: (number | string)[] = [];
+    const host = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+    const policy = vi.spyOn(listenerPortPolicy, "assertTailnetListenerPortAllowed").mockResolvedValue(undefined);
+    const { input, startServer } = options({});
+    startServer.mockImplementation(async ({ port }) => {
+      if (port === 46_173) throw Object.assign(new Error("Port in use"), { code: "EADDRINUSE" });
+      return { host: "127.0.0.1", port, close: vi.fn(async () => undefined) };
+    });
+    try {
+      const { readConfigFile, writeConfigFile } = settingsForPortTest({ authorization: APP_CAPABILITY }, {}, null, steps);
+      await maybeStartTailnetObserverServer({ ...input, dependencies: { ...input.dependencies, readConfigFile } });
+      const settings = createTailnetObserverConfigService({
+        pairedSharingBootstrapFailed: () => false,
+        env: {},
+        readConfigFile,
+        writeConfigFile,
+        readOwnDeviceAdmission: async () => false,
+        probeEnvironment: async () => tailscaleEnvironment(null),
+      });
+      const { saved } = await settings.snapshot();
+      await settings.apply({ ...saved, enabled: true });
+      expect(writeConfigFile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port: 28_173 }));
+      expect(startServer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port: 28_173 }));
     } finally {
       policy.mockRestore();
       host.mockRestore();

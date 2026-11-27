@@ -2,6 +2,7 @@ import { DEFAULT_TAILNET_OBSERVER_PORT, TAILNET_OBSERVER_PORT_BLOCKED } from "..
 import { describe, expect, it, vi } from "vitest";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
 import { createTailnetObserverConfigService } from "../tailnet-observer-config-service.js";
+import { loadTailnetObserverConfig } from "../tailnet-surface-server.js";
 import type {
   TailnetObserverConfigFile,
   TailscaleEnvironment,
@@ -50,6 +51,7 @@ function service(options: {
   writeConfigFile?: (file: TailnetObserverConfigFile) => Promise<void>;
   environment?: TailscaleEnvironment;
   restartListener?: () => Promise<unknown>;
+  choosePort?: (preferred: number) => Promise<number | null>;
   runServe?: (input: { cliPath: string; port: number }) => Promise<TailscaleServeOutcome>;
   ownDeviceAdmission?: boolean;
   writeOwnDeviceAdmission?: (enabled: boolean) => Promise<void>;
@@ -72,6 +74,7 @@ function service(options: {
     // Injected for the same reason: the admission record is real host state, and reading it would make this matrix depend on the developer's own.
     readOwnDeviceAdmission: async () => options.ownDeviceAdmission === true,
     writeOwnDeviceAdmission: options.writeOwnDeviceAdmission ?? (async () => undefined),
+    choosePort: options.choosePort,
     ...(options.runServe === undefined ? {} : { runServe: options.runServe as never }),
   });
 }
@@ -391,6 +394,34 @@ describe("Tailnet observer configuration service", () => {
         serve: "configured",
         webOrigin: WEB_ORIGIN,
       }));
+    });
+
+    it("keeps a blocked environment override out of the saved configuration", async () => {
+      const env = { AVE_TAILNET_OBSERVER_PORT: "29999" };
+      let file: TailnetObserverConfigFile | null = null;
+      const readConfigFile = async () => file;
+      const runServe = vi.fn();
+      const settings = service({
+        env,
+        readConfigFile,
+        writeConfigFile: async next => { file = next; },
+        choosePort: async preferred => preferred,
+        restartListener: async () => {
+          const { config } = await loadTailnetObserverConfig({ env, readConfigFile });
+          expect(config?.port).toBe(29_999);
+          throw new Error(TAILNET_OBSERVER_PORT_BLOCKED);
+        },
+        runServe,
+      });
+
+      await expect(settings.guidedSetup()).resolves.toMatchObject({
+        ok: false,
+        error: TAILNET_OBSERVER_PORT_BLOCKED,
+      });
+      expect(runServe).not.toHaveBeenCalled();
+      await expect(loadTailnetObserverConfig({ env: {}, readConfigFile })).resolves.toMatchObject({
+        config: { port: DEFAULT_TAILNET_OBSERVER_PORT },
+      });
     });
 
     it("leaves Serve alone when it already forwards to this exact port", async () => {

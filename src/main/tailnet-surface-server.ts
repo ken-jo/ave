@@ -409,14 +409,19 @@ function probeLoopbackBind(port: number): Promise<number | null> {
 
 // Persist the selected port so restart cannot move the serve target.
 // Probe-to-bind races remain explicit start failures, never silent fallback to a different port.
-export async function chooseObserverPort(preferred: number | null): Promise<number | null> {
+export async function chooseObserverPort(
+  preferred: number,
+  { explicit, listeningPort }: { explicit: boolean; listeningPort: number | null },
+): Promise<number | null> {
   const isAllowed = await readTailnetListenerPortPolicy();
-  if (preferred !== null) {
-    if (!isAllowed(preferred)) throw new Error(TAILNET_PORT_CONFINED_WORKER_RANGE);
-    if (await probeLoopbackBind(preferred) !== null) return preferred;
+  const canBind = async (port: number) => port === listeningPort || await probeLoopbackBind(port) !== null;
+  if (isAllowed(preferred)) {
+    if (await canBind(preferred)) return preferred;
+  } else if (explicit) {
+    throw new Error(TAILNET_PORT_CONFINED_WORKER_RANGE);
   }
   if (preferred !== DEFAULT_TAILNET_OBSERVER_PORT && isAllowed(DEFAULT_TAILNET_OBSERVER_PORT)) {
-    if (await probeLoopbackBind(DEFAULT_TAILNET_OBSERVER_PORT) !== null) return DEFAULT_TAILNET_OBSERVER_PORT;
+    if (await canBind(DEFAULT_TAILNET_OBSERVER_PORT)) return DEFAULT_TAILNET_OBSERVER_PORT;
   }
 
   const bound = await probeLoopbackBind(0);

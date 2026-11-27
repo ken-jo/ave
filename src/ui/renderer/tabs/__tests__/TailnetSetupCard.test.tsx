@@ -273,7 +273,7 @@ describe("TailnetSetupCard", () => {
       fireEvent.click(await screen.findByTestId("tailnet-setup-connect"));
 
       const notice = await screen.findByTestId("tailnet-setup-port-blocked");
-      expect(notice).toHaveTextContent("Port " + port + " is blocked or in use by another program.");
+      expect(notice).toHaveTextContent(`Port ${port} is blocked or in use by another program.`);
       expect(notice).toHaveTextContent("The operating system has reserved this port.");
       fireEvent.click(screen.getByRole("button", { name: "Change port" }));
       const portInput = await screen.findByTestId("tailnet-observer-port");
