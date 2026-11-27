@@ -38,6 +38,7 @@ export class MemoryMapHost {
   protected snapshot: GraphSnapshot | null = null;
   protected cache: VectorCache = {};
   private graphScope: { id?: string; hydrated: boolean } = { hydrated: false };
+  private graphClearGeneration = 0;
   private queryGeneration = 0;
   private queryController?: AbortController;
   constructor(protected readonly options: HostOptions) {
@@ -62,13 +63,18 @@ export class MemoryMapHost {
     this.registry.changed();
   }
   private async clearSaved(assertCurrent: () => void): Promise<void> {
-    await this.namespace.childDir('', { assertStillValid: assertCurrent });
-    const cleared = await writeFileAtomicAtPathAdmitted(join(this.namespace.dir, 'snapshot.json'), JSON.stringify({ cache: {}, snapshot: null }), () => {
+    const generation = this.graphClearGeneration;
+    const assertCanClear = () => {
+      if (generation !== this.graphClearGeneration) throw new MemoryMapHostError('request-stale');
       assertCurrent();
+    };
+    await this.namespace.childDir('', { assertStillValid: assertCanClear });
+    const cleared = await writeFileAtomicAtPathAdmitted(join(this.namespace.dir, 'snapshot.json'), JSON.stringify({ cache: {}, snapshot: null }), () => {
+      assertCanClear();
       return true;
     });
     if (!cleared) throw new MemoryMapHostError('request-stale');
-    assertCurrent();
+    assertCanClear();
   }
   private selectedNamespace(): EmbeddingNamespace { return this.options.provider?.namespace() ?? LOCAL_NAMESPACE; }
   protected activate(catalog: MemoryMapCatalog): void {
@@ -251,11 +257,8 @@ export class MemoryMapHost {
     const revision = catalogRevision(catalog.records);
     try { owner.takeover(assertLocal); }
     catch (error) { owner.fail(this.buildErrorCode(error)); throw error; }
-    if (this.graphScope.id !== catalog.authorizationScopeId) {
-      this.cancel();
-      this.clearGraph(catalog.authorizationScopeId, true);
-    } else this.graphScope = { id: catalog.authorizationScopeId, hydrated: true };
-    const scope = this.graphScope;
+    this.graphClearGeneration++;
+    if (this.graphScope.id !== catalog.authorizationScopeId) this.cancel();
     const signal = owner.signal;
     const active = () => owner.isRunning() && sameNamespace(selected, this.selectedNamespace());
     const current = () => {
@@ -348,8 +351,8 @@ export class MemoryMapHost {
       const canPublish = () => { assertCanPublish(); return true; };
       // The admitted rename commits the graph and its build outcome together.
       const committed = await writeFileAtomicAtPathAdmitted(join(this.namespace.dir, 'snapshot.json'), JSON.stringify(result), canPublish, () => {
-        this.activate(catalog);
-        this.graphScope = scope;
+        if (this.graphScope.id !== catalog.authorizationScopeId) this.cancel();
+        this.graphScope = { id: catalog.authorizationScopeId, hydrated: true };
         this.cache = result.cache; this.snapshot = result.snapshot; owner.snapshot = null;
         owner.settle({ kind: 'ready' });
       }).catch(error => {

@@ -137,6 +137,75 @@ describe('memory graph publication', () => {
     expect(await replacement).toMatchObject({ value: { status: 'ready' } });
   });
 
+  it.each(['cancelled', 'failed'] as const)('restores the graph seen by a cold view after a %s rebuild', async outcome => {
+    const f = await fixture();
+    const readCatalog = () => f.catalog;
+    const options = { namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: f.runWorker };
+    const original = await new MemoryMapHost(options).build(readCatalog);
+    const path = join(f.root, 'snapshot.json');
+    const originalBytes = await readFile(path);
+    const registry = new BuildRegistry();
+    const projecting = deferred<AbortSignal>();
+    const exit = deferred<void>();
+    const buildId = 'interrupted';
+    const runWorker: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
+      const [, task, signal, , , beginWorker] = args;
+      if (task.kind === 'project' && task.input.jobId === buildId) {
+        const receipt = beginWorker?.('projection');
+        projecting.resolve(signal);
+        await exit.promise;
+        receipt?.confirmed();
+        signal.throwIfAborted();
+        throw new Error('Projection failed');
+      }
+      return f.runWorker<T>(...args);
+    };
+    const cold = new MemoryMapHost({ ...options, registry, runWorker });
+    const initialView = await cold.buildView(readCatalog);
+    expect(initialView.snapshot).toEqual(original);
+    expect(await cold.buildView(readCatalog)).toEqual(initialView);
+
+    const owner = registry.register(buildId, { scopeId: f.catalog.authorizationScopeId, assertAdmitted: () => {} });
+    const rebuild = cold.build(readCatalog, owner);
+    const settled = rebuild.catch((error: unknown) => error);
+    try {
+      const signal = await Promise.race([projecting.promise, settled.then(() => { throw new Error('Projection did not start'); })]);
+      expect((await cold.buildView(readCatalog)).snapshot).toMatchObject({ snapshotId: owner.id, status: 'building' });
+      const cancelled = outcome === 'cancelled' ? registry.cancel(owner.id) : undefined;
+      expect(signal.aborted).toBe(outcome === 'cancelled');
+      expect(await readFile(path)).toEqual(originalBytes);
+      exit.resolve();
+      if (cancelled) {
+        expect(await cancelled).toBeNull();
+        expect(await settled).toMatchObject({ code: 'request-stale' });
+      } else {
+        expect(await settled).toMatchObject({ message: 'Projection failed' });
+      }
+      const restored = await cold.buildView(readCatalog);
+      expect.soft(restored.snapshot).toEqual(original);
+      expect(restored.builds).toMatchObject([{ id: owner.id, outcome: { kind: outcome } }]);
+      expect(await readFile(path)).toEqual(originalBytes);
+      expect.soft((await cold.buildView(readCatalog)).snapshot).toEqual(original);
+      expect((await new MemoryMapHost(options).buildView(readCatalog)).snapshot).toEqual(original);
+
+      const readOtherScope = () => ({ ...f.catalog, authorizationScopeId: 'other' });
+      const readUpdatedCatalog = () => ({
+        ...f.catalog, records: f.catalog.records.map(record => ({ ...record, contentRevision: 'updated', text: 'Updated body' })),
+      });
+      expect((await cold.buildView(readOtherScope)).snapshot).toBeNull();
+      expect((await cold.buildView(readUpdatedCatalog)).snapshot).toBeNull();
+      const replacement = await cold.build(readUpdatedCatalog);
+      expect(replacement.snapshotId).not.toBe(original.snapshotId);
+      const replacementBytes = await readFile(path);
+      expect(replacementBytes).not.toEqual(originalBytes);
+      expect(JSON.parse(replacementBytes.toString()).snapshot).toEqual(replacement);
+      expect((await cold.buildView(readUpdatedCatalog)).snapshot).toEqual(replacement);
+    } finally {
+      exit.resolve();
+      await settled;
+    }
+  });
+
   it('refuses a held old clear while another scope is building', async () => {
     const f = await fixture();
     const preparingClear = deferred<void>();
