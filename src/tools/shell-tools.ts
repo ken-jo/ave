@@ -2880,7 +2880,8 @@ async function runPosixContainerShell(input: {
         : { output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true, metadata: { sandboxed: false, sandboxAttempted: true } };
     } else if (exit.rejected) {
       result = {
-        output: [process.platform === "linux" ? t("sandboxPolicy.linuxContainerStartRefused") : t("sandboxPolicy.containerStartRefused"),
+        output: ["environmentFailed" in exit && exit.environmentFailed ? t("sandboxPolicy.linuxContainerEnvironmentFailed")
+          : process.platform === "linux" ? t("sandboxPolicy.linuxContainerStartRefused") : t("sandboxPolicy.containerStartRefused"),
           // A launcher that failed after the command began still had its writes quarantined; say so.
           ...("cleanupNotice" in exit && typeof exit.cleanupNotice === "string" ? [exit.cleanupNotice] : [])].join("\n"), isError: true,
         metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },

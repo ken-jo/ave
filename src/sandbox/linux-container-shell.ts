@@ -1,11 +1,13 @@
 import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, openSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
 import { createLogger } from "../lib/logger.js";
 import { trackManagedChildProcess } from "../main/managed-child-processes.js";
-import { LINUX_SHELL_READY_FD, linuxShellExtraDescriptors, type MxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
+import {
+  LINUX_SHELL_ENVIRONMENT_FAILED_CODE, LINUX_SHELL_READY_FD, linuxShellExtraDescriptors, type MxcLinuxShellPrograms, writeLinuxShellEnvironment,
+} from "../permissions/mxc-linux.js";
 import { linuxLauncherStateDir, removeLinuxLauncherStateDir } from "../permissions/mxc-linux-raw-ip.js";
 import { errorMessage } from "../shared/error-message.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
@@ -19,6 +21,8 @@ export interface LinuxContainerShellExit {
   readonly rejected: boolean;
   /** The command started (its ready byte arrived) and the launcher then failed: a failed run, never a refused start. */
   readonly runFailed: boolean;
+  /** The contained shell could not load its environment, so the command never ran; `rejected` is set with it. */
+  readonly environmentFailed: boolean;
   readonly cleanupUnverified: boolean;
   readonly cleanupNotice?: string;
 }
@@ -59,26 +63,21 @@ export function startMxcLinuxShell(
   if (createHash("sha256").update(readFileSync(staged.requestPath)).digest("hex") !== staged.requestSha256) {
     throw new Error("Linux container request changed before launch");
   }
-  // The environment travels on a descriptor, never as launcher arguments, which any local user can read.
-  const environment = openSync(staged.environmentPath, "r");
-  let child: ChildProcessByStdio<null, Readable, Readable>;
+  // The environment travels on a descriptor, never as launcher arguments, which any local user can read. It is a
+  // socket Ave writes and closes, not the staged file: the launcher's own shell inside the container keeps the
+  // descriptor open for the whole run, and a file reached through its /proc entry could be reopened for writing.
+  const bytes = readFileSync(staged.environmentPath);
+  if (createHash("sha256").update(bytes).digest("hex") !== staged.environmentSha256) {
+    throw new Error("Linux container environment changed before launch");
+  }
   // A fresh, private log beside the staged request. The launcher appends to it, so an existing file is refused.
   const logPath = join(dirname(staged.requestPath), "launcher.log");
-  try {
-    // A positional read leaves the descriptor at offset 0 for the shell that sources it.
-    const bytes = Buffer.alloc(fstatSync(environment).size);
-    if (readSync(environment, bytes, 0, bytes.length, 0) !== bytes.length
-      || createHash("sha256").update(bytes).digest("hex") !== staged.environmentSha256) {
-      throw new Error("Linux container environment changed before launch");
-    }
-    closeSync(openSync(logPath, "wx", 0o600));
-    child = spawn(programs.launcher, ["--log-file", logPath, "--config", staged.requestPath], {
-      env: programs.env, detached: true,
-      stdio: ["ignore", "pipe", "pipe", ...linuxShellExtraDescriptors(), environment],
-    }) as ChildProcessByStdio<null, Readable, Readable>;
-  } finally {
-    closeSync(environment);
-  }
+  closeSync(openSync(logPath, "wx", 0o600));
+  const child = spawn(programs.launcher, ["--log-file", logPath, "--config", staged.requestPath], {
+    env: programs.env, detached: true,
+    stdio: ["ignore", "pipe", "pipe", ...linuxShellExtraDescriptors(), "pipe"],
+  }) as ChildProcessByStdio<null, Readable, Readable>;
+  writeLinuxShellEnvironment(child, bytes);
   let timeout = false;
   let cancelled = false;
   let escalator: ReturnType<typeof setTimeout> | undefined;
@@ -101,7 +100,7 @@ export function startMxcLinuxShell(
   watchdog.unref();
   signal.addEventListener("abort", stop, { once: true });
   let launchError = false;
-  // Only the filter helper, once its filter is on, writes here; it closes the descriptor before the command runs.
+  // Only the shell's bootstrap writes here, under the filter, once the environment loaded, just before the command.
   let started = false;
   // The launcher's network state folder, learned from its supervisor's argv once the command started. A launcher
   // stopped by a signal cannot remove it, so the launch does, after the launcher is gone.
@@ -127,8 +126,10 @@ export function startMxcLinuxShell(
       const timedOut = timeout || outcome === "timed-out";
       // A run that ended by a signal has no launcher verdict, so it is never reported as a refused start.
       const refused = !timedOut && !cancelled && outcome === "refused" && (launchError || code !== null);
+      // The shell's bootstrap exits with its own status, before the ready byte, when the environment did not load.
+      const environmentFailed = !started && !timedOut && !cancelled && outcome === "exited" && code === LINUX_SHELL_ENVIRONMENT_FAILED_CODE;
       const exit = { code: code ?? -1, timedOut, cancelled: cancelled && !timedOut, cleanupUnverified: false,
-        rejected: refused && !started, runFailed: refused && started };
+        rejected: (refused && !started) || environmentFailed, runFailed: refused && started, environmentFailed };
       if (removed === undefined) resolve(exit);
       // A folder that cannot be removed never costs the command its result: the command ran.
       else removed.then(() => resolve(exit), (error: unknown) => {

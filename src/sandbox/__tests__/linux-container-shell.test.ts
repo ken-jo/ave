@@ -94,6 +94,13 @@ describe.runIf(process.platform !== "win32")("Linux container shell exit classif
     await expect(run(START_FAILED, "", 255)).resolves.toMatchObject({ rejected: true, runFailed: false });
   });
 
+  it("names a shell whose environment did not load, before its ready byte, as a refused start", async () => {
+    await expect(run(stamp("Exit code: 125 (0x7D)\n"), "", 125)).resolves.toMatchObject({ rejected: true, environmentFailed: true, runFailed: false });
+    // Control: a command that itself exits 125 after the ready byte is its own status.
+    await expect(run(stamp("Exit code: 125 (0x7D)\n"), "", 125, { started: true }))
+      .resolves.toMatchObject({ code: 125, rejected: false, environmentFailed: false });
+  });
+
   it("keeps a launcher timeout after the command started as timed out", async () => {
     await expect(run(TIMED_OUT, "", 255, { started: true })).resolves.toMatchObject({ rejected: false, runFailed: false, timedOut: true });
   });

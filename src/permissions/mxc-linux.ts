@@ -1,9 +1,10 @@
 import { type ChildProcess, execFile, spawn, type StdioOptions } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, closeSync, constants, openSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { posix } from "node:path";
+import { Writable } from "node:stream";
 import { promisify } from "node:util";
 import { expandReadDenyGlobLinuxSteps } from "@anthropic-ai/sandbox-runtime/dist/sandbox/read-deny-glob.js";
 import { finishInTurns, type GlobWalkListings } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
@@ -44,10 +45,22 @@ const PROXY_VARIABLES = /^(?:https?|all|no|ftp)_proxy$/iu;
  */
 const LINUX_SHELL_ENVIRONMENT_FD = 9;
 /**
- * The descriptor the filter helper inside the container writes one byte to once the filter is on, just before the
- * command runs. Its arrival separates a launcher that refused to start from one that failed after the command began.
+ * The descriptor the shell's bootstrap inside the container writes one byte to once the filter is on and the
+ * environment loaded, just before the command runs. Its arrival separates a launcher that refused to start from one
+ * that failed after the command began.
  */
 export const LINUX_SHELL_READY_FD = 4;
+/** The bootstrap's exit status when the environment did not load; without the ready byte it is never the command's. */
+export const LINUX_SHELL_ENVIRONMENT_FAILED_CODE = 125;
+
+/** Writes the environment script into the launcher's environment socket and shuts down Ave's sending side. */
+export function writeLinuxShellEnvironment(child: ChildProcess, bytes: Buffer): void {
+  const pipe: unknown = (child.stdio as readonly unknown[])[LINUX_SHELL_ENVIRONMENT_FD];
+  if (!(pipe instanceof Writable)) throw new Error("Linux container launcher has no environment socket");
+  // A launcher that exits early closes the reading end; its own outcome reports that.
+  pipe.on("error", () => {});
+  pipe.end(bytes);
+}
 const PORTABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 
 /** Descriptors 3 to 8 of a launcher spawn: the ready pipe at {@link LINUX_SHELL_READY_FD}, nothing else. */
@@ -309,16 +322,25 @@ export function buildBubblewrapShellRequest(input: {
   // Git expects its global config to be a file. A masked, absent config has no settings to read.
   if (home !== undefined && input.env.GIT_CONFIG_GLOBAL === undefined
     && grants.placeholders?.some(row => row.path === posix.join(home, ".gitconfig"))) env.GIT_CONFIG_GLOBAL = "/dev/null";
-  // The environment arrives on its descriptor, which the shell closes before the command; a missing one ends the shell.
+  // The environment arrives on its descriptor, a socket Ave writes and closes, which the shell reads whole and closes
+  // before the command. It is read into the positional parameters, never a named variable the environment could
+  // hold; the trailing `.` proves the read finished and keeps trailing newlines. `command eval` keeps a failed export
+  // from ending the shell before it reports the failure, in every POSIX sh. The ready byte follows the load.
   const fd = LINUX_SHELL_ENVIRONMENT_FD;
-  const bootstrap = `. /dev/fd/${fd} && exec ${fd}<&- || exit 125\n`
+  const ready = LINUX_SHELL_READY_FD;
+  const failed = LINUX_SHELL_ENVIRONMENT_FAILED_CODE;
+  const bootstrap = `set -- "$(/bin/cat <&${fd} && printf .)" && exec ${fd}<&- || exit ${failed}\n`
+    + `case $1 in *.) ;; *) exit ${failed} ;; esac\n`
+    + `command eval "\${1%.}" || exit ${failed}\n`
+    + "set --\n"
+    + `printf '\\n' >&${ready} && exec ${ready}>&- || exit ${failed}\n`
     + `export NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1\n${input.commandLine}`;
   return {
     request: {
       version: "0.9.0-alpha",
       containment: "bubblewrap",
       // The helper closes every other inherited descriptor (the launcher's proxy mode leaves one to its user namespace).
-      process: { commandLine: `${quote(helper)} --close-other-fds --keep-fd ${fd} --ready-fd ${LINUX_SHELL_READY_FD} -- /bin/sh -c ${quote(bootstrap)}`, cwd, timeout: input.timeoutMs, inheritDefaultEnv: false, env: [] },
+      process: { commandLine: `${quote(helper)} --close-other-fds --keep-fd ${fd} --keep-fd ${ready} -- /bin/sh -c ${quote(bootstrap)}`, cwd, timeout: input.timeoutMs, inheritDefaultEnv: false, env: [] },
       filesystem: { readwritePaths: grants.readwrite, readonlyPaths, deniedPaths: grants.denied },
       network: { egress: { default: "deny" }, ingress: { default: "deny", hostLoopback: "deny" } },
       runtimeConfig: { networkProxy: input.proxyUrl },
@@ -329,24 +351,22 @@ export function buildBubblewrapShellRequest(input: {
 
 /**
  * Runs the launcher like `execFile`, resolving to its stdout and rejecting on a non-zero exit, with the contained shell's
- * environment file open read-only on {@link LINUX_SHELL_ENVIRONMENT_FD}.
+ * environment written into a pipe on {@link LINUX_SHELL_ENVIRONMENT_FD}.
  */
 function runLauncherWithEnvironment(
-  launcher: string, args: readonly string[], environmentPath: string,
+  launcher: string, args: readonly string[], environment: Buffer,
   options: { readonly signal?: AbortSignal; readonly env: NodeJS.ProcessEnv; readonly timeout: number; readonly killSignal: NodeJS.Signals },
 ) {
-  const fd = openSync(environmentPath, "r");
   let child: ChildProcess;
-  try {
-    const stdio: StdioOptions = ["ignore", "pipe", "pipe", ...linuxShellExtraDescriptors(), fd];
+  {
+    const stdio: StdioOptions = ["ignore", "pipe", "pipe", ...linuxShellExtraDescriptors(), "pipe"];
     // The canary reads the firewall payloads the launcher writes, and takes them as evidence only when nobody else
     // could write them. The launcher creates them under the inherited umask, which is often 002, so the canary's
     // launcher runs under 077. `exec` keeps the pid the firewall reader looks under.
     child = spawn("/bin/sh", ["-c", 'umask 077 && exec "$0" "$@"', launcher, ...args],
       { env: options.env, stdio, ...(options.signal ? { signal: options.signal } : {}), killSignal: options.killSignal, timeout: options.timeout });
-  } finally {
-    closeSync(fd);
   }
+  writeLinuxShellEnvironment(child, environment);
   const stdout: Buffer[] = [];
   child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
   child.stderr?.resume();
@@ -464,16 +484,14 @@ async function runLinuxCanary(
       });
       const config = posix.join(scratch, "request.json");
       await writeFile(config, JSON.stringify(request), { mode: 0o600, flag: "wx" });
-      // Beside the request, so the container cannot read it by path; the run hands it over on its descriptor.
-      const environmentPath = posix.join(scratch, "environment.sh");
-      await writeFile(environmentPath, environment, { mode: 0o600, flag: "wx" });
+      // Handed over on its descriptor as a pipe the run writes.
       const options = { signal, env: programs.env, timeout: timeout + TOOL_TIMEOUT_POLICY.mxcLinuxShellStopMs, killSignal: "SIGKILL" as const };
       try { await runFile(programs.launcher, ["--dry-run", "--config", config], options); } catch {
         signal?.throwIfAborted();
         return { state: "request-rejected" };
       }
       held.validate();
-      const execution = runLauncherWithEnvironment(programs.launcher, ["--config", config], environmentPath, options);
+      const execution = runLauncherWithEnvironment(programs.launcher, ["--config", config], Buffer.from(environment), options);
       const pid = execution.child.pid;
       let ended = false;
       const settled = execution.then(() => { ended = true; }, () => { ended = true; });

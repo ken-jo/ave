@@ -435,6 +435,22 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     expect(readFileSync(join(work, "seen-token"), "utf8")).toBe(secret);
   });
 
+  it("leaves the command no process in its namespace that holds the environment's descriptor", async () => {
+    startEgressRelayService({ ask: async () => false });
+    // Any process the command can see whose descriptor 9 is a file (the environment script, once) could be reopened
+    // for writing through /proc. The launcher's own shell keeps descriptor 9 for the whole run, so it must be a pipe.
+    const { launch } = await prepare([
+      "for fd in /proc/[0-9]*/fd/9; do",
+      '  [ -f "$fd" ] || continue',
+      '  printf "holder %s\\n" "$fd"; if (printf x >> "$fd") 2>/dev/null; then echo appended; fi',
+      "done",
+      "true",
+    ].join("\n"), { env: { AVE_MARKER: "present" } });
+    const result = await run(launch);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe("");
+  });
+
   it("tunnels a verified TLS response through the invocation proxy", async () => {
     const hostname = "shell-boundary.example";
     const key = join(root, "server.key");
