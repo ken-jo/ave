@@ -12,7 +12,7 @@ import {
 import { openHostEgressListener } from "../permissions/egress-host-listener.js";
 import { openInvocationProxyListener } from "../permissions/egress-invocation-listener.js";
 import {
-  egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation,
+  egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased,
 } from "../permissions/egress-invocations.js";
 import { resolveHostLauncherPath } from "../permissions/mxc-launcher.js";
 import { buildSeatbeltShellRequest } from "../permissions/mxc-macos.js";
@@ -157,7 +157,6 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
   if (owner?.kind !== "shell" || owner.requiresListener !== true) throw new Error("Container egress requires a live shell invocation");
   const invocationSignal = egressInvocationAbortSignal(token);
   const revoke = (): void => lifecycle.revoke();
-  lifecycle.onRevoke(() => releaseEgressInvocation(token));
   lifecycle.defer(onEgressInvocationReleased(released => { if (released === token) revoke(); }));
   lifecycle.defer(onSandboxStatusChanged(() => { if (detectMxcShellCapability() !== capability) revoke(); }));
   invocationSignal?.addEventListener("abort", revoke, { once: true });
