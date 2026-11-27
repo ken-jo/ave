@@ -4,9 +4,15 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { removeLinkOnly } from "../../__tests__/support/tmp-dir-teardown.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { policyHomeAnchors } from "../../shared/policy-home.js";
 import { admitMxcExtensionFilesystem, initializeAsrtSandbox, resetAsrtSandbox } from "../asrt-sandbox.js";
 import { mxcConfinementStatePaths } from "../mxc-runtime-root.js";
 import { mxcPolicyRows } from "../mxc-windows.js";
+
+vi.mock("../../shared/policy-home.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../../shared/policy-home.js")>();
+  return { ...actual, policyHomeAnchors: () => [actual.getPolicyHome()] };
+});
 
 describe.runIf(process.platform === "win32")("Windows container holder write admission", () => {
   const makeFixture = useTempDirs("mxc-admission-");
@@ -17,12 +23,16 @@ describe.runIf(process.platform === "win32")("Windows container holder write adm
   beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
   beforeEach(() => {
     fixture = makeFixture();
+    const home = join(fixture, "alice");
     target = join(fixture, "allowed");
-    local = join(fixture, "alice", "AppData", "Local");
+    local = join(home, "AppData", "Local");
     mkdirSync(target);
     mkdirSync(local, { recursive: true });
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
     vi.stubEnv("LOCALAPPDATA", local);
     vi.stubEnv("AVE_TEST_SANDBOX_BASE", join(fixture, "sandbox-cache"));
+    expect(policyHomeAnchors().every(anchor => anchor === home), "sandbox policy homes must be fixture-scoped").toBe(true);
   });
   afterEach(async () => {
     try {
