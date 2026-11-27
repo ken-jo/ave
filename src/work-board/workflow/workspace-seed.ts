@@ -166,7 +166,7 @@ export async function hashSeedFile(root: SourceRoot, path: string, maxBytes?: nu
  * held folder, and the file is a new one: a file or link already at its name is unlinked, never written through. With `expect`, a copy
  * whose content is not the sha256 given for its path is removed again and the call throws.
  */
-export async function copySeedFiles(source: SourceRoot, target: OwnedDir, paths: readonly string[], expect?: ReadonlyMap<string, string>, fromProject = false, maxBytes = Infinity): Promise<SeedFile[]> {
+export async function copySeedFiles(source: SourceRoot, target: OwnedDir, paths: readonly string[], expect?: ReadonlyMap<string, string>, fromProject = false): Promise<SeedFile[]> {
   const assertConsumable = (): void => {
     if (fromProject && !isHostWorkspaceConsumable(source.path)) throw new SeedStop("seed-unreadable");
   };
@@ -182,8 +182,7 @@ export async function copySeedFiles(source: SourceRoot, target: OwnedDir, paths:
       const dir = target.ensurePath(segments.slice(0, -1));
       const { fd, id } = dir.createFile(leaf, { replace: true });
       let made: { sha256: string; size: number };
-      try { made = await digest(handle, { fd, held: () => dir.check() }, maxBytes); } finally { closeSync(fd); }
-      maxBytes -= made.size;
+      try { made = await digest(handle, { fd, held: () => dir.check() }); } finally { closeSync(fd); }
       dir.check();
       if (dir.entryId(leaf) !== id) throw new OwnedFsError("changed", "the copy was replaced while it was written");
       const wanted = expect?.get(path);

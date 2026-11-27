@@ -181,7 +181,7 @@ it("a file changed after the request is not sent", () => parked(async (h, id, bi
   expect(invoke).not.toHaveBeenCalled();
 }, { files: ["deliver.txt"] }));
 
-it("preserves a failed file output for retry across restart and delivers only the approved bytes", () => parked(async (h, id, binding, invoke) => {
+it("preserves a failed file output across restart and still refuses its retry without a bound file operand", () => parked(async (h, id, binding, invoke) => {
   await expect(h.engine.decideStageGate(id, binding, gesture(WORK_BOARD.decideStage, id, binding))).resolves.toMatchObject({ ok: true });
   await h.until(id, item => item.runStatus === "completed");
   const engine = h.makeEngine();
@@ -192,14 +192,10 @@ it("preserves a failed file output for retry across restart and delivers only th
   expect(await bytes.readFile(path, "utf8")).toBe("Original");
   const { runId, stageId, attempt, outputHash } = binding;
   const retry = { runId, stageId, attempt, outputHash, outputId: stage.outputExecutions?.[0].id ?? "" };
-  invoke.mockImplementationOnce(async ({ root }: { root: string }) => {
-    await bytes.writeFile(path, "A later edit");
-    expect(await bytes.readFile(join(root, "deliver.txt"), "utf8")).toBe("Original");
-    return "done";
-  });
   await expect(engine.retryOutput(id, retry, gesture(WORK_BOARD.retryOutput, id, retry))).resolves.toEqual({ ok: true });
-  expect((await h.stageRun(id, "review")).outputExecutions).toMatchObject([{ status: "done" }]);
-}, { files: ["deliver.txt"], fail: true }));
+  expect((await h.stageRun(id, "review")).outputExecutions).toMatchObject([{ status: "failed", detail: "output-file-unbound" }]);
+  expect(invoke).not.toHaveBeenCalled();
+}, { files: ["deliver.txt"] }));
 
 it("a rejected gate executes nothing", () => parked(async (h, id, binding, invoke) => {
   await expect(h.engine.decideStageGate(id, { ...binding, decision: "reject" })).resolves.toMatchObject({ ok: true });

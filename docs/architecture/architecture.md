@@ -1558,13 +1558,18 @@ receipt and two digests. The output digest is computed from the stored result
 and requests. It is never written to disk. Approval is recorded before the host
 invokes the declared tool through ordinary tool governance. An interrupted
 execution is never replayed at startup. A user can retry a failed tool output
-under the same approval binding.
+under the same approval binding. The host rechecks listed file hashes and
+refuses upload requests and recognized file operands because the current
+external tool adapters cannot open files bound to the approval.
 
 A push request binds a configured remote's one resolved, sanitized push URL
-and the run ref's commit. Git holds the run ref at that commit during the push.
-The host guards the literal URL against configuration rewrites when recording
-and executing the request. An approved push sends only the run ref, without
-force or tags. A subsequent push requires a new request and approval.
+and the run ref's commit. For a local bare repository, it also binds its
+canonical path and filesystem identity and checks both again at launch.
+The host guards against configuration rewrites and suppresses inherited push
+options. It holds the run ref during transport and cancels transport if the
+lock process exits early. The push uses the approved commit as its source
+and the same-named run branch as its sole destination, without force or
+tags. A subsequent push requires a new request and approval.
 
 `ave:work-board:decide-plan` (internal, sender-validated board-window main
 frame, `CHANNEL_GESTURE: "required"`) carries the run id, the hash of the plan

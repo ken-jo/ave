@@ -6841,6 +6841,7 @@ export const en = {
   "reasonCodes.file-unreadable": "A requested file could not be read within the file limits.",
   "reasonCodes.needs-human-gate": "Requested outputs require a human gate.",
   "reasonCodes.output-file-changed": "A requested file changed after it was recorded.",
+  "reasonCodes.output-file-unbound": "This tool cannot open the approved file through the workflow.",
   "reasonCodes.push-ref-changed": "push failed: run branch changed",
   "reasonCodes.push-url-unverified": "push failed: push URL could not be verified",
   "reasonCodes.push-url-changed": "push failed: remote URL changed",

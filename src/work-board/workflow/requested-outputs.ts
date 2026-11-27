@@ -14,7 +14,7 @@ import { isWorkspaceGlob } from "../template-graph.js";
 import { type HostGit, configuredWorkflowPush, executeWorkflowPush, isWorkflowPush } from "./host-git.js";
 import { holdDir, realWithin } from "./owned-fs.js";
 import type { RunRef } from "./stage-workspace.js";
-import { copySeedFiles, hashSeedFile } from "./workspace-seed.js";
+import { hashSeedFile } from "./workspace-seed.js";
 
 export type OutputRefusal = "output-not-declared" | "remote-not-configured" | "too-many" | "args-too-large"
   | "file-outside-workspace" | "file-unreadable" | "needs-human-gate";
@@ -136,7 +136,7 @@ export function stageOutputIntake(hooks: RequestedOutputHooks, scope: Omit<Outpu
 export type GovernedOutputCall = (input: {
   output: RequestedOutput; args: Record<string, unknown>; root: string; surface: WebContents;
   recheck: () => Promise<boolean>;
-}) => Promise<OutputExecution["status"]>;
+}) => Promise<OutputExecution["status"] | "output-file-unbound">;
 
 export function createRequestedOutputHooks(git: HostGit, invoke: GovernedOutputCall): RequestedOutputHooks {
   return {
@@ -148,26 +148,19 @@ export function createRequestedOutputHooks(git: HostGit, invoke: GovernedOutputC
       if (!canExecute()) return { id, status: "failed", detail: "output-execution-interrupted" };
       if (isWorkflowPush(decl)) return { id, ...await executeWorkflowPush(git, workspace.repository, run.runId, args, canExecute) };
       if (!approvalSurface || approvalSurface.isDestroyed()) return { id, status: "denied", detail: "user-keyboard-required" };
-      const recheck = async () => {
-        if (!canExecute() || approvalSurface.isDestroyed()) return false;
-        if (!files?.length) return true;
-        try { return canonicalWorkflowJson(await outputFiles(workspace.root, files.map(file => file.path))) === canonicalWorkflowJson(files); }
-        catch { return false; }
-      };
-      if (!await recheck()) return { id, status: "failed", detail: "output-file-changed" };
-      // The target sees only copies of the approved bytes in its working folder, even if the stage folder is edited during the call.
+      if (files?.length) {
+        try {
+          const current = await outputFiles(workspace.root, files.map(file => file.path));
+          if (canonicalWorkflowJson(current) !== canonicalWorkflowJson(files)) return { id, status: "failed", detail: "output-file-changed" };
+        } catch { return { id, status: "failed", detail: "output-file-changed" }; }
+      }
+      // External handlers have no contract for opening a host-bound file operand.
+      if (files?.length || decl.kind === "upload") return { id, status: "failed", detail: "output-file-unbound" };
+      const recheck = async () => canExecute() && !approvalSurface.isDestroyed();
       const root = await mkdtemp(join(tmpdir(), "ave-output-"));
       try {
-        if (files?.length) {
-          try {
-            const source = holdDir(await realpath(workspace.root));
-            const target = holdDir(await realpath(root));
-            const copy = await copySeedFiles(source, target, files.map(file => file.path),
-              new Map(files.map(file => [file.path, file.sha256])), false, MAX_OUTPUT_FILE_BYTES);
-            if (canonicalWorkflowJson(copy) !== canonicalWorkflowJson(files)) throw new OutputFileError("file-unreadable");
-          } catch { return { id, status: "failed", detail: "output-file-changed" }; }
-        }
         const status = await invoke({ output, args, root, surface: approvalSurface, recheck });
+        if (status === "output-file-unbound") return { id, status: "failed", detail: status };
         return { id, status, ...(status === "failed" ? { detail: "output-execution-failed" } : {}) };
       } finally {
         await rm(root, { recursive: true, force: true }).catch(() => undefined);

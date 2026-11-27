@@ -167,3 +167,52 @@ it("a recorded tool uses the deciding window for its fresh permission check and 
     await h.cleanup();
   }
 });
+
+it.each(["manifest", "upload", "declared operand", "conventional operand"] as const)("refuses an unbound file argument from a %s", async (kind) => {
+  const { governedWorkflowOutput } = await import("../../boot/steps/workflow-output-invocation.js");
+  const { approvalSurfaceRegistry } = await import("../../permissions/approval-surface-registry.js");
+  const { ToolExecutor } = await import("../../tools/executor.js");
+  const h = await stageRunHarness();
+  const owner = makeMockWebContents();
+  const shown = deferred<ApprovalRequest>();
+  owner.send.mockImplementation((channel: string, request: ApprovalRequest) => {
+    if (channel === IPC_APPROVAL_REQUEST) shown.resolve(request);
+  });
+  const gate = new ApprovalGate(sessionId => approvalSurfaceRegistry.resolve(sessionId));
+  try {
+    const decl = { ...DECLARATION, kind: kind === "upload" ? "upload" : DECLARATION.kind } as const;
+    const path = join(h.dir, "report.txt");
+    writeFileSync(path, "Approved bytes");
+    const args = kind === "declared operand" ? { document: { source: path } } : { path };
+    const opened: string[] = [];
+    const execute = vi.fn(async (input: typeof args) => {
+      writeFileSync(path, "Later bytes");
+      opened.push(readFileSync(String(input.document?.source ?? input.path), "utf8"));
+      return { output: "Sent", isError: false };
+    });
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({ name: decl.toolName, source: "mcp", mcpServerId: decl.ownerId,
+      description: "Send a report", category: "write", jsonSchema: { type: "object" },
+      ...(kind === "declared operand" && { pathFields: ["document.source"] }),
+      execute: input => execute(input as typeof args) }));
+    const manager = new PermissionManager(join(h.dir, "permissions.json"));
+    manager.setMode("strict");
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, new AuditLogger());
+    const hooks = createRequestedOutputHooks(createHostGit(), governedWorkflowOutput(registry, executor));
+    const run = { itemId: 1, runId: "file-delivery", runKey: "file-delivery" };
+    const request = await hooks.accept({ stage: stageOf("review", { requestedOutputs: [decl] }), workspaceRoot: h.dir, run,
+      raw: { toolName: decl.toolName, owner: decl.owner, ownerId: decl.ownerId, args, summary: "Send report",
+        ...(kind === "manifest" && { files: ["report.txt"] }) } });
+    if (!request.ok) throw new Error(request.code);
+    const dispatch = hooks.execute({ run, stageId: "review", output: request.output, approvalSurface: owner as never,
+      workspace: { root: h.dir }, canExecute: () => true });
+    const card = await Promise.race([shown.promise, dispatch.then(() => undefined)]);
+    if (card) gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac }, owner as never);
+    await expect(dispatch).resolves.toMatchObject({ status: "failed", detail: "output-file-unbound" });
+    expect(execute).not.toHaveBeenCalled();
+    expect(opened).toEqual([]);
+  } finally {
+    gate.disposeAll();
+    await h.cleanup();
+  }
+});

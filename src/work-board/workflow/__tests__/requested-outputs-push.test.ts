@@ -1,8 +1,11 @@
-import { appendFileSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import { appendFileSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { en } from "../../../i18n/messages/en.js";
 import { ko } from "../../../i18n/messages/ko.js";
+import * as hostGitLaunch from "../../../shared/host-git.js";
 import { canonicalWorkflowJson, outputHashOf } from "../../../shared/workflow-template-output.js";
 import { configuredWorkflowPush, createHostGit, executeWorkflowPush, type HostGit } from "../host-git.js";
 import { runBranch } from "../workspace-layout.js";
@@ -12,6 +15,7 @@ const RUN_ID = "approved-run";
 const REF = `refs/heads/${runBranch(RUN_ID)}`;
 const fixtures: ReturnType<typeof gitFixture>[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const fixture of fixtures.splice(0)) await fixture.done();
 });
 
@@ -57,6 +61,83 @@ it("a push to a configured remote sends only ave/workflow/<run> to the same-name
   expect(x.refs(x.one)).toBe(REF);
   expect(x.fixture.userGit(x.one, "rev-parse", REF)).toBe(args.sha);
   expect(x.refs(x.two)).toBe("");
+});
+
+it("sends no configured default push option to a receiver that advertises push options", async () => {
+  const x = setup();
+  x.git("config", "--add", "push.pushOption", "unapproved-repository-option");
+  const runner = createHostGit({ env: { ...x.fixture.env, GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "push.pushOption", GIT_CONFIG_VALUE_0: "unapproved-command-option" } });
+  x.fixture.userGit(x.one, "config", "receive.advertisePushOptions", "true");
+  const trace = join(x.fixture.base, "packets");
+  const launch = hostGitLaunch.spawnHostGitIfWorkspaceFree;
+  vi.spyOn(hostGitLaunch, "spawnHostGitIfWorkspaceFree").mockImplementation((cwd, program, args, options, deadline) =>
+    launch(cwd, program, args, args.includes("push") ? { ...options, env: { ...options.env, GIT_TRACE_PACKET: trace } } : options, deadline));
+  const binding = await x.bind({ remote: "origin" }, runner);
+  expect(binding).toBeDefined();
+  expect((await x.push(binding ?? {}, runner)).status).toBe("done");
+  const packets = readFileSync(trace, "utf8");
+  expect(packets).toContain("push-options");
+  expect(packets).not.toContain("unapproved-");
+  expect(x.refs(x.one)).toBe(REF);
+});
+
+it("refuses an HTTP header configured for the approved URL before starting the transport", async () => {
+  const x = setup();
+  const url = "https://example.test/repo";
+  x.git("remote", "set-url", "origin", url);
+  const binding = await x.capture();
+  x.git("config", `http.${url}.extraHeader`, "X-Unapproved: fixture");
+  await expect(x.bind()).resolves.toBeUndefined();
+  const runner = wrap(x, async (command, next) => command[0] === "push" ? { code: 0, stdout: "", stderr: "" } : next());
+  await expect(x.push(binding, runner)).resolves.toEqual({ status: "failed", detail: "push-url-unverified" });
+});
+
+it("refuses a configured remote named like the approved literal URL", async () => {
+  const x = setup();
+  const binding = await x.capture();
+  x.git("config", `remote.${binding.url}.url`, x.two);
+  await expect(x.push(binding)).resolves.toEqual({ status: "failed", detail: "push-url-unverified" });
+  empty(x);
+});
+
+it.each(["retargets the symlink", "replaces the repository at the same path"])("refuses a parked local endpoint when it %s", async (change) => {
+  const x = setup();
+  if (change === "retargets the symlink") {
+    const alias = join(x.fixture.base, "approved-endpoint");
+    symlinkSync(x.one, alias, "junction");
+    x.git("remote", "set-url", "origin", alias);
+    const binding = await x.capture();
+    unlinkSync(alias);
+    symlinkSync(x.two, alias, "junction");
+    expect(x.git("remote", "get-url", "--push", "origin")).toBe(binding.url);
+    await expect(x.push(binding)).resolves.toEqual({ status: "failed", detail: "push-url-unverified" });
+    empty(x);
+  } else {
+    const binding = await x.capture();
+    const moved = join(x.fixture.base, "former-endpoint.git");
+    renameSync(x.one, moved);
+    renameSync(x.two, x.one);
+    await expect(x.push(binding)).resolves.toEqual({ status: "failed", detail: "push-url-unverified" });
+    expect(x.refs(x.one)).toBe("");
+    expect(x.refs(moved)).toBe("");
+  }
+});
+
+it("rechecks the local repository identity at process launch", async () => {
+  const x = setup();
+  const binding = await x.capture();
+  const moved = join(x.fixture.base, "former-endpoint.git");
+  const runner = wrap(x, (command, next) => {
+    if (command[0] === "push") {
+      renameSync(x.one, moved);
+      renameSync(x.two, x.one);
+    }
+    return next();
+  });
+  await expect(x.push(binding, runner)).resolves.toEqual({ status: "failed", detail: "push-url-unverified" });
+  expect(x.refs(x.one)).toBe("");
+  expect(x.refs(moved)).toBe("");
 });
 
 it("a request that names an unknown remote, or a URL, is refused remote-not-configured, which has an en and a ko message, and nothing is sent", async () => {
@@ -152,16 +233,17 @@ it("a request that carries its own url is refused", async () => {
   empty(x);
 });
 
-it("the git call of a push is given the compared URL and the one refspec, and no remote name", async () => {
+it("the git call pushes the approved SHA to the bound branch using the compared URL", async () => {
   const x = setup();
+  const binding = await x.capture();
   const runner = wrap(x, async (args, next) => {
     if (args[0] === "push") {
-      expect(args.slice(-2)).toEqual([x.one, `${REF}:${REF}`]);
+      expect(args.slice(-2)).toEqual([binding.localEndpoint?.path, `${binding.sha}:${REF}`]);
       expect(args).not.toContain("origin");
     }
     return next();
   });
-  expect((await x.push(await x.capture(), runner)).status).toBe("done");
+  expect((await x.push(binding, runner)).status).toBe("done");
 });
 
 it("a remote whose URL is changed in the repository after the compare and before git runs still pushes to the approved URL and nothing reaches the new one", async () => {
@@ -203,6 +285,93 @@ it("the approved Git ref cannot move between the final verification and transpor
   });
   expect((await x.push(args, runner)).status).toBe("done");
   expect(x.fixture.userGit(x.one, "rev-parse", REF)).toBe(args.sha);
+});
+
+it("cancels a push waiting on its final guard when the prepared lock process exits", async () => {
+  const x = setup();
+  const binding = await x.capture();
+  writeFileSync(join(x.repo, "new"), "Different payload");
+  x.fixture.commitAll("A later commit");
+  const guardReached = deferred<void>();
+  const resumeGuard = deferred<void>();
+  const callbackReturned = deferred<void>();
+  const prepared = deferred<Exclude<ReturnType<typeof hostGitLaunch.spawnHostGitIfWorkspaceFree>, string>>();
+  const launch = hostGitLaunch.spawnHostGitIfWorkspaceFree;
+  vi.spyOn(hostGitLaunch, "spawnHostGitIfWorkspaceFree").mockImplementation((...args) => {
+    const child = launch(...args);
+    if (typeof child !== "string" && args[2].includes("update-ref")) prepared.resolve(child);
+    return child;
+  });
+  const real = x.real;
+  let pushStarted = false;
+  const runner: HostGit = { ...real, run: (cwd, command, options) => {
+    if (command[0] === "update-ref" && options?.holdPreparedRef) {
+      const holdPreparedRef = options.holdPreparedRef;
+      return real.run(cwd, command, { ...options, holdPreparedRef: async (...args) => {
+        try { await holdPreparedRef(...args); } finally { callbackReturned.resolve(); }
+      } });
+    }
+    if (command[0] === "config") {
+      guardReached.resolve();
+      return resumeGuard.promise.then(() => real.run(cwd, command, options));
+    }
+    if (command[0] === "push") pushStarted = true;
+    return real.run(cwd, command, options);
+  } };
+  const outcome = x.push(binding, runner);
+  try {
+    await guardReached.promise;
+    const lock = await prepared.promise;
+    const exited = once(lock, "exit");
+    lock.stdin?.end("abort\n");
+    await exited;
+    x.git("update-ref", REF, "HEAD");
+  } finally {
+    resumeGuard.resolve();
+    await callbackReturned.promise;
+  }
+  await expect(outcome).resolves.toMatchObject({ status: "failed", detail: "push-ref-changed" });
+  expect(pushStarted).toBe(false);
+  empty(x);
+});
+
+it("terminates a running transport before returning from a lost prepared lock", async () => {
+  const x = setup();
+  const binding = await x.capture();
+  type Child = Exclude<ReturnType<typeof hostGitLaunch.spawnHostGitIfWorkspaceFree>, string>;
+  const prepared = deferred<Child>();
+  const transportReady = deferred<Child>();
+  const launch = hostGitLaunch.spawnHostGitIfWorkspaceFree;
+  let transportExited = false;
+  vi.spyOn(hostGitLaunch, "spawnHostGitIfWorkspaceFree").mockImplementation((cwd, program, args, options, deadline) => {
+    if (args.includes("push")) {
+      const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? "node";
+      const transport = launch(cwd, node, ["-e", "console.log('ready'); setInterval(() => {}, 1_000)"], options, deadline);
+      if (typeof transport !== "string") {
+        transport.on("exit", () => { transportExited = true; });
+        transport.stdout?.once("data", () => transportReady.resolve(transport));
+      }
+      return transport;
+    }
+    const child = launch(cwd, program, args, options, deadline);
+    if (typeof child !== "string" && args.includes("update-ref")) prepared.resolve(child);
+    return child;
+  });
+  const outcome = x.push(binding);
+  const transport = await transportReady.promise;
+  const lock = await prepared.promise;
+  try {
+    lock.stdin?.end("abort\n");
+    await expect(outcome).resolves.toMatchObject({ status: "failed", detail: "push-ref-changed" });
+    expect(transportExited).toBe(true);
+  } finally {
+    if (!transportExited) {
+      const exit = once(transport, "exit");
+      transport.kill("SIGKILL");
+      await exit;
+    }
+  }
+  empty(x);
 });
 
 describe.each(["insteadOf", "pushInsteadOf"] as const)("%s", rule => {

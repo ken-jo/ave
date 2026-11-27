@@ -6843,6 +6843,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.file-unreadable": "요청한 파일을 제한 범위 내에서 읽을 수 없습니다.",
   "reasonCodes.needs-human-gate": "출력 요청에는 사용자 승인이 필요합니다.",
   "reasonCodes.output-file-changed": "요청한 파일이 기록된 뒤 변경되었습니다.",
+  "reasonCodes.output-file-unbound": "이 도구는 워크플로에서 승인한 파일을 열 수 없습니다.",
   "reasonCodes.push-ref-changed": "푸시 실패: 실행 브랜치가 변경됨",
   "reasonCodes.push-url-unverified": "푸시 실패: 푸시 URL을 확인할 수 없음",
   "reasonCodes.push-url-changed": "푸시 실패: 원격 URL이 변경됨",

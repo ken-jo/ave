@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
+import { selectDeclaredPathValues } from "../../shared/dotted-field-value.js";
 import { canonicalWorkflowJson } from "../../shared/workflow-template-output.js";
 import type { ToolExecutor } from "../../tools/executor.js";
+import { withPathFieldDefaults } from "../../tools/pipeline/path-extraction.js";
 import type { ToolRegistry } from "../../tools/registry.js";
 import type { GovernedOutputCall } from "../../work-board/workflow/requested-outputs.js";
+
+const STANDARD_FILE_FIELDS = ["path", "file_path", "filePath"] as const;
 
 export function governedWorkflowOutput(registry: ToolRegistry, executor: ToolExecutor): GovernedOutputCall {
   return async ({ output, args, root, surface, recheck }) => {
@@ -11,6 +15,13 @@ export function governedWorkflowOutput(registry: ToolRegistry, executor: ToolExe
     const tool = registry.findByName(decl.toolName);
     if (!tool || (decl.owner === "server" ? tool.source !== "mcp" || tool.mcpServerId !== decl.ownerId
       : decl.owner !== "plugin" || tool.source !== "plugin" || tool.pluginId !== decl.ownerId)) return "denied";
+    const input = withPathFieldDefaults(tool, args);
+    const pathFields = [...STANDARD_FILE_FIELDS, ...tool.pathFields ?? [], ...Object.keys(tool.pathFieldDefaults ?? {})];
+    try {
+      if (pathFields.some(field => selectDeclaredPathValues(input, field).some(value => value !== undefined && value !== null))) {
+        return "output-file-unbound";
+      }
+    } catch { return "output-file-unbound"; }
     const sessionId = `workflow-output:${randomUUID()}`;
     updateApprovalSurface({ kind: "attach", sessionId, surface });
     try {
