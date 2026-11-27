@@ -139,6 +139,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
     const recentResults = document.getElementById("work-review-recent-results");
     const states = new Map();
     const submissions = new Map();
+    let submissionOrder = 0;
     let reviews = new Map();
     let scope;
     let revoked = false;
@@ -524,7 +525,11 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
     function recordRecent(submission) {
       const entry = element("div");
       entry.className = "work-review-recent-entry";
-      const description = element("p", [submission.heading, submission.title, resultText(submission.result)].filter(Boolean).join(" · "));
+      entry.dataset.submissionOrder = String(submission.order);
+      const description = element("p", [
+        submission.heading, submission.title, message(submission.actionLabel),
+        workText("resultRevision", { revision: submission.revision }), resultText(submission.result),
+      ].filter(Boolean).join(" · "));
       description.className = "work-review-feedback";
       description.toggleAttribute("data-error", resultIsError(submission.result));
       const dismiss = element("button", workText("dismissResult"));
@@ -535,10 +540,11 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
         (recentResults.querySelector("button") ?? reload).focus();
       });
       entry.append(description, dismiss);
-      recentResults.append(entry);
+      const next = Array.from(recentResults.children).find(child => Number(child.dataset.submissionOrder) > submission.order);
+      recentResults.insertBefore(entry, next ?? null);
       syncRecentHeading();
     }
-    function reconcileSubmissions() {
+    function reconcileSubmissions(replacedKey) {
       const current = new Set();
       for (const [identity, item] of reviews) current.add(currentSubmission(item, identity));
       for (const [key, submission] of submissions) {
@@ -549,17 +555,18 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
           recordRecent(submission);
           submission.movedToRecent = true;
         }
-        if (!current.has(submission)) submissions.delete(key);
+        if (key === replacedKey || !current.has(submission)) submissions.delete(key);
       }
     }
     function beginOwnerAction() {
       recentResults.replaceChildren();
       syncRecentHeading();
     }
-    function supersedePriorResults(identity) {
+    function supersedePriorResults(identity, replacedKey) {
       for (const submission of submissions.values()) {
         if (submission.identity === identity) submission.superseded = true;
       }
+      reconcileSubmissions(replacedKey);
     }
     function clear(text) {
       for (const state of states.values()) {
@@ -587,19 +594,20 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       clear(section.hidden ? undefined : text);
       forgetReviews();
     }
-    async function submit(state, item, reviewedScope, decision, read, note, formSchedule) {
+    async function submit(state, item, reviewedScope, actionLabel, decision, read, note, formSchedule) {
       const submittedBinding = { ...item.binding, input: read() };
       const { identity } = state;
-      const key = submissionKey(identity, reviewRevision(item));
+      const revision = reviewRevision(item);
+      const key = submissionKey(identity, revision);
       const stage = item.kind === "requested-output" ? reviews.get(outputPeerIdentity(item)) : undefined;
       const title = item.kind === "create-and-run" ? submittedBinding.input.title : stage?.review.title ?? reviewTitle(item);
       const routine = item.review.routine?.title;
       const submission = {
-        identity, submittedBinding, heading: reviewHeading(item, formSchedule),
+        identity, submittedBinding, heading: reviewHeading(item, formSchedule), actionLabel, revision, order: ++submissionOrder,
         title: routine && routine !== title ? routine + " · " + title : title,
         result: { status: "pending" }, dismissedFor: new Set(),
       };
-      supersedePriorResults(identity);
+      supersedePriorResults(identity, key);
       submissions.set(key, submission);
       if (note) {
         delete state.draft.changeNote;
@@ -699,8 +707,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       const { identity } = state;
       const available = () => reviewActions(item, currentSubmission(item, identity), linkedOutput, fields.valid());
       function resetCard(open) {
-        supersedePriorResults(identity);
-        submissions.delete(submissionKey(identity, reviewRevision(item)));
+        supersedePriorResults(identity, submissionKey(identity, reviewRevision(item)));
         state.draft = {};
         state.card.content = undefined;
         update(latestSnapshot);
@@ -716,15 +723,15 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
         control.addEventListener("click", () => {
           if (isCurrent() && !control.disabled && !control.hidden) {
             beginOwnerAction();
-            onClick();
+            onClick(label);
           }
         });
         actions.append(control);
         return control;
       }
-      const decide = (decision, note) => void submit(state, item, reviewedScope, decision, fields.read, note, formSchedule);
-      const approve = button("approve", approveLabels[item.kind], () => {
-        if (available().approve) decide(item.kind === "join" ? "retry_merge" : item.deny === "reject" ? "approve" : undefined);
+      const decide = (label, decision, note) => void submit(state, item, reviewedScope, label, decision, fields.read, note, formSchedule);
+      const approve = button("approve", approveLabels[item.kind], label => {
+        if (available().approve) decide(label, item.kind === "join" ? "retry_merge" : item.deny === "reject" ? "approve" : undefined);
       });
       let note;
       let requestChanges;
@@ -734,22 +741,21 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
         note.maxLength = boot.maxNoteLength;
         note.parentElement.hidden = !draft.changeNoteOpen;
         note.addEventListener("input", () => { draft.changeNote = note.value; });
-        requestChanges = button("request_changes", "workflowTemplates.requestChanges", () => {
+        requestChanges = button("request_changes", "workflowTemplates.requestChanges", label => {
           if (note.parentElement.hidden) {
             supersedePriorResults(identity);
             draft.changeNoteOpen = true;
             note.parentElement.hidden = false;
             note.focus();
-            reconcileSubmissions();
             syncCards();
           } else if (note.value.trim()) {
-            decide("request_changes", note.value.trim());
+            decide(label, "request_changes", note.value.trim());
             note.value = "";
             note.parentElement.hidden = true;
           }
         });
       }
-      const negative = item.deny === "reject" ? button("reject", rejectLabels[item.kind], () => decide("reject"))
+      const negative = item.deny === "reject" ? button("reject", rejectLabels[item.kind], label => decide(label, "reject"))
         : button("dismiss", "common.cancel", () => resetCard(false));
       const reopen = item.kind === "create-and-run" || item.kind === "schedule-attachment"
         ? button("reopen", "tailnetWorkReviews.newDecision", () => resetCard(true)) : undefined;

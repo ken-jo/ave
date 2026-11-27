@@ -3099,6 +3099,58 @@ describe("phone work reviews", () => {
     }
   });
 
+  it.each([
+    ["en", "Plan approval", "Approve", "Reject", "Revision 2", "Revision 3", "Decision refused (plan_mismatch).", "Decision submitted."],
+    ["ko", "계획 승인", "승인", "거절", "리비전 2", "리비전 3", "결정이 거부되었습니다(plan_mismatch).", "결정을 제출했습니다."],
+  ])("lists both plan decisions in submission order in %s", async (locale, kind, approve, reject, firstRevision, secondRevision, refusal, success) => {
+    const title = 'Quarterly report <img src="review-title">';
+    const first = { ...views[0], review: { ...views[0].review, title, revision: 2, planNumber: 3 } };
+    const second = {
+      ...first, binding: { ...first.binding, input: { runId, planHash: refreshedPlanHash } },
+      review: { ...first.review, plan: "Revised plan", planHash: refreshedPlanHash, revision: 3, planNumber: 4 },
+    };
+    const reviews: TailnetWorkReview[] = [first];
+    const approval = deferred<TailnetWorkDecisionResponse>();
+    const rejection = deferred<TailnetWorkDecisionResponse>();
+    const { browser, received } = await openPhoneReviews(reviews, decision => {
+      if (decision.kind !== "plan") throw new Error("Expected plan decision");
+      return decision.input.decision === "approve" ? approval.promise : rejection.promise;
+    }, locale);
+    const descriptions = () => Array.from(recentPhoneResults(browser)?.querySelectorAll("p") ?? []);
+    try {
+      phoneAction(browser, "plan", "approve").click();
+      await vi.waitFor(() => expect(received).toHaveLength(1));
+      reviews[0] = second;
+      refreshPhoneReviews(browser);
+      await vi.waitFor(() => expect(phoneAction(browser, "plan", "reject").disabled).toBe(false));
+      phoneAction(browser, "plan", "reject").click();
+      await vi.waitFor(() => expect(received).toHaveLength(2));
+      expect(received.map(decision => decision.input)).toEqual([
+        { runId, planHash: first.review.planHash, decision: "approve" },
+        { runId, planHash: refreshedPlanHash, decision: "reject" },
+      ]);
+      reviews.length = 0;
+      refreshPhoneReviews(browser);
+      await vi.waitFor(() => expect(reviewStatus(browser, "plan")).toBeUndefined());
+
+      rejection.resolve({ ok: true, kind: "plan", status: "rejected" });
+      await vi.waitFor(() => expect(descriptions()).toHaveLength(1));
+      approval.resolve({ ok: false, error: "plan_mismatch" });
+      await vi.waitFor(() => expect(descriptions()).toHaveLength(2));
+      expect(descriptions().map(entry => entry.textContent)).toEqual([
+        [kind, title, approve, firstRevision, refusal].join(" · "),
+        [kind, title, reject, secondRevision, success].join(" · "),
+      ]);
+      for (const entry of descriptions()) {
+        expect(Array.from(entry.childNodes, child => child.nodeType)).toEqual([browser.window.Node.TEXT_NODE]);
+      }
+    } finally {
+      approval.resolve({ ok: false, error: "plan_mismatch" });
+      rejection.resolve({ ok: true, kind: "plan", status: "rejected" });
+      browser.window.close();
+    }
+  });
+
   it("shows a settled stage rejection on the matching output that appeared during submission", async () => {
     const reviews: TailnetWorkReview[] = [views[1]];
     const result = deferred<TailnetWorkDecisionResponse>();
@@ -3158,6 +3210,11 @@ describe("phone work reviews", () => {
       }
       button.click();
       expect(reviewStatus(browser, "plan")).toBe("Submitting decision…");
+      if (action === "reject") {
+        expect(recentPhoneResults(browser)?.querySelector("p")?.textContent).toBe(
+          "Plan approval · Review plan · Approve · Revision 0 · The work item changed after this plan was made. Request changes to plan it again.",
+        );
+      }
       await vi.waitFor(() => expect(reviewStatus(browser, "plan")).toBe("Decision submitted."));
       expect(phoneAction(browser, "plan", "reject").disabled).toBe(true);
       expect(received[1]).toMatchObject({ kind: "plan", input: { ...views[0].binding.input, decision: action } });
@@ -3342,6 +3399,11 @@ describe("phone work reviews", () => {
       expect(received).toHaveLength(1);
       phoneAction(browser, kind, "reopen").click();
       expect(document.querySelector(`[data-work-kind="${kind}"] input`)).toHaveProperty("value", initial);
+      expect(reviewStatus(browser, kind)).toBe("");
+      const description = kind === "create-and-run"
+        ? "Create and run · First report · Create and run · Revision 2 · Decision submitted."
+        : "Attach a new schedule · Workflow run · Approve and attach · Revision 2 · Decision submitted.";
+      expect(recentPhoneResults(browser)?.querySelector("p")?.textContent).toBe(description);
       approve.click();
       fill(second);
       phoneAction(browser, kind, "approve").click();

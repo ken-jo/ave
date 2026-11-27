@@ -167,6 +167,7 @@ export const en = {
   "tailnetWorkReviews.refused": "Decision refused ({code}).",
   "tailnetWorkReviews.dismissResult": "Dismiss message",
   "tailnetWorkReviews.recentResults": "Recent results",
+  "tailnetWorkReviews.resultRevision": "Revision {revision}",
   "tailnetWorkReviews.projectReset": "The selected project is no longer available. Review the current project selection before starting.",
   "tailnetWorkReviews.logout": "Disconnect",
   "tailnetWorkReviews.connecting": "Connecting…",

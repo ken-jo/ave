@@ -168,6 +168,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "tailnetWorkReviews.submissionUnknown": "결과를 확인할 수 없습니다. 다시 제출하기 전에 현재 업무 상태를 확인하세요.",
   "tailnetWorkReviews.dismissResult": "메시지 닫기",
   "tailnetWorkReviews.recentResults": "최근 결과",
+  "tailnetWorkReviews.resultRevision": "리비전 {revision}",
   "tailnetWorkReviews.projectReset": "선택한 프로젝트를 더 이상 사용할 수 없습니다. 시작하기 전에 현재 프로젝트 선택을 확인하세요.",
   "tailnetWorkReviews.refused": "결정이 거부되었습니다({code}).",
   "tailnetWorkReviews.logout": "연결 해제",
