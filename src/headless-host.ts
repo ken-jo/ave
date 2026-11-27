@@ -28,6 +28,7 @@ import {
   runExecTurn,
   waitForExecRelease,
 } from "./main/exec-mode.js";
+import { runWithSkillMemoryOwnerInput } from "./memory/skill-memory-service.js";
 import {
   initializeWorkloadBroker,
   isActiveWorkloadBrokerCwd,
@@ -155,6 +156,7 @@ export async function main(): Promise<number> {
     const { services } = runtime;
     return await runExecTurn({
       conversationLoop: services.conversationLoop,
+      runWithSkillMemoryOwnerInput,
       permissionManager: services.conversationLoop.permissionManager,
       approvalGate: services.approvalGate,
       settingsService: services.settingsService,

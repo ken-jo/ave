@@ -1,5 +1,6 @@
 import type { OpenJoinIpcResult } from "../../shared/work-board-types.js";
 import type { MemoryMapApi } from '../../shared/memory-map.js';
+import type { SkillMemoryApi } from "../../shared/skill-memory-types.js";
 import type { PermissionAuditIntegrity } from "../../audit/audit-schema.js";
 import type { ScheduleAttachment, ScheduleAttachmentRequest, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, WorkflowTemplateConfirmResult } from "../../shared/workflow-template-types.js";
 import type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
@@ -814,6 +815,7 @@ export type AvePreloadApi = {
   starredAdd: (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) => Promise<{ ok: boolean; entry?: { id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string } }>;
   starredRemove: (opts: { id?: string; sessionId?: string; messageIndex?: number }) => Promise<{ ok: boolean }>;
   memoryMap: MemoryMapApi;
+  skillMemory: SkillMemoryApi;
   memoryGetDetail: (id: string, opts?: ProjectQueryOptions, contentRevision?: string) => Promise<MemoryDetailResult>;
   memoryGetSummaries: (opts?: ProjectQueryOptions) => Promise<MemorySummariesResult>;
 

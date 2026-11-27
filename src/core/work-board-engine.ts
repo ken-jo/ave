@@ -120,17 +120,24 @@ function planReadOnlyToolNames(registry: ToolRegistry): string[] {
     .map((tool) => tool.name);
 }
 
+interface WorkBoardProgressProject {
+  projectRoot?: string;
+  runId?: string;
+}
+
 export interface WorkBoardEngineDeps {
   store: WorkBoardStore;
   /** The runner is unavailable until parent-loop construction; report early calls as errors. */
   getRunner: () => SubAgentRunner | undefined;
   /** A named profile's model applies to both child phases. */
   getAgentProfile?: (name: string) => Promise<LoadedAgentProfile | null>;
-  emitProgress: (event: WorkBoardRunEvent, project?: { projectRoot?: string }) => void;
+  emitProgress: (event: WorkBoardRunEvent, project?: WorkBoardProgressProject, isOwnerCurrent?: () => boolean) => void;
   /** Optional transcript storage retains context across restarts and reruns; absence skips persistence. */
   transcriptStorage?: TranscriptStorage;
   /** Invoke learning only after successful persistence; hook failures must not fail a completed run. */
   onRunComplete?: (info: { itemId: number; title: string; projectRoot?: string; projectName?: string }) => void | Promise<void>;
+  skillMemory?: Pick<import("../memory/skill-memory-service.js").SkillMemoryService,
+    "linkWorkBoardSession" | "unlinkWorkBoardSession" | "queueWorkBoard">;
   /** What a template run needs beyond the ordinary run's deps. Absent: an item made from a template refuses to run. */
   workflow?: Omit<StageRunEngineDeps, "store" | "getRunner" | "getAgentProfile" | "emit" | "holdItem" | "releaseItem">;
 }
@@ -469,6 +476,11 @@ interface PlanPhaseInput {
   recorder: RunRecorder;
 }
 
+function attendedWorkBoardAuthority(opts: Pick<RunItemOptions, "approvalSurface" | "authority">): (() => boolean) | undefined {
+  const { approvalSurface, authority } = opts;
+  return approvalSurface != null && authority === undefined ? () => !approvalSurface.isDestroyed() : undefined;
+}
+
 export function createWorkBoardEngine(
   deps: WorkBoardEngineDeps,
 ): WorkBoardEngine {
@@ -493,15 +505,22 @@ export function createWorkBoardEngine(
   /** Allow one survey per window so duplicate clicks cannot incur duplicate child runs. */
   const briefingInFlight = new Set<WorkBoardBriefingKind>();
 
-  const emit = (event: Omit<WorkBoardRunEvent, "at">, project?: { projectRoot?: string }): void => {
-    emitProgress({ ...event, at: new Date().toISOString() }, project);
+  const attendedWorkflows = new Map<number, { runId: string; isCurrent: () => boolean }>();
+  const emit = (event: Omit<WorkBoardRunEvent, "at">, project?: WorkBoardProgressProject): void => {
+    const attended = attendedWorkflows.get(event.itemId);
+    const progress = { ...event, at: new Date().toISOString() };
+    if (attended && project?.runId === attended.runId) emitProgress(progress, project, attended.isCurrent);
+    else emitProgress(progress, project);
   };
 
   const stageRuns = deps.workflow
     ? createStageRunEngine({
         ...deps.workflow, store, getRunner, getAgentProfile, emit,
         holdItem: (itemId) => { inFlight.add(itemId); },
-        releaseItem: (itemId) => { inFlight.delete(itemId); },
+        releaseItem: (itemId) => {
+          inFlight.delete(itemId);
+          attendedWorkflows.delete(itemId);
+        },
       })
     : null;
 
@@ -529,6 +548,8 @@ export function createWorkBoardEngine(
     try {
       return await body();
     } finally {
+      const child = executingChildByItem.get(itemId);
+      if (child) deps.skillMemory?.unlinkWorkBoardSession(child);
       executingChildByItem.delete(itemId);
       executingTurnByItem.delete(itemId);
       cancelRequested.delete(itemId);
@@ -584,9 +605,14 @@ export function createWorkBoardEngine(
         inFlight.delete(itemId);
         return { status: "error", reason: "template-run-unavailable", reasonCode: "template-run-unavailable" };
       }
+      const isOwnerCurrent = opts.templateSource.kind === "local-create-and-run" ? attendedWorkBoardAuthority(opts) : undefined;
       return stageRuns.start(itemId, {
         source: opts.templateSource, authority: opts.authority, remoteProvisional: opts.remoteProvisional,
-        onRunAllocated: opts.onTemplateRunAllocated, onStarted: opts.onTemplateStarted,
+        onRunAllocated: isOwnerCurrent ? runId => {
+          attendedWorkflows.set(itemId, { runId, isCurrent: isOwnerCurrent });
+          opts.onTemplateRunAllocated?.(runId);
+        } : opts.onTemplateRunAllocated,
+        onStarted: opts.onTemplateStarted,
       });
     }
     return guarded(itemId, opts.approvalSurface, () => runItemGuarded(itemId, item, opts));
@@ -750,7 +776,7 @@ export function createWorkBoardEngine(
 
   /** Run the approved plan. The decision is already stored and the run already marked executing; full execution scope still passes
    * every tool call through its own permission tree (CHILD → H). */
-  async function executePhase(itemId: number, item: WorkItem, plan: string, profile: LoadedAgentProfile | null, runner: SubAgentRunner, recorder: RunRecorder): Promise<RunItemResult> {
+  async function executePhase(itemId: number, item: WorkItem, plan: string, profile: LoadedAgentProfile | null, runner: SubAgentRunner, recorder: RunRecorder, isOwnerCurrent?: () => boolean): Promise<RunItemResult> {
     const originSessionId = workBoardOriginSessionId(itemId);
     emit({ itemId, phase: "executing" });
 
@@ -768,6 +794,8 @@ export function createWorkBoardEngine(
     });
     // Which turn received a steer: read when the loop acknowledges the injection (see steerRun).
     executingTurnByItem.set(itemId, executeActivity.lastTurn);
+    const skillRoot = isOwnerCurrent ? item.projectRoot : undefined;
+    let skillSessionId: string | undefined;
     const execResult = await runner.spawn(
       {
         title: `Execute: ${item.title}`,
@@ -780,6 +808,10 @@ export function createWorkBoardEngine(
       },
       {
         onLinked: ({ childSessionId }) => {
+          if (skillRoot) {
+            skillSessionId = childSessionId;
+            deps.skillMemory?.linkWorkBoardSession(itemId, childSessionId, skillRoot);
+          }
           // The host's own record of this run's execute child: steer and stop resolve it here, never from renderer input.
           executingChildByItem.set(itemId, childSessionId);
           emit({ itemId, phase: "executing", runSessionId: childSessionId });
@@ -821,7 +853,7 @@ export function createWorkBoardEngine(
 
     const output = execResult.summary;
 
-    await store.setRunResult(itemId, {
+    const saved = await store.setRunResult(itemId, {
       runStatus: "completed",
       plan,
       output,
@@ -833,6 +865,10 @@ export function createWorkBoardEngine(
       phase: "done",
       runSessionId: execResult.childSessionId,
     });
+    if (saved.status === "updated" && item.runId && skillSessionId === execResult.childSessionId && isOwnerCurrent) {
+      void deps.skillMemory?.queueWorkBoard(saved.item, item.runId, [execResult.childSessionId], isOwnerCurrent)
+        .catch(() => log.warn("Work board skill memory evidence was unavailable"));
+    }
     await recorder.flush();
     // Persist success before fire-and-forget learning; memory append failure must not change run status.
     if (onRunComplete) {
@@ -931,7 +967,8 @@ export function createWorkBoardEngine(
         const resolved = await resolveProfile(planApproval.agentName);
         if (!resolved.ok) throw new Error(resolved.reason);
         if (status === "approved") {
-          return await executePhase(itemId, item, plan, resolved.profile, runner, recorder);
+          return await executePhase(itemId, item, plan, resolved.profile, runner, recorder,
+            attendedWorkBoardAuthority(opts));
         }
         const planTools = planReadOnlyToolNames(runner.parentToolRegistry());
         if (planTools.length === 0) throw new Error(PLAN_TOOLS_EMPTY);

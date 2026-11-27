@@ -1,4 +1,7 @@
 import { showNativeMessage, pickNativeFiles, pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
+import { isAttendedSkillMemoryOwner, registerSkillMemoryHandlers } from "./skill-memory.js";
+import { securitySettingsGestures } from "../security-settings-gesture.js";
+import { runWithSkillMemoryOwnerInput } from "../../memory/skill-memory-service.js";
 import { registerMemoryMapHandlers } from './memory-map.js';
 import { registerWindowsMemoryMapHandlers } from './memory-map-win32.js';
 import { createWindowsSessionsSearchHandler } from './sessions-search-win32.js';
@@ -1078,10 +1081,14 @@ export function registerChatHandlers(deps: IpcDeps): void {
       }
     }
     try {
-      const result = await group.commandPort.execute(DESKTOP_CONVERSATION_ACTOR, {
-        kind: "message.send",
-        payload,
-      });
+      const send = () => group.commandPort.execute(DESKTOP_CONVERSATION_ACTOR, { kind: "message.send", payload });
+      const claimed = (payload as { skillMemoryOwnerInput?: unknown } | null)?.skillMemoryOwnerInput === true;
+      const admitted = claimed ? parseChatSendPayload(payload) : undefined;
+      const verifiedInput = admitted?.ok && admitted.payload.inputOrigin === "user-keyboard"
+        && isAttendedSkillMemoryOwner(e) && securitySettingsGestures.consume(e.sender, {
+          channel: CHANNELS.chat.send, payload: admitted.payload.input,
+        }) !== null;
+      const result = await (verifiedInput ? runWithSkillMemoryOwnerInput(admitted.payload.input, send) : send());
       return interrupted ? flagInterruptedRefusal(result) : result;
     } catch (error) {
       if (error instanceof Error && error.message === STREAMING_ACTIVE) {
@@ -1612,6 +1619,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return { ok: true, filePath: res.filePath };
   });
 
+  registerSkillMemoryHandlers(deps);
+
   // Row edits share one channel so title, archive, and other row changes address the same conversation.
   ipcMain.handle(CHANNELS.chat.sessionUpdate, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.sessionUpdate, e); return UNAUTHORIZED_FRAME; }
@@ -1648,7 +1657,25 @@ export function registerChatHandlers(deps: IpcDeps): void {
       fields.unreadSince = raw.unread ? now : null;
     }
     if (Object.keys(fields).length === 0) return { ok: false, error: "no-fields" };
-    await memoryManager.sessions.updateSessionRowFields(raw.sessionId, fields);
+    const sessionId = raw.sessionId;
+    const skillMemory = deps.conversationLoop.deps?.skillMemory;
+    const metadata = fields.archivedAt && skillMemory ? memoryManager.sessions.loadSessionMetadata(sessionId) : undefined;
+    const holder = metadata ? groupHolding(sessionId) : undefined;
+    const projectRoot = metadata?.projectRoot ?? holder?.loop.getSessionProjectRoot();
+    const archiveAuthority = projectRoot && !metadata?.archivedAt
+      && (!holder || (!holder.loop.hasActiveTurn() && !holder.surfaceRuntime.activity.isBusy()
+        && groupTargetContents(holder.owner) === e.sender))
+      && isAttendedSkillMemoryOwner(e) && securitySettingsGestures.consume(e.sender, {
+        channel: CHANNELS.chat.sessionUpdate,
+        payload: { sessionId, archived: true },
+      });
+    await memoryManager.sessions.updateSessionRowFields(sessionId, fields);
+    if (archiveAuthority && projectRoot && fields.archivedAt
+      && memoryManager.sessions.loadSessionMetadata(sessionId)?.archivedAt === fields.archivedAt) {
+      const { sender, senderFrame } = e;
+      await skillMemory?.queueArchive(sessionId, projectRoot, `archive:${createDlpSafeUuid()}`,
+        () => !sender.isDestroyed() && senderFrame === sender.mainFrame);
+    }
     return { ok: true };
   });
 

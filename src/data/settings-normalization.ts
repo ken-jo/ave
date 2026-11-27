@@ -1198,6 +1198,9 @@ export function normalizeFeatureFlags(input: unknown): FeatureFlags {
   if (typeof obj.idleMemoryConsolidation === "boolean") {
     result.idleMemoryConsolidation = obj.idleMemoryConsolidation;
   }
+  if (typeof obj.automaticSkillMemory === "boolean") {
+    result.automaticSkillMemory = obj.automaticSkillMemory;
+  }
   if (typeof obj.subAgentAutonomousWake === "boolean") {
     result.subAgentAutonomousWake = obj.subAgentAutonomousWake;
   }

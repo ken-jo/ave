@@ -422,6 +422,40 @@ function linkingRunner(): {
 }
 
 describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)", () => {
+  it("passes the locally approved execute child to skill memory after the board commits Done", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-board-review-"));
+    const store = new WorkBoardStore(join(dir, "board.json"));
+    try {
+      const created = await store.create({ title: "Attended run", detail: "Verify the build output.", projectRoot: dir });
+      if (created.status !== "created") throw new Error("Could not create the item");
+      const { runner, release, linked } = linkingRunner();
+      const emitProgress = vi.fn();
+      const skillMemory = {
+        linkWorkBoardSession: vi.fn(),
+        unlinkWorkBoardSession: vi.fn(),
+        queueWorkBoard: vi.fn(async (_item: object, _runId: string, _sessions: readonly string[]) => {
+          const current = await store.get(created.itemId);
+          expect(current).toMatchObject({ status: "found", item: { runStatus: "completed" } });
+          expect(emitProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: "done" }), undefined);
+        }),
+      };
+      const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress, skillMemory });
+      const run = runThroughDecision(engine, store, created.itemId, "approve", { surface: { isDestroyed: () => false } as never });
+      const child = await within(linked, "the child to link");
+      expect(skillMemory.linkWorkBoardSession).toHaveBeenCalledWith(created.itemId, child, dir);
+      release();
+      expect((await run).status).toBe("completed");
+      expect(skillMemory.unlinkWorkBoardSession).toHaveBeenCalledWith(child);
+      expect(skillMemory.queueWorkBoard)
+        .toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: created.itemId }), expect.any(String), [child], expect.any(Function));
+      const [queued] = skillMemory.queueWorkBoard.mock.results;
+      if (!queued) throw new Error("The skill memory queue result was not recorded");
+      await within(queued.value, "the skill memory queue to read the committed item");
+    } finally {
+      await cleanupTmpDir(dir);
+    }
+  });
+
   it("emits the execute child id on an executing event and persists it while the run is still executing", async () => {
     const { store, cleanup } = tempBoard();
     try {

@@ -165,6 +165,7 @@ const MAIN_FLOOR: readonly string[] = [
   `${FIXTURE_HOME}/.ave/agent-plugin-trust/`,
   `${FIXTURE_HOME}/.ave/packages/ledger.json`,
   `${FIXTURE_HOME}/.ave/packages/mcp-installs.json`,
+  `${FIXTURE_HOME}/.ave/skill-memory/`,
   `${FIXTURE_HOME}/.ave/skill-approvals.json`,
   USER_DATA,
   `${FIXTURE_HOME}/.zshenv`,

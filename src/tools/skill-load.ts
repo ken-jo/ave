@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { t } from "../i18n/index.js";
 import { createDynamicTool, type Tool } from "./base.js";
 import type { LoadedSkill, SkillStore } from "../main/skill-store.js";
-import { SKILL_SELECTOR_ALLOWLIST } from "../main/skill-store.js";
+import { SKILL_SELECTOR_ALLOWLIST, skillApprovalMaterial } from "../main/skill-store.js";
 import { parsePluginSkillSelector } from "../shared/plugin-skill-selector.js";
 import { renderSkillReadResult, type SkillOverlay } from "../main/skill-overlay.js";
 import type { SkillApprovalsStore } from "../main/skill-approvals-store.js";
@@ -16,7 +16,8 @@ import { turnExtensionPolicyContext, unattendedApprovalDenial } from "../shared/
 import { mcpSkillSelector, parseMcpSkillSelector } from "../shared/mcp-skill-selector.js";
 import { errorMessage } from "../shared/error-message.js";
 import { createLogger } from "../lib/logger.js";
-import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { bindSkillMemoryInvocation } from "../memory/skill-memory-service.js";
+import { hashSkillMaterial } from "../main/skill-approvals-store.js";
 const log = createLogger("ave");
 
 export interface SkillLoadEvent {
@@ -24,18 +25,6 @@ export interface SkillLoadEvent {
   description: string;
   // Attribute window-wide skill badges to the loading conversation so other tiles cannot inherit them.
   sessionId: string;
-}
-
-// Bind approval to body plus bundled names and sizes shown in the fence; resource bytes require separate reads.
-// Keep flat-body and bundled-digest encodings in separate key spaces while preserving existing flat approvals.
-function approvalMaterial(skill: Pick<LoadedSkill, "body" | "resources" | "mcpOwner">): string {
-  if (skill.mcpOwner) return `${skill.mcpOwner.fingerprint}|${sha256Hex(skill.body)}`;
-  if (skill.resources.length === 0) return skill.body;
-  const manifest = skill.resources
-    .map((resource) => `${resource.path}:${resource.bytes}`)
-    .sort()
-    .join("\n");
-  return `${sha256Hex(skill.body)}|${sha256Hex(manifest)}`;
 }
 
 // Namespace bundled approval records so digest material cannot collide with flat bodies; retain legacy flat keys.
@@ -167,7 +156,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       // Editable skill bodies and bundled names/sizes must match approved material; any change requires approval again.
       const alreadyApproved = await deps.approvals.isApproved(
         approvalRecordKey(skill),
-        approvalMaterial(skill),
+        skillApprovalMaterial(skill),
       );
       if (!alreadyApproved) {
         if (!invocationCurrent()) return interrupted();
@@ -219,7 +208,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       if (!alreadyApproved) {
         if (!skillCurrent()) return skillChanged();
         try {
-          await deps.approvals.approve(approvalRecordKey(skill), approvalMaterial(skill), {
+          await deps.approvals.approve(approvalRecordKey(skill), skillApprovalMaterial(skill), {
             refresh: async () => invocationCurrent() && await refreshController(),
             isCurrent: () => invocationCurrent() && skillCurrent(),
           });
@@ -235,6 +224,9 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       // Record approved identity in this conversation's overlay; skill_read reacquires and compares generation rather than retaining the lease.
       if (!invocationCurrent()) return interrupted();
       deps.overlay.register(sessionId, skill);
+      if (skill.sourceDigest && !skill.mcpOwner && !skill.pluginOwner && !skill.agentPluginOwner) {
+        await bindSkillMemoryInvocation(sessionId, skill.name, skill.filePath, skill.sourceDigest, hashSkillMaterial(skillApprovalMaterial(skill)));
+      }
 
       deps.emit({
         name: skill.name,

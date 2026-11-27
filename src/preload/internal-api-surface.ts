@@ -1,3 +1,5 @@
+import type { SkillMemoryApi } from "../shared/skill-memory-types.js";
+import { consumeSkillMemoryOwnerInput } from "./skill-memory-input.js";
 import { memoryMapApiSurface } from './memory-map-api-surface.js';
 import type { MemoryDetailResult, MemorySummariesResult } from "../shared/memory-detail.js";
 import type { HookTrustListResult, HookTrustReviewRequest, HookTrustReviewResult } from "../shared/hook-trust-review.js";
@@ -414,6 +416,10 @@ export function buildInternalApiSurface() {
 
   // Plugin-owned OAuth removed host-owned provider auth IPC bridges.
 
+  skillMemory: {
+    list: () => ipcRenderer.invoke(CHANNELS.skillMemory.list),
+    decide: input => ipcRenderer.invoke(CHANNELS.skillMemory.decide, input),
+  } satisfies SkillMemoryApi,
   memoryMap: memoryMapApiSurface,
   memoryGetDetail: async (id: string, opts?: MemoryProjectOptions, contentRevision?: string): Promise<MemoryDetailResult> =>
     contentRevision !== undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts, contentRevision)
@@ -927,11 +933,11 @@ export function buildInternalApiSurface() {
   acknowledgeRoutineFailure: async (routineId: string, failureFiredAt: string) =>
     ipcRenderer.invoke(ROUTINES.acknowledgeFailure, routineId, failureFiredAt) as Promise<{ ok: true } | { ok: false; error: string }>,
   addRoutine: async (input: Omit<import("../shared/routines-types.js").AddRoutineInput, "createdBy">) =>
-    ipcRenderer.invoke(ROUTINES.add, input) as Promise<
+    ipcRenderer.invoke(ROUTINES.add, input, ...(consumeSkillMemoryOwnerInput("routine", input.prePrompt) ? [true] : [])) as Promise<
       { ok: true; routine: import("../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }
     >,
   updateRoutine: async (id: string, patch: import("../shared/routines-types.js").RoutineEditPatch) =>
-    ipcRenderer.invoke(ROUTINES.update, id, patch) as Promise<
+    ipcRenderer.invoke(ROUTINES.update, id, patch, ...(consumeSkillMemoryOwnerInput("routine", patch.prePrompt) ? [true] : [])) as Promise<
       { ok: true; routine: import("../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }
     >,
   pauseRoutine: async (id: string) =>

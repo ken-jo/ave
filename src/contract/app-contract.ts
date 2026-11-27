@@ -136,6 +136,10 @@ export const CHANNELS = {
     // renderer before it mounts so both sides resolve against the same one.
     getModelCatalog: "ave:llm:get-model-catalog",
   },
+  skillMemory: {
+    list: "ave:skill-memory:list",
+    decide: "ave:skill-memory:decide",
+  },
   memoryMap: {
     get: "ave:memory-map:graph-get",
     build: "ave:memory-map:graph-build",

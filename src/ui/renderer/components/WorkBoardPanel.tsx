@@ -890,6 +890,7 @@ export function WorkItemCreateDialog({ api, project, onClose, onCreated }: Creat
               onChange={(e) => setDetail(e.target.value)}
               rows={3}
               data-testid="work-board-create-detail"
+              data-skill-memory-source="work-board"
             />
           </Label>
           <div className="grid gap-3 sm:grid-cols-2">

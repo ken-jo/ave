@@ -3,6 +3,7 @@ import type { RewindMode, RewindResult } from "../shared/code-rewind.js";
 import type { TurnReviewDecisionRequest, TurnReviewResult } from "../shared/turn-change-review.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 import { ipcRenderer } from "electron";
+import { consumeSkillMemoryOwnerInput } from "./skill-memory-input.js";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
 import {
   captureUserKeyboardIntent,
@@ -56,6 +57,7 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
       input,
       attachments,
       inputOrigin,
+      ...(inputOrigin === "user-keyboard" && consumeSkillMemoryOwnerInput("chat", input) ? { skillMemoryOwnerInput: true } : {}),
       ...(personaPromptId ? { personaPromptId } : {}),
       ...(options?.pluginPromptId ? { pluginPromptId: options.pluginPromptId } : {}),
       ...(options?.sendRequestId !== undefined ? { sendRequestId: options.sendRequestId } : {}),

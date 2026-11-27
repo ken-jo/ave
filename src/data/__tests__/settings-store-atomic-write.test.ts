@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { directHostFetchTransport } from "../../__tests__/support/host-fetch-transport.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { SettingsService, SettingsWriteRefusedError, settingsFilePath } from "../settings-store.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { evaluateHostFetch, runHostFetchHops } from "../../main/host-fetch-guard.js";
@@ -399,4 +400,26 @@ it("does not publish a settings change before its write succeeds", async () => {
   fail(new Error("disk full"));
   await expect(writing).rejects.toThrow("disk full");
   expect(observer).not.toHaveBeenCalled();
+});
+
+it("notifies feature listeners after each save without waiting for asynchronous listeners", async () => {
+  const finishOff = deferred<void>();
+  const observed: (boolean | undefined)[] = [];
+  service.onChanged("features", async () => {
+    if (service.getSaved("features")?.automaticSkillMemory === false) await finishOff.promise;
+  });
+  service.onChanged("features", () => {
+    const saved = service.getSaved("features")?.automaticSkillMemory;
+    expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8")).features.automaticSkillMemory).toBe(saved);
+    observed.push(saved);
+  });
+  const off = service.patch({ features: { automaticSkillMemory: false } });
+  const on = service.patch({ features: { automaticSkillMemory: true } });
+  try {
+    await vi.waitFor(() => expect(observed).toEqual([false, true]));
+    await Promise.all([off, on]);
+  } finally {
+    finishOff.resolve();
+    await Promise.all([off, on]);
+  }
 });

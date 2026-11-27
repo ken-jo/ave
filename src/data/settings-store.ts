@@ -10,8 +10,10 @@ import {
   normalizeCorpCaCommonName,
 } from "../shared/corp-ca-common-name.js";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { UUID_PATTERN } from "../shared/uuid.js";
 import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { commitUnderAdmission } from "../shared/admission-commit.js";
 import { withInstalledStateMutation } from "../main/installed-state-mutation.js";
@@ -476,6 +478,8 @@ export interface FeatureFlags {
   /** When true, idle IDLE_SCAN may send eligible active global and current explicit-project raw memories to the
    * configured LLM to update a derived long-term overview. Default false: manual consolidation remains available. */
   idleMemoryConsolidation?: boolean;
+  /** Review verified skill invocations at task or session completion. */
+  automaticSkillMemory?: boolean;
   /** When true, a queued background sub-agent Message may start a new parent turn while that exact parent
    * session is loaded and idle. Default false: the durable mailbox joins the user's next turn instead. */
   subAgentAutonomousWake?: boolean;
@@ -847,6 +851,7 @@ export class SettingsWriteRefusedError extends Error {
 
 export class SettingsService {
   private readonly changeListeners = new Map<keyof AppSettings, Set<() => void>>();
+  private savedSkillMemoryGeneration: string | undefined;
   private providerConfigRevision = 0;
   private readonly secretGenerations = new Map<string, number>();
   private observedSecretFingerprint: string | null | "unreadable" | undefined;
@@ -992,6 +997,14 @@ export class SettingsService {
 
   get<K extends keyof AppSettings>(key: K): AppSettings[K] {
     return structuredClone(this.settings[key]);
+  }
+
+  getSaved<K extends keyof AppSettings>(key: K): AppSettings[K] {
+    return structuredClone(this.saved[key]);
+  }
+
+  getSavedSkillMemoryGeneration(): string | undefined {
+    return this.savedSkillMemoryGeneration;
   }
 
   async set<K extends keyof AppSettings>(key: K, value: AppSettings[K], admission?: SettingsWriteAdmission): Promise<void> {
@@ -1907,6 +1920,11 @@ export class SettingsService {
         features: { ...DEFAULT_SETTINGS.features, ...normalizedFeatures },
         appliedMigrations,
       };
+      if (Object.hasOwn(parsed, "skillMemoryGeneration")) {
+        const generation: unknown = parsed.skillMemoryGeneration;
+        this.savedSkillMemoryGeneration = typeof generation === "string" && UUID_PATTERN.test(generation)
+          ? generation : randomUUID();
+      }
       return {
         settings: result,
         writeBack: needsAppearanceWriteBack || migrationWriteBack,
@@ -1944,11 +1962,7 @@ export class SettingsService {
           for (const write of admitted) write.apply(this.settings);
           const featuresChanged = !isDeepStrictEqual(this.saved.features, snapshot.features);
           this.saved = snapshot;
-          if (featuresChanged) {
-            for (const listener of this.changeListeners.get("features") ?? []) {
-              try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
-            }
-          }
+          if (featuresChanged) this.notifyFeaturesSaved();
           if (this.withheldSecretKeys.size > 0) void this.deleteWithheldSecrets();
           for (const write of batch) write.resolve();
         } catch (err) {
@@ -1959,6 +1973,14 @@ export class SettingsService {
       }
     } finally {
       this.saving = false;
+    }
+  }
+
+  private notifyFeaturesSaved(): void {
+    for (const listener of this.changeListeners.get("features") ?? []) {
+      try {
+        void Promise.resolve(listener()).catch(error => log.warn({ error }, "settings change listener failed"));
+      } catch (error) { log.warn({ error }, "settings change listener failed"); }
     }
   }
 
@@ -1989,7 +2011,14 @@ export class SettingsService {
   }
 
   private async saveSettings(settings: AppSettings): Promise<void> {
-    writeUtf8FileAtomicSync(this.settingsPath, JSON.stringify(settings, null, 2));
+    const wasOff = this.saved.features?.automaticSkillMemory === false;
+    const isOff = settings.features?.automaticSkillMemory === false;
+    // Fence old evidence at the settings commit, even if journal cleanup fails or the host exits.
+    const skillMemoryGeneration = isOff && !wasOff
+      ? randomUUID()
+      : this.savedSkillMemoryGeneration ?? (wasOff || isOff ? randomUUID() : undefined);
+    writeUtf8FileAtomicSync(this.settingsPath, JSON.stringify({ ...settings, skillMemoryGeneration }, null, 2));
+    this.savedSkillMemoryGeneration = skillMemoryGeneration;
   }
 
 }

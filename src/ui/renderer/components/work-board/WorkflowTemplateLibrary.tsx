@@ -363,7 +363,7 @@ function WorkflowStartForm({ api, template, version, project, projects, existing
             </select>
           </Label>
           <Label className="grid gap-1">{t("workBoard.detailFieldLabel")}
-            <Textarea rows={3} maxLength={16384} value={detail} onChange={event => setDetail(event.target.value)} />
+            <Textarea rows={3} maxLength={16384} value={detail} data-skill-memory-source="work-board" onChange={event => setDetail(event.target.value)} />
           </Label>
         </fieldset>
       )}
