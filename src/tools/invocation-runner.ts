@@ -12,7 +12,7 @@ import { isConfinedHostShellExecution } from "../permissions/host-shell-executio
 import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { criticalDeleteTargetFor } from "../permissions/sensitive-paths.js";
 import { windowsObligationsApply } from "../permissions/admitted-obligation.js";
-import { assertWindowsTarget, observeWindowsTarget, sealsHold, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
+import { assertWindowsTarget, fileTargetSealFailureKey, observeWindowsTarget, sealsHold, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
 import { hookChainFromDispatch } from "./pipeline/audit-entries.js";
 import { runScriptHook, scriptHookRefusal } from "./invocation-services.js";
 import { HookInputMutationRequest, attachHookControlContext, hookInfluenceContext } from "../hooks/hook-influence.js";
@@ -1591,7 +1591,7 @@ async function runToolInvocationAttempt(
     const canonicalTargets: Array<{ filePath: string; canonicalPath: string; runtimePath: string }> = [];
     const isWindows = process.platform === "win32";
     let unsealedRuleSubject = isWindows ? scopedRuleSubjectFor(tool, finalInput, executionCwd) : undefined;
-    const resolveFileTarget = (filePath: string) => {
+    const resolveFileTarget = (filePath: string, localRequired = false) => {
       const isEdit = unsealedRuleSubject?.kind === "edit";
       const resolvedTarget = (runtimePath: string) => ({
         filePath, canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath,
@@ -1611,7 +1611,7 @@ async function runToolInvocationAttempt(
       } catch (error) {
         rethrowLocalityFailure(error);
         // A share, device or mapped path still needs a policy decision. Only a proven local route can issue a seal.
-        if (isEdit || !(error instanceof Error) || !("code" in error) || error.code !== "ENETWORKSHAREPATH" ||
+        if (localRequired || isEdit || !(error instanceof Error) || !("code" in error) || error.code !== "ENETWORKSHAREPATH" ||
             ("incomplete" in error && error.incomplete === true)) throw error;
         const reached = localDriveAlias(filePath) !== undefined ? resolvePathForPolicy(filePath)
           : "reached" in error && typeof error.reached === "string" ? error.reached : filePath;
@@ -2569,7 +2569,7 @@ async function runToolInvocationAttempt(
     const pathEffect = requiredTier(invocationCategory);
     const nativeFileWrite = isCanonicalFileTool(tool) && invocationCategory === "write" && !brokeredFileRouteSelected;
     const initialPathJudgment = () => withLocalityDecision(() => {
-      const expected = targetFilePaths.map(resolveFileTarget);
+      const expected = targetFilePaths.map((path) => resolveFileTarget(path));
       canonicalTargets.push(...expected.map(({ target }) => target));
       const sensitiveTarget = brokeredFileRouteSelected ? undefined : PermissionManager.checkPathScope({
         canonicalTargets,
@@ -2609,7 +2609,7 @@ async function runToolInvocationAttempt(
         pathFor: (path) => pathsByOperand.get(targetKey(path)),
         ...(nativeFileWrite ? { entryFor: (path: string) => entries.get(targetKey(path)) } : {}),
         verify: () => withLocalityDecision(() => {
-          const current = targetFilePaths.map(resolveFileTarget);
+          const current = expected.map(({ target, observation }) => resolveFileTarget(target.filePath, observation !== undefined));
           for (const [index, { target, observation }] of expected.entries()) {
             if (observation === undefined) continue;
             const actual = current[index]?.observation;
@@ -2974,7 +2974,7 @@ async function runToolInvocationAttempt(
     }
     if (isWindows && canonicalTargets.length > 0) {
       try { withLocalityDecision(() => assertFileTargetsUnchanged()); }
-      catch { return await denyFileTargets(changedTargetReason); }
+      catch (error) { return await denyFileTargets(t(fileTargetSealFailureKey(error))); }
     }
     if (hostTerminalReapproval && !authorization.humanApproved) {
       return await returnExecutionRouteFailure(new Error("Terminal reapproval requires an explicit human answer."));

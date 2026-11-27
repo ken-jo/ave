@@ -1,4 +1,4 @@
-import { isLocalityFailure, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
+import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { noteOwnedWrite, terminalFileEvidence, writtenFileIdentity, type WrittenFileIdentity } from "../main/terminal/changed-file-evidence.js";
 import { checkpointFileMutation, markCodeCheckpointUnavailable, type RecordCheckpointEffect } from "../memory/code-checkpoints.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -32,7 +32,7 @@ import { t } from "../i18n/index.js";
 import type { PathEffect } from "../permissions/allowed-directories.js";
 import { isPathAllowed } from "../permissions/allowed-directories.js";
 import { canonicalizePathForMatch, caseFoldForMatch, judgedPathNamesOpenedFile } from "../permissions/sensitive-paths.js";
-import { TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
+import { fileTargetSealFailureKey, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
 import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import type { ApprovalMemoryScope } from "../shared/permissions-events.js";
 import { consumeExecutionGrantForBuiltinToolInvocation } from "../permissions/execution-router.js";
@@ -365,7 +365,7 @@ abstract class FileTool<TSchema extends z.ZodTypeAny> extends ZodTool<TSchema> {
       return {
         ok: false,
         error: process.platform === "win32" && transport.kind === "local" && ctx.fileTargetSeal !== undefined
-          ? { output: t(isLocalityFailure(error) ? "be_executor.fileTargetUnverified" : "be_executor.fileTargetChanged"), isError: true }
+          ? { output: t(fileTargetSealFailureKey(error)), isError: true }
           : brokerFailureResult(errorMessage(error)),
       };
     }

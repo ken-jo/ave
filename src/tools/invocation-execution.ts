@@ -48,7 +48,7 @@ import {
 import { TOOL_RESULT_READ_MAX_CHARS } from "../shared/bounded-tool-output.js";
 import { TOOL_RESULT_CHUNK_READER_METADATA_KEY } from "./tool-result-chunk.js";
 import { t } from "../i18n/index.js";
-import type { TargetSeal } from "../permissions/target-seal.js";
+import { fileTargetSealFailureKey, type TargetSeal } from "../permissions/target-seal.js";
 import { createLogger } from "../lib/logger.js";
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
 import type { Tool } from "./base.js";
@@ -1006,9 +1006,13 @@ export async function executeAuthorizedToolInvocation(
     signal.throwIfAborted();
     if (context.fileTargetSeal) {
       try { context.fileTargetSeal.verify(); }
-      catch {
-        permissionResult = refusal("File target changed before execution.", RULE_PROVENANCE);
-        throw new Error(t("be_executor.fileTargetChanged"));
+      catch (error) {
+        const key = fileTargetSealFailureKey(error);
+        const reason = key === "be_executor.fileTargetUnverified"
+          ? "File target locality could not be verified before execution."
+          : "File target changed before execution.";
+        permissionResult = refusal(reason, RULE_PROVENANCE);
+        throw new Error(t(key));
       }
     }
     if (services.requirePermissionAuditChain) {

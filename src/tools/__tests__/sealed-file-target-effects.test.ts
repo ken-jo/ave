@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const hooks = vi.hoisted(() => ({
+  onAuthorized: undefined as (() => void) | undefined,
   onExecutionRefresh: undefined as (() => void) | undefined,
   beforeRename: undefined as ((source: string, target: string) => void) | undefined,
   unlinks: [] as string[],
@@ -28,6 +29,14 @@ vi.mock("node:fs/promises", async (original) => {
   };
 });
 vi.unmock("../../shared/windows-drive-locality.js");
+vi.mock("../invocation-authorization.js", async (original) => {
+  const actual = await original<typeof import("../invocation-authorization.js")>();
+  return { ...actual, authorizeToolInvocation: async (...args: Parameters<typeof actual.authorizeToolInvocation>) => {
+    const result = await actual.authorizeToolInvocation(...args);
+    hooks.onAuthorized?.();
+    return result;
+  } };
+});
 vi.mock("../../shared/chat-origin.js", async (original) => {
   const actual = await original<typeof import("../../shared/chat-origin.js")>();
   return { ...actual, refreshRemoteControllerBoundToSession: async (...args: Parameters<typeof actual.refreshRemoteControllerBoundToSession>) => {
@@ -43,6 +52,7 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { sealTargets } from "../../permissions/target-seal.js";
+import { localFs } from "../../shared/local-path-io.js";
 import { resolvePhysicalFilesystemPath } from "../../shared/shell-filesystem-path.js";
 import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
@@ -75,6 +85,7 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
   });
 
   afterEach(async () => {
+    hooks.onAuthorized = undefined;
     hooks.onExecutionRefresh = undefined;
     hooks.beforeRename = undefined;
     hooks.unlinks.length = 0;
@@ -97,6 +108,20 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
       executionCwd: cwd, sessionId: "sealed-target", permissionContext: { trustOrigin: "user-keyboard" },
     });
     return { result, execute };
+  }
+
+  function refuseRouteAt(path: string, refusal: "incomplete" | "share") {
+    if (refusal === "incomplete") {
+      const lstat = localFs.lstat;
+      vi.spyOn(localFs, "lstat").mockImplementation((verdict) => {
+        if (verdict.path === path) throw Object.assign(new Error("access denied"), { code: "EACCES" });
+        return lstat(verdict);
+      });
+    } else {
+      const readlink = localFs.readlink;
+      vi.spyOn(localFs, "readlink").mockImplementation((verdict) =>
+        verdict.path === path ? "\\\\server\\share\\sub" : readlink(verdict));
+    }
   }
 
   it("reads a local file when an unrelated project-write anchor moves", async () => {
@@ -200,14 +225,26 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     expect(hooks.unlinks.filter((name) => name.includes(".ave-tmp-"))).toEqual([]);
   });
 
-  it.each([false, true])("reports why a sealed write was refused (classifier unavailable: %s)", async (unavailable) => {
-    const path = join(project, "sub", "note.txt");
+  it.each([
+    ["changed", "be_executor.fileTargetChanged"],
+    ["helper unavailable", "be_executor.fileTargetUnverified"],
+    ["incomplete", "be_executor.fileTargetUnverified"],
+    ["share", "be_executor.fileTargetUnverified"],
+  ] as const)("reports why a sealed write was refused (%s)", async (refusal, key) => {
+    const alias = join(project, "alias");
+    symlinkSync(join(project, "sub"), alias, "junction");
+    const path = join(alias, "note.txt");
     const seal = sealTargets(() => resolvePhysicalFilesystemPath(path, project, 64));
-    if (unavailable) {
+    if (refusal === "helper unavailable") {
       setWindowsDriveQueryForTest(() => { throw windowsPathKindHelperUnavailable("No drive classification"); });
+    } else if (refusal === "changed") {
+      const replacement = join(project, "replacement");
+      mkdirSync(replacement);
+      writeFileSync(join(replacement, "note.txt"), "replacement");
+      unlinkSync(alias);
+      symlinkSync(replacement, alias, "junction");
     } else {
-      renameSync(path, join(project, "sub", "original.txt"));
-      symlinkSync(join(project, "sub", "original.txt"), path, "file");
+      refuseRouteAt(alias, refusal);
     }
 
     const result = await new WriteFileTool().execute({ path, content: "changed" }, {
@@ -215,10 +252,31 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     });
     expect(result).toMatchObject({
       isError: true,
-      output: t(unavailable ? "be_executor.fileTargetUnverified" : "be_executor.fileTargetChanged"),
+      output: t(key),
     });
     expect(hooks.opens).toEqual([]);
-    expect(readFileSync(path, "utf8")).toBe("before");
+    expect(readFileSync(join(project, "sub", "note.txt"), "utf8")).toBe("before");
+  });
+
+  it.each([
+    ["onAuthorized", "incomplete"],
+    ["onAuthorized", "share"],
+    ["onExecutionRefresh", "incomplete"],
+  ] as const)("reports a sealed route refusal at %s (%s)", async (stage, refusal) => {
+    const alias = join(project, "alias");
+    symlinkSync(join(project, "sub"), alias, "junction");
+    manager.setMode("allow");
+    const refuse = vi.fn(() => {
+      hooks[stage] = undefined;
+      refuseRouteAt(alias, refusal);
+    });
+    hooks[stage] = refuse;
+    const { result, execute } = await write("alias/note.txt", project);
+    expect(refuse).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ is_error: true, content: t("be_executor.fileTargetUnverified") });
+    expect(execute).not.toHaveBeenCalled();
+    expect(hooks.opens.filter((path) => path.endsWith("note.txt"))).toEqual([]);
+    expect(readFileSync(join(project, "sub", "note.txt"), "utf8")).toBe("before");
   });
 
   it("publishes a sealed write and closes the staging handle without deleting the destination", async () => {

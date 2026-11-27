@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { fileIdentityKey } from "../lib/file-identity.js";
-import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
+import { admitLocalPath, admitLocalRoute, isLocalityFailure, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 
 /**
  * What a judgment observed about its original operands, carried to each effect the judgment authorizes. `verify` observes
@@ -21,6 +21,12 @@ export class TargetIdentityChangedError extends Error {
   constructor() {
     super("Target identity changed");
   }
+}
+
+export function fileTargetSealFailureKey(error: unknown) {
+  const unverified = process.platform === "win32" && (isLocalityFailure(error) ||
+    (error instanceof Error && "code" in error && error.code === "ENETWORKSHAREPATH"));
+  return unverified ? "be_executor.fileTargetUnverified" : "be_executor.fileTargetChanged";
 }
 
 export interface WindowsTargetObservation {
