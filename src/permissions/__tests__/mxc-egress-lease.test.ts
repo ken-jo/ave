@@ -65,8 +65,9 @@ describe("container egress lease", () => {
   });
   it("refuses preparation when admission ends during the runtime await", async () => {
     const { invocation, relay } = await fixture();
-    const signal = egressInvocationAbortSignal(invocation.token)!;
-    const open = runtime.open.getMockImplementation()!;
+    const signal = egressInvocationAbortSignal(invocation.token);
+    const open = runtime.open.getMockImplementation();
+    if (!signal || !open) throw new Error("fixture missing abort signal or runtime open");
     runtime.open.mockImplementationOnce(async (...args) => {
       const opened = await open(...args);
       invocation.release();
