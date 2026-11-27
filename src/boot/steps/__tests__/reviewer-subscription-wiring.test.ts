@@ -347,7 +347,7 @@ it.each([true, false])("projects the winning focus observation for held settings
       get: <K extends keyof typeof settings>(key: K) => settings[key],
       getAll: () => settings,
       getSecret: vi.fn(),
-      hasStoredSecret: () => false,
+      hasStoredSecret: async () => false,
     };
     const provider: LLMProvider = { vendor: "claude", async *streamTurn() {} };
     const subscriptionProviderFactory = vi.fn(() => provider);
