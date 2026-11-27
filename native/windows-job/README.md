@@ -62,7 +62,7 @@ trailing control bytes, a lost owner, or a failed resume terminate the job with
 an `unconfirmed` verdict. The resume and an observed owner loss are decided
 under one lock: a loss seen first ends the run with the command still
 suspended, and a later one reaps the job. Older launchers reject the mode before starting a
-command. Inline requests continue through `--hold`.
+command. Legacy `--hold` admits inline requests and refuses pipe-backed requests.
 
 Call `spawnWindowsJobProcess` with an absolute executable path already selected
 by the shell resolver. Keep its stdin open until disposal; never expose that pipe
