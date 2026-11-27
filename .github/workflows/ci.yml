@@ -1067,6 +1067,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -PolicyReaderFixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build Windows path helper and fixture
         id: windows-path-kind-build
         if: steps.docs-impact.outputs.docs_only != 'true'
@@ -1149,6 +1151,7 @@ jobs:
           path: |
             ave/resources/windows-job/x64/ave-job.exe
             ave/resources/windows-job/x64/ave-job-query-failure.exe
+            ave/resources/windows-job/x64/ave-job-policy-reader-test.exe
             ave/resources/windows-path-kind/x64/ave-path-kind.exe
             ave/resources/windows-path-kind/x64/ave-path-kind.exe.build.json
             ave/resources/windows-path-kind/x64/ave-path-kind-hold-fixture.exe

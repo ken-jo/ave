@@ -42,7 +42,7 @@ import { z } from "zod";
 
 import { spawnWindowsJobProcess } from "../main/windows-job-launcher.js";
 import { t } from "../i18n/index.js";
-import type { HeldWindowsRun, WindowsHoldVerdict } from "../shared/windows-path-facts.js";
+import type { HeldWindowsPolicy, HeldWindowsRun, WindowsHoldVerdict } from "../shared/windows-path-facts.js";
 import {
   createDynamicTool,
   ZodTool,
@@ -1634,8 +1634,9 @@ export const backgroundShellManager = createManager();
 
 function bindForegroundShellHold(
   hold: HostShellSpawnDirectoryHold | undefined, child: ChildProcess, sessionId: string | undefined,
+  policy?: HeldWindowsPolicy,
 ): HeldWindowsRun | undefined {
-  const held = hold?.bind(child);
+  const held = policy === undefined ? hold?.bind(child) : hold?.bind(child, policy);
   if (held !== undefined) backgroundShellManager.registerHeldLauncher(sessionId, child, held);
   return held;
 }
@@ -4527,6 +4528,7 @@ async function spawnPowerShellInMxc(
       sandboxHome: sandboxHome.path,
       env: powerShellExecutionEnvironment(verified, powerShellLaunch.env),
       timeoutMs: resolveShellTimeoutMs(timeoutSeconds),
+      directoryHeld: cwdHold.stdio !== undefined,
       exists: existsSync,
     }, lifecycle));
     signal?.throwIfAborted();
@@ -4543,19 +4545,26 @@ async function spawnPowerShellInMxc(
     try {
       assertHostShellSpawnDirectory(spawnAuthorization);
       cwdHold.assertHeld();
-      const target = cwdHold.command(cmd, args);
+      const bindHeldPolicy = launch.bindHeldPolicy;
+      const holdStdio = cwdHold.stdio;
+      if (bindHeldPolicy !== undefined && holdStdio === undefined) throw new Error("Windows sandbox policy requires a directory hold");
+      const target = bindHeldPolicy === undefined ? cwdHold.command(cmd, args) : cwdHold.command(cmd, args, true);
       child = spawn(target.executable, target.args, {
         // The launcher runs from its own (per-machine, admin-only) directory, so
         // nothing in the workspace sits beside it; the container's working
         // directory travels in the request.
         cwd: win32Path.dirname(cmd),
-        stdio: cwdHold.stdio ?? ["ignore", "pipe", "pipe"],
+        stdio: holdStdio === undefined ? ["ignore", "pipe", "pipe"] : bindHeldPolicy === undefined ? holdStdio : [...holdStdio, "pipe", "pipe"],
         shell: false,
         windowsHide: true,
         // The launcher's own environment: the container's is in the request.
         env: buildSafeChildEnv({}),
       }) as PipedChild;
-      held = bindForegroundShellHold(cwdHold, child, sessionId);
+      const launcher = child;
+      held = bindForegroundShellHold(cwdHold, launcher, sessionId, bindHeldPolicy === undefined ? undefined : {
+        bindReader: (pid, onFailure) => bindHeldPolicy(launcher, pid, onFailure),
+        onFailure: () => lifecycle.revoke(),
+      });
     } catch (error) {
       throw error instanceof HostShellDirectoryHoldError ? error : launcherError(error);
     }
@@ -4670,7 +4679,7 @@ async function spawnPowerShellInMxc(
       }));
       closed = checkedShellClose(spawned, waitForClose, run);
       if (run === undefined) trackManagedChildProcess(spawned, { killProcessGroup: false, label: MXC_SHELL_LABEL });
-      launch.bindChild(spawned);
+      if (launch.bindHeldPolicy === undefined) launch.bindChild(spawned);
       collector = createOutputCollector(spawned, { captureFactory: outputCaptureFactory, progress, observation });
       spawned.stdout.on("data", parserResponse === undefined ? collector.collect : parserResponse.collect);
       // The parser's stderr is drained, never kept.
