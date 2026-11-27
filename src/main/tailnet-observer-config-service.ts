@@ -110,7 +110,7 @@ function proposalToFile(
     ...(config.enabled ? { enabled: true } : {}),
     // Authorization is always a chosen value, never a negative: the form has no "no boundary" position, so persisting it is persisting what was picked.
     authorization: config.authorization,
-    ...(config.port === DEFAULT_TAILNET_OBSERVER_PORT ? {} : { port: config.port }),
+    port: config.port,
     ...(config.controllerEnabled ? { controllerEnabled: true } : {}),
     ...(config.pairedSharingEnabled ? { pairedSharingEnabled: true } : {}),
     ...web,

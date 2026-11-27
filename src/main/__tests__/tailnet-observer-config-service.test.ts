@@ -92,6 +92,23 @@ function enabledView(overrides: Partial<TailnetObserverConfigView> = {}): Tailne
 }
 
 describe("Tailnet observer configuration service", () => {
+  it.each(["apply", "guidedSetup"] as const)("round-trips the explicit default port through %s", async action => {
+    const port = DEFAULT_TAILNET_OBSERVER_PORT;
+    let file: TailnetObserverConfigFile = { enabled: true, authorization: TAILNET_IDENTITY, port };
+    const settings = service({
+      readConfigFile: async () => file,
+      writeConfigFile: async next => { file = next; },
+      listeningPort: port,
+      environment: readyEnvironment({ serveConfigured: true, serveTargetPort: port }),
+    });
+
+    if (action === "apply") await settings.apply((await settings.snapshot()).saved);
+    else await expect(settings.guidedSetup()).resolves.toMatchObject({ ok: true, port });
+
+    expect(file.port).toBe(port);
+    await expect(settings.snapshot()).resolves.toMatchObject({ saved: { port }, provenance: { port: "file" } });
+  });
+
   it("preserves the previously saved listener port", async () => {
     const savedPort = 46_173;
     const writeConfigFile = vi.fn();
@@ -162,6 +179,7 @@ describe("Tailnet observer configuration service", () => {
     expect(writeConfigFile).toHaveBeenCalledWith({
       enabled: true,
       authorization: APP_CAPABILITY,
+      port: DEFAULT_TAILNET_OBSERVER_PORT,
       pairedSharingEnabled: true,
     });
   });
@@ -237,7 +255,7 @@ describe("Tailnet observer configuration service", () => {
 
       // Not `{}` any more: the boundary has no implicit default, so a file that named none would be invalid the moment the listener is enabled. Starting over
       // therefore writes the default boundary out explicitly.
-      expect(writeConfigFile).toHaveBeenCalledWith({ authorization: TAILNET_IDENTITY });
+      expect(writeConfigFile).toHaveBeenCalledWith({ authorization: TAILNET_IDENTITY, port: DEFAULT_TAILNET_OBSERVER_PORT });
     });
   });
 
@@ -363,6 +381,7 @@ describe("Tailnet observer configuration service", () => {
       expect(writeConfigFile).toHaveBeenCalledWith({
         enabled: true,
         authorization: TAILNET_IDENTITY,
+        port: DEFAULT_TAILNET_OBSERVER_PORT,
         pairedSharingEnabled: true,
         webEnabled: true,
         webOrigin: WEB_ORIGIN,
