@@ -5,12 +5,20 @@ use std::os::windows::io::AsRawHandle;
 use std::process::exit;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 const MAX_POLICY: u32 = 4 * 1024 * 1024;
 const PIPE_INSTANCES: u32 = 4;
 const PIPE_PREFIX: &str = r"\\.\pipe\ave-mxc-";
+const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+const PIPE_WAIT: u32 = 0;
+const PIPE_NOWAIT: u32 = 1;
+const PERMITTED: u8 = 1;
+const WRITTEN: u8 = 2;
 
 struct Delivery {
     bound: Handle,
@@ -20,7 +28,46 @@ struct Delivery {
     accepted: AtomicU32,
     completed: AtomicU32,
     failed: AtomicBool,
+    authorization: Option<Authorization>,
     policy: Vec<u8>,
+}
+
+struct Authorization {
+    gate: Vec<u16>,
+    output: u32,
+    replies: Mutex<Receiver<u8>>,
+}
+
+impl Authorization {
+    fn handoff(&self, pipe: Raw, delivery: &Delivery, client: &Handle) -> Result<(), u32> {
+        let Ok(replies) = self.replies.lock() else {
+            return Err(0);
+        };
+        check(unsafe { SetNamedPipeHandleState(pipe, &PIPE_NOWAIT, null(), null()) })?;
+        let output = unsafe { GetStdHandle(self.output) };
+        if !may_offer_pipe(
+            || {
+                write_all(output, b"authorize\n").is_ok()
+                    && received(&replies, PERMITTED, delivery.remaining())
+            },
+            || unsafe { GetFileAttributesW(self.gate.as_ptr()) },
+        ) || delivery.remaining() == 0
+            || unsafe { WaitForSingleObject(client.raw(), 0) } != WAIT_TIMEOUT
+        {
+            return Err(0);
+        }
+        let offer = format!("deliver {:x} {}\n", pipe as usize, delivery.deadline);
+        write_all(output, offer.as_bytes())?;
+        if !received(&replies, WRITTEN, delivery.remaining()) {
+            return Err(0);
+        }
+        check(unsafe { SetNamedPipeHandleState(pipe, &PIPE_WAIT, null(), null()) })
+    }
+}
+
+fn received(replies: &Receiver<u8>, expected: u8, remaining: u32) -> bool {
+    remaining != 0
+        && replies.recv_timeout(std::time::Duration::from_millis(remaining.into())) == Ok(expected)
 }
 
 impl Delivery {
@@ -46,7 +93,7 @@ fn read_u32() -> Result<u32, u32> {
     Ok(u32::from_le_bytes(bytes))
 }
 
-fn watch_owner(delivery: &Delivery, acknowledge: bool) {
+fn watch_owner(delivery: &Delivery, acknowledge: bool, authorization: Option<SyncSender<u8>>) {
     let Ok(pid) = read_u32() else {
         return;
     };
@@ -69,13 +116,42 @@ fn watch_owner(delivery: &Delivery, acknowledge: bool) {
             return delivery.fail();
         }
     }
-    let _ = read(input(), &mut [0]);
+    if let Some(authorization) = authorization {
+        let mut reply = [0];
+        while read_exact(input(), &mut reply).is_ok() && matches!(reply[0], PERMITTED | WRITTEN) {
+            if authorization.send(reply[0]).is_err() {
+                break;
+            }
+        }
+    } else {
+        let _ = read(input(), &mut [0]);
+    }
 }
 
-fn send(pipe: Raw, delivery: &Delivery) -> bool {
-    let result: Result<(), u32> = match write(pipe, &delivery.policy) {
-        Ok(written) if written != delivery.policy.len() => return false,
-        Ok(_) => flush(pipe).and_then(|_| write(pipe, &[])).and_then(|_| {
+fn gate_allows_write(attributes: u32) -> bool {
+    attributes != INVALID_FILE_ATTRIBUTES
+        && attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) == 0
+}
+
+fn may_offer_pipe(request: impl FnOnce() -> bool, attributes: impl FnOnce() -> u32) -> bool {
+    request() && gate_allows_write(attributes())
+}
+
+fn send(pipe: Raw, delivery: &Delivery, client: &Handle) -> bool {
+    let written = match &delivery.authorization {
+        Some(authorization) => authorization.handoff(pipe, delivery, client),
+        None => write(pipe, &delivery.policy).and_then(|count| {
+            if count == delivery.policy.len() {
+                Ok(())
+            } else {
+                Err(0)
+            }
+        }),
+    };
+    let result: Result<(), u32> = written
+        .and_then(|()| flush(pipe))
+        .and_then(|_| write(pipe, &[]))
+        .and_then(|_| {
             let mut discard = [0; 256];
             while read(pipe, &mut discard).is_ok() {
                 if delivery.remaining() == 0 {
@@ -83,9 +159,7 @@ fn send(pipe: Raw, delivery: &Delivery) -> bool {
                 }
             }
             Err(last_error())
-        }),
-        Err(error) => Err(error),
-    };
+        });
     matches!(result, Err(109 | 232))
 }
 
@@ -123,7 +197,7 @@ fn serve(pipe: Arc<Handle>, delivery: &Delivery) {
             }
             return;
         }
-        if !send(pipe, delivery) {
+        if !send(pipe, delivery, client) {
             return delivery.fail();
         }
         unsafe {
@@ -160,8 +234,12 @@ fn event() -> Handle {
 }
 
 pub fn run(args: &[Vec<u16>], acknowledge: bool) -> u8 {
-    let [name, milliseconds] = args else {
-        return 2;
+    let (name, milliseconds, gate) = match args {
+        [name, milliseconds] => (name, milliseconds, None),
+        [name, milliseconds, gate, authorize] if *authorize == ascii("--authorize") => {
+            (name, milliseconds, Some(c_wide(gate)))
+        }
+        _ => return 2,
     };
     let prefix = ascii(PIPE_PREFIX);
     let Some(suffix) = name.strip_prefix(prefix.as_slice()) else {
@@ -180,7 +258,11 @@ pub fn run(args: &[Vec<u16>], acknowledge: bool) -> u8 {
         return 2;
     }
     let deadline = unsafe { GetTickCount64() } + u64::from(timeout);
-    let mut policy = vec![0; size as usize];
+    let mut policy = if gate.is_some() {
+        Vec::new()
+    } else {
+        vec![0; size as usize]
+    };
     if read_exact(input(), &mut policy).is_err() {
         return 2;
     }
@@ -219,6 +301,20 @@ pub fn run(args: &[Vec<u16>], acknowledge: bool) -> u8 {
         }
     }
     drop(descriptor);
+    let (authorization, replies) = match gate {
+        Some(gate) => {
+            let (send, receive) = sync_channel(0);
+            (
+                Some(Authorization {
+                    gate,
+                    output: if acknowledge { STDERR } else { STDOUT },
+                    replies: Mutex::new(receive),
+                }),
+                Some(send),
+            )
+        }
+        None => (None, None),
+    };
     let delivery = Arc::new(Delivery {
         bound: event(),
         done: event(),
@@ -227,6 +323,7 @@ pub fn run(args: &[Vec<u16>], acknowledge: bool) -> u8 {
         accepted: AtomicU32::new(0),
         completed: AtomicU32::new(0),
         failed: AtomicBool::new(false),
+        authorization,
         policy,
     });
     if acknowledge && write(unsafe { GetStdHandle(STDOUT) }, b"held-v1\n") != Ok(8) {
@@ -234,7 +331,7 @@ pub fn run(args: &[Vec<u16>], acknowledge: bool) -> u8 {
     }
     let owner_delivery = Arc::clone(&delivery);
     let owner = thread::Builder::new()
-        .spawn(move || watch_owner(&owner_delivery, acknowledge))
+        .spawn(move || watch_owner(&owner_delivery, acknowledge, replies))
         .unwrap_or_else(|_| exit(1));
     let workers: Vec<_> = pipes
         .iter()
@@ -258,4 +355,49 @@ pub fn run(args: &[Vec<u16>], acknowledge: bool) -> u8 {
     // The process boundary cancels blocking pipe and owner reads together.
     let _workers = workers;
     exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn policy_release_gate_requires_a_regular_path() {
+        assert!(gate_allows_write(0x80));
+        assert!(!gate_allows_write(INVALID_FILE_ATTRIBUTES));
+        assert!(!gate_allows_write(FILE_ATTRIBUTE_DIRECTORY));
+        assert!(!gate_allows_write(FILE_ATTRIBUTE_REPARSE_POINT | 0x80));
+        assert!(!gate_allows_write(
+            FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT
+        ));
+    }
+
+    #[test]
+    fn a_pipe_offer_requires_a_fresh_permit_and_a_live_gate_after_the_reply() {
+        assert!(!may_offer_pipe(|| false, || 0x80));
+        let attrs = std::cell::Cell::new(0x80);
+        assert!(!may_offer_pipe(
+            || {
+                attrs.set(INVALID_FILE_ATTRIBUTES);
+                true
+            },
+            || attrs.get(),
+        ));
+        assert!(may_offer_pipe(|| true, || 0x80));
+    }
+
+    #[test]
+    fn permission_to_offer_a_pipe_does_not_acknowledge_the_host_write() {
+        let (send, replies) = sync_channel(1);
+        send.send(PERMITTED).unwrap();
+        assert!(!received(&replies, WRITTEN, 10));
+        send.send(WRITTEN).unwrap();
+        assert!(!received(&replies, WRITTEN, 0));
+        assert!(received(&replies, WRITTEN, 10));
+    }
+
+    #[test]
+    fn policy_pipe_rejects_extra_arguments() {
+        assert_eq!(run(&[ascii(PIPE_PREFIX), ascii("1000"), vec![], vec![]], false), 2);
+    }
 }

@@ -39,6 +39,7 @@ vi.mock("node:dns/promises", async (importOriginal) => ({
 
 vi.mock("../mxc-windows.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../mxc-windows.js")>(),
+  getHostWxcExecIdentity: () => "verified-launcher",
   resolveHostWxcExecPath: async () => "C:\\Ave\\resources\\mxc\\x64\\wxc-exec.exe",
 }));
 

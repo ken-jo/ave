@@ -15,6 +15,7 @@ import { planWindowsExtensionHolder } from "../mxc-extension-readiness.js";
 import { mxcPolicyModel } from "../../__tests__/support/mxc-policy-rows.js";
 import { decisionMemo } from "../../shared/local-path-io.js";
 import { t } from "../../i18n/index.js";
+import { configureHostResources } from "../../main/host-resources.js";
 
 const state = vi.hoisted(() => ({
   plan: { selectedBackend: "mxc", readiness: "ready" },
@@ -24,6 +25,7 @@ const state = vi.hoisted(() => ({
   executableMtime: 1n,
   // Synthetic junctions (lexical prefix -> target) and not-yet-created paths for canonical spelling.
   junctions: new Map<string, string>(),
+  nativeRoot: undefined as string | undefined,
   missing: new Set<string>(),
   spawn: vi.fn(), close: vi.fn(), admit: vi.fn(), validate: vi.fn(), allowed: vi.fn(), lease: vi.fn(),
   pierceNotices: vi.fn(() => []),
@@ -72,11 +74,20 @@ vi.mock("../sandbox-capability.js", async (original) => {
 });
 vi.mock("../egress-host-listener.js", () => ({ openMxcEgressLease: (...args: unknown[]) => state.lease(...args) }));
 vi.mock("../mxc-extension-process.js", () => ({ spawnMxcExtensionProcess: (...args: unknown[]) => state.spawn(...args) }));
+vi.mock("../admitted-obligation.js", async (original) => ({
+  ...await original<typeof import("../admitted-obligation.js")>(),
+  windowsObligationsApply: () => process.platform === "win32",
+}));
+vi.mock("../shell-working-directory-identity.js", async (original) => {
+  const actual = await original<typeof import("../shell-working-directory-identity.js")>();
+  return { ...actual, pinShellWorkingDirectory: vi.fn(async () => ({ isHeld: () => true, release: async () => {} })) };
+});
 vi.mock("../../main/managed-child-processes.js", () => ({ assertManagedChildProcessAdmissionOpen: vi.fn() }));
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
   // Synthetic Windows paths: canonical spelling is the lexical one, and the executable's file identity is a fixture stamp.
   const canonical = (path: string): string => {
+    if (state.nativeRoot !== undefined && path.startsWith(state.nativeRoot)) return actual.realpathSync.native(path);
     const key = path.toLowerCase();
     if ([...state.missing].some((missing) => key === missing.toLowerCase() || key.startsWith(`${missing.toLowerCase()}\\`))) {
       throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
@@ -88,6 +99,7 @@ vi.mock("node:fs", async (original) => {
   };
   const realpathSync = Object.assign(canonical, { native: canonical });
   const lstatSync = (path: string) => {
+    if (state.nativeRoot !== undefined && path.startsWith(state.nativeRoot)) return actual.lstatSync(path);
     canonical(path);
     const directory = !path.endsWith(".exe");
     if (!directory) state.onExecutableStat?.();
@@ -113,6 +125,11 @@ vi.mock("../../shared/windows-path-facts.js", async original => {
     };
   };
   const pinWindowsPaths: typeof actual.pinWindowsPaths = paths => paths.map(path => {
+    if (state.nativeRoot !== undefined && path.startsWith(state.nativeRoot)) {
+      const [observed] = actual.pinWindowsPaths([path]);
+      if (observed === undefined) throw new Error("Fixture path was not observed");
+      return observed;
+    }
     const ancestors = [];
     for (let parent = win32.dirname(path); parent !== path; parent = win32.dirname(parent)) {
       ancestors.unshift(facts(parent));
@@ -169,6 +186,45 @@ function admitWrites(...allowWrite: string[]): void {
     denyRead: [], denyWrite: [], protectedFloor: [] }), assertStillValid: state.validate });
 }
 const ORIGINAL_PLATFORM = process.platform;
+
+it.runIf(ORIGINAL_PLATFORM === "win32").each(["leaf", "parent"] as const)(
+  "refuses a cwd replacement during holder footprint admission (%s)",
+  async (replacement) => {
+    configureHostResources({ resourcePath: win32.join(process.cwd(), "resources"), isPackaged: false });
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const { tmpdir } = await import("node:os");
+    const root = fs.realpathSync.native(fs.mkdtempSync(win32.join(tmpdir(), "mxc-holder-cwd-")));
+    state.nativeRoot = root;
+    const parent = win32.join(root, "parent");
+    const cwd = win32.join(parent, "cwd");
+    fs.mkdirSync(cwd, { recursive: true });
+    const input = spec();
+    const allowRead = [...(input.allowRead ?? []), root];
+    state.admit.mockImplementationOnce(() => {
+      if (replacement === "leaf") {
+        fs.renameSync(cwd, win32.join(parent, "original"));
+        fs.mkdirSync(cwd);
+      } else {
+        fs.renameSync(parent, win32.join(root, "original"));
+        const target = win32.join(root, "replacement");
+        fs.mkdirSync(win32.join(target, "cwd"), { recursive: true });
+        fs.symlinkSync(target, parent, "junction");
+      }
+      return { model: mxcPolicyModel({ allowRead, allowWrite: input.allowWrite ?? [],
+        denyRead: [], denyWrite: [], protectedFloor: [] }), assertStillValid: state.validate };
+    });
+    try {
+      await expect(spawnMxcConfinedChild({
+        ...input, cwd, allowRead,
+        filesystemOwnership: { ...input.filesystemOwnership, readRoots: [root] },
+      })).rejects.toThrow(/working directory/u);
+      expect(state.spawn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
 beforeEach(() => {
   setProcessPlatform("win32");
   vi.clearAllMocks();
@@ -177,6 +233,7 @@ beforeEach(() => {
   state.onExecutableStat = undefined;
   state.executableMtime = 1n;
   state.junctions.clear();
+  state.nativeRoot = undefined;
   state.missing.clear();
   state.plan = planWindowsExtensionHolder({ requested: true, mxc: { state: "available" },
     fallback: { version: "0.0.80", ready: false } });
@@ -205,6 +262,20 @@ afterEach(async () => {
 });
 
 describe("native confined holder admission", () => {
+  it("withdraws the pending receiver gate when the install evidence changes", async () => {
+    const revoke = vi.fn();
+    state.spawn.mockImplementationOnce(async (request, options) => {
+      const unwatch = options.watchRelease?.(revoke);
+      try {
+        options.beforeSpawn();
+        unregisterReleaseGate?.();
+        return { startEvidence: started(request), dispose: vi.fn().mockResolvedValue(undefined) };
+      } finally { unwatch?.(); }
+    });
+    await expect(spawnMxcConfinedChild(spec())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+    expect(revoke).toHaveBeenCalledOnce();
+  });
+
   it("revalidates the caller's and the admitted filesystem in one decision per launch pass", async () => {
     const owner = {};
     const seen: Array<[string, unknown]> = [];
@@ -455,6 +526,36 @@ describe("native confined holder admission", () => {
     const parent = { confinement: "windows-mxc", release: vi.fn() } as unknown as Awaited<ReturnType<typeof spawnMxcConfinedChild>>;
     await expect(spawnMxcConfinedChild({ ...spec(), parent })).rejects.toThrow("parent backend");
     expect(state.spawn).not.toHaveBeenCalled();
+  });
+
+  it("revokes descendant authorization while its receiver frame is held", async () => {
+    const parent = await spawnMxcConfinedChild(spec());
+    let authorized!: () => void;
+    let receive!: () => void;
+    const authorization = new Promise<void>(resolve => { authorized = resolve; });
+    const delivery = new Promise<void>(resolve => { receive = resolve; });
+    const spawnSdk = vi.fn();
+    state.spawn.mockImplementationOnce(async (request, options) => {
+      let released = true;
+      const unwatch = options.watchRelease(() => { released = false; });
+      try {
+        options.beforeSpawn();
+        authorized();
+        await delivery;
+        if (!released) throw new Error("Receiver authorization revoked");
+        spawnSdk();
+        return { startEvidence: started(request), dispose: vi.fn().mockResolvedValue(undefined) };
+      } finally { unwatch(); }
+    });
+    admitWrites("D:\\child");
+    const pending = spawnMxcConfinedChild(siblingChild(parent)).catch((error: unknown) => error);
+    await authorization;
+    const release = parent.release();
+    await Promise.resolve();
+    receive();
+    await pending;
+    await release;
+    expect(spawnSdk).not.toHaveBeenCalled();
   });
 
   it("awaits an authorized but unpublished descendant before reporting parent termination", async () => {

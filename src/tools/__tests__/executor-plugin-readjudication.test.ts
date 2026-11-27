@@ -99,7 +99,7 @@ describe("executor human re-adjudication card production", () => {
     const admission = admitToolInvocation(TOOL_NAME);
     const services = {
       invocationTerminal: admission.terminal, toolRegistry: tools, hookRunner: new HookRunner(), permissionManager: manager,
-      approvalGate, scriptHookManager: hooks, requirePermissionAuditChain: true,
+      approvalGate, scriptHookManager: hooks,
       hostClassifiesRiskProvider: () => true, sandboxFsContainedProvider: () => false,
       workspaceRootLifecycleProvider: () => undefined,
       auditWriter: new AuditWriter(hooks), rateLimiter: new RateLimiter(),

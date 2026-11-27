@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const filesystem = vi.hoisted(() => ({ stat: vi.fn(), entries: vi.fn(), realpath: vi.fn(), access: vi.fn() }));
-const nativeFacts = vi.hoisted(() => ({ read: vi.fn() }));
+const nativeFacts = vi.hoisted(() => ({ read: vi.fn(), pin: vi.fn() }));
 const systemHelper = vi.hoisted(() => ({ exec: vi.fn() }));
 // The non-blocking driver observes the same fixture through its own entry points,
 // so a test can prove which driver performed each check.
@@ -39,7 +39,7 @@ vi.mock("node:fs/promises", async (importOriginal) => ({
   lstat: asynchronous.stat, readdir: asynchronous.entries, access: asynchronous.access,
 }));
 vi.mock("../windows-path-facts.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../windows-path-facts.js")>(), readWindowsDacls: nativeFacts.read,
+  ...await importOriginal<typeof import("../windows-path-facts.js")>(), readWindowsDacls: nativeFacts.read, pinWindowsPaths: nativeFacts.pin,
 }));
 
 interface Entry {
@@ -413,6 +413,7 @@ function windowsFixture(): void {
   filesystem.entries.mockImplementation((path: string) => [...entries.keys()].filter(child => child.startsWith(`${path}\\`) && !child.slice(path.length + 1).includes("\\")).map(child => child.slice(path.length + 1)));
   nativeFacts.read.mockImplementation((paths: readonly string[]) => paths.map(path => ({
     exists: true, canonical: path, directory: entries.get(path)!.directory, ancestors: [], reparseTag: 0, attributes: 0,
+    volumeSerial: "system-volume", fileId: path,
     elevated: false, currentUserSid: USER,
     dacl: { owner: SYSTEM, nullDacl: false, aces: [{ type: 0, flags: 0, mask: 0x1f01ff, sid: SYSTEM }, { type: 0, flags: 0, mask: 0x1200a9, sid: USER }] },
   })));
@@ -424,12 +425,19 @@ describe("verified native installations", () => {
     const candidates = [{ executable: WINDOWS_EXECUTABLE, installationRoots: [WINDOWS_ROOT, WINDOWS_DEPENDENCIES] }];
     const { resolveVerifiedExecutable } = await import("../verified-executable.js");
     const verified = resolveVerifiedExecutable(candidates, "win32");
-    expect(verified).toEqual({ executable: WINDOWS_EXECUTABLE });
+    expect(verified).toEqual({ executable: WINDOWS_EXECUTABLE, assertStillValid: expect.any(Function) });
     expect(nativeFacts.read.mock.calls.flatMap(([paths]) => paths)).toContain(`${WINDOWS_DEPENDENCIES}\\startup.dll`);
     expect(nativeFacts.read.mock.calls.every(([paths]) => paths.length <= 16)).toBe(true);
     const inspections = nativeFacts.read.mock.calls.length;
     expect(resolveVerifiedExecutable(candidates, "win32")).toBe(verified);
     expect(nativeFacts.read.mock.calls).toHaveLength(inspections);
+    const read = nativeFacts.read.getMockImplementation();
+    if (read === undefined) throw new Error("Expected a path facts fixture");
+    const image = read([WINDOWS_EXECUTABLE])[0];
+    nativeFacts.pin.mockReset().mockReturnValueOnce([image]).mockReturnValueOnce([{ ...image, fileId: "replacement" }]);
+    expect(() => verified?.assertStillValid?.()).not.toThrow();
+    expect(nativeFacts.pin).toHaveBeenCalledExactlyOnceWith([WINDOWS_EXECUTABLE]);
+    expect(() => verified?.assertStillValid?.()).toThrow("Verified executable changed before spawn");
   });
 
   it.each(["write", "reparse", "owner"])("refuses unsafe additional native root evidence: %s", async failure => {
@@ -462,7 +470,8 @@ describe("verified native installations", () => {
     windowsFixture();
     const dependency = `${WINDOWS_DEPENDENCIES}\\startup.dll`;
     const { resolveVerifiedExecutable } = await import("../verified-executable.js");
-    expect(resolveVerifiedExecutable([{ executable: WINDOWS_EXECUTABLE, installationRoots: [WINDOWS_EXECUTABLE, dependency] }], "win32")).toEqual({ executable: WINDOWS_EXECUTABLE });
+    expect(resolveVerifiedExecutable([{ executable: WINDOWS_EXECUTABLE, installationRoots: [WINDOWS_EXECUTABLE, dependency] }], "win32"))
+      .toEqual({ executable: WINDOWS_EXECUTABLE, assertStillValid: expect.any(Function) });
     expect(nativeFacts.read.mock.calls.flatMap(([paths]) => paths)).toEqual(expect.arrayContaining([WINDOWS_EXECUTABLE, WINDOWS_ROOT, dependency, WINDOWS_DEPENDENCIES]));
     expect(filesystem.entries).not.toHaveBeenCalled();
   });

@@ -12,9 +12,8 @@ vi.mock("../../main/auth-window-service.js", () => ({
 const { ledgerOrder } = vi.hoisted(() => ({ ledgerOrder: [] as string[] }));
 vi.mock("../../tools/invocation-ledger.js", () => ({
   sealToolInvocations: () => ledgerOrder.push("invocations-seal"),
-  closeToolInvocationAudit: async (close: () => Promise<void>) => {
+  closeToolInvocations: async () => {
     ledgerOrder.push("invocations-join");
-    await close();
   },
 }));
 
@@ -82,8 +81,6 @@ describe("assembleAppServices rationale shutdown", () => {
       "mcp-policy",
       "mcp",
       "invocations-join",
-      "audit-writer",
-      "audit",
       "tracing",
     ]);
     expect(services.shutdown()).toBe(shutdown);

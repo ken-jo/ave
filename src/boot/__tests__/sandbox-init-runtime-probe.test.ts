@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import type { SandboxMacContainerShellSupport } from "../../shared/sandbox-capability-info.js";
+import type { SandboxContainerShellSupport } from "../../shared/sandbox-capability-info.js";
 import {
   createSandboxBootHarness,
   type SandboxBootHarness,
@@ -20,7 +20,8 @@ const h = vi.hoisted(() => ({
   checkDeps: vi.fn(),
   isProbeError: vi.fn(),
   isMacProbeError: vi.fn(),
-  detectMacShell: vi.fn<() => Promise<SandboxMacContainerShellSupport>>(),
+  detectMacShell: vi.fn<() => Promise<SandboxContainerShellSupport>>(),
+  detectLinuxShell: vi.fn<() => Promise<SandboxContainerShellSupport>>(),
   logger: {
     debug: vi.fn(),
     info: vi.fn(),
@@ -39,6 +40,10 @@ vi.mock("../../lib/logger.js", () => ({
 
 vi.mock("../../permissions/mxc-macos.js", () => ({
   detectHostMxcMacShellSupport: h.detectMacShell,
+}));
+
+vi.mock("../../permissions/mxc-linux.js", () => ({
+  detectHostMxcLinuxShellSupport: h.detectLinuxShell,
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
@@ -73,7 +78,7 @@ import {
   __resetSandboxRequestedAtBootForTest,
   detectSandboxCapability,
   getHostShellExecutionPlan,
-  getMacContainerShellInfo,
+  getContainerShellInfo,
   getSandboxBootOutcome,
   isPluginWorkerConfinementRequestedAtBoot,
   isShellSandboxRequestedAtBoot,
@@ -102,6 +107,8 @@ beforeEach(() => {
   h.isMacProbeError.mockReturnValue(false);
   h.detectMacShell.mockReset();
   h.detectMacShell.mockResolvedValue({ state: "available" });
+  h.detectLinuxShell.mockReset();
+  h.detectLinuxShell.mockResolvedValue({ state: "available" });
   h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");
   vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "");
@@ -117,6 +124,23 @@ afterEach(() => {
   __resetSandboxBootOutcomeForTest();
   setProcessPlatform(ORIGINAL_PLATFORM);
   vi.clearAllMocks();
+});
+
+it.each(["linux", "darwin"] as const)("decides the %s sandbox gate as soon as the dependency probe settles", async platform => {
+  setProcessPlatform(platform);
+  const order: string[] = [];
+  h.checkDeps.mockImplementationOnce(() => {
+    // The nested microtask runs before a continuation that awaits a derived promise.
+    queueMicrotask(() => queueMicrotask(() => { order.push("queued update"); }));
+    return Promise.resolve({ errors: ["missing sandbox dependency"], warnings: [] });
+  });
+  h.logger.warn.mockImplementation((record) => {
+    if (record?.event === "sandbox_gate") order.push("gate decision");
+  });
+
+  await initSandboxGate(harness.context(true));
+
+  expect(order).toEqual(["gate decision", "queued update"]);
 });
 
 describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
@@ -194,6 +218,47 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
       reason: expect.stringContaining("abort"),
     }));
   });
+
+  it("names the missing Linux packages when explicit shell activation aborts", async () => {
+    const errors = ["bubblewrap (bwrap) not installed", "socat not installed"];
+    h.checkDeps.mockResolvedValue({ errors, warnings: [] });
+    h.detectLinuxShell.mockResolvedValue({ state: "unavailable", reason: "tools-missing", detail: ["bwrap"] });
+    vi.stubEnv("AVE_SANDBOX_ENABLED", "1");
+
+    await expect(initSandboxGate(harness.context(false))).rejects.toThrow(
+      "Missing: bubblewrap (bwrap) not installed; socat not installed",
+    );
+
+    expect(sandboxGateEvents()).toEqual([expect.objectContaining({
+      platform: "linux",
+      onSignal: "explicit-env",
+      outcome: "abort",
+      reason: "abort-explicit-cannot-activate",
+    })]);
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "abort", dependencyErrors: errors });
+    expect(h.detectLinuxShell).not.toHaveBeenCalled();
+    expect(h.initialize).not.toHaveBeenCalled();
+  });
+
+  it("aborts explicit shell activation when dependencies pass but the Linux container is unavailable", async () => {
+    h.detectLinuxShell.mockResolvedValue({ state: "unavailable", reason: "shell-start-failed" });
+    vi.stubEnv("AVE_SANDBOX_ENABLED", "1");
+
+    await expect(initSandboxGate(harness.context(false))).rejects.toThrow(
+      "Linux container shell unavailable (shell-start-failed)",
+    );
+
+    expect(h.checkDeps).toHaveBeenCalledExactlyOnceWith();
+    expect(h.detectLinuxShell).toHaveBeenCalledAfter(h.checkDeps);
+    expect(sandboxGateEvents()).toEqual([expect.objectContaining({
+      platform: "linux",
+      onSignal: "explicit-env",
+      outcome: "abort",
+      reason: "abort-linux-runtime-probe-failed",
+    })]);
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "abort", causes: ["linux-runtime-probe-failed"] });
+    expect(h.initialize).not.toHaveBeenCalled();
+  });
 });
 
 describe("macOS container shell probe failure", () => {
@@ -219,11 +284,23 @@ describe("macOS container shell probe failure", () => {
 
     await expect(initSandboxGate(harness.context(true))).resolves.toBeUndefined();
     expect(h.initialize).toHaveBeenCalledOnce();
-    expect(getMacContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "shell-start-failed" });
+    expect(getContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "shell-start-failed" });
     const plan = getHostShellExecutionPlan();
     expect(plan).toMatchObject({ mode: "plain", fallbackReason: "active-sandbox-not-shell-contained" });
     expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
   });
+});
+
+it("records missing Linux shell tools even when the legacy dependency gate degrades", async () => {
+  h.checkDeps.mockResolvedValue({ errors: ["missing bwrap"], warnings: [] });
+  h.detectLinuxShell.mockResolvedValue({ state: "unavailable", reason: "tools-missing", detail: ["bwrap", "slirp4netns"] });
+  await expect(initSandboxGate(harness.context(true))).resolves.toBeUndefined();
+  const gateIndex = h.logger.warn.mock.calls.findIndex(([record]) => record?.event === "sandbox_gate");
+  expect(gateIndex).toBeGreaterThanOrEqual(0);
+  expect(h.detectLinuxShell.mock.invocationCallOrder[0]).toBeGreaterThan(h.logger.warn.mock.invocationCallOrder[gateIndex]);
+  expect(h.initialize).not.toHaveBeenCalled();
+  expect(getContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "tools-missing", detail: ["bwrap", "slirp4netns"] });
+  expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", substrate: "none", requiresExplicitUserApproval: true });
 });
 
 describe("macOS sandbox runtime probe failure", () => {

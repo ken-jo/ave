@@ -5,6 +5,7 @@ import { hasUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat
 import { isSubAgentMaxRounds } from "../../shared/subagent-policy.js";
 import { telemetryPatchError } from "../../shared/telemetry-policy.js";
 import { containsSecuritySettings } from "../../shared/security-settings.js";
+import { refreshWindowsBackgroundAdmission } from "../../permissions/windows-background-features.js";
 import { isWebSearchProvider } from "../../data/settings-normalization.js";
 /** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external */
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
@@ -46,7 +47,9 @@ import type {
   ShortcutSettings,
   AppSettings,
   SettingsService,
+  SettingsWriteAdmission,
 } from "../../data/settings-store.js";
+import { SettingsWriteRefusedError } from "../../data/settings-store.js";
 import type { ActiveChatModel } from "../../shared/active-chat-model.js";
 import {
   resolveMainActiveChatModel,
@@ -100,7 +103,7 @@ function normalizeSubscriptionModel(value: unknown): string | undefined | null {
     : null;
 }
 
-/** The settings shape the renderer sees. Authoritative remote route lineage (`a2aRemote`) is main-only and never projected to the renderer. The upstream proxy (`upstreamProxy`) crosses only through its own permissions channels; the validated local model location stays in main. Every other stored field crosses as-is.
+/** The settings shape the renderer sees. Authoritative remote route lineage (`a2aRemote`) is main-only and never projected to the renderer. The upstream proxy (`upstreamProxy`) crosses only through its own permissions channels; the validated local model location stays in main. The session indexing switch is projected only when applicable.
  * `activeChatModel` is the one derived field. A vendor block always names a model, so the stored settings cannot say whether chat has a model at all; only main, which holds the secret store, can. Every renderer surface that names the active model reads it from here. */
 export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstreamProxy" | "memoryEmbedding"> & {
   readonly activeChatModel: ActiveChatModel;
@@ -112,7 +115,15 @@ export async function rendererSettingsSnapshot(
 ): Promise<RendererSettingsSnapshot> {
   // `upstreamProxy` has its own channels (permissions upstreamProxyGet/Set).
   const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, memoryEmbedding: _embeddingConfig, ...projected } = structuredClone(snapshot);
-  return { ...projected, activeChatModel: await resolveMainActiveChatModel(settingsService) };
+  const activeChatModel = await resolveMainActiveChatModel(settingsService);
+  if (process.platform === "win32") {
+    if ((await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable()) {
+      projected.features = { ...projected.features, sessionIndexingWithoutContainment: projected.features?.sessionIndexingWithoutContainment ?? true };
+    } else {
+      delete projected.features?.sessionIndexingWithoutContainment;
+    }
+  }
+  return { ...projected, activeChatModel };
 }
 
 /** Shared by every handler that mutates settings and must re-broadcast the projected snapshot to all windows. */
@@ -735,6 +746,16 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         return { ok: false, error: "invalid-foundry-endpoint", message: (err as Error).message };
       }
     }
+    // The last await before the patch: the admission is decided here and nothing below yields until the merge is applied.
+    const features = partial?.features;
+    let switchAdmission: SettingsWriteAdmission | undefined;
+    if (process.platform === "win32" && features && typeof features === "object" && Object.hasOwn(features, "sessionIndexingWithoutContainment")) {
+      if (typeof features.sessionIndexingWithoutContainment !== "boolean") return { ok: false, error: "invalid-input" };
+      const admission = await refreshWindowsBackgroundAdmission("switches");
+      if (!admission.areSwitchesAvailable()) return { ok: false, error: "invalid-input" };
+      // The same admission travels to the step that saves the switch.
+      switchAdmission = { field: ["features", "sessionIndexingWithoutContainment"], canCommit: () => admission.areSwitchesAvailable() };
+    }
     // Reviewer LLM follows the active chat provider/model. Capture the active identity before patching
     // so provider/model/baseUrl/Vertex changes can refresh reviewer wiring and cache scope immediately.
     const prevLlm = settingsService.get("llm");
@@ -760,7 +781,15 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       if (!parsed.ok) return { ok: false, error: "invalid-input" };
       partial = { ...partial, system: { ...partial.system, mainLayout: browserTabRegistry.prepareLayoutBindings(window.id, parsed.layout) } };
     }
-    const persistSettings = settingsService.patch(partial);
+    let switchRefused = false;
+    const persistSettings = switchAdmission === undefined
+      ? settingsService.patch(partial)
+      : settingsService.patch(partial, { admission: switchAdmission }).catch((error: unknown) => {
+        if (!(error instanceof SettingsWriteRefusedError)) throw error;
+        // The rest of the patch is on disk and still needs its follow-up.
+        switchRefused = true;
+        return settingsService.getAll();
+      });
     if (layoutPatch !== undefined) browserTabRegistry.trackBindingWrite(persistSettings);
     // SettingsService applies its merge before awaiting disk persistence. Capture this request's exact LLM snapshot before another renderer can supersede it.
     const appliedLlm = settingsService.get("llm");
@@ -856,6 +885,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     reconcileShortcutStartupIfChanged();
     if (marketplaceWritten) hooks?.marketplaceSettingsChanged();
     await broadcastSettingsSnapshot(deps);
+    if (switchRefused) return { ok: false, error: "invalid-input" };
     return rendererSettingsSnapshot(settingsService, result);
   });
 

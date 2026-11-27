@@ -51,6 +51,7 @@ export const SETTINGS_SECTIONS: Record<SettingsTab, readonly string[]> = {
     "chat-experimental",
     "chat-privacy",
     "memory-embeddings",
+    "session-indexing",
   ],
   notifications: ["chat-signals", "notifications-delivery", "notifications-notices"],
   web: ["web-search-engine", "web-api-key", "web-view-flow", "web-address-search"],
@@ -102,7 +103,11 @@ export function isSettingsTab(tab: unknown): tab is SettingsTab {
 
 /** Is `section` one of the anchors `tab` actually renders? */
 export function isSettingsSection(tab: SettingsTab, section: unknown): boolean {
-  return typeof section === "string" && SETTINGS_SECTIONS[tab].includes(section);
+  if (typeof section !== "string" || !SETTINGS_SECTIONS[tab].includes(section)) return false;
+  if (section !== "session-indexing") return true;
+  return typeof process !== "undefined" && typeof process.platform === "string"
+    ? process.platform === "win32"
+    : /\bWindows NT\b/u.test(globalThis.navigator?.userAgent ?? "");
 }
 
 /** A settings destination: the page, and optionally the section within it. */

@@ -1,0 +1,53 @@
+name: Build and prove the Linux shell container
+description: Build the pinned seccomp helper and check the installed launcher
+runs:
+  using: composite
+  steps:
+    - name: Build and verify the static helper
+      working-directory: ave
+      shell: bash
+      run: |
+        case "$RUNNER_ARCH" in
+          ARM64) arch=arm64; target=aarch64-unknown-linux-musl ;;
+          X64) arch=x64; target=x86_64-unknown-linux-musl ;;
+          *) exit 1 ;;
+        esac
+        export CARGO_TARGET_DIR="$RUNNER_TEMP/linux-shell-seccomp"
+        export RUSTFLAGS="-C linker=rust-lld -C linker-flavor=ld.lld -C link-self-contained=yes --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$(pwd)=/src/ave"
+        rustup target add "$target"
+        cargo fetch --manifest-path native/linux-shell-seccomp/Cargo.toml --locked --target "$target"
+        cargo build --manifest-path native/linux-shell-seccomp/Cargo.toml --locked --offline --release --target "$target"
+        expected=$(node -p 'require("./src/permissions/mxc-linux-seccomp-pins.json")[process.argv[1]]' "$arch")
+        printf '%s  %s\n' "$expected" "$CARGO_TARGET_DIR/$target/release/apply-seccomp" | sha256sum --check
+        printf '%s  %s\n' "$expected" "resources/linux-shell-seccomp/$arch/apply-seccomp" | sha256sum --check
+    - name: Execute the shipped helper on this architecture
+      working-directory: ave
+      shell: bash
+      run: |
+        case "$RUNNER_ARCH" in
+          ARM64) arch=arm64 ;;
+          X64) arch=x64 ;;
+          *) exit 1 ;;
+        esac
+        helper="resources/linux-shell-seccomp/$arch/apply-seccomp"
+        "$helper" /bin/true
+        # The filter must refuse a new AF_UNIX socket; an unconfined interpreter creates one.
+        python3 -c 'import socket; socket.socket(socket.AF_UNIX)'
+        if "$helper" python3 -c 'import socket; socket.socket(socket.AF_UNIX)'; then
+          echo "::error::the $arch filter allowed an AF_UNIX socket"
+          exit 1
+        fi
+    - name: Prove proxy enforcement
+      working-directory: ave
+      shell: bash
+      run: |
+        case "$RUNNER_ARCH" in
+          ARM64) arch=arm64 ;;
+          X64) arch=x64 ;;
+          *) exit 1 ;;
+        esac
+        sudo modprobe nf_conntrack
+        bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
+        node scripts/fetch-mxc.mjs --current
+        "resources/mxc/$arch/lxc-exec" --available-backends |
+          jq -e 'any(.[]; .backend == "bubblewrap" and (.capabilities | index("proxyEnforcement") != null))'

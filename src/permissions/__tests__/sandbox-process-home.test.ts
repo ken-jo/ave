@@ -286,6 +286,16 @@ describe("createSandboxProcessHome", () => {
     expect(existsSync(`${second!.path}.owner`)).toBe(false);
   });
 
+  it.runIf(process.platform === "win32")("leaves a tree-owned HOME unmarked for the boot sweep", async () => {
+    const home = createSandboxProcessHome("win32", undefined, null);
+    try {
+      expect(await readSandboxHomeOwner(home.path)).toBeNull();
+    } finally {
+      home.cleanup();
+    }
+    expect(existsSync(home.path)).toBe(false);
+  });
+
   it.runIf(process.platform === "win32")("leaves a Windows HOME unmarked when the host start time is unknown, and retries after a backoff", async () => {
     vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
     const probe = vi.fn(async (pids: readonly number[]) =>

@@ -191,6 +191,10 @@ describe("preload contextBridge world shape lock", () => {
     for (const name of [...exposed.keys()].sort()) {
       worlds[name] = deepShape(exposed.get(name));
     }
+    const map = (exposed.get('aveApi') as AveApi).memoryMap;
+    expect(typeof map.buildView).toBe(process.platform === 'win32' ? 'function' : 'undefined');
+    const internal = worlds.aveApi as { memoryMap: string[] };
+    internal.memoryMap = internal.memoryMap.filter(name => name !== 'buildView');
     expect(worlds).toMatchInlineSnapshot(`
       {
         "__aveDevMode": "boolean",
@@ -632,6 +636,7 @@ describe("preload contextBridge world shape lock", () => {
           "onRoutineFired": "function",
           "onRoutineRunningFinished": "function",
           "onRoutineRunningStarted": "function",
+          "onRoutinesChanged": "function",
           "onSessionGoalChanged": "function",
           "onSessionTasksChanged": "function",
           "onSettingsUpdated": "function",

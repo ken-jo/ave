@@ -56,9 +56,9 @@ import {
 
 const log = createLogger("memory");
 // Track written row ids plus file size and mtime; append completion-order results only while the prior prefix remains valid.
-const transcriptWriteStates = new Map<string, { ids: string[]; size: number; mtimeMs: number }>();
+export const transcriptWriteStates = new Map<string, { ids: string[]; size: number; mtimeMs: number }>();
 // A process-local open journal marks a live turn; never recover its sidecar as an orphan.
-const liveTurnJournals = new Map<string, number>();
+export const liveTurnJournals = new Map<string, number>();
 // Auxiliary managers can share the same host-owned session directory.
 const unpublishedCapturesByDirectory = new Map<string, Map<string, Set<string>>>();
 
@@ -70,7 +70,7 @@ export interface FileSnapshot {
   tooLarge: boolean;
 }
 
-function statPathIfPresent(path: string): Omit<FileSnapshot, "content" | "tooLarge"> | null {
+export function statPathIfPresent(path: string): Omit<FileSnapshot, "content" | "tooLarge"> | null {
   let fd: number | null = null;
   try {
     fd = openSync(path, "r");
@@ -324,7 +324,7 @@ export interface SessionMetadata {
   goal?: SessionGoal;
 }
 
-function asTerminalA2ATaskState(value: unknown): A2AProjectedTaskState | undefined {
+export function asTerminalA2ATaskState(value: unknown): A2AProjectedTaskState | undefined {
   if (
     typeof value !== "string"
     || !(A2A_PROJECTED_TASK_STATE_VALUES as readonly string[]).includes(value)
@@ -349,7 +349,7 @@ interface DetachedWireTerminalTombstone {
   subAgentTitle?: string;
 }
 
-function detachProjectBinding<T extends object>(
+export function detachProjectBinding<T extends object>(
   metadata: T,
   terminalTombstone?: A2AProjectedTaskState,
 ): T {
@@ -369,7 +369,7 @@ function detachProjectBinding<T extends object>(
   return next;
 }
 
-function applyDetachedWireTerminalTombstone<T extends object>(
+export function applyDetachedWireTerminalTombstone<T extends object>(
   metadata: T,
   tombstone: DetachedWireTerminalTombstone,
 ): T {
@@ -388,11 +388,11 @@ function applyDetachedWireTerminalTombstone<T extends object>(
     tombstone.taskState,
   );
 }
-const MAX_SESSION_TITLE_CHARS = 80;
+export const MAX_SESSION_TITLE_CHARS = 80;
 
 // Own session-file limits here and share them with import validation.
 export const MAX_SESSION_FILE_BYTES = 5_000_000;
-const MAX_SUMMARY_PREAMBLE_CHARS = 8_000;
+export const MAX_SUMMARY_PREAMBLE_CHARS = 8_000;
 const MAX_A2A_WIRE_ID_CHARS = 256;
 const ACTIVE_SESSION_STATE_FILE = ".active-session.json";
 
@@ -400,12 +400,12 @@ const ACTIVE_SESSION_STATE_FILE = ".active-session.json";
 function isPersistedOriginSessionId(id: unknown): id is string {
   return isValidSessionId(id) || parseWorkBoardOriginSessionId(id) !== null;
 }
-function isValidA2AWireHandlerId(id: unknown): id is string {
+export function isValidA2AWireHandlerId(id: unknown): id is string {
   return typeof id === "string"
     && A2A_HANDLER_ID_PATTERN.test(id)
     && maskSensitiveData(id).detections.length === 0;
 }
-function isValidA2AWireMetadataId(id: unknown): id is string {
+export function isValidA2AWireMetadataId(id: unknown): id is string {
   return isValidSessionId(id)
     && id.length <= MAX_A2A_WIRE_ID_CHARS
     && isSafeStructuralId(id);
@@ -469,7 +469,7 @@ function stampLegacyRowIds(sessionId: string, messages: unknown[]): unknown[] {
   });
 }
 
-function isCompactBoundaryRecord(value: unknown): boolean {
+export function isCompactBoundaryRecord(value: unknown): boolean {
   if (!isRecord(value)) return false;
   const meta = isRecord(value.meta) ? value.meta : {};
   return value.role === "user" && meta.compactBoundary === true;
@@ -540,13 +540,13 @@ const VALID_CHECKPOINT_TRIGGERS = new Set<CheckpointTrigger>([
   "manual",
 ]);
 
-function normalizeSessionKind(value: unknown): SessionKind {
+export function normalizeSessionKind(value: unknown): SessionKind {
   if (value === "main" || value === "routine" || value === "subagent") return value;
   return "main";
 }
 
 // Index string content and multipart text fields so search does not lose readable message text.
-function extractSearchableContent(messages: unknown[]): string {
+export function extractSearchableContent(messages: unknown[]): string {
   const parts: string[] = [];
   for (const raw of messages) {
     const message = raw as Record<string, unknown>;
@@ -615,7 +615,7 @@ function normalizeCheckpoint(raw: unknown): Checkpoint | null {
 }
 
 // Missing or invalid kind becomes main without routine inference; discard invalid checkpoint entries individually.
-function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata {
+export function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata {
   const checkpointsRaw = Array.isArray(raw.checkpoints) ? raw.checkpoints : undefined;
   const checkpoints: Checkpoint[] | undefined = checkpointsRaw
     ? (checkpointsRaw.map(normalizeCheckpoint).filter((c): c is Checkpoint => c !== null))
@@ -761,32 +761,32 @@ function parseSessionMetadataObject(raw: string): Record<string, unknown> {
 }
 
 /** Whether stored session metadata belongs to `projectRoot`: the detach and its preview share this. */
-function sessionMetadataInProject(parsed: Record<string, unknown>, projectRoot: string): boolean {
+export function sessionMetadataInProject(parsed: Record<string, unknown>, projectRoot: string): boolean {
   const storedRoot = typeof parsed.projectRoot === "string" ? parsed.projectRoot : undefined;
   return Boolean(storedRoot && projectRootEquals(storedRoot, projectRoot));
 }
 
 export class SessionRepository {
-  private readonly sessionsDir: string;
+  protected readonly sessionsDir: string;
   private readonly toolOutputArtifacts: ToolOutputArtifactStore;
-  private readonly unpublishedOutputCaptures: Map<string, Set<string>>;
+  protected readonly unpublishedOutputCaptures: Map<string, Set<string>>;
   // Keep one search index per manager namespace, never a global singleton.
-  private readonly searchIndex: SessionSearchIndex;
+  protected readonly searchIndex: SessionSearchIndex;
   // Root guards block stale writers until re-add; only newly created sessions may bind again.
-  private readonly detachedProjectRoots = new Set<string>();
+  protected readonly detachedProjectRoots = new Set<string>();
   // Session tombstones survive root re-add so old conversations remain detached.
-  private readonly detachedProjectRootsBySession = new Map<string, Set<string>>();
+  protected readonly detachedProjectRootsBySession = new Map<string, Set<string>>();
   private readonly reportedInterruptedTurnFolds = new Set<string>();
   // Capture policy generation before locking to detect detach/re-add ABA races.
   private readonly projectRootGenerations = new Map<string, number>();
   // Retain terminal state and binding together so late writes cannot regress or reclassify detached wire tasks.
-  private readonly detachedWireTerminalTombstones = new Map<string, DetachedWireTerminalTombstone>();
+  protected readonly detachedWireTerminalTombstones = new Map<string, DetachedWireTerminalTombstone>();
   private paneSessions: Map<string, Set<string>> | null = null;
-  private get checkpointsDir(): string {
+  protected get checkpointsDir(): string {
     return join(this.sessionsDir, ".checkpoints");
   }
 
-  private readonly aveDir: string;
+  protected readonly aveDir: string;
 
   constructor(options?: { aveDir?: string }) {
     this.aveDir = resolve(options?.aveDir ?? aveHome());
@@ -800,20 +800,20 @@ export class SessionRepository {
     unpublishedCapturesByDirectory.set(captureOwnerKey, this.unpublishedOutputCaptures);
   }
 
-  private projectRootGeneration(key: string): number {
+  protected projectRootGeneration(key: string): number {
     return this.projectRootGenerations.get(key) ?? 0;
   }
 
   // Use a persistent sidecar lock target; touching a missing metadata path during locking could resurrect deleted state.
-  private sessionMetadataLockPath(sessionId: string): string {
+  protected sessionMetadataLockPath(sessionId: string): string {
     return join(this.sessionsDir, ".metadata-locks", `${sessionId}.target`);
   }
 
-  private bumpProjectRootGeneration(key: string): void {
+  protected bumpProjectRootGeneration(key: string): void {
     this.projectRootGenerations.set(key, this.projectRootGeneration(key) + 1);
   }
 
-  private rememberDetachedWireTerminal(
+  protected rememberDetachedWireTerminal(
     sessionId: string,
     metadata: Partial<SessionMetadata>,
   ): DetachedWireTerminalTombstone | undefined {
@@ -901,7 +901,7 @@ export class SessionRepository {
   }
 
   // Rewrite through temp, fsync, and rename so crashes retain a complete prior transcript.
-  private writeSessionTranscriptLocked(sessionId: string, targetPath: string, messages: unknown[]): void {
+  protected writeSessionTranscriptLocked(sessionId: string, targetPath: string, messages: unknown[]): void {
     const prepared = this.prepareSessionMessagesForDisk(sessionId, messages);
     const lines = prepared.messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
     let unchanged = false;
@@ -1004,7 +1004,7 @@ export class SessionRepository {
     removeTurnInflightRecord(turnInflightPath(this.sessionsDir, sessionId));
   }
 
-  private isTurnJournalLive(sessionId: string): boolean {
+  protected isTurnJournalLive(sessionId: string): boolean {
     return liveTurnJournals.has(turnInflightPath(this.sessionsDir, sessionId));
   }
 
@@ -1058,7 +1058,7 @@ export class SessionRepository {
   }
 
   // Open and close the index per operation so persistence leaves no database handle blocking directory cleanup.
-  private indexSessionForSearch(sessionId: string, messages: unknown[]): void {
+  protected indexSessionForSearch(sessionId: string, messages: unknown[]): void {
     if (!this.searchIndex.open()) return;
     try {
       const input = this.buildIndexInput(sessionId, messages);
@@ -1164,7 +1164,7 @@ export class SessionRepository {
     }
   }
 
-  private listSessionJsonlFiles(): string[] {
+  protected listSessionJsonlFiles(): string[] {
     return readdirIfPresent(this.sessionsDir).filter((file) => file.endsWith(".jsonl"));
   }
 
@@ -1499,7 +1499,7 @@ export class SessionRepository {
   }
 
   // Detach project metadata without deleting transcripts; re-read under locks for idempotent concurrent cleanup.
-  private sessionMetadataTargets(): Array<{ sessionId: string; targetPath: string }> {
+  protected sessionMetadataTargets(): Array<{ sessionId: string; targetPath: string }> {
     return readdirIfPresent(this.sessionsDir)
       .filter((file) => file.endsWith(".meta.json"))
       .map((file) => ({
@@ -1753,7 +1753,7 @@ export class SessionRepository {
     return index;
   }
 
-  private notePaneSession(sessionId: string, metadata: SessionMetadata | null): void {
+  protected notePaneSession(sessionId: string, metadata: SessionMetadata | null): void {
     const index = this.paneSessions;
     if (!index) return;
     for (const [tabId, ids] of index) {
@@ -2049,7 +2049,7 @@ export class SessionRepository {
     return true;
   }
 
-  private prepareSessionMessagesForDisk(sessionId: string, messages: unknown[]): {
+  protected prepareSessionMessagesForDisk(sessionId: string, messages: unknown[]): {
     messages: unknown[];
     keepArtifactKeys: Set<string>;
     keepCaptureIds: Set<string>;
@@ -2260,7 +2260,7 @@ export class SessionRepository {
   }
 
   // Derive summaries only from string user/assistant content so disk and in-memory paths agree.
-  private deriveSessionSummary(
+  protected deriveSessionSummary(
     sessionId: string,
     messages: unknown[] | null,
   ): { title: string; preview: string } {

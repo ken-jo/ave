@@ -4,16 +4,24 @@ import { MxcExtensionChannel } from "./mxc-extension-channel.js";
 import { MXC_STREAM_CHUNK_BYTES, mxcModuleDiagnostics, mxcRequestDigest } from "./mxc-extension-protocol.js";
 import { MxcNativeProcess } from "./mxc-native-process.js";
 import { MxcIntegrityError } from "../../scripts/lib/mxc-sdk-integrity.mjs";
-import { MxcCapabilityUnavailableError, MxcProcessContractError, MxcProcessCleanupError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
+import { MxcBaseContainmentUnavailableError, MxcCapabilityUnavailableError, MxcProcessContractError, MxcProcessCleanupError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
 import type { MxcSupervisorRuntime } from "./mxc-supervisor-bootstrap.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
+import { assertMxcReleaseGate, type MxcReleaseProof } from "./mxc-release-gate.js";
+import { commitUnderAdmission } from "../shared/admission-commit.js";
+
+function classifyBackendFailure(error: unknown): unknown {
+  return error instanceof Error && "code" in error && error.code === "backend_unavailable"
+    ? new MxcBaseContainmentUnavailableError({ cause: error })
+    : error;
+}
 
 /** One container incarnation per supervisor. All dependencies are host-owned. */
 export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness: Readable,
-  bootstrap: () => Promise<MxcSupervisorRuntime>, onFatal: () => void): Promise<void> {
+  bootstrap: () => Promise<MxcSupervisorRuntime>, onFatal: () => void, requireRelease = false): Promise<void> {
   let owned: MxcNativeProcess | undefined;
   let processPin: ReturnType<MxcSupervisorRuntime["pinProcess"]> | undefined;
-  let admissionAuthorization: { resolve(authorized: boolean): void } | undefined;
+  let admissionAuthorization: { resolve(authorized: boolean | MxcReleaseProof): void } | undefined;
   let nativeObservation: { id: number; resolve(): void } | undefined;
   let ownerLost = false;
   let starting: Promise<{ exitCode: number; timedOut: boolean } | null> | undefined;
@@ -22,6 +30,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
   let forwarding = false;
   let spawnPendingAtCancellation = false;
   let stopping = false;
+  let commonBackendAbsent = false;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   let resolveTerminal!: (result: { exitCode: number; timedOut: boolean } | null) => void;
   let rejectTerminal!: (error: unknown) => void;
@@ -70,28 +79,55 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
           starting = (async () => {
             const runtime = await bootstrap();
             if (stopping) return null;
-            const probe = runtime.sdk.probe(frame.request);
+            const probe = (() => {
+              try { return runtime.sdk.probe(frame.request); }
+              catch (error) { throw classifyBackendFailure(error); }
+            })();
             // Start evidence (contract fields 1-5): each value is what this start observed, reported on its ready frame.
             const baseContainerReady = probe.tier === "base-container" && probe.needsDaclAugmentation === false;
             const ancestorQueriesSupported = probe.probes.baseContainerSupportsEnumeratePaths === true;
-            if (!baseContainerReady || !ancestorQueriesSupported) {
+            if (!baseContainerReady) {
+              commonBackendAbsent = probe.probes.baseContainerApiPresent === false;
+              throw new MxcBaseContainmentUnavailableError();
+            }
+            if (!ancestorQueriesSupported) {
               throw new MxcCapabilityUnavailableError("Required native containment is unavailable");
             }
             runtime.auditModules();
             if (stopping) return null;
-            const authorized = new Promise<boolean>((resolve) => { admissionAuthorization = { resolve }; });
+            const authorized = new Promise<boolean | MxcReleaseProof>((resolve) => { admissionAuthorization = { resolve }; });
             await channel.send({ type: "creating" });
             // No native creation until the owner revalidates admitted roots after
             // bootstrap/probing and acknowledges over the authenticated channel.
-            if (!await authorized) return null;
+            const release = await authorized;
+            if (!release) return null;
             if (stopping) return null;
-            creationStarted = true;
-            // The SDK still opens string paths: authorization cannot make its
-            // later native file opens atomic with the owner's identity check.
             // A single argument is deliberate: telemetry options are never passed.
-            spawnPending = true;
             const requestDigest = mxcRequestDigest(frame.request);
-            const nativePending = runtime.sdk.spawn(frame.request).finally(() => { spawnPending = false; });
+            let nativePending!: ReturnType<MxcSupervisorRuntime["sdk"]["spawn"]>;
+            let releaseDirectory: (() => void) | undefined;
+            try {
+              commitUnderAdmission(() => {
+                if (release === true) {
+                  if (requireRelease) throw new MxcProcessContractError("Missing extension authorization at native creation");
+                  return;
+                }
+                const source = assertMxcReleaseGate(release);
+                if (source !== undefined) {
+                  releaseDirectory = runtime.holdDirectory?.(source);
+                  if (releaseDirectory === undefined) throw new MxcProcessContractError("Missing supervisor working directory hold");
+                  assertMxcReleaseGate(release);
+                }
+              }, () => {
+                creationStarted = true;
+                spawnPending = true;
+                nativePending = runtime.sdk.spawn(frame.request).catch((error: unknown) => { throw classifyBackendFailure(error); })
+                  .finally(() => { spawnPending = false; releaseDirectory?.(); });
+              });
+            } catch (error) {
+              releaseDirectory?.();
+              throw error;
+            }
             // Keep adopting a late handle even if the notification channel fails.
             // The failure requests teardown while the native promise remains owned.
             const spawning = Promise.resolve().then(() => channel.send({ type: "spawning" }));
@@ -152,7 +188,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
           if (stopping) break;
           if (!admissionAuthorization) throw new MxcProcessContractError("Unexpected spawn authorization");
           const authorization = admissionAuthorization; admissionAuthorization = undefined;
-          authorization.resolve(true);
+          authorization.resolve(frame.releasePath && frame.releaseDigest ? { path: frame.releasePath, digest: frame.releaseDigest } : true);
           break;
         }
         case "stdin":
@@ -184,6 +220,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
     await channel.end();
   } catch (cause) {
     stop();
+    const backendLoss = commonBackendAbsent ? "common" : cause instanceof MxcIntegrityError && cause.cause === undefined ? "extension" : undefined;
     let failure = cause;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -210,7 +247,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
     try {
       // Every other error receipt certifies that creation never began or native
       // termination and disposal completed; cleanup failure has its own code.
-      await channel.send({ type: "error", code,
+      await channel.send({ type: "error", code, ...(backendLoss ? { backendLoss } : {}),
         message: failure instanceof Error ? failure.message.slice(0, 1024) : "Supervisor failed" });
       await channel.end();
     } catch { /* The parent may already be gone; process exit closes the native job. */ }

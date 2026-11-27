@@ -8,11 +8,21 @@ interface MxcHolderLifetime {
 }
 
 const holders = new Set<MxcHolderLifetime>();
+const admissionSealListeners = new Set<() => void>();
 let admissionClosedReason: string | undefined;
 let draining: Promise<void> | undefined;
 
 export function sealMxcHolderLifetimeAdmission(reason: string): void {
-  admissionClosedReason ??= reason;
+  if (admissionClosedReason !== undefined) return;
+  admissionClosedReason = reason;
+  for (const listener of admissionSealListeners) listener();
+  admissionSealListeners.clear();
+}
+
+export function onMxcHolderLifetimeAdmissionSealed(listener: () => void): () => void {
+  if (admissionClosedReason !== undefined) listener();
+  else admissionSealListeners.add(listener);
+  return () => { admissionSealListeners.delete(listener); };
 }
 
 function releaseHolder(holder: MxcHolderLifetime): Promise<void> {

@@ -72,6 +72,8 @@ export function stageApprovalLanes(requests: readonly ApprovalRequest[]): readon
 export interface BoardApprovals {
   /** The requests this board draws, per item, head first. */
   byItem: ReadonlyMap<number, readonly ApprovalRequest[]>;
+  /** Pending output approvals are visible on the board even when another surface owns the card. */
+  pendingOutputItemIds: ReadonlySet<number>;
   /** Answer the head of `itemId`'s requests through the window's one signed decision path. */
   surface: ReturnType<typeof useApprovalSurface>;
 }
@@ -95,6 +97,16 @@ export function useBoardApprovals(
   const surface = useApprovalSurface();
   const { claims, queue } = surface;
   const surfaceId = `work-board:${useId()}`;
+
+  const pendingOutputItemIds = useMemo(() => {
+    const pending = new Set<number>();
+    for (const item of items) {
+      if (!item.runId) continue;
+      const prefix = workflowOutputSessionPrefix(item.id, item.runId);
+      if (queue.some(request => request.sessionId?.startsWith(prefix))) pending.add(item.id);
+    }
+    return pending;
+  }, [items, queue]);
 
   // Session → item, for the children of the items this board lists. The run state also holds runs of items another project's board lists
   // (progress is window-wide); claiming those would hold their cards off the lane with no card here to draw them.
@@ -143,5 +155,5 @@ export function useBoardApprovals(
     return map;
   }, [queue, sessionToItem, claims, surfaceId, claimsVersion]);
 
-  return { byItem, surface };
+  return { byItem, pendingOutputItemIds, surface };
 }

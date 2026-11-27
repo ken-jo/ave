@@ -32,9 +32,9 @@ type Substrate = "sandbox-active" | "sandbox-unavailable" | "sandbox-off";
 
 function arrangeSubstrate(substrate: Substrate): void {
   __resetActiveSandboxCapabilityForTest();
-  // On macOS the shell backend is the container route: an active sandbox is a published container shell, never the wrap alone.
-  if (process.platform === "darwin") {
-    setContainerShellSubstrate(substrate === "sandbox-active" ? { state: "available" } : { state: "unavailable", reason: "shell-start-failed" });
+  // Shell containment requires the boot canary’s container proof.
+  if (process.platform === "darwin" || process.platform === "linux") {
+    setContainerShellSubstrate(process.platform, substrate === "sandbox-active" ? { state: "available" } : { state: "unavailable", reason: "shell-start-failed" });
   }
   if (substrate === "sandbox-active") {
     setShellSandboxRequestedAtBoot(true);

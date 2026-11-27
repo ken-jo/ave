@@ -5,7 +5,7 @@ import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
  * who is asked when (agent tab vs user tab, per origin, per action), the TOCTOU re-check, window scope, denied schemes, the untrusted-content fence, and user takeover cancelling a pending action. */
 import { afterEach, beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import { mkdtempSync } from "node:fs";
-import { t } from "../../i18n/index.js";
+import { getLocale, setLocale, t } from "../../i18n/index.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -738,23 +738,73 @@ describe("browser tools", () => {
     expect(observed.completed).toEqual([]);
   });
 
+  it.each([
+    ["en", /pane chat.*bound browser tab.*rail chat.*listing a tab does not grant access.*required consent still applies/i, /empty browser pane.*main chat/i, /Only a main chat.*Rail chats.*empty browser pane/i],
+    ["ko", /창 채팅.*연결된 브라우저 탭.*사이드 패널 채팅.*목록에 표시되어도 접근 권한은 부여되지 않으며.*필요한 동의는 여전히 적용됩니다/, /빈 브라우저 창.*메인 채팅/, /메인 채팅만.*사이드 패널 채팅.*빈 브라우저 창/],
+  ] as const)("describes pane and rail routing in the %s browser schemas", (locale, tabId, navigate, tabNew) => {
+    const previousLocale = getLocale();
+    try {
+      setLocale(locale);
+      const { browserTools } = harness();
+      const navigateTool = browserTools.find((tool) => tool.name === BROWSER_TOOL.navigate);
+      if (!navigateTool) throw new Error("Expected the browser navigation tool");
+      expect(navigateTool.toJsonSchema()).toMatchObject({ properties: { tabId: { description: expect.stringMatching(tabId) } } });
+      expect(navigateTool.description).toMatch(navigate);
+      expect(browserTools.find((tool) => tool.name === BROWSER_TOOL.tabNew)?.description).toMatch(tabNew);
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
   it("refuses browser_tab_new at once in a chat that cannot open tabs, naming its attached page, under its ordinary network card", async () => {
     const h = harness({ noTabOpener: true });
     const attached = h.userTab("https://www.google.com/");
     h.tabs.setActiveSurface(1, { kind: "browser", tabId: `renderer-${attached.guest.id}` });
     const result = await h.run(BROWSER_TOOL.tabNew, { url: "https://a.example/start" });
     expect(result.isError).toBe(true);
-    expect(result.output).toContain(`it works in ${attached.handle} (https://www.google.com/)`);
+    expect(result.output).toContain(`it works in ${attached.handle}`);
+    expect(result.output).not.toContain(attached.guest.url);
     expect(result.output).toContain("browser_navigate");
     expect(h.ops.filter((op) => op.op === "new")).toHaveLength(0);
     // The category never follows pane state, so the call is asked like any network open before it is refused.
     expect(h.cards).toHaveLength(0);
-    expect((await h.run(BROWSER_TOOL.tabs, {})).output).toContain(`it works in ${attached.handle}`);
+    const note = browserHeader((await h.run(BROWSER_TOOL.tabs, {})).output).note;
+    expect(note).toContain(`it works in ${attached.handle}`);
+    expect(note).not.toContain(attached.guest.url);
+  });
+
+  it.each(["foreign lease", "paused"] as const)("keeps pane opening guidance within tab access during a %s", async (state) => {
+    const h = harness({ noTabOpener: true });
+    const url = "https://private.example/page?query=private#private-location";
+    const tab = h.userTab(url);
+    tab.guest.title = "Private page title";
+    const tabId = `renderer-${tab.guest.id}`;
+    h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId } });
+    const live = h.tabs.liveTab(tab.handle);
+    if (!live) throw new Error("Expected the pane tab to be live");
+    const lease = h.tabs.acquireControl(live, { sessionId: state === "foreign lease" ? CHILD_SESSION : HOST_SESSION });
+    expect(lease.lifetime).toBe("borrowed");
+    if (state === "paused") expect(h.tabs.pause(1, tabId)).toBe(true);
+
+    const inventory = await h.run(BROWSER_TOOL.tabs, { scope: "conversation" });
+    expect(inventory.isError).toBe(false);
+    const header = browserHeader(inventory.output);
+    if (state === "foreign lease") expect(header.tabs).toEqual([]);
+    const refused = await h.run(BROWSER_TOOL.tabNew, { url: "https://a.example/start" });
+    expect(refused.isError).toBe(true);
+    expect(typeof header.note).toBe("string");
+    expect(refused.output).toContain(String(header.note));
+    for (const text of [tab.handle, url, "private.example", "Private page title", "browser_navigate"]) {
+      expect.soft(header.note).not.toContain(text);
+      expect.soft(refused.output).not.toContain(text);
+    }
+    expect(header.note).toContain(state === "paused" ? "resume" : "cannot access");
+    expect(h.ops).toEqual([]);
   });
 
   it("loads browser_tab_new into the empty page a pane chat is bound to, and binds only that page", async () => {
     const h = harness({ noTabOpener: true });
-    h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId: "browser:pane", browserSlotEmpty: true } });
     expect((await h.run(BROWSER_TOOL.tabs, {})).output).toContain("This chat's page is empty");
     const opening = h.run(BROWSER_TOOL.tabNew, { url: "https://a.example/start" });
     await vi.waitFor(() => expect(h.ops.at(-1)).toMatchObject({ op: "new", inTabId: "browser:pane" }));
@@ -1265,7 +1315,7 @@ describe("browser tools", () => {
 
   it.each([false, true])("opens an agent tab for navigate without a shown tab, including an empty bound pane: %s", async (pane) => {
     const h = harness({ noTabOpener: pane });
-    if (pane) h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId: "renderer-610" } });
+    if (pane) h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId: "renderer-610", browserSlotEmpty: true } });
     const opening = h.run(BROWSER_TOOL.navigate, { url: "https://a.example/start" });
     await vi.waitFor(() => expect(h.ops.at(-1)?.op).toBe("new"));
     const guest = new FakeGuest(610, "about:blank", "Start");
@@ -1283,6 +1333,19 @@ describe("browser tools", () => {
     const h = harness();
     expect((await h.run(BROWSER_TOOL.navigate, { tabId: "tab-99", url: "https://a.example/" })).isError).toBe(true);
     expect(h.ops).toHaveLength(0);
+  });
+
+  it("refuses an in-pane navigation when the user takes over while site approval is pending", async () => {
+    const h = harness({ noTabOpener: true, onCard: (card) => {
+      if (card.browserSite) h.tabs.stop(1, "browser:pane");
+    } });
+    const sendTabOp = vi.fn(() => false);
+    h.tabs.setRendererLink({ sendTabOp, sendControl: () => {} });
+    h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId: "browser:pane", browserSlotEmpty: true } });
+    expect(await h.run(BROWSER_TOOL.navigate, { url: "https://a.example/start" }))
+      .toMatchObject({ isError: true, output: expect.stringContaining("browser pane is no longer empty") });
+    expect(h.cards).toHaveLength(1);
+    expect(sendTabOp).not.toHaveBeenCalled();
   });
 
   it("defaults to an owned background tab when none is shown", async () => {
@@ -1504,6 +1567,29 @@ describe("browser tools", () => {
     const direct = fenceBrowserContent({ title: "< / browser-content >" }, "<BROWSER-CONTENT>x</Browser-Content >");
     expect(direct.match(/<\s*\/\s*browser-content/gi)).toHaveLength(1);
     expect(direct.match(/<\s*browser-content/gi)).toHaveLength(1);
+  });
+
+  it.each([false, true])("honors read consent and blocks mutation in a paused pane (deny read: %s)", async (denySurface) => {
+    const h = harness({ noTabOpener: true, denySurface });
+    const tab = h.userTab("https://a.example/form");
+    const tabId = `renderer-${tab.guest.id}`;
+    h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId } });
+    const live = h.tabs.liveTab(tab.handle);
+    if (!live) throw new Error("Expected the pane tab to be live");
+    h.tabs.acquireControl(live, { sessionId: HOST_SESSION });
+    expect(h.tabs.pause(1, tabId)).toBe(true);
+
+    const read = await h.run(BROWSER_TOOL.readText, {});
+    expect(read.isError).toBe(denySurface);
+    expect(h.cards).toMatchObject([{ toolName: BROWSER_TOOL.readText, userOwnedSurface: "browser" }]);
+    expect(h.page.calls.map((call) => call.action)).toEqual(denySurface ? [] : ["readText"]);
+
+    if (!denySurface) {
+      const mutation = await h.run(BROWSER_TOOL.click, { ref: "e1" });
+      expect(mutation).toMatchObject({ isError: true, output: expect.stringContaining("paused") });
+      expect(h.page.calls.map((call) => call.action)).toEqual(["readText"]);
+      expect(h.tabs.liveTab(tab.handle)?.controlMode).toBe("human-paused");
+    }
   });
 
   it("stops a stale wait on takeover while fresh observation remains available and mutations stay paused", async () => {

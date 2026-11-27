@@ -6,12 +6,18 @@ import { captureShellWorkingDirectoryIdentity } from "../permissions/shell-worki
 import { win32 as winPath } from "node:path";
 import { withLocalityDecision } from "../shared/local-path-io.js";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
+import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, windowsPathKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 
 import { appOwnedSandboxPrivateRoots, aveHomeReadBoundaryCovering, getProtectedReadDenyFloor, getUserReadDenies, insideOwnWindowsSandboxHome, protectedReadDenyMatcher } from "../permissions/asrt-sandbox.js";
 import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "../permissions/confinement-state-paths.js";
 import { detectMxcShellCapability } from "../permissions/sandbox-capability.js";
+import { observeWindowsBackend, reportWindowsBackendLoss, type WindowsBackendObservation } from "../permissions/windows-confinement-evidence.js";
 import {
   buildMxcShellRequest,
+  getHostWxcExecIdentity,
+  isWindowsPathAtOrUnder,
+  MxcLauncherIntegrityError,
+  type MxcRankedPath,
   mxcRankedGrantIdentity,
   openMxcRequestTransport,
   type MxcRequestTransport,
@@ -31,7 +37,7 @@ export interface MxcShellLaunch extends Pick<MxcRequestTransport, "bindChild" | 
   readonly proxyPort: number;
   readonly watchedNotice?: string | undefined;
   /** Admit connections after the final shell admission checks, immediately before spawn. */
-  activate(assertSpawnDirectory?: () => void): void;
+  activate(assertSpawnDirectory?: () => void): WindowsBackendObservation;
 }
 
 /** A shell command's policy as the lists the shell composes. */
@@ -96,8 +102,25 @@ export interface PrepareMxcShellLaunchInput {
   readonly timeoutMs: number;
   readonly directoryHeld?: boolean;
   readonly exists: (path: string) => boolean;
+  readonly assertWorkingDirectory?: () => void;
+  readonly assertCommand?: () => void;
+  readonly assertDelivery?: () => void;
   readonly markTiming?: (stage: MxcShellPreparationStage) => void;
   readonly markParserTiming?: (stage: MxcParserPreparationStage) => void;
+}
+
+function matchesRankedPath({ path, obligation }: MxcRankedPath, facts: WindowsPathFacts | undefined): boolean {
+  if (!facts || admitWindowsReparse(facts, "grant") !== true) return false;
+  if (obligation.kind === "missing" ? facts.exists !== false : facts.exists !== true
+    || facts.directory !== obligation.directory || facts.canonical === null || windowsPathKey(facts.canonical) !== windowsPathKey(path)) return false;
+  const existing = [...facts.ancestors, facts].filter(component => component.exists === true);
+  const anchor = existing.at(-1)?.canonical;
+  return anchor != null && windowsPathKey(anchor) === windowsPathKey(obligation.anchorTarget)
+    && existing.length === obligation.chain.length
+    && existing.every((component, index) => {
+      const identity = obligation.chain[index];
+      return identity !== undefined && windowsObjectKey(identity) === windowsObjectKey(component);
+    });
 }
 
 /** Margin MXC's own timeout keeps behind the host's lifetime watch. */
@@ -115,20 +138,26 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   const capability = detectMxcShellCapability();
   if (capability === undefined) throw new Error("Container shell route is unavailable");
   // Before anything is allocated: a runtime root that was not proved private refuses every container start.
-  requireMxcContainerStartRoot();
+  const runtimeRoot = requireMxcContainerStartRoot();
   const token = input.egressToken;
   const isRouteCurrent = (): boolean => detectMxcShellCapability() === capability;
   const egress = openShellEgressAdmission({ token, lifecycle, isRouteCurrent, releaseOnRevoke: true });
   const { assertAdmission } = egress;
   assertAdmission();
   let wxcExec: string;
+  let launcherIdentity: string;
+  // Taken before the launcher check starts, so its failure reaches only the evidence it was measured against.
+  const backendObservation = observeWindowsBackend("container", "shell");
   try {
-    wxcExec = await resolveHostWxcExecPath();
-  } catch {
+    launcherIdentity = getHostWxcExecIdentity();
+    wxcExec = await resolveHostWxcExecPath(launcherIdentity);
+  } catch (error) {
+    if (error instanceof MxcLauncherIntegrityError) reportWindowsBackendLoss(backendObservation);
     // The resolver's failures name the launcher's absolute path.
     throw new Error("Contained shell launcher could not be verified on this installation");
   }
   if (!input.exists(wxcExec)) {
+    reportWindowsBackendLoss(backendObservation);
     throw new Error("Contained shell launcher is missing from this installation");
   }
   input.markParserTiming?.("launcher-verified");
@@ -140,6 +169,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   };
   // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.
   const { observation: { grants }, seal } = sealTargetObservation(() => {
+    if (requireMxcContainerStartRoot() !== runtimeRoot) throw new Error("Container runtime root changed before spawn");
     const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;
     // The container runtime root is closed to reads and writes alike: a grant inside it would outrank its deny. Only this invocation's own HOME is granted there, and the deny is restated so it holds beneath a granted ancestor.
     const privateRoots = appOwnedSandboxPrivateRoots();
@@ -158,9 +188,28 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     const denyRead = [...new Set([...input.filesystem.denyRead, ...privateRoots])];
     const userDenyRead = getUserReadDenies();
     const protectedFloor = getProtectedReadDenyFloor().filter((path) => !userDenyRead.includes(path));
-    const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, denyRead, protectedFloor, userDenyRead }));
+    let rankedPaths: readonly MxcRankedPath[] = [];
+    const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, denyRead, protectedFloor, userDenyRead }),
+      paths => { rankedPaths = paths; });
+    const allowed = [...grants.readwrite, ...grants.readonly];
+    const cwdPaths = allowed.some(path => isWindowsPathAtOrUnder(input.cwd, path)) ? [input.cwd] : [];
+    const paths = [...new Set([...cwdPaths, ...allowed, ...grants.denied]
+      .map(path => {
+        const normalized = winPath.normalize(path);
+        return normalized === winPath.parse(normalized).root ? normalized : normalized.replace(/\\+$/u, "");
+      }))];
+    const facts = pinWindowsPaths(paths, { batch: true });
+    const byPath = new Map(paths.map((path, index) => [windowsPathKey(path), facts[index]]));
+    const witnessed = new Set(rankedPaths.map(({ path }) => windowsPathKey(path)));
+    if ([...allowed, ...grants.denied].some(path => !witnessed.has(windowsPathKey(path)))
+      || rankedPaths.some(proof => !matchesRankedPath(proof, byPath.get(windowsPathKey(proof.path))))) {
+      throw new Error("Container filesystem grant changed before spawn");
+    }
+    const grantFacts = facts.map(row => [...row.ancestors, row].map(part => [part.exists,
+      part.exists === true ? windowsObjectKey(part) : null, part.canonical, part.directory, part.reparseTag, part.reparseTarget]));
     assertWriteGrantsOutsideConfinementState(grants.readwrite, statePaths, undefined, home);
     const cwd = resolvePathForPolicy(input.cwd);
+    input.assertWorkingDirectory?.();
     const directory = process.platform === "win32" ? captureShellWorkingDirectoryIdentity(input.cwd) : undefined;
     return {
       cwd,
@@ -168,13 +217,20 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
       home,
       grants,
       grantIdentity: mxcRankedGrantIdentity(grants),
+      grantFacts,
     };
   }, JSON.stringify);
+  const assertDispatch = (): void => withLocalityDecision(() => {
+    assertAdmission();
+    seal.verify();
+    input.assertCommand?.();
+    if (getHostWxcExecIdentity() !== launcherIdentity) throw new Error("Contained shell launcher changed before spawn");
+  });
   assertAdmission();
   markTiming?.("sandbox-prep");
   const listener = await egress.openProxy();
   markTiming?.("egress-prep");
-  seal.verify();
+  assertDispatch();
   input.markParserTiming?.("seal-verified");
   const systemRoot = windowsSystemRoot();
   const env: Record<string, string> = { ...input.env };
@@ -187,7 +243,14 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     proxyUrl: listener.url,
     timeoutMs: input.timeoutMs + MXC_TIMEOUT_MARGIN_MS,
   });
-  const transport = await openMxcRequestTransport(request, wxcExec, input.directoryHeld);
+  const transport = await openMxcRequestTransport(request, wxcExec, {
+    root: runtimeRoot, signal: lifecycle.signal,
+    held: input.directoryHeld === true,
+    assertStillValid: () => withLocalityDecision(() => {
+      assertDispatch();
+      if (egress.active) input.assertDelivery?.();
+    }),
+  });
   lifecycle.defer(() => transport.release());
   assertAdmission();
   markTiming?.(transport.args[0] === "--config" ? "policy-pipe-ready" : "inline-policy-ready");
@@ -212,22 +275,32 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     if (notices.length > 0) watchedNotice = notices.join("\n");
     if (failure !== undefined) throw failure;
   });
+  const bindHeldPolicy = transport.bindHeldPolicy;
   return {
     argv: [wxcExec, ...transport.args],
     proxyPort: listener.port,
     get watchedNotice() { return watchedNotice; },
     activate: (assertSpawnDirectory) => {
-      assertAdmission();
       const assertStillValid = (): void => {
-        seal.verify();
+        assertDispatch();
         assertSpawnDirectory?.();
       };
       if (claim === undefined) withLocalityDecision(assertStillValid);
       else claim.start(assertStillValid);
+      const observation = observeWindowsBackend("container", "shell");
       egress.activate();
       input.markParserTiming?.("seal-verified-at-activation");
+      return observation;
     },
-    bindChild: transport.bindChild,
-    ...(transport.bindHeldPolicy !== undefined && { bindHeldPolicy: transport.bindHeldPolicy }),
+    bindChild: (child) => {
+      if (!egress.active) throw new Error("Container shell launch must be active before binding a child");
+      transport.bindChild(child);
+    },
+    ...(bindHeldPolicy !== undefined && {
+      bindHeldPolicy: (launcher, readerPid, onFailure) => {
+        if (!egress.active) throw new Error("Container shell launch must be active before binding a child");
+        return bindHeldPolicy(launcher, readerPid, onFailure);
+      },
+    }),
   };
 }

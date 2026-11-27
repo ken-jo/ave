@@ -33,6 +33,7 @@ const runtime = vi.hoisted(() => ({
   containerBackend: false,
   aclHolderGrants: false,
   policyFrames: [] as Buffer[],
+  policyPayloads: [] as { bytes: Buffer; pipe: string }[],
 }));
 const needsFixtureGrantPins = () => runtime.containerBackend || (hostPlatform !== "win32" && runtime.aclHolderGrants);
 
@@ -295,9 +296,25 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
     const aces = [{ type: 0, flags: 3, mask: 0x1f01ff, sid: owner }, ...(readable(path) ? [{ type: 0, flags: 3, mask: 0x1200a9, sid: "S-1-5-32-545" }] : [])];
     return entry.exists ? { identity: { volumeSerial: entry.volumeSerial, fileId: entry.fileId }, owner, protected: true, nullDacl: false, aces } : null;
   };
+  const holdWindowsDirectory: typeof actual.holdWindowsDirectory = async (path) => {
+    const [directory] = pin([path]);
+    if (!directory?.directory) return undefined;
+    let held = true;
+    const unexpectedLauncher = (): never => { throw new Error("The fixture replaces the native launcher"); };
+    return {
+      facts: directory,
+      launcherArgs: [],
+      stdio: [],
+      command: unexpectedLauncher,
+      bind: unexpectedLauncher,
+      isHeld: () => held,
+      release: async () => { held = false; },
+    };
+  };
   return {
     ...actual,
     pinWindowsPaths: pin,
+    holdWindowsDirectory,
     readWindowsDacls: (paths: readonly string[], options?: { parent?: boolean }) => {
       const rows = pin(paths);
       const parents = options?.parent ? pin(paths.map(path => win32.dirname(path))) : [];
@@ -341,6 +358,7 @@ vi.mock("../sandbox-capability.js", async (original) => {
 });
 vi.mock("../mxc-windows.js", async (original) => ({
   ...await original<typeof import("../mxc-windows.js")>(),
+  getHostWxcExecIdentity: () => "verified-launcher",
   resolveHostWxcExecPath: async () => launcherPath,
 }));
 
@@ -389,6 +407,15 @@ vi.mock("node:child_process", async (original) => {
       return helper.child;
     },
   } };
+});
+vi.mock("../mxc-policy-pipe.js", async (original) => {
+  const actual = await original<typeof import("../mxc-policy-pipe.js")>();
+  const openMxcPolicyPipe: typeof actual.openMxcPolicyPipe = async (bytes, pipe, admission) => {
+    const transport = await actual.openMxcPolicyPipe(bytes, pipe, admission);
+    runtime.policyPayloads.push({ bytes, pipe });
+    return transport;
+  };
+  return { ...actual, openMxcPolicyPipe };
 });
 vi.mock("../../main/windows-path-kind-launcher.js", async (original) => {
   const actual = await original<typeof import("../../main/windows-path-kind-launcher.js")>();
@@ -575,6 +602,7 @@ afterEach(async () => {
     windowsAdmission.native = false;
     runtime.aclHolderGrants = false;
     runtime.policyFrames.length = 0;
+    runtime.policyPayloads.length = 0;
   }
 });
 
@@ -633,13 +661,19 @@ async function containerShellRequest(input: { cwd: string; writePaths: readonly 
     if (launch.argv[1] === "--config") {
       expect(launch.argv[2]).toMatch(/^\\\\\.\\pipe\\ave-mxc-[a-f0-9]{32}$/u);
       expect(runtime.policyFrames).toHaveLength(1);
+      expect(runtime.policyPayloads).toHaveLength(1);
       const frame = runtime.policyFrames.pop();
-      if (!frame) throw new Error("The policy helper received no frame");
-      expect(frame.readUInt32LE(0)).toBe(frame.length - 4);
-      bytes = frame.subarray(4);
+      const payload = runtime.policyPayloads.pop();
+      if (!frame || !payload) throw new Error("Missing policy header or payload");
+      // Gated delivery sends the body only after the launcher binds, so observe it at transport entry.
+      expect(frame).toHaveLength(4);
+      expect(frame.readUInt32LE(0)).toBe(payload.bytes.length);
+      expect(launch.argv[2]).toBe(payload.pipe);
+      bytes = payload.bytes;
     } else {
       expect(launch.argv[1]).toBe("--config-base64");
       expect(runtime.policyFrames).toHaveLength(0);
+      expect(runtime.policyPayloads).toHaveLength(0);
       bytes = Buffer.from(launch.argv[2] ?? "", "base64");
     }
     if (input.policyPadding) expect(launch.argv[1]).toBe("--config");

@@ -43,6 +43,7 @@ export const ROUTINES = {
   pause: "ave:routines:pause",
   resume: "ave:routines:resume",
   listOccurrences: "ave:routines:list-occurrences",
+  changed: "ave:routines:changed",
   // Running indicator events (renderer reflects LLM session progress)
   runningStarted: "ave:routines:running-started",
   runningFinished: "ave:routines:running-finished",

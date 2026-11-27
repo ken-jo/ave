@@ -3,11 +3,12 @@ import { globSync, readFileSync } from "node:fs";
  * Host-only channels reject isolated app-resource origins and admit host renderer frames.
  * Each channel is driven from both to ensure a guard that refuses everyone cannot pass.
  *
- * The shared ipc-guard audit row records the reject branch because refusal results differ
+ * The shared sender-refusal event records the reject branch because refusal results differ
  * between handlers. A separate return-value assertion for ave:app:info also checks that a
  * refused caller receives no host fields.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { resolve } from "node:path";
 import type { IpcMainInvokeEvent } from "electron";
 import { hostFrameEvent, isolatedAppFrameEvent } from "../../__tests__/test-helpers.js";
@@ -69,8 +70,7 @@ vi.mock("electron", () => {
   };
 });
 
-type AuditRow = { sessionId?: string; input?: string };
-const auditRows: AuditRow[] = [];
+let permissionEvents: ReturnType<typeof collectPermissionEvents>["events"];
 
 
 /**
@@ -100,6 +100,7 @@ function makeDeps(): never {
       generateText: vi.fn(async () => ""),
       getActiveStreamTurn: () => null,
     },
+    memoryManager: { sessions: {} },
     sideChatConversationLoop: undefined,
     approvalGate: undefined,
     settingsService: {
@@ -127,18 +128,8 @@ function makeDeps(): never {
   } as unknown as never;
 }
 
-/**
- * The sender guard's audit row is the one carrying `frameUrl`. Other
- * `ipc-guard` rows exist (payload-validation rejections inside a handler that
- * already passed its guard), and matching those would report a guard rejection
- * that never happened.
- */
-function guardRowsFor(channel: string): AuditRow[] {
-  return auditRows.filter((row) => {
-    if (row.sessionId !== "ipc-guard" || typeof row.input !== "string") return false;
-    const parsed = JSON.parse(row.input) as { channel?: string; frameUrl?: string };
-    return parsed.channel === channel && typeof parsed.frameUrl === "string";
-  });
+function guardRowsFor(channel: string) {
+  return permissionEvents.filter((row) => row.event === "ipc_sender_refused" && row.channel === channel);
 }
 
 /** What {@link invoke} returns when the handler threw. */
@@ -159,6 +150,7 @@ async function invoke(channel: string, event: IpcMainInvokeEvent, args: unknown[
 }
 
 /** `[domain, channel, args]` — args are only what a handler needs to reach its guard. */
+const WINDOWS_BUILD_VIEW: readonly [string, string, unknown[]] = ["chat", CHANNELS.memoryMap.buildView, [{ invalid: true }]];
 const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = [
   // Full chat authority: sending turns, reading transcripts, editing memory.
   ["chat", CHANNELS.chat.send, [{ input: "x" }]],
@@ -172,6 +164,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["chat", CHANNELS.memory.detailGet, ["11111111-1111-4111-8111-111111111111", {}]],
   ["chat", CHANNELS.memory.summariesGet, [{}]],
   ["chat", CHANNELS.memoryMap.get, [{ invalid: true }]],
+  ...(process.platform === 'win32' ? [WINDOWS_BUILD_VIEW] : []),
   ["chat", CHANNELS.memoryMap.build, [{ invalid: true }]],
   ["chat", CHANNELS.memoryMap.cancel, [{ invalid: true }]],
   ["chat", CHANNELS.memoryMap.facets, [{ invalid: true }]],
@@ -286,8 +279,10 @@ beforeEach(async () => {
   configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   handleMap.clear();
   appWindows.length = 0;
-  auditRows.length = 0;
   vi.clearAllMocks();
+  const logs = collectPermissionEvents();
+  permissionEvents = logs.events;
+  onTestFinished(logs.restore);
   // The dev domain refuses everything when packaged, which would hide its
   // sender guard behind an earlier return.
   setIsPackaged(false);

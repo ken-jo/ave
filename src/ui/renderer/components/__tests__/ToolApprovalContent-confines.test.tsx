@@ -3,7 +3,8 @@
 /** PR2 finding b; ToolApprovalContent confines honesty. The always-visible security-isolation summary must reflect per-dimension confines. Before the fix, the confines-BLIND `isWeakSandbox` printed a blanket "OS 격리 활성" for ANY verified non-none ASRT; so a write/shell tool on Windows (partial srt-win, process not confined)
  * wrongly read as fully isolated. Now a non-full confinement renders the partial-isolation qualifier with the per-dimension breakdown. Display-only; the relaxation control (sandboxRelaxesCategory) is untouched. Locale is pinned to Korean for renderer tests (vitest-ambient-intl.ts), so the assertions match the Korean catalog. */
 import "../../../../../test/renderer/setup.js";
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
+import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 
@@ -35,6 +36,48 @@ function renderSandboxSummary(req: ApprovalRequest) {
 }
 
 describe("ToolApprovalContent sandbox confines label", () => {
+  const originalLocale = getLocale();
+  afterEach(() => setLocale(originalLocale));
+
+  describe.each([
+    { locale: "en", activeLabel: "OS isolation active" },
+    { locale: "ko", activeLabel: "OS 격리 활성" },
+  ] as const)("$locale execution plan", ({ locale, activeLabel }) => {
+    it.each([
+      { platform: "win32", substrate: "mxc", backend: "MXC" },
+      { platform: "darwin", substrate: "mxc", backend: "Seatbelt" },
+      { platform: "darwin", substrate: "asrt", backend: "Seatbelt" },
+      { platform: "linux", substrate: "mxc", backend: "bubblewrap (bwrap)" },
+      { platform: "linux", substrate: "asrt", backend: "bubblewrap (bwrap)" },
+      { platform: "win32", substrate: "asrt", backend: "srt" },
+    ] as const)("names $backend for $platform/$substrate", ({ platform, substrate, backend }) => {
+      setLocale(locale);
+      const request = makeRequest(undefined);
+      request.executionPlan = {
+        version: "host-shell-execution-plan/v4",
+        identity: `host-shell-execution-plan/v4:${platform}:${substrate}`,
+        platform,
+        requestedSandbox: true,
+        executionRequest: "default",
+        mode: "asrt",
+        sandboxed: true,
+        substrate,
+        fallbackReason: "none",
+        requiresExplicitUserApproval: false,
+        capability: {
+          kind: "asrt",
+          confidence: "verified",
+          platform,
+          confines: { filesystem: true, process: true, network: true },
+        },
+      };
+
+      const { summary } = renderSandboxSummary(request);
+      expect(summary).toHaveAttribute("data-testid", "tool-approval-execution-plan");
+      expect(summary).toHaveTextContent(`${activeLabel} (${backend})`);
+    });
+  });
+
   it("names the broker guest instead of calling it partial isolation", () => {
     const { summary } = renderSandboxSummary(
       makeRequest({

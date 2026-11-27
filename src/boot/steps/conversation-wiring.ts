@@ -11,7 +11,7 @@ import {
   createCallLlm,
   createCallLlmForPlugin,
 } from "../conversation.js";
-import { MemoryManager } from "../../memory/memory-manager.js";
+import { MemoryManager, type MemoryManagerOptions } from "../../memory/memory-manager.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { readPermissionSettings } from "../../permissions/permission-settings-store.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
@@ -91,11 +91,13 @@ export function createSubscriptionChatLoopBindings(): SubscriptionChatLoopBindin
     await openOAuthLogin(validated.url, options);
   };
   const audit: SubscriptionRuntimeAuditSink = (event) => {
-    try {
-      logPermissionEvent("subscription_runtime_warning", { sessionId: permissionLogId("subscription-runtime"), provider: permissionLogId(event.provider), outcome: permissionLogId(event.outcome) }, "warn");
-    } catch {
-      // Audit availability must not make the provider usable or unusable.
-    }
+    const requestKind = typeof event.requestKind === "string" && /^[a-z-]{1,80}$/.test(event.requestKind)
+      ? permissionLogId(event.requestKind)
+      : undefined;
+    logPermissionEvent("subscription_runtime_warning", {
+      sessionId: "subscription-runtime", provider: permissionLogId(event.provider),
+      outcome: permissionLogId(event.outcome), requestKind,
+    }, "warn");
   };
   return Object.freeze({
     subscriptionProviderFactory: (
@@ -149,13 +151,15 @@ export function createLoopRationaleBindings(input: {
   };
 }
 
-export function createIsolatedConversationMemoryManagers(): IsolatedConversationMemoryManagers {
+export function createIsolatedConversationMemoryManagers(createSessionRepository?: MemoryManagerOptions["createSessionRepository"]): IsolatedConversationMemoryManagers {
   const sideChatMemoryManager = new MemoryManager({
     aveDir: openFeatureNamespace("side-chat").dir,
+    ...(createSessionRepository === undefined ? {} : { createSessionRepository }),
   });
   sideChatMemoryManager.load();
   const subAgentMemoryManager = new MemoryManager({
     aveDir: openFeatureNamespace("subagent").dir,
+    ...(createSessionRepository === undefined ? {} : { createSessionRepository }),
   });
   subAgentMemoryManager.load();
   return { sideChatMemoryManager, subAgentMemoryManager };
@@ -355,6 +359,7 @@ export async function wireConversation(
       let paneLoop!: ConversationLoop;
       paneLoop = createSideChatConversationLoop({
         ...sideChatLoopDeps,
+        paneWindowId: windowId,
         sessionHeldElsewhere: sideSessionHeldElsewhereFor(() => paneLoop),
         ...createLoopRationaleBindings({
           service: rationaleHostService,

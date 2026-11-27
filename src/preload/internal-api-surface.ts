@@ -50,6 +50,7 @@ import type {
 } from "../shared/permissions-events.js";
 import {
   type ActiveWorkspaceSurface,
+  type PaneChatSurface,
 } from "../shared/browser-surface.js";
 import type { MarketplaceAnnouncementPayload } from "../shared/marketplace-announcements.js";
 import { isMemorySaveResultEvent, type MemorySaveResultEvent } from "../shared/memory-save-result.js";
@@ -266,7 +267,7 @@ export function buildInternalApiSurface() {
       attachments?: unknown[],
       originSessionId?: string,
       sendRequestId?: string,
-      surface?: ActiveWorkspaceSurface,
+      surface?: PaneChatSurface,
       sessionId?: string,
       origin?: { inputOrigin: "queue-auto" } | { inputOrigin: "user-keyboard"; userIntent?: UserKeyboardIntentSnapshot },
     ) =>
@@ -921,6 +922,11 @@ export function buildInternalApiSurface() {
     >,
   listRoutineOccurrences: async (query: { projectRoot?: string; from: string; to: string }) =>
     ipcRenderer.invoke(ROUTINES.listOccurrences, query) as Promise<import("../shared/routines-types.js").RoutineOccurrencesResult>,
+  onRoutinesChanged: (handler: () => void) => {
+    const listener = () => handler();
+    ipcRenderer.on(ROUTINES.changed, listener);
+    return () => ipcRenderer.removeListener(ROUTINES.changed, listener);
+  },
   onRoutineFired: (
     handler: (event: import("../shared/routines-types.js").RoutineFiredPayload) => void,
   ) => {

@@ -104,6 +104,8 @@ vi.mock("../services.js", () => ({
       toolRegistry: { setDenyRules: vi.fn(), size: 0 },
     };
   }),
+  selectBootSessionRepositoryFactory: vi.fn(() => undefined),
+  verifySessionSearchIndex: vi.fn(async () => {}),
 }));
 
 vi.mock("../conversation.js", () => ({

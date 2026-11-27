@@ -260,8 +260,8 @@ describe("native plugin child quarantine through the runtime", () => {
       expect(spec.floorPierces).toEqual([]);
       expect(spec).not.toHaveProperty("probe");
       expect(spec.assertRequest).toBeTypeOf("function");
-      expect(() => spec.assertRequest?.({ command: windowsCommandLine(spec.command, spec.args), workingDirectory: spec.cwd } as never)).not.toThrow();
-      expect(() => spec.assertRequest?.({ command: windowsCommandLine(spec.command, spec.args), workingDirectory: winPath.dirname(spec.cwd) } as never))
+      expect(() => spec.assertRequest?.({ command: windowsCommandLine(spec.command, spec.args), workingDirectory: spec.cwd } as never, spec.cwd)).not.toThrow();
+      expect(() => spec.assertRequest?.({ command: windowsCommandLine(spec.command, spec.args), workingDirectory: winPath.dirname(spec.cwd) } as never, spec.cwd))
         .toThrow(/^Admitted plugin request does not/u);
       expect(accountRoute).not.toHaveBeenCalled();
       await runtime.stopAll();

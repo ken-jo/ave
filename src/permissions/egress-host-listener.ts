@@ -1,13 +1,15 @@
 import { maskSensitiveData } from "../audit/dlp-filter.js";
-import { egressInvocationOwner, onEgressInvocationReleased } from "./egress-invocations.js";
+import { egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased } from "./egress-invocations.js";
+import { commitUnderAdmission } from "../shared/admission-commit.js";
 import { openInvocationProxyListener, type InvocationProxyAdmission, type InvocationProxyListener } from "./egress-invocation-listener.js";
 import { openEgressRelay } from "./egress-relay/relay.js";
 
 /** One endpoint-scoped egress lease; control traffic belongs on native streams. */
-export async function openMxcEgressLease(token: string): Promise<InvocationProxyListener> {
-  if (!egressInvocationOwner(token)) throw new Error("Container egress requires a live invocation");
-  const relay = await openHostEgressListener(token);
-  let listener: InvocationProxyListener | undefined;
+export async function openMxcEgressLease(token: string, assertStillValid?: () => void): Promise<InvocationProxyListener> {
+  const owner = egressInvocationOwner(token);
+  const signal = egressInvocationAbortSignal(token);
+  if (!owner || !signal) throw new Error("Container egress requires a live invocation");
+  const disposers: Array<() => Promise<void>> = [];
   let closed = false;
   let closing: Promise<void> | undefined;
   let unsubscribe = (): void => {};
@@ -15,24 +17,38 @@ export async function openMxcEgressLease(token: string): Promise<InvocationProxy
     closed = true;
     unsubscribe();
     closing ??= (async () => {
-      try { await listener?.close(); } finally { await relay.close(); }
+      const results = await Promise.allSettled(disposers.map(dispose => dispose()));
+      const errors = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+      if (errors.length) throw new AggregateError(errors, "Container egress lease failed to close");
     })();
     return closing;
   };
+  const assertCanBind = () => {
+    signal.throwIfAborted();
+    if (closed || egressInvocationOwner(token) !== owner) throw new Error("Container egress invocation ended during preparation");
+    assertStillValid?.();
+  };
+  let ready = false;
+  const admission = { signal, assertCanBind, acceptsConnections: () => ready && !closed && !signal.aborted,
+    adopt: (dispose: () => Promise<void>) => { disposers.push(dispose); } };
   try {
-    listener = await openInvocationProxyListener({
-      upstream: () => !closed && egressInvocationOwner(token)
+    assertCanBind();
+    const relay = await openHostEgressListener(token, admission);
+    const listener = await openInvocationProxyListener({
+      admission,
+      upstream: () => admission.acceptsConnections()
         ? { host: "127.0.0.1", port: relay.port, proxyAuthorization: relay.proxyAuthorization }
         : undefined,
       onRefused: relay.recordRefusal,
     });
-    relay.registerPort(listener.port);
-    // Admission may have ended while the asynchronous listener bind was pending.
-    if (!egressInvocationOwner(token)) throw new Error("Container egress invocation ended during preparation");
-    unsubscribe = onEgressInvocationReleased((released) => {
-      if (released === token) void close().catch(() => {});
+    return commitUnderAdmission(assertCanBind, () => {
+      relay.registerPort(listener.port);
+      unsubscribe = onEgressInvocationReleased((released) => {
+        if (released === token) void close().catch(() => {});
+      });
+      ready = true;
+      return { port: listener.port, url: listener.url, close };
     });
-    return { port: listener.port, url: listener.url, close };
   } catch (error) {
     try {
       await close();

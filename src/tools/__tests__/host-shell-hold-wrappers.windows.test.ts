@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const boundary = vi.hoisted(() => ({ helper: undefined as ChildProcess | undefined, members: "", spawns: [] as string[][], refuseHold: false, unqueryable: false }));
+const boundary = vi.hoisted(() => ({ helper: undefined as ChildProcess | undefined, members: "", spawns: [] as string[][], refuseHold: false, unqueryableLaunch: 0 }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
@@ -16,7 +16,9 @@ vi.mock("node:child_process", async (importOriginal) => {
         // A helper gone just before the launch refuses the launcher its hold.
         if (boundary.refuseHold) actual.execFileSync("taskkill", ["/PID", String(boundary.helper?.pid), "/F"], { stdio: "ignore", windowsHide: true });
         // This launcher cannot read its own job, so it can never confirm the run stopped.
-        if (boundary.unqueryable) args[0] = String(args[0]).replace(/ave-job\.exe$/u, "ave-job-query-failure.exe");
+        if (boundary.unqueryableLaunch > 0 && --boundary.unqueryableLaunch === 0) {
+          args[0] = String(args[0]).replace(/ave-job\.exe$/u, "ave-job-query-failure.exe");
+        }
       }
       if (!String(args[0]).endsWith("ave-path-kind.exe") || !(args[1] as string[]).includes("--hold")) return actual.spawn(...args);
       const fixture = String(args[0]).replace(/ave-path-kind\.exe$/u, "ave-path-kind-hold-fixture.exe");
@@ -145,7 +147,7 @@ describe.runIf(process.platform === "win32")("held working directory under the c
     if (!existsSync(UNQUERYABLE_LAUNCHER)) throw new Error("Build the launcher fixture: bun run build:windows-job -- -QueryFailureFixture");
     directory = await containerRoute(testContext.skip);
     writeFileSync(join(directory, "spin.cmd"), "@echo.>\"%~dp0echoed\"\r\n@for /l %%i in (1,1,2000000000) do @rem\r\n");
-    boundary.unqueryable = true;
+    boundary.unqueryableLaunch = 2; // The parser's held launch must complete first.
     const abort = new AbortController();
     try {
       const listed = await spinning(directory, end === "abort" ? { abortSignal: abort.signal } : { timeoutSeconds: 8 });
@@ -157,7 +159,7 @@ describe.runIf(process.platform === "win32")("held working directory under the c
       expect(result.output.endsWith(t("shellExecution.cwdPinUnconfirmed"))).toBe(true);
       expect(result.notice).toBe(t("shellExecution.cwdPinUnconfirmed"));
       expect(result.metadata).toMatchObject({ cwdPinUnconfirmed: true });
-    } finally { boundary.unqueryable = false; }
+    } finally { boundary.unqueryableLaunch = 0; }
   });
 
   it("fails a refused pinned start and never retries the command unpinned", { timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async (testContext) => {

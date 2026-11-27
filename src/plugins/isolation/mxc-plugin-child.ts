@@ -123,9 +123,7 @@ export interface MxcPluginChildIntent {
   readonly baseEnv: NodeJS.ProcessEnv;
 }
 
-/** Both values are compared exactly against the request admission measured. The request builder forms `command` with
- * `windowsCommandLine` and passes the cwd through, so any rewriting (case folding, normalization, realpath) is a contract
- * violation. A JavaScript case fold would also disagree with the NTFS upcase table and could equate distinct directories. */
+/** Compare the exact command and physical cwd the holder admitted. */
 export function assertLaunchMatchesIntent(request: ContainerRequest, intent: Pick<MxcPluginChildIntent, "command" | "args" | "cwd">): void {
   if (request.command !== windowsCommandLine(intent.command, intent.args)) {
     throw new MxcProcessContractError("Admitted plugin request does not run the derived command");
@@ -186,7 +184,7 @@ export async function spawnMxcPluginChild(
         if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
       },
       // Checked on a snapshot of the exact request admission later consumes, so this is the request that runs.
-      assertRequest: (request) => assertLaunchMatchesIntent(request, intent),
+      assertRequest: (request, cwd) => assertLaunchMatchesIntent(request, { ...intent, cwd }),
     });
   } catch (error) {
     // Unverified startup cleanup keeps the planner's state: the process may still exist.

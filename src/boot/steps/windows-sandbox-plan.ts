@@ -4,7 +4,6 @@ import type {
 } from "../../permissions/sandbox-capability.js";
 import {
   egressProtocolCoverageFor,
-  type SandboxMxcUnavailableReason,
   type SandboxWindowsExtensionPlan,
   type SandboxWindowsSubstrateInfo,
 } from "../../shared/sandbox-capability-info.js";
@@ -18,16 +17,11 @@ import {
 
 type WindowsAsrtStart = "srt-win" | "proxy-only" | "none";
 
-type WindowsMxcState =
-  | { readonly state: "available" }
-  | { readonly state: "checking" }
-  | { readonly state: "unavailable"; readonly reason: SandboxMxcUnavailableReason };
-
 export interface WindowsSandboxPlanInputs {
   readonly shellRequested: boolean;
   readonly workerRequested: boolean;
   /** While the post-boot shell probe is checking, prepare the proxy but do not use container shells yet. */
-  readonly mxc: WindowsMxcState;
+  readonly mxc: SandboxWindowsSubstrateInfo["mxc"];
   /** Whether extension holders may select the container. A successful shell launcher probe cannot supply this, and
    * neither can a holder's start evidence, which exists only after a start: it follows the install's release-gate record.
    * Boot supplies a settled state only: `checking` belongs to per-holder readiness. */
@@ -39,6 +33,7 @@ export interface WindowsSandboxPlanInputs {
   readonly windowsBuild: string | null;
   /** ASRT's Windows dependency check passed (srt-win provisioned, WFP fence usable). */
   readonly srtWinReady: boolean;
+  readonly accountBackendAbsent?: true;
 }
 
 export interface WindowsSandboxPlan {
@@ -75,9 +70,10 @@ export function windowsSubstrateFor(input: WindowsSandboxPlanInputs, started: Wi
   });
   const extensions = started === "none" ? "none" : extensionPlan.selectedBackend;
   return {
-    mxc: input.mxc.state === "unavailable" ? { state: "unavailable", reason: input.mxc.reason } : { state: input.mxc.state },
+    mxc: input.mxc,
     windowsBuild: input.windowsBuild,
     srtWinReady: input.srtWinReady,
+    ...(input.accountBackendAbsent === true ? { accountBackendAbsent: true } : {}),
     shells,
     extensions,
     shellEgressIdentity: shells === "mxc" ? "kernel-channel" : "shared",
@@ -87,7 +83,8 @@ export function windowsSubstrateFor(input: WindowsSandboxPlanInputs, started: Wi
 }
 
 export function windowsSubstrateWithoutAsrt(substrate: SandboxWindowsSubstrateInfo): SandboxWindowsSubstrateInfo {
-  return { ...substrate, shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
+  const { accountBackendAbsent: _absenceEvidence, ...degraded } = substrate;
+  return { ...degraded, shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
     ...(substrate.extensionPlan ? { extensionPlan: withoutWindowsExtensionBackend(substrate.extensionPlan) } : {}),
   };
 }

@@ -7,14 +7,19 @@ import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { getHostResources } from "../main/host-resources.js";
 import { spawnManaged } from "../main/managed-child-processes.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
-import { mxcStagingParent } from "./mxc-runtime-root.js";
+import { mxcStagingParent, requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { observeWindowsBackend, reportWindowsBackendLoss } from "./windows-confinement-evidence.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
 import { MxcExtensionChannel } from "./mxc-extension-channel.js";
 import { isMxcSupervisorLoaderOverride } from "./mxc-supervisor-transport.js";
 import { MXC_STREAM_CHUNK_BYTES, type MxcExtensionStartRecord } from "./mxc-extension-protocol.js";
 import { MxcIntegrityError } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
+import { createMxcReleaseGate, type MxcReleaseProof } from "./mxc-release-gate.js";
+import { commitUnderAdmission } from "../shared/admission-commit.js";
+import type { HeldWindowsDirectory } from "../shared/windows-path-facts.js";
+import { stripExtendedPathPrefix } from "./sandbox-path-spelling.js";
 
 interface ProcessResult { exitCode: number; timedOut: boolean }
 export type MxcProcessLifecycleEvent = { type: "supervisor-started"; pid: number }
@@ -36,6 +41,8 @@ export interface OwnedMxcExtensionProcess {
   readonly diagnostics: { nodeVersion: string; nativeModules: readonly string[]; nativeModuleCount: number; nativeModulesTruncated: boolean; ownerHandle: string };
   /** What this start's own ready frame carried; holder admission judges it. Absent until that frame arrives. */
   readonly startEvidence: MxcExtensionStartRecord | undefined;
+  /** Binds every later stdin frame to the caller's admission, checked in the step that writes the frame. */
+  fenceInput(admit: () => void): void;
   dispose(): Promise<void>;
 }
 
@@ -63,17 +70,21 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
   private stopped = false;
   private cleanup: Promise<void> | undefined;
   private closedAlready = false;
+  private admitInput: (() => void) | undefined;
+  // Taken before the supervisor starts measuring the backend, so its failure reaches only that evidence.
+  private readonly backendObservations = { common: observeWindowsBackend("container"), extension: observeWindowsBackend("container", "extension") };
   private resolveReady!: () => void;
   private rejectReady!: (error: Error) => void;
   private resolveCompletion!: (result: ProcessResult) => void;
   private rejectCompletion!: (error: Error) => void;
 
-  constructor(private readonly child: ChildProcess, generation: string, key: Buffer, private readonly onLifecycle?: LifecycleObserver, private readonly beforeSpawn?: () => void) {
+  constructor(private readonly child: ChildProcess, generation: string, key: Buffer, private readonly onLifecycle?: LifecycleObserver, private readonly beforeSpawn?: () => void,
+    private readonly release?: SupervisorPreparation["release"], private readonly beforeReady?: () => void) {
     if (!child.stdin || !child.stdout || !child.stderr || !child.stdio[3]) {
       child.kill();
       throw new MxcProcessContractError("Supervisor requires private standard streams");
     }
-    this.channel = new MxcExtensionChannel(child.stdout, child.stdin, generation, key, "host");
+    this.channel = new MxcExtensionChannel(child.stdout, child.stdin, generation, key, "host", "windows-extension");
     this.liveness = child.stdio[3] as Duplex;
     this.ready = new Promise<void>((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
     this.completion = new Promise<ProcessResult>((resolve, reject) => { this.resolveCompletion = resolve; this.rejectCompletion = reject; });
@@ -83,14 +94,14 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
         const send = async () => {
           if (this.stopping || !this.id || this.result) throw new MxcProcessContractError("Extension input is closed");
           for (let offset = 0; offset < chunk.length; offset += MXC_STREAM_CHUNK_BYTES) {
-            await this.channel.send({ type: "stdin", data: chunk.subarray(offset, offset + MXC_STREAM_CHUNK_BYTES).toString("base64") });
+            await this.channel.send({ type: "stdin", data: chunk.subarray(offset, offset + MXC_STREAM_CHUNK_BYTES).toString("base64") }, this.admitInput);
           }
         };
         void send().then(() => callback(), (error: Error) => callback(error));
       },
       final: (callback) => {
         if (this.stopping || this.result) return callback();
-        void this.channel.send({ type: "stdin-end" }).then(() => callback(), (error: Error) => callback(error));
+        void this.channel.send({ type: "stdin-end" }, this.admitInput).then(() => callback(), (error: Error) => callback(error));
       },
     });
     const fail = (error: Error): void => this.fail(error);
@@ -132,20 +143,23 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
         this.observe({ type: "creating" });
         if (this.stopping || this.failure) continue;
         try {
-          // The authenticated request arrives after native bootstrap and probing.
-          // Recheck admission synchronously; no asynchronous caller work may extend it.
-          const result: unknown = this.beforeSpawn?.();
-          if (result !== undefined) {
-            void Promise.resolve(result).catch(() => {});
-            throw new MxcProcessContractError("Extension admission check must be synchronous");
-          }
-        } catch (cause) {
-          this.fail(new MxcProcessContractError("Extension admission revalidation failed", { cause }));
-          continue;
+          await this.channel.send({ type: "spawn-authorized", ...(this.release ? { releasePath: this.release.path, releaseDigest: this.release.digest } : {}) }, () => {
+            if (this.stopping || this.failure) throw new MxcProcessContractError("Extension start was cancelled");
+            try {
+              const result: unknown = this.beforeSpawn?.();
+              if (result !== undefined) {
+                void Promise.resolve(result).catch(() => {});
+                throw new MxcProcessContractError("Extension admission check must be synchronous");
+              }
+            } catch (cause) {
+              throw new MxcProcessContractError("Extension admission revalidation failed", { cause });
+            }
+            if (this.stopping || this.failure) throw new MxcProcessContractError("Extension start was cancelled");
+            this.creationStarted = true;
+          });
+        } catch (error) {
+          if (!this.stopping || this.creationStarted) this.fail(error as Error);
         }
-        if (this.stopping || this.failure) continue;
-        this.creationStarted = true;
-        await this.channel.send({ type: "spawn-authorized" });
       } else if (frame.type === "spawning") {
         if (!this.creationRequested || !this.creationStarted || this.spawnInvoked || this.id) throw new MxcProcessContractError("Unexpected supervisor spawning receipt");
         this.spawnInvoked = true;
@@ -160,6 +174,10 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
         if (frame.id !== this.nativeId) throw new MxcProcessContractError("Supervisor readiness lacks its native process receipt");
         if (this.id) throw new MxcProcessContractError("Duplicate supervisor readiness");
         this.id = frame.id;
+        try { this.beforeReady?.(); } catch (error) {
+          this.fail(error as Error);
+          continue;
+        }
         this.diagnostics = { nodeVersion: frame.nodeVersion, nativeModules: frame.nativeModules, nativeModuleCount: frame.nativeModuleCount, nativeModulesTruncated: frame.nativeModulesTruncated, ownerHandle: frame.ownerHandle };
         this.startEvidence = Object.freeze({ requestDigest: frame.requestDigest, evidence: Object.freeze({ ...frame.startEvidence }) });
         this.resolveReady();
@@ -176,6 +194,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
         this.observe({ type: "stopped", spawnPendingAtCancellation: frame.spawnPendingAtCancellation });
       } else if (frame.type === "error") {
         this.failureReceipt = true;
+        if (frame.code !== "start-refused" && frame.backendLoss) reportWindowsBackendLoss(this.backendObservations[frame.backendLoss]);
         if (frame.code === "cleanup-unverified") throw new MxcProcessCleanupError(frame.message);
         if (frame.code === "integrity") throw new MxcIntegrityError(frame.message);
         if (frame.code === "capability-unavailable") throw new MxcCapabilityUnavailableError(frame.message);
@@ -186,6 +205,8 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
   }
 
   get observerFailure(): Error | undefined { return this.lifecycleFailure; }
+
+  fenceInput(admit: () => void): void { this.admitInput = admit; }
 
   private observe(event: MxcProcessLifecycleEvent): void {
     try { notifyLifecycle(this.onLifecycle, event); } catch (error) {
@@ -210,6 +231,8 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
 
   private async stop(): Promise<void> {
     this.stopping = true;
+    let gateFailure: unknown;
+    try { this.release?.revoke(); } catch (error) { gateFailure = error; }
     // Readiness follows native-observed. EOF can then interrupt a control
     // reader blocked on native stdin without releasing an unobserved pin.
     if (this.id && !this.liveness.destroyed && !this.liveness.writableEnded) this.liveness.end();
@@ -240,23 +263,41 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
       if (this.creationStarted && !this.result && !this.stopped && !this.failureReceipt) {
         throw new MxcProcessCleanupError("Extension termination is unverified", { cause: this.failure });
       }
+      if (gateFailure !== undefined) throw gateFailure;
     } finally { clearTimeout(timer); }
   }
 }
 
+interface SupervisorPreparation {
+  beforeSupervisor?: () => void;
+  beforeReady?: () => void;
+  release?: MxcReleaseProof & { revoke(): void };
+  watchRelease?: (revoke: () => void) => () => void;
+}
+
 async function spawnWith(request: ContainerRequest, nodeModules: string, entry: string,
-  spawn: (entry: string, nodeModules: string, generation: string) => ChildProcess, signal?: AbortSignal, onLifecycle?: LifecycleObserver, beforeSpawn?: () => void, onOwned?: (owned: OwnedMxcExtensionProcess) => void): Promise<OwnedMxcExtensionProcess> {
+  spawn: (entry: string, nodeModules: string, generation: string) => ChildProcess, signal?: AbortSignal, onLifecycle?: LifecycleObserver, beforeSpawn?: () => void, onOwned?: (owned: OwnedMxcExtensionProcess) => void,
+  preparation?: SupervisorPreparation): Promise<OwnedMxcExtensionProcess> {
   assertMxcExtensionRequest(request);
-  if (signal?.aborted) throw new MxcProcessContractError("Extension start was cancelled");
+  const assertPreparation = () => {
+    if (signal?.aborted) throw new MxcProcessContractError("Extension start was cancelled");
+    preparation?.beforeSupervisor?.();
+  };
   const generation = randomBytes(32).toString("hex"), key = randomBytes(32);
-  const child = spawn(entry, nodeModules, generation);
-  const owned = new SupervisedMxcProcess(child, generation, key, onLifecycle, beforeSpawn);
+  const child = commitUnderAdmission(assertPreparation, () => spawn(entry, nodeModules, generation));
+  const owned = new SupervisedMxcProcess(child, generation, key, onLifecycle, beforeSpawn, preparation?.release, preparation?.beforeReady);
   let timer: ReturnType<typeof setTimeout> | undefined;
   let startupAbort: (() => void) | undefined;
   const abort = (): void => { void owned.dispose().catch(() => {}); };
+  const revoke = () => {
+    try { preparation?.release?.revoke(); } catch { abort(); }
+  };
   signal?.addEventListener("abort", abort, { once: true });
+  signal?.addEventListener("abort", revoke, { once: true });
+  let unwatch: (() => void) | undefined;
   void owned.completion.finally(() => signal?.removeEventListener("abort", abort)).catch(() => {});
   try {
+    unwatch = preparation?.watchRelease?.(revoke);
     onOwned?.(owned);
     if (child.pid !== undefined) notifyLifecycle(onLifecycle, { type: "supervisor-started", pid: child.pid });
     if (signal?.aborted) throw new MxcProcessContractError("Extension start was cancelled");
@@ -283,6 +324,9 @@ async function spawnWith(request: ContainerRequest, nodeModules: string, entry: 
     }
     throw owned.observerFailure ?? error;
   } finally {
+    revoke();
+    unwatch?.();
+    signal?.removeEventListener("abort", revoke);
     clearTimeout(timer);
     if (startupAbort) signal?.removeEventListener("abort", startupAbort);
   }
@@ -314,7 +358,10 @@ export function mxcSupervisorEnvironment(base: Readonly<Record<string, string>> 
     LOCALAPPDATA: stateDirectory, ELECTRON_RUN_AS_NODE: "1" };
 }
 
-function spawnPackaged(request: ContainerRequest, options: MxcNativeSpawnOptions, beforeSpawn: (() => void) | undefined): Promise<OwnedMxcExtensionProcess> {
+async function spawnPackaged(request: ContainerRequest, options: MxcNativeSpawnOptions, holder?: {
+  cwdHold: HeldWindowsDirectory;
+  beforeSpawn: () => void; beforeSupervisor: () => void; paths: readonly string[]; watchRelease: (revoke: () => void) => () => void;
+}): Promise<OwnedMxcExtensionProcess> {
   if (process.platform !== "win32") throw new MxcCapabilityUnavailableError("Native extension processes require Windows");
   const resources = getHostResources();
   if (!resources.isPackaged) throw new MxcCapabilityUnavailableError("Native extension processes require a verified packaged installation");
@@ -322,9 +369,37 @@ function spawnPackaged(request: ContainerRequest, options: MxcNativeSpawnOptions
   const entry = join(resources.resourcePath, "app.asar", "dist", "src", "main", "mxc-extension-supervisor.js");
   // The supervisor needs only the runtime mode; the admitted container environment
   // is a separate sealed request and never inherits the supervisor's environment.
-  return spawnWith(request, nodeModules, entry, (file, modules, generation) => spawnManaged(process.execPath, [file, modules, generation], {
-    env: mxcSupervisorEnvironment(), cwd: resources.resourcePath, stdio: ["pipe", "pipe", "pipe", "pipe"],
-  }, { label: "extension-native-supervisor" }), options.signal, options.onLifecycle, beforeSpawn, options.onOwned);
+  assertMxcExtensionRequest(request);
+  const root = requireMxcContainerStartRoot();
+  const cwdSource = holder?.cwdHold?.source;
+  const assertDirectoryHold = () => {
+    if (holder === undefined) return;
+    const canonical = holder.cwdHold?.facts.canonical;
+    if (cwdSource === undefined || !holder.cwdHold.isHeld() || canonical == null
+      || stripExtendedPathPrefix(canonical) !== request.workingDirectory) {
+      throw new MxcProcessContractError("Extension working directory hold is unavailable");
+    }
+  };
+  const beforeSupervisor = () => {
+    options.signal?.throwIfAborted();
+    if (requireMxcContainerStartRoot() !== root) throw new MxcProcessContractError("Container runtime root changed before supervisor start");
+    assertDirectoryHold();
+    holder?.beforeSupervisor();
+  };
+  const filesystem = request.filesystem;
+  const paths = [request.workingDirectory, ...(filesystem?.readwritePaths ?? []), ...(filesystem?.readonlyPaths ?? []),
+    ...(filesystem?.deniedPaths ?? []), ...(holder?.paths ?? [])];
+  for (const [key, value] of Object.entries(request.environment ?? {})) {
+    if (/^(?:HOME|TEMP|TMP|LOCALAPPDATA|USERPROFILE)$/iu.test(key)) paths.push(value);
+  }
+  const release = commitUnderAdmission(beforeSupervisor, () => createMxcReleaseGate(root, paths.filter((path) => path !== undefined), cwdSource));
+  try {
+    const env = commitUnderAdmission(beforeSupervisor, () => mxcSupervisorEnvironment());
+    return await spawnWith(request, nodeModules, entry, (file, modules, generation) => spawnManaged(process.execPath, [file, modules, generation], {
+      env, cwd: resources.resourcePath, stdio: ["pipe", "pipe", "pipe", "pipe"],
+    }, { label: "extension-native-supervisor" }), options.signal, options.onLifecycle, holder?.beforeSpawn, options.onOwned,
+    { beforeSupervisor, beforeReady: assertDirectoryHold, release, watchRelease: holder?.watchRelease });
+  } finally { release.revoke(); }
 }
 
 /** Production native extension spawn. Its only sanctioned caller is `spawnMxcConfinedChild` (`confined-child.ts`),
@@ -334,11 +409,11 @@ function spawnPackaged(request: ContainerRequest, options: MxcNativeSpawnOptions
  * caller set (`mxc-native-spawn-callers.test.ts`). onOwned retains cleanup ownership before startup begins, including
  * when startup rejects with unverified cleanup.
  */
-export async function spawnMxcExtensionProcess(request: ContainerRequest, options: MxcNativeSpawnOptions & { readonly beforeSpawn: () => void }): Promise<OwnedMxcExtensionProcess> {
-  if (typeof options?.beforeSpawn !== "function") {
+export async function spawnMxcExtensionProcess(request: ContainerRequest, options: MxcNativeSpawnOptions & NonNullable<Parameters<typeof spawnPackaged>[2]>): Promise<OwnedMxcExtensionProcess> {
+  if (typeof options?.beforeSpawn !== "function" || typeof options.beforeSupervisor !== "function") {
     throw new MxcProcessContractError("Native extension spawn requires row-2 admission at the spawn boundary; use spawnMxcConfinedChild");
   }
-  return spawnPackaged(request, options, options.beforeSpawn);
+  return spawnPackaged(request, options, options);
 }
 
 /** Diagnostic-only: the packaged owned-process verification entry (`tools/mxc-probes/packaged-main.ts`), which is

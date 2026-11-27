@@ -218,9 +218,10 @@ export interface SubAgentSpawnInput {
   /** Agent profile's `model:` frontmatter. May be a complexity tier ("low" / "mid" / "high"), an explicit vendor-specific model ID, or undefined.
    * Resolved against the active vendor in `spawn()`; an unresolvable value leaves the child on the parent's model (design- intent fallback, logged for audit). */
   profileModel?: string;
-  /** Agent profile's `mode:` frontmatter (execute / plan / research / explore, or undefined). Resolved in `spawn()` to a working-posture
-   * preamble + auto-skill recommendation prepended to the instructions. Unknown / absent → the `default` mode (inert), logged for audit. */
+  /** Agent profile mode for session metadata, lifecycle hooks, and the mode preamble. */
   profileMode?: string;
+  /** Whether to prepend the working posture and skill recommendations. Defaults to true. */
+  includeModePreamble?: boolean;
   /** Trusted host execution mode; never accepted from the child model. */
   background?: boolean;
   /** Host-only: the instructions quote data that came from files, so the child's first turn starts at that trust origin. */
@@ -3217,7 +3218,7 @@ export class SubAgentRunner {
 
     // Prepend the mode preamble (posture + auto-skill recommendation) to the instructions. The
     // preamble is empty for the default mode, leaving the profile body to drive the sub-agent unchanged.
-    const modePreamble = buildModePreamble(modeResult.config);
+    const modePreamble = input.includeModePreamble === false ? "" : buildModePreamble(modeResult.config);
     const initialPrompt = modePreamble
       ? `${modePreamble}\n\n${input.instructions}`
       : input.instructions;

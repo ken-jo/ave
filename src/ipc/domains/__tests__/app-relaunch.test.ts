@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ipcMain, type IpcMainInvokeEvent } from "electron";
 import { CHANNELS, CHANNEL_GESTURE, isPublicChannel } from "../../../contract/app-contract.js";
 import { hostFrameEvent, isolatedAppFrameEvent } from "../../../__tests__/test-helpers.js";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { beginAppUpdateInstallRequest, clearAppUpdateInstallRequested } from "../../../main/app-update-install-intent.js";
 import { withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
 import { registerAppHandlers } from "../app.js";
@@ -35,7 +36,7 @@ vi.mock("node:fs/promises", async (original) => {
 });
 
 const handlers = new Map<string, Parameters<typeof ipcMain.handle>[1]>();
-const auditLogger = { log: vi.fn() };
+let permissionEvents: ReturnType<typeof collectPermissionEvents>;
 const relaunchApp = vi.fn();
 const intent = { intent: { inputOrigin: "user-keyboard", userActivation: true } };
 let mainEvent: IpcMainInvokeEvent;
@@ -48,7 +49,7 @@ let bootSystem = { hardwareAcceleration: true, corpCaEnabled: true, corpCaCommon
 beforeEach(() => {
   clearAppUpdateInstallRequested();
   setAppRelaunchRequested(false);
-  auditLogger.log.mockClear();
+  permissionEvents = collectPermissionEvents();
   relaunchApp.mockReset();
   mainEvent = hostFrameEvent();
   Object.assign(mainEvent.sender, { mainFrame: mainEvent.senderFrame });
@@ -58,6 +59,7 @@ beforeEach(() => {
   registerAppHandlers({ settingsService: { get: (key: string) => key === "telemetry" ? bootTelemetry : bootSystem }, relaunchApp, getMainWindow: () => ({ webContents: mainEvent.sender, isDestroyed: () => false }) } as unknown as IpcDeps);
 });
 afterEach(async () => {
+  permissionEvents.restore();
   clearAppUpdateInstallRequested();
   setAppRelaunchRequested(false);
   vi.restoreAllMocks();
@@ -466,7 +468,7 @@ describe("app relaunch boundary", () => {
 
   it("audits missing activation", () => {
     expect(invoke(mainEvent, {})).toEqual({ ok: false, error: "user-keyboard-required" });
-    expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ type: "warn", input: expect.stringContaining("user-keyboard-required") }));
+    expect(permissionEvents.events).toContainEqual({ event: "app_relaunch_refused", channel: CHANNELS.app.relaunch, reasonCode: "user-keyboard-required" });
   });
 
   it("closes plugin install entry before invoking the host", async () => {
@@ -487,7 +489,7 @@ describe("app relaunch boundary", () => {
     expect(invoke()).toEqual({ ok: true });
     expect(invoke()).toEqual({ ok: false, error: "relaunch-in-progress" });
     expect(relaunchApp).toHaveBeenCalledExactlyOnceWith();
-    expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ type: "warn", input: expect.stringContaining("relaunch-in-progress") }));
+    expect(permissionEvents.events).toContainEqual({ event: "app_relaunch_refused", channel: CHANNELS.app.relaunch, reasonCode: "relaunch-in-progress" });
   });
 
   it("reopens install entry after a failed relaunch", async () => {
@@ -517,14 +519,14 @@ describe("app relaunch boundary", () => {
 
   it("audits and refuses a plugin frame before considering consent", () => {
     expect(invoke(isolatedAppFrameEvent())).toEqual({ ok: false, error: "unauthorized-frame" });
-    expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "ipc-guard", input: expect.stringContaining(CHANNELS.app.relaunch) }));
+    expect(permissionEvents.events).toContainEqual({ event: "ipc_sender_refused", channel: CHANNELS.app.relaunch });
     expect(relaunchApp).not.toHaveBeenCalled();
   });
 
   it("refuses while an extension installation holds its lifecycle lock", async () => {
     await withPluginInstallLock("relaunch-fixture", async () => {
       expect(invoke()).toEqual({ ok: false, error: "plugin-install-in-progress" });
-      expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ type: "warn", input: expect.stringContaining("plugin-install-in-progress") }));
+      expect(permissionEvents.events).toContainEqual({ event: "app_relaunch_refused", channel: CHANNELS.app.relaunch, reasonCode: "plugin-install-in-progress" });
       expect(relaunchApp).not.toHaveBeenCalled();
     });
     expect(invoke()).toEqual({ ok: true });
@@ -533,7 +535,7 @@ describe("app relaunch boundary", () => {
   it("refuses while an app update installation is requested", () => {
     beginAppUpdateInstallRequest();
     expect(invoke()).toEqual({ ok: false, error: "update-install-in-progress" });
-    expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ type: "warn", input: expect.stringContaining("update-install-in-progress") }));
+    expect(permissionEvents.events).toContainEqual({ event: "app_relaunch_refused", channel: CHANNELS.app.relaunch, reasonCode: "update-install-in-progress" });
     expect(relaunchApp).not.toHaveBeenCalled();
   });
 

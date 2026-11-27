@@ -9,7 +9,9 @@ import { getIsPackaged } from "./dev-flags.js";
 import { installBootModelCatalog } from "../core/model-catalog/bundled.js";
 import { DEFAULT_LOCALE, normalizeLocale, setLocale, tryLoadLocaleMessages,
 } from "../i18n/index.js";
-import { MemoryManager } from "../memory/memory-manager.js";
+import { WindowsSessionRepository } from "../memory/session-repository-win32.js";
+import { MemoryManager, type MemoryManagerOptions } from "../memory/memory-manager.js";
+import { isWindowsBackgroundFeatureReleaseEnabled, sessionSearchIndexPolicySource } from "../permissions/windows-background-features.js";
 import { registerShutdownHook } from "../main/app-shutdown.js";
 import { MemoryCaptureService } from "../memory/memory-capture-service.js";
 import { execTurnRequested } from "../main/exec-mode.js";
@@ -136,7 +138,10 @@ export async function bootstrapCoreServices(mainWindow: MainWindow | null, host:
     /* non-fatal */
   }
 
-  const memoryManager = new MemoryManager();
+  const createSessionRepository = selectBootSessionRepositoryFactory(settingsService);
+  const memoryManager = createSessionRepository === undefined
+    ? new MemoryManager()
+    : new MemoryManager({ createSessionRepository });
   memoryManager.load();
   memoryManager.startPersistentContextWatcher();
   registerShutdownHook("memory-manager", () => {
@@ -144,11 +149,15 @@ export async function bootstrapCoreServices(mainWindow: MainWindow | null, host:
     memoryManager.sessions.closeSearchIndex();
   });
   log.info("boot: memory loaded from %s", memoryManager.getDir());
-  // Recover corrupt or missing search indexes from JSONL; never scan linearly as a fallback.
-  await memoryManager.sessions.verifyOrRebuildSearchIndex().catch((err: unknown) => {
-    log.warn("boot: search index verify/rebuild failed: %s", (err as Error).message,
-    );
-  });
+  if (process.platform === "win32") {
+    if (!isWindowsBackgroundFeatureReleaseEnabled()) await verifySessionSearchIndex(memoryManager);
+  } else {
+    // Recover corrupt or missing search indexes from JSONL; never scan linearly as a fallback.
+    await memoryManager.sessions.verifyOrRebuildSearchIndex().catch((err: unknown) => {
+      log.warn("boot: search index verify/rebuild failed: %s", (err as Error).message,
+      );
+    });
+  }
   // Same aveDir as the main store: usage rows sit beside the memories they name.
   const memoryUsageLog = new MemoryUsageLog({ aveDir: memoryManager.getDir() });
   const memorySaveNotices = new MemorySaveNotices(memoryManager);
@@ -194,4 +203,21 @@ export async function bootstrapCoreServices(mainWindow: MainWindow | null, host:
     memorySaveNotices,
     toolRegistry,
   };
+}
+
+export function selectBootSessionRepositoryFactory(settingsService: Pick<SettingsService, "get">): MemoryManagerOptions["createSessionRepository"] {
+  return process.platform === "win32"
+    ? aveDir => new WindowsSessionRepository({
+      aveDir,
+      ...sessionSearchIndexPolicySource(() => settingsService.get("features")?.sessionIndexingWithoutContainment),
+    })
+    : undefined;
+}
+
+export async function verifySessionSearchIndex(memoryManager: MemoryManager): Promise<void> {
+  try {
+    await memoryManager.sessions.verifyOrRebuildSearchIndex();
+  } catch (error) {
+    log.warn("boot: search index verify/rebuild failed: %s", (error as Error).message);
+  }
 }
