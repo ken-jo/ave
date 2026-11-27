@@ -756,6 +756,9 @@ export class WorkBoardStore {
   // Fires as a listed row the user deleted is written gone, before boardChanged, with the run that row named, and after a failed write of
   // such a delete that leaves its intent stored. Only a cue to read the delete intents again: no run ends by it (see runClasses).
   readonly rowDeleted = new ChangeSignal<{ itemId: number; runId: string }>((err) => log.warn("[work-board] delete listener threw: %s", (err as Error).message));
+  // Fires when a delete's write failed and the published board still shows the row: its run's authority stays revoked, so the run is
+  // to be stopped as by Stop (see commit).
+  readonly revokedRowKept = new ChangeSignal<{ itemId: number; runId: string }>((err) => log.warn("[work-board] revoked-run listener threw: %s", (err as Error).message));
   private cache: BoardFile = emptyBoard();
   // Each run's effect authority by `itemId#runId` (see runAuthority). Kept for the process: a revoked one must stay revoked after the run settles.
   private readonly authorities = new Map<string, AbortController>();
@@ -797,6 +800,20 @@ export class WorkBoardStore {
   // (`deleted`) with its intent stored; one that removes an entry or the user's text (`drops`) is refused while the run file cannot be
   // read (see assertKeepsRunIds).
   private async commit(board: BoardRead, change: BoardChange = {}): Promise<void> {
+    if (!change.deleted) return this.write(board, change);
+    const { itemId, runId } = change.deleted;
+    // A delete takes the run's authority as it is decided, before anything is written: the row may be gone on disk before this write
+    // returns, and no effect may start in between. A delete that fails with the row still standing leaves the run revoked, as Stop does.
+    this.revokeRun(itemId, runId);
+    try {
+      await this.write(board, change);
+    } catch (error) {
+      if (this.names(itemId, runId)) this.revokedRowKept.emit(change.deleted);
+      throw error;
+    }
+  }
+
+  private async write(board: BoardRead, change: BoardChange): Promise<void> {
     if (board.unread) throw new WorkBoardWriteRefusal("work-board-unread");
     if (await this.legacyCopyHolds(false)) throw new WorkBoardWriteRefusal("work-board-legacy-copy-unfinished");
     const file = cacheOf(board);
@@ -1137,7 +1154,12 @@ export class WorkBoardStore {
 
   /** Synchronous effect admission: the run's authority stands and the board the last commit published still names it on its row. */
   admitsRunEffect(itemId: number, runId: string): boolean {
-    return !this.runAuthority(itemId, runId).aborted && this.cache.items.some(item => item.id === itemId && item.runId === runId);
+    return !this.runAuthority(itemId, runId).aborted && this.names(itemId, runId);
+  }
+
+  /** Whether the board the last commit published names the run on its row. */
+  private names(itemId: number, runId: string): boolean {
+    return this.cache.items.some(item => item.id === itemId && item.runId === runId);
   }
 
   private authorityOf(itemId: number, runId: string): AbortController {

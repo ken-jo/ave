@@ -75,7 +75,7 @@ interface LaneHooks {
 
 export interface StageRunEngineDeps {
   /** The board: the row of a run carries its id, its shown status and its final output. Nothing a run is decided from is read here. */
-  store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "clearMissingRun" | "runAuthority" | "revokeRun" | "admitsRunEffect">;
+  store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "revokedRowKept" | "clearMissingRun" | "runAuthority" | "revokeRun" | "admitsRunEffect">;
   /** Every run-authority field: the pin, the source, the stage runs, the joins, the gates and how the run ended. */
   runs: WorkflowRunState;
   /** The authorised registry root of a project path, or null when the registry does not hold it. */
@@ -570,6 +570,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   store.rowDeleted.subscribe(() => {
     intentsPending = true;
     detach(consumeIntents);
+  });
+  // A delete that revoked the run's authority failed and left its row: the run is stopped, as by Stop. Its effects are refused already.
+  store.revokedRowKept.subscribe(({ itemId, runId }) => {
+    if (runs.get(itemId)?.runId === runId) stop(itemId);
   });
   /** Whether a state holds the item; when it is that run, its row is removed. */
   function removedHeld(itemId: number, runId: string): boolean {
