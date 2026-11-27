@@ -75,7 +75,8 @@ beforeAll(async () => {
   });
   savedCorpusManager = runnerManager(savedCorpusPath);
   await savedCorpusManager.loadRulesFromFile();
-  savedCorpusRules = new Map(savedCorpusManager["rules"].map((rule) => [rule.pattern, rule]));
+  const hydrated = savedCorpusManager as unknown as { rules: readonly PermissionRule[] };
+  savedCorpusRules = new Map(hydrated.rules.map((rule) => [rule.pattern, rule]));
   savedCorpusManager.setMode("allow");
 });
 afterAll(() => { rmSync(directory, { recursive: true, force: true }); });
