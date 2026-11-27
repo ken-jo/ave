@@ -228,6 +228,7 @@ export interface ExecutionStageContext {
   invocationRuntimeAllowedDirectories: string[];
   supportsA2AParentDelivery: boolean | undefined;
   spawnDepth: number | undefined;
+  stageSubAgents: true | undefined;
   memoryIncludeUnscoped: boolean | undefined;
   turnMessageId: string | undefined;
   memoryWriteTainted: boolean | undefined;
@@ -295,6 +296,7 @@ export async function executeAuthorizedToolInvocation(
     invocationRuntimeAllowedDirectories,
     supportsA2AParentDelivery,
     spawnDepth,
+    stageSubAgents,
     memoryIncludeUnscoped,
     turnMessageId,
     memoryWriteTainted,
@@ -933,9 +935,8 @@ export async function executeAuthorizedToolInvocation(
       // one of those guards unreachable and file the work under a synthetic
       // session instead.
       ...(sessionId !== undefined ? { sessionId } : {}),
-      // C3(b): spawn depth visible to tools — `agent_spawn` reads this
-      // and refuses when >= 1 (a sub-agent cannot itself spawn).
       spawnDepth: spawnDepth ?? 0,
+      ...(stageSubAgents === true ? { stageSubAgents, activePluginIds: invocationPermissionContext.allowedPluginIds } : {}),
       ...(memoryIncludeUnscoped === true ? { memoryIncludeUnscoped: true } : {}),
       ...(turnMessageId !== undefined ? { turnMessageId } : {}),
       // Fail closed: only an explicit false from the turn lets memory tools write.
