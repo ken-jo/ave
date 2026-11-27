@@ -5,22 +5,29 @@ import { endRun, endRunSession, registerRunSession, type RunSessionMember } from
 import { dropRunApprovals } from "./user-approval-store.js";
 
 export interface RunScopeHooks {
-  /** Links a stage session or its sub-agent. Only an attended run takes "Allow for this run". Throws when the link is refused. */
+  /** Atomically links a stage session or its sub-agent. A refusal leaves membership and reviewer state unchanged. */
   sessionLinked(runKey: string, sessionId: string, member: Omit<RunSessionMember, "runKey">): void;
   sessionEnded(sessionId: string): void;
   runEnded(runKey: string): void;
 }
 
 export function createRunScopeHooks(permissionManager: PermissionManager): RunScopeHooks {
+  const endSession = (sessionId: string) => {
+    endRunSession(sessionId);
+    permissionManager.endRunSessionReview(sessionId);
+  };
   return {
     sessionLinked(runKey, sessionId, member) {
       // Each stage session starts its own reviewer count; a repeated link never reopens a paused one.
-      if (registerRunSession(runKey, sessionId, member)) permissionManager.beginRunSessionReview(sessionId);
+      if (!registerRunSession(runKey, sessionId, member)) return;
+      try {
+        permissionManager.beginRunSessionReview(sessionId);
+      } catch (error) {
+        endSession(sessionId);
+        throw error;
+      }
     },
-    sessionEnded(sessionId) {
-      endRunSession(sessionId);
-      permissionManager.endRunSessionReview(sessionId);
-    },
+    sessionEnded: endSession,
     runEnded(runKey) {
       // Membership goes first: from here no session reads or makes a grant of this run, whatever is still being dropped.
       endRun(runKey);

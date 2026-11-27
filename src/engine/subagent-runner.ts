@@ -2511,6 +2511,7 @@ export class SubAgentRunner {
 
     const parentStage = { stage, abortSignal, activePluginIds: new Set(activePluginIds) };
     stage.spawned += 1;
+    let linked = false;
     let release: (() => void) | undefined;
     // Register the promise before linking can notify progress or synchronously re-enter Stop.
     const run = Promise.resolve().then(() => {
@@ -2528,12 +2529,14 @@ export class SubAgentRunner {
         onLinked: ({ childSessionId }) => {
           release = stage.bind(childSessionId, input.title);
           callbacks?.onLinked?.({ childSessionId });
+          linked = true;
         },
       }, undefined, undefined, parentStage);
     }).finally(() => {
       try {
         release?.();
       } finally {
+        if (!linked) stage.spawned -= 1;
         stage.pending.delete(run);
       }
     });

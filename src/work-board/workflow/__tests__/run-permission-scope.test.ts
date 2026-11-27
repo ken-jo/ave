@@ -157,6 +157,70 @@ it("links opted-in grandchildren with the stage's own workspace and run scope", 
   }
 });
 
+it("rolls back a partially initialized run scope and preserves another run's session", async () => {
+  const manager = runScopePermissions();
+  const runScope = createRunScopeHooks(manager);
+  runScope.sessionLinked("another-run", "existing", { stageId: "b", stageName: "Stage b", lane: "attended" });
+  for (const invocation of ["one", "two", "three"]) manager.resolveReviewerChoice("existing", invocation, "deny");
+  const beginReview = manager.beginRunSessionReview.bind(manager);
+  const bound = new Set<string>();
+  const h = await stageRunHarness({ workflow: {
+    runScope,
+    workspaceBinding: {
+      bind: sessionId => { bound.add(sessionId); },
+      unbind: sessionId => { bound.delete(sessionId); },
+    },
+  } });
+  try {
+    const version = await h.confirm([autoStageOf("a", { allowSubAgents: true })]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [stage] = await h.untilLive(1);
+    const bind = stage.callbacks?.onStageSubAgentLinked;
+    if (!bind) throw new Error("No sub-agent link for the opted-in stage");
+    vi.spyOn(manager, "beginRunSessionReview").mockImplementationOnce(sessionId => {
+      beginReview(sessionId);
+      for (const invocation of ["one", "two", "three"]) manager.resolveReviewerChoice(sessionId, invocation, "deny");
+      throw new Error("Reviewer initialization failed");
+    });
+
+    expect(() => bind("partial", "Extract")).toThrow("Reviewer initialization failed");
+    expect(bound.has("partial")).toBe(false);
+    expect(runSessionOf("partial")).toBeUndefined();
+    expect(manager.getAutomatedApprovalPauseReason("partial")).toBeUndefined();
+
+    expect(() => bind("existing", "Extract")).toThrow(expect.objectContaining({ code: "session-in-another-run" }));
+    expect(runSessionOf("existing")).toMatchObject({ runKey: "another-run", stageId: "b" });
+    expect(manager.getAutomatedApprovalPauseReason("existing")).toBe("consecutive");
+    stage.finish();
+    expect(await run).toMatchObject({ status: "completed" });
+  } finally {
+    runScope.sessionEnded("existing");
+    await h.cleanup();
+  }
+});
+
+it("records an interrupted stage when the workspace bind fails with sub-agents disabled", async () => {
+  const unbind = vi.fn();
+  const h = await stageRunHarness({ workflow: {
+    workspaceBinding: {
+      bind: () => { throw new Error("Stage workspace disappeared"); },
+      unbind,
+    },
+  } });
+  try {
+    const version = await h.confirm([autoStageOf("a", { allowSubAgents: false })]);
+    const id = await h.addItem(version);
+    await h.start(id, h.local(version));
+    const [stage] = h.children;
+    expect(await h.stageRun(id, "a")).toMatchObject({ failure: "interrupted" });
+    expect(h.interrupts).toEqual([stage.sessionId]);
+    expect(unbind).toHaveBeenCalledExactlyOnceWith(stage.sessionId);
+  } finally {
+    await h.cleanup();
+  }
+});
+
 it("links a scheduled grandchild with the same lane, workspace and envelope as its stage", async () => {
   const manager = runScopePermissions();
   const links: Parameters<NonNullable<StageRunEngineDeps["lane"]>["sessionLinked"]>[0][] = [];

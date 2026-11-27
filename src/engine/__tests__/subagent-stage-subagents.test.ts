@@ -162,6 +162,32 @@ it.each(["sequentially", "concurrently"])("limits each stage to three grandchild
   expect(turn).toHaveBeenCalledTimes(8);
 });
 
+it.each(["deferred abort", "bind refusal", "link callback refusal"])("returns the slot after a %s", async failure => {
+  const { bind, runner, turn, start } = fixture();
+  turn.mockImplementation(async function (this: ConversationLoop, prompt) {
+    if (prompt !== "stage") return done;
+    const input = { title: "Helper", instructions: "grandchild", toolScope: PARENT_ALL_TOOL_SCOPE };
+    if (failure === "deferred abort") {
+      const controller = new AbortController();
+      const pending = runner.spawnStageSubAgent(this.sessionId, input, undefined, controller.signal);
+      controller.abort();
+      expect((await pending).ok).toBe(false);
+      expect(bind).not.toHaveBeenCalled();
+    } else {
+      const refuse = () => { throw new Error("Link refused"); };
+      if (failure === "bind refusal") bind.mockImplementationOnce(refuse);
+      const callbacks = failure === "link callback refusal" ? { onLinked: refuse } : undefined;
+      await expect(runner.spawnStageSubAgent(this.sessionId, input, callbacks)).rejects.toThrow("Link refused");
+    }
+    const results = await Promise.all([1, 2, 3, 4].map(() => runner.spawnStageSubAgent(this.sessionId, input)));
+    expect(results.map(result => result.ok)).toEqual([true, true, true, false]);
+    expect(results[3].error).toContain("stage-spawn-limit");
+    return done;
+  });
+  const result = await start();
+  expect(result.ok, result.error).toBe(true);
+});
+
 it("refuses a plugin tool whose owner is inactive in the stage", async () => {
   const { registry, turn, tool, start } = fixture();
   registry.register(createDynamicTool({

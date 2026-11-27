@@ -1064,9 +1064,19 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           }
         };
         try {
-          deps.workspaceBinding?.bind(sessionId, stageRoot);
-          deps.runScope?.sessionLinked(runKey, sessionId, agentTitle === undefined ? member : { ...member, agentTitle });
-          scoped = true;
+          let bound = true;
+          try {
+            deps.workspaceBinding?.bind(sessionId, stageRoot);
+          } catch (error) {
+            if (agentTitle !== undefined) throw error;
+            bound = false;
+          }
+          // The stage is already tracked, so let its runner report a workspace refusal as an interruption.
+          if (agentTitle === undefined && (!bound || halted(state, stageId))) runner.interruptRun(sessionId, workBoardOriginSessionId(state.itemId));
+          if (deps.runScope) {
+            deps.runScope.sessionLinked(runKey, sessionId, agentTitle === undefined ? member : { ...member, agentTitle });
+            scoped = true;
+          }
           if (unattended) {
             laneLinkStarted = true;
             deps.lane?.sessionLinked({ ...unattended, sessionId });
@@ -1102,8 +1112,6 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
               linked = childSessionId;
               state.live.set(stageId, childSessionId);
               state.starting.delete(stageId);
-              // A stop, a rejection or a revocation that arrived while the child was starting reaches it here.
-              if (halted(state, stageId)) runner.interruptRun(childSessionId, workBoardOriginSessionId(state.itemId));
               releaseStageSession = linkStageSession(childSessionId);
               state.scheduledStart = undefined;
               emit({ itemId: state.itemId, phase: "executing", stageId, attempt, runSessionId: childSessionId });
