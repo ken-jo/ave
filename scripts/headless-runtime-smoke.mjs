@@ -46,7 +46,9 @@ try {
   const imagePath = resolve(imageDirectory, "source.png");
   writeFileSync(imagePath, imageSource);
   imageResponse = JSON.parse(execFileSync(process.execPath, [imageChild, JSON.stringify({
-    path: imagePath, expectedPath: realpathSync.native(imagePath), options: { maxBytes: 512, maxDimension: 2 },
+    path: imagePath,
+    ...(process.platform === "win32" ? { expectedPath: realpathSync.native(imagePath) } : {}),
+    options: { maxBytes: 512, maxDimension: 2 },
     scope: { cwd: imageDirectory, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true },
   }), JSON.stringify({ resourcePath: resolve(root, "resources"), isPackaged: true })], {
     encoding: "utf8", timeout: 30_000, maxBuffer: 8192,
