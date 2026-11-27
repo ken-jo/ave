@@ -225,6 +225,24 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     expect(hooks.unlinks.filter((name) => name.includes(".ave-tmp-"))).toEqual([]);
   });
 
+  it("refuses a sealed write when the file leaf is replaced by a symlink", async () => {
+    const path = join(project, "sub", "note.txt");
+    const original = join(project, "sub", "original.txt");
+    const seal = sealTargets(() => resolvePhysicalFilesystemPath(path, project, 64));
+    renameSync(path, original);
+    symlinkSync(original, path, "file");
+
+    const result = await new WriteFileTool().execute({ path, content: "changed" }, {
+      cwd: project, extraAllowedDirectories: [], metadata: {}, fileTargetSeal: seal,
+    });
+    expect(result).toMatchObject({
+      isError: true,
+      output: t("be_executor.fileTargetChanged"),
+    });
+    expect(hooks.opens).toEqual([]);
+    expect(readFileSync(path, "utf8")).toBe("before");
+  });
+
   it.each([
     ["changed", "be_executor.fileTargetChanged"],
     ["helper unavailable", "be_executor.fileTargetUnverified"],
