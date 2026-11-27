@@ -31,7 +31,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
 const containerLaunch = vi.hoisted(() => ({
   settle: undefined as undefined | ((outcome: {
     code: number | null; timedOut: boolean; cancelled: boolean; rejected: boolean; cleanupUnverified: boolean;
-    startFailed?: true; transportFailed?: true; runFailed?: boolean; cwdChanged?: true; grantWithheld?: true; failure?: { type: "error"; code: string; message: string };
+    startFailed?: true; transportFailed?: true; runFailed?: boolean; environmentFailed?: boolean; cwdChanged?: true; grantWithheld?: true; failure?: { type: "error"; code: string; message: string };
   }) => void),
   // The final check the route handed the supervisor client, called as the client calls it once the workload is ready.
   authorize: undefined as undefined | ((grant: () => boolean) => Promise<boolean>),
@@ -488,6 +488,19 @@ describe("linux container run that lost its launcher", () => {
     } finally {
       containerLaunch.narrowedWriteRoots = [];
     }
+  });
+
+  it.each([
+    [true, "sandboxPolicy.linuxContainerEnvironmentFailed"],
+    [false, "sandboxPolicy.linuxContainerStartRefused"],
+  ] as const)("names a container shell that never reached its command (environment failed: %s), never as the command's status", async (environmentFailed, key) => {
+    const pending = new BashTool().execute({ command: "echo ready", timeoutSeconds: 1 }, { cwd: process.cwd(), extraAllowedDirectories: [], metadata: {} });
+    await vi.waitFor(() => expect(containerLaunch.settle).toBeTypeOf("function"));
+    containerLaunch.settle?.({ code: environmentFailed ? 125 : 126, timedOut: false, cancelled: false, rejected: true, environmentFailed, cleanupUnverified: false });
+    const result = await pending;
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain(t(key));
+    expect(result.output).not.toMatch(/exited with code/);
   });
 
   it("returns the command's output with a named failed run, never the refused-start message", async () => {

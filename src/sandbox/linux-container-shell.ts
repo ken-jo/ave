@@ -126,10 +126,12 @@ export function startMxcLinuxShell(
       const timedOut = timeout || outcome === "timed-out";
       // A run that ended by a signal has no launcher verdict, so it is never reported as a refused start.
       const refused = !timedOut && !cancelled && outcome === "refused" && (launchError || code !== null);
-      // The shell's bootstrap exits with its own status, before the ready byte, when the environment did not load.
-      const environmentFailed = !started && !timedOut && !cancelled && outcome === "exited" && code === LINUX_SHELL_ENVIRONMENT_FAILED_CODE;
+      // The bootstrap writes the ready byte just before the command, so an exit without it is never the command's:
+      // the filter helper could not start the shell (126, 127), or the environment did not load (125).
+      const neverRan = !started && !timedOut && !cancelled && outcome === "exited";
+      const environmentFailed = neverRan && code === LINUX_SHELL_ENVIRONMENT_FAILED_CODE;
       const exit = { code: code ?? -1, timedOut, cancelled: cancelled && !timedOut, cleanupUnverified: false,
-        rejected: (refused && !started) || environmentFailed, runFailed: refused && started, environmentFailed };
+        rejected: (refused && !started) || neverRan, runFailed: refused && started, environmentFailed };
       if (removed === undefined) resolve(exit);
       // A folder that cannot be removed never costs the command its result: the command ran.
       else removed.then(() => resolve(exit), (error: unknown) => {

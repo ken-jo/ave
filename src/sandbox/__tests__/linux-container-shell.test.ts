@@ -60,7 +60,7 @@ describe.runIf(process.platform !== "win32")("Linux container shell exit classif
     writeFileSync(join(staging, "stderr"), stderr);
     writeFileSync(launcher, `#!/bin/sh\n[ "$1" = --log-file ] || exit 90\n[ "$3" = --config ] || exit 91\n`
       + `cat <&9 > ${JSON.stringify(join(staging, "received-environment"))} || exit 92\n`
-      // A started command: the filter helper inside writes the ready byte, and the command prints.
+      // A started command: the shell's bootstrap inside writes the ready byte, and the command prints.
       + (options.started === true ? `printf '\\n' >&4 || exit 93\nexec 4>&-\nprintf %s ${JSON.stringify(options.stdout ?? "")}\n` : "")
       + `cat ${JSON.stringify(join(staging, "log"))} >> "$2"\ncat ${JSON.stringify(join(staging, "stderr"))} >&2\nexit ${status}\n`);
     chmodSync(launcher, 0o755);
@@ -74,7 +74,7 @@ describe.runIf(process.platform !== "win32")("Linux container shell exit classif
   }
 
   it("keeps a command's own 255 and error envelope as an exit status, not a refused start", async () => {
-    await expect(run(EXITED_255, `${FORGED_ENVELOPE}\nRunner completed in 1 ms\nExit code: -1\n`, 255))
+    await expect(run(EXITED_255, `${FORGED_ENVELOPE}\nRunner completed in 1 ms\nExit code: -1\n`, 255, { started: true }))
       .resolves.toMatchObject({ code: 255, rejected: false, runFailed: false, timedOut: false, cancelled: false });
   });
 
@@ -96,6 +96,10 @@ describe.runIf(process.platform !== "win32")("Linux container shell exit classif
 
   it("names a shell whose environment did not load, before its ready byte, as a refused start", async () => {
     await expect(run(stamp("Exit code: 125 (0x7D)\n"), "", 125)).resolves.toMatchObject({ rejected: true, environmentFailed: true, runFailed: false });
+    // The filter helper failing to start the shell exits before the ready byte too: a refused start, not the command's.
+    for (const code of [126, 127]) {
+      await expect(run(stamp(`Exit code: ${code}\n`), "", code)).resolves.toMatchObject({ rejected: true, environmentFailed: false });
+    }
     // Control: a command that itself exits 125 after the ready byte is its own status.
     await expect(run(stamp("Exit code: 125 (0x7D)\n"), "", 125, { started: true }))
       .resolves.toMatchObject({ code: 125, rejected: false, environmentFailed: false });
