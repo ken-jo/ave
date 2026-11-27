@@ -105,7 +105,7 @@ export function stageOutputIntake(hooks: RequestedOutputHooks, scope: Omit<Outpu
 
 export interface GovernedOutputAdapter {
   invoke(input: {
-    output: RequestedOutput; surface: WebContents; cwd: string; signal: AbortSignal; canExecute: () => boolean;
+    run: Pick<RunRef, "itemId" | "runId">; output: RequestedOutput; surface: WebContents; cwd: string; signal: AbortSignal; canExecute: () => boolean;
   }): Promise<OutputExecution["status"]>;
 }
 
@@ -120,7 +120,7 @@ export function createRequestedOutputHooks(git: HostGit, adapter: GovernedOutput
       if (isWorkflowPush(decl)) return { id, ...await executeWorkflowPush(git, workspace.repository, run.runId, args, canExecute, authority) };
       if (!approvalSurface || approvalSurface.isDestroyed()) return { id, status: "denied", detail: "user-gesture-required" };
       if (!approvalArgsAreDisplayable(args)) return { id, status: "failed", detail: "output-args-not-displayable" };
-      const status = await adapter.invoke({ output, surface: approvalSurface, signal, canExecute, cwd: run.projectRoot ?? defaultWorkspaceRoot });
+      const status = await adapter.invoke({ run, output, surface: approvalSurface, signal, canExecute, cwd: run.projectRoot ?? defaultWorkspaceRoot });
       if (signal.aborted && status !== "done") return { id, status: "failed", detail: "output-execution-interrupted" };
       return { id, status, ...(status === "failed" ? { detail: "output-execution-failed" } : {}) };
     },

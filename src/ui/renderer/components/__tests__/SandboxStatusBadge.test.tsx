@@ -62,7 +62,7 @@ describe("SandboxStatusBadge", () => {
   it("shows a failed macOS container alongside an active wrap", () => {
     render(<SandboxStatusBadge capability={{
       ...capability({ platform: "darwin", active: true }),
-      containerShell: { state: "unavailable", reason: "shell-start-failed", egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } },
+      containerShell: { state: "unavailable", reason: "shell-start-failed", egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" } },
     }} />);
     expect(screen.getByTestId("sandbox-off-status")).toHaveTextContent("셸 격리 사용 불가");
   });

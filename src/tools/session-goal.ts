@@ -37,6 +37,7 @@ export function createSessionGoalTool(store: SessionGoalStore): Tool {
     source: "builtin",
     // Read-category session bookkeeping has no external or cross-session effect; goal completion must not wait behind an approval modal.
     category: "read",
+    requiresAttendedStage: true,
     isReadOnly: () => true,
     jsonSchema: {
       type: "object",

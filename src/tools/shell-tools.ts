@@ -2879,9 +2879,11 @@ async function runPosixContainerShell(input: {
         ? collector.format() : collector.format({ code: exit.code, signal: null });
       const ending = exit.cancelled ? t("sandboxPolicy.containerShellCancelled")
         : exit.timedOut ? t("sandboxPolicy.containerShellTimedOut", { seconds: timeoutMs / 1000 })
-          : exit.cleanupUnverified ? t("sandboxPolicy.containerShellCleanupUnverified")
-            : exit.failure ? t("sandboxPolicy.containerShellRefused", { reason: exit.failure.code })
-              : noExitCode ? t("sandboxPolicy.containerShellNoExitCode") : "";
+          : exit.startFailed ? t("sandboxPolicy.containerShellStartFailed")
+            : exit.cleanupUnverified ? t("sandboxPolicy.containerShellCleanupUnverified")
+              : exit.transportFailed ? t("sandboxPolicy.containerShellTransportFailed")
+                : exit.failure ? t("sandboxPolicy.containerShellRefused", { reason: exit.failure.code })
+                  : noExitCode ? t("sandboxPolicy.containerShellNoExitCode") : "";
       const output = await annotateWithSandboxViolations(egress.token, [format, ending].filter(Boolean).join("\n"), undefined, policyNotices);
       result = {
         output, isError: interrupted || exit.code !== 0,
@@ -2904,10 +2906,14 @@ async function runPosixContainerShell(input: {
       logReleaseFailures(label, await lifecycle.dispose());
       throw error;
     }
+    // A revoked approval is a refused spawn, worded as the wrap route words it. The container was not what failed,
+    // and nothing ran, so the result claims no isolation either way.
+    const revoked = error instanceof Error && error.message === HOST_SHELL_AUTHORIZATION_REVOKED_ERROR;
     result = input.signal?.aborted
       ? { output: t("sandboxPolicy.containerShellCancelled"), isError: true, metadata: { aborted: true, sandboxed: false } }
-      : { output: t("sandboxPolicy.containerShellRefused", { reason: shellFailureText([error], "code") }), isError: true,
-        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } };
+      : revoked ? { output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true, metadata: { sandboxed: false, sandboxAttempted: true } }
+        : { output: t("sandboxPolicy.containerShellRefused", { reason: shellFailureText([error], "code") }), isError: true,
+          metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } };
   }
   return withReleaseFailures(result, await lifecycle.dispose(), "code");
 }

@@ -9,7 +9,7 @@ import { appendRequestOnlyText } from "./request-only-text.js";
 import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import { randomUUID } from "node:crypto";
 import type { ConversationLoop as LoopContext } from "../conversation-loop.js";
-import type { GuidanceInjectionSource, RunTurnOptions, TurnCallbacks, TurnDecisionEvent, TurnInputRequired, TurnStopReason, ToolScope } from "./types.js";
+import type { GuidanceInjectionSource, RunTurnOptions, TurnCallbacks, TurnDecisionEvent, TurnInputRequired, TurnStopReason, TurnToolCall, ToolScope } from "./types.js";
 import type { GenericMessage, LLMProvider, LLMVendor, MessageMeta, TokenUsage, TokenUsageByModel, ToolCallBlock, ToolSchema } from "../llm/types.js";
 import type { ChatInputOrigin } from "../../shared/chat-origin.js";
 import type { PermissionReviewEvent } from "../../shared/permission-review-status.js";
@@ -144,7 +144,8 @@ export async function queryLoop(
     },
   ): Promise<{
     text: string;
-    toolCalls: Array<{ name: string; input: Record<string, unknown>; result: string }>;
+    toolCalls: TurnToolCall[];
+    allToolCallsRefused?: true;
     usage?: TokenUsage;
     stopReason?: TurnStopReason;
     inputRequired?: TurnInputRequired;
@@ -264,7 +265,8 @@ export async function queryLoop(
     const withServingIdentity = (
       result: {
         text: string;
-        toolCalls: Array<{ name: string; input: Record<string, unknown>; result: string }>;
+        toolCalls: TurnToolCall[];
+        allToolCallsRefused?: true;
         usage?: TokenUsage;
         stopReason?: TurnStopReason;
         inputRequired?: TurnInputRequired;
@@ -306,7 +308,10 @@ export async function queryLoop(
         },
       })
       : self.provider!;
-    const allToolCalls: Array<{ name: string; input: Record<string, unknown>; result: string }> = [];
+    const allToolCalls: TurnToolCall[] = [];
+    // Count model calls separately from summary rows, including intercepted meta calls and capped calls.
+    let attemptedToolCalls = 0;
+    let refusedToolCalls = 0;
     const toolMetaByUseId = new Map<string, ToolCallMeta>();
     // Persist the last live review verdict on its tool result so reload shows the same decision.
     const permissionReviewByUseId = new Map<string, PermissionReviewEvent>();
@@ -1241,6 +1246,7 @@ export async function queryLoop(
       // Both tool-call and terminal assistant commits count against the round budget.
       assistantRoundsRun += 1;
 
+      attemptedToolCalls += pendingToolCalls.length;
       if (pendingToolCalls.length === 0 || stopReason === "end_turn") {
         // Queued guidance takes effect before ending the turn; the cap still reports undelivered entries.
         if (self.guidanceQueue.length > 0 && assistantRoundsRun < effectiveMaxRounds) {
@@ -1316,7 +1322,10 @@ export async function queryLoop(
             t("be_conversationLoop.suspectTruncationError", { reason: stopReason ?? "unknown reason", round: roundIndex }),
           );
         }
-        return withServingIdentity({ text: mergedText, toolCalls: allToolCalls, usage: turnUsage, stopReason });
+        return withServingIdentity({
+          text: mergedText, toolCalls: allToolCalls, usage: turnUsage, stopReason,
+          ...(stopReason === "end_turn" && attemptedToolCalls > 0 && refusedToolCalls === attemptedToolCalls && { allToolCallsRefused: true }),
+        });
       }
 
       // Malformed argument calls receive per-call errors without reaching execution.
@@ -1334,6 +1343,7 @@ export async function queryLoop(
           isError: true,
         });
         allToolCalls.push({ name: tc.name, input: {}, result: content });
+        refusedToolCalls += 1;
         decide({
           kind: "tool_call.invalid_arguments",
           branch: tc.invalidInput.reason,
@@ -1409,6 +1419,7 @@ export async function queryLoop(
       const interceptedAuthorizationRequired = interceptedMetaGate.denied
         .map((denied) => authorizationRequiredStateOf(denied.authorizationRequired))
         .find((state): state is AuthorizationRequiredState => state !== undefined);
+      refusedToolCalls += interceptedMetaGate.denied.length;
       for (const denied of interceptedMetaGate.denied) {
         self.history.append({
           role: "tool_result",
@@ -1486,6 +1497,7 @@ export async function queryLoop(
       }
       const catalogCountAfterPlugin = self.deps.toolRegistry.getToolCatalogForScope(scope).length;
       for (const rr of pluginOutcome.results) {
+        if (rr.hostRefused) refusedToolCalls += 1;
         // Eager activation exposes the full suite immediately; only deferred mode needs search guidance.
         const finalContent = !rr.is_error && rebuiltAfterPlugin
           ? scope.deferral
@@ -1557,6 +1569,7 @@ export async function queryLoop(
         });
       }
       for (const rr of searchOutcome.results) {
+        if (rr.hostRefused) refusedToolCalls += 1;
         const finalContent = !rr.is_error && rebuiltAfterSearch
           ? t("be_conversationLoop.searchToolLoaded", { content: rr.content, loadedCount: toolSchemas.length, added: addedBySearch })
           : rr.content;
@@ -1730,6 +1743,7 @@ export async function queryLoop(
                   tool_use_id: toolUse.id,
                   content: denied.content,
                   is_error: true,
+                  hostRefused: true,
                   ...(denied.authorizationRequired
                     ? { authorizationRequired: denied.authorizationRequired }
                     : {}),
@@ -1798,6 +1812,7 @@ export async function queryLoop(
                   tool_use_id: toolUse.id,
                   content,
                   is_error: result.is_error,
+                  ...(result.hostRefused && { hostRefused: true }),
                   durationMs: 0,
                 };
               }
@@ -1836,6 +1851,7 @@ export async function queryLoop(
                       })
                     : result.content,
                   is_error: result.is_error,
+                  ...(result.hostRefused && { hostRefused: true }),
                   durationMs: 0,
                 };
               }
@@ -1950,6 +1966,7 @@ export async function queryLoop(
         });
       }
 
+      refusedToolCalls += toolResults.filter(result => result.hostRefused).length;
       toolErrorsRun += toolResults.filter((tr) => tr.is_error === true).length;
 
       // Synthetic terminal results have no invocation callback; completed calls are already stored.
@@ -2344,7 +2361,7 @@ interface PluginExpansionState {
 }
 
 interface PluginExpansionOutcome {
-  results: Array<{ tool_use_id: string; content: string; is_error: boolean }>;
+  results: Array<Pick<ToolResult, "tool_use_id" | "content" | "hostRefused"> & { is_error: boolean }>;
 
   remaining: ToolUseBlock[];
 
@@ -2377,18 +2394,21 @@ function handleRequestPlugin(
         tool_use_id: tu.id,
         content: t("be_pluginExpansion.missingPluginId", { available: availableIds.join(", ") || t("be_pluginExpansion.noneAvailable") }),
         is_error: true,
+        hostRefused: true,
       });
     } else if (!availableIds.includes(pluginId)) {
       results.push({
         tool_use_id: tu.id,
         content: t("be_pluginExpansion.unknownPluginId", { pluginId, available: availableIds.join(", ") || t("be_pluginExpansion.noneAvailable") }),
         is_error: true,
+        hostRefused: true,
       });
     } else if (turnExpansions >= MAX_PLUGIN_EXPANSION) {
       results.push({
         tool_use_id: tu.id,
         content: t("be_pluginExpansion.turnLimitExceeded", { max: String(MAX_PLUGIN_EXPANSION), pluginId }),
         is_error: true,
+        hostRefused: true,
       });
     } else if (sessionExpansions >= MAX_SESSION_PLUGIN_EXPANSION) {
       log.warn(
@@ -2399,6 +2419,7 @@ function handleRequestPlugin(
         tool_use_id: tu.id,
         content: t("be_pluginExpansion.sessionLimitExceeded", { max: String(MAX_SESSION_PLUGIN_EXPANSION), pluginId }),
         is_error: true,
+        hostRefused: true,
       });
     } else {
       state.activePluginIds.add(pluginId);
@@ -2460,7 +2481,7 @@ export interface ToolSearchState {
 }
 
 interface ToolSearchOutcome {
-  results: Array<{ tool_use_id: string; content: string; is_error: boolean }>;
+  results: Array<Pick<ToolResult, "tool_use_id" | "content" | "hostRefused"> & { is_error: boolean }>;
 
   remaining: ToolUseBlock[];
 
@@ -2594,18 +2615,21 @@ export function handleToolSearch(
         tool_use_id: tu.id,
         content: t("be_toolSearch.queryRequired"),
         is_error: true,
+        hostRefused: true,
       });
     } else if (tokenizeQuery(query).length === 0) {
       results.push({
         tool_use_id: tu.id,
         content: t("be_toolSearch.queryTokenTooShort", { minLen: String(MIN_CATALOG_MATCH_TOKEN_LENGTH) }),
         is_error: true,
+        hostRefused: true,
       });
     } else if (turnSearches >= MAX_TOOL_SEARCH_PER_TURN) {
       results.push({
         tool_use_id: tu.id,
         content: t("be_toolSearch.turnLimitExceeded", { max: String(MAX_TOOL_SEARCH_PER_TURN), query }),
         is_error: true,
+        hostRefused: true,
       });
     } else if (sessionSearches >= MAX_TOOL_SEARCH_PER_SESSION) {
       log.warn(
@@ -2616,6 +2640,7 @@ export function handleToolSearch(
         tool_use_id: tu.id,
         content: t("be_toolSearch.sessionLimitExceeded", { max: String(MAX_TOOL_SEARCH_PER_SESSION), query }),
         is_error: true,
+        hostRefused: true,
       });
     } else {
       const normalizedQuery = query.trim().toLowerCase();

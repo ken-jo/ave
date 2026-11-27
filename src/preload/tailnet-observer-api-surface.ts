@@ -3,10 +3,12 @@ import { ipcRenderer } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import {
   parseTailnetGuidedSetupResult,
+  parseTailnetObserverApplyResult,
   parseTailnetObserverMutationResult,
   parseTailnetObserverSnapshotResult,
   parseTailnetServeResult,
   type TailnetGuidedSetupResult,
+  type TailnetObserverApplyResult,
   type TailnetObserverConfigApi,
   type TailnetObserverConfigView,
   type TailnetObserverMutationResult,
@@ -19,7 +21,7 @@ function unavailableSnapshot(): TailnetObserverSnapshotResult {
   return Object.freeze({ ok: false, error: "tailnet-observer-unavailable" });
 }
 
-function unavailableMutation(): TailnetObserverMutationResult {
+function unavailableMutation(): { readonly ok: false; readonly error: string } {
   return Object.freeze({ ok: false, error: "tailnet-observer-unavailable" });
 }
 
@@ -43,9 +45,9 @@ export function buildTailnetObserverApiSurface(): TailnetObserverConfigApi {
       }
     },
 
-    async apply(config: TailnetObserverConfigView): Promise<TailnetObserverMutationResult> {
+    async apply(config: TailnetObserverConfigView): Promise<TailnetObserverApplyResult> {
       try {
-        return parseTailnetObserverMutationResult(
+        return parseTailnetObserverApplyResult(
           await ipcRenderer.invoke(CHANNELS.tailnetObserver.apply, {
             config,
             intent: ipcUserKeyboardIntent(),

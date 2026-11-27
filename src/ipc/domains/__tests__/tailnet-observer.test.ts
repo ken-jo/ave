@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_TAILNET_OBSERVER_PORT, parseTailnetObserverApplyResult, type TailnetObserverApplyStatus } from "../../../shared/tailnet-observer-config.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { invokeFileIpcHandler } from "./test-helpers.js";
 
@@ -17,7 +18,7 @@ vi.mock("electron", () => ({
 const CONFIG = Object.freeze({
   enabled: true,
   authorization: { kind: "app-capability" as const, capability: CAPABILITY },
-  port: 46_173,
+  port: DEFAULT_TAILNET_OBSERVER_PORT,
   controllerEnabled: false,
   pairedSharingEnabled: true,
   webEnabled: false,
@@ -37,8 +38,9 @@ function snapshotFixture() {
       webEnabled: "unset" as const,
       webOrigin: "unset" as const,
     },
-    listeningPort: 46_173,
+    listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
     lastStartError: null,
+    portBlock: null,
     pairedSharingBootstrapFailed: false,
     ownDeviceAdmission: false,
     environment: {
@@ -51,14 +53,14 @@ function snapshotFixture() {
       detail: null,
     },
     derivedWebOrigin: "https://desk.example-tailnet.ts.net",
-    serveCommand: "tailscale serve --bg --https=443 http://127.0.0.1:46173",
+    serveCommand: `tailscale serve --bg --https=443 http://127.0.0.1:${DEFAULT_TAILNET_OBSERVER_PORT}`,
     configFileError: null,
   };
 }
 
 async function setup(overrides: {
   snapshot?: () => Promise<unknown>;
-  apply?: (config: unknown) => Promise<void>;
+  apply?: (config: unknown) => Promise<TailnetObserverApplyStatus>;
   configureServe?: () => Promise<unknown>;
   guidedSetup?: () => Promise<unknown>;
   setOwnDeviceAdmission?: (enabled: boolean) => Promise<void>;
@@ -67,7 +69,7 @@ async function setup(overrides: {
   vi.clearAllMocks();
   const service = {
     snapshot: vi.fn(overrides.snapshot ?? (async () => snapshotFixture())),
-    apply: vi.fn(overrides.apply ?? (async () => undefined)),
+    apply: vi.fn(overrides.apply ?? (async () => ({ outcome: "applied", restartNeeded: false }))),
     configureServe: vi.fn(
       overrides.configureServe
         ?? (async () => ({ ok: true as const, url: "https://desk.example-tailnet.ts.net/" })),
@@ -78,7 +80,7 @@ async function setup(overrides: {
           ok: true as const,
           snapshot: snapshotFixture(),
           webOrigin: "https://desk.example-tailnet.ts.net",
-          port: 46_173,
+          port: DEFAULT_TAILNET_OBSERVER_PORT,
           serve: "configured" as const,
         })),
     ),
@@ -139,7 +141,7 @@ describe("Tailnet observer configuration IPC boundary", () => {
 
     for (const config of [
       undefined,
-      { ...CONFIG, port: "46173" },
+      { ...CONFIG, port: String(DEFAULT_TAILNET_OBSERVER_PORT) },
       { ...CONFIG, enabled: "yes" },
       { ...CONFIG, port: 1.5 },
       [CONFIG],
@@ -150,10 +152,19 @@ describe("Tailnet observer configuration IPC boundary", () => {
     expect(service.apply).not.toHaveBeenCalled();
   });
 
+  it("preserves the restart result through the apply response validator", async () => {
+    await setup({ apply: async () => ({ outcome: "restart-needed", restartNeeded: true }) });
+    const result = await invokeFileIpcHandler(handlers, CHANNELS.tailnetObserver.apply, { intent, config: CONFIG });
+    expect(parseTailnetObserverApplyResult(result)).toEqual({ ok: true, outcome: "restart-needed", restartNeeded: true });
+    expect(parseTailnetObserverApplyResult({ ok: true })).toBeNull();
+    expect(parseTailnetObserverApplyResult({ ok: true, restartNeeded: false })).toBeNull();
+    expect(parseTailnetObserverApplyResult({ ok: true, outcome: "observer-off", restartNeeded: true })).toBeNull();
+  });
+
   it("passes a valid proposal through and returns the host's own rejection code", async () => {
     const accepted = await setup();
     await expect(invokeFileIpcHandler(handlers, CHANNELS.tailnetObserver.apply, { intent, config: CONFIG }))
-      .resolves.toEqual({ ok: true });
+      .resolves.toEqual({ ok: true, outcome: "applied", restartNeeded: false });
     expect(accepted.apply).toHaveBeenCalledWith(CONFIG);
 
     // Preserve the resolver's stable error code across IPC for localized status explanations.
@@ -178,8 +189,27 @@ describe("Tailnet observer configuration IPC boundary", () => {
   });
 
   it("validates the snapshot it returns rather than trusting the service", async () => {
-    await setup({ snapshot: async () => ({ ...snapshotFixture(), listeningPort: "46173" }) });
+    await setup({ snapshot: async () => ({ ...snapshotFixture(), listeningPort: String(DEFAULT_TAILNET_OBSERVER_PORT) }) });
 
+    await expect(invokeFileIpcHandler(handlers, CHANNELS.tailnetObserver.snapshot))
+      .resolves.toEqual({ ok: false, error: "tailnet-observer-unavailable" });
+  });
+
+  it("returns a validated listener port block", async () => {
+    const portBlock = { code: "EACCES", port: DEFAULT_TAILNET_OBSERVER_PORT, hint: "excluded-range" };
+    const snapshot = { ...snapshotFixture(), listeningPort: null, portBlock };
+    await setup({ snapshot: async () => snapshot });
+
+    await expect(invokeFileIpcHandler(handlers, CHANNELS.tailnetObserver.snapshot))
+      .resolves.toEqual({ ok: true, snapshot });
+  });
+
+  it.each([
+    { code: "EIO", port: 1024, hint: null },
+    { code: "EADDRINUSE", port: 0, hint: null },
+    { code: "EACCES", port: 1024, hint: "unknown" },
+  ])("rejects an invalid listener port block: %j", async portBlock => {
+    await setup({ snapshot: async () => ({ ...snapshotFixture(), portBlock }) });
     await expect(invokeFileIpcHandler(handlers, CHANNELS.tailnetObserver.snapshot))
       .resolves.toEqual({ ok: false, error: "tailnet-observer-unavailable" });
   });
@@ -300,7 +330,7 @@ describe("Tailnet observer configuration IPC boundary", () => {
         ok: true,
         snapshot: snapshotFixture(),
         webOrigin: "https://desk.example-tailnet.ts.net",
-        port: 46_173,
+        port: DEFAULT_TAILNET_OBSERVER_PORT,
         serve: "configured",
       });
     });

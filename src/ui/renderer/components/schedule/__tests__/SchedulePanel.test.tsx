@@ -1,6 +1,8 @@
 import "../../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { setLocale, t } from "../../../../../i18n/runtime.js";
+import { formatMediumDateTime } from "../../../../../shared/format-time.js";
 import { userEvent } from "@testing-library/user-event";
 import { SchedulePanel } from "../SchedulePanel.js";
 import { ScheduleItemPopover } from "../ScheduleItemPopover.js";
@@ -528,4 +530,30 @@ it.each(["{Enter}", "[Space]"])("guides a refused pointer attachment to keyboard
   await user.keyboard(key);
   expect(attach).toHaveBeenNthCalledWith(2, { ...pin, scheduleId: "build", expectedScope: scope });
   expect((await within(dialog).findByRole("alert")).textContent).toContain("범위");
+});
+
+it.each(["en", "ko"] as const)("shows the breaker reason and resumes a template schedule in %s", async locale => {
+  setLocale(locale);
+  const pausedAt = at(4, 10);
+  const paused = routine({ execution: "template-run", attachmentId: "attached", pausedAt, pausedBy: "schedule-breaker" });
+  const resumed = routine({ execution: "template-run", attachmentId: "attached" });
+  const state = { routines: [paused], occurrences: [{ routineId: paused.id, at: at(5, 9), status: "paused" as const }] };
+  const api = makeApi(state);
+  const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+  try {
+    const reason = t("schedulePanel.pausedByScheduleBreaker", { when: formatMediumDateTime(pausedAt) });
+    await view.findByText(reason);
+    expect(view.queryByRole("button", { name: t("workflowSchedule.runNow") })).toBeNull();
+    fireEvent.click(await view.findByTestId("schedule-chip"));
+    const popover = within(await view.findByRole("dialog"));
+    expect(popover.getByText(reason)).toBeTruthy();
+    state.routines = [resumed];
+    await act(async () => { fireEvent.click(popover.getByRole("button", { name: t("schedulePanel.resume") })); });
+    expect(api.resumeRoutine).toHaveBeenCalledExactlyOnceWith(paused.id);
+    await waitFor(() => expect(view.queryByText(reason)).toBeNull());
+    expect(view.getAllByRole("button", { name: t("workflowSchedule.runNow") }).length).toBeGreaterThan(0);
+  } finally {
+    view.unmount();
+    setLocale("ko");
+  }
 });

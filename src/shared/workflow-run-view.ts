@@ -1,6 +1,11 @@
 import type { StageGateDecideInput, StageJoinDecideInput, WorkBoardRunToolStep, WorkPlanDecision } from "./work-board-types.js";
 import type { StageJoin, TemplateVersionPin, WorkItemStageRun } from "./workflow-template-types.js";
 
+/** Host-generated output invocations have their own approval session; the run dialog claims only its current run. */
+export function workflowOutputSessionPrefix(itemId: number, runId: string): string {
+  return `workflow-output:${itemId}:${runId}:`;
+}
+
 type JoinEvidence = Omit<NonNullable<StageJoin["conflict"]>, "conflictHash">;
 
 export type PendingWorkflowDecision =
@@ -30,7 +35,7 @@ export interface WorkflowStageInputView {
   truncated: boolean;
 }
 
-export interface WorkflowStageView extends Pick<WorkItemStageRun, "stageId" | "attempt" | "status" | "childSessionId" | "startedAt" | "endedAt" | "failure" | "gate" | "outputExecutions"> {
+export interface WorkflowStageView extends Pick<WorkItemStageRun, "stageId" | "attempt" | "status" | "childSessionId" | "startedAt" | "endedAt" | "failure" | "failureReason" | "gate" | "outputExecutions"> {
   deniedCalls?: WorkItemStageRun["deniedCalls"];
   result?: string;
   resultHash?: string;

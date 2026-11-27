@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerBuiltinTools, registerRequestPluginMetaTool, registerToolSearchMetaTool } from "../tools.js";
 import { bootstrapCoreServices } from "../services.js";
+import { SubAgentRunner, exactToolScope } from "../../engine/subagent-runner.js";
+import { makeSubagentLoopDeps, patchLoopProvider } from "../../engine/__tests__/support/subagent-loop-fixtures.js";
+import { workBoardOriginSessionId } from "../../shared/work-board-types.js";
+import { makePromptMemorySource } from "../../prompts/__tests__/test-helpers.js";
+import { isUnattendedReadTool } from "../../tools/base.js";
 import { tmpdir } from "node:os";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { BUILTIN_APPROVAL_ACTIONS } from "../../ui/renderer/components/permissions/builtin-approval-action.js";
@@ -116,4 +121,40 @@ describe("builtin approval action coverage", () => {
     expect(action.title).toBe(t("toolApprovalDialog.toolApprovalTitle"));
     expect(action.primary).toBeNull();
   });
+});
+
+it("exposes exactly the scheduled read-only stage tools from the boot registry", async () => {
+  const registry = await registeredBuiltins();
+  const requests: string[][] = [];
+  const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider({
+    vendor: "openai",
+    async *streamTurn({ tools }) {
+      requests.push((tools ?? []).map(tool => tool.name).sort());
+      yield { type: "text_delta", text: "Finished" };
+      yield { type: "message_complete", stopReason: "end_turn" };
+    },
+  });
+  try {
+    const runner = new SubAgentRunner({
+      parentDeps: makeSubagentLoopDeps(registry), toolRegistry: registry,
+      subAgentMemoryManager: {
+        ...makePromptMemorySource(),
+        sessions: { saveSession: async () => {}, saveSessionMetadata: async () => {} },
+      } as unknown as ConstructorParameters<typeof SubAgentRunner>[0]["subAgentMemoryManager"],
+    });
+    const result = await runner.spawn({
+      title: "Scheduled stage", instructions: "Read the input", originSessionId: workBoardOriginSessionId(1),
+      toolScope: exactToolScope(registry.listAll().filter(isUnattendedReadTool).map(tool => tool.name)),
+      unattendedStage: { runKey: "scheduled", stageId: "gather" },
+    });
+    expect(result.ok).toBe(true);
+    expect(requests).toEqual([[
+      "agent_list", "bash_output", "glob_files", "grep_files", "list_files", "memory_read", "memory_search",
+      "open_document", "read_document", "read_file", "read_tool_result_chunk", "render_html",
+      "skill_list", "skill_load", "skill_read", "terminal_read", "tool_search", "view_image",
+    ]]);
+  } finally {
+    hasProviderSpy.mockRestore();
+    refreshProviderSpy.mockRestore();
+  }
 });

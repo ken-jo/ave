@@ -2,8 +2,10 @@ import { createSocket } from "node:dgram";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 
+import type { MxcRawIpUdpArrival } from "../shared/sandbox-capability-info.js";
+
 export type MxcRawIpUdpSend = "sent" | "refused-local" | "unmeasured";
-export type MxcRawIpUdpArrival = "arrived" | "absent" | "unmeasured";
+export type { MxcRawIpUdpArrival } from "../shared/sandbox-capability-info.js";
 
 export async function openMxcRawIpUdpListener(address: string, probeId: string, deadline: number, adopt: (close: () => Promise<void>) => void) {
   const bindBudget = deadline - Date.now();
