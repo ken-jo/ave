@@ -274,6 +274,12 @@ export function detectMxcShellCapability(): SandboxCapability | undefined {
   return _mxcShellCapability;
 }
 
+// @internal — test teardown only.
+export function __resetContainerShellSubstrateForTest(): void {
+  if (_containerShellSubstrate !== undefined) _sandboxGeneration += 1;
+  _containerShellSubstrate = undefined;
+}
+
 export function getMacContainerShellInfo(): SandboxMacContainerShellInfo | undefined {
   if (process.platform !== "darwin" || !isShellSandboxRequestedAtBoot() || _containerShellSubstrate === undefined) return undefined;
   const support = _containerShellSubstrate.state === "available" && detectMxcShellCapability() === undefined
