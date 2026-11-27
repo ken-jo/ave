@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { lstat, readdir, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { raceWithAbort } from '../../shared/abortable-deadline.js';
+import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import { commitUnderAdmission } from '../../shared/admission-commit.js';
 import { renameDirectoryOnce } from '../../lib/transient-fs-lock-retry.js';
 import { openFeatureNamespace, type FeatureNamespaceHandle } from '../storage/feature-namespace.js';
@@ -212,7 +214,9 @@ export class LocalModelManager {
       publish({ status: 'downloading', receivedBytes: 0, totalBytes: this.files.reduce((n, f) => n + f.bytes, 0), completedFiles: 0, totalFiles: this.files.length });
       for (const file of this.files) {
         assertStillValid();
-        const response = await downloadFile(file.name, signal, assertStillValid);
+        const bodyDeadline = new AbortController();
+        const requestSignal = AbortSignal.any([signal, bodyDeadline.signal]);
+        const response = await downloadFile(file.name, requestSignal, assertStillValid);
         if (!response.ok || !response.body) throw new MemoryModelError('model-download-failed');
         const reader = response.body.getReader();
         try {
@@ -223,7 +227,9 @@ export class LocalModelManager {
             let received = 0;
             while (true) {
               assertStillValid();
-              const chunk = await reader.read();
+              const idleTimer = setTimeout(() => bodyDeadline.abort(new MemoryModelError('model-download-failed')),
+                TOOL_TIMEOUT_POLICY.modelStreamIdleCeilingMs);
+              const chunk = await raceWithAbort(reader.read(), requestSignal).finally(() => clearTimeout(idleTimer));
               if (chunk.done) break;
               assertStillValid();
               received += chunk.value.byteLength;
@@ -238,7 +244,7 @@ export class LocalModelManager {
             assertStillValid();
             await handle.sync();
           } finally { await handle.close(); }
-        } finally { await reader.cancel().catch(() => {}); }
+        } finally { void reader.cancel().catch(() => {}); }
         assertStillValid();
         publish({ ...this.state, completedFiles: this.state.completedFiles + 1 });
       }

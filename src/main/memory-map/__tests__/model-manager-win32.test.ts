@@ -4,6 +4,7 @@ import { lstat, mkdtemp, mkdir, writeFile, open, readFile, readdir, realpath, rm
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { TOOL_TIMEOUT_POLICY } from '../../../shared/tool-timeout-policy.js';
 import { deferred } from '../../../__tests__/support/deferred.js';
 import { LocalModelManager, verifyModelFolder } from '../model-manager-win32.js';
 import { MemoryMapHostError } from '../errors.js';
@@ -17,6 +18,65 @@ const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const { fixture, linkedFixture } = createModelManagerFixtures(LocalModelManager, roots);
 describe('local model lifecycle', () => {
+  it.each(['timeout', 'cancel'] as const)('releases the manager after artifact body %s', async outcome => {
+    const root = await mkdtemp(join(tmpdir(), 'memory-model-'));
+    roots.push(root);
+    const readStarted = deferred<void>();
+    const resumeBody = deferred<void>();
+    const aborted = vi.fn();
+    const existingPath = join(root, 'existing-model');
+    await mkdir(existingPath);
+    await writeFile(join(existingPath, 'weights.bin'), 'saved model');
+    let savedPath = existingPath;
+    const savePath = vi.fn((path: string) => { savedPath = path; });
+    const downloadFile = vi.fn(async (_signal: AbortSignal) => new Response('model')).mockImplementationOnce(async signal => {
+      signal?.addEventListener('abort', aborted, { once: true });
+      return new Response(new ReadableStream({
+        async pull(controller) {
+          readStarted.resolve();
+          await resumeBody.promise;
+          controller.close();
+        },
+      }, { highWaterMark: 0 }));
+    });
+    const manager = new LocalModelManager({
+      namespace: {
+        dir: root,
+        readJson: async (_, fallback) => fallback,
+        writeJson: async () => {},
+        childDir: async name => { const path = join(root, name); await mkdir(path, { recursive: true }); return path; },
+        createFile: name => open(join(root, name), 'wx'),
+      },
+      files: [{ name: 'weights.bin', bytes: 5, sha256: createHash('sha256').update('model').digest('hex') }],
+      downloadFile: (_name, signal) => downloadFile(signal),
+      readPath: () => savedPath,
+      savePath,
+    });
+    const completed = vi.fn();
+    vi.useFakeTimers();
+    const first = manager.download().then(completed);
+    try {
+      await readStarted.promise;
+      if (outcome === 'cancel') manager.cancel();
+      await vi.advanceTimersByTimeAsync(outcome === 'timeout' ? TOOL_TIMEOUT_POLICY.modelStreamIdleCeilingMs : 0);
+      // Cleanup includes real filesystem I/O, so allow it to settle without advancing the fake clock.
+      vi.useRealTimers();
+      await vi.waitFor(() => expect(completed).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'failed', error: outcome === 'timeout' ? 'model-download-failed' : 'model-cancelled',
+      })), { timeout: 1500 });
+      expect(aborted).toHaveBeenCalledOnce();
+      expect(savePath).not.toHaveBeenCalled();
+      expect(savedPath).toBe(existingPath);
+      expect(await readFile(join(existingPath, 'weights.bin'), 'utf8')).toBe('saved model');
+      await expect(manager.download()).resolves.toMatchObject({ status: 'ready' });
+      expect(savePath).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+      resumeBody.resolve();
+      await first;
+    }
+  });
+
   it('checks admission before a model task touches storage or the network and can retry after refusal', async () => {
     const childDir = vi.fn(async () => { throw new Error('Unexpected storage write'); });
     const downloadFile = vi.fn(async () => new Response('unexpected'));

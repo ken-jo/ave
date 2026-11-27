@@ -5,6 +5,7 @@ import type { RequestOptions } from 'node:https';
 import { Readable } from 'node:stream';
 import { promises as dns, type LookupAddress, type LookupAllOptions } from 'node:dns';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import { deferred } from '../../__tests__/support/deferred.js';
 import type { IpcMainInvokeEvent } from 'electron';
 import type { IpcDeps } from '../types.js';
@@ -134,6 +135,37 @@ describe('memory map host boundary', () => {
       expect(result).toBeInstanceOf(Error);
     } finally {
       lookup.mockRestore();
+    }
+  });
+
+  it.each(['timeout', 'cancel'] as const)('settles a stalled artifact DNS lookup on %s', async outcome => {
+    const lookupStarted = deferred<void>();
+    const answers = deferred<LookupAddress[]>();
+    const lookup = vi.spyOn(artifactDns, 'lookup').mockImplementation(() => {
+      lookupStarted.resolve();
+      return answers.promise;
+    });
+    const transport = vi.fn<typeof fetch>();
+    const controller = new AbortController();
+    const completed = vi.fn();
+    vi.useFakeTimers();
+    try {
+      const download = await artifactDownloader(transport);
+      const attempt = download(MODEL_FILES[0].name, controller.signal, vi.fn()).then(
+        response => completed(response),
+        error => completed(error),
+      );
+      await lookupStarted.promise;
+      if (outcome === 'cancel') controller.abort();
+      await vi.advanceTimersByTimeAsync(outcome === 'timeout' ? TOOL_TIMEOUT_POLICY.networkFetchDefaultMs : 0);
+      expect(completed).toHaveBeenCalledWith(expect.objectContaining({ name: 'AbortError' }));
+      await attempt;
+      expect(transport).not.toHaveBeenCalled();
+      expect(state.artifactRequest).not.toHaveBeenCalled();
+    } finally {
+      answers.resolve([]);
+      lookup.mockRestore();
+      vi.useRealTimers();
     }
   });
 

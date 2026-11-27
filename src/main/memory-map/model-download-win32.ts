@@ -4,6 +4,7 @@ import { isIP } from 'node:net';
 import { Readable } from 'node:stream';
 import { getCACertificates } from 'node:tls';
 import { classifyAddress, fetchAddressCheckedResponse, NetworkGuardError } from '../../core/network-guard.js';
+import { raceWithAbort } from '../../shared/abortable-deadline.js';
 import { modelFileUrl } from './model-manifest.js';
 import { MemoryModelError } from './model-manager-win32.js';
 
@@ -79,7 +80,9 @@ export function downloadModelFile(
       requestSignal.throwIfAborted();
       const host = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname;
       const family = isIP(host);
-      const answers = family ? [{ address: host, family }] : await dns.lookup(host, { all: true });
+      const answers = family
+        ? [{ address: host, family }]
+        : await raceWithAbort(dns.lookup(host, { all: true }), requestSignal);
       const approved = new Set(select(answers.map(answer => answer.address)));
       return requestArtifact(url, answers.filter(answer => approved.has(answer.address)), requestSignal, assertStillValid);
     },
