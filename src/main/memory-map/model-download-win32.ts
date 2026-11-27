@@ -23,6 +23,18 @@ function requestArtifact(
   signal.throwIfAborted();
   assertStillValid();
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (error?: unknown, response?: Response) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      if (response) resolve(response);
+      else reject(error);
+    };
+    const fail = () => settle(new MemoryModelError('model-download-failed'));
+    // Abort settles even when the destroyed request emits nothing further.
+    const onAbort = () => settle(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
     const request = requestHttps(url, {
       agent: false,
       signal,
@@ -35,6 +47,11 @@ function requestArtifact(
     }, incoming => {
       try {
         const status = incoming.statusCode ?? 0;
+        if (status < 200) {
+          incoming.destroy();
+          fail();
+          return;
+        }
         const headers = new Headers();
         for (let index = 0; index + 1 < incoming.rawHeaders.length; index += 2) {
           const name = incoming.rawHeaders[index];
@@ -44,14 +61,20 @@ function requestArtifact(
         const hasBody = status >= 200 && status < 300 && status !== 204 && status !== 205;
         if (!hasBody) incoming.destroy();
         const body = hasBody ? Readable.toWeb(incoming) as ReadableStream<Uint8Array> : null;
-        resolve(new Response(body, { status, headers }));
+        settle(undefined, new Response(body, { status, headers }));
       } catch (error) {
         incoming.destroy();
-        reject(error);
+        settle(error);
       }
     });
-    request.once('error', reject);
+    request.on('error', settle);
+    request.once('close', fail);
+    request.once('upgrade', (_incoming, socket) => {
+      socket.destroy();
+      fail();
+    });
     request.once('socket', socket => {
+      socket.once('close', fail);
       socket.once('secureConnect', () => {
         try {
           signal.throwIfAborted();

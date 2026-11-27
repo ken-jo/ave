@@ -1,15 +1,25 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { promises as dns, type LookupAddress, type LookupAllOptions } from 'node:dns';
+import { EventEmitter } from 'node:events';
 import { lstat, mkdtemp, mkdir, writeFile, open, readFile, readdir, realpath, rm, symlink } from 'node:fs/promises';
+import type { ClientRequest, IncomingMessage } from 'node:http';
+import type { RequestOptions } from 'node:https';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
+import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TOOL_TIMEOUT_POLICY } from '../../../shared/tool-timeout-policy.js';
 import { deferred } from '../../../__tests__/support/deferred.js';
 import { LocalModelManager, verifyModelFolder } from '../model-manager-win32.js';
+import { downloadModelFile } from '../model-download-win32.js';
 import { MemoryMapHostError } from '../errors.js';
-import { LOCAL_MODEL_REVISION } from '../model-manifest.js';
+import { LOCAL_MODEL_REVISION, MODEL_FILES } from '../model-manifest.js';
 import { createModelManagerFixtures } from './model-manager-fixtures.js';
+const artifactRequest = vi.hoisted(() => vi.fn<(
+  url: URL, options: RequestOptions, respond: (incoming: IncomingMessage) => void,
+) => ClientRequest>());
+vi.mock('node:https', async importOriginal => ({ ...await importOriginal<typeof import('node:https')>(), request: artifactRequest }));
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, realpath: vi.fn(actual.realpath), rm: vi.fn(actual.rm) };
@@ -18,6 +28,107 @@ const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const { fixture, linkedFixture } = createModelManagerFixtures(LocalModelManager, roots);
 describe('local model lifecycle', () => {
+  it.each([
+    ['headers', 'upgrade'],
+    ['headers', 'status-101'],
+    ['headers', 'request-close'],
+    ['headers', 'socket-close'],
+    ['connect', 'timeout'],
+    ['connect', 'cancel'],
+    ['headers', 'timeout'],
+    ['headers', 'cancel'],
+  ] as const)('releases the manager during artifact %s on %s', async (phase, outcome) => {
+    const root = await mkdtemp(join(tmpdir(), 'memory-model-'));
+    roots.push(root);
+    const file = { name: MODEL_FILES[0].name, bytes: 5, sha256: createHash('sha256').update('model').digest('hex') };
+    const existingPath = join(root, 'existing-model');
+    await mkdir(existingPath);
+    await writeFile(join(existingPath, file.name), 'saved model');
+    let savedPath = existingPath;
+    const savePath = vi.fn((path: string) => { savedPath = path; });
+    const manager = new LocalModelManager({
+      namespace: {
+        dir: root,
+        readJson: async (_, fallback) => fallback,
+        writeJson: async () => {},
+        childDir: async name => { const path = join(root, name); await mkdir(path, { recursive: true }); return path; },
+        createFile: name => open(join(root, name), 'wx'),
+      },
+      files: [file],
+      downloadFile: downloadModelFile,
+      readPath: () => savedPath,
+      savePath,
+    });
+    const artifactDns: { lookup: (host: string, options: LookupAllOptions) => Promise<LookupAddress[]> } = dns;
+    const lookup = vi.spyOn(artifactDns, 'lookup').mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+    const waiting = deferred<void>();
+    const request = new EventEmitter();
+    const destroyRequest = vi.fn();
+    const destroySocket = vi.fn();
+    const socket = Object.assign(new EventEmitter(), { destroy: destroySocket });
+    const send = vi.fn(() => waiting.resolve());
+    const upgraded = Object.assign(Readable.from([]), { statusCode: 101, rawHeaders: [] });
+    const destroyIncoming = vi.spyOn(upgraded, 'destroy');
+    let respondToFirst: ((incoming: IncomingMessage) => void) | undefined;
+    artifactRequest.mockImplementationOnce((_url, options, respond) => {
+      respondToFirst = respond;
+      // The request can be destroyed on abort without emitting any further events.
+      options.signal?.addEventListener('abort', destroyRequest, { once: true });
+      queueMicrotask(() => {
+        request.emit('socket', socket);
+        if (phase === 'headers') socket.emit('secureConnect');
+        else waiting.resolve();
+      });
+      return Object.assign(request, { destroy: destroyRequest, end: send }) as unknown as ClientRequest;
+    }).mockImplementationOnce((_url, _options, respond) => {
+      const nextRequest = new EventEmitter();
+      const nextSocket = new EventEmitter();
+      queueMicrotask(() => {
+        nextRequest.emit('socket', nextSocket);
+        nextSocket.emit('secureConnect');
+      });
+      return Object.assign(nextRequest, {
+        end: () => respond(Object.assign(Readable.from([Buffer.from('model')]), {
+          statusCode: 200, rawHeaders: [],
+        }) as unknown as IncomingMessage),
+      }) as unknown as ClientRequest;
+    });
+    const completed = vi.fn();
+    vi.useFakeTimers();
+    const first = manager.download().then(completed);
+    try {
+      await waiting.promise;
+      expect(send).toHaveBeenCalledTimes(phase === 'headers' ? 1 : 0);
+      if (outcome === 'upgrade') request.emit('upgrade', upgraded, socket, Buffer.alloc(0));
+      if (outcome === 'status-101') {
+        assert.ok(respondToFirst);
+        respondToFirst(upgraded as unknown as IncomingMessage);
+      }
+      if (outcome === 'request-close') request.emit('close');
+      if (outcome === 'socket-close') socket.emit('close');
+      if (outcome === 'cancel') manager.cancel();
+      if (outcome === 'timeout') await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.networkFetchDefaultMs);
+      vi.useRealTimers();
+      await vi.waitFor(() => expect(completed).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'failed', error: outcome === 'cancel' ? 'model-cancelled' : 'model-download-failed',
+      })), { timeout: 750 });
+      if (outcome === 'timeout' || outcome === 'cancel') expect(destroyRequest).toHaveBeenCalledOnce();
+      if (outcome === 'upgrade') expect(destroySocket).toHaveBeenCalledOnce();
+      if (outcome === 'status-101') expect(destroyIncoming).toHaveBeenCalledOnce();
+      expect(savePath).not.toHaveBeenCalled();
+      expect(savedPath).toBe(existingPath);
+      expect(await readFile(join(existingPath, file.name), 'utf8')).toBe('saved model');
+      await expect(manager.download()).resolves.toMatchObject({ status: 'ready' });
+      expect(savePath).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+      if (!completed.mock.calls.length) request.emit('error', new Error('Release the stalled fixture'));
+      await first;
+      artifactRequest.mockReset();
+      lookup.mockRestore();
+    }
+  });
+
   it.each(['timeout', 'cancel'] as const)('releases the manager after artifact body %s', async outcome => {
     const root = await mkdtemp(join(tmpdir(), 'memory-model-'));
     roots.push(root);
