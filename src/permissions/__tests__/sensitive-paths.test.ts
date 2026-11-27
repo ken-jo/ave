@@ -1,7 +1,8 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { isAbsolute, join } from "node:path";
+import { protectedReadDenyMatcher } from "../asrt-sandbox.js";
 import {
   SENSITIVE_PATH_PATTERNS,
   SENSITIVE_PATH_ENTRIES,
@@ -80,6 +81,26 @@ it.skipIf(process.platform === "win32")("keeps session root, search anchors and 
   } finally {
     vi.unstubAllEnvs();
   }
+});
+
+it.skipIf(process.platform === "win32")("keeps compiled protected-read aliases for the matcher's lifetime", () => {
+  const root = realpathSync(resources.makeTmpDir("read-deny-matcher-"));
+  const first = join(root, "first");
+  const second = join(root, "second");
+  const alias = join(root, "alias");
+  const firstFile = join(first, "file.txt");
+  const secondFile = join(second, "file.txt");
+  mkdirSync(first);
+  mkdirSync(second);
+  symlinkSync(first, alias, "dir");
+  const floor = [{ path: alias, literal: true as const }];
+  const retained = protectedReadDenyMatcher(floor);
+  expect(retained(firstFile)).toBe(alias);
+
+  unlinkSync(alias);
+  symlinkSync(second, alias, "dir");
+  expect(protectedReadDenyMatcher(floor)(secondFile)).toBe(alias);
+  expect([retained(firstFile), retained(secondFile)]).toEqual([alias, undefined]);
 });
 
 afterEach(async () => {
