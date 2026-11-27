@@ -10,7 +10,10 @@ const manager = vi.hoisted(() => ({
   reset: vi.fn(async () => {}),
   setParentProxyRouter: vi.fn(),
 }));
-vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: manager }));
+vi.mock("@anthropic-ai/sandbox-runtime", async () => {
+  const { withSandboxManagerConfig } = await import("../../__tests__/support/linux-wrapper-programs.js");
+  return { SandboxManager: withSandboxManagerConfig(manager) };
+});
 installVerifiedAveHomePrivacy();
 registerLinuxWrapperProgramFixtures();
 const ORIGINAL_PLATFORM = process.platform;

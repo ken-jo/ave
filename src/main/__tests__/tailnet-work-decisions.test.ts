@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { setupCommittedAveHome } from "../../__tests__/support/committed-ave-home.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { parseTailnetWorkDecision } from "../../api/tailnet-work-decision-input.js";
 import { outputHashOf } from "../../shared/workflow-template-output.js";
@@ -10,6 +11,8 @@ import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-h
 import { RoutinesStore } from "../routines-store.js";
 import { createTailnetWorkDecisions } from "../tailnet-work-decisions.js";
 import { itemDigestOf, planHashOf } from "../work-board-store.js";
+
+setupCommittedAveHome("tailnet-work-decisions-");
 
 const base = { id: "0f3b6ea5-4de9-444e-9aee-8a1691e2e005", scope: "7e63f524-3125-445f-a4c0-726cf9341848" };
 const login = "owner@example.com";

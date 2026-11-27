@@ -905,6 +905,7 @@ describe("bootstrap() integration lock", () => {
         "startRoutinesScheduler",
         "startWorkBoardDueSoon",
         "systemPromptBuilder",
+        "tailnetWorkDecisions",
         "telemetry",
         "toolRegistry",
         "workBoardEngine",

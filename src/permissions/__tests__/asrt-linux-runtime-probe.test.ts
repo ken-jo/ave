@@ -62,8 +62,9 @@ const h = vi.hoisted(() => ({
   spawn: vi.fn(),
 }));
 
-vi.mock("@anthropic-ai/sandbox-runtime", () => ({
-  SandboxManager: {
+vi.mock("@anthropic-ai/sandbox-runtime", async () => {
+  const { withSandboxManagerConfig } = await import("../../__tests__/support/linux-wrapper-programs.js");
+  return { SandboxManager: withSandboxManagerConfig({
     isSupportedPlatform: () => true,
     checkDependenciesAsync: h.checkDependenciesAsync,
     setParentProxyRouter: () => undefined,
@@ -73,8 +74,8 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({
     wrapWithSandboxArgv: h.wrapWithSandboxArgv,
     cleanupAfterCommand: h.cleanupAfterCommand,
     reset: h.reset,
-  },
-}));
+  }) };
+});
 
 vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js", async original => ({
   ...await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js")>(),

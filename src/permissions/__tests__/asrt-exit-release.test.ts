@@ -28,20 +28,22 @@ const manager = vi.hoisted(() => ({
   initialize: vi.fn<() => Promise<void>>(async () => undefined),
   setSignalCleanupOwnedByHost: vi.fn<(owned: boolean) => void>(),
 }));
-vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
-  setParentProxyRouter: () => undefined,
-  initialize: () => manager.initialize(),
-  setSignalCleanupOwnedByHost: (owned: boolean) => manager.setSignalCleanupOwnedByHost(owned),
-  updateConfig: () => undefined,
-  reset: () => manager.reset(),
-  wrapWithSandboxArgv: async () => ({
-    argv: ["/bin/bash", "-c", "/configured/bwrap --new-session --die-with-parent --unshare-pid --ro-bind / / -- /bin/bash -c true"],
-    env: process.env,
-  }),
-  cleanupAfterCommand: () => undefined,
-  openInvocationListener: async () => ({ socketPath: "/configured/proxy.sock" }),
-  closeInvocationListener: () => undefined,
-} }));
+vi.mock("@anthropic-ai/sandbox-runtime", async () => {
+  const { withSandboxManagerConfig } = await import("../../__tests__/support/linux-wrapper-programs.js");
+  return { SandboxManager: withSandboxManagerConfig({
+    setParentProxyRouter: () => undefined,
+    initialize: () => manager.initialize(),
+    setSignalCleanupOwnedByHost: (owned: boolean) => manager.setSignalCleanupOwnedByHost(owned),
+    reset: () => manager.reset(),
+    wrapWithSandboxArgv: async () => ({
+      argv: ["/bin/bash", "-c", "/configured/bwrap --new-session --die-with-parent --unshare-pid --ro-bind / / -- /bin/bash -c true"],
+      env: process.env,
+    }),
+    cleanupAfterCommand: () => undefined,
+    openInvocationListener: async () => ({ socketPath: "/configured/proxy.sock" }),
+    closeInvocationListener: () => undefined,
+  }) };
+});
 // The host's signal claim (asrt-signal-ownership.test.ts covers the module itself).
 const signalClaim = vi.hoisted(() => ({ claimed: false }));
 vi.mock("../asrt-signal-ownership.js", () => ({ readAsrtSignalReleaseClaim: () => signalClaim.claimed }));

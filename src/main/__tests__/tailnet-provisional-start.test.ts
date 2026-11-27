@@ -4,7 +4,7 @@ import { join } from "node:path";
 import * as ts from "typescript/unstable/ast";
 import { expect, it, vi } from "vitest";
 import { parseSourceTexts } from "../../../scripts/lib/ts7-ast.mjs";
-import { useConfigurationOwner as installConfigurationOwnerFixture } from "../../__tests__/support/configuration-owner.js";
+import { setupCommittedAveHome } from "../../__tests__/support/committed-ave-home.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import * as atomicFile from "../../lib/atomic-file.js";
@@ -23,7 +23,7 @@ import * as featureStorage from "../storage/feature-namespace.js";
 import * as storage from "../storage/rewrite-keeping-bytes.js";
 import { createTailnetWorkDecisions } from "../tailnet-work-decisions.js";
 
-installConfigurationOwnerFixture();
+setupCommittedAveHome("tailnet-provisional-start-");
 
 type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
 

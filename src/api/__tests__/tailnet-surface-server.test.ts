@@ -20,6 +20,7 @@ import type { ConversationCommandPort } from "../../main/conversation-command-po
 import type { TailnetPairedShareAuthorizer } from "../../main/tailnet-paired-share-authorizer.js";
 import type { TailnetAuthorization } from "../../shared/tailnet-observer-config.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
+import { initializeAveHomeFixture, protectAveHomeFixture } from "../../__tests__/support/ave-home-privacy.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
@@ -33,6 +34,7 @@ import { spawnWithSandbox } from "../../tools/shell-tools.js";
 import { prepareSandboxFixture } from "../../tools/__tests__/support/prepared-shell.js";
 import { quoteSandboxWrappedWord } from "../../permissions/sandbox-wrapped-command.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
+import { aveHome } from "../../shared/ave-home.js";
 import { RoutinesStore } from "../../main/routines-store.js";
 import { createTailnetObserverConfigService } from "../../main/tailnet-observer-config-service.js";
 import { maybeStartTailnetObserverServer, resetTailnetObserverServerForTests, stopTailnetObserverServer, type TailnetObserverConfigFile } from "../../main/tailnet-surface-server.js";
@@ -2223,6 +2225,11 @@ it("refuses the live listener through an agent egress relay while the paired Web
 });
 
 async function pairedWorkFixture(h: Awaited<ReturnType<typeof stageRunHarness>>) {
+  if (process.platform === "win32") {
+    const home = aveHome();
+    protectAveHomeFixture(home);
+    await initializeAveHomeFixture(home);
+  }
   const sharing = pairedSharing({ observe: true, control: true });
   const routines = new RoutinesStore(join(h.dir, "routines.json"));
   routines.bindTemplateAttachments(h.templates);
