@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { connect, createServer, type Server } from "node:net";
@@ -299,6 +299,21 @@ print('socket-controls')
     expect(controlResult.code, controlResult.stderr).toBe(0);
     expect(readFileSync(join(inner, "control"), "utf8")).toBe("inner");
   });
+
+  it.each([["outside every write root", false], ["inside the work root", true]])(
+    "keeps a protected name that is a symlink to a folder %s", async (_label, insideWork) => {
+      startEgressRelayService({ ask: async () => false });
+      const target = insideWork ? join(work, "editor-settings") : join(root, "editor-settings");
+      mkdirSync(target);
+      symlinkSync(target, join(work, ".vscode"));
+      const { launch } = await prepare("rm .vscode && mkdir .vscode && printf x > .vscode/tasks.json");
+      // A bind mount cannot hold a link's own entry, so the write policy withholds the root that could replace it.
+      expect(launch.narrowedWriteRoots).toContainEqual({ root: work, reason: "routing-link" });
+      const result = await run(launch);
+      expect(result.code, result.stderr).not.toBe(0);
+      expect(lstatSync(join(work, ".vscode")).isSymbolicLink()).toBe(true);
+      expect(existsSync(join(target, "tasks.json"))).toBe(false);
+    });
 
   it("quarantines Git controls created during a command before releasing the work root", async () => {
     startEgressRelayService({ ask: async () => false });
