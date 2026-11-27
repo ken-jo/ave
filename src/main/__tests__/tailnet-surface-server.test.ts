@@ -20,6 +20,7 @@ import {
   maybeStartTailnetObserverServer,
   parseTailnetObserverConfigFile,
   probeTailscaleEnvironment,
+  isPrivateServeTarget,
   resetTailnetObserverServerForTests,
   isTailnetOwnDeviceAdmissionEnabled,
   resolveTailnetObserverConfig,
@@ -1186,5 +1187,30 @@ describe("own-device admission", () => {
       runtime: null,
       namespace: memoryNamespace(),
     })).rejects.toThrow("tailnet-own-device-admission-unavailable");
+  });
+});
+
+describe("private work decision ingress", () => {
+  const origin = "https://desk.example-tailnet.ts.net";
+  const key = "desk.example-tailnet.ts.net:443";
+  const port = 46_173;
+  const web = { [key]: { Handlers: { "/": { Proxy: `http://127.0.0.1:${port}` } } } };
+  const config = { TCP: { "443": { HTTPS: true } }, Web: web };
+
+  it("requires the configured HTTPS host to proxy the exact listener", () => {
+    expect(isPrivateServeTarget(config, origin, port)).toBe(true);
+    expect(isPrivateServeTarget(config, origin, port + 1)).toBe(false);
+    expect(isPrivateServeTarget(config, "https://other.example-tailnet.ts.net", port)).toBe(false);
+    expect(isPrivateServeTarget({ Web: web }, origin, port)).toBe(false);
+    const override = { ...web[key].Handlers, "/tailnet/v2/web": { Proxy: "http://127.0.0.1:9999" } };
+    expect(isPrivateServeTarget({ ...config, Web: { [key]: { Handlers: override } } }, origin, port)).toBe(false);
+    expect(isPrivateServeTarget({ ...config, Web: { [key]: { Handlers: { "/other": web[key].Handlers["/"] } } } }, origin, port)).toBe(false);
+  });
+
+  it("refuses public ingress, raw forwarding, or an additional service configuration", () => {
+    expect(isPrivateServeTarget({ ...config, AllowFunnel: { [key]: true } }, origin, port)).toBe(false);
+    expect(isPrivateServeTarget({ ...config, TCP: { ...config.TCP, "444": { TCPForward: `127.0.0.1:${port}` } } }, origin, port)).toBe(false);
+    expect(isPrivateServeTarget({ ...config, Foreground: { other: config } }, origin, port)).toBe(false);
+    expect(isPrivateServeTarget(null, origin, port)).toBe(false);
   });
 });

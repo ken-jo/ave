@@ -4,7 +4,7 @@ import { lstat, open } from "node:fs/promises";
 import { readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { createLogger } from "../../lib/logger.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
-import { writeFileAtomicAtPath } from "./feature-namespace.js";
+import { writeFileAtomicAtPath, writeFileAtomicAtPathIf } from "./feature-namespace.js";
 import { parseStrictJsonText } from "../../shared/strict-json.js";
 import type { WorkBoardRefusalCode } from "../../shared/work-board-types.js";
 
@@ -54,8 +54,8 @@ async function copyHolds(copy: string, filePath: string, hash: string, size: num
 export async function rewriteKeepingBytes(
   filePath: string,
   body: string,
-  keep: { tag: string; unchanged?: string; check?: (prior: Buffer | undefined) => void },
-): Promise<void> {
+  keep: { tag: string; unchanged?: string; check?: (prior: Buffer | undefined) => void; canCommit?: () => boolean },
+): Promise<boolean> {
   const input = await readAveHomeInput(filePath);
   const prior = input.status === "absent" || input.bytes.length === 0 ? undefined : input.bytes;
   keep.check?.(prior);
@@ -75,5 +75,7 @@ export async function rewriteKeepingBytes(
       throw new WorkBoardWriteRefusal("work-board-backup-conflict", copy);
     }
   }
+  if (keep.canCommit) return writeFileAtomicAtPathIf(filePath, body, keep.canCommit);
   await writeFileAtomicAtPath(filePath, body);
+  return true;
 }

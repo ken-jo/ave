@@ -17,6 +17,7 @@ import {
   isTailnetWebOrigin,
   type TailnetPairingDeviceStatus,
   type TailnetSurfaceServer,
+  type TailnetWorkDecisionHandler,
 } from "../api/tailnet-surface-server.js";
 import {
   isTailnetAppCapabilityKey,
@@ -41,6 +42,7 @@ import {
   type TailnetPairingShareStore,
   type TailnetShareActorId,
 } from "./tailnet-pairing-share-store.js";
+import { TAILNET_WORK_DECISION_PATH } from "../shared/tailnet-work-decisions.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 
 export const DEFAULT_TAILNET_OBSERVER_PORT = 46_173;
@@ -144,6 +146,7 @@ export interface StartTailnetObserverServerOptions {
   readonly encryption: SecretEncryption;
   readonly conversationSurfaceRuntime: ConversationSurfaceRuntime;
   readonly getCurrentConversationId: () => string;
+  readonly workDecisionHandler?: TailnetWorkDecisionHandler;
   readonly isConversationBusy: () => boolean;
   // Present only in main-process composition; controller stays OFF without it.
   readonly conversationCommandPort?: ConversationCommandPort;
@@ -615,6 +618,7 @@ async function startForBoot(
     : undefined;
 
   const identityPolicy = pairedSharingRuntime?.authorizer ?? createTailnetOwnerIdentityPolicy();
+  const { webOrigin } = config;
   const server = await resolved.startServer({
     host: "127.0.0.1",
     port: config.port,
@@ -649,7 +653,14 @@ async function startForBoot(
           },
         }
       : {}),
-    ...(config.webOrigin === undefined ? {} : { web: { origin: config.webOrigin } }),
+    ...(webOrigin === undefined ? {} : { web: {
+      origin: webOrigin,
+      ...(receiptStore && options.workDecisionHandler ? { workDecisions: {
+        decide: options.workDecisionHandler,
+        receipts: receiptStore,
+        verifyServeTarget: () => verifyPrivateServeTarget(webOrigin, config.port),
+      } } : {}),
+    } }),
     log: (message) => options.log?.("[tailnet-observer] " + message),
   });
   if (generation !== lifecycleGeneration) {
@@ -848,21 +859,49 @@ function loopbackProxyPort(proxy: string): number | null {
   return Number.isSafeInteger(port) && port > 0 && port <= 65_535 ? port : null;
 }
 
-// What `tailscale serve status --json` says about the web handlers in place.
+export function isPrivateServeTarget(raw: unknown, origin: string, port: number): boolean {
+  if (!isRecord(raw) || !isRecord(raw.Web) || !isRecord(raw.TCP)) return false;
+  if (raw.AllowFunnel !== undefined && (!isRecord(raw.AllowFunnel) || Object.values(raw.AllowFunnel).some(value => value !== false))) return false;
+  // Additional configurations can expose another route to the same listener.
+  if ([raw.Foreground, raw.Services].some(value => value !== undefined && (!isRecord(value) || Object.keys(value).length > 0))) return false;
+  if (Object.values(raw.TCP).some(entry => !isRecord(entry) || entry.TCPForward !== undefined)) return false;
+  const https = raw.TCP["443"];
+  if (!isTailnetWebOrigin(origin) || !isRecord(https) || https.HTTPS !== true) return false;
+  const hostPort = `${new URL(origin).hostname}:443`;
+  const listeners = serveWebHandlers(raw.Web).filter(handler => handler.hostPort === hostPort);
+  const proxy = `http://127.0.0.1:${port}`;
+  return listeners.some(handler => handler.mount === "/" && handler.proxy === proxy)
+    && listeners.every(handler => handler.mount === "/" || handler.proxy === proxy
+      || (handler.mount !== TAILNET_WORK_DECISION_PATH
+        && !TAILNET_WORK_DECISION_PATH.startsWith(handler.mount.endsWith("/") ? handler.mount : `${handler.mount}/`)));
+}
+
+async function verifyPrivateServeTarget(origin: string, port: number): Promise<boolean> {
+  try {
+    const serve = await runTailscaleCommand(tailscaleCliPath(hostPlatform), ["serve", "status", "--json"]);
+    return serve.kind === "ran" && serve.code === 0 && isPrivateServeTarget(JSON.parse(serve.stdout), origin, port);
+  } catch {
+    return false;
+  }
+}
+
+function serveWebHandlers(web: Record<string, unknown>) {
+  return Object.entries(web).flatMap(([hostPort, listener]) => {
+    if (!isRecord(listener) || !isRecord(listener.Handlers)) return [];
+    return Object.entries(listener.Handlers).flatMap(([mount, handler]) =>
+      isRecord(handler) ? [{ hostPort, mount, proxy: typeof handler.Proxy === "string" ? handler.Proxy : undefined }] : []);
+  });
+}
+
 function readServeStatus(raw: unknown): { configured: boolean; targetPort: number | null } {
   if (!isRecord(raw) || !isRecord(raw.Web)) return { configured: false, targetPort: null };
-  let configured = false;
-  for (const hostPort of Object.values(raw.Web)) {
-    if (!isRecord(hostPort) || !isRecord(hostPort.Handlers)) continue;
-    for (const handler of Object.values(hostPort.Handlers)) {
-      if (!isRecord(handler)) continue;
-      configured = true;
-      if (typeof handler.Proxy !== "string") continue;
-      const port = loopbackProxyPort(handler.Proxy);
-      if (port !== null) return { configured: true, targetPort: port };
-    }
+  const handlers = serveWebHandlers(raw.Web);
+  for (const { proxy } of handlers) {
+    if (proxy === undefined) continue;
+    const port = loopbackProxyPort(proxy);
+    if (port !== null) return { configured: true, targetPort: port };
   }
-  return { configured, targetPort: null };
+  return { configured: handlers.length > 0, targetPort: null };
 }
 
 // Return named observed states only; never invent account, DNS, or port values missing from CLI output.

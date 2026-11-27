@@ -39,6 +39,7 @@ import { stripBoardRunFields } from "../work-board/template-run-fields.js";
 import { readAveHomeInput } from "../shared/ave-home-trust.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
 import { copyLegacyPluginBoard } from "../boot/steps/work-board-migration.js";
+import { WORK_DECISION_AUTHORITY_REVOKED, WorkDecisionAuthorityError, type WorkDecisionAuthority } from "../work-board/work-decision-authority.js";
 import { isTemplateId, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import type { TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
 
@@ -786,15 +787,16 @@ export class WorkBoardStore {
   // and when it would take out of the board file the id of a run that is not settled, unless it is the user's delete of that run's row
   // (`deleted`) with its intent stored; one that removes an entry or the user's text (`drops`) is refused while the run file cannot be
   // read (see assertKeepsRunIds).
-  private async commit(board: BoardRead, change: BoardChange = {}): Promise<void> {
+  private async commit(board: BoardRead, change: BoardChange = {}, canCommit?: () => boolean): Promise<void> {
     if (board.unread) throw new WorkBoardWriteRefusal("work-board-unread");
     if (await this.legacyCopyHolds(false)) throw new WorkBoardWriteRefusal("work-board-legacy-copy-unfinished");
     const file = cacheOf(board);
     const text = boardText(file);
     const runs = await this.runs.heldRuns();
     try {
-      await rewriteKeepingBytes(this.filePath, text, {
+      const committed = await rewriteKeepingBytes(this.filePath, text, {
         tag: "invalid-rows",
+        canCommit,
         unchanged: board.unchanged,
         check: (prior) => {
           if (prior !== undefined && repeatsKey(prior.toString("utf8"))) {
@@ -804,9 +806,10 @@ export class WorkBoardStore {
           assertKeepsRunIds(prior, text, runs, board.unchanged, change);
         },
       });
+      if (!committed) throw new WorkDecisionAuthorityError();
     } catch (error) {
       if (error instanceof WorkBoardWriteRefusal && error.code === "work-board-runs-unreadable") this.runsUnreadable = true;
-      if (!(error instanceof WorkBoardWriteRefusal)) await this.landedAnyway(file, text);
+      if (!(error instanceof WorkBoardWriteRefusal || error instanceof WorkDecisionAuthorityError)) await this.landedAnyway(file, text);
       throw error;
     }
     this.repeatedKey = false;
@@ -1114,7 +1117,7 @@ export class WorkBoardStore {
    * the row gone or naming a newer run, `row-lost` when the row is there without naming or holding the run or is lost, `board-unread` while the
    * board file shows nothing or the row does not validate. A missing or unreadable board is never read as empty, and is left as it is.
    * `mutate` requests an end, which settleRun writes, only as completed, denied, failed or stopped (`cause-refused` otherwise). */
-  async updateRun(id: number, runId: string, mutate: (run: WorkflowRunRecord) => WorkflowRunRecord | RunEnd | null): Promise<WorkflowRunWriteResult | { status: "board-unread" | "row-lost" | "cause-refused" }> {
+  async updateRun(id: number, runId: string, mutate: (run: WorkflowRunRecord) => WorkflowRunRecord | RunEnd | null, authority?: WorkDecisionAuthority): Promise<WorkflowRunWriteResult | { status: "board-unread" | "row-lost" | "cause-refused" }> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
       const row = (await readBoardOnDisk(this.filePath))?.standing({ itemId: id, runId });
@@ -1124,7 +1127,7 @@ export class WorkBoardStore {
       return this.runs.settleRun(runId, (run) => {
         requireTemplate(run.itemId === id, "invalid-template-run");
         return mutate(run);
-      }, cause => ROW_ENDS.has(cause));
+      }, cause => ROW_ENDS.has(cause), authority);
     });
   }
 
@@ -1140,7 +1143,7 @@ export class WorkBoardStore {
     });
   }
 
-  async create(input: WorkItemCreateInput): Promise<WorkItemCreateResult> {
+  async create(input: WorkItemCreateInput, canCommit?: () => boolean): Promise<WorkItemCreateResult> {
     await this.ensureLoaded();
     if (input.templateId !== undefined && !isTemplateId(input.templateId)) return { status: "invalid", reason: "invalid templateId" };
     const title = (input.title ?? "").trim();
@@ -1204,8 +1207,9 @@ export class WorkBoardStore {
       };
       board.nextId = id + 1;
       board.items.push(item);
-      try { await this.commit(board); }
+      try { await this.commit(board, {}, canCommit); }
       catch (error) {
+        if (error instanceof WorkDecisionAuthorityError) return { status: "invalid" as const, reason: error.code };
         if (error instanceof WorkBoardWriteRefusal) return { status: "invalid" as const, reason: error.code };
         throw error;
       }
@@ -1405,7 +1409,7 @@ export class WorkBoardStore {
 
   // Start a fresh capped history entry and reset latest fields without overwriting prior history or transcripts. A template run
   // stores its pin, start authority and stage state in the run file first; the row then names that run by runId and nothing else.
-  async beginRun(id: number, runId: string, startedAt: string, pin?: TemplateRunStart): Promise<WorkItemUpdateResult> {
+  async beginRun(id: number, runId: string, startedAt: string, pin?: TemplateRunStart, authority?: WorkDecisionAuthority): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await this.readBoard();
@@ -1420,7 +1424,7 @@ export class WorkBoardStore {
         return { status: "invalid" as const, itemId: id, reason: "template-run-unavailable" };
       }
       if (pin) requireTemplate(prior.templateId === pin.templateId && pin.source !== undefined, "invalid-template-run");
-      if (pin?.source.kind === "local-create-and-run") requireTemplate(projectRootKey(pin.source.projectRoot) === projectRootKey(prior.projectRoot), "project-mismatch");
+      if (pin && pin.source.kind !== "schedule-attachment") requireTemplate(projectRootKey(pin.source.projectRoot) === projectRootKey(prior.projectRoot), "project-mismatch");
       if (prior.status === "completed") {
         this.cache = cacheOf(board);
         return { status: "invalid" as const, itemId: id, reason: "work-item-completed" };
@@ -1431,9 +1435,10 @@ export class WorkBoardStore {
         const stored = await this.runs.put(structuredClone({
           runId, itemId: id, pin: { templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash },
           runStartedBy: pin.source, startedAt, stageRuns: pin.stageRuns,
-        }), retain);
+        }), retain, authority);
         if (stored.status !== "stored") {
           this.cache = cacheOf(board);
+          if (stored.status === "refused" && authority) return { status: "invalid" as const, itemId: id, reason: WORK_DECISION_AUTHORITY_REVOKED };
           return { status: "invalid" as const, itemId: id, reason: stored.status === "pending-review" ? "template-runs-pending-review" : stored.status === "too-large" ? "template-runs-too-large" : "invalid-template-run" };
         }
       }
@@ -1456,9 +1461,10 @@ export class WorkBoardStore {
       delete updated.planApproval;
       board.items[idx] = updated;
       // An entry the cap drops takes its run id out of the row: the write guard refuses it for a run that is not settled.
-      try { await this.commit(board, capped.length < history.length ? { drops: true } : {}); }
+      try { await this.commit(board, capped.length < history.length ? { drops: true } : {}, authority?.isCurrent); }
       catch (error) {
         if (pin) await this.settleUnstarted(id, runId).catch((cleanup: Error) => log.warn("[work-board-store] a failed run start was not settled: %s", cleanup.message));
+        if (error instanceof WorkDecisionAuthorityError) return { status: "invalid" as const, itemId: id, reason: error.code };
         throw error;
       }
       // The run this row named until now is in its history only from this write on.
@@ -1655,7 +1661,7 @@ export class WorkBoardStore {
   // Record the user's decision on the pending plan. Every check runs inside the board lock against the stored item, so two decisions for
   // the same plan cannot both pass: the second finds the approval no longer pending. The decision is written before anything acts on it;
   // approve moves the run to executing and request_changes back to planning in the same write, and reject ends the run as denied.
-  async decidePlan(id: number, input: PlanDecisionInput): Promise<PlanDecisionResult> {
+  async decidePlan(id: number, input: PlanDecisionInput, authority?: WorkDecisionAuthority): Promise<PlanDecisionResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await this.readBoard();
@@ -1697,8 +1703,14 @@ export class WorkBoardStore {
         input.status === "approved" ? "executing" : input.status === "rejected" ? "denied" : "planning";
       const updated = withRunResult(current, { runStatus: nextRunStatus }, iso);
       updated.planApproval = decided;
+      if (authority && !await authority.refreshCurrent()) return refuse(WORK_DECISION_AUTHORITY_REVOKED);
       board.items[idx] = updated;
-      await this.commit(board);
+      try {
+        await this.commit(board, {}, authority?.isCurrent);
+      } catch (error) {
+        if (error instanceof WorkDecisionAuthorityError) return { status: "refused", reason: error.code };
+        throw error;
+      }
       await appendActivity(this.activity, {
         kind: runStatusActivityKind(nextRunStatus),
         itemId: updated.id,

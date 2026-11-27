@@ -1,3 +1,7 @@
+import { TAILNET_WORK_DECISION_CAPABILITY, TAILNET_WORK_DECISION_PATH, type TailnetWorkDecisionRequest, type TailnetWorkDecisionResponse } from "../shared/tailnet-work-decisions.js";
+import type { RemoteWorkDecisionEvidence } from "../main/workflow-template-decision.js";
+import { parseTailnetWorkDecision } from "./tailnet-work-decision-input.js";
+import { WORK_DECISION_AUTHORITY_REVOKED } from "../work-board/work-decision-authority.js";
 import { TailnetOwnerIdentityError } from "../main/tailnet-owner-identity.js";
 import type { TailnetOwnerIdentityEvidence } from "../main/tailnet-owner-policy.js";
 import type { TailnetOwnerIdentityErrorCode } from "../shared/tailnet-sharing.js";
@@ -102,9 +106,18 @@ export interface TailnetPairingDeviceStatus {
   readonly ownDevice: boolean;
 }
 // Browser access requires paired sharing and same-origin checks; native routes reject browser context.
+export type TailnetWorkDecisionHandler = (request: TailnetWorkDecisionRequest, evidence: RemoteWorkDecisionEvidence) => Promise<TailnetWorkDecisionResponse>;
+
+interface TailnetWebWorkDecisions {
+  readonly decide: TailnetWorkDecisionHandler;
+  readonly verifyServeTarget: () => Promise<boolean>;
+  readonly receipts: TailnetControllerReceiptStore;
+}
+
 export interface TailnetWebOptions {
   readonly origin: string;
   readonly sessions?: TailnetWebSessionStore;
+  readonly workDecisions?: TailnetWebWorkDecisions;
 }
 
 const ownerAdmittedRequests = new WeakSet<IncomingMessage>();
@@ -127,7 +140,7 @@ export interface TailnetSurfaceServerOptions {
   readonly maxRequestsPerWindow?: number;
   readonly maxWebReadRequestsPerWindow?: number;
   readonly requestWindowMs?: number;
-  // Remote control accepts only conversation.send; no attachment, session, policy, or approval commands.
+  // Conversation commands and work decisions have separate controller entry points.
   readonly controller?: TailnetControllerOptions;
   // Enabling paired sharing disables unpaired native access.
   readonly pairedSharing?: TailnetPairedShareAuthorizer;
@@ -211,6 +224,8 @@ interface TailnetRequestLimiter {
 interface TailnetWebRuntime {
   readonly origin: string;
   readonly sessions: TailnetWebSessionStore;
+  readonly workDecisions?: TailnetWebWorkDecisions;
+  readonly receiptOwnerId: string;
 }
 
 interface TailnetStreamSessionGuard {
@@ -221,12 +236,13 @@ interface TailnetStreamSessionGuard {
 interface TailnetWebRequestAuthorization {
   readonly login: string;
   readonly cookieToken: string;
+  readonly csrfToken: string;
   readonly pairedShare: TailnetPairedShareAuthorization;
   readonly scope: TailnetObserverScope;
   readonly session: TailnetWebSessionAuthorization;
 }
 
-type TailnetWebRequiredRole = "observe" | "control";
+type TailnetWebRequiredRole = "observe" | "control" | typeof TAILNET_WORK_DECISION_CAPABILITY;
 
 interface TailnetWebPageState {
   readonly csrfToken: string;
@@ -251,7 +267,7 @@ export function isAuthorizedTailnetController(
 function authorizedTailnetLogin(
   headers: IncomingHttpHeaders,
   authorization: TailnetAuthorization,
-  role: "observer" | "controller" | "pairing",
+  role: "observer" | "controller" | "pairing" | typeof TAILNET_WORK_DECISION_CAPABILITY,
 ): string | undefined {
   const login = singleHeader(headers, "tailscale-user-login");
   if (!isSafeLogin(login)) return undefined;
@@ -275,9 +291,9 @@ function authorizedTailnetLogin(
     return undefined;
   }
   const grants = parsed[expectedAppCapability];
-  return Array.isArray(grants) && grants.some((grant) => isRecord(grant) && grant.role === role)
-    ? login
-    : undefined;
+  if (!Array.isArray(grants)) return undefined;
+  const hasRole = (required: typeof role) => grants.some(grant => isRecord(grant) && grant.role === required);
+  return hasRole(role) && (role !== TAILNET_WORK_DECISION_CAPABILITY || hasRole("controller")) ? login : undefined;
 }
 // Accept only the boot-configured canonical HTTPS origin; never derive it from request headers.
 export function isTailnetWebOrigin(value: unknown): value is string {
@@ -350,6 +366,8 @@ export function startTailnetSurfaceServer(
     : Object.freeze({
         origin: options.web.origin,
         sessions: options.web.sessions ?? createTailnetWebSessionStore(),
+        workDecisions: options.web.workDecisions,
+        receiptOwnerId: randomUUID(),
       });
 
   const maxConnections = requirePositiveInteger(options.maxConnections ?? DEFAULT_MAX_CONNECTIONS, `maxConnections must be a positive safe integer.`);
@@ -503,11 +521,12 @@ async function route(
   const webSnapshotRoute = path === "/tailnet/v2/web/snapshot";
   const webEventsRoute = path === "/tailnet/v2/web/events";
   const webCommandRoute = path === "/tailnet/v2/web/commands";
+  const webWorkDecisionRoute = path === TAILNET_WORK_DECISION_PATH;
   const webAttachmentRoute = path === "/tailnet/v3/web/attachments";
   const webLogoutRoute = path === "/tailnet/v2/web/logout";
   const webPairingClaimRoute = path === "/tailnet/v2/web/pairing/claim";
   const webRoute = webDocumentRoute || webSnapshotRoute || webEventsRoute || webCommandRoute
-    || webAttachmentRoute || webLogoutRoute || webPairingClaimRoute;
+    || webAttachmentRoute || webLogoutRoute || webPairingClaimRoute || webWorkDecisionRoute;
   if (
     !observerRoute
     && !(controllerRoute && controllerBroker)
@@ -525,7 +544,10 @@ async function route(
     sendJson(res, 403, { ok: false, error: pairingRoute ? "browser-pairing-not-ready" : controllerRoute || attachmentRoute ? "browser-controller-not-ready" : "browser-observer-not-ready" });
     return;
   }
-  const authenticatedLogin = authorizedTailnetLogin(req.headers, options.authorization, controllerRoute || attachmentRoute || webCommandRoute || webAttachmentRoute ? "controller" : pairingRoute || webPairingClaimRoute ? "pairing" : "observer") ?? (webDocumentRoute ? authorizedTailnetLogin(req.headers, options.authorization, "pairing") : undefined);
+  const role = webWorkDecisionRoute ? TAILNET_WORK_DECISION_CAPABILITY
+    : controllerRoute || attachmentRoute || webCommandRoute || webAttachmentRoute ? "controller"
+    : pairingRoute || webPairingClaimRoute ? "pairing" : "observer";
+  const authenticatedLogin = authorizedTailnetLogin(req.headers, options.authorization, role) ?? (webDocumentRoute ? authorizedTailnetLogin(req.headers, options.authorization, "pairing") : undefined);
   if (authenticatedLogin !== undefined) {
     const admissionLimiter = webSnapshotRoute || webEventsRoute ? webReadRequestLimiter : requestLimiter;
     if (!admissionLimiter.accept(authenticatedLogin, req.socket)) {
@@ -732,6 +754,10 @@ async function routeTailnetWeb(
       maxConnections,
       maxStreamLifetimeMs,
     );
+    return;
+  }
+  if (path === TAILNET_WORK_DECISION_PATH) {
+    await routeTailnetWebWorkDecision(req, res, options, web, currentScope, mutationRequestLimiter);
     return;
   }
   if (path === "/tailnet/v2/web/commands") {
@@ -1066,6 +1092,77 @@ function routeTailnetWebEvents(
   );
 }
 
+async function routeTailnetWebWorkDecision(
+  req: IncomingMessage,
+  res: ServerResponse,
+  options: TailnetSurfaceServerOptions,
+  web: TailnetWebRuntime,
+  currentScope: TailnetObserverScopeReader,
+  requestLimiter: TailnetRequestLimiter,
+): Promise<void> {
+  const fail = (status: number, error: string) => {
+    req.resume();
+    sendTailnetWebJson(res, web, status, { ok: false, error } satisfies TailnetWorkDecisionResponse);
+  };
+  const work = web.workDecisions;
+  if (!work) return fail(404, "work-decisions-disabled");
+  if (req.method !== "POST") return fail(405, "method-not-allowed");
+  const authorize = (consumeRateLimit: boolean) =>
+    authorizeTailnetWebRequest(req, res, options, web, currentScope, requestLimiter, TAILNET_WORK_DECISION_CAPABILITY, consumeRateLimit);
+  if (authorize(true) === null) return;
+  const body = await readTailnetJsonBody(req, MAX_COMMAND_BODY_BYTES);
+  if (!body.ok) return fail(body.status, "invalid-work-decision");
+  const decision = parseTailnetWorkDecision(body.value);
+  if (!decision) return fail(400, "invalid-work-decision");
+  if (!await work.verifyServeTarget()) return fail(403, "work-decision-serve-required");
+  const authorized = authorize(false);
+  if (authorized === null) return;
+  const { login, pairedShare, scope, cookieToken, csrfToken } = authorized;
+  if (decision.scope !== scope.value) return fail(409, "work-decision-scope-mismatch");
+
+  const isCurrent = () => {
+    const session = web.sessions.resolveMutation(cookieToken, csrfToken);
+    return session !== null && sameTailnetWebSessionAuthority(session, pairedShare)
+      && isTailnetShareScopeCurrent(pairedShare, currentScope, scope);
+  };
+  const evidence: RemoteWorkDecisionEvidence = {
+    login, conversationId: scope.conversationId,
+    authority: {
+      isCurrent,
+      refreshCurrent: async () => isCurrent() && await work.verifyServeTarget()
+        && await pairedShare.pairedShareGuard.refreshCurrent(pairedShare.pairedShare) && isCurrent(),
+    },
+  };
+  if (!isCurrent()) return fail(403, WORK_DECISION_AUTHORITY_REVOKED);
+
+  const keyDigest = sha256Hex(`work-decision\u0000${pairedShare.actorId}\u0000${decision.id}`);
+  const ownerId = web.receiptOwnerId;
+  let reserved = false;
+  try {
+    const receipt = work.receipts.reserve({
+      keyDigest, ownerId,
+      intentDigest: sha256Hex(JSON.stringify(decision)),
+      conversationDigest: privateConversationDigest(scope.conversationId),
+    });
+    if (receipt.kind === "capacity-exhausted") return fail(503, "receipt-unavailable");
+    if (receipt.kind === "conflict") return fail(409, "idempotency-conflict");
+    if (receipt.kind !== "reserved") return fail(409, "work-decision-replayed");
+    reserved = true;
+    const result = await work.decide(decision, evidence);
+    sendTailnetWebJson(res, web, result.ok ? 200 : result.error === WORK_DECISION_AUTHORITY_REVOKED ? 403 : 409, result);
+  } catch {
+    fail(500, reserved ? "work-decision-unavailable" : "receipt-unavailable");
+  } finally {
+    if (reserved) {
+      try {
+        work.receipts.settle({ keyDigest, ownerId });
+      } catch {
+        options.log?.("Work decision receipt settlement failed; replay is blocked");
+      }
+    }
+  }
+}
+
 async function routeTailnetWebCommand(
   req: IncomingMessage,
   res: ServerResponse,
@@ -1238,7 +1335,8 @@ function authorizeTailnetWebRequest(
     sendTailnetWebJson(res, web, 403, { ok: false, error: "csrf-required" });
     return null;
   }
-  const login = authorizedTailnetLogin(req.headers, options.authorization, required === "control" ? "controller" : "observer");
+  const role = required === "observe" ? "observer" : required === "control" ? "controller" : required;
+  const login = authorizedTailnetLogin(req.headers, options.authorization, role);
   if (login === undefined) {
     req.resume();
     sendTailnetWebJson(res, web, 403, { ok: false, error: "tailnet-role-required" });
@@ -1257,7 +1355,7 @@ function authorizeTailnetWebRequest(
     sendTailnetWebJson(res, web, 503, { ok: false, error: "conversation-unavailable" });
     return null;
   }
-  const pairedShare = resolvePairedShare(options, login, scope.conversationId, required);
+  const pairedShare = resolvePairedShare(options, login, scope.conversationId, required === "observe" ? "observe" : "control");
   if (
     pairedShare === null
     || pairedShare === undefined
@@ -1270,6 +1368,7 @@ function authorizeTailnetWebRequest(
   }
   return {
     cookieToken,
+    csrfToken,
     login,
     pairedShare,
     scope,
@@ -1995,7 +2094,7 @@ async function routeTailnetAttachmentUpload(
   }
   const staged = attachmentStore.stage({
     ownerKey: pairedAttachmentOwnerKey(latestPairedShare),
-    isCurrent: () => isTailnetAttachmentCurrent(latestPairedShare, currentScope, latestScope),
+    isCurrent: () => isTailnetShareScopeCurrent(latestPairedShare, currentScope, latestScope),
     mimeType,
     bytes: body.bytes,
   });
@@ -2094,7 +2193,7 @@ async function routeTailnetWebAttachmentUpload(
   }
   const staged = attachmentStore.stage({
     ownerKey: pairedAttachmentOwnerKey(reauthorized.pairedShare),
-    isCurrent: () => isTailnetAttachmentCurrent(
+    isCurrent: () => isTailnetShareScopeCurrent(
       reauthorized.pairedShare,
       currentScope,
       reauthorized.scope,
@@ -2116,7 +2215,7 @@ async function routeTailnetWebAttachmentUpload(
   });
 }
 
-function isTailnetAttachmentCurrent(
+function isTailnetShareScopeCurrent(
   pairedShare: TailnetPairedShareAuthorization,
   currentScope: TailnetObserverScopeReader,
   expectedScope: TailnetObserverScope,

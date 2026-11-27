@@ -1,4 +1,8 @@
-export type TemplateConfirmationOrigin = "local-desktop" | "tailnet-surface";
+export type TemplateDecisionActor = { who: string } & (
+  | { origin: "local-desktop"; auditId?: never }
+  | { origin: "tailnet-surface"; auditId: string }
+);
+export type TemplateConfirmationOrigin = TemplateDecisionActor["origin"];
 export type TemplateScope = { kind: "all" } | { kind: "project"; projectRoot: string };
 type StageGate = { type: "human" } | {
   type: "auto";
@@ -54,11 +58,7 @@ export interface WorkflowTemplate {
   archivedAt?: string;
 }
 export interface TemplateVersionPin { templateId: string; version: number; graphHash: string }
-interface TemplateConfirmation extends TemplateVersionPin {
-  who: string;
-  at: string;
-  origin: TemplateConfirmationOrigin;
-}
+type TemplateConfirmation = TemplateVersionPin & TemplateDecisionActor & { at: string };
 export interface TemplateVersion extends TemplateGraph, TemplateVersionPin {
   confirmedAt: string;
   confirmation: TemplateConfirmation;
@@ -94,15 +94,13 @@ export type ScheduleAttachmentRequest = TemplateVersionPin & { expectedScope: Te
   | { scheduleId: string }
   | { schedule: import("./routines-types.js").RoutineSchedule }
 );
-export interface ScheduleAttachment extends ScheduleAttachmentInput {
+export type ScheduleAttachment = ScheduleAttachmentInput & TemplateDecisionActor & {
   id: string;
   /** Approved project-registry root, canonicalized at authorization; compared exactly. */
   approvedScope: TemplateScope;
   detachedAt?: string;
-  who: string;
   at: string;
-  origin: TemplateConfirmationOrigin;
-}
+};
 export interface WorkflowTemplateRecord {
   template: WorkflowTemplate;
   versions: TemplateVersion[];
@@ -144,6 +142,7 @@ export type EnvelopeRefusal = "tools-broader-than-scope" | "host-shell" | "floor
   | "outputs-need-human-gate" | "setup-outside-commands" | "bad-stage-id" | "too-many-entries";
 type RunPin = TemplateVersionPin;
 export type RunAuthoritySource = { kind: "local-create-and-run"; pin: RunPin; projectRoot?: string }
+  | { kind: "tailnet-create-and-run"; pin: RunPin; projectRoot?: string }
   | { kind: "schedule-attachment"; attachmentId: string; pin: RunPin; firedAt: string };
 export interface RunWorkspace { kind: "git" | "folder"; runRoot: string; branch?: string; baseCommit?: string; outputDir?: string }
 type LaneBlockCode = "envelope-missing" | "isolation-unproven" | "lane-unavailable";

@@ -29,6 +29,7 @@ import type {
   WorkItemStageRun,
 } from "../../shared/workflow-template-types.js";
 import { isUnattendedReadTool } from "../../tools/base.js";
+import { WORK_DECISION_AUTHORITY_REVOKED, type WorkDecisionAuthority } from "../work-decision-authority.js";
 import { isAllReadOnlyVersion, WorkflowTemplateError } from "../template-graph.js";
 import type { AuthoriseRunSource, RunAuthorityVerdict } from "./run-authority.js";
 import type { LaneBlockCode, OutputExecution, RunPin, StageFailure } from "./shipped-shapes.js";
@@ -113,14 +114,20 @@ export type ScheduledTemplateStart =
   | { ok: true; itemId: number; result: Promise<WorkItemRunResult> }
   | { ok: false; code: string; tool?: EnvelopeToolRef };
 
+interface StageRunStart {
+  source: RunAuthoritySource;
+  authority?: WorkDecisionAuthority;
+  onStarted?: (runId: string) => void;
+}
+
 export interface StageRunEngine {
   /** Resolves once admission writes the run. The result observes its first quiescent state separately. */
   startScheduled(source: ScheduledTemplateSource, title: string): Promise<ScheduledTemplateStart>;
   /** Resolves with the run's first quiescent state, or with the start's refusal (error, already_running, not_found). That state may already
    * be past a gate: a decision queued before then is part of it. Gate state comes from events, not from this value. */
-  start(itemId: number, a: { source: RunAuthoritySource }): Promise<WorkItemRunResult>;
-  decideGate(itemId: number, i: StageGateDecideInput): Promise<StageGateDecideResult>;
-  decideJoin(itemId: number, i: StageJoinDecideInput): Promise<StageJoinDecideResult>;
+  start(itemId: number, a: StageRunStart): Promise<WorkItemRunResult>;
+  decideGate(itemId: number, i: StageGateDecideInput, authority?: WorkDecisionAuthority): Promise<StageGateDecideResult>;
+  decideJoin(itemId: number, i: StageJoinDecideInput, authority?: WorkDecisionAuthority): Promise<StageJoinDecideResult>;
   openJoin(itemId: number, i: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
   retryStage(itemId: number, i: StageRetryInput): Promise<StageRetryResult>;
   /** Start whatever is ready in a run that has no live child (after a restart). Not a retry: no attempt is used. */
@@ -335,7 +342,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   /** The project a run works on, from what authorised it: the card's root for Create and run, the approved snapshot for a schedule. */
   async function runProjectOf(source: RunAuthoritySource): Promise<string | undefined> {
-    if (source.kind === "local-create-and-run") return source.projectRoot;
+    if (source.kind !== "schedule-attachment") return source.projectRoot;
     const approved = (await deps.attachments.getAttachment(source.attachmentId))?.approvedScope;
     return approved?.kind === "project" ? approved.projectRoot : undefined;
   }
@@ -609,8 +616,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   /** One write of the run. Null when nothing was stored. */
-  async function writeRun(state: RunState, mutate: (run: RunRecord) => RunRecord | RunEnd | null): Promise<{ run: RunRecord } | { run: null; reason: RunWriteFailure }> {
-    const result = await records.update(state.itemId, state.runId, mutate, state.lost ? "lost" : state.rowGone ? state.removedAs : undefined);
+  async function writeRun(state: RunState, mutate: (run: RunRecord) => RunRecord | RunEnd | null, authority?: WorkDecisionAuthority): Promise<{ run: RunRecord } | { run: null; reason: RunWriteFailure }> {
+    const result = await records.update(state.itemId, state.runId, mutate, state.lost ? "lost" : state.rowGone ? state.removedAs : undefined, authority);
     if (result.ok) {
       if (state.boardUnread) {
         state.boardUnread = false;
@@ -723,7 +730,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** One event: resolve the pin, then one atomic write that checks, reduces and stores the run as it is at that moment, then the effects.
    * `precheck` refuses a user decision before anything is written: on the run as read, before the pin is resolved, and again inside the
    * write. */
-  async function handle<R extends string = never>(state: RunState, event: RunEvent, precheck?: Precheck<R>, replay?: Held, knownAttempt?: number): Promise<R | PinRefusal | "run_mismatch" | "not_found" | null> {
+  async function handle<R extends string = never>(state: RunState, event: RunEvent, precheck?: Precheck<R>, replay?: Held, knownAttempt?: number, authority?: WorkDecisionAuthority): Promise<R | PinRefusal | typeof WORK_DECISION_AUTHORITY_REVOKED | "run_mismatch" | "not_found" | null> {
     if (runs.get(state.itemId) !== state) {
       log.warn("dropped a stage event of another run (id=%d, event=%s)", state.itemId, event.type);
       return "run_mismatch";
@@ -791,7 +798,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         const next = { ...current, stageRuns: step.stageRuns, stageJoins: step.joins };
         ending = step.runStatus === "executing" ? null : step.runStatus;
         return ending === null ? next : endOf(state, next, ending, now);
-      });
+      }, authority);
     } catch (error) {
       if (precheck || replay) throw error;
       if (event.type === "seal_failed") {
@@ -807,6 +814,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }
     if (written.run === null) {
       if (refusal !== null) return refusal;
+      if (authority && written.reason === "refused") return WORK_DECISION_AUTHORITY_REVOKED;
       // The row does not name the run: writeRun read its class, which ends it as lost or removed, and the event goes with that end, or holds
       // it, and the event is held with it (a replay stays where it is).
       if (written.reason === "row-gone" || holdsWrite(state, written.reason)) {
@@ -1218,7 +1226,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return { status: "awaiting_approval" };
   }
 
-  async function start(itemId: number, a: { source: RunAuthoritySource }): Promise<WorkItemRunResult> {
+  async function start(itemId: number, a: StageRunStart): Promise<WorkItemRunResult> {
     try {
       // A run a restart left unsettled is taken over first: a start never races its adoption, and never replaces such a run.
       const adoptedNow = await adopted();
@@ -1232,10 +1240,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const row = got.item;
       const record = row.runId === undefined ? null : await records.get(itemId, row.runId);
       if (record ? record.settled === undefined : ROW_BUSY.has(row.runStatus ?? "idle")) return busy;
+      if (a.source.kind === "tailnet-create-and-run" && !a.authority) return refusedStart(WORK_DECISION_AUTHORITY_REVOKED);
       const checked = await checkStart(a.source, row.projectRoot);
       if ("status" in checked) return checked;
-      const started = await beginStart(itemId, a.source, checked);
-      return "status" in started ? started : await firstResult(started);
+      const started = await beginStart(itemId, a.source, checked, undefined, a.authority);
+      if ("status" in started) return started;
+      a.onStarted?.(started.runId);
+      return await firstResult(started);
     } finally {
       // A refused start never opened a run; the caller's in-flight mark goes with it.
       if (!runs.has(itemId)) deps.releaseItem(itemId);
@@ -1252,7 +1263,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const pin = source.pin;
     try {
       // Only the source's approved project may be used for a run.
-      if (source.kind === "local-create-and-run" && source.projectRoot !== undefined) {
+      if (source.kind !== "schedule-attachment" && source.projectRoot !== undefined) {
         const registered = deps.resolveProjectRoot(source.projectRoot);
         if (registered === null) return refusedStart("scope-not-authorised");
         if (registered !== source.projectRoot) return refusedStart("project-mismatch");
@@ -1349,7 +1360,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return { itemId, runId, runKey: runKeyOf(itemId, runId), ...(projectRoot !== undefined ? { projectRoot } : {}) };
   }
 
-  async function beginStart(itemId: number, source: RunAuthoritySource, { projectRoot, version }: CheckedStart, scheduledRef?: RunRef): Promise<RunState | WorkItemRunResult> {
+  async function beginStart(itemId: number, source: RunAuthoritySource, { projectRoot, version }: CheckedStart, scheduledRef?: RunRef, authority?: WorkDecisionAuthority): Promise<RunState | WorkItemRunResult> {
     const ref = scheduledRef ?? newRunRef(itemId, projectRoot);
     const pin = source.pin;
     const refused = refusedStart;
@@ -1367,7 +1378,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     try {
       const stageRuns = version.stages.map((stage): WorkItemStageRun => ({ stageId: stage.id, attempt: 1, status: "waiting" }));
       // The run file gets the pin, the source and the stage runs first; the board row then names the run by its id and nothing else.
-      const begun = await records.begin(itemId, runId, startedAt, { templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash, source, stageRuns });
+      const begun = await records.begin(itemId, runId, startedAt, { templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash, source, stageRuns }, authority);
       if (begun.status !== "updated") return await abandonStart(ref, false, begun.status === "invalid" ? refused(begun.reason) : { status: "not_found" });
       recorded = true;
       const placed = await records.update(itemId, runId, current => ({ ...current, runWorkspace: opened.workspace }));
@@ -1439,9 +1450,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return result;
   }
 
+  type DecisionRefusal = PinRefusal | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "not_found" | "not_pending";
+
   /** A user action on an unsettled run: refused before any write unless `precheck` passes and the pin still resolves. */
-  async function decide<R extends string>(itemId: number, runId: string, event: RunEvent, precheck: Precheck<R>):
-  Promise<R | PinRefusal | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "not_found" | "not_pending" | null> {
+  function decide<R extends string>(itemId: number, runId: string, event: RunEvent, precheck: Precheck<R>):
+  Promise<R | DecisionRefusal | null>;
+  function decide<R extends string>(itemId: number, runId: string, event: RunEvent, precheck: Precheck<R>, authority: WorkDecisionAuthority | undefined):
+  Promise<R | DecisionRefusal | typeof WORK_DECISION_AUTHORITY_REVOKED | null>;
+  async function decide<R extends string>(itemId: number, runId: string, event: RunEvent, precheck: Precheck<R>, authority?: WorkDecisionAuthority):
+  Promise<R | DecisionRefusal | typeof WORK_DECISION_AUTHORITY_REVOKED | null> {
     // An end the run file did not confirm, or a deleted row's run not taken over yet, holds back only its own run's decisions, once the
     // boot takeover has succeeded.
     if (!(await adopted()).ok && (!takenOver || (unconfirmed.size === 0 && !intentsPending))) return "runs_not_adopted";
@@ -1454,7 +1471,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (unconfirmed.has(runId)) return "run_end_unconfirmed";
     const state = await stateFor(record);
     if (!state) return "not_pending";
-    return enqueue(state, () => handle(state, event, precheck));
+    return enqueue(state, () => handle(state, event, precheck, undefined, undefined, authority));
   }
 
   function noteRefusal(i: StageGateDecideInput): "note_required" | "note_too_long" | "note_invalid" | null {
@@ -1469,7 +1486,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return state !== undefined && !state.stopping && state.refused === null && state.faulted === null;
   };
 
-  async function decideGate(itemId: number, i: StageGateDecideInput): Promise<StageGateDecideResult> {
+  async function decideGate(itemId: number, i: StageGateDecideInput, authority?: WorkDecisionAuthority): Promise<StageGateDecideResult> {
     const event: RunEvent = { type: "gate_decided", stageId: i.stageId, attempt: i.attempt, decision: i.decision, ...(i.note !== undefined && i.note.length > 0 ? { note: i.note } : {}) };
     const reason = await decide(itemId, i.runId, event, (record) => {
       const run = record.stageRuns.find(candidate => candidate.stageId === i.stageId);
@@ -1481,18 +1498,18 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const note = noteRefusal(i);
       if (note) return note;
       return i.decision === "request_changes" && run.attempt >= MAX_STAGE_ATTEMPTS ? "attempts_exhausted" : null;
-    });
+    }, authority);
     if (reason !== null) return { ok: false, reason };
     return { ok: true, status: i.decision === "approve" ? "approved" : i.decision === "reject" ? "rejected" : "changes_requested" };
   }
 
-  async function decideJoin(itemId: number, i: StageJoinDecideInput): Promise<StageJoinDecideResult> {
+  async function decideJoin(itemId: number, i: StageJoinDecideInput, authority?: WorkDecisionAuthority): Promise<StageJoinDecideResult> {
     const reason = await decide(itemId, i.runId, { type: "join_decided", joinId: i.joinId, decision: i.decision }, (record) => {
       const join = (record.stageJoins ?? []).find(candidate => candidate.joinId === i.joinId);
       if (!join) return "not_found";
       if (join.status !== "conflict" || !join.conflict || !decidable(itemId)) return "not_pending";
       return join.conflict.conflictHash === i.conflictHash && (join.conflictGeneration ?? 0) === i.generation ? null : "conflict_mismatch";
-    });
+    }, authority);
     return reason === null ? { ok: true } : { ok: false, reason };
   }
 
@@ -1799,7 +1816,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         const record = runOf({ id: item.id, runId });
         if (!record || record.pin.templateId !== item.templateId) return null;
         const source = record.runStartedBy;
-        const scope = source.kind === "local-create-and-run"
+        const scope = source.kind !== "schedule-attachment"
           ? source.projectRoot === undefined ? { kind: "all" as const } : { kind: "project" as const, projectRoot: source.projectRoot }
           : (await deps.attachments.getAttachment(source.attachmentId))?.approvedScope;
         if (!scope) return null;

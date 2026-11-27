@@ -19,6 +19,7 @@ import { createSharedConversationProjectionStore } from "../../engine/shared-con
 import type { ConversationCommandPort } from "../../main/conversation-command-port.js";
 import type { TailnetPairedShareAuthorizer } from "../../main/tailnet-paired-share-authorizer.js";
 import type { TailnetAuthorization } from "../../shared/tailnet-observer-config.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
 
@@ -192,7 +193,7 @@ function url(server: TailnetSurfaceServer, path: string): string {
   return "http://127.0.0.1:" + server.port + path;
 }
 function tailnetRoleHeaders(
-  roles: readonly ("observer" | "controller" | "pairing")[],
+  roles: readonly ("observer" | "controller" | "pairing" | "work-decision")[],
   login = "owner@example.com",
 ): Record<string, string> {
   return {
@@ -206,7 +207,7 @@ function tailnetRoleHeaders(
 function webSessionHeaders(
   cookieToken: string,
   csrfToken: string,
-  roles: readonly ("observer" | "controller" | "pairing")[] = ["observer"],
+  roles: readonly ("observer" | "controller" | "pairing" | "work-decision")[] = ["observer"],
   login = "owner@example.com",
 ): Record<string, string> {
   return {
@@ -2005,4 +2006,114 @@ it("checks request identity before submitting a command after asynchronous body 
   finish();
   expect(await completed).toBe(403);
   expect(submit).not.toHaveBeenCalled();
+});
+
+describe("remote work decisions", () => {
+  const path = "/tailnet/v2/web/work-decisions";
+  const receiptId = "8fe084f3-931b-4414-8e6a-b6101905e344";
+  const workRoles = ["observer", "controller", "work-decision"] as const;
+
+  it.each([
+    ["controller capability", 403, "tailnet-role-required"],
+    ["work-only capability", 403, "tailnet-role-required"],
+    ["session cookie", 401, "web-session-required"],
+    ["Serve target", 403, "work-decision-serve-required"],
+    ["origin", 403, "same-origin-required"],
+    ["CSRF", 403, "csrf-required"],
+    ["stale conversation scope", 409, "work-decision-scope-mismatch"],
+    ["work identity", 400, "invalid-work-decision"],
+    ["accepted and replayed", 200, undefined],
+  ] as const)("checks %s before routing", async (condition, status, error) => {
+    const decide = vi.fn(async () => ({ ok: true as const, kind: "plan" as const, status: "approved" as const }));
+    const sharing = pairedSharing({ observe: true, control: true });
+    const web = {
+      origin: WEB_ORIGIN,
+      workDecisions: {
+        decide,
+        verifyServeTarget: async () => condition !== "Serve target",
+        receipts: createReceiptStore(),
+      },
+    };
+    const { server } = await fixture({ web, pairedSharing: sharing.authorizer });
+    const session = await openWebSession(server);
+    const snapshot = await fetch(url(server, "/tailnet/v2/web/snapshot"), {
+      headers: webSessionHeaders(session.cookieToken, session.csrfToken),
+    });
+    const { scope } = (await snapshot.json() as { snapshot: { scope: string } }).snapshot;
+    const headers: Record<string, string> = {
+      ...webSessionHeaders(session.cookieToken, session.csrfToken, condition === "controller capability" ? ["observer", "controller"] : condition === "work-only capability" ? ["work-decision"] : workRoles),
+      "Content-Type": "application/json",
+    };
+    if (condition === "origin") headers.Origin = "https://other.ts.net";
+    if (condition === "session cookie") delete headers.Cookie;
+    if (condition === "CSRF") delete headers["X-Ave-Tailnet-Csrf"];
+    const request = {
+      id: receiptId, scope: condition === "stale conversation scope" ? PAIRED_SHARE.scope : scope,
+      kind: "plan", itemId: condition === "work identity" ? 0 : 1,
+      input: { runId: "run", planHash: "a".repeat(64), decision: "approve", note: OWNER_ONLY_SENTINEL },
+    };
+    const submit = () => fetch(url(server, path), { method: "POST", headers, body: JSON.stringify(request) });
+    const response = await submit();
+    expect(response.status).toBe(status);
+    const body = await response.text();
+    expect(body).not.toContain(OWNER_ONLY_SENTINEL);
+    if (error) {
+      expect(JSON.parse(body)).toMatchObject({ ok: false, error });
+      expect(decide).not.toHaveBeenCalled();
+      return;
+    }
+    expect(JSON.parse(body)).toEqual({ ok: true, kind: "plan", status: "approved" });
+    expect(decide).toHaveBeenCalledOnce();
+    const replay = await submit();
+    expect(replay.status).toBe(409);
+    expect(await replay.json()).toMatchObject({ ok: false, error: "work-decision-replayed" });
+    expect(decide).toHaveBeenCalledOnce();
+  });
+});
+
+it("blocks a duplicate work request in flight and notices a paired share revoked after admission", async () => {
+  const dispatch = deferred<void>();
+  const release = deferred<void>();
+  const path = "/tailnet/v2/web/work-decisions";
+  const sharing = pairedSharing({ observe: true, control: true });
+  const { server } = await fixture({
+    pairedSharing: sharing.authorizer,
+    web: { origin: WEB_ORIGIN, workDecisions: {
+      verifyServeTarget: async () => true,
+      receipts: createReceiptStore(),
+      async decide(_request, { authority }) {
+        dispatch.resolve();
+        await release.promise;
+        expect(authority.isCurrent()).toBe(false);
+        return await authority.refreshCurrent()
+          ? { ok: true, kind: "plan", status: "approved" }
+          : { ok: false, error: "remote-controller-authority-revoked" };
+      },
+    } },
+  });
+  const session = await openWebSession(server);
+  const snapshot = await fetch(url(server, "/tailnet/v2/web/snapshot"), {
+    headers: webSessionHeaders(session.cookieToken, session.csrfToken),
+  });
+  const { scope } = (await snapshot.json() as { snapshot: { scope: string } }).snapshot;
+  const headers = { ...webSessionHeaders(session.cookieToken, session.csrfToken, ["controller", "work-decision"]), "Content-Type": "application/json" };
+  const body = JSON.stringify({
+    id: "d5bdac87-cda7-42b5-9290-4d31ae6014e3", scope, kind: "plan", itemId: 1,
+    input: { runId: "run", planHash: "a".repeat(64), decision: "approve" },
+  });
+  const submit = () => fetch(url(server, path), { method: "POST", headers, body });
+  const first = submit();
+  try {
+    await dispatch.promise;
+    const duplicate = await submit();
+    expect(duplicate.status).toBe(409);
+    expect(await duplicate.json()).toEqual({ ok: false, error: "work-decision-replayed" });
+    sharing.revoke();
+    release.resolve();
+    const refused = await first;
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toEqual({ ok: false, error: "remote-controller-authority-revoked" });
+  } finally {
+    release.resolve();
+  }
 });

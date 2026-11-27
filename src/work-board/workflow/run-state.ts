@@ -1,3 +1,4 @@
+import type { WorkDecisionAuthority } from "../work-decision-authority.js";
 import type { RunClass } from "../../main/run-classification.js";
 import type { WorkBoardStore } from "../../main/work-board-store.js";
 import type { DeleteIntent, HeldEvent, HeldIdentity, RunEnd, RunRemovalCause } from "../../main/workflow-run-store.js";
@@ -38,7 +39,7 @@ type RunAdoption = {
 /** The one reader and writer of run state the stage scheduler uses. */
 export interface WorkflowRunState {
   /** Stores the new run in the run file, then names it on the board row, under the board lock. */
-  begin(itemId: number, runId: string, startedAt: string, start: TemplateRunStart): Promise<WorkItemUpdateResult>;
+  begin(itemId: number, runId: string, startedAt: string, start: TemplateRunStart, authority?: WorkDecisionAuthority): Promise<WorkItemUpdateResult>;
   /** The stored run of that row, read by run id whether or not the row still exists. Null when it is missing, unreadable, awaits review or
    * belongs to another row. */
   get(itemId: number, runId: string): Promise<RunRecord | null>;
@@ -47,7 +48,7 @@ export interface WorkflowRunState {
   /** One atomic read-modify-write, under the board lock; `mutate` may end the run (a RunEnd). Without `removedAs` it runs only for the run
    * the row names, and ends it only by the row's causes; with it, by run id alone, for a run whose row was removed or lost, and ends it
    * only as that cause while its class allows it. */
-  update(itemId: number, runId: string, mutate: (run: RunRecord) => RunRecord | RunEnd | null, removedAs?: RunRemovalCause): Promise<RunWrite>;
+  update(itemId: number, runId: string, mutate: (run: RunRecord) => RunRecord | RunEnd | null, removedAs?: RunRemovalCause, authority?: WorkDecisionAuthority): Promise<RunWrite>;
   /** Ends a run whose start failed before its row write was known to land: `settled` once the run is over (or the file no longer holds
    * it), `named` when the board on disk shows the row naming it after all, so it ends as any stored run does. */
   settleUnstarted(itemId: number, runId: string): Promise<"settled" | "named" | RunWriteFailure>;
@@ -81,17 +82,18 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
     };
   };
   return {
-    begin: (itemId, runId, startedAt, start) => store.beginRun(itemId, runId, startedAt, start),
+    begin: (itemId, runId, startedAt, start, authority) => store.beginRun(itemId, runId, startedAt, start, authority),
     get: async (itemId, runId) => (await view())({ id: itemId, runId }),
     read: async (itemId, runId) => {
       const read = (await store.runs.view()).get(runId);
       return read.status === "found" && read.run.itemId !== itemId ? { status: "invalid" } : read;
     },
-    update: async (itemId, runId, mutate, removedAs) => {
+    update: async (itemId, runId, mutate, removedAs, authority) => {
+      if (removedAs && authority) return { ok: false, reason: "row-lost" };
       try {
         const result = removedAs
           ? await store.settleRemovedRun(itemId, runId, removedAs, mutate)
-          : await store.updateRun(itemId, runId, mutate);
+          : await store.updateRun(itemId, runId, mutate, authority);
         if (result.status === "stored") return { ok: true, run: result.run };
         if (result.status === "not-found") return { ok: false, reason: removedAs ? "unavailable" : "row-gone" };
         return { ok: false, reason: result.status };

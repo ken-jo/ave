@@ -53,6 +53,7 @@ import {
   maybeStartTailnetObserverServer,
   loadTailnetObserverConfig,
 } from "./main/tailnet-surface-server.js";
+import { createTailnetWorkDecisions } from "./main/tailnet-work-decisions.js";
 import { createTailnetObserverConfigService } from "./main/tailnet-observer-config-service.js";
 import { createTailnetPairedSharingRuntime } from "./main/tailnet-paired-sharing-runtime.js";
 import { nudgeTelegramBridgeServer, stopTelegramBridgeServer } from "./main/telegram-bridge-server.js";
@@ -471,6 +472,7 @@ async function main() {
       conversationSurfaceRuntime,
       conversationCommandPort,
       getCurrentConversationId,
+      workDecisionHandler: createTailnetWorkDecisions(services)?.decide,
       tailnetPairedSharingRuntime: tailnetPairedSharingBootstrapUnavailable
         ? null : tailnetPairedSharingRuntime,
       isConversationBusy: () => conversationSurfaceRuntime.activity.isBusy(),

@@ -131,7 +131,11 @@ export interface WorkBoardEngineDeps {
   workflow?: Omit<StageRunEngineDeps, "store" | "getRunner" | "getAgentProfile" | "emit" | "holdItem" | "releaseItem">;
 }
 
+import type { WorkDecisionAuthority } from "../work-board/work-decision-authority.js";
+
 interface RunItemOptions {
+  authority?: WorkDecisionAuthority;
+  onTemplateStarted?: (runId: string) => void;
   agentName?: string;
   /** Set by the host entrypoint, never copied from a renderer payload. */
   approvalSurface?: WebContents | null;
@@ -162,6 +166,7 @@ interface DecidePlanInput {
 }
 
 interface DecidePlanOptions {
+  authority?: WorkDecisionAuthority;
   /** Set by the host entrypoint: the window the execute (or re-plan) child's tool cards appear in. */
   approvalSurface?: WebContents | null;
 }
@@ -196,8 +201,8 @@ export interface WorkBoardEngine {
 
   /** Template runs. The user's decision at a stage gate or on a join that could not be collected, a retry of a failed stage, and
    * continuing a run that a restart left with only ready stages. Each is refused and changes nothing unless it matches the stored run. */
-  decideStageGate(itemId: number, input: StageGateDecideInput): Promise<StageGateDecideResult>;
-  decideStageJoin(itemId: number, input: StageJoinDecideInput): Promise<StageJoinDecideResult>;
+  decideStageGate(itemId: number, input: StageGateDecideInput, authority?: WorkDecisionAuthority): Promise<StageGateDecideResult>;
+  decideStageJoin(itemId: number, input: StageJoinDecideInput, authority?: WorkDecisionAuthority): Promise<StageJoinDecideResult>;
   openStageJoin(itemId: number, input: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
   retryStage(itemId: number, input: StageRetryInput): Promise<StageRetryResult>;
   continueRun(itemId: number, input: { runId: string }): Promise<StageRetryResult>;
@@ -570,7 +575,7 @@ export function createWorkBoardEngine(
         inFlight.delete(itemId);
         return { status: "error", reason: "template-run-unavailable", reasonCode: "template-run-unavailable" };
       }
-      return stageRuns.start(itemId, { source: opts.templateSource });
+      return stageRuns.start(itemId, { source: opts.templateSource, authority: opts.authority, onStarted: opts.onTemplateStarted });
     }
     return guarded(itemId, opts.approvalSurface, () => runItemGuarded(itemId, item, opts));
   }
@@ -873,7 +878,7 @@ export function createWorkBoardEngine(
         planHash: input.planHash,
         status,
         ...(note !== undefined ? { note } : {}),
-      });
+      }, opts.authority);
     } catch (err) {
       // The decision was not stored, so nothing runs.
       inFlight.delete(itemId);
@@ -1067,8 +1072,8 @@ export function createWorkBoardEngine(
     executingChildSessionId: (itemId) => executingChildByItem.get(itemId),
     steerRun,
     cancelRun,
-    decideStageGate: async (itemId, input) => { await recover(); return stageRuns?.decideGate(itemId, input) ?? { ok: false, reason: "not_found" }; },
-    decideStageJoin: async (itemId, input) => { await recover(); return stageRuns?.decideJoin(itemId, input) ?? { ok: false, reason: "not_found" }; },
+    decideStageGate: async (itemId, input, authority) => { await recover(); return stageRuns?.decideGate(itemId, input, authority) ?? { ok: false, reason: "not_found" }; },
+    decideStageJoin: async (itemId, input, authority) => { await recover(); return stageRuns?.decideJoin(itemId, input, authority) ?? { ok: false, reason: "not_found" }; },
     openStageJoin: async (itemId, input, open) => stageRuns?.openJoin(itemId, input, open) ?? { ok: false, reason: "not_found" },
     retryStage: async (itemId, input) => { await recover(); return stageRuns?.retryStage(itemId, input) ?? { ok: false, reason: "not_found" }; },
     continueRun: async (itemId, input) => { await recover(); return stageRuns?.continueRun(itemId, input) ?? { ok: false, reason: "not_found" }; },

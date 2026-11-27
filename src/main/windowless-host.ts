@@ -8,6 +8,7 @@ import { getAveAppVersion } from "../shared/app-version.js";
 import { setServices } from "./app-state.js";
 import { maybeStartTailnetObserverServer } from "./tailnet-surface-server.js";
 
+import { createTailnetWorkDecisions } from "./tailnet-work-decisions.js";
 // One service graph, command owner and event timeline for every attached client.
 export async function createWindowlessHost(projectRoot: string, host: BootHost) {
   const services = await bootstrap(projectRoot, null, () => null, "headless", host);
@@ -34,6 +35,7 @@ export async function createWindowlessHost(projectRoot: string, host: BootHost) 
       conversationCommandPort,
       getCurrentConversationId: () => services.conversationLoop.getSessionId(),
       isConversationBusy: () => conversationSurfaceRuntime.activity.isBusy(),
+      workDecisionHandler: createTailnetWorkDecisions(services)?.decide,
       auditLogger: services.auditLogger,
     }),
     startLocalApi: () => maybeStartLocalApiServer({

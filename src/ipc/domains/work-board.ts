@@ -1,7 +1,8 @@
+import { exactRecord, parseDecidePlanInput, parseDecideStageInput, parseJoinBinding, parseTemplateRunTuple, PLAN_HASH_PATTERN, RUN_ID_PATTERN } from "../../work-board/work-decision-input.js";
 import { readWorkflowDecisionHistory } from "../workflow-decision-history.js";
 import { maskWorkflowText, withoutWorkflowProjection } from "../../work-board/workflow/run-read-projection.js";
-import { isGraphHash, isStageId, isTemplateId, isTemplateVersion, WorkflowTemplateError } from "../../work-board/template-graph.js";
-import type { RunAuthoritySource, TemplateVersionPin } from "../../shared/workflow-template-types.js";
+import { isStageId, WorkflowTemplateError } from "../../work-board/template-graph.js";
+import type { RunAuthoritySource } from "../../shared/workflow-template-types.js";
 import { registerWorkflowTemplateHandlers } from "../workflow-template-handlers.js";
 // Work-board mutations use the store's lifecycle; execution and reports require their separately wired services.
 import { ipcMain, shell, type IpcMainInvokeEvent, type WebContents, type WebFrameMain } from "electron";
@@ -16,14 +17,10 @@ import type {
   WorkBoardSteerIpcResult,
   WorkItemRunResult,
   WorkBoardRunFailure,
-  StageGateDecideInput,
   StageGateDecideIpcResult,
   StageJoinDecideIpcResult,
-  StageJoinDecideInput,
   StageRetryIpcResult,
-  WorkPlanDecideInput,
   WorkPlanDecideIpcResult,
-  WorkPlanDecision,
 } from "../../shared/work-board-types.js";
 import { MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId } from "../../shared/work-board-types.js";
 import { workBoardDecisionChannel, workBoardDecisionKey, type WorkBoardDecisionChannel } from "../../shared/work-board-decision-intent.js";
@@ -112,7 +109,7 @@ async function runRecordOwner(entry: unknown, attachments: IpcDeps["workflowTemp
   const source = typeof entry === "object" && entry !== null ? (entry as { runStartedBy?: unknown }).runStartedBy : undefined;
   if (typeof source !== "object" || source === null) return undefined;
   const { kind, projectRoot, attachmentId } = source as { kind?: unknown; projectRoot?: unknown; attachmentId?: unknown };
-  if (kind === "local-create-and-run") return projectRoot === undefined ? {} : typeof projectRoot === "string" && projectRoot !== "" ? { projectRoot } : undefined;
+  if (kind === "local-create-and-run" || kind === "tailnet-create-and-run") return projectRoot === undefined ? {} : typeof projectRoot === "string" && projectRoot !== "" ? { projectRoot } : undefined;
   if (kind !== "schedule-attachment" || typeof attachmentId !== "string" || !attachments) return undefined;
   const scope = (await attachments.getAttachment(attachmentId).catch(() => null))?.approvedScope;
   return scope?.kind === "all" ? {} : scope?.kind === "project" ? { projectRoot: scope.projectRoot } : undefined;
@@ -136,61 +133,6 @@ function entryTarget(target: unknown, key: "invalidRow" | "runRecord"): { positi
   if (!hasExactly(entry, ["position", "hash"])) return undefined;
   const { position, hash } = entry;
   return typeof position === "number" && Number.isSafeInteger(position) && position >= 0 && typeof hash === "string" && PLAN_HASH_PATTERN.test(hash) ? { position, hash } : undefined;
-}
-
-const PLAN_DECISIONS: readonly WorkPlanDecision[] = ["approve", "reject", "request_changes"];
-const PLAN_HASH_PATTERN = /^[0-9a-f]{64}$/;
-const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-
-/** Accept exactly `{ runId, planHash, decision, note? }`; anything else is invalid input, never a partial decision. */
-function parseDecidePlanInput(raw: unknown): WorkPlanDecideInput | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const record = raw as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== "runId" && key !== "planHash" && key !== "decision" && key !== "note")) return null;
-  const { runId, planHash, decision, note } = record;
-  if (typeof runId !== "string" || !RUN_ID_PATTERN.test(runId)) return null;
-  if (typeof planHash !== "string" || !PLAN_HASH_PATTERN.test(planHash)) return null;
-  if (typeof decision !== "string" || !PLAN_DECISIONS.includes(decision as WorkPlanDecision)) return null;
-  if (note !== undefined && typeof note !== "string") return null;
-  return { runId, planHash, decision: decision as WorkPlanDecision, ...(note !== undefined ? { note } : {}) };
-}
-
-/** A plain object with no key outside `keys`; anything else is invalid input. */
-function exactRecord(raw: unknown, keys: readonly string[]): Record<string, unknown> | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const record = raw as Record<string, unknown>;
-  return Object.keys(record).every((key) => keys.includes(key)) ? record : null;
-}
-
-/** Accept exactly `{ runId, stageId, attempt, resultHash, outputHash?, decision, note? }`; never a partial decision. */
-function parseDecideStageInput(raw: unknown): StageGateDecideInput | null {
-  const record = exactRecord(raw, ["runId", "stageId", "attempt", "resultHash", "outputHash", "decision", "note"]);
-  if (!record) return null;
-  const { runId, stageId, attempt, resultHash, outputHash, decision, note } = record;
-  if (typeof runId !== "string" || !RUN_ID_PATTERN.test(runId) || !isStageId(stageId)) return null;
-  if (typeof attempt !== "number" || !Number.isInteger(attempt) || attempt < 1 || attempt > 3) return null;
-  if (typeof resultHash !== "string" || !PLAN_HASH_PATTERN.test(resultHash)) return null;
-  if (outputHash !== undefined && (typeof outputHash !== "string" || !PLAN_HASH_PATTERN.test(outputHash))) return null;
-  if (typeof decision !== "string" || !PLAN_DECISIONS.includes(decision as WorkPlanDecision)) return null;
-  if (note !== undefined && typeof note !== "string") return null;
-  return { runId, stageId, attempt, resultHash, decision: decision as WorkPlanDecision, ...(outputHash !== undefined ? { outputHash } : {}), ...(note !== undefined ? { note } : {}) };
-}
-
-/** The `Create and run` tuple the user saw, with the project the card showed. Null when the renderer sent none or a malformed one. */
-function parseJoinBinding(record: Record<string, unknown> | null): Omit<StageJoinDecideInput, "decision"> | null {
-  if (!record) return null;
-  const { runId, joinId, conflictHash, generation } = record;
-  if (typeof runId !== "string" || !RUN_ID_PATTERN.test(runId) || !isTemplateId(joinId)
-    || typeof conflictHash !== "string" || !PLAN_HASH_PATTERN.test(conflictHash)
-    || typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 0) return null;
-  return { runId, joinId, conflictHash, generation };
-}
-
-function parseTemplateRunTuple(raw: unknown): { pin: TemplateVersionPin; projectRoot?: string } | null {
-  const record = exactRecord(raw, ["templateId", "version", "graphHash", "projectRoot"]);
-  if (!record || !isTemplateId(record.templateId) || !isTemplateVersion(record.version) || !isGraphHash(record.graphHash)) return null;
-  if (record.projectRoot !== undefined && (typeof record.projectRoot !== "string" || record.projectRoot.length === 0)) return null;
-  return { pin: { templateId: record.templateId, version: record.version, graphHash: record.graphHash }, ...(record.projectRoot !== undefined ? { projectRoot: record.projectRoot } : {}) };
 }
 
 export function registerWorkBoardHandlers(deps: IpcDeps): void {

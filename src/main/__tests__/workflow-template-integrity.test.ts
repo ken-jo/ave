@@ -29,7 +29,7 @@ it.each(["version", "attachment"])("refuses handwritten remote %s authority even
     await writeFile(file, JSON.stringify(raw));
     await expect(store.resolveVersion({ templateId: draft.template.id, version: 2, graphHash: hash })).rejects.toMatchObject({ code: "invalid-template-file" });
   } else {
-    record.scheduleAttachments = [{ id: "attachment", scheduleId: "daily", templateId: draft.template.id, version: 1, graphHash: version.graphHash, who: "user", at: version.confirmedAt, origin: "tailnet-surface" }];
+    record.scheduleAttachments = [{ id: "attachment", scheduleId: "daily", templateId: draft.template.id, version: 1, graphHash: version.graphHash, who: "user", at: version.confirmedAt, origin: "tailnet-surface", approvedScope: { kind: "all" } }];
     await writeFile(file, JSON.stringify(raw));
     await expect(store.getAttachment("attachment")).rejects.toMatchObject({ code: "invalid-template-file" });
   }
