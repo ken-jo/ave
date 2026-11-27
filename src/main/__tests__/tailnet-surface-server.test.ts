@@ -1024,6 +1024,7 @@ describe("Tailnet observer port state table", () => {
     override?: number;
     priorListener?: boolean;
     occupied?: number;
+    holdsDefault?: boolean;
     edit?: number;
     boot: number | null;
     draft: number;
@@ -1092,11 +1093,15 @@ describe("Tailnet observer port state table", () => {
       id: "E4", file: "none", route: "absent", enable: true, override: overridePort, edit: overridePort,
       boot: overridePort, draft: defaultPort, guided: defaultPort,
     },
+    {
+      id: "C2 E6 B5 listener holds the default", file: "none", route: "absent", enable: true, override: defaultPort,
+      holdsDefault: true, boot: defaultPort, draft: defaultPort, guided: defaultPort,
+    },
   ];
 
   it.each(cases.flatMap(row => (["boot", "Settings", "guided setup"] as const).map(entry => ({ ...row, entry }))))(
     "$id through $entry",
-    async ({ file, route, enable, override, priorListener, occupied, edit, boot, draft, guided, entry }) => {
+    async ({ file, route, enable, override, priorListener, occupied, holdsDefault, edit, boot, draft, guided, entry }) => {
       const dir = makeTempDir();
       const configPath = join(dir, "observer.json");
       const namespace = {
@@ -1161,7 +1166,7 @@ describe("Tailnet observer port state table", () => {
       const hint = vi.spyOn(portHints, "getWindowsTailnetPortHint").mockResolvedValue(null);
       const blocker = createServer();
       try {
-        if (entry === "guided setup" && guided === "alternate") {
+        if (entry === "guided setup" && (guided === "alternate" || holdsDefault)) {
           await new Promise<void>((resolve, reject) => {
             blocker.once("error", (error: NodeJS.ErrnoException) => {
               if (error.code === "EADDRINUSE" || error.code === "EACCES") resolve();

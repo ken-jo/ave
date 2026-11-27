@@ -248,6 +248,7 @@ function provenanceOf(file: RawLayer, env: RawLayer): TailnetObserverConfigProve
 interface TailnetObserverPortEvidence {
   readonly environment?: TailscaleEnvironment;
   readonly establishedPort?: number | null;
+  readonly listeningPort?: number | null;
 }
 
 export function resolveTailnetObserverPort(
@@ -275,7 +276,10 @@ export function resolveTailnetObserverPort(
   if (file === null && environment?.serveStatusKnown === false && environmentEnabled) {
     return { port: LEGACY_TAILNET_OBSERVER_PORT, canChoosePort: false };
   }
-  return { port: DEFAULT_TAILNET_OBSERVER_PORT, canChoosePort: entryPoint === "guided-setup" };
+  return {
+    port: DEFAULT_TAILNET_OBSERVER_PORT,
+    canChoosePort: entryPoint === "guided-setup" && evidence?.listeningPort !== DEFAULT_TAILNET_OBSERVER_PORT,
+  };
 }
 
 // Keep OFF side-effect free and use the same port resolver as Settings.

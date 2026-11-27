@@ -274,8 +274,8 @@ export function createTailnetObserverConfigService(
       }
 
       try {
-        const { establishedPort } = runtimeState();
-        const selection = resolveTailnetObserverPort(file, options.env, { environment, establishedPort }, "guided-setup");
+        const { establishedPort, listeningPort } = runtimeState();
+        const selection = resolveTailnetObserverPort(file, options.env, { environment, establishedPort, listeningPort }, "guided-setup");
         const port = selection.canChoosePort ? await chooseObserverPort() : selection.port;
         if (port === null) return guidedFailure("tailnet-guided-setup-port-unavailable");
         await saveAndRestart(
