@@ -48,6 +48,8 @@ import { TAILNET_WORK_DECISION_PATH } from "../shared/tailnet-work-decisions.js"
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { assertTailnetListenerPortAllowed } from "../permissions/tailnet-listener-policy.js";
 import { getWindowsTailnetPortHint } from "./tailnet-port-hint.js";
+import { createLogger } from "../lib/logger.js";
+import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 
 export interface TailnetObserverConfig {
   readonly port: number;
@@ -99,6 +101,8 @@ export interface TailnetObserverConfigFile {
 const TAILNET_FEATURE_NAMESPACE = "tailnet";
 const TAILNET_OBSERVER_CONFIG_FILE = "observer.json";
 const TAILNET_OWN_DEVICE_ADMISSION_FILE = "own-device-admission.json";
+const LEGACY_TAILNET_OBSERVER_PORT = 46_173;
+const log = createLogger("tailnet-observer");
 
 const CONFIG_KEYS: readonly TailnetObserverConfigKey[] = [
   "enabled",
@@ -303,13 +307,29 @@ export function resolveTailnetObserverConfig(
   return resolveFromLayers({}, envLayer(env)).config;
 }
 
-// Read the host-owned file, distinguishing "absent" from "unreadable".
 export async function readTailnetObserverConfigFile(
   namespace: FeatureNamespaceHandle = openFeatureNamespace(TAILNET_FEATURE_NAMESPACE),
 ): Promise<TailnetObserverConfigFile | null> {
+  const path = join(namespace.dir, TAILNET_OBSERVER_CONFIG_FILE);
+  return withInProcessFileQueue(path, async () => {
+    const file = await readObserverConfigAtPath(path);
+    if (file === null || file.port !== undefined) return file;
+
+    const migrated = Object.freeze({ ...file, port: LEGACY_TAILNET_OBSERVER_PORT });
+    try {
+      await namespace.writeJson(TAILNET_OBSERVER_CONFIG_FILE, migrated);
+    } catch {
+      log.warn("Could not persist the legacy observer port.");
+    }
+    return migrated;
+  });
+}
+
+// Distinguish an absent file from an unreadable one before attempting migration.
+async function readObserverConfigAtPath(path: string): Promise<TailnetObserverConfigFile | null> {
   let text: string;
   try {
-    text = await readFile(join(namespace.dir, TAILNET_OBSERVER_CONFIG_FILE), "utf8");
+    text = await readFile(path, "utf8");
   } catch (err) {
     // Absent is the default-OFF state and must stay side-effect free. Anything else is a configuration the host cannot read, which is not the same thing and
     // must not resolve to "the user never enabled this".
@@ -331,9 +351,11 @@ export async function writeTailnetObserverConfigFile(
   namespace: FeatureNamespaceHandle = openFeatureNamespace(TAILNET_FEATURE_NAMESPACE),
 ): Promise<void> {
   const parsed = parseTailnetObserverConfigFile(file);
-  if (parsed.port !== undefined) parseFixedPort(String(parsed.port));
-  resolveFromLayers(fileLayer(parsed), {});
-  await namespace.writeJson(TAILNET_OBSERVER_CONFIG_FILE, file);
+  const port = parsed.port === undefined ? DEFAULT_TAILNET_OBSERVER_PORT : parseFixedPort(String(parsed.port));
+  const saved = { ...parsed, port };
+  resolveFromLayers(fileLayer(saved), {});
+  const path = join(namespace.dir, TAILNET_OBSERVER_CONFIG_FILE);
+  await withInProcessFileQueue(path, () => namespace.writeJson(TAILNET_OBSERVER_CONFIG_FILE, saved));
 }
 
 // Resolve the observer configuration the way production boots it: the host-owned file first, the environment as an override layer on top.

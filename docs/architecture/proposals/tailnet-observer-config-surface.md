@@ -182,10 +182,11 @@ the connect button reveals the full form inline, and a configured desktop can
 still reveal it from the status card. An app capability, a hand-picked port, and
 the controller are only reachable there.
 
-**The port rule.** Guided setup uses the saved port or the shared default when
-the file has no port. The listener attempts one fixed port. A blocked bind
-reports its code and port in the Settings snapshot so the owner can choose
-another port in the manual form.
+**The port rule.** Guided setup uses the saved port or the shared default for a
+fresh configuration. A saved file without a port inherits the previous default
+of 46173 and is migrated to record that port explicitly. The listener attempts
+one fixed port. A blocked bind reports its code and port in the Settings
+snapshot so the owner can choose another port in the manual form.
 
 **Gate.** The channel is `apply` plus `configureServe` in one press, so it
 carries exactly their gate — host-renderer sender plus a fresh local keyboard

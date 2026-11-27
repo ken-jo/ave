@@ -1,4 +1,6 @@
 async function runGuardedOwnerOperation<T>(guard: () => void, operation: () => Promise<T>): Promise<T> { guard(); const result = await operation(); guard(); return result; }
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 import { DEFAULT_TAILNET_OBSERVER_PORT, TAILNET_OBSERVER_PORT_BLOCKED } from "../../shared/tailnet-observer-config.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
@@ -566,6 +568,7 @@ describe("Tailnet observer configuration surface", () => {
       readConfigFile: file({
         enabled: true,
         authorization: APP_CAPABILITY,
+        port: DEFAULT_TAILNET_OBSERVER_PORT,
         pairedSharingEnabled: true,
       }),
     });
@@ -578,8 +581,7 @@ describe("Tailnet observer configuration surface", () => {
     });
     expect(resolution.fileConfigured).toBe(true);
     expect(resolution.provenance.enabled).toBe("file");
-    // Defaulted, not configured: the surface must not claim the file chose it.
-    expect(resolution.provenance.port).toBe("unset");
+    expect(resolution.provenance.port).toBe("file");
   });
 
   it("stays OFF and side-effect free when neither source enables it", async () => {
@@ -687,13 +689,58 @@ describe("Tailnet observer configuration surface", () => {
     );
   });
 
+  it("boots a portless upgrade fixture on its existing Serve target and saves the legacy port", async () => {
+    const port = 46_173;
+    const dir = makeTempDir();
+    const namespace = {
+      dir, writeJson: (name: string, value: unknown) => writeJsonAtomic(dir, name, value),
+    } as FeatureNamespaceHandle;
+    const legacy = { enabled: true, authorization: TAILNET_IDENTITY, webEnabled: true, webOrigin: WEB_ORIGIN, pairedSharingEnabled: true };
+    await namespace.writeJson("observer.json", legacy);
+    const readConfigFile = () => readTailnetObserverConfigFile(namespace);
+    const probeEnvironment = () => probeTailscaleEnvironment({
+      platform: "linux",
+      runCommand: runner({
+        "status --json": { kind: "ran", code: 0, stdout: readyStatus({ Self: { UserID: 7, DNSName: "ave.example.ts.net." } }), stderr: "" },
+        "serve status --json": {
+          kind: "ran", code: 0, stderr: "",
+          stdout: JSON.stringify({
+            Web: { "ave.example.ts.net:443": { Handlers: { "/": { Proxy: `http://127.0.0.1:${port}` } } } },
+          }),
+        },
+      }),
+    });
+    const { input, startServer } = options({});
+    const settings = createTailnetObserverConfigService({
+      pairedSharingBootstrapFailed: () => false,
+      env: {}, readConfigFile,
+      readOwnDeviceAdmission: async () => false,
+      probeEnvironment,
+    });
+
+    await maybeStartTailnetObserverServer({
+      ...input,
+      tailnetPairedSharingRuntime: fakeRuntime(fakeStore()),
+      dependencies: { ...input.dependencies, readConfigFile, probeEnvironment },
+    });
+
+    expect.soft(startServer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port }));
+    await expect.soft(settings.snapshot()).resolves.toMatchObject({
+      listeningPort: port,
+      saved: { port },
+      provenance: { port: "file" },
+      environment: { serveConfigured: true, serveTargetPort: port },
+    });
+    expect(JSON.parse(await readFile(join(dir, "observer.json"), "utf8"))).toEqual({ ...legacy, port });
+  });
+
   it("starts the listener from a file-only configuration", async () => {
     const f = options({});
     const started = await maybeStartTailnetObserverServer({
       ...f.input,
       dependencies: {
         startServer: f.startServer as never,
-        readConfigFile: file({ enabled: true, authorization: APP_CAPABILITY }),
+        readConfigFile: file({ enabled: true, authorization: APP_CAPABILITY, port: DEFAULT_TAILNET_OBSERVER_PORT }),
       },
     });
 
