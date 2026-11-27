@@ -152,7 +152,12 @@ interface OutputExecution { id: string; status: "pending" | "done" | "failed" | 
 interface JoinConflict { conflictHash: string; reason: "merge-conflict" | "same-path" | "identity-missing" | "interrupted"; files: { path: string; stageIds: string[] }[]; excerpt?: string }
 export interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflictGeneration?: number; conflict?: JoinConflict; decidedAt?: string }
 /** The identity and revision of the item as remote Create and run created it. */
-export interface RemoteProvisionalStart { readonly createdAt: string; readonly mutationRevision: string }
+export interface RemoteProvisionalStart {
+  readonly createdAt: string;
+  readonly mutationRevision: string;
+  /** Original workspace identity for recovery before a run record exists. */
+  readonly workspace?: { readonly runId: string; readonly projectRoot: string };
+}
 export interface TemplateRunStart extends RunPin {
   source: RunAuthoritySource;
   stageRuns: WorkItemStageRun[];

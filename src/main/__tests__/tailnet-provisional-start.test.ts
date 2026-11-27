@@ -1,5 +1,5 @@
 import { AsyncLocalStorage, createHook } from "node:async_hooks";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as ts from "typescript/unstable/ast";
 import { expect, it, vi } from "vitest";
@@ -7,16 +7,19 @@ import { parseSourceTexts } from "../../../scripts/lib/ts7-ast.mjs";
 import { useConfigurationOwner as installConfigurationOwnerFixture } from "../../__tests__/support/configuration-owner.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
+import * as atomicFile from "../../lib/atomic-file.js";
 import { ensureAveHomePrivate } from "../../shared/ave-home.js";
 import type { TailnetWorkDecisionRequest } from "../../shared/tailnet-work-decisions.js";
 import type { WorkItem } from "../../shared/work-board-types.js";
 import { createHostGit, type HostGit } from "../../work-board/workflow/host-git.js";
 import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
+import { runBranch } from "../../work-board/workflow/workspace-layout.js";
 import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { gitFixture } from "../../work-board/workflow/__tests__/stage-git-fixture.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import { readPermissionSettings, writePermissionSettings } from "../../permissions/permission-settings-store.js";
 import { RoutinesStore } from "../routines-store.js";
+import * as featureStorage from "../storage/feature-namespace.js";
 import * as storage from "../storage/rewrite-keeping-bytes.js";
 import { createTailnetWorkDecisions } from "../tailnet-work-decisions.js";
 
@@ -145,6 +148,124 @@ it("commits first launch once when multiple stages are ready", async () => {
   });
 });
 
+it.each(["guarded writer", "atomic replacement"])("accepts a landed launch write at the %s and adopts it without launching twice", async boundary => {
+  let launches = 0;
+  const h = await stageRunHarness({ observeRunWork: true, onSpawn: () => { launches += 1; } });
+  const write = featureStorage.writeFileAtomicAtPathIf;
+  const replace = atomicFile.replaceUtf8FileAtomicSyncIf;
+  let injected = false;
+  let launchesAfterReplacement: number | undefined;
+  function directorySyncFault(): never {
+    injected = true;
+    throw atomicFile.committedDirectorySyncError(Object.assign(new Error("Directory sync fault"), { code: "EIO" }));
+  }
+  const fault = boundary === "guarded writer"
+    ? vi.spyOn(featureStorage, "writeFileAtomicAtPathIf").mockImplementation(async (path, body, check, didCommit) => {
+      if (path !== h.boardPath || !didCommit) return write(path, body, check, didCommit);
+      expect(await write(path, body, check)).toBe(true);
+      directorySyncFault();
+    })
+    : vi.spyOn(atomicFile, "replaceUtf8FileAtomicSyncIf").mockImplementation((...args) => {
+      const [path, body] = args;
+      const committed = replace(...args);
+      const row = path === h.boardPath ? rows(body)[0] : undefined;
+      if (!committed || injected || row?.runId === undefined || row.remoteProvisional) return committed;
+      queueMicrotask(() => { launchesAfterReplacement = launches; });
+      directorySyncFault();
+    });
+  try {
+    await h.runThenEnd(async () => {
+      const version = await h.confirm([stageOf("a")]);
+      const remote = remoteStart(h);
+      const result = await remote.decide({ ...h.pinOf(version), title: "Remote work" });
+      expect(injected).toBe(true);
+      expect(result).toMatchObject({ ok: true, kind: "create-and-run" });
+      if (!result.ok || result.kind !== "create-and-run") throw new Error("Committed launch was refused");
+      if (boundary === "atomic replacement") expect(launchesAfterReplacement).toBe(1);
+      expect(h.children).toHaveLength(1);
+      expect(remote.log).toHaveBeenCalledOnce();
+      expect(h.board.hasActiveProvisionalStart(result.itemId)).toBe(false);
+      const [row] = rows(readFileSync(h.boardPath, "utf8"));
+      expect(row).toMatchObject({ id: result.itemId, runId: result.runId });
+      expect(row?.remoteProvisional).toBeUndefined();
+
+      await h.makeEngine().adoptParkedTemplateRuns();
+      expect(await h.board.list()).toMatchObject({ items: [{ id: result.itemId, runId: result.runId }] });
+      expect(h.children).toHaveLength(1);
+      expect(remote.log).toHaveBeenCalledOnce();
+    });
+  } finally { fault.mockRestore(); }
+});
+
+it("retracts a provisional create in the same process when the activity log fails", async () => {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
+    const version = await h.confirm([stageOf("a")]);
+    const remote = remoteStart(h);
+    const landed: number[] = [];
+    const unsubscribe = h.board.boardChanged.subscribe(() => {
+      const row = rows(readFileSync(h.boardPath, "utf8"))[0];
+      if (row?.remoteProvisional) landed.push(row.id);
+    });
+    try {
+      mkdirSync(join(h.dir, "activity.jsonl"));
+      await expect(remote.decide({ ...h.pinOf(version), title: "Remote work" })).rejects.toThrow();
+      expect(landed).toEqual([expect.any(Number)]);
+      expect(rows(readFileSync(h.boardPath, "utf8"))).toEqual([]);
+      expect(h.board.hasActiveProvisionalStart(landed[0])).toBe(false);
+      expect(h.children).toHaveLength(0);
+      expect(remote.log).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
+});
+
+it.each(["create", "store run", "link run", "show execution", "store workspace", "prepare stage", "retract"] as const)(
+  "keeps an unaccepted start retracted after a landed %s write reports failure", async phase => {
+    const h = await stageRunHarness({ observeRunWork: true });
+    const rewrite = storage.rewriteKeepingBytes;
+    let injected = false;
+    let itemId: number | undefined;
+    const fault = vi.spyOn(storage, "rewriteKeepingBytes").mockImplementation(async (...args) => {
+      const [path, body] = args;
+      const committed = await rewrite(...args);
+      const isBoard = path === h.boardPath;
+      const items = isBoard ? rows(body) : [];
+      const row = items[0];
+      if (row?.remoteProvisional) itemId = row.id;
+      const run = path === join(h.dir, "workflow-runs.json") ? JSON.parse(body).runs[0] : undefined;
+      const matches = phase === "retract" ? isBoard && itemId !== undefined && items.length === 0
+        : phase === "store run" ? run !== undefined
+        : phase === "store workspace" ? run?.runWorkspace !== undefined
+        : phase === "prepare stage" ? run?.stageRuns.some((stage: { workspace?: unknown }) => stage.workspace !== undefined)
+        : row?.remoteProvisional && (phase === "create" ? row.runId === undefined
+          : phase === "link run" ? row.runStatus === "planning" : row.runStatus === "executing");
+      if (committed && matches && !injected) {
+        injected = true;
+        throw atomicFile.committedDirectorySyncError(new Error("Directory sync fault"));
+      }
+      return committed;
+    });
+    try {
+      await h.runThenEnd(async () => {
+        const version = await h.confirm([stageOf("a")]);
+        const remote = remoteStart(h);
+        if (phase === "retract") mkdirSync(join(h.dir, "activity.jsonl"));
+        const attempt = remote.decide({ ...h.pinOf(version), title: "Remote work" });
+        if (phase === "create" || phase === "retract") await expect(attempt).rejects.toThrow();
+        else expect(await attempt).toMatchObject({ ok: false });
+        if (phase === "retract") await expect(attempt).rejects.not.toMatchObject({ committed: true });
+        expect(injected).toBe(true);
+        expect(rows(readFileSync(h.boardPath, "utf8"))).toEqual([]);
+        expect(await h.board.runs.list()).toMatchObject({ status: "found", runs: [] });
+        if (itemId === undefined) throw new Error("Provisional row was not written");
+        expect(h.board.hasActiveProvisionalStart(itemId)).toBe(false);
+        expect(h.children).toHaveLength(0);
+        expect(remote.log).not.toHaveBeenCalled();
+      });
+    } finally { fault.mockRestore(); }
+  },
+);
+
 it("refuses launch when authority is revoked at the accepting board write", async () => {
   const h = await stageRunHarness({ observeRunWork: true });
   const entered = deferred<void>();
@@ -189,8 +310,14 @@ it.each([
   const entered = deferred<void>();
   const release = deferred<void>();
   const git = createHostGit({ env: fixture.env });
+  const addsWorktree = command[0] === "worktree";
+  let worktreePath: string | undefined;
   const run: HostGit["run"] = async (cwd, args, call) => {
     if (command.every((arg, i) => arg === args[i])) {
+      if (addsWorktree) {
+        expect((await git.run(cwd, args, call)).code).toBe(0);
+        worktreePath = args.at(-2);
+      }
       entered.resolve();
       await release.promise;
       throw new Error("Initial workspace opening interrupted");
@@ -204,7 +331,11 @@ it.each([
     let runId: string | undefined;
     const h = await stageRunHarness({ wiring: (_store, { workspace }) => {
       const provider = createStageWorkspaceProvider({ git: { ...git, run } });
-      return { workspace: { ...workspace, async open(ref, root) { runId = ref.runId; return provider.open(ref, root); } } };
+      return { workspace: {
+        ...workspace,
+        async open(ref, root) { runId = ref.runId; return provider.open(ref, root); },
+        async sweep(active, projects) { await workspace.sweep(active, projects); await provider.sweep(active, projects); },
+      } };
     } });
     await h.runThenEnd(async () => {
       const version = await h.confirm([stageOf("a")]);
@@ -216,10 +347,25 @@ it.each([
         if (!row || !runId) throw new Error("Provisional start was missing");
         expect.soft(row).toHaveProperty("remoteProvisional");
         expect.soft(await h.board.list()).toMatchObject({ items: [] });
+        const branch = runBranch(runId);
+        const branches = () => fixture.userGit(fixture.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads");
+        const worktrees = () => fixture.userGit(fixture.repo, "worktree", "list", "--porcelain");
+        if (addsWorktree) {
+          expect(row.remoteProvisional?.workspace).toEqual({ runId, projectRoot: fixture.repo });
+          expect(worktreePath && existsSync(worktreePath)).toBe(true);
+          expect(branches().split("\n")).toContain(branch);
+          expect(worktrees()).toContain(`branch refs/heads/${branch}`);
+          expect(await h.board.runs.list()).toMatchObject({ status: "found", runs: [] });
+        }
         expect(await h.start(row.id, h.local(version, fixture.repo))).toMatchObject({ status: "not_found" });
         if (edited) expect(await h.board.update(row.id, { title: "Desktop edit", priority: "high" })).toMatchObject({ status: "updated" });
         remote.revoke();
         await expectRetracted(h, row.id, runId, edited);
+        if (addsWorktree) {
+          expect(branches()).toBe("main");
+          expect(worktrees().match(/^worktree /gmu)).toHaveLength(1);
+          expect(worktreePath && existsSync(worktreePath)).toBe(false);
+        }
         expect(h.children).toHaveLength(0);
         expect(remote.log).not.toHaveBeenCalled();
       } finally {
@@ -233,17 +379,19 @@ it.each([
   }
 });
 
-// Register the orchestration awaits from row creation through first-launch acceptance.
-// The replay above samples every promise continuation, including the I/O these calls await.
-const span = {
-  "main/tailnet-work-decisions.ts": ["start"],
-  "core/work-board-engine.ts": ["runItem", "recover"],
-  "main/work-board-store.ts": ["create", "beginRun", "setRunStatus", "acceptProvisionalTemplateStart", "commit", "updateRun"],
-  "main/storage/feature-namespace.ts": ["writeFileAtomicAtPathIf"],
-  "main/storage/rewrite-keeping-bytes.ts": ["rewriteKeepingBytes"],
-  "work-board/workflow/stage-run-engine.ts": ["start", "checkStart", "beginStart", "handle", "runEffects", "writeRun", "spawnStageChild", "resolvePinned", "verdictFor", "runProjectOf"],
-  "work-board/workflow/stage-workspaces.ts": ["gitProject", "openIn", "prepare", "prepareGit", "recordRegistration", "assertRepository", "repositoryMismatch", "commonDirOf", "refStoreOf", "checkOut", "prepareFolder", "usesFilter"],
-} as const;
+// Inventory whole owner files so new helpers and callbacks enter the guard without a name allow-list.
+const OWNER_FILES = [
+  "main/tailnet-work-decisions.ts",
+  "core/work-board-engine.ts",
+  "main/work-board-store.ts",
+  "main/workflow-run-store.ts",
+  "main/storage/feature-namespace.ts",
+  "main/storage/rewrite-keeping-bytes.ts",
+  "work-board/activity-log.ts",
+  "work-board/workflow/run-state.ts",
+  "work-board/workflow/stage-run-engine.ts",
+  "work-board/workflow/stage-workspaces.ts",
+] as const;
 
 function awaitedName(node: ts.Expression): string {
   if (ts.isNewExpression(node)) return `new ${node.expression.getText()}`;
@@ -252,57 +400,60 @@ function awaitedName(node: ts.Expression): string {
   return node.getText().replace(/\s+/gu, " ");
 }
 
-it("registers every await in the remote create-to-launch source span", () => {
-  const sources = new Map(Object.keys(span).map(file => [file, readFileSync(new URL(`../../${file}`, import.meta.url), "utf8")]));
+function ownerSources() {
+  return new Map(OWNER_FILES.map(file => [file, readFileSync(new URL(`../../${file}`, import.meta.url), "utf8")]));
+}
+
+function awaitInventory(sources: ReadonlyMap<string, string>): string {
   const syntax = parseSourceTexts(sources);
-  const inventory: Record<string, string[]> = {};
+  expect([...syntax.keys()].sort()).toEqual([...sources.keys()].sort());
+  const inventory = new Map<string, string[]>();
   for (const [path, file] of syntax) {
-    const owners: readonly string[] = span[path as keyof typeof span];
-    const visit = (node: ts.Node, owner?: string) => {
-      if ((ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) && node.name && owners.includes(node.name.getText())) {
-        owner = node.name.getText();
-        inventory[`${path}#${owner}`] ??= [];
-      }
+    const visit = (node: ts.Node, owner = "<module>") => {
+      if (ts.isFunctionLikeDeclaration(node)) owner = functionBinding(node) ?? owner;
       const awaited = ts.isAwaitExpression(node) ? node.expression
         : ts.isForOfStatement(node) && node.awaitModifier ? node.expression : undefined;
-      if (owner && awaited) inventory[`${path}#${owner}`].push(awaitedName(awaited));
+      if (awaited) {
+        const key = `${path}#${owner}`;
+        const entries = inventory.get(key) ?? [];
+        entries.push(awaitedName(awaited));
+        inventory.set(key, entries);
+      }
       node.forEachChild(child => visit(child, owner));
     };
     visit(file as ts.SourceFile);
   }
-  expect(Object.entries(inventory).sort().map(([owner, awaits]) => `${owner}: ${awaits.join(", ")}`).join("\n")).toMatchInlineSnapshot(`
-    "core/work-board-engine.ts#recover: store.recoverRuns()
-    core/work-board-engine.ts#runItem: recover(), stageRuns.reconsider(), stageRuns.reconsider(), store.get()
-    main/storage/feature-namespace.ts#writeFileAtomicAtPathIf: preparePrivateFileDirectory()
-    main/storage/rewrite-keeping-bytes.ts#rewriteKeepingBytes: readAveHomeInput(), copyHolds(), writeFileAtomicAtPath().then(), writeFileAtomicAtPath()
-    main/tailnet-work-decisions.ts#start: templates.get(), templates.resolveVersion(), authority.refreshCurrent(), board.create(), new Promise, board.rollbackProvisionalTemplateStart()
-    main/work-board-store.ts#acceptProvisionalTemplateStart: this.ensureLoaded(), withInProcessFileQueue(), this.readBoard(), authority.refreshCurrent(), this.commit()
-    main/work-board-store.ts#beginRun: this.ensureLoaded(), this.readBoard(), readBoardOnDisk(), this.runs.put(), this.commit(), this.settleUnstarted().catch(), this.pruneAfterWrite(), appendActivity()
-    main/work-board-store.ts#commit: this.legacyCopyHolds(), this.runs.heldRuns(), rewriteKeepingBytes(), this.landedAnyway()
-    main/work-board-store.ts#create: this.ensureLoaded(), this.legacyCopyHolds(), this.readBoard(), this.runs.issueRowId().catch(), this.commit(), appendActivity()
-    main/work-board-store.ts#setRunStatus: this.ensureLoaded(), this.readBoard(), authority.refreshCurrent(), this.commit(), appendActivity()
-    main/work-board-store.ts#updateRun: this.ensureLoaded(), readBoardOnDisk()
-    work-board/workflow/stage-run-engine.ts#beginStart: workspace.open(), authority.refreshCurrent(), verdictFor(), records.begin(), abandonStart(), records.update(), abandonStart(), abandonStart(), store.setRunStatus(), abandonStart(), records.read().then(), enqueue().catch(), abandonStart()
-    work-board/workflow/stage-run-engine.ts#checkStart: runProjectOf(), verdictFor(), resolvePinned()
-    work-board/workflow/stage-run-engine.ts#handle: records.get(), hold(), unwind(), hold(), resolvePinned(), unwind(), writeRun(), hold(), unwind(), hold(), finish(), unwind(), runEffects()
-    work-board/workflow/stage-run-engine.ts#resolvePinned: templates.resolveVersion()
-    work-board/workflow/stage-run-engine.ts#runEffects: workspace.seal().catch(), writeRun(), deps.passConditions.evaluate(), sealStage(), sealStage(), workspace.integrate(), finish(), workspace.release().catch()
-    work-board/workflow/stage-run-engine.ts#runProjectOf: deps.attachments.getAttachment()
-    work-board/workflow/stage-run-engine.ts#spawnStageChild: records.get(), store.get(), resolvePinned(), verdictFor(), authorise(), workspace.release(), workspace.prepare(), authorise(), deps.lane.admit(), deps.getAgentProfile(), writeRun(), authorise(), pendingStart.acceptance, running
-    work-board/workflow/stage-run-engine.ts#start: adopted(), store.get(), records.get(), checkStart(), beginStart(), firstResult()
-    work-board/workflow/stage-run-engine.ts#verdictFor: templates.get(), deps.attachments.readScheduleRunAuthority(), templates.resolveVersion()
-    work-board/workflow/stage-run-engine.ts#writeRun: records.update(), records.classes().catch()
-    work-board/workflow/stage-workspaces.ts#assertRepository: repositoryMismatch()
-    work-board/workflow/stage-workspaces.ts#checkOut: assertRepository(), driversIn(), gitIn()()
-    work-board/workflow/stage-workspaces.ts#commonDirOf: gitOut()
-    work-board/workflow/stage-workspaces.ts#gitProject: git.run(), git.run(), git.run(), git.run()
-    work-board/workflow/stage-workspaces.ts#openIn: gitProject(), git.floorHolds(), git.drivers(), usesFilter(), commonDirOf(), refStoreOf(), chain.run.anchor(), chain.project.remove().catch(), dropPin().catch(), assertRepository(), git.run(), assertRepository(), git.run().catch(), recordRegistration(), checkOut(), gitIn()(), releaseIn().catch(), at.project.remove().catch()
-    work-board/workflow/stage-workspaces.ts#prepare: removeStage(), prepareGit(), prepareFolder(), removeStage().catch()
-    work-board/workflow/stage-workspaces.ts#prepareFolder: listSeedFiles(), copySeedFiles(), plain.done()
-    work-board/workflow/stage-workspaces.ts#prepareGit: git.drivers(), gitOut(), assertRepository(), git.run().catch(), recordRegistration(), checkOut(), gitIn()(), held.walk().remove(), removeStage().catch()
-    work-board/workflow/stage-workspaces.ts#recordRegistration: found.held.anchor(), found.worktrees.remove().catch(), dropAdminPin().catch()
-    work-board/workflow/stage-workspaces.ts#refStoreOf: git.run()
-    work-board/workflow/stage-workspaces.ts#repositoryMismatch: git.floorHolds(), commonDirOf().catch(), refStoreOf().catch()
-    work-board/workflow/stage-workspaces.ts#usesFilter: gitOut(), gitOut()"
-  `);
+  return [...inventory].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([owner, awaits]) => `${owner}: ${awaits.join(", ")}`).join("\n");
+}
+
+function functionBinding(node: ts.FunctionLikeDeclaration): string | undefined {
+  if ("name" in node && node.name) return node.name.getText();
+  for (let parent = node.parent; parent && !ts.isFunctionLikeDeclaration(parent); parent = parent.parent) {
+    if (ts.isVariableDeclaration(parent) || ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent)) return parent.name.getText();
+    if (ts.isStatement(parent)) break;
+  }
+  // An inline callback belongs to the nearest enclosing named binding.
+  return undefined;
+}
+
+it.each([
+  ["beginStart", /(async function beginStart[^\n]+\{)/u],
+  ["adopted", /(const adopted = async [^\n]+\{)/u],
+] as const)("detects a new await inside %s", (binding, opening) => {
+  const path = "work-board/workflow/stage-run-engine.ts";
+  const sources = ownerSources();
+  const original = sources.get(path);
+  if (!original) throw new Error(`Missing source ${path}`);
+  const mutated = original.replace(opening, "$1\n    await Promise.resolve();");
+  expect(mutated).not.toBe(original);
+  const before = awaitInventory(sources);
+  sources.set(path, mutated);
+  const after = awaitInventory(sources);
+  expect(after).not.toBe(before);
+  expect(after.split("\n").find(line => line.startsWith(`${path}#${binding}: `))).toContain("Promise.resolve()");
+});
+
+it("registers every await in the remote create-to-launch source span", () => {
+  expect(awaitInventory(ownerSources())).toMatchSnapshot();
 });

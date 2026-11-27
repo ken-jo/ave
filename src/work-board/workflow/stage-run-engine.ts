@@ -1268,7 +1268,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const row = got.item;
       if (a.source.kind === "tailnet-create-and-run") {
         if (!a.authority) return refusedStart(WORK_DECISION_AUTHORITY_REVOKED);
-        if (!row.remoteProvisional || row.remoteProvisional.mutationRevision !== a.remoteProvisional?.mutationRevision) {
+        if (!row.remoteProvisional || row.remoteProvisional.mutationRevision !== a.remoteProvisional?.mutationRevision
+          || row.remoteProvisional.workspace?.runId !== a.remoteProvisional?.workspace?.runId) {
           return refusedStart("template-run-unavailable");
         }
       } else if (row.remoteProvisional) return refusedStart("template-run-unavailable");
@@ -1388,14 +1389,14 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     await workspace.discard(projects, runId => runId !== ref.runId);
   }
 
-  function newRunRef(itemId: number, projectRoot: string | undefined): RunRef {
-    const runId = randomUUID();
+  function newRunRef(itemId: number, projectRoot: string | undefined, runId: string = randomUUID()): RunRef {
     return { itemId, runId, runKey: runKeyOf(itemId, runId), ...(projectRoot !== undefined ? { projectRoot } : {}) };
   }
 
   async function beginStart(itemId: number, source: RunAuthoritySource, { projectRoot, version }: CheckedStart, scheduledRef?: RunRef, start?: StageRunStart): Promise<RunState | WorkItemRunResult> {
     const authority = start?.authority;
-    const ref = scheduledRef ?? newRunRef(itemId, projectRoot);
+    const reservedId = source.kind === "tailnet-create-and-run" ? start?.remoteProvisional?.workspace?.runId : undefined;
+    const ref = scheduledRef ?? newRunRef(itemId, projectRoot, reservedId);
     const pin = source.pin;
     const refused = refusedStart;
     const { runId } = ref;
@@ -1667,7 +1668,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       for (let i = active.length - 1; i >= 0; i -= 1) if (active[i] === runId) active.splice(i, 1);
     };
     const provisionalItems = new Set(found.provisional.map(item => item.id));
-    if (only === undefined) await retractProvisionalItems(found, releaseWorkspace);
+    const retractable = only === undefined ? provisionalRetractions(found) : [];
+    for (const { item, run } of retractable) await settleProvisionalRun(item, run);
     // A row write that fails leaves the adoption to the next attempt; a row that is gone by then is an orphan for that attempt.
     const shownOnRow = (itemId: number, patch: Parameters<typeof store.setRunResult>[1]): Promise<boolean> =>
       store.setRunResult(itemId, patch).then(result => result.status === "updated", () => false);
@@ -1749,31 +1751,38 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const root = await runProjectOf(run.runStartedBy).catch(() => undefined);
       if (root !== undefined) projects.set(run.runId, root);
     }
+    for (const { marker, run } of retractable) {
+      if (run) releaseWorkspace(run.runId);
+      const reserved = marker.workspace;
+      if (reserved) projects.set(reserved.runId, reserved.projectRoot);
+    }
     await records.pruneSettled();
     if (only === undefined && found.keepWorkspaces !== undefined) await workspace.sweep([...new Set(active)], projects).catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
+    // Keep the original project available to the sweep until it has checked the workspace. A restart during the sweep repeats it.
+    for (const { item, marker, run } of retractable) await store.rollbackProvisionalTemplateStart(item.id, marker, run?.runId);
     const still = new Set(found.kept.filter(run => !provisionalItems.has(run.itemId)).map(run => run.runId));
     kept = only === undefined ? still : new Set([...kept].filter(runId => still.has(runId)));
     return { ok: true };
   }
 
-  async function retractProvisionalItems(found: Extract<Awaited<ReturnType<typeof records.adoption>>, { ok: true }>, releaseWorkspace: (runId: string) => void): Promise<void> {
+  function provisionalRetractions(found: Extract<Awaited<ReturnType<typeof records.adoption>>, { ok: true }>) {
     const byItem = new Map(found.runs.filter(run => run.runStartedBy.kind === "tailnet-create-and-run").map(run => [run.itemId, run]));
-    for (const item of found.provisional) {
+    return found.provisional.flatMap(item => {
       const marker = item.remoteProvisional;
-      if (!marker || store.hasActiveProvisionalStart(item.id)) continue;
-      const run = byItem.get(item.id);
-      if (run && run.settled === undefined) {
-        if (item.runId === run.runId) {
-          const at = new Date().toISOString();
-          const ended = await records.update(item.id, run.runId, current => endedAs(current, "stopped", at));
-          if (!ended.ok && ended.reason !== "refused") throw new WorkflowInvariantError("run-state-failed", writeFault(ended.reason));
-        } else if (item.runId === undefined) {
-          const ended = await records.settleUnstarted(item.id, run.runId);
-          if (ended !== "settled") throw new WorkflowInvariantError("run-state-failed", ended === "named" ? "run-state-unavailable" : writeFault(ended));
-        }
-      }
-      await store.rollbackProvisionalTemplateStart(item.id, marker, run?.runId);
-      if (run) releaseWorkspace(run.runId);
+      if (!marker || store.hasActiveProvisionalStart(item.id)) return [];
+      return [{ item, marker, run: byItem.get(item.id) }];
+    });
+  }
+
+  async function settleProvisionalRun(item: Pick<WorkItemResolved, "id" | "runId">, run: RunRecord | undefined): Promise<void> {
+    if (!run || run.settled !== undefined) return;
+    if (item.runId === run.runId) {
+      const at = new Date().toISOString();
+      const ended = await records.update(item.id, run.runId, current => endedAs(current, "stopped", at));
+      if (!ended.ok && ended.reason !== "refused") throw new WorkflowInvariantError("run-state-failed", writeFault(ended.reason));
+    } else if (item.runId === undefined) {
+      const ended = await records.settleUnstarted(item.id, run.runId);
+      if (ended !== "settled") throw new WorkflowInvariantError("run-state-failed", ended === "named" ? "run-state-unavailable" : writeFault(ended));
     }
   }
 
