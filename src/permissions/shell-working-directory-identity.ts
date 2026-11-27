@@ -90,10 +90,10 @@ export function sameShellWorkingDirectoryIdentity(actual: ShellWorkingDirectoryI
 }
 
 /** Windows: hold the approved directory and its ancestors against rename and delete. The child still opens its cwd by path, so this proves nothing inside the child. */
-export async function pinShellWorkingDirectory(identity: ShellWorkingDirectoryIdentity): Promise<HeldWindowsDirectory | undefined> {
+export async function pinShellWorkingDirectory(identity: ShellWorkingDirectoryIdentity, forSupervisor = false): Promise<HeldWindowsDirectory | undefined> {
   const { pending } = withLocalityDecision(() => {
     admitLocalPath(identity.realpath);
-    return { pending: holdWindowsDirectory(identity.realpath) };
+    return { pending: holdWindowsDirectory(identity.realpath, forSupervisor) };
   });
   const held = await pending;
   if (held === undefined) return undefined;

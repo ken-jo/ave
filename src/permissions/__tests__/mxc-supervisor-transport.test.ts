@@ -13,12 +13,15 @@ import { MxcIntegrityError } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "../mxc-extension-errors.js";
 import type { MxcSupervisorRuntime } from "../mxc-supervisor-bootstrap.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMxcReleaseGate } from "../mxc-release-gate.js";
+import { holdWindowsDirectory } from "../../shared/windows-path-facts.js";
+import { adoptMxcSupervisorDirectoryHold } from "../mxc-supervisor-cwd-hold.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 
-vi.mock("../../main/host-resources.js", () => ({ getHostResources: () => ({ resourcePath: "unit-resources", isPackaged: false }) }));
+vi.mock("../../main/host-resources.js", () => ({ getHostResources: () => ({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }) }));
 vi.mock("../../main/managed-child-processes.js", () => ({ spawnManaged: vi.fn() }));
 
 function transportFixture(request = createMxcExtensionRequest(), holdStartWrite?: (complete: () => void) => void) {
@@ -62,6 +65,73 @@ async function collect(stream: PassThrough): Promise<Buffer> {
 }
 
 describe("supervisor transport and lifecycle with an injected SDK (unit only)", () => {
+  it.runIf(process.platform === "win32").each(["stable", "cancel", "pre-start loss", "before-ready loss"] as const)(
+    "owns real directory handles across the SDK creation boundary (%s)",
+    async (scenario) => {
+      const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-supervisor-cwd-")));
+      const cwd = join(root, "cwd");
+      const marker = join(cwd, "marker");
+      mkdirSync(cwd);
+      writeFileSync(marker, "admitted");
+      const hold = await holdWindowsDirectory(cwd, true);
+      const entered = deferred<void>();
+      const pending = deferred<MxcProcess>();
+      const controller = new AbortController();
+      const request = createMxcExtensionRequest();
+      request.workingDirectory = cwd;
+      request.environment = { ...request.environment, PWD: cwd };
+      request.filesystem = { ...request.filesystem, readonlyPaths: [...(request.filesystem?.readonlyPaths ?? []), root] };
+      const f = transportFixture(request);
+      const { default: ffi } = await import("koffi");
+      const kernel = ffi.load("kernel32.dll");
+      f.runtime.holdDirectory = (source) => adoptMxcSupervisorDirectoryHold(kernel, source);
+      if (scenario !== "pre-start loss") f.spawn.mockImplementation(() => { entered.resolve(); return pending.promise; });
+      let launch: Promise<OwnedMxcExtensionProcess | undefined> | undefined;
+      let adopted: OwnedMxcExtensionProcess | undefined;
+      try {
+        if (hold?.source === undefined) throw new Error("Fixture cwd hold is unavailable");
+        const release = createMxcReleaseGate(root, [cwd], hold.source);
+        if (scenario === "pre-start loss") await hold.release();
+        launch = f.launch(controller.signal, undefined, undefined, (owned) => { adopted = owned; }, {
+          release,
+          beforeReady: () => {
+            if (scenario === "before-ready loss" && !hold.isHeld()) throw new MxcProcessContractError("Working directory hold lost");
+          },
+        });
+        void launch.catch(() => {});
+        if (scenario === "pre-start loss") {
+          await expect(launch).rejects.toThrow(/hold could not be adopted/u);
+          expect(f.spawn).not.toHaveBeenCalled();
+          return;
+        }
+        await Promise.race([entered.promise, launch]);
+        if (scenario === "cancel") controller.abort();
+        await hold.release();
+        expect(() => renameSync(cwd, join(root, "replacement"))).toThrow();
+        expect(readFileSync(marker, "utf8")).toBe("admitted");
+        pending.resolve(f.fixture.native as unknown as MxcProcess);
+        if (scenario === "cancel") await expect(launch).rejects.toThrow(/cancelled/u);
+        else if (scenario === "before-ready loss") {
+          await expect(launch).rejects.toThrow("Working directory hold lost");
+          expect(adopted?.startEvidence).toBeUndefined();
+        } else {
+          const owned = await launch;
+          expect(owned?.startEvidence?.requestDigest).toBe(mxcRequestDigest(request));
+          await owned?.dispose();
+        }
+        expect(f.fixture.native.kill).toHaveBeenCalledOnce();
+        expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
+        renameSync(cwd, join(root, "retired"));
+      } finally {
+        controller.abort();
+        pending.resolve(f.fixture.native as unknown as MxcProcess);
+        await launch?.catch(() => {});
+        await hold?.release();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("refuses an expired preparation before starting a supervisor", async () => {
     const f = transportFixture();
     const child = await f.launch(undefined, undefined, undefined, undefined, {
@@ -99,6 +169,7 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
   it("requires the supported platform and a packaged installation on the public path", async () => {
     await expect(spawnMxcExtensionProcess(createMxcExtensionRequest(), {
       beforeSpawn: () => {}, beforeSupervisor: () => {}, paths: [], watchRelease: () => () => {},
+      cwdHold: {} as Parameters<typeof spawnMxcExtensionProcess>[1]["cwdHold"],
     })).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
     await expect(spawnMxcExtensionProcessForDiagnostics(createMxcExtensionRequest())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
   });

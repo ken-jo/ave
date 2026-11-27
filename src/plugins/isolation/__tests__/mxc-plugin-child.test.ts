@@ -69,7 +69,7 @@ function fixture() {
   const holderRelease = vi.fn(async () => {});
   // Row 2 stand-in: run the adapter's check on the measured request, then hand back the owned process.
   spawn.mockReset().mockImplementation(async (spec: MxcConfinedChildSpec) => {
-    spec.assertRequest?.(admittedRequest(spec));
+    spec.assertRequest?.(admittedRequest(spec), spec.cwd);
     return { process: owned, confinement: "windows-mxc", release: holderRelease };
   });
   return { owned, launch, intent, controller, resolve, reject, holderRelease, staging };
@@ -359,9 +359,9 @@ describe("native plugin stream ownership", () => {
   ])("refuses a measured request whose %s differs from the derived intent, with the contract error", async (_label, mutate) => {
     const { launch, intent } = fixture();
     const base = spawn.getMockImplementation()!;
-    spawn.mockImplementation(async (spec: MxcConfinedChildSpec) => base({ ...spec, assertRequest: (request: ContainerRequest) => {
+    spawn.mockImplementation(async (spec: MxcConfinedChildSpec) => base({ ...spec, assertRequest: (request: ContainerRequest, cwd: string) => {
       mutate(request);
-      spec.assertRequest?.(request);
+      spec.assertRequest?.(request, cwd);
     } }));
     const failure = await spawnMxcPluginChild(launch, intent).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(MxcProcessContractError);

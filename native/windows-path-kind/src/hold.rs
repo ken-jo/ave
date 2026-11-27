@@ -59,6 +59,13 @@ unsafe extern "system" {
     fn CreateJobObjectW(security: *const SecurityAttributes, name: *const u16) -> Raw;
     fn SetInformationJobObject(job: Raw, class: i32, buffer: *const JobLimits, size: u32) -> i32;
     fn AssignProcessToJobObject(job: Raw, process: Raw) -> i32;
+    fn GetProcessTimes(
+        process: Raw,
+        creation: *mut [u32; 2],
+        exit: *mut [u32; 2],
+        kernel: *mut [u32; 2],
+        user: *mut [u32; 2],
+    ) -> i32;
     pub(super) fn TerminateProcess(process: Raw, code: u32) -> i32;
 }
 
@@ -214,15 +221,40 @@ fn serve(held: &HeldDirectory, recheck: fn(&PinnedPath, &[u16]) -> bool) {
 }
 
 pub(super) fn run(args: &[Vec<u16>], options: Options) -> u8 {
+    run_hold(args, options, false)
+}
+
+pub(super) fn run_for_supervisor(args: &[Vec<u16>]) -> u8 {
+    run_hold(args, Options::default(), true)
+}
+
+fn supervisor_reply(pinned: &PinnedPath, output: &mut String, limit: usize) -> Option<()> {
+    let (mut creation, mut exit, mut kernel, mut user) = ([0; 2], [0; 2], [0; 2], [0; 2]);
+    check(unsafe {
+        GetProcessTimes(GetCurrentProcess(), &mut creation, &mut exit, &mut kernel, &mut user)
+    }).ok()?;
+    let creation = u64::from(creation[0]) | (u64::from(creation[1]) << 32);
+    let handles = pinned.handles.iter().map(|h| format!("\"{}\"", h.raw() as usize))
+        .collect::<Vec<_>>().join(",");
+    output.truncate(output.len().checked_sub(3)?);
+    output.push_str(&format!(",\"creationTime\":\"{creation}\",\"handles\":[{handles}]}}]\n"));
+    (output.len() <= limit).then_some(())
+}
+
+fn run_hold(args: &[Vec<u16>], options: Options, for_supervisor: bool) -> u8 {
     let [path] = args else { return 2 };
     let Some((pinned, leaf)) = hold(path) else {
         diagnose("could not hold the directory");
         return 4;
     };
-    let Some(output) = held_reply(&pinned.facts, options.reply_limit) else {
+    let Some(mut output) = held_reply(&pinned.facts, options.reply_limit) else {
         diagnose("held directory reply exceeds the limit");
         return 3;
     };
+    if for_supervisor && supervisor_reply(&pinned, &mut output, options.reply_limit).is_none() {
+        diagnose("could not describe held directory handles");
+        return 3;
+    }
     let Ok(job) = create_job() else {
         diagnose("could not create the hold job");
         return 3;

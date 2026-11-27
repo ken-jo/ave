@@ -45,7 +45,8 @@ const mxcLaunchMock = vi.hoisted(() => ({
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
-  return { ...actual, spawn: childProcessMock.spawn,
+  return { ...actual, spawn: (...args: Parameters<typeof actual.spawn>) => String(args[0]).endsWith("ave-path-kind.exe")
+    ? Reflect.apply(actual.spawn, undefined, args) : Reflect.apply(childProcessMock.spawn, undefined, args),
     execFileSync: (...args: Parameters<typeof actual.execFileSync>) => String(args[0]).endsWith("ave-path-kind.exe")
       ? Reflect.apply(actual.execFileSync, undefined, args) : Reflect.apply(childProcessMock.execFileSync, undefined, args),
   };
@@ -97,7 +98,8 @@ import { egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocat
 import * as mxcWindows from "../../permissions/mxc-windows.js";
 import * as policyHome from "../../shared/policy-home.js";
 import * as mxcPolicyPipe from "../../permissions/mxc-policy-pipe.js";
-import { holdHostShellSpawnDirectory } from "../../permissions/host-shell-execution-permit.js";
+import { buildHostShellExecutionPermitBinding, holdHostShellSpawnDirectory, mintHostShellExecutionPermit, recordHostShellPolicyAuthorization } from "../../permissions/host-shell-execution-permit.js";
+import { captureShellWorkingDirectoryIdentity } from "../../permissions/shell-working-directory-identity.js";
 import type { WindowsHoldVerdict } from "../../shared/windows-path-facts.js";
 import { isWatchedWorkspaceConsumable, listWatchedQuarantine, pruneWatchedRows, WATCHED_ROW_VIOLATION } from "../../permissions/windows-watched-rows.js";
 import * as asrtSandbox from "../../permissions/asrt-sandbox.js";
@@ -213,6 +215,102 @@ function executePowerShell(toolContext: ToolExecutionContext, command = "Write-O
 }
 
 describe("builtin shell — Windows MXC containers", () => {
+  it.runIf(ORIGINAL_PLATFORM === "win32").each([1, 2])(
+    "refuses a different working directory before container start %i",
+    async (start) => {
+      bootMxcShells();
+      const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-cwd-admission-")));
+      const cwd = join(root, "work");
+      mkdirSync(cwd);
+      let starts = 0;
+      sandboxHomeMock.onCreate.mockImplementation(() => {
+        if (++starts !== start) return;
+        renameSync(cwd, join(root, "original"));
+        mkdirSync(cwd);
+      });
+      try {
+        const identity = captureShellWorkingDirectoryIdentity(cwd);
+        if (identity === undefined) throw new Error("Fixture cwd was not admitted");
+        const result = await executePowerShell({ ...context("mxc-cwd-admission"), cwd, windowsContainerShellCwd: identity });
+        expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+        expect(childProcessMock.spawn).toHaveBeenCalledTimes(start - 1);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(ORIGINAL_PLATFORM === "win32").each(["leaf", "ancestor"] as const)(
+    "keeps the admitted %s immovable after activating the parser and payload",
+    async (component) => {
+      bootMxcShells();
+      const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-cwd-activation-")));
+      const parent = join(root, "parent");
+      const cwd = join(parent, "work");
+      const marker = join(cwd, "marker");
+      mkdirSync(cwd, { recursive: true });
+      writeFileSync(marker, "admitted");
+      const actual = await vi.importActual<typeof import("../../permissions/host-shell-execution-permit.js")>(
+        "../../permissions/host-shell-execution-permit.js",
+      );
+      const fakeHold = vi.mocked(holdHostShellSpawnDirectory).getMockImplementation();
+      const activate = mxcLaunchMock.activate.getMockImplementation();
+      if (!fakeHold || !activate) throw new Error("Missing shell fixture");
+      vi.mocked(holdHostShellSpawnDirectory).mockImplementation(async (authorization, identity) => {
+        const native = await actual.holdHostShellSpawnDirectory(authorization, identity);
+        return { ...await fakeHold(authorization, identity), assertHeld: native.assertHeld, dispose: native.dispose };
+      });
+      const { readFileSync } = await import("node:fs");
+      const move = vi.fn(() => renameSync(component === "leaf" ? cwd : parent, join(root, "replacement")));
+      mxcLaunchMock.activate.mockImplementation((assertSpawnDirectory?: () => void) => {
+        assertSpawnDirectory?.();
+        expect(move).toThrow();
+        expect(readFileSync(marker, "utf8")).toBe("admitted");
+        return activate();
+      });
+      try {
+        expect((await executePowerShell({ ...context("mxc-cwd-activation"), cwd })).isError).toBe(false);
+        expect(move).toHaveBeenCalledTimes(2);
+      } finally {
+        mxcLaunchMock.activate.mockImplementation(activate);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("uses a permit's admitted cwd for both starts and preserves a command exit 125", async () => {
+    bootMxcShells();
+    const ctx = context("mxc-permit-cwd");
+    const plan = ctx.hostShellExecutionPlan;
+    if (plan === undefined) throw new Error("Missing container plan");
+    const binding = buildHostShellExecutionPermitBinding({
+      plan, toolName: "powershell", toolUseId: "mxc-permit-cwd", rawInput: { command: "Write-Output hi", timeoutSeconds: 7 },
+      executionCwd: ctx.cwd, extraAllowedDirectories: [],
+    });
+    if (binding?.cwdIdentity === undefined) throw new Error("Missing approved directory identity");
+    recordHostShellPolicyAuthorization(binding, undefined);
+    const permit = mintHostShellExecutionPermit({ plan, binding, answer: undefined });
+    if (permit === undefined) throw new Error("Missing container shell permit");
+    const hold = vi.mocked(holdHostShellSpawnDirectory);
+    const fakeHold = hold.getMockImplementation();
+    if (!fakeHold) throw new Error("Missing hold fixture");
+    hold.mockImplementation(async (authorization, identity) => ({
+      ...await fakeHold(authorization, identity),
+      bind: (child) => {
+        const verdict = deferred<WindowsHoldVerdict>();
+        child.once("exit", () => { verdict.resolve({ kind: "ok", stopped: false }); });
+        return { verdict: verdict.promise, stop: () => verdict.promise };
+      },
+    }));
+    childProcessMock.spawn.mockImplementation((_command: string, args: readonly string[]) =>
+      args.includes(PARSER_REQUEST) ? fakeChild(PARSED, 0) : fakeChild(CONTAINER_OUTPUT, 125));
+    const result = await executePowerShell({ ...ctx, hostShellExecutionPermit: permit });
+    expect(hold).toHaveBeenNthCalledWith(1, undefined, binding.cwdIdentity);
+    expect(hold).toHaveBeenNthCalledWith(2, { cwdIdentity: binding.cwdIdentity }, binding.cwdIdentity);
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: true, returncode: 125 } });
+    expect(result.notice).toBeUndefined();
+  });
+
   it.runIf(ORIGINAL_PLATFORM === "win32").each([true, false])(
     "shows the saved-session read notice only for a read operand (read=%s)",
     async (read) => {
@@ -293,6 +391,12 @@ describe("builtin shell — Windows MXC containers", () => {
   });
 
   beforeEach(() => {
+    vi.mocked(holdHostShellSpawnDirectory).mockImplementation(async (_authorization, identity) => ({
+      assertHeld() {}, command: (executable, args) => ({ executable, args: [...args] }),
+      launcherArgs: identity === undefined ? [] : ["--hold"],
+      stdio: identity === undefined ? undefined : ["pipe", "pipe", "pipe", "pipe", "pipe"],
+      bind: () => undefined, dispose() {},
+    }));
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     vi.stubEnv("SystemRoot", "C:\\Windows");
     installationMock.resolve.mockReturnValue({ executable: String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
@@ -300,10 +404,8 @@ describe("builtin shell — Windows MXC containers", () => {
     __resetShellResolverCache();
     childProcessMock.execFileSync.mockImplementation((_file, args: readonly string[]) =>
       args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
-    childProcessMock.spawn.mockImplementation((_command: string, args: readonly string[], options?: { stdio?: unknown }) => {
-      const parser = Array.isArray(options?.stdio) && options.stdio[0] === "pipe";
-      return parser || args.includes(PARSER_REQUEST) ? fakeChild(PARSED, 0) : fakeChild(`${CONTAINER_OUTPUT}\n`, 0);
-    });
+    childProcessMock.spawn.mockImplementation((_command: string, args: readonly string[]) =>
+      args.includes(PARSER_REQUEST) ? fakeChild(PARSED, 0) : fakeChild(`${CONTAINER_OUTPUT}\n`, 0));
     mxcLaunchMock.activate.mockImplementation(() => backendEvidence.observeWindowsBackend("container"));
     mxcLaunchMock.prepare.mockImplementation(async (input: { commandLine: string }, lifecycle: ContainedShellLifecycle) => {
       lifecycle.defer(mxcLaunchMock.release);
@@ -457,7 +559,8 @@ describe("builtin shell — Windows MXC containers", () => {
     const [parserLaunch] = mxcLaunchMock.prepare.mock.calls[0] as [{ commandLine: string }];
     expect(isParserLaunch(parserLaunch)).toBe(true);
     const [launch] = mxcLaunchMock.prepare.mock.calls[1] as [Record<string, unknown>];
-    for (const [prepared] of mxcLaunchMock.prepare.mock.calls as [{ commandLine: string; cwd: string; env: Record<string, string> }][]) {
+    for (const [prepared] of mxcLaunchMock.prepare.mock.calls as [PrepareMxcShellLaunchInput][]) {
+      expect(prepared.directoryHeld).toBe(true);
       const script = Buffer.from(prepared.commandLine.split(" ").at(-1)!, "base64").toString("utf16le");
       expect(prepared.commandLine).toContain("-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -EncodedCommand");
       expect(script).toContain("$PSModuleAutoLoadingPreference = 'None'");
@@ -483,7 +586,7 @@ describe("builtin shell — Windows MXC containers", () => {
     const containerSpawn = childProcessMock.spawn.mock.calls.find((call) => call[0] === WXC_EXEC && (call[1] as string[]).at(-1) === "eyJ9");
     if (containerSpawn === undefined) throw new Error("wxc-exec was not spawned");
     expect(containerSpawn[1]).toEqual(["--config-base64", "eyJ9"]);
-    expect(containerSpawn[2]).toMatchObject({ shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    expect(containerSpawn[2]).toMatchObject({ shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"] });
     // The launcher runs from its own directory; the container cwd is in the request.
     expect((containerSpawn[2] as { cwd?: string }).cwd).toBe(String.raw`C:\Program Files\Ave\resources\mxc\x64`);
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
@@ -903,8 +1006,8 @@ describe("builtin shell — Windows MXC containers", () => {
     const hold = vi.mocked(holdHostShellSpawnDirectory);
     const holdDirectory = hold.getMockImplementation();
     if (holdDirectory === undefined) throw new Error("no hold implementation");
-    hold.mockImplementation(async (authorization) => ({
-      ...await holdDirectory(authorization),
+    hold.mockImplementation(async (authorization, identity) => ({
+      ...await holdDirectory(authorization, identity),
       bind: (child) => {
         if (child.pid !== undefined) return undefined;
         child.once("error", () => { verdict.resolve({ kind: "unconfirmed" }); });
@@ -920,7 +1023,7 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
   });
 
-  it("uses the held policy mode and binds the reported reader PID", async () => {
+  it.each(["parser", "command"] as const)("uses the held policy mode for the %s and binds the reported reader PID", async (phase) => {
     bootMxcShells();
     const hold = vi.mocked(holdHostShellSpawnDirectory);
     const holdDirectory = hold.getMockImplementation();
@@ -933,7 +1036,7 @@ describe("builtin shell — Windows MXC containers", () => {
     const bindHeldPolicy = vi.fn(async () => {});
     const bindDirect = vi.fn();
     const stop = vi.fn();
-    hold.mockImplementationOnce(holdDirectory);
+    if (phase === "command") hold.mockImplementationOnce(holdDirectory);
     hold.mockResolvedValueOnce({
       assertHeld() {}, dispose() {},
       command, launcherArgs: ["--hold"], stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
@@ -947,21 +1050,22 @@ describe("builtin shell — Windows MXC containers", () => {
     });
     mxcLaunchMock.prepare.mockImplementation(async (input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle) => {
       const launch = await prepare(input, lifecycle);
-      if (isParserLaunch(input)) return launch;
+      if (isParserLaunch(input) !== (phase === "parser")) return launch;
       expect(input.directoryHeld).toBe(true);
       return { ...launch, argv: [WXC_EXEC, "--config", "policy-pipe"], bindHeldPolicy, bindChild: bindDirect };
     });
     let launcher: ReturnType<typeof fakeChild> | undefined;
     childProcessMock.spawn.mockImplementation((_file: string, args: readonly string[]) => {
       if (args.includes(PARSER_REQUEST)) return fakeChild(PARSED, 0);
-      launcher = fakeChild(CONTAINER_OUTPUT, 0);
+      if (!args.includes("policy-pipe")) return fakeChild(CONTAINER_OUTPUT, 0);
+      launcher = fakeChild(phase === "parser" ? PARSED : CONTAINER_OUTPUT, 0);
       return launcher;
     });
 
     const result = await executePowerShell(context("held-policy-reader"));
     expect(result.isError).toBe(false);
     expect(command).toHaveBeenCalledWith(WXC_EXEC, ["--config", "policy-pipe"], true);
-    expect(childProcessMock.spawn).toHaveBeenLastCalledWith(
+    expect(childProcessMock.spawn).toHaveBeenCalledWith(
       "ave-job.exe", ["--hold-policy-v1", WXC_EXEC, "--config", "policy-pipe"],
       expect.objectContaining({ stdio: ["pipe", "pipe", "pipe", "pipe", "pipe", "pipe", "pipe"] }),
     );
@@ -975,8 +1079,8 @@ describe("builtin shell — Windows MXC containers", () => {
     const holdDirectory = hold.getMockImplementation();
     if (holdDirectory === undefined) throw new Error("no hold implementation");
     if (phase === "command") hold.mockImplementationOnce(holdDirectory);
-    hold.mockImplementationOnce(async (authorization) => ({
-      ...await holdDirectory(authorization),
+    hold.mockImplementationOnce(async (authorization, identity) => ({
+      ...await holdDirectory(authorization, identity),
       bind: (child) => {
         const verdict = deferred<WindowsHoldVerdict>();
         child.once("exit", () => { verdict.resolve({ kind: "unconfirmed" }); });
