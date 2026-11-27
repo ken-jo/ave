@@ -82,11 +82,11 @@ interface LogFileInfo {
   size: number;
 }
 
-function byLogAge(a: LogFileInfo, b: LogFileInfo): number {
+export function byLogAge(a: Pick<LogFileInfo, "dateStr" | "seq">, b: Pick<LogFileInfo, "dateStr" | "seq">): number {
   return a.dateStr === b.dateStr ? a.seq - b.seq : a.dateStr < b.dateStr ? -1 : 1;
 }
 
-function parseLogSeq(fileName: string): number {
+export function parseLogSeq(fileName: string): number {
   const m = fileName.match(/^ave-\d{4}-\d{2}-\d{2}\.(\d+)\.log$/);
   return m ? parseInt(m[1], 10) : 0;
 }

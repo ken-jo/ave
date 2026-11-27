@@ -15,7 +15,7 @@ import {
 } from "../../audit/diagnostics-bundle.js";
 import { redactForLLM, scrubSecretsForLLM } from "../../audit/dlp-filter.js";
 import { utcDateKey } from "../../shared/local-date.js";
-import { parseLogFileDate } from "../../lib/log-file-sink.js";
+import { byLogAge, parseLogFileDate, parseLogSeq } from "../../lib/log-file-sink.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { createLogger } from "../../lib/logger.js";
@@ -59,17 +59,21 @@ async function crashDumpsDir(): Promise<string> {
 // Tail reads redact PII and credentials, loading each needed rotation-bounded file in full.
 async function tailLogs(lines: number, level: LogLevelFilter): Promise<string[]> {
   const dir = join(aveHome(), "logs");
-  let files: string[];
+  let names: string[];
   try {
-    files = readdirSync(dir).filter((f) => parseLogFileDate(f) !== null).sort();
+    names = readdirSync(dir);
   } catch {
     return [];
   }
+  const files = names.flatMap((name) => {
+    const dateStr = parseLogFileDate(name);
+    return dateStr ? [{ name, dateStr, seq: parseLogSeq(name) }] : [];
+  }).sort(byLogAge);
   const collected: string[] = [];
   for (let i = files.length - 1; i >= 0 && collected.length < lines; i--) {
     let raw: string;
     try {
-      raw = await readFile(join(dir, files[i]), "utf-8");
+      raw = await readFile(join(dir, files[i].name), "utf-8");
     } catch {
       continue;
     }

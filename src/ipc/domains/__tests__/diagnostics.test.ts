@@ -100,6 +100,20 @@ describe("diagnostics IPC — fail-closed sender guard", () => {
 });
 
 describe("ave:logs:tail", () => {
+  it("tails the newest numeric rollover across dates", async () => {
+    for (const [name, msg] of [
+      ["ave-2025-05-31.19.log", "previous day"],
+      ["ave-2025-06-01.log", "first write"],
+      ["ave-2025-06-01.9.log", "ask"],
+      ["ave-2025-06-01.10.log", "deny"],
+    ]) {
+      writeFileSync(join(tmp, "logs", name), JSON.stringify({ level: 30, msg }) + "\n");
+    }
+    const tail = async (lines: number) => invokeRegisteredHandlerWithEvent(handlers, CHANNELS.logs.tail, ACCEPT_EVENT, { lines }) as Promise<{ ok: boolean; lines: string[] }>;
+    expect((await tail(1)).lines.map((line) => JSON.parse(line).msg)).toEqual(["deny"]);
+    expect((await tail(4)).lines.map((line) => JSON.parse(line).msg)).toEqual(["previous day", "first write", "ask", "deny"]);
+  });
+
   it("returns recent redacted lines", async () => {
     writeFileSync(
       join(tmp, "logs", "ave-2025-06-01.log"),
