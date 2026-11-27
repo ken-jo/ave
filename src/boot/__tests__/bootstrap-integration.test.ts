@@ -1,10 +1,13 @@
 import { TEST_OWNER } from "../../main/__tests__/routines-fixture.js";
-import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__/support/host-runtime.js";
+import { createBootHostFixture, createDesktopHostFixture, unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { SettingsService } from "../../data/settings-store.js";
 import * as tracing from "../../engine/telemetry/tracing.js";
 /** Boot integration checks service shape and construction order with heavy dependencies mocked.
  * It does not verify the behavior of closures wired to those mocks. */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { join, resolve } from "node:path";
+import type { BootHost } from "../host-runtime.js";
 
 // Use a hoisted recorder so mock factories can record construction order.
 const h = await vi.hoisted(async () => {
@@ -72,31 +75,20 @@ vi.mock("../../main/app-shutdown.js", () => ({
 vi.mock("../services.js", () => ({
   bootstrapCoreServices: vi.fn(async () => {
     h.rec("core");
+    const settingsService = new SettingsService({
+      userDataPath: join(h.root, "settings"),
+      encryption: unavailableSecretEncryption,
+    });
+    await settingsService.set("features", {
+      ...settingsService.get("features"),
+      osToolSandbox: false,
+      idlePreferenceRefresh: true,
+    });
     return {
       pythonPath: "/usr/bin/python3",
       pythonRuntime: { kind: "python-runtime-stub" },
       bashAstValidator: {},
-      settingsService: {
-        get: vi.fn((key: string) => {
-          switch (key) {
-            case "marketplace":
-              return {};
-            case "llm":
-              return { provider: "openai", vendors: { openai: { model: "gpt", baseUrl: undefined } },
-              };
-            case "features":
-              return { osToolSandbox: false, idlePreferenceRefresh: true,
-              };
-            default:
-              return {};
-          }
-        }),
-        onChanged: vi.fn(() => () => {}),
-        getSecret: vi.fn(() => undefined),
-        getAll: vi.fn(() => ({})),
-        deletePluginConfig: vi.fn(async () => undefined),
-        deletePluginSecrets: vi.fn(async () => 0),
-      },
+      settingsService,
       memoryManager: {},
       // The capture gateway reviewer is late-bound after the active loop exists.
       memoryCaptureService: { setMemoryReviewer: vi.fn() },
@@ -663,19 +655,24 @@ function assertBefore(a: string, b: string) {
   ).toBeLessThan(ib);
 }
 
+function createIntegrationHost(overrides: Partial<BootHost> = {}): BootHost {
+  // Real settings reads use the native configuration helper from the checkout's resources.
+  return createBootHostFixture({ resourcePath: resolve("resources"), ...overrides });
+}
+
 function bootWithWindow(
   window: Parameters<typeof bootstrap>[1],
   mode: Parameters<typeof bootstrap>[3],
 ) {
-  return bootstrap(`${h.root}/project`, window, () => window, mode, createBootHostFixture());
+  return bootstrap(`${h.root}/project`, window, () => window, mode, createIntegrationHost());
 }
 
 describe("bootstrap desktop identity registration", () => {
   it.each(["resourcePath", "isPackaged"] as const)("refuses a conflicting host resource %s", async (field) => {
-    const registered = createBootHostFixture();
+    const registered = createIntegrationHost();
     configureHostResources(registered);
     const resources = getHostResources();
-    const conflicting = createBootHostFixture(field === "resourcePath"
+    const conflicting = createIntegrationHost(field === "resourcePath"
       ? { resourcePath: `${h.root}/other-resources` }
       : { isPackaged: !resources.isPackaged });
     try {
@@ -694,7 +691,7 @@ describe("bootstrap desktop identity registration", () => {
     const configure = vi.spyOn(tracing, "configureTracing").mockReturnValueOnce(promise);
     const order = h.order.length;
     const window = fakeWindow();
-    const boot = bootstrap(`${h.root}/project`, window, () => window, "interactive", createBootHostFixture(), controller.signal);
+    const boot = bootstrap(`${h.root}/project`, window, () => window, "interactive", createIntegrationHost(), controller.signal);
     const stopped = expect(boot).rejects.toMatchObject({ name: "AbortError" });
     try {
       controller.abort();
@@ -714,7 +711,7 @@ describe("bootstrap desktop identity registration", () => {
     const configure = vi.spyOn(tracing, "configureTracing").mockReturnValueOnce(held);
     const initializeNotificationPresenter = vi.fn(() => supported);
     const window = fakeWindow();
-    const boot = bootstrap(`${h.root}/project`, window, () => window, "interactive", createBootHostFixture({
+    const boot = bootstrap(`${h.root}/project`, window, () => window, "interactive", createIntegrationHost({
       desktop: createDesktopHostFixture({ initializeNotificationPresenter }),
     }));
     try {

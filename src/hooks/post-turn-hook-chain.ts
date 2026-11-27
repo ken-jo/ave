@@ -74,6 +74,7 @@ export interface PostTurnHookResult {
   detector: DetectorResult;
   // Canonical message array that this hook persisted for transcript replay. It carries the marker-stripped assistant output.
   messagesForPersistence: GenericMessage[];
+  transcriptPersisted?: true;
 }
 
 export class PostTurnHookChain {
@@ -81,6 +82,7 @@ export class PostTurnHookChain {
 
   async run(ctx: PostTurnHookContext): Promise<PostTurnHookResult> {
     let messagesForPersistence = ctx.messages;
+    let transcriptPersisted: true | undefined;
 
     // Stub old results only during compaction; post-turn rewriting changes the next request's prefix and defeats cache reuse.
 
@@ -114,7 +116,10 @@ export class PostTurnHookChain {
           ? replaceLastAssistantOutput(baseMessages, ctx.output, outputForPersistence)
           : baseMessages;
       // saveSession owns JSONL stubbing and file-backed tool results; preserve the engine's in-memory verbatim messages.
-      await this.deps.memoryManager?.sessions.saveSession(ctx.sessionId, messagesForPersistence);
+      if (this.deps.memoryManager) {
+        await this.deps.memoryManager.sessions.saveSession(ctx.sessionId, messagesForPersistence);
+        transcriptPersisted = true;
+      }
     } catch (err) {
       log.warn("saveSession failed: %s", err);
     }
@@ -174,7 +179,7 @@ export class PostTurnHookChain {
       log.warn("idle poke failed: %s", err);
     }
 
-    return { detector, messagesForPersistence };
+    return { detector, messagesForPersistence, ...(transcriptPersisted ? { transcriptPersisted } : {}) };
   }
 }
 

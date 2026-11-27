@@ -20,6 +20,10 @@ import { broadcastPermissionConfigChangedFromHost } from "../permission-config-b
 import { PreferenceRefreshService } from "../../memory/preference-refresh-service.js";
 import { AgentsDocMergeService } from "../../memory/agents-doc-merge-service.js";
 import { MemoryConsolidationService, MemoryMaintenanceCoordinator, sessionMemoryProject } from "../../memory/memory-consolidation-service.js";
+import { SkillMemoryService } from "../../memory/skill-memory-service.js";
+import { SkillMemoryStore } from "../../memory/skill-memory-store.js";
+import { observeWorkflowSkillMemory } from "./skill-memory-work-board.js";
+import { hasCurrentSkillMemoryRoutineEvidence } from "../../main/routines-store.js";
 import { MemoryReviewerService } from "../../memory/memory-reviewer-service.js";
 import { SubAgentRunner } from "../../engine/subagent-runner.js";
 import { A2ASubAgentMessageBus } from "../../engine/a2a-subagent-message-bus.js";
@@ -210,8 +214,18 @@ export async function wireConversation(
   const memoryReviewer = new MemoryReviewerService({
     resolveActiveChatOneShot: () => lateBinding.llmCallerRef.fn,
   });
+  const skillMemory = new SkillMemoryService(new SkillMemoryStore(), {
+    enabled: () => settingsService.get("features")?.automaticSkillMemory === true,
+    canReviewAttended: () => Boolean(ctx.host.desktop),
+    authorizedProject: isAuthorizedWorkspaceProjectRoot,
+    loadSkill: (name) => ctx.skillStore.load(name),
+    isScheduledCurrent: (id, digest, root) => ctx.routinesStore.list()
+      .some(routine => routine.id === id && hasCurrentSkillMemoryRoutineEvidence(routine, digest, root)),
+  });
+  skillMemory.setReviewer(memoryReviewer);
 
   const routineLoopDeps = {
+    skillMemory,
     settingsService,
     systemPromptBuilder,
     ...(ctx.tracing.enabled ? { tracer: ctx.tracing.tracer } : {}),
@@ -297,6 +311,7 @@ export async function wireConversation(
     pluginOperationGrants,
     pluginOperationIdentityProvider,
     skillOverlay,
+    skillMemory,
     isSkillName,
     notificationService,
     rewireReviewerAgent,
@@ -436,6 +451,7 @@ export async function wireConversation(
       pluginOperationGrants,
       pluginOperationIdentityProvider,
       skillOverlay,
+      skillMemory,
       isSkillName,
       notificationService,
       rewireReviewerAgent,
@@ -471,6 +487,15 @@ export async function wireConversation(
 
   lateBinding.conversationLoopRef.fn = conversationLoop;
   lateBinding.llmCallerRef.fn = createCallLlm(conversationLoop);
+  const syncSkillMemorySetting = () => skillMemory.onSettingChanged(
+    settingsService.getSaved("features")?.automaticSkillMemory === true,
+    settingsService.getSavedSkillMemoryGeneration(),
+  );
+  settingsService.onChanged("features", () => { void syncSkillMemorySetting(); });
+  const initialSkillMemorySetting = syncSkillMemorySetting();
+  if (!ctx.host.desktop && settingsService.getSaved("features")?.automaticSkillMemory === true) {
+    await initialSkillMemorySetting;
+  }
   memoryCaptureService.setMemoryReviewer(memoryReviewer);
   lateBinding.pluginCallLlmRef.fn = createCallLlmForPlugin(conversationLoop,
   );
@@ -599,17 +624,20 @@ export async function wireConversation(
   // Create the Work Board engine after its runner dependency exists.
   const unattendedEffects = createToolEffectResolver(ctx.toolRegistry);
   permissionManager.setUnattendedToolEffectResolver(unattendedEffects);
+  const observeWorkflowSkills = ctx.host.desktop ? observeWorkflowSkillMemory(workBoardStore, skillMemory) : undefined;
   const workBoardEngine: WorkBoardEngine = createWorkBoardEngine({
     store: workBoardStore,
+    skillMemory,
     getRunner: () => subAgentRunnerRef.fn,
     getAgentProfile: (name) => agentProfileStore.load(name),
-    emitProgress: (event, project) => {
+    emitProgress: (event, project, isOwnerCurrent) => {
       const deliver = (root: string | undefined) =>
         deliverWorkBoardProgress(ctx.host.desktop?.getAppWindows() ?? [], event, root, { logger: log });
       if (project) deliver(project.projectRoot);
       else void workBoardStore.get(event.itemId).then(result => {
         if (result.status === "found") deliver(result.item.projectRoot);
       }).catch((error: unknown) => log.warn("Work board progress scope could not be read: %s", errorMessage(error)));
+      observeWorkflowSkills?.(event, project, isOwnerCurrent);
     },
     // Append bounded project learnings best-effort; memory failures must not fail a run.
     onRunComplete: ({ itemId, title, projectRoot }) =>

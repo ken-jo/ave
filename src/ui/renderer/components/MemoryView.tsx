@@ -11,6 +11,8 @@ import { MemoryMapCanvas } from './MemoryMapCanvas.js';
 import { MemoryQuestionBox } from './MemoryQuestionBox.js';
 import { MEMORY_SOURCE_TOKENS } from './memory-graph-renderer.js';
 
+import { SkillMemoryContent } from './SkillMemoryContent.js';
+
 const CARD_PAGE_SIZE = 24;
 const BUILD_STATUS_REFRESH_MS = 1500;
 type MapState = 'loading' | 'unconfigured' | 'unavailable' | 'building' | 'failed' | 'empty' | 'ready' | 'stale';
@@ -151,10 +153,11 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
         <TabsTrigger value="map">{t('memoryMap.map')}</TabsTrigger>
         <TabsTrigger value="cards">{t('memoryMap.cards')}</TabsTrigger>
         <TabsTrigger value="manage">{t('memoryMap.manage')}</TabsTrigger>
+        <TabsTrigger value="skills">{t('skillMemory.tab')}</TabsTrigger>
       </TabsList>
-      {tab !== 'manage' && <Button size="sm" variant="outline" disabled={state === 'building' || state === 'loading' || state === 'unconfigured' || state === 'unavailable'} onClick={() => void handleBuild()}>{t('memoryMap.rebuild')}</Button>}
+      {(tab === 'map' || tab === 'cards') && <Button size="sm" variant="outline" disabled={state === 'building' || state === 'loading' || state === 'unconfigured' || state === 'unavailable'} onClick={() => void handleBuild()}>{t('memoryMap.rebuild')}</Button>}
     </div>
-    {tab !== 'manage' && <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border @[640px]:flex-row">
+    {(tab === 'map' || tab === 'cards') && <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border @[640px]:flex-row">
       <aside aria-label={t('memoryMap.filters')} className="w-full shrink-0 space-y-4 overflow-auto border-b p-3 @[640px]:w-48 @[640px]:border-b-0 @[640px]:border-r">
         <p role="status" className="text-xs font-medium">{t('memoryMap.totals', { memories: visiblePoints.length, links: linkCount })}</p>
         <fieldset className="space-y-1"><legend className="mb-2 text-xs font-semibold">{t('memoryMap.sources')}</legend>
@@ -194,6 +197,7 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
         </aside>}
       </div>
     </div>}
+    <TabsContent value="skills" className="m-0 flex min-h-0 flex-1 flex-col"><SkillMemoryContent api={api.skillMemory} /></TabsContent>
     <TabsContent value="manage" className="m-0 flex min-h-0 flex-1 flex-col"><MemorySearchPanel {...props} /></TabsContent>
   </Tabs>;
 }

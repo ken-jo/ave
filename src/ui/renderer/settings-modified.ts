@@ -39,7 +39,7 @@ export const SECTION_SETTING_CONTROLS: Readonly<Record<string, readonly SettingC
   ],
   "chat-stream-smoothing": [{ path: "llm.streamSmoothing", label: "chatTab.streamSmoothingTitle" }],
   "chat-processing-display": [{ path: "chat.processingDisplayLevel", label: "chatTab.processingDisplayTitle" }],
-  "chat-experimental": [{ path: "features.idlePreferenceRefresh", label: "chatTab.idleRefreshLabel" }, { path: "features.idleMemoryConsolidation", label: "chatTab.idleMemoryConsolidationLabel" }, { path: "features.subAgentAutonomousWake", label: "chatTab.subAgentWakeLabel" }, { path: "chat.subAgentMaxRounds", label: "chatTab.subAgentMaxRoundsLabel" }],
+  "chat-experimental": [{ path: "features.idlePreferenceRefresh", label: "chatTab.idleRefreshLabel" }, { path: "features.idleMemoryConsolidation", label: "chatTab.idleMemoryConsolidationLabel" }, { path: "features.automaticSkillMemory", label: "chatTab.automaticSkillMemoryLabel" }, { path: "features.subAgentAutonomousWake", label: "chatTab.subAgentWakeLabel" }, { path: "chat.subAgentMaxRounds", label: "chatTab.subAgentMaxRoundsLabel" }],
   "chat-privacy": [{ path: "privacy.piiRedactEnabled", label: "privacyTab.piiRedactToggleLabel" }],
   "chat-signals": [{ path: "system.signalTurnFinished", label: "accessibilitySignals.turnFinished" }, { path: "system.signalApprovalNeeded", label: "accessibilitySignals.approvalNeeded" }, { path: "system.signalTurnFailed", label: "accessibilitySignals.turnFailed" }],
   "notifications-delivery": [{ path: "alerts.osNotificationsEnabled", label: "alerts.osMaster" }],

@@ -333,8 +333,8 @@ export async function stageRunHarness(opts: {
     const current = createWorkBoardEngine({
       store,
       getRunner: () => suppliedRunner ?? engineRunner,
-      emitProgress: (event, project) => {
-        opts.onProgress?.(event, project);
+      emitProgress: (event, project, isOwnerCurrent) => {
+        opts.onProgress?.(event, project, isOwnerCurrent);
         const { itemId, phase, stageId, attempt } = event;
         if (engine === wrapped) {
           if (phase === "stage_failed") {

@@ -82,6 +82,7 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
   };
   const log = vi.fn();
   watchPermissionEvents((entry) => { if (entry.event.startsWith("work_board_")) log(entry); });
+  const recordWorkBoardOwnerInput = vi.fn(async () => {});
   const base = { title: "t", status: "in_progress", status_resolved: "in_progress", priority: "medium", created_at: "x", updated_at: "x" };
   const create = vi.fn(async (input: { title: string; projectRoot: string }) =>
     ({ status: "created", itemId: 7, item: { ...base, ...input, id: 7 } }));
@@ -93,12 +94,13 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
         : { status: "not_found", itemId: id },
     },
     workBoardEngine: engine,
+    conversationLoop: { deps: { skillMemory: { recordWorkBoardOwnerInput } } },
     settingsService: { get: (key: string) => (key === "privacy" ? privacy : undefined) },
     getMainWindow: () => window,
     getAppWindows: () => [window],
   } as unknown as IpcDeps);
   const event = { sender: owner, senderFrame: owner.mainFrame };
-  return { event, engine, log, create };
+  return { event, engine, log, create, recordWorkBoardOwnerInput };
 }
 
 const decisions = [
@@ -193,7 +195,7 @@ it("starts a template run only from a gesture and the tuple the card showed, and
   const options = { template: TUPLE, templateSource: { kind: "schedule-attachment", attachmentId: "att-1", pin: TUPLE } };
   await expect(decide(WORK_BOARD.run, event, 7, options)).resolves.toEqual({ status: "awaiting_approval" });
   expect(engine.runItem).toHaveBeenCalledTimes(1);
-  expect(engine.runItem).toHaveBeenCalledWith(7, { templateSource: { kind: "local-create-and-run", pin: TUPLE } });
+  expect(engine.runItem).toHaveBeenCalledWith(7, { templateSource: { kind: "local-create-and-run", pin: TUPLE }, approvalSurface: event.sender });
 });
 
 it("creates and runs only the new item described by the native launch receipt", async () => {
@@ -209,7 +211,70 @@ it("creates and runs only the new item described by the native launch receipt", 
   await expect(decide(WORK_BOARD.add, event, input, launch)).resolves.toMatchObject({ status: "created", itemId: 7 });
   expect(engine.runItem).toHaveBeenCalledExactlyOnceWith(7, {
     templateSource: { kind: "local-create-and-run", pin: TUPLE, projectRoot },
+    approvalSurface: event.sender,
   });
+});
+
+it("records the exact typed detail only with a live native add gesture", async () => {
+  const { event, recordWorkBoardOwnerInput } = setup();
+  const input = { title: "Review", detail: "Run the checks.", projectRoot: defaultWorkspaceProject().projectRoot };
+  const add = handler(WORK_BOARD.add);
+  pressWorkBoardTestKey(event);
+  const created = await add(event, input, undefined, undefined, true);
+  expect(created).toMatchObject({ status: "created", item: input });
+  expect(recordWorkBoardOwnerInput).toHaveBeenCalledExactlyOnceWith(expect.objectContaining(input));
+  await expect(add(event, input, undefined, undefined, true)).resolves.toMatchObject({ status: "created" });
+  expect(recordWorkBoardOwnerInput).toHaveBeenCalledOnce();
+});
+
+it("does not record a detail the store did not preserve verbatim", async () => {
+  const { create, event, recordWorkBoardOwnerInput } = setup();
+  const input = { title: "Review", detail: "Run the checks.", projectRoot: defaultWorkspaceProject().projectRoot };
+  create.mockImplementationOnce(async () => ({
+    status: "created", itemId: 7, item: {
+      ...input, detail: "Different detail", id: 7, status: "in_progress",
+      status_resolved: "in_progress", priority: "medium", created_at: "x", updated_at: "x",
+    },
+  }));
+  pressWorkBoardTestKey(event);
+  await expect(handler(WORK_BOARD.add)(event, input, undefined, undefined, true)).resolves.toMatchObject({ status: "created" });
+  expect(recordWorkBoardOwnerInput).not.toHaveBeenCalled();
+});
+
+it.each(["pasted detail", "programmatic detail"])("creates an item without recording unverified %s", async (detail) => {
+  const { event, recordWorkBoardOwnerInput } = setup();
+  const input = { title: "Review", detail, projectRoot: defaultWorkspaceProject().projectRoot };
+  pressWorkBoardTestKey(event);
+  await expect(handler(WORK_BOARD.add)(event, input)).resolves.toMatchObject({ status: "created" });
+  expect(recordWorkBoardOwnerInput).not.toHaveBeenCalled();
+});
+
+it("refuses evidence from a non-owner frame or an expired native add gesture", async () => {
+  const { event, recordWorkBoardOwnerInput } = setup();
+  const input = { title: "Review", detail: "Run the checks.", projectRoot: defaultWorkspaceProject().projectRoot };
+  const add = handler(WORK_BOARD.add);
+  const subframe = { ...event, senderFrame: { ...event.senderFrame } };
+  const now = vi.spyOn(Date, "now");
+  try {
+    now.mockReturnValue(1_000);
+    pressWorkBoardTestKey(event);
+    await expect(add(subframe, input, undefined, undefined, true)).resolves.toMatchObject({ status: "created" });
+    now.mockReturnValue(6_001);
+    await expect(add(event, input, undefined, undefined, true)).resolves.toMatchObject({ status: "created" });
+    expect(recordWorkBoardOwnerInput).not.toHaveBeenCalled();
+  } finally {
+    now.mockRestore();
+  }
+});
+
+it("records typed detail using the validated create-and-run decision receipt", async () => {
+  const { event, recordWorkBoardOwnerInput } = setup();
+  const projectRoot = defaultWorkspaceProject().projectRoot;
+  const input = { title: "Review", detail: "Run the checks.", templateId: TUPLE.templateId, projectRoot };
+  const launch = { ...TUPLE, projectRoot };
+  const token = await captureWorkBoardTestGesture(handler, event, WORK_BOARD.add, input, launch);
+  await expect(handler(WORK_BOARD.add)(event, input, launch, token, true)).resolves.toMatchObject({ status: "created" });
+  expect(recordWorkBoardOwnerInput).toHaveBeenCalledExactlyOnceWith(expect.objectContaining(input));
 });
 
 it("leaves an ordinary run as it was: no gesture, no source", async () => {

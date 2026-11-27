@@ -20,14 +20,14 @@ globalThis.window?.addEventListener("submit", event => {
   snapshotDecision(event, event.target instanceof HTMLFormElement ? event.target : undefined);
 }, true);
 
-export async function invokeWorkBoardDecision(channel: WorkBoardDecisionChannel, subject: unknown, input: unknown): Promise<unknown> {
+export async function invokeWorkBoardDecision(channel: WorkBoardDecisionChannel, subject: unknown, input: unknown, ...extras: unknown[]): Promise<unknown> {
   const key = workBoardDecisionKey(channel, subject, input);
   const gesture = clicked;
   if (gesture && gesture.event.eventPhase !== Event.NONE && gesture.key === key) {
     clicked = undefined;
     const token = randomUUID();
     if (await ipcRenderer.invoke(WORK_BOARD.captureDecisionIntent, token, key) === true) {
-      return ipcRenderer.invoke(channel, subject, input, token);
+      return ipcRenderer.invoke(channel, subject, input, token, ...extras);
     }
   }
   return ipcRenderer.invoke(channel, subject, input);

@@ -143,6 +143,7 @@ export const TOOL_TIMEOUT_POLICY = {
   modelStreamIdleCeilingMs: 300_000,
   // Permission-rationale model work is separate from normal tool execution and interactive user waits.
   rationaleGenerationMs: 15_000,
+  skillMemoryReviewMs: 60_000,
   rationaleScopeReviewMs: 15_000,
   approvalGateUserWaitMs: 5 * 60 * 1000,
   // On shutdown-cleanup expiry, kill tracked children and exit; AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS may override.

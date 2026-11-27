@@ -1,3 +1,5 @@
+import { isAttendedSkillMemoryOwner } from "./skill-memory.js";
+import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import type { IpcDeps } from "../types.js";
@@ -183,6 +185,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     async (
       e,
       input: Omit<AddRoutineInput, "createdBy">,
+      ownerTyped?: unknown,
     ) => {
       if (!validateHostRendererSender(e)) {
         auditUnauthorized(ROUTINES.add);
@@ -201,7 +204,10 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       }
       try {
         // The renderer form is the user's own action; only the host's tool path may record an agent as creator.
-        const record = await routinesStore.add({ ...input, createdBy: "user" });
+        const ownerTypedPrompt = ownerTyped === true && typeof input.prePrompt === "string" && isAttendedSkillMemoryOwner(e)
+          && securitySettingsGestures.consume(e.sender, { channel: ROUTINES.add, payload: input.prePrompt }) !== null;
+        const addInput = { ...input, createdBy: "user" as const };
+        const record = await (ownerTypedPrompt ? routinesStore.add(addInput, undefined, true) : routinesStore.add(addInput));
         return { ok: true, routine: record };
       } catch (err) {
         return { ok: false, error: (err as Error).message };
@@ -209,7 +215,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     },
   );
 
-  ipcMain.handle(ROUTINES.update, async (e, id: unknown, patch: unknown) => {
+  ipcMain.handle(ROUTINES.update, async (e, id: unknown, patch: unknown, ownerTyped: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(ROUTINES.update);
       return UNAUTHORIZED_FRAME;
@@ -227,7 +233,10 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       if (linkError) return { ok: false, error: linkError };
     }
     try {
-      const routine = await routinesStore.edit(id, patch as RoutineEditPatch);
+      const edit = patch as RoutineEditPatch;
+      const ownerTypedPrompt = ownerTyped === true && typeof edit.prePrompt === "string" && isAttendedSkillMemoryOwner(e)
+        && securitySettingsGestures.consume(e.sender, { channel: ROUTINES.update, payload: { id, prompt: edit.prePrompt } }) !== null;
+      const routine = await (ownerTypedPrompt ? routinesStore.edit(id, edit, undefined, true) : routinesStore.edit(id, edit));
       return routine ? { ok: true, routine } : { ok: false, error: "routine-not-found" };
     } catch (err) {
       return { ok: false, error: (err as Error).message };

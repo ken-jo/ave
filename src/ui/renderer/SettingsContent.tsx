@@ -616,6 +616,8 @@ export function SettingsContent({
               setIdlePreferenceRefresh={s.setIdlePreferenceRefresh}
               idleMemoryConsolidation={s.idleMemoryConsolidation}
               setIdleMemoryConsolidation={s.setIdleMemoryConsolidation}
+              automaticSkillMemory={s.automaticSkillMemory}
+              setAutomaticSkillMemory={s.setAutomaticSkillMemory}
               subAgentAutonomousWake={s.subAgentAutonomousWake}
               subAgentMaxRounds={s.subAgentMaxRounds}
               setSubAgentMaxRounds={s.setSubAgentMaxRounds}

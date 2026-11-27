@@ -458,6 +458,7 @@ export function AddRoutineModal({ api, onClose, onAdded, template, initialAt: sl
                 <Label className="space-y-1">
                   <div className="text-xs font-medium text-muted-foreground">{t("routinePanel.llmPromptLabel")}</div>
                   <Textarea
+                    data-skill-memory-source="routine"
                     value={prePrompt}
                     onChange={(e) => setPrePrompt(e.target.value)}
                     placeholder={t("routinePanel.llmPromptPlaceholder")}

@@ -1,6 +1,7 @@
 // One-shot headless actions use normal host services and shutdown; retained turns wait for explicit release. Keep heavy imports dynamic because the
 // logger imports execModeRequested during module initialization.
 import { statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import type { EventEmitter } from "node:events";
 import { basename, isAbsolute, resolve } from "node:path";
 import {
@@ -79,6 +80,8 @@ export interface ExecRequest {
 
 export interface ExecDeps {
   readonly conversationLoop: ConversationLoop;
+  // Required for inline prompts when the conversation loop has skill memory.
+  readonly runWithSkillMemoryOwnerInput?: (prompt: string, run: () => Promise<TurnResult>) => Promise<TurnResult>;
   readonly permissionManager: PermissionManager | undefined;
   readonly approvalGate: ApprovalGate | undefined;
   readonly settingsService: SettingsService;
@@ -433,6 +436,12 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
   }
   if (request.approveMode === "allow") permissionManager.setMode("allow");
   try {
+    // Stdin may carry arbitrary external text. Only an inline prompt can supply owner input.
+    const skillMemory = request.prompt === null ? undefined : deps.conversationLoop.deps?.skillMemory;
+    const { runWithSkillMemoryOwnerInput } = deps;
+    if (skillMemory && !runWithSkillMemoryOwnerInput) {
+      throw new Error("skill memory owner-input hook is missing");
+    }
     await deps.conversationLoop.newConversation("main", {
       projectRoot: request.cwd,
       projectName: basename(request.cwd),
@@ -454,7 +463,7 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
         deps.stdout.write(`${JSON.stringify(event)}\n`);
       }
     };
-    const result = await runStreamedTurn(deps.conversationLoop, prompt, sink, {
+    const run = () => runStreamedTurn(deps.conversationLoop, prompt, sink, {
       // The owner typed this prompt on the command line. Its proof is the single-use unattended authority below, which run-turn
       // accepts in place of a renderer gesture; it never grants host terminal typing.
       inputOrigin: "user-keyboard",
@@ -463,6 +472,9 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
       unattendedAuthority: issueUnattendedTurnAuthority(),
       ...(request.maxRounds === undefined ? {} : { maxRounds: request.maxRounds }),
     });
+    const result = skillMemory && runWithSkillMemoryOwnerInput
+      ? await runWithSkillMemoryOwnerInput(prompt, run)
+      : await run();
     if (request.output === "json") {
       // An authorization terminal is a control response, not a normal model result. Do not serialize `toolCalls`: they contain raw command/tool arguments and
       // are unnecessary for an operator to resume safely.
@@ -481,6 +493,16 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
           }
         : result;
       deps.stdout.write(`${JSON.stringify(output)}\n`);
+    }
+    if (skillMemory && boundProjectRoot && result.stopReason === "end_turn"
+      && !result.inputRequired && !result.authorizationRequired) {
+      await skillMemory.queueUnattended({
+        sessionId: deps.conversationLoop.getSessionId(),
+        projectRoot: boundProjectRoot,
+        completionId: `exec:${randomUUID()}`,
+        runKind: "headless",
+        flushBeforeExit: !request.keepAlive,
+      });
     }
     return exitCodeForTurnResult(result);
   } catch (err) {

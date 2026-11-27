@@ -286,7 +286,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     try {
       const result: WorkItemRunResult = await engine.runItem(
         id,
-        { ...(agentName ? { agentName } : {}), ...(templateSource ? { templateSource } : { approvalSurface: sender }) },
+        { ...(agentName ? { agentName } : {}), ...(templateSource ? { templateSource } : {}), approvalSurface: sender },
       );
       broadcastToAppWindows(deps, WORK_BOARD.runFinished, {
         itemId: id,
@@ -306,7 +306,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     }
   }
 
-  handle(WORK_BOARD.add, async (e, input: WorkItemCreateInput, launch?: unknown, intent?: unknown) => {
+  handle(WORK_BOARD.add, async (e, input: WorkItemCreateInput, launch?: unknown, intent?: unknown, skillOwnerInput?: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(WORK_BOARD.add);
       return UNAUTHORIZED_FRAME;
@@ -328,6 +328,9 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       if (!workBoardEngine) return NO_ENGINE;
       source = { kind: "local-create-and-run", pin: tuple.pin, projectRoot: tuple.projectRoot };
     }
+    const skillMemory = skillOwnerInput === true ? deps.conversationLoop.deps?.skillMemory : undefined;
+    const verifiedDetail = skillMemory && typeof input.detail === "string" && isBoardOwnerFrame(e)
+      && (source !== undefined || securitySettingsGestures.consume(e.sender, { channel: WORK_BOARD.add, payload: input }) !== null);
     // A create never shows the renderer a raw failure.
     const result = await workBoardStore.create(normalized.input).catch((error: unknown) => {
       log.warn("[work-board] an item was not created: %s", errorMessage(error));
@@ -335,6 +338,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     });
     if (result.status === "created") {
       broadcastItemChanged(result.itemId, "created");
+      if (verifiedDetail && result.item.detail === input.detail) await skillMemory.recordWorkBoardOwnerInput(result.item);
       if (source && workBoardEngine) {
         const root = result.item.projectRoot;
         void executeRun(workBoardEngine, result.itemId, e.sender, root, undefined, source).catch((error: unknown) => log.warn("Workflow start could not be reported: %s", errorMessage(error)));
