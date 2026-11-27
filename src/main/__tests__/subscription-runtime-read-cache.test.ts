@@ -5,7 +5,7 @@ import type { CodexSubscriptionStatus } from "../../shared/codex-subscription.js
 import type { CodexAppServerClient } from "../codex-app-server-client.js";
 import { claudeCodeSubscriptionStatus, type ClaudeCodeSubscriptionStatus } from "../../shared/claude-code-subscription.js";
 import type { ClaudeCodeSubscriptionClient } from "../claude-code-subscription-client.js";
-import { SubscriptionRuntimeService, type AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
+import { onSubscriptionRuntimeStatusChanged, SubscriptionRuntimeService, type AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
 import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace as namespace } from "../../__tests__/support/subscription-runtime-namespace.js";
 
 const CODEX_CONNECTED: CodexSubscriptionStatus = {
@@ -109,8 +109,8 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     const runtime = await service({ claude: client });
     try {
       const logout = runtime.logout("claude-code");
-      // The card refreshes while the CLI is still signing out: the account still reads as connected.
-      expect((await runtime.getStatus("claude-code", { allowCached: true })).connection).toBe("connected");
+      // The raw CLI still reads as connected, so the outstanding mutation must prevent that reply from reaching the caller.
+      await expect(runtime.getStatus("claude-code", { allowCached: true })).rejects.toMatchObject({ code: "subscription-status-superseded" });
       gate.resolve();
       await logout;
       expect((await runtime.getStatus("claude-code", { allowCached: true })).connection).toBe("signed-out");
@@ -119,7 +119,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     }
   });
 
-  it("keeps no status read that began during a logout and ended after it", async () => {
+  it("rejects a held ready read that began before logout and ended after it", async () => {
     const { client, setStatus } = claudeClient();
     const logoutGate = deferred<void>();
     const readGate = deferred<void>();
@@ -131,18 +131,71 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     });
     const runtime = await service({ claude: client });
     try {
-      const logout = runtime.logout("claude-code");
       client.getStatus.mockImplementationOnce(async () => {
         const connected = claudeCodeSubscriptionStatus("ready", "connected", "2.1.0");
         await readGate.promise;
         return connected;
       });
       const read = runtime.getStatus("claude-code", { allowCached: true });
+      const logout = runtime.logout("claude-code");
       logoutGate.resolve();
       await logout;
       readGate.resolve();
-      expect((await read).connection).toBe("connected");
+      await expect(read).rejects.toMatchObject({ code: "subscription-status-superseded" });
       expect((await runtime.getStatus("claude-code", { allowCached: true })).connection).toBe("signed-out");
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it.each([false, true])("orders a disconnect and reconnect by sample start with newest completion first=%s", async (newestFirst) => {
+    const { client } = claudeClient();
+    const runtime = await service({ claude: client });
+    const changed = vi.fn();
+    const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
+    try {
+      await runtime.verify("claude-code");
+      const disconnected = deferred<ClaudeCodeSubscriptionStatus>();
+      const reconnected = deferred<ClaudeCodeSubscriptionStatus>();
+      client.getStatus.mockImplementationOnce(() => disconnected.promise).mockImplementationOnce(() => reconnected.promise);
+      const earlier = runtime.getStatus("claude-code");
+      const later = runtime.getStatus("claude-code");
+      const signedOut = claudeCodeSubscriptionStatus("unverified", "signed-out", "2.1.0");
+      const signedIn = claudeCodeSubscriptionStatus("ready", "connected", "2.2.0");
+      if (newestFirst) {
+        reconnected.resolve(signedIn);
+        await expect(later).resolves.toMatchObject({ connection: "connected" });
+        disconnected.resolve(signedOut);
+        await expect(earlier).rejects.toMatchObject({ code: "subscription-status-superseded" });
+        expect(changed).not.toHaveBeenCalled();
+      } else {
+        disconnected.resolve(signedOut);
+        await expect(earlier).resolves.toMatchObject({ connection: "signed-out", capabilities: { chat: false } });
+        reconnected.resolve(signedIn);
+        await expect(later).resolves.toMatchObject({ connection: "connected", capabilities: { chat: false } });
+        expect(changed.mock.calls).toEqual([["claude-code", false], ["claude-code", true]]);
+      }
+      const sampleCount = client.getStatus.mock.calls.length;
+      expect(await runtime.getStatus("claude-code", { allowCached: true })).toMatchObject({ connection: "connected", version: "2.2.0" });
+      expect(client.getStatus).toHaveBeenCalledTimes(sampleCount);
+    } finally {
+      unsubscribe();
+      await runtime.stop();
+    }
+  });
+
+  it("rejects an earlier ready sample after a later disconnect reaches admission", async () => {
+    const { client, setStatus } = claudeClient();
+    const runtime = await service({ claude: client });
+    try {
+      await runtime.verify("claude-code");
+      const held = deferred<ClaudeCodeSubscriptionStatus>();
+      client.getStatus.mockImplementationOnce(() => held.promise);
+      const earlier = runtime.getStatus("claude-code");
+      setStatus(claudeCodeSubscriptionStatus("unverified", "signed-out", "2.1.0"));
+      await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "signed-out" });
+      held.resolve(claudeCodeSubscriptionStatus("ready", "connected", "2.1.0"));
+      await expect(earlier).rejects.toMatchObject({ code: "subscription-status-superseded" });
     } finally {
       await runtime.stop();
     }
@@ -218,7 +271,7 @@ describe("SubscriptionRuntimeService settings read cache", () => {
       const stale = runtime.getStatus("claude-code", { allowCached: true });
       await runtime.verify("claude-code");
       pending.resolve(claudeCodeSubscriptionStatus("ready", "connected", "2.0.0"));
-      await stale;
+      await expect(stale).rejects.toMatchObject({ code: "subscription-status-superseded" });
       expect((await runtime.getStatus("claude-code", { allowCached: true })).version).toBe("2.1.0");
     } finally {
       await runtime.stop();

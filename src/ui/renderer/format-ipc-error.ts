@@ -222,6 +222,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "active-chat-runtime-requires-subscription-selection": "formatIpcError.activeChatRuntimeRequiresSubscriptionSelection",
   "codex-login-failed": "formatIpcError.codexLoginFailed",
   "subscription-operation-failed": "formatIpcError.subscriptionChatUnavailable",
+  "subscription-status-superseded": "formatIpcError.subscriptionChatUnavailable",
   "subscription-chat-unavailable": "formatIpcError.subscriptionChatUnavailable",
   "subscription-runtime-native-required": "formatIpcError.subscriptionRuntimeNativeRequired",
   "subscription-runtime-unauthenticated": "formatIpcError.subscriptionRuntimeUnauthenticated",

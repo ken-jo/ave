@@ -447,9 +447,7 @@ describe("SubscriptionRuntimeService", () => {
     await service.chooseExecutable("kimi-code", "C:\\approved\\kimi.exe");
     resolveVerification(KIMI_CONNECTED);
 
-    await expect(verifying).resolves.toMatchObject({
-      capabilities: { chat: false },
-    });
+    await expect(verifying).rejects.toMatchObject({ code: "subscription-status-superseded" });
     await expect(service.getStatus("kimi-code")).resolves.toMatchObject({
       capabilities: { chat: false },
     });

@@ -441,10 +441,11 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       runtime = await getSubscriptionRuntime();
       return { ok: true, status: await operation(runtime, provider) };
     } catch (error) {
-      const status = await runtime?.getCachedStatus(provider);
+      const code = subscriptionRuntimeErrorCode(error);
+      const status = code === "subscription-status-superseded" ? undefined : await runtime?.getCachedStatus(provider);
       return {
         ok: false,
-        error: subscriptionRuntimeErrorCode(error),
+        error: code,
         ...(status ? { status } : {}),
       };
     }
@@ -490,10 +491,11 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       const result = await runtime.listModels(provider, { allowCached: true });
       return { ok: true, ...result };
     } catch (error) {
-      const status = await runtime?.getCachedStatus(provider);
+      const code = subscriptionRuntimeErrorCode(error);
+      const status = code === "subscription-status-superseded" ? undefined : await runtime?.getCachedStatus(provider);
       return {
         ok: false,
-        error: subscriptionRuntimeErrorCode(error),
+        error: code,
         ...(status ? { status } : {}),
       };
     }

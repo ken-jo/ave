@@ -497,14 +497,16 @@ describe("common subscription runtime IPC", () => {
       expect(initial).toMatchObject({ activeChatModel: selected });
       const held = deferred<CodexSubscriptionStatus>();
       getStatus.mockImplementationOnce(() => held.promise);
-      const older = service.getStatus(selection.provider);
+      const earlierSampleCount = getStatus.mock.calls.length;
+      const older = invoke("ave:settings:subscription:status", selection.provider, { refresh: true });
+      await vi.waitFor(() => expect(getStatus).toHaveBeenCalledTimes(earlierSampleCount + 1));
       status = { ...connected, connection: "signed-out" };
       await expect(service.openTextSession(selection)).rejects.toMatchObject({ code: "subscription-chat-unavailable" });
       await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({
         activeChatModel: { kind: "none", reason: "no-connected-provider" },
       })));
       held.resolve(connected);
-      await older;
+      await expect(older).resolves.toEqual({ ok: false, error: "subscription-status-superseded" });
       expect(await isSubscriptionConnected()).toBe(false);
 
       status = connected;

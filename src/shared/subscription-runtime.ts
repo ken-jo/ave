@@ -535,6 +535,7 @@ export type SubscriptionRuntimeErrorCode =
   | "subscription-logout-not-supported"
   | "subscription-chat-unavailable"
   | "subscription-model-not-supported"
+  | "subscription-status-superseded"
   | "subscription-operation-failed";
 
 export type SubscriptionRuntimeActionResult =
