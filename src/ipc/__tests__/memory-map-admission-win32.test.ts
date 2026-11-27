@@ -44,6 +44,10 @@ vi.mock('../../permissions/sandbox-capability.js', async importOriginal => ({
   getWindowsSandboxSubstrate: () => state.substrate,
   isSandboxGateUndecidedAtBoot: () => false,
 }));
+vi.mock('../../permissions/mxc-runtime-root.js', async importOriginal => ({
+  ...await importOriginal<typeof import('../../permissions/mxc-runtime-root.js')>(),
+  mxcSandboxHomesParent: () => 'C:/example/ave-runtime/homes',
+}));
 vi.mock('../../shared/ave-home.js', async importOriginal => ({
   ...await importOriginal<typeof import('../../shared/ave-home.js')>(),
   isAveHomePrivacyVerifiedAtBoot: () => true,
