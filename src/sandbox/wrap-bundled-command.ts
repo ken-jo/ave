@@ -149,6 +149,31 @@ export async function wrapManagedBundledCommand(input: Omit<BundledWrapInput, "s
   };
 }
 
+/** Own a private HOME and command wrap for a Windows launch with no lifetime ACL grants. */
+export function prepareManagedWindowsProcessHome(label: string) {
+  if (process.platform !== "win32") throw new Error("Managed Windows process HOME requires Windows");
+  const home = createSandboxProcessHome();
+  // The process or relay settling is the available exit evidence for these launches.
+  const resources = createManagedRelayResources();
+  let child: ChildProcess | undefined;
+  let wrapped = false;
+  recordManagedCleanup(resources, home.cleanup, () => wrapped ? cleanupAsrtSandboxAfterCommand() : undefined);
+  return {
+    env: home.env,
+    onWrapped() { wrapped = true; },
+    onSpawn(running: ChildProcess) {
+      child = running;
+      void observeManagedWindowsRelayExit(running, resources)
+        .then(receipt => releaseManagedResources(resources, receipt))
+        .catch((error: unknown) => log.warn(`[${label}] sandbox home release failed: ${errorMessage(error)}`));
+    },
+    stop() {
+      if (child === undefined) return abandonManagedLaunch(resources);
+      terminateChildBestEffort(child);
+    },
+  };
+}
+
 /** A bundled process started under srt-win, and what it holds while it runs. */
 export interface WindowsBundledSpawn {
   readonly child: ChildProcess;

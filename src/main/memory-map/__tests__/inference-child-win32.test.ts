@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { appendFileSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
@@ -29,7 +30,9 @@ vi.mock('node:child_process', async importOriginal => ({
   ...await importOriginal<typeof import('node:child_process')>(),
   spawn: spawnHost,
 }));
-vi.mock('../../../sandbox/wrap-bundled-command.js', () => ({ spawnMxcBundledHolder: spawnMxc }));
+vi.mock('../../../sandbox/wrap-bundled-command.js', async importOriginal => ({
+  ...await importOriginal<typeof import('../../../sandbox/wrap-bundled-command.js')>(), spawnMxcBundledHolder: spawnMxc,
+}));
 vi.mock('../../../permissions/confined-child.js', () => ({
   spawnConfinedChild: spawn, NODE_PRESERVE_SYMLINK_FLAGS: [], srtWinTargetEnv: (_base: unknown, extra: unknown) => extra,
 }));
@@ -37,7 +40,9 @@ vi.mock('../../../plugins/isolation/child-loopback-link.js', async importOrigina
   ...await importOriginal<typeof import('../../../plugins/isolation/child-loopback-link.js')>(),
   connectToAnnouncedChild: connectLoopback,
 }));
-vi.mock('../../../permissions/windows-acl-grant-holder.js', () => ({ holdWindowsFilesystemGrant: grant }));
+vi.mock('../../../permissions/windows-acl-grant-holder.js', async importOriginal => ({
+  ...await importOriginal<typeof import('../../../permissions/windows-acl-grant-holder.js')>(), holdWindowsFilesystemGrant: grant,
+}));
 vi.mock('../../../permissions/sandbox-process-home.js', () => ({
   createSandboxProcessHome: createHome,
   isSandboxHomeUnavailable: (error: unknown) => (error as { code?: unknown } | undefined)?.code === 'sandbox-home-unavailable',
@@ -113,7 +118,10 @@ function serveReply(beforeWrite?: (received: number) => void | Promise<void>) {
   const child = Object.assign(new EventEmitter(), {
     stdin, stdout, stderr: new PassThrough(), exitCode: null, signalCode: null, kill: vi.fn(),
   });
-  spawn.mockResolvedValue({ child });
+  spawn.mockImplementation(async spec => {
+    spec.onSpawn?.(child as unknown as ChildProcess);
+    return { child };
+  });
   connectLoopback.mockImplementation(async () => {
     const [socket, peer] = duplexPair();
     peer.pipe(stdin);
@@ -315,6 +323,27 @@ it('uses the Windows system directory as cwd without a profile ACL grant', async
     cwd: 'C:\\Windows\\System32', grantMode: 'deny-only', extraEnv: expect.objectContaining(home.env),
   }));
   expect(home.cleanup).toHaveBeenCalledOnce();
+});
+
+it('keeps the private home until a child acquired during a failed launch exits', async () => {
+  const cleanup = vi.fn();
+  createHome.mockReturnValue({ env: {}, cleanup });
+  const { child } = serveReply();
+  const refusal = new Error('relay setup refused');
+  spawn.mockImplementationOnce(spec => {
+    spec.onWrapped?.();
+    spec.onSpawn?.(child as unknown as ChildProcess);
+    throw refusal;
+  });
+
+  try {
+    await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toBe(refusal);
+    expect.soft(child.kill).toHaveBeenCalledOnce();
+    expect.soft(cleanup).not.toHaveBeenCalled();
+  } finally {
+    child.emit('close');
+  }
+  await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
 });
 
 it('streams verified bytes through the container holder and releases it', async () => {

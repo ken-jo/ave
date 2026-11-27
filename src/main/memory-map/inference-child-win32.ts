@@ -5,11 +5,10 @@ import { type FileHandle, open } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
-import { cleanupAsrtSandboxAfterCommand } from '../../permissions/asrt-sandbox.js';
 import { NODE_PRESERVE_SYMLINK_FLAGS, spawnConfinedChild, srtWinTargetEnv } from '../../permissions/confined-child.js';
-import { createSandboxProcessHome, isSandboxHomeUnavailable } from '../../permissions/sandbox-process-home.js';
+import { isSandboxHomeUnavailable } from '../../permissions/sandbox-process-home.js';
 import { CHILD_LOOPBACK_TRANSPORT_ARG, connectToAnnouncedChild, encodeChildEnv } from '../../plugins/isolation/child-loopback-link.js';
-import { spawnMxcBundledHolder } from '../../sandbox/wrap-bundled-command.js';
+import { prepareManagedWindowsProcessHome, spawnMxcBundledHolder } from '../../sandbox/wrap-bundled-command.js';
 import { commitUnderAdmission } from '../../shared/admission-commit.js';
 import type { MemoryMapProgress } from '../../shared/memory-map.js';
 import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
@@ -84,9 +83,9 @@ async function writeRequest(output: Writable, folder: string, taskJson: string, 
   } finally { await Promise.all(handles.map(handle => handle.close())); }
 }
 
-function sandboxHomeOrRefusal(): ReturnType<typeof createSandboxProcessHome> {
+function sandboxHomeOrRefusal(): ReturnType<typeof prepareManagedWindowsProcessHome> {
   try {
-    return createSandboxProcessHome();
+    return prepareManagedWindowsProcessHome(INFERENCE_CHILD_LABEL);
   } catch (error) {
     if (isSandboxHomeUnavailable(error)) throw new MemoryMapHostError('sandbox-home-unavailable');
     throw error;
@@ -130,24 +129,19 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
   }
 
   const home = sandboxHomeOrRefusal();
-  let wrapped = false;
-  const release = () => {
-    home.cleanup();
-    if (wrapped) { wrapped = false; void cleanupAsrtSandboxAfterCommand(); }
-  };
-  let child: ChildProcess | undefined;
   try {
+    let running: ChildProcess;
     const cwd = win32SystemBinary('');
     const extraEnv = { ...home.env, ...TELEMETRY_OPT_OUT };
     assertStillValid();
     if (route === 'unconfined') {
       if (!isAbsolute(entry)) throw new Error('Inference child entry must be absolute');
-      child = spawnManaged(process.execPath, [entry], {
+      running = spawnManaged(process.execPath, [entry], {
         cwd, env: { ...baseEnv, ...extraEnv, ELECTRON_RUN_AS_NODE: '1' }, shell: false, stdio: ['pipe', 'pipe', 'pipe'],
-      }, { label: INFERENCE_CHILD_LABEL });
+      }, { label: INFERENCE_CHILD_LABEL }, home.onSpawn);
     } else {
       // The account backend delivers no spawn environment or stdin, so it uses authenticated loopback.
-      ({ child } = await spawnConfinedChild({
+      ({ child: running } = await spawnConfinedChild({
         command: process.execPath,
         args: [...NODE_PRESERVE_SYMLINK_FLAGS, entry, CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv(srtWinTargetEnv(baseEnv, extraEnv))],
         windowsShell: 'cmd',
@@ -160,26 +154,22 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
         extraEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
         assertStillValid,
-        onWrapped: () => { wrapped = true; },
+        onWrapped: home.onWrapped,
+        onSpawn: home.onSpawn,
       }));
     }
-    const running = child;
-    const stop = () => { if (running.exitCode === null && running.signalCode === null) running.kill(); };
-    running.once('close', release);
-    running.once('error', () => { if (running.pid === undefined) release(); });
     running.stderr?.resume();
     const { stdout, stdin } = running;
     if (!stdout || !stdin) throw new Error('[memory-map-inference] the child has no pipes');
-    if (route === 'unconfined') return { input: stdout, output: stdin, stop, assertStillValid };
+    if (route === 'unconfined') return { input: stdout, output: stdin, stop: home.stop, assertStillValid };
     const exited = new Promise<string>(resolve => {
       running.once('exit', (code, signal) => resolve(`code=${String(code)} signal=${String(signal)}`));
       running.once('error', error => resolve(error.message));
     });
     const socket = await connectToAnnouncedChild({ stdout, exited, timeoutMs: TOOL_TIMEOUT_POLICY.windowsInferenceChildConnectMs, assertStillValid });
-    return { input: socket, output: socket, stop, assertStillValid };
+    return { input: socket, output: socket, stop: home.stop, assertStillValid };
   } catch (error) {
-    child?.kill();
-    release();
+    await home.stop();
     throw error;
   }
 }
