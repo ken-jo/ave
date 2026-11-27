@@ -48,9 +48,8 @@ jobs:
         ${{ (github.event_name == 'pull_request' && steps.plan.outputs.platform_checks == 'true') ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-      # One shard when the plan step did not run (a docs-only change), so the
-      # matrix below always reads a list.
-      shards: ${{ steps.plan.outputs.shards || '[1]' }}
+      shards: ${{ steps.plan.outputs.shards }}
+      shard_count: ${{ steps.plan.outputs.shard_count }}
       # scripts/plan-vitest-tiers.mjs selects the opt-in tiers; a docs-only change selects none.
       census_tier: ${{ steps.tiers.outputs.census_tier || 'false' }}
       native_tier: ${{ steps.tiers.outputs.native_tier || 'false' }}
@@ -201,10 +200,9 @@ jobs:
         working-directory: ave
         env:
           AVE_BUILD_MINIFIER: esbuild
-      # Plan once: the shards below run this plan instead of planning again,
-      # so every shard splits the same file list. A full run without
-      # coverage uses one pool beside selected native checks, otherwise
-      # FULL_RUN_SHARDS shards. Affected and coverage runs use one pool.
+      # Plan once so every shard splits the same file list. Full runs without
+      # coverage use two shards with selected native checks and four otherwise.
+      # Affected and coverage runs use one shard.
       - name: Plan the suite
         id: plan
         if: steps.docs-impact.outputs.docs_only != 'true'
@@ -261,13 +259,71 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  background-ui:
+    name: Background UI authority
+    needs: build
+    if: needs.build.outputs.docs_only != 'true'
+    runs-on: ubuntu-24.04-arm
+    env:
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ave
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./ave/.github/actions/setup-bun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          bun-version-file: ave/.bun-version
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
+        with:
+          path: ave/node_modules
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
+      - uses: ./ave/.github/actions/cache-runtime-tools
+        with:
+          repository: ave
+      - name: Restore runtime download archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/electron
+          key: ${{ runner.os }}-${{ runner.arch }}-runtime-electron-v1-${{ hashFiles('ave/bun.lock') }}
+      - run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        working-directory: ave
+      - name: Ensure uv toolchain
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        working-directory: ave
+        run: node scripts/fetch-uv.mjs
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ci-build
+          path: ave/dist
+      # The app loads its generated icons from build/, outside the dist artifact.
+      - run: bun run build:icons
+        working-directory: ave
       - name: Install background UI runtime dependencies
-        if: steps.docs-impact.outputs.docs_only != 'true'
         uses: ./ave/.github/actions/linux-packages
         with:
           packages: xvfb xauth libgtk-3-0t64 libnss3 libasound2t64 libgbm1
       - name: Verify background approvals and keyboard authority
-        if: steps.docs-impact.outputs.docs_only != 'true'
         timeout-minutes: 5
         working-directory: ave
         env:
@@ -282,7 +338,7 @@ jobs:
           export HOME="$task_home" AVE_HOME="$task_home/.ave" TMPDIR="$task_home/tmp"
           xvfb-run -a -s '-screen 0 1600x1000x24' bun run test:ui-e2e ui/approval-dialog.spec.ts ui/background-focus.spec.ts --retries=0 --reporter=list,json --output=test-results/background/cases
       - name: Upload background UI evidence
-        if: steps.docs-impact.outputs.docs_only != 'true' && always()
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: background-ui-results
@@ -293,12 +349,12 @@ jobs:
   vitest:
     name: Vitest shard ${{ matrix.shard }}
     needs: build
-    if: needs.build.outputs.docs_only != 'true'
+    if: needs.build.outputs.docs_only != 'true' && needs.build.outputs.shards != ''
     runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}
+        shard: ${{ fromJSON(needs.build.outputs.shards) }}
     env:
       # Parallel runners may share a home; each workspace owns its Bun cache.
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
@@ -318,8 +374,7 @@ jobs:
       # The suite's sandbox tests need bwrap, socat and rg, and the terminal's
       # real-shell tests (typing, and the differential check of what zsh and
       # bash run against what the permission rules read) need zsh, which the
-      # runner image lacks. The shards exercise real shells; the build's
-      # approval subset does not.
+      # runner image lacks.
       - name: Install Linux sandbox and real-shell tools
         uses: ./ave/.github/actions/linux-packages
         with:
@@ -412,6 +467,7 @@ jobs:
         working-directory: ave
         run: rm -f ajv pino
       - name: Run script tests
+        if: matrix.shard == 1
         run: bun run test:scripts
         working-directory: ave
       - name: Run the suite (coverage gate on nightly and dispatch)
@@ -435,8 +491,7 @@ jobs:
         # composite's two halves separately, the duplicate scan last;
         # `check:test-quality` stays as the local one-shot README.md documents.
         #
-        # Four workers share one runner when native checks dominate the
-        # critical path. File isolation and timing phases remain unchanged.
+        # Each Linux shard uses up to four workers with file isolation.
         #
         # This job is one shard of the plan the build job wrote:
         # AVE_CI_PLAN_FILE is that plan, AVE_CI_SHARD this shard's place in
@@ -473,8 +528,7 @@ jobs:
       # The suite's sandbox tests need bwrap, socat and rg, and the terminal's
       # real-shell tests (typing, and the differential check of what zsh and
       # bash run against what the permission rules read) need zsh, which the
-      # runner image lacks. The shards exercise real shells; the build's
-      # approval subset does not.
+      # runner image lacks.
       - name: Install Linux sandbox and real-shell tools
         uses: ./ave/.github/actions/linux-packages
         with:
@@ -683,7 +737,7 @@ jobs:
     # .required_status_checks.contexts). gate-core and mxc-pins report under
     # names that list does not contain, so only this job's explicit result
     # check below lets them block a merge; skipped or cancelled fails too.
-    needs: [build, vitest, vitest-tiers, windows-native-preparation, windows-payload-packaging, windows-script-tests, windows-dev-boot, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins]
+    needs: [build, background-ui, vitest, vitest-tiers, windows-native-preparation, windows-payload-packaging, windows-script-tests, windows-dev-boot, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins]
     if: always()
     # Every job in every workflow runs on a GitHub-hosted runner
     # (src/__tests__/support/workflow-runner-policy.ts fails on anything
@@ -701,10 +755,14 @@ jobs:
       - name: Require the build and every Vitest shard
         if: always()
         env:
+          GH_TOKEN: ${{ github.token }}
           GATE_CORE_RESULT: ${{ needs.gate-core.result }}
           MXC_PINS_RESULT: ${{ needs.mxc-pins.result }}
           BUILD_RESULT: ${{ needs.build.result }}
+          BACKGROUND_UI_RESULT: ${{ needs.background-ui.result }}
           VITEST_RESULT: ${{ needs.vitest.result }}
+          VITEST_SHARDS: ${{ needs.build.outputs.shards }}
+          VITEST_SHARD_COUNT: ${{ needs.build.outputs.shard_count }}
           VITEST_TIER_JOB: ${{ needs.build.outputs.vitest_tier_job }}
           VITEST_TIERS_RESULT: ${{ needs.vitest-tiers.result }}
           WINDOWS_TIER_TESTS: ${{ needs.build.outputs.windows_tier_tests }}
@@ -737,6 +795,13 @@ jobs:
             echo "::error::documentation impact was not resolved"
             exit 1
           fi
+          case "$DOCS_ONLY:$BACKGROUND_UI_RESULT" in
+            true:skipped|false:success) ;;
+            *)
+              echo "::error::background UI authority docs_only=$DOCS_ONLY result=$BACKGROUND_UI_RESULT"
+              exit 1
+              ;;
+          esac
           case "$WINDOWS_ARM64_PATH_KIND:$WINDOWS_ARM64_PATH_KIND_RESULT" in
             true:success|false:skipped) ;;
             *)
@@ -766,6 +831,23 @@ jobs:
           elif [ "$VITEST_RESULT" != "success" ]; then
             echo "::error::the Vitest shards ended $VITEST_RESULT"
             exit 1
+          elif [[ ! "$VITEST_SHARD_COUNT" =~ ^[1-9][0-9]*$ ]] ||
+               [ "$VITEST_SHARDS" != "[$(seq -s, 1 "$VITEST_SHARD_COUNT")]" ]; then
+            echo "::error::Vitest matrix '$VITEST_SHARDS' does not contain the $VITEST_SHARD_COUNT planned shards"
+            exit 1
+          else
+            # The matrix result alone does not prove that every leg finished.
+            if ! job_pages=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100") ||
+               ! jq -e --argjson shards "$VITEST_SHARDS" '
+                 ([$shards[] | ["Vitest shard \(.)", "completed", "success"]] | sort) as $expected
+                 | .[0].total_count as $total
+                 | map(.jobs[]) as $jobs
+                 | ($jobs | length) == $total
+                   and ([$jobs[] | select(.name | startswith("Vitest shard ")) | [.name, .status, .conclusion]] | sort) == $expected
+               ' <<< "$job_pages" > /dev/null; then
+              echo "::error::Vitest matrix '$VITEST_SHARDS' lacks exactly one successful job per shard"
+              exit 1
+            fi
           fi
           if [ "$PLATFORM_CHECKS" != "true" ] && [ "$PLATFORM_CHECKS" != "false" ]; then
             echo "::error::native platform selection was not resolved"
@@ -795,11 +877,24 @@ jobs:
         if: needs.build.outputs.docs_only != 'true'
         with:
           path: ave
-          # Only the CI budget report reads this tree; diff/ancestry planning
-          # stays in the build job with full history.
+          # Diff/ancestry planning stays in the build job with full history.
           fetch-depth: 1
           # No later step pushes or fetches with the job token.
           persist-credentials: false
+      - name: Download the suite plan
+        if: needs.build.outputs.docs_only != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+      - name: Verify the planned shard count
+        if: needs.build.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          AVE_CI_PLAN_FILE: ${{ runner.temp }}/ci-plan/ci-plan.json
+          PLATFORM_CHECKS: ${{ needs.build.outputs.platform_checks }}
+          VITEST_SHARD_COUNT: ${{ needs.build.outputs.shard_count }}
+        run: node scripts/verify-ci-shard-count.mjs
       - name: Report the total runner budget
         if: always() && needs.build.outputs.docs_only != 'true' && hashFiles('ave/scripts/report-ci-budget.mjs') != ''
         # Timing service failures are advisory; product checks above stay required.

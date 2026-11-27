@@ -10,6 +10,7 @@ import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { PermissionManager, type PermissionRule } from "../permission-manager.js";
+import { updatePermissionsFile } from "../permissions-store.js";
 import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { inspectShellCommand, shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/literal-shell-inspection.js";
@@ -66,6 +67,17 @@ beforeAll(async () => {
   expect(applicationRoots.map(({ path }) => canonicalizePathForMatch(path))).toEqual(canonicalRoots);
   corpusManagers = [runnerManager(), runnerManager()].map((manager) => ({ manager, state: managerState(manager) }));
   for (const { state } of corpusManagers) expect(state).toEqual(EMPTY_MANAGER_STATE);
+
+  const savedCorpusPath = join(directory, "runner-corpus-grants.json");
+  const savedKeys = new Set(RUNNER_SECURITY_CASES.map(({ dialect, command }) => actionKey(dialect, command)));
+  await updatePermissionsFile(savedCorpusPath, file => {
+    for (const pattern of savedKeys) file.rules.push({ pattern, action: "allow", tier: "write" });
+  });
+  savedCorpusManager = runnerManager(savedCorpusPath);
+  await savedCorpusManager.loadRulesFromFile();
+  const hydrated = savedCorpusManager as unknown as { rules: readonly PermissionRule[] };
+  savedCorpusRules = new Map(hydrated.rules.map((rule) => [rule.pattern, rule]));
+  savedCorpusManager.setMode("allow");
 });
 afterAll(() => { rmSync(directory, { recursive: true, force: true }); });
 
@@ -187,6 +199,8 @@ function managerState(manager: PermissionManager) {
 
 const EMPTY_MANAGER_STATE = { epoch: expect.any(String), alwaysAllowed: [], sessionRules: [], floorSessionGrants: [], rules: 0, verdictCache: null, recentlyDenied: null };
 let corpusManagers: { manager: PermissionManager; state: ReturnType<typeof managerState> }[];
+let savedCorpusManager: PermissionManager;
+let savedCorpusRules: ReadonlyMap<string, PermissionRule>;
 
 function expectDefaultHostDecision(dialect: ShellDialect, command: string): void {
   const credential = dialect === "powershell" && CREDENTIAL_COMMANDS.has(command);
@@ -230,34 +244,37 @@ describe("shared runner decisions", () => {
     expectDefaultHostDecision(dialect, command);
   });
 
-  it.each(RUNNER_SECURITY_CASES)("retains reviewed security disposition in Allow with saved grants: $dialect $command ($why)", async (row) => {
+  it.each(RUNNER_SECURITY_CASES)("retains reviewed security disposition in Allow with saved grants: $dialect $command ($why)", (row) => {
     const platform = process.platform === "win32" ? row.win32 : undefined;
     const { dialect, command } = row;
     const disposition = platform?.disposition ?? row.disposition;
     const reasonCode = platform?.reasonCode ?? row.disposition;
-    const manager = runnerManager();
-    manager.setMode("allow");
+    const withoutGrant = runnerManager();
+    withoutGrant.setMode("allow");
     if (disposition === "exfiltration") {
-      const unconsented = checkCommand(manager, dialect, command);
+      const unconsented = checkCommand(withoutGrant, dialect, command);
       expect(unconsented).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
       expect(unconsented.forceModal).toBeUndefined();
       expect(unconsented.pipelineRequest?.floor).toBeUndefined();
       expect(unconsented.pipelineRequest?.exfiltration?.reason).toEqual(expect.any(String));
-      expect(checkCommand(manager, dialect, command, false, true)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+      expect(checkCommand(withoutGrant, dialect, command, false, true)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
     }
     if (disposition === "project-escape") {
-      const unconsented = checkCommand(manager, dialect, command);
+      const unconsented = checkCommand(withoutGrant, dialect, command);
       expect(unconsented).toMatchObject({ decision: "ask", forceModal: true, reasonCode: platform?.reasonCode ?? "project-escape",
         pipelineRequest: { floor: { code: "project-escape" } } });
       expect(unconsented.reviewer).toBeUndefined();
       if (platform?.exfiltration === false) expect(unconsented.pipelineRequest?.exfiltration).toBeUndefined();
       else expect(unconsented.pipelineRequest?.exfiltration?.reason).toEqual(expect.any(String));
-      expect(checkCommand(manager, dialect, command, false, true)).toMatchObject({
+      expect(checkCommand(withoutGrant, dialect, command, false, true)).toMatchObject({
         decision: "deny", reasonCode: "no-approver", reason: "Nobody can approve this request; do not retry.",
       });
     }
-    await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
-    manager.setRules(([{ pattern: actionKey(dialect, command), action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
+    // The remembered approvals are keyed by exact action. Test only this row's active allow rule.
+    const manager = savedCorpusManager;
+    const pattern = actionKey(dialect, command);
+    expect(savedCorpusRules.get(pattern)).toMatchObject({ pattern, action: "allow", tier: "write" });
+    manager.setRules(([{ pattern, action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
     if (disposition === "ordinary") {
       expect(dialect === "bash" ? shellExfiltrationSignal(command, CWD) : inspectPowerShellCommand(command, CWD).exfiltration).toBeNull();
       expect(checkCommand(manager, dialect, command).decision).toBe("allow");

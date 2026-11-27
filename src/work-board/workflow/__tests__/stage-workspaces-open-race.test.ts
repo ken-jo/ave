@@ -8,7 +8,7 @@ import type { OwnedDir } from "../owned-fs.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { ADMIN_MARK, JOIN_DIR, OUT_DIR, RUN_FILE, runRootOf, runSlug } from "../workspace-layout.js";
 import { removeLink, stageOf } from "./stage-fixtures.js";
-import { type GitFixture, type GitHandle, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
+import { type GitFixture, type GitHandle, sealed, stageRoot, seedGitFixtures } from "./stage-git-fixture.js";
 
 /** Runs before the run folder is made in its project folder, with that folder's path: where another process's release can come between. */
 const between = vi.hoisted(() => ({
@@ -133,6 +133,7 @@ vi.mock("../owned-fs.js", async (original) => {
   };
 });
 
+const createFixture = seedGitFixtures();
 let base: string;
 const hostGit = (): HostGit => createHostGit({ env: { ...process.env, GIT_CONFIG_GLOBAL: join(base, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1" } });
 const run = (): { itemId: number; runId: string; runKey: string } => ({ itemId: 7, runId: `run-race-${process.pid}-${Date.now()}`, runKey: "key" });
@@ -336,7 +337,7 @@ it("a project's folder that cannot be listed keeps every root, and the runs of t
 });
 
 it("a project root the disk gives no answer about may still be the recorded one: a release then leaves the whole run, and takes it apart once the root is read", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const handle = fx.start();
     const open = await handle.provider.open(handle.run, fx.repo);
@@ -355,7 +356,7 @@ it("a project root the disk gives no answer about may still be the recorded one:
 });
 
 it("a registration whose ownership cannot be read may still be the run's own: a release leaves the whole run, and takes it apart once it is read", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const handle = fx.start();
     const open = await handle.provider.open(handle.run, fx.repo);
@@ -375,7 +376,7 @@ it("a registration whose ownership cannot be read may still be the run's own: a 
 });
 
 it("a registration whose stage name another folder took after the removal stays, and goes once the name is free", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const handle = fx.start();
     const open = await handle.provider.open(handle.run, fx.repo);
@@ -402,7 +403,7 @@ it("a registration whose stage name another folder took after the removal stays,
 });
 
 it.each([["the same text", (link: Buffer): Buffer | string => link], ["another text", (): Buffer | string => "gitdir: elsewhere\n"]])("a stage folder whose worktree link was written anew with %s is still the run's own, and goes with its registration", async (_, written) => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const handle = fx.start();
     const open = await handle.provider.open(handle.run, fx.repo);
@@ -421,7 +422,7 @@ it.each([["the same text", (link: Buffer): Buffer | string => link], ["another t
 });
 
 it("a registration whose admin folder's anchor is a copy is not the run's: nothing of the stage goes, and the release says so", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const handle = fx.start();
     const open = await handle.provider.open(handle.run, fx.repo);
@@ -439,7 +440,7 @@ it("a registration whose admin folder's anchor is a copy is not the run's: nothi
 });
 
 it.skipIf(process.platform !== "win32")("a home on a share keeps the registration git wrote with the share's path", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const handle = fx.start();
     const open = await handle.provider.open(handle.run, fx.repo);
@@ -488,11 +489,11 @@ const slashed = (path: string, volume: string): string => path.slice(volume.leng
 it.each([
   "missing", "readable", "unicode-subsection", "malformed-key", "reftable", "replaced", "over-cap", "timeout", "unreadable", "failed", "truncated", "malformed", "external",
 ] as const)("partial release verifies a %s repository config before removing its stage", async (scenario) => {
-  const fx = gitFixture();
+  const fx = createFixture();
   const config = join(fx.repo, ".git", "config");
   const saved = join(fx.repo, ".git", "config-saved");
   const originalConfig = readFileSync(config, "utf8");
-  const real = createHostGit({ env: fx.env });
+  const real = fx.git;
   const limited = createHostGit({ env: fx.env, maxOutputBytes: 16 });
   let releasing = false;
   const query = vi.fn(async (...[cwd, args, call]: Parameters<HostGit["run"]>) => {
@@ -560,15 +561,15 @@ it.each([
 
 /** A host git that notes where each call was made. */
 function countedGit(fx: GitFixture): { git: HostGit; calls: string[] } {
-  const real = createHostGit({ env: fx.env });
+  const real = fx.git;
   const calls: string[] = [];
   return { calls, git: { run: (cwd, args, call) => { calls.push(resolve(cwd).toLowerCase()); return real.run(cwd, args, call); }, drivers: (cwd) => { calls.push(resolve(cwd).toLowerCase()); return real.drivers(cwd); }, floorHolds: real.floorHolds } };
 }
 
 onWindows("a project on a share keeps the registration a stage folder names by the share's path", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
-    const real = createHostGit({ env: fx.env });
+    const real = fx.git;
     const configAnswer = vi.fn(() => ({ code: 0, stdout: "", stderr: "" }));
     const handle = fx.start({ git: { ...real, run: (cwd, args, call) =>
       between.share !== undefined && args[0] === "config" && args.includes("--list") ? Promise.resolve(configAnswer()) : real.run(cwd, args, call),
@@ -599,7 +600,7 @@ onWindows("a project on a share keeps the registration a stage folder names by t
 
 onWindows("a record edited to name its repository on another share or a device keeps the stage folder and its registration, and nothing is asked of that path", async () => {
   for (const moved of [(git: string) => `\\\\other\\share\\${git.slice(parse(git).root.length)}`, (git: string) => `\\\\.\\${git}`]) {
-    const fx = gitFixture();
+    const fx = createFixture();
     try {
       const handle = fx.start();
       const open = await handle.provider.open(handle.run, fx.repo);
@@ -662,7 +663,7 @@ onWindows.each<Unverified>([
   ["names its project by a device path", root => `\\\\.\\${root}`, true],
   ["is as it was written, with no project open", undefined, false],
 ])("a record that %s directs nothing: no path of it is asked about, git is not run, and the run stays whole with its record", async (_what, rootAs, open) => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const { provider, calls, handle, runRoot, record, local } = await found(fx, rootAs);
     const { projectRoot, ...closed } = handle.run;
@@ -696,7 +697,7 @@ onWindows.each<Unverified>([
 });
 
 it("a record edited to name a registration's worktree outside the run folder is no record, and nothing is asked of that path", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const { provider, calls, handle, runRoot, record } = await found(fx);
     const outside = join(fx.base, "outside");
@@ -720,7 +721,7 @@ it("a record edited to name a registration's worktree outside the run folder is 
 onWindows("a folder of the run whose link names another share, a device or a folder outside the repository has no git run in it", async () => {
   const links = [(admin: string) => `gitdir: //other/share/${slashed(admin, parse(admin).root)}\n`, (admin: string) => `gitdir: //./${admin.replaceAll("\\", "/")}\n`, (admin: string) => `gitdir: ${admin}/../../../../other/x\n`];
   for (const linkTo of links) {
-    const fx = gitFixture();
+    const fx = createFixture();
     try {
       mkdirSync(join(fx.base, "other", "x"), { recursive: true });
       const { git, calls } = countedGit(fx);
@@ -755,7 +756,7 @@ onWindows("a folder of the run whose link names another share, a device or a fol
 });
 
 onWindows("a project or a repository directory that is really at a path with no plain form gets no workspace", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const real = realpathSync.native(fx.repo);
     const volume = parse(real).root;
@@ -780,7 +781,7 @@ onWindows("a project or a repository directory that is really at a path with no 
  * repository alone asks.
  */
 async function collectWithLink(fx: GitFixture, linkTo: (admin: string) => string): Promise<{ asked: string[]; repository: string[] }> {
-  const git = createHostGit({ env: fx.env });
+  const git = fx.git;
   let joinDir = "";
   let admin = "";
   let replaced = false;
@@ -814,7 +815,7 @@ async function collectWithLink(fx: GitFixture, linkTo: (admin: string) => string
 
 onWindows("an integration folder whose link names another share or a device is not collected into, and nothing is asked of the link", async () => {
   for (const linkTo of [(admin: string) => `gitdir: //other/share/${slashed(admin, parse(admin).root)}\n`, (admin: string) => `gitdir: //./${admin.replaceAll("\\", "/")}\n`]) {
-    const fx = gitFixture();
+    const fx = createFixture();
     try {
       const { asked, repository } = await collectWithLink(fx, linkTo);
       expect(between.foreign).toEqual([]);
@@ -826,7 +827,7 @@ onWindows("an integration folder whose link names another share or a device is n
 });
 
 it("an integration folder whose link leaves the repository's worktrees folder by `..` is not collected into, and the folder it names is not asked about", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     mkdirSync(join(fx.base, "other", "x"), { recursive: true });
     // Four levels up from the admin folder is the folder the project is in.
@@ -838,7 +839,7 @@ it("an integration folder whose link leaves the repository's worktrees folder by
 });
 
 onWindows("a stage folder that names an admin folder on another share or a device records nothing, and nothing off this machine is asked", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const handle = fx.start();
     const open = await handle.provider.open(handle.run, fx.repo);
@@ -863,7 +864,7 @@ onWindows("a stage folder that names an admin folder on another share or a devic
 });
 
 onWindows("a record edited to name an admin folder on another share or a device is refused, and nothing off this machine is asked", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const handle = fx.start();
     const open = await handle.provider.open(handle.run, fx.repo);
@@ -887,7 +888,7 @@ onWindows("a record edited to name an admin folder on another share or a device 
 });
 
 it.each(["EXDEV", "EPERM", "ENOTSUP"])("a volume that gives a file no second name (%s) gets no workspace, and nothing of the attempt stays", async (code) => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const handle = fx.start();
     const real = realpathSync.native(fx.repo);
@@ -923,7 +924,7 @@ it.each([
   ["refuses the pin alone, as a permission does, while it gives the probe one", { ending: ".pin", code: "EPERM", pinOnly: true }, "workspace-unavailable"],
   ["refuses the integration worktree's pin", { ending: "._join.pin", code: "ENOTSUP" }, "volume-unsupported"],
 ] as const)("an open on a volume that %s is refused, and nothing of the attempt stays", async (_, unlinked, code) => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const handle = fx.start();
     between.unlinked = unlinked;
@@ -938,7 +939,7 @@ it.each([
 });
 
 it("a volume that answers a second name with a copy gives no pin: the open is refused, and nothing of the attempt stays", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const handle = fx.start();
     between.copied = ".pin";
@@ -951,7 +952,7 @@ it("a volume that answers a second name with a copy gives no pin: the open is re
 });
 
 it("a repository on another device than the home keeps its registrations' pins in its own ave-pins, which go with the run", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const handle = fx.start();
     const projectFolder = projectFolderOf(fx, handle);
@@ -971,7 +972,7 @@ it("a repository on another device than the home keeps its registrations' pins i
 });
 
 it("a pin deleted from a repository's ave-pins leaves its registration the run cannot prove its own: the release says so and removes nothing of it", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const handle = fx.start();
     between.otherDevice = projectFolderOf(fx, handle);
@@ -987,7 +988,7 @@ it("a pin deleted from a repository's ave-pins leaves its registration the run c
 });
 
 it("a run whose registrations are left in a repository on another device takes its own pins out of ave-pins, and no other run's", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
     const handle = fx.start();
     const other = fx.start({}, 8);
@@ -1012,9 +1013,9 @@ it("a run whose registrations are left in a repository on another device takes i
 });
 
 it("a stop right before any write of a record leaves a run whose later release removes nothing but the run's own", async () => {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
-    const stoppable = (): HostGit => new Proxy(createHostGit({ env: fx.env }), {
+    const stoppable = (): HostGit => new Proxy(fx.git, {
       get(target, key) {
         const value = Reflect.get(target, key) as unknown;
         if (typeof value !== "function") return value;
@@ -1050,7 +1051,7 @@ it("a stop right before any write of a record leaves a run whose later release r
         || [runRoot, ...admins].some(root => key(path) === key(root) || key(path).startsWith(key(root) + sep));
       between.gone = [];
       // As after a restart: a provider that knows nothing of the run finds it by its record.
-      await createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }) }).release(handle.run, "all");
+      await createStageWorkspaceProvider({ git: fx.git }).release(handle.run, "all");
       expect(between.gone.filter(path => !own(path))).toEqual([]);
       expect(userRefs()).toEqual(before);
       expect(fx.userGit(fx.repo, "status", "--porcelain")).toBe("");
