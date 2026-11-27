@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
-import { fireEvent, render, screen, act, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, act, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { SideChatView } from "../SideChatView.js";
+import { BrowserCaptureControls } from "../browser-capture-controls.js";
+import type { BrowserWorkspaceApi } from "../../../../shared/browser-workspace.js";
 import type { ChatStreamEvent } from "../../../../lib/chat-stream-state.js";
 import type { AveApi } from "../../types.js";
 import { ChatContextProvider, type ChatContextValue } from "../../context/ChatContext.js";
@@ -16,7 +18,7 @@ import { t } from "../../../../i18n/runtime.js";
 import type { ApprovalRequest, AskUserQuestionRequest } from "../../types.js";
 
 beforeEach(() => { vi.stubGlobal("ave", makeMockAveNamespace().ns); });
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 function makeApi() {
   // Two subscribers share the side stream — the transcript reducer and the message queue's drain — so the seam fans every
@@ -65,10 +67,12 @@ function renderView(
   api: AveApi,
   chatContext?: Partial<ChatContextValue>,
   view?: Partial<React.ComponentProps<typeof SideChatView>>,
+  sibling?: React.ReactNode,
 ) {
   return render(
     <TooltipProvider>
       <ApprovalSurfaceProvider value={approvalSurfaceStub()}>
+        {sibling}
         {chatContext ? (
           <ChatContextProvider value={chatContext as ChatContextValue}>
             <SideChatView api={api} {...view} />
@@ -161,6 +165,56 @@ describe("SideChatView — New button gating during streaming", () => {
     emitFallback({ from: event.to, to: "secondary/model-c", streamId: 2 });
     expect(within(paneView.getByTestId("side-chat-composer-dock")).getByTestId("status-toast-message")).toHaveTextContent("secondary/model-c");
     expect(railView.getByTestId("status-toast-message")).not.toHaveTextContent("secondary/model-c");
+  });
+
+  it.each(["capture", "image save"] as const)("keeps a pending %s out of the new pane chat", async (pendingStep) => {
+    const { api } = makeApi();
+    const tabId = "browser:capture";
+    const groupId = "pane:capture";
+    const onSessionIdChange = vi.fn();
+    api.sideChat!.paneHistory = vi.fn(async () => ({ ok: true as const, sessionId: "side-1", messages: [] }));
+    api.sideChat!.endPaneChat = vi.fn(async () => ({ ok: true as const }));
+    const image = { ok: true as const, path: "/work/capture.png", dataUrl: "data:image/png;base64,aW1hZ2U=", mimeType: "image/png", width: 200, height: 100, bytes: 5 };
+    const captureResult = { ok: true as const, value: { ...image, tabId, documentGeneration: 2, truncated: false } };
+    const pendingCapture = deferred<typeof captureResult>();
+    const pendingSave = deferred<typeof image>();
+    const capture = vi.fn(async () => pendingStep === "capture" ? pendingCapture.promise : captureResult);
+    const browser = { capture, getState: vi.fn(async () => ({ ok: true, value: { tabs: [{ tabId, documentGeneration: 2 }] } })) } as unknown as BrowserWorkspaceApi;
+    const saveClipboardImage = vi.fn(async () => pendingStep === "image save" ? pendingSave.promise : image);
+    const readImage = vi.fn(async () => image);
+    const release = vi.fn(async () => ({ ok: true }));
+    const { ns } = makeMockAveNamespace();
+    vi.stubGlobal("ave", { ...ns, attach: { saveClipboardImage, readImage, release } });
+
+    renderView(api, undefined, {
+      chatGroupId: groupId,
+      boundSurface: { kind: "browser", tabId, name: "Browser", detail: null, detailTitle: null },
+      onSessionIdChange,
+      runtime: { hasApiKey: true, settingsLoaded: true },
+    }, <BrowserCaptureControls api={browser} tabId={tabId} paneChatGroupId={groupId} />);
+    await waitFor(() => expect(onSessionIdChange).toHaveBeenCalledWith("side-1"));
+    const dock = screen.getByTestId("side-chat-composer-dock");
+    vi.spyOn(dock, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 200, 100));
+    vi.spyOn(document.body, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, window.innerWidth, window.innerHeight));
+    const toolbar = screen.getByTestId("browser-capture-menu");
+    fireEvent.pointerDown(toolbar, { button: 0, ctrlKey: false });
+    await act(async () => { fireEvent.click(await screen.findByTestId("browser-capture-viewport")); });
+    expect(capture).toHaveBeenCalledOnce();
+    if (pendingStep === "image save") expect(saveClipboardImage).toHaveBeenCalledOnce();
+
+    await act(async () => { fireEvent.click(screen.getByTestId("side-chat-new")); });
+    expect(api.sideChat!.endPaneChat).toHaveBeenCalledExactlyOnceWith(tabId, "new");
+    expect(screen.getByTestId("side-chat-composer-dock")).toBe(dock);
+    expect(screen.getByTestId("browser-capture-menu")).toBe(toolbar);
+    await act(async () => {
+      pendingCapture.resolve(captureResult);
+      pendingSave.resolve(image);
+    });
+
+    expect.soft(readImage).not.toHaveBeenCalled();
+    expect.soft(sideComposer().textarea).toHaveValue("");
+    if (pendingStep === "capture") expect(saveClipboardImage).not.toHaveBeenCalled();
+    else expect(release).toHaveBeenCalledExactlyOnceWith([image.path]);
   });
 
   it("ignores fallback events without the active stream id", async () => {

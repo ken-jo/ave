@@ -147,12 +147,14 @@ describe("SurfacePane", () => {
     vi.spyOn(dock, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 200, 100));
     const attachOther = vi.fn(async () => true);
     const attachPane = vi.fn(async () => true);
+    const paneSession = Symbol();
+    const viewport = vi.spyOn(document.body, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, window.innerWidth, window.innerHeight));
     const unregisterOther = registerComposerTarget({
       groupId: "other", kind: "conversation", attach: () => true, attachImage: attachOther,
       available: () => true, element: () => other,
     });
     const unregisterPane = target === "missing" ? undefined : registerComposerTarget({
-      groupId: surfacePaneChatGroup(paneId), kind: "side-chat", attach: () => true,
+      groupId: surfacePaneChatGroup(paneId), kind: "side-chat", attach: () => true, getSessionIdentity: () => paneSession,
       ...(target === "unsupported" ? {} : { attachImage: attachPane }),
       available: () => target !== "hidden", element: () => dock,
     });
@@ -170,6 +172,7 @@ describe("SurfacePane", () => {
     } finally {
       unregisterPane?.();
       unregisterOther();
+      viewport.mockRestore();
     }
   });
 

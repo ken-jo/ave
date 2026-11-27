@@ -14,6 +14,7 @@ export interface ComposerTarget {
   /** Put `text` into the draft; false when it did not fit. */
   attach: (text: string) => boolean;
   attachImage?: (base64: string, canCommit?: () => boolean) => Promise<boolean>;
+  getSessionIdentity?: () => symbol;
   /** Whether the user can see this composer now. */
   available: () => boolean;
   /** The composer's dock: focus landing inside it is "the user used it". */
@@ -100,24 +101,32 @@ export async function attachImageToComposer(base64: string, groupId?: string): P
   return target?.attachImage ? target.attachImage(base64) : "no-composer";
 }
 
-export async function attachImageToPaneChat(base64: string, paneChatGroupId: string, sourceCurrent: () => boolean): Promise<AttachTextResult | "target-changed"> {
+export function pinPaneChatImageTarget(paneChatGroupId: string, sourceCurrent: () => boolean):
+  ((base64: string) => Promise<boolean | "target-changed">) | null {
   const registration = sideChatOf(paneChatGroupId);
-  if (!registration) return "no-composer";
+  if (!registration) return null;
   const [key, target] = registration;
   const dock = target.element();
-  if (!target.attachImage || !dock || !isElementShown(dock)) return "no-composer";
+  const attachImage = target.attachImage;
+  const sessionIdentity = target.getSessionIdentity?.();
+  if (!attachImage || sessionIdentity === undefined || !dock || !isElementShown(dock)) return null;
+
   let current = true;
   const canCommit = () => {
-    current &&= sourceCurrent() && targets.get(key) === target && target.available() && target.element() === dock && isElementShown(dock);
+    current &&= sourceCurrent() && targets.get(key) === target && target.getSessionIdentity?.() === sessionIdentity
+      && target.available() && target.element() === dock && isElementShown(dock);
     return current;
   };
-  try {
-    const attached = await target.attachImage(base64, canCommit);
-    return attached || (canCommit() ? false : "target-changed");
-  } catch (error) {
+  return async (base64) => {
     if (!canCommit()) return "target-changed";
-    throw error;
-  }
+    try {
+      const attached = await attachImage(base64, canCommit);
+      return attached || (canCommit() ? false : "target-changed");
+    } catch (error) {
+      if (!canCommit()) return "target-changed";
+      throw error;
+    }
+  };
 }
 
 /** Test-only. */

@@ -231,6 +231,7 @@ function SideChatSession({
     turnSummaryByTurnStart,
     isStreaming,
     sessionId,
+    getSessionIdentity,
     send,
     newSession,
     loadSession,
@@ -529,17 +530,18 @@ function SideChatSession({
   }, [openRequest, loadSession]);
   const shownRef = useRef(shown && composerVisible);
   shownRef.current = shown && composerVisible;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (chatGroupId === undefined) return undefined;
     return registerComposerTarget({
       groupId: chatGroupId,
       kind: "side-chat",
       attach: (text) => attachPastedTextRef.current(text),
       attachImage: (base64, canCommit) => attachImageRef.current(base64, canCommit),
+      getSessionIdentity,
       available: () => shownRef.current,
       element: () => dockRef.current,
     });
-  }, [chatGroupId]);
+  }, [chatGroupId, getSessionIdentity]);
 
   return (
     <div className="relative flex h-full min-h-0 flex-col" data-testid="side-chat-view" data-approval-scope {...composerDropZone}>

@@ -62,6 +62,7 @@ export interface UseSideChat {
   turnSummaryByTurnStart: Map<number, TurnSummary>;
   isStreaming: boolean;
   sessionId: string | null;
+  getSessionIdentity: () => symbol;
   send: (text: string, opts?: SideChatSendOptions) => Promise<void>;
   newSession: () => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
@@ -140,6 +141,7 @@ function createSideChatRuntime(retained: boolean) {
     maxStreamIdRef: runtimeRef<number>(-1),
     isStreamingRef: runtimeRef(false),
   };
+  let sessionIdentity = Symbol();
   const update = (patch: Partial<SideChatSnapshot>) => {
     runtime.snapshot = { ...runtime.snapshot, ...patch };
     for (const listener of runtime.listeners) listener();
@@ -154,7 +156,12 @@ function createSideChatRuntime(retained: boolean) {
       update({ entries: typeof next === "function" ? next(runtime.snapshot.entries) : next });
     },
     setIsStreaming: (isStreaming: boolean) => update({ isStreaming }),
-    setSessionId: (sessionId: string | null) => update({ sessionId }),
+    // A fresh draft has a lifetime even before the host assigns it a session ID.
+    getSessionIdentity: () => sessionIdentity,
+    setSessionId: (sessionId: string | null) => {
+      sessionIdentity = Symbol();
+      update({ sessionId });
+    },
   });
 }
 
@@ -854,6 +861,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     turnSummaryByTurnStart,
     isStreaming,
     sessionId,
+    getSessionIdentity: runtime.getSessionIdentity,
     send,
     newSession,
     loadSession,
