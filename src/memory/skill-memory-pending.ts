@@ -77,19 +77,25 @@ export class SkillMemoryPending {
     };
   }
 
-  discard(): Promise<void> {
-    return this.locked(() => this.namespace.writeJson<Journal>(FILENAME, {
-      version: 1, generation: randomUUID(), disabled: true, rows: [], board: [],
-    }));
+  discard(generation: string = randomUUID()): Promise<void> {
+    return this.locked(() => this.writeEmpty(generation, true));
   }
 
-  async enable(): Promise<void> {
-    if (!this.read().disabled) return;
-    await this.update(journal => {
-      if (!journal.disabled) return false;
-      delete journal.disabled;
-      return true;
+  async enable(generation: string | undefined, discardUnconfirmed: boolean): Promise<void> {
+    const needsClear = (journal: Journal) => journal.disabled || (generation !== undefined && journal.generation !== generation);
+    if (!discardUnconfirmed && !needsClear(this.read())) return;
+    await this.locked(async () => {
+      if (discardUnconfirmed) {
+        await this.writeEmpty(generation ?? randomUUID());
+        return;
+      }
+      const journal = this.read();
+      if (needsClear(journal)) await this.writeEmpty(generation ?? journal.generation ?? randomUUID());
     });
+  }
+
+  private writeEmpty(generation: string, disabled?: true): Promise<void> {
+    return this.namespace.writeJson<Journal>(FILENAME, { version: 1, generation, disabled, rows: [], board: [] });
   }
 
   withGeneration(generation: string | undefined, commit: () => Promise<boolean>): Promise<boolean> {

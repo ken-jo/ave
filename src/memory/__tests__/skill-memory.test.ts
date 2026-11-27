@@ -2,10 +2,14 @@ import { mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
+import { SettingsService } from "../../data/settings-store.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import type { SkillMemoryRunKind } from "../../shared/skill-memory-types.js";
 import { bindSkillMemoryInvocation, SkillMemoryService } from "../skill-memory-service.js";
 import { SkillMemoryStore } from "../skill-memory-store.js";
+import { SkillMemoryPending } from "../skill-memory-pending.js";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { approveSkillMemoryEvidence, parseSkillMemoryReview, sanitizeSkillMemoryText } from "../skill-memory-policy.js";
@@ -68,8 +72,8 @@ describe("host completion and invocation recall", () => {
     const selection = JSON.parse(prompt) as { skills: { id: string }[]; anchors: { id: string }[] };
     return JSON.stringify([{ skill: selection.skills[0]?.id, anchor: selection.anchors[0]?.id, description, body }]);
   });
-  const makeService = (desktop = true) => new SkillMemoryService(store, {
-    enabled: () => enabled,
+  const makeService = (desktop = true, isEnabled = () => enabled) => new SkillMemoryService(store, {
+    enabled: isEnabled,
     canReviewAttended: () => desktop,
     authorizedProject: isCurrent,
     loadSkill: async () => ({ name: "review", filePath: skill, body: source, description: "", triggers: [], resources: [], sourceDigest: sha256Hex(source) }),
@@ -284,6 +288,127 @@ describe("host completion and invocation recall", () => {
     await exec.queueUnattended({ sessionId: "during-off", projectRoot: root, completionId: "exec:off", runKind: "headless", flushBeforeExit: true });
     expect(review).not.toHaveBeenCalled();
     expect(store.list()).toEqual([]);
+  });
+
+  it("clears old evidence before reviewing after a failed OFF discard", async () => {
+    service = makeService();
+    await invoke("attended", true, root, "old", true);
+    const journal = join(home, "skill-memory", "pending.json");
+    const discard = vi.spyOn(SkillMemoryPending.prototype, "discard").mockRejectedValueOnce(new Error("Write failed"));
+    try {
+      enabled = false;
+      await service.onSettingChanged(false);
+      expect(JSON.parse(readFileSync(journal, "utf8")).rows).toHaveLength(1);
+
+      enabled = true;
+      service.setReviewer({ review });
+      await service.onSettingChanged(true);
+      await service.waitForPending();
+      expect(review).not.toHaveBeenCalled();
+      expect(JSON.parse(readFileSync(journal, "utf8")).rows).toEqual([]);
+
+      await invoke("attended", true, root, "new", true);
+      await service.waitForPending();
+      expect(review).toHaveBeenCalledOnce();
+      expect(store.list()[0]?.active[0]?.origin.sessionId).toBe("new");
+    } finally {
+      discard.mockRestore();
+      await service.onSettingChanged(true);
+    }
+  });
+
+  it("saves OFF independently of a failed discard and blocks old evidence across an ON save and restart", async () => {
+    const options = { userDataPath: home, encryption: unavailableSecretEncryption };
+    const settings = new SettingsService(options);
+    const readSettings = () => JSON.parse(readFileSync(settings.getSettingsFilePath(), "utf8"));
+    const sync = (settings: SettingsService, memory: SkillMemoryService) => memory.onSettingChanged(
+      settings.getSaved("features")?.automaticSkillMemory === true, settings.getSavedSkillMemoryGeneration(),
+    );
+    service = makeService(true, () => settings.get("features")?.automaticSkillMemory === true);
+    const memory = service;
+    settings.onChanged("features", () => { void sync(settings, memory); });
+    await sync(settings, memory);
+    await invoke("attended", true, root, "old", true);
+    const journal = join(home, "skill-memory", "pending.json");
+    const old = readFileSync(journal, "utf8");
+    const finishDiscard = deferred<void>();
+    const discard = vi.spyOn(SkillMemoryPending.prototype, "discard").mockImplementationOnce(async () => {
+      expect(readSettings().features.automaticSkillMemory).toBe(false);
+      await finishDiscard.promise;
+      throw new Error("Write failed");
+    });
+    const enable = vi.spyOn(SkillMemoryPending.prototype, "enable")
+      .mockRejectedValueOnce(new Error("Write failed"))
+      .mockRejectedValueOnce(new Error("Write failed"));
+    try {
+      await settings.patch({ features: { automaticSkillMemory: false } });
+      expect(discard).toHaveBeenCalledOnce();
+      expect(readSettings().features.automaticSkillMemory).toBe(false);
+      const generation = settings.getSavedSkillMemoryGeneration();
+      expect(generation).toBeTypeOf("string");
+      await settings.patch({ features: { idlePreferenceRefresh: true } });
+      expect(readSettings().features).toMatchObject({ automaticSkillMemory: false, idlePreferenceRefresh: true });
+      finishDiscard.resolve();
+      await sync(settings, memory);
+      await settings.patch({ features: { idlePreferenceRefresh: false } });
+      expect(readSettings().features).toMatchObject({ automaticSkillMemory: false, idlePreferenceRefresh: false });
+
+      memory.setReviewer({ review });
+      await settings.patch({ features: { automaticSkillMemory: true } });
+      expect(readSettings().features.automaticSkillMemory).toBe(true);
+      await sync(settings, memory);
+      expect(await memory.ensureReviewAvailable()).toBe(false);
+      await invoke("attended", true, root, "blocked", true);
+      await memory.waitForPending();
+      expect(review).not.toHaveBeenCalled();
+      expect(readFileSync(journal, "utf8")).toBe(old);
+
+      const restartedSettings = new SettingsService(options);
+      expect(restartedSettings.getSavedSkillMemoryGeneration()).toBe(generation);
+      service = makeService();
+      service.setReviewer({ review });
+      await sync(restartedSettings, service);
+      await service.waitForPending();
+      expect(await service.ensureReviewAvailable()).toBe(true);
+      expect(review).not.toHaveBeenCalled();
+      expect(JSON.parse(readFileSync(journal, "utf8"))).toMatchObject({ generation, rows: [], board: [] });
+    } finally {
+      finishDiscard.resolve();
+      enable.mockRestore();
+      discard.mockRestore();
+      await memory.onSettingChanged(true, settings.getSavedSkillMemoryGeneration());
+    }
+  });
+
+  it("retries a failed boot discard while OFF with backoff", async () => {
+    await invoke("attended");
+    const journal = join(home, "skill-memory", "pending.json");
+    service = makeService();
+    enabled = false;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const discard = vi.spyOn(SkillMemoryPending.prototype, "discard")
+      .mockRejectedValueOnce(new Error("Write failed"))
+      .mockRejectedValueOnce(new Error("Write failed"));
+    try {
+      await service.onSettingChanged(false);
+      expect(discard).toHaveBeenCalledOnce();
+      expect(JSON.parse(readFileSync(journal, "utf8")).rows).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(discard).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      await service.onSettingChanged(false);
+      expect(discard).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(discard).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      await service.onSettingChanged(false);
+      expect(discard).toHaveBeenCalledTimes(3);
+      expect(JSON.parse(readFileSync(journal, "utf8"))).toMatchObject({ disabled: true, rows: [], board: [] });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      discard.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("keeps earlier evidence through a failed turn and recovers it for explicit archive", async () => {

@@ -30,14 +30,15 @@ function fixture() {
   const list = vi.fn(() => []);
   const listCurrent = vi.fn(async () => []);
   const decide = vi.fn(async (_input: unknown, grant: (scope: object, lesson: object) => boolean) => grant({}, {}));
+  const ensureReviewAvailable = vi.fn(async () => true);
   registerSkillMemoryHandlers({
-    conversationLoop: { deps: { skillMemory: { store: { list, listCurrent, decide } } } }, auditLogger: { log: vi.fn() },
+    conversationLoop: { deps: { skillMemory: { ensureReviewAvailable, store: { list, listCurrent, decide } } } }, auditLogger: { log: vi.fn() },
   } as never);
   const change = {
     scopeId: sha256Hex("scope"), action: "apply", lessonId: "7c1c6b6e-1b53-4b47-b6ec-9b9ea567c8fe", digest: sha256Hex("lesson"),
   };
   return {
-    contents, event, listCurrent, decide, change,
+    contents, event, listCurrent, decide, change, ensureReviewAvailable,
     invokeList: (...args: unknown[]) => requiredFixture(state.handlers.get(CHANNELS.skillMemory.list))(...args),
     invokeDecision: (...args: unknown[]) => requiredFixture(state.handlers.get(CHANNELS.skillMemory.decide))(...args),
   };
@@ -62,6 +63,14 @@ describe("skill memory IPC", () => {
     f.contents.emit("before-mouse-event", {}, { type: "mouseUp" });
     expect(await f.invokeDecision(f.event, f.change)).toEqual({ ok: true });
     expect(await f.invokeDecision(f.event, f.change)).toEqual({ ok: false });
+  });
+
+  it("reports unavailable review through the existing list response and can recover on retry", async () => {
+    const f = fixture();
+    f.ensureReviewAvailable.mockResolvedValueOnce(false);
+    expect(await f.invokeList(f.event)).toEqual({ ok: false });
+    expect(f.listCurrent).not.toHaveBeenCalled();
+    expect(await f.invokeList(f.event)).toEqual({ ok: true, groups: [] });
   });
 
   it("refuses stale sources and unknown decision fields", async () => {

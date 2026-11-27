@@ -27,7 +27,7 @@ export function isAttendedSkillMemoryOwner(event: IpcMainInvokeEvent): boolean {
 
 export function registerSkillMemoryHandlers(deps: IpcDeps): void {
   const { list, decide } = CHANNELS.skillMemory;
-  const store = () => deps.conversationLoop.deps?.skillMemory?.store;
+  const skillMemory = () => deps.conversationLoop.deps?.skillMemory;
   ipcMain.handle(list, async (event, ...args: unknown[]) => {
     if (!isSkillMemoryOwnerFrame(event)) {
       auditUnauthorized(deps.auditLogger, list, event);
@@ -35,7 +35,9 @@ export function registerSkillMemoryHandlers(deps: IpcDeps): void {
     }
     if (args.length > 0) return { ok: false };
     try {
-      const groups = await store()?.listCurrent(async (scope, fingerprint) =>
+      const service = skillMemory();
+      if (!service || !await service.ensureReviewAvailable()) return { ok: false };
+      const groups = await service.store.listCurrent(async (scope, fingerprint) =>
         isAuthorizedWorkspaceProjectRoot(scope.projectRoot)
         && isSkillMemoryProposalCurrent(scope, fingerprint, await deps.skillStore?.load(scope.skill)));
       return groups ? { ok: true, groups } : { ok: false };
@@ -47,7 +49,7 @@ export function registerSkillMemoryHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     const parsed = Decision.safeParse(raw);
-    const current = store();
+    const current = skillMemory()?.store;
     if (!parsed.success || extra.length || !current) return { ok: false };
     const operation = { channel: decide, payload: parsed.data };
     const proof = securitySettingsGestures.consume(event.sender, operation);

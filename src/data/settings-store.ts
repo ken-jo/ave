@@ -10,8 +10,10 @@ import {
   normalizeCorpCaCommonName,
 } from "../shared/corp-ca-common-name.js";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { UUID_PATTERN } from "../shared/uuid.js";
 import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { withInstalledStateMutation } from "../main/installed-state-mutation.js";
 import {
@@ -812,7 +814,7 @@ function mainLayoutAsStored(holdsSettings: boolean, storedSystem: unknown, norma
 
 export class SettingsService {
   private readonly changeListeners = new Map<keyof AppSettings, Set<() => void>>();
-  private beforeFeaturesSaved: ((features: AppSettings["features"]) => Promise<void> | undefined) | undefined;
+  private savedSkillMemoryGeneration: string | undefined;
   private providerConfigRevision = 0;
   private readonly secretGenerations = new Map<string, number>();
   private observedSecretFingerprint: string | null | "unreadable" | undefined;
@@ -964,6 +966,10 @@ export class SettingsService {
     return structuredClone(this.saved[key]);
   }
 
+  getSavedSkillMemoryGeneration(): string | undefined {
+    return this.savedSkillMemoryGeneration;
+  }
+
   async set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void> {
     const persist = async () => {
       this.settings[key] = value;
@@ -976,16 +982,12 @@ export class SettingsService {
     return key === "marketplace" ? withInstalledStateMutation(persist) : persist();
   }
 
-  /** Observes writes after they reach disk. Feature callbacks finish before the next snapshot is saved. */
+  /** Observes writes after they reach disk. Callbacks must not block the writer. */
   onChanged(key: keyof AppSettings, listener: () => void): () => void {
     let listeners = this.changeListeners.get(key);
     if (!listeners) this.changeListeners.set(key, (listeners = new Set()));
     listeners.add(listener);
     return () => { listeners.delete(listener); };
-  }
-
-  setBeforeFeaturesSaved(prepare: (features: AppSettings["features"]) => Promise<void> | undefined): void {
-    this.beforeFeaturesSaved = prepare;
   }
 
   async patch(
@@ -1863,6 +1865,11 @@ export class SettingsService {
         features: { ...DEFAULT_SETTINGS.features, ...normalizedFeatures },
         appliedMigrations,
       };
+      if (Object.hasOwn(parsed, "skillMemoryGeneration")) {
+        const generation: unknown = parsed.skillMemoryGeneration;
+        this.savedSkillMemoryGeneration = typeof generation === "string" && UUID_PATTERN.test(generation)
+          ? generation : randomUUID();
+      }
       return {
         settings: result,
         writeBack: needsAppearanceWriteBack || migrationWriteBack,
@@ -1895,17 +1902,15 @@ export class SettingsService {
         const snapshot = this.getAll();
         const featuresChanged = !isDeepStrictEqual(this.saved.features, snapshot.features);
         try {
-          if (featuresChanged) await this.beforeFeaturesSaved?.(snapshot.features);
           await this.saveSettings(snapshot);
           this.saved = snapshot;
-          if (featuresChanged) await this.notifyFeaturesSaved();
+          if (featuresChanged) this.notifyFeaturesSaved();
           if (this.withheldSecretKeys.size > 0) void this.deleteWithheldSecrets();
           for (const write of batch) write.resolve();
         } catch (err) {
           this.settings = structuredClone(this.saved);
           this.providerConfigChanged();
           for (const write of [...batch, ...this.unsaved.splice(0)]) write.reject(err);
-          if (featuresChanged && this.beforeFeaturesSaved) await this.notifyFeaturesSaved();
         }
       }
     } finally {
@@ -1913,14 +1918,23 @@ export class SettingsService {
     }
   }
 
-  private async notifyFeaturesSaved(): Promise<void> {
+  private notifyFeaturesSaved(): void {
     for (const listener of this.changeListeners.get("features") ?? []) {
-      try { await listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
+      try {
+        void Promise.resolve(listener()).catch(error => log.warn({ error }, "settings change listener failed"));
+      } catch (error) { log.warn({ error }, "settings change listener failed"); }
     }
   }
 
   private async saveSettings(settings: AppSettings): Promise<void> {
-    writeUtf8FileAtomicSync(this.settingsPath, JSON.stringify(settings, null, 2));
+    const wasOff = this.saved.features?.automaticSkillMemory === false;
+    const isOff = settings.features?.automaticSkillMemory === false;
+    // Fence old evidence at the settings commit, even if journal cleanup fails or the host exits.
+    const skillMemoryGeneration = isOff && !wasOff
+      ? randomUUID()
+      : this.savedSkillMemoryGeneration ?? (wasOff || isOff ? randomUUID() : undefined);
+    writeUtf8FileAtomicSync(this.settingsPath, JSON.stringify({ ...settings, skillMemoryGeneration }, null, 2));
+    this.savedSkillMemoryGeneration = skillMemoryGeneration;
   }
 
 }

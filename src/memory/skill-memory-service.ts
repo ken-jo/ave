@@ -23,6 +23,8 @@ const RECALL_BYTES = 8_000;
 const REVIEW_INPUT_BYTES = 12_000;
 const SESSION_EVIDENCE_LIMIT = 8;
 const RETAINED_SESSIONS = 128;
+const DISCARD_RETRY_INITIAL_MS = 1_000;
+const DISCARD_RETRY_MAX_MS = 30_000;
 // Allow one review interval for queueing and one for inference. Older completions need owner review.
 const ATTENDED_AUTHORITY_MS = 2 * TOOL_TIMEOUT_POLICY.skillMemoryReviewMs;
 
@@ -49,6 +51,11 @@ interface Completion {
   runKind: SkillMemoryRunKind;
   isCurrent: () => boolean;
   signal?: AbortSignal;
+}
+
+interface ReviewSetting {
+  enabled: boolean;
+  generation: string | undefined;
 }
 
 const turnContext = new AsyncLocalStorage<SkillMemoryTurn | null>();
@@ -153,8 +160,11 @@ export class SkillMemoryService {
   private readonly pending = new SkillMemoryPending();
   private readonly attendedAuthority = new Map<string, () => boolean>();
   private evidenceRevision = 0;
-  private setting: boolean | undefined;
+  private setting: ReviewSetting | undefined;
   private settingChange: Promise<void> | undefined;
+  private reviewState: "ready" | "synchronizing" | "unavailable" = "ready";
+  private discardUnconfirmed = false;
+  private discardRetry: ReturnType<typeof setTimeout> | undefined;
   private drainage: Promise<void> | undefined;
   private drainRequested = false;
 
@@ -168,27 +178,59 @@ export class SkillMemoryService {
 
   setReviewer(reviewer: Pick<MemoryReviewerService, "review">): void { this.reviewer = reviewer; }
 
-  onSettingChanged(enabled: boolean): Promise<void> | undefined {
-    if (this.setting === enabled) return this.settingChange;
-    this.setting = enabled;
+  onSettingChanged(enabled: boolean, generation?: string): Promise<void> | undefined {
+    if (this.setting?.enabled === enabled && this.setting.generation === generation) return this.settingChange;
+    this.setting = { enabled, generation };
     if (!enabled) {
       this.evidenceRevision++;
       this.sessions.clear();
       this.attendedAuthority.clear();
     }
-    const prior = this.settingChange?.catch(() => undefined) ?? Promise.resolve();
-    const change = prior.then(() => enabled ? this.pending.enable() : this.pending.discard());
-    this.settingChange = change;
-    void change.then(() => {
-      if (enabled && this.settingChange === change) this.resumePending();
-    }, () => {
-      if (this.settingChange === change) this.setting = undefined;
+    return this.syncSetting(this.setting);
+  }
+
+  async ensureReviewAvailable(): Promise<boolean> {
+    if (!this.setting?.enabled) return true;
+    if (this.reviewState === "unavailable") await this.syncSetting(this.setting);
+    else await this.settingChange;
+    return !this.setting.enabled || this.reviewState === "ready";
+  }
+
+  private syncSetting(setting: ReviewSetting, retryDelayMs = DISCARD_RETRY_INITIAL_MS): Promise<void> {
+    clearTimeout(this.discardRetry);
+    this.discardRetry = undefined;
+    this.reviewState = "synchronizing";
+    const prior = this.settingChange ?? Promise.resolve();
+    const change = prior.then(async () => {
+      if (setting.enabled && this.setting !== setting) return;
+      try {
+        if (setting.enabled) {
+          await this.pending.enable(setting.generation, this.discardUnconfirmed);
+        } else {
+          this.discardUnconfirmed = true;
+          await this.pending.discard(setting.generation);
+        }
+        this.discardUnconfirmed = false;
+      } catch {
+        log.warn(setting.enabled ? "Pending skill memory could not be enabled" : "Pending skill memory discard could not be confirmed");
+        if (this.setting !== setting) return;
+        this.reviewState = "unavailable";
+        if (!setting.enabled) {
+          const nextDelay = Math.min(retryDelayMs * 2, DISCARD_RETRY_MAX_MS);
+          this.discardRetry = setTimeout(() => { void this.syncSetting(setting, nextDelay); }, retryDelayMs).unref();
+        }
+        return;
+      }
+      if (this.setting !== setting) return;
+      this.reviewState = "ready";
+      if (setting.enabled && this.deps.canReviewAttended()) this.resumePending();
     });
+    this.settingChange = change;
     return change;
   }
 
   private canReview(): boolean {
-    return this.setting !== false && this.deps.enabled();
+    return this.setting?.enabled !== false && this.reviewState === "ready" && this.deps.enabled();
   }
 
   trackTurn(scope: Omit<SkillMemoryTurn, "bindings"> | null) {

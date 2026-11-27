@@ -504,13 +504,14 @@ export async function wireConversation(
 
   lateBinding.conversationLoopRef.fn = conversationLoop;
   lateBinding.llmCallerRef.fn = createCallLlm(conversationLoop);
-  if (ctx.host.desktop) {
-    const syncSkillMemorySetting = () => skillMemory.onSettingChanged(settingsService.getSaved("features")?.automaticSkillMemory === true);
-    // The OFF snapshot reaches disk only after the journal has been durably cleared.
-    settingsService.setBeforeFeaturesSaved(features =>
-      features?.automaticSkillMemory === true ? undefined : skillMemory.onSettingChanged(false));
-    settingsService.onChanged("features", syncSkillMemorySetting);
-    void syncSkillMemorySetting()?.catch(() => log.warn("Pending skill memory setting could not be synchronized"));
+  const syncSkillMemorySetting = () => skillMemory.onSettingChanged(
+    settingsService.getSaved("features")?.automaticSkillMemory === true,
+    settingsService.getSavedSkillMemoryGeneration(),
+  );
+  settingsService.onChanged("features", () => { void syncSkillMemorySetting(); });
+  const initialSkillMemorySetting = syncSkillMemorySetting();
+  if (!ctx.host.desktop && settingsService.getSaved("features")?.automaticSkillMemory === true) {
+    await initialSkillMemorySetting;
   }
   memoryCaptureService.setMemoryReviewer(memoryReviewer);
   lateBinding.pluginCallLlmRef.fn = createCallLlmForPlugin(conversationLoop, bootAuditLogger,

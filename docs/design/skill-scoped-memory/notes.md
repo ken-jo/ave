@@ -4,7 +4,7 @@ Status · Product design and automatic activation authority approved on 2026-11-
 
 ## Settings and review
 
-**Automatically improve skill memory** is on by default in Settings. At the end of a completed task or session, Ave runs one review for the verified skills used in that project. Turning it off atomically clears pending evidence and prevents reviews in progress from saving a result. Already active lessons and staged proposals remain available, along with owner review and undo.
+**Automatically improve skill memory** is on by default in Settings. At the end of a completed task or session, Ave runs one review for the verified skills used in that project. Turning it off saves the setting first and prevents reviews in progress from saving a result. Ave clears pending evidence in the background and retries a failed clear while off and on startup. After turning it back on, automatic review resumes once the journal has been cleared for that setting change. If clearing fails, the Skills view shows its unavailable state and offers a retry. Already active lessons and staged proposals are retained for owner review and undo.
 
 For an attended run with current owner authority, accepted lessons go straight to the Ave-managed store. Headless runs, scheduled runs and attended completions whose authority is no longer current go to Needs review. They become eligible for recall after owner approval. The owner can inspect the full text and provenance in **Control room → Memory → Skills**, then apply or reject the exact proposal. The same view shows active lessons, change history and undo. Changes affect subsequent invocations of that skill in the same project.
 
