@@ -159,14 +159,25 @@ export class ClaudeCodeConversationRuntime {
         return HOST_TOOL_ACCEPTED;
       });
       await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir]);
-      await runtime.verify();
+      try {
+        await runtime.verify();
+      } catch (error) {
+        if (!failure && !this.stopped) this.options.connectionEvidence?.({ kind: "transport-lost", source: this });
+        throw error;
+      }
       assertActive();
-      const spawned = this.spawn(runtime.executable, claudeCodePrintArgs(configPath, toolNames, this.options.model), {
-        cwd: workspaceDir,
-        env: sanitizedClaudeCodeEnvironment(runtimeHome, process.env, this.options.platform, runtimeTempDir),
-        stdio: ["pipe", "pipe", "pipe"], shell: false, windowsHide: true,
-        detached: (this.options.platform ?? process.platform) !== "win32",
-      });
+      let spawned: ChildProcess;
+      try {
+        spawned = this.spawn(runtime.executable, claudeCodePrintArgs(configPath, toolNames, this.options.model), {
+          cwd: workspaceDir,
+          env: sanitizedClaudeCodeEnvironment(runtimeHome, process.env, this.options.platform, runtimeTempDir),
+          stdio: ["pipe", "pipe", "pipe"], shell: false, windowsHide: true,
+          detached: (this.options.platform ?? process.platform) !== "win32",
+        });
+      } catch (error) {
+        this.options.connectionEvidence?.({ kind: "transport-lost", source: this });
+        throw error;
+      }
       child = spawned;
       const transportFailed = (error: Error) => {
         if (child !== spawned || ended || failure) return;

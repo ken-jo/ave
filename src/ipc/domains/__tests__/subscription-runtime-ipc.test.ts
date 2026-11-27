@@ -15,6 +15,7 @@ import type {
 import { MAX_COMPOSER_ATTACHMENT_COUNT, MAX_COMPOSER_IMAGE_BYTES } from "../../../shared/composer-image-input.js";
 import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace } from "../../../__tests__/support/subscription-runtime-namespace.js";
 import type { CodexSubscriptionStatus } from "../../../shared/codex-subscription.js";
+import { acpSubscriptionStatus } from "../../../shared/acp-subscription.js";
 import { SETTINGS } from "../../../shared/ipc-channels.js";
 import { deferred } from "../../../__tests__/test-helpers.js";
 import { makeAppIpcInvoker } from "./test-helpers.js";
@@ -765,6 +766,49 @@ describe("common subscription runtime IPC", () => {
     expect(deps.settingsService.patch).toHaveBeenCalledWith({
       llm: { activeChatRuntime: { kind: "subscription", provider: "kimi-code" } },
     });
+  });
+
+  it("broadcasts a single status event for an ACP verification recovery", async () => {
+    const actual = await vi.importActual<typeof import("../../../main/subscription-runtime-service.js")>(
+      "../../../main/subscription-runtime-service.js",
+    );
+    const service = await actual.SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: createSubscriptionRuntimeNamespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
+      claudeCodeClient: { stop: vi.fn() } as never, codexClient: { stop: vi.fn() } as never,
+      acpRegistry: {
+        stopAll: vi.fn(),
+        verify: async () => acpSubscriptionStatus("kimi-code", "ready", "connected"),
+      } as never,
+    });
+    runtimeServiceMock.get.mockResolvedValue(service);
+    runtimeServiceMock.connectionProjection.mockImplementation(actual.subscriptionConnectionProjection);
+    runtimeServiceMock.onAutoVerified.mockImplementationOnce((listener) => vi.fn(actual.onSubscriptionRuntimeStatusChanged(listener)));
+    const deps = makeDeps();
+    const send = vi.fn();
+    deps.getAppWindows = vi.fn(() => [{ isDestroyed: () => false, webContents: { isDestroyed: () => false, send } }]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    const dispose = registerSettingsHandlers(deps as never);
+    try {
+      const statusUpdated = "ave:settings:subscription:status-updated";
+      await expect(invoke("ave:settings:subscription:verify", "kimi-code")).resolves.toMatchObject({
+        ok: true, status: { capabilities: { chat: true } },
+      });
+      const events = send.mock.calls.filter(([channel]) => channel === statusUpdated);
+      expect(events).toEqual([[statusUpdated, {
+        provider: "kimi-code", connected: true,
+        revision: actual.subscriptionConnectionProjection("kimi-code")?.revision,
+      }]]);
+      send.mockClear();
+      const verified = await invoke("ave:settings:subscription:verify", "kimi-code");
+      expect(verified).toMatchObject({ ok: true, status: { revision: expect.any(Number) } });
+      expect(send.mock.calls.filter(([channel]) => channel === statusUpdated)).toEqual([
+        [statusUpdated, { provider: "kimi-code", revision: actual.subscriptionHostRevision() }],
+      ]);
+    } finally {
+      dispose();
+      runtimeServiceMock.connectionProjection.mockReset();
+      await service.stop();
+    }
   });
   it("emits revision-only status invalidations for runtime mutations, including failures", async () => {
     const deps = makeDeps();

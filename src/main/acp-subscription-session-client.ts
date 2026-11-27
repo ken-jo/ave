@@ -680,6 +680,7 @@ export class AcpSubscriptionSessionClient {
     child.stderr?.once("error", () => abort("acp-session-transport-closed"));
     child.once("error", () => abort("acp-session-transport-closed"));
     child.once("exit", () => abort("acp-session-transport-closed"));
+    child.once("close", () => abort("acp-session-transport-closed"));
   }
 
   private request(method: ProviderRpcOperation, params: Record<string, unknown>): Promise<unknown> {

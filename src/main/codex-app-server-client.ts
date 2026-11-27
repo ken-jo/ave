@@ -452,6 +452,7 @@ export class CodexAppServerClient {
     try {
       await verifyCodexExecutableArtifact(runtime);
     } catch {
+      if (generation === this.startGeneration) this.connectionEvidence?.({ kind: "transport-lost", source: this });
       this.accountStatus = blankStatus("unavailable");
       throw new CodexAppServerError("codex-runtime-invalid-executable");
     }
@@ -469,9 +470,11 @@ export class CodexAppServerClient {
         },
       );
     } catch {
+      this.connectionEvidence?.({ kind: "transport-lost", source: this });
       throw new CodexAppServerError("codex-runtime-start-failed");
     }
     if (!hasCodexStdioStreams(child)) {
+      this.connectionEvidence?.({ kind: "transport-lost", source: child });
       try {
         child.kill();
       } catch {

@@ -979,6 +979,7 @@ export class CodexConversationRuntime {
     try {
       runtime = await this.resolveRuntime();
     } catch (error) {
+      if (generation === this.startGeneration) this.connectionEvidence?.({ kind: "transport-lost", source: this });
       if (error instanceof CodexConversationRuntimeError) throw error;
       throw new CodexConversationRuntimeError("codex-runtime-unavailable");
     }
@@ -993,6 +994,7 @@ export class CodexConversationRuntime {
     try {
       await verifyCodexExecutableArtifact(runtime);
     } catch {
+      if (generation === this.startGeneration) this.connectionEvidence?.({ kind: "transport-lost", source: this });
       throw new CodexConversationRuntimeError("codex-runtime-unavailable");
     }
     if (generation !== this.startGeneration) throw new CodexConversationRuntimeError("codex-operation-failed");
@@ -1009,9 +1011,11 @@ export class CodexConversationRuntime {
         },
       );
     } catch {
+      this.connectionEvidence?.({ kind: "transport-lost", source: this });
       throw new CodexConversationRuntimeError("codex-runtime-start-failed", subscriptionTransportFailure({ phase: "process-start", kind: "process" }));
     }
     if (!hasCodexStdioStreams(child)) {
+      this.connectionEvidence?.({ kind: "transport-lost", source: child });
       await forceKillManagedChildProcess(child, "codex conversation missing transport streams");
       throw new CodexConversationRuntimeError("codex-runtime-start-failed");
     }

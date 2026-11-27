@@ -387,6 +387,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   let activeChatRuntimeTransitionRevision = 0;
   // Handler-start ownership prevents a slow verify/model lookup from applying an older subscription choice after a newer provider/API selection.
   let activeChatRuntimeSelectionIntentRevision = 0;
+  const hostPublications = new Map<SubscriptionRuntimeId, number>();
   const publishSubscriptionRuntimeStatusUpdated = (
     provider: SubscriptionRuntimeId, revision = nextSubscriptionHostRevision(), connected?: boolean,
   ): void => {
@@ -481,9 +482,14 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       runtime: SubscriptionRuntimeService,
       runtimeId: SubscriptionRuntimeId,
     ) => Promise<SubscriptionRuntimeStatus>,
+    reuseHostPublication = false,
   ): Promise<SubscriptionRuntimeActionResult> => {
+    const before = hostPublications.get(provider);
     const result = await runSubscriptionAction(provider, operation);
-    publishSubscriptionRuntimeStatusUpdated(provider);
+    const published = hostPublications.get(provider);
+    if (!reuseHostPublication || !result.ok || published === before || result.status.revision !== published) {
+      publishSubscriptionRuntimeStatusUpdated(provider);
+    }
     return result;
   };
   const publishActiveSubscriptionConnection = async (
@@ -500,6 +506,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       && subscriptionConnectionProjection(provider)?.revision === revision);
   };
   const stopStatusChangedListener = onSubscriptionRuntimeStatusChanged((provider, connected, revision) => {
+    hostPublications.set(provider, revision);
     publishSubscriptionRuntimeStatusUpdated(provider, revision, connected);
     if (connected !== undefined) {
       void publishActiveSubscriptionConnection(provider, revision).catch((err) => {
@@ -1130,7 +1137,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       auditSubscriptionMutation("verify-runtime", "invalid", "rejected", "subscription-provider-not-supported");
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
-    const result = await runSubscriptionMutation(providerValue, (runtime, provider) => runtime.verify(provider));
+    const result = await runSubscriptionMutation(providerValue, (runtime, provider) => runtime.verify(provider), true);
     auditSubscriptionMutation("verify-runtime", providerValue, result.ok ? "succeeded" : "failed", result.ok ? undefined : result.error);
     return result;
   });

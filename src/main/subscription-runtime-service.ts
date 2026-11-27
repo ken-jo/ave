@@ -1121,6 +1121,7 @@ type HostConnection = {
   // Once attempt receipts arrive, only the client that owns the attempt can change its projection.
   loginAttempt?: object | null;
   revision: number;
+  statusRevision?: number;
   scope: string;
   safetyEpoch: number;
   proven: boolean;
@@ -1394,8 +1395,13 @@ export class SubscriptionRuntimeService {
     if (sample.proven) this.safelyVerified.add(runtimeId);
     const state = this.connection(runtimeId);
     const revision = state.revision;
-    const status = this.observeIndependentStatus(runtimeId, ++this.sequence, sample.project());
-    if (sample.proven && state.revision === revision) notifyStatusChanged(runtimeId);
+    let status = this.observeIndependentStatus(runtimeId, ++this.sequence, sample.project());
+    if (sample.proven && state.revision === revision) {
+      const proofRevision = nextSubscriptionHostRevision();
+      state.statusRevision = proofRevision;
+      status = { ...status, revision: proofRevision };
+      notifyStatusChanged(runtimeId, undefined, proofRevision);
+    }
     if (isSettledStatus(status)) {
       this.cachedStatuses.set(runtimeId, this.cachedRead(status));
     }
@@ -1895,11 +1901,11 @@ export class SubscriptionRuntimeService {
   ): SubscriptionRuntimeStatus {
     const state = this.connection(provider);
     if (start <= state.latch || start <= state.acceptedRead) {
-      return { ...state.status, ...state.login, revision: state.revision };
+      return { ...state.status, ...state.login, revision: state.statusRevision ?? state.revision };
     }
     const wasConnected = this.connectionHasAuthority(provider, state.status);
     const connected = this.connectionHasAuthority(provider, status);
-    if (passive && wasConnected && !connected) return { ...status, revision: state.revision };
+    if (passive && wasConnected && !connected) return { ...status, revision: state.statusRevision ?? state.revision };
     state.acceptedRead = start;
     state.login = { pendingLogin: status.pendingLogin, pendingDeviceCode: status.pendingDeviceCode };
     if (wasConnected && !connected) {
@@ -1908,7 +1914,7 @@ export class SubscriptionRuntimeService {
       state.status = status;
       if (connected && !wasConnected) this.publishConnection(provider);
     }
-    return { ...status, revision: state.revision };
+    return { ...status, revision: state.statusRevision ?? state.revision };
   }
 
   private currentProjection(provider: CliProvider): SubscriptionRuntimeStatus {
@@ -2095,6 +2101,7 @@ export class SubscriptionRuntimeService {
     this.invalidateCachedReads(provider);
     const state = this.connection(provider);
     state.revision = nextSubscriptionHostRevision();
+    state.statusRevision = undefined;
     const connected = this.connectionHasAuthority(provider, state.status);
     connectionProjections.set(provider, { revision: state.revision, connected, scope: `${state.scope}:${state.generation}` });
     notifyStatusChanged(provider, connected, state.revision);
@@ -2259,9 +2266,6 @@ export class SubscriptionRuntimeService {
         try {
           await session.stop();
         } catch (error) {
-          if (this.safetyEpochIsCurrent(session.provider, safetyEpoch)) {
-            this.sessionFailed(session.provider);
-          }
           throw stableError(error);
         }
       },

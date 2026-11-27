@@ -387,11 +387,13 @@ class AcpAuthProbe {
     child.stdout.once("error", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
     child.stdin.once("error", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
     child.stdout.once("end", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
+    child.stdin.once("close", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
     // Drain but never retain or log diagnostic output. Provider CLIs can print device codes, URLs, account emails, and network details here.
     child.stderr?.on("data", () => {});
     child.stderr?.once("error", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
     child.once("error", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
     child.once("exit", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
+    child.once("close", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
   }
 
   async authenticate(
@@ -888,9 +890,12 @@ export class AcpSubscriptionRuntimeClient {
         }
       });
       stderrStream.on("data", () => {});
-      child.once("error", () => {
+      const transportLost = () => {
         finish(new AcpSubscriptionRuntimeError("acp-runtime-unavailable"), "acp subscription command error");
-      });
+      };
+      stdoutStream.once("error", transportLost);
+      stderrStream.once("error", transportLost);
+      child.once("error", transportLost);
       child.once("close", (code: number | null) => {
         if (code === 0) finish();
         else finish(new AcpSubscriptionRuntimeError("acp-operation-failed"));
