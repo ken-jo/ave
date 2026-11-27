@@ -449,7 +449,8 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
   const isCompleted = item.status === "completed";
   const runMissing = item.templateRunError === "template-run-not-found";
   const live = run !== undefined && isRunInFlight(run) ? run : undefined;
-  const narration = latestTurn(live);
+  const templateRun = item.runPin !== undefined || run?.workflowRun !== undefined;
+  const narration = templateRun ? undefined : latestTurn(live);
   const toolApproval = live ? actions.toolApprovals.get(item.id)?.[0] : undefined;
   const stepsShowing = actions.stepsShowingId === item.id;
   const narrationLine = (className: string) => (
@@ -483,7 +484,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
         )}
         {` · ${toolApproval.toolName}`}
       </p>
-    ) : (
+    ) : templateRun ? null : (
       <p className={className} data-testid="work-board-live-narration" title={narration?.text}>
         {narration ? (
           <>
@@ -543,8 +544,8 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
               {item.detail && (
                 <div className="mt-1.5 grid [contain:inline-size]">
                   <p
-                    aria-hidden="true"
-                    className="invisible col-start-1 row-start-1 line-clamp-2 break-words text-dense leading-relaxed [overflow-wrap:anywhere]"
+                    aria-hidden={!templateRun || toolApproval !== undefined || Boolean(live.heldNotice)}
+                    className={`${templateRun && !toolApproval && !live.heldNotice ? "" : "invisible "}col-start-1 row-start-1 line-clamp-2 break-words text-dense leading-relaxed [overflow-wrap:anywhere]`}
                   >
                     {item.detail}
                   </p>

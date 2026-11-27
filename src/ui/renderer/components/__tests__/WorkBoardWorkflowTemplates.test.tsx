@@ -59,6 +59,7 @@ function SwitchableBoard({ api, projects, onOpened, initiallyAll, opened }: {
 function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [template], queue: ApprovalRequest[] = [], projects = [project], initiallyAll = false) {
   const opened = { all: initiallyAll };
   let progress: (event: RunProgressEventPayload) => void = () => {};
+  let finished: Parameters<AveApi["onWorkBoardRunFinished"]>[0] = () => {};
   const api = {
     listWorkBoard: vi.fn(async (_filter?: { projectRoot?: string }) => ({ status: "ok", items })),
     getWorkBoardRunTranscript: vi.fn(async () => ({ events: [] })),
@@ -82,7 +83,7 @@ function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [
     openWorkBoardJoin: vi.fn(async () => ({ ok: true })),
     retryWorkStage: vi.fn(async () => ({ ok: true })),
     onWorkBoardItemChanged: () => () => {},
-    onWorkBoardRunFinished: () => () => {},
+    onWorkBoardRunFinished: (callback: typeof finished) => { finished = callback; return () => {}; },
     onWorkBoardRunProgress: (callback: typeof progress) => { progress = callback; return () => {}; },
   };
   const surface = { ...approvalSurfaceStub(), queue };
@@ -90,7 +91,7 @@ function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [
   const board = <SwitchableBoard api={api as unknown as AveApi} projects={projects} onOpened={openProject} initiallyAll={initiallyAll} opened={opened} />;
   const view = render(withApprovalSurface(board, surface));
   const setQueue = (queue: ApprovalRequest[]) => view.rerender(withApprovalSurface(board, { ...surface, queue }));
-  return { api, surface, setQueue, openProject, opened, emit: (event: RunProgressEventPayload) => act(() => progress(event)) };
+  return { api, surface, setQueue, openProject, opened, finish: (event: Parameters<typeof finished>[0]) => act(() => finished(event)), emit: (event: RunProgressEventPayload) => act(() => progress(event)) };
 }
 
 async function templates() {
@@ -527,4 +528,14 @@ it("uses the decision gesture message when no gesture accompanies approval", asy
   fireEvent.click(view.getByRole("button", { name: t("workflowTemplates.approveStage") }));
   expect(await view.findByText(t("workflowTemplates.decideWithGesture"))).toBeVisible();
   expect(view.queryByText(t("reasonCodes.user-gesture-required"))).toBeNull();
+});
+
+it("keeps a template run with no plan in progress when its launch returns parked", async () => {
+  const { finish } = mount([{ ...item, runPin: pin, templateRunState: "running" }]);
+  await screen.findByRole("button", { name: item.title });
+  finish({ itemId: item.id, status: "awaiting_approval", at });
+  const chip = await screen.findByTestId("work-board-live-chip");
+  expect(chip).toHaveAttribute("data-phase", "executing");
+  expect(screen.queryByText(t("workBoard.liveChipAwaitingApproval"), { exact: false })).toBeNull();
+  expect(screen.queryByText(t("workBoard.liveNarrationWaiting"))).toBeNull();
 });

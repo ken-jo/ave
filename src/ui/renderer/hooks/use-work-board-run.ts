@@ -134,12 +134,12 @@ export function isTerminalPhase(phase: RunPhase): boolean {
 }
 
 /** The phase a terminal run result settles the card in. already_running started nothing here, so it leaves no phase. */
-function phaseForRunResult(status: WorkItemRunResult["status"]): RunPhase | undefined {
+function phaseForRunResult(status: WorkItemRunResult["status"], templateRun = false): RunPhase | undefined {
   switch (status) {
     case "completed":
       return "done";
     case "awaiting_approval":
-      return "awaiting_approval";
+      return templateRun ? "executing" : "awaiting_approval";
     case "denied":
       return "denied";
     case "error":
@@ -404,6 +404,8 @@ export function useWorkBoardRun(
     const book = steerBookRef.current;
     return () => book.clear();
   }, []);
+  const currentItems = useRef(items);
+  currentItems.current = items;
   const onPhaseEnteredRef = useRef(onPhaseEntered);
   useEffect(() => {
     onPhaseEnteredRef.current = onPhaseEntered;
@@ -529,8 +531,11 @@ export function useWorkBoardRun(
     if (typeof api.onWorkBoardRunFinished === "function") {
       unsubs.push(
         api.onWorkBoardRunFinished(({ itemId, status }) => {
-          const phase = phaseForRunResult(status);
-          update(itemId, cur => ({ ...cur, busy: false, stopping: false, phase, heldNotice: phase !== undefined && isTerminalPhase(phase) ? undefined : cur.heldNotice }));
+          update(itemId, cur => {
+            const templateRun = cur.workflowRun !== undefined || currentItems.current.some(item => item.id === itemId && item.runPin !== undefined);
+            const phase = phaseForRunResult(status, templateRun);
+            return { ...cur, busy: phase === "executing", stopping: false, phase, heldNotice: phase !== undefined && isTerminalPhase(phase) ? undefined : cur.heldNotice };
+          });
         }),
       );
     }
@@ -602,12 +607,12 @@ export function useWorkBoardRun(
         }
         if (result && "status" in result) {
           update(id, (cur) => {
-            const phase = template && result.status === "already_running" ? "error" : phaseForRunResult(result.status);
+            const phase = template && result.status === "already_running" ? "error" : phaseForRunResult(result.status, template !== undefined);
             // A result that names no reason keeps the text its event already showed for the same end.
             const kept = result.reason === undefined && phase === cur.phase && (phase === "error" || phase === "denied") ? cur.reason : undefined;
             return {
               ...cur,
-              busy: false,
+              busy: phase === "executing",
               phase,
               reason: template && (result.status === "error" || result.status === "not_found" || result.status === "already_running")
                 ? templateError(result.reasonCode) : reasonText(result.reason) ?? kept,
