@@ -627,8 +627,7 @@ export async function probeMxcPowerShellStart(
     if (!start.ok) return unavailable(start.reason, start.detail);
     if (!measure) return available;
     log.info({ launcherSha256: pinnedWxcExecSha256(deps.arch), schema: request.version,
-      network: request.network, windowsBuild: deps.windowsBuild,
-      ...(rawIpProbe.rawIp === "blocked" ? { evidenceKind: rawIpProbe.evidenceKind } : {}) }, "MXC raw IP startup measurement");
+      network: request.network, windowsBuild: deps.windowsBuild }, "MXC raw IP startup measurement");
     if (rawIpProbe.udpArrival === "arrived") log.warn("raw-ip-reachable (udp)");
     else if (rawIpProbe.reachableTargets.length > 0) log.warn("raw-ip-reachable");
     return { ...available, rawIpProbe };

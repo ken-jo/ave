@@ -16,6 +16,7 @@ vi.mock("../mxc-raw-ip-udp.js", () => ({ openMxcRawIpUdpListener: vi.fn() }));
 
 it.each([
   { label: "structural refusal", rawIp: "blocked", t4: 10013, udpArrival: "absent", evidenceKind: "structural", warnings: [] },
+  { label: "inconclusive TCP result", rawIp: "unknown", t4: "deadline", udpArrival: "absent", evidenceKind: undefined, warnings: [] },
   { label: "TCP reachability", rawIp: "unknown", t4: "connected", udpArrival: "absent", evidenceKind: undefined, warnings: [{ msg: "raw-ip-reachable" }] },
   { label: "UDP arrival", rawIp: "unknown", t4: 10013, udpArrival: "arrived", evidenceKind: undefined, warnings: [{ msg: "raw-ip-reachable (udp)" }] },
 ] as const)("writes only the measurement key and any warning for $label", async ({ rawIp, t4, udpArrival, evidenceKind, warnings }) => {
@@ -51,6 +52,7 @@ it.each([
       return { port: 49153, url: "http://127.0.0.1:49153", close: async () => {} };
     });
     expect(result).toMatchObject({ state: "available", rawIpProbe: { rawIp, udpArrival } });
+    if (evidenceKind !== undefined) expect(result).toHaveProperty("rawIpProbe.evidenceKind", evidenceKind);
 
     await vi.waitFor(async () => {
       const records = (await readFile(sink.currentFile, "utf8")).trim().split("\n").map((line) => {
@@ -58,8 +60,7 @@ it.each([
         return fields;
       });
       expect(records).toEqual([
-        { msg: "MXC raw IP startup measurement", launcherSha256: pinnedWxcExecSha256("x64"), schema: "1.0.0", network, windowsBuild,
-          ...(evidenceKind === undefined ? {} : { evidenceKind }) },
+        { msg: "MXC raw IP startup measurement", launcherSha256: pinnedWxcExecSha256("x64"), schema: "1.0.0", network, windowsBuild },
         ...warnings,
       ]);
     });

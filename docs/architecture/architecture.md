@@ -3725,11 +3725,11 @@ in its directory.
   when TCP would otherwise support a blocked verdict.
   The host accepts a single complete evidence frame with its launch identifier.
   Missing evidence or a failed control leaves coverage unknown. Shell
-  availability follows the PowerShell exit result. File logs record the
-  launcher hash, schema, network section, Windows build, evidence kind when
-  blocked, and any reachability warning. Coverage stays in memory for the
-  current boot and is reported on Windows MXC shell plans and in the Windows
-  substrate snapshot.
+  availability follows the PowerShell exit result. The measurement file record
+  contains the launcher hash, schema, network section, and Windows build.
+  Reachability warnings are logged separately. The evidence kind stays in
+  memory for the current boot, and coverage is reported on Windows MXC shell
+  plans and in the Windows substrate snapshot.
   The container request and host proxy enforce the network policy. Extension plans retain
   `rawIp: "unknown"`. Direct UDP and ICMP remain unverified.
 - **Inbound.** Proxy mode requires `ingress.default: "allow"`, which grants
