@@ -1,6 +1,12 @@
 // The staging parent start-up establishes under the runtime root, as a synthetic path.
 // Faked win32 on a POSIX host: no backend state to check here; a Windows host keeps its own.
-const { hostPlatform } = vi.hoisted(() => ({ hostPlatform: process.platform }));
+const { hostPlatform, macHolderRoute } = vi.hoisted(() => ({ hostPlatform: process.platform, macHolderRoute: { forced: false } }));
+// A case may put macOS on its holder route regardless of the product switch.
+vi.mock("../../../shared/container-platform.js", async (original) => {
+  const actual = await original<typeof import("../../../shared/container-platform.js")>();
+  return { ...actual, isContainerHolderRouteEnabled: (platform: NodeJS.Platform) =>
+    (platform === "darwin" && macHolderRoute.forced) || actual.isContainerHolderRouteEnabled(platform) };
+});
 vi.mock("../../../permissions/confinement-state-paths.js", async (original) => {
   const actual = await original<typeof import("../../../permissions/confinement-state-paths.js")>();
   return hostPlatform === "win32" ? actual : { ...actual, declaredConfinementStatePaths: () => [] };
@@ -223,6 +229,7 @@ import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
 import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { buildSafeChildEnv } from "../../../tools/safe-env.js";
 import { ProcessEntryUnconfinedError } from "../../process-entry.js";
+import { isContainerHolderRouteEnabled } from "../../../shared/container-platform.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 import { admittedMxcChild, nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch.js";
 import { MxcNativeEntryRequiredError, MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
@@ -1836,7 +1843,8 @@ describe("the factory's launch reaches the spawn as decided", () => {
     }
   });
 
-  it.runIf(process.platform === "linux" || process.platform === "darwin")(
+  // macOS on its holder route refuses a process launch before spawning (next case); before it, the wrap's result is checked.
+  it.runIf(process.platform === "linux" || (process.platform === "darwin" && !isContainerHolderRouteEnabled("darwin")))(
     "kills a process launch that comes back unconfined before exposing it to the session",
     async () => {
       const roots = spawnableRoots();
@@ -1860,6 +1868,26 @@ describe("the factory's launch reaches the spawn as decided", () => {
       }
     },
   );
+
+  // Owner card 2026-11-28, "Windows처럼 거부": where holders run plugins a process launch is refused before the start gate.
+  it("refuses a process launch on the macOS holder route even with the sandbox on, before anything is spawned or asked", async () => {
+    const roots = spawnableRoots();
+    spawnConfinedChild.mockClear();
+    sandbox.active = true;
+    macHolderRoute.forced = true;
+    setProcessPlatform("darwin");
+    try {
+      const refused = await attempt(processLaunch(roots.context.pluginRoot!), PROCESS_MANIFEST, roots);
+      expect(refused).toBeInstanceOf(ProcessEntryUnconfinedError);
+      expect(refused).toMatchObject({ code: "process-entry-unconfined" });
+      expect(spawnConfinedChild).not.toHaveBeenCalled();
+    } finally {
+      setProcessPlatform(hostPlatform);
+      macHolderRoute.forced = false;
+      sandbox.active = false;
+      roots.remove();
+    }
+  });
 
   it("refuses a process launch on Windows even with the sandbox on, before anything is spawned", async () => {
     const roots = spawnableRoots();

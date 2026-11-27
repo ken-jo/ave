@@ -1196,7 +1196,7 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // be_mxcExtensionErrors
   "be_mxcExtensionErrors.workerTransportUnsupported": "이 익스텐션의 워커는 Windows 익스텐션 컨테이너가 지원하지 않는 연결 방식을 씁니다. 워커에는 stdio control v1 이 필요하니 익스텐션을 업데이트하세요({code})",
-  "be_mxcExtensionErrors.nativeEntryRequired": "이 프로세스 유형은 아직 Windows 익스텐션 컨테이너용으로 갱신되지 않아 시작하지 않았습니다({code})",
+  "be_mxcExtensionErrors.nativeEntryRequired": "이 프로세스 유형은 아직 익스텐션 컨테이너용으로 갱신되지 않아 시작하지 않았습니다({code})",
   "be_mxcExtensionErrors.readinessRefused": "허용된 익스텐션 백엔드가 없어 이 시작을 거부했습니다. 격리 없이 실행되지 않습니다({code})",
   "be_mxcRuntimeRoot.elevatedOwned": "{path} 폴더는 Ave 를 관리자 권한으로 실행했을 때 만들어져 일반 실행에서는 쓸 수 없습니다. 이 폴더를 삭제한 뒤 Ave 를 다시 시작하거나, 원래 그렇게 설정했다면 다시 관리자 권한으로 실행하세요",
 

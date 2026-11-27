@@ -1194,7 +1194,7 @@ export const en = {
 
   // be_mxcExtensionErrors
   "be_mxcExtensionErrors.workerTransportUnsupported": "This extension's worker uses a connection a Windows extension container cannot carry: workers need stdio control v1. Update the extension ({code})",
-  "be_mxcExtensionErrors.nativeEntryRequired": "This process type has not been updated for Windows extension containers yet, so it was not started ({code})",
+  "be_mxcExtensionErrors.nativeEntryRequired": "This process type has not been updated for extension containers yet, so it was not started ({code})",
   "be_mxcExtensionErrors.readinessRefused": "No extension backend has admitted this start, so it was refused; it does not run unconfined ({code})",
   "be_mxcRuntimeRoot.elevatedOwned": "the folder {path} was created while Ave ran as administrator, so a normal run cannot use it. Delete that folder and restart Ave, or run Ave as administrator again if that is how you set it up",
 

@@ -165,7 +165,8 @@ describe("container route call sites", () => {
     expect(callers(/\bisContainerHolderRouteEnabled\s*\(/u, definition))
       // Boot runs the macOS holder route check only once the holder route is on.
       // Row 2 admits a macOS user hook on the proven holder route; the hook plan puts it there only on that route.
+      // A `process` plugin launch is refused wherever the holder route runs plugins (owner card 2026-11-28).
       .toEqual(["src/boot/steps/sandbox-init.ts", "src/permissions/asrt-sandbox.ts", "src/permissions/confined-child.ts",
-        "src/permissions/sandbox-capability.ts", "src/sandbox/wrap-bundled-command.ts"]);
+        "src/permissions/sandbox-capability.ts", "src/plugins/isolation/out-of-process-plugin.ts", "src/sandbox/wrap-bundled-command.ts"]);
   });
 });
