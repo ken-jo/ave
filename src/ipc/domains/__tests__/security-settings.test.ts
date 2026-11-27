@@ -43,7 +43,7 @@ describe('security settings user consent boundary', () => {
     await f.call({ features: { osToolSandbox: false } });
     expect(f.settingsService.patch).toHaveBeenCalledExactlyOnceWith({ features: { osToolSandbox: false } });
     expect(f.events).toHaveBeenLastCalledWith({
-      event: "security_settings_changed", phase: "committed", groupCount: 1,
+      event: "security_settings_changed", phase: "committed", osToolSandbox: false,
     });
     expect(await f.call({ features: { osToolSandbox: false } })).toMatchObject({ ok: false });
   });
@@ -99,7 +99,7 @@ describe('security settings user consent boundary', () => {
     f.settingsService.patch.mockRejectedValueOnce(new Error("Settings storage unavailable"));
     f.contents.emit("before-mouse-event", {}, { type: "mouseUp" });
     await expect(f.call({ features: { osToolSandbox: false } })).rejects.toThrow("Settings storage unavailable");
-    expect(f.events).toHaveBeenCalledExactlyOnceWith({ event: "security_settings_changed", phase: "requested", groupCount: 1 });
+    expect(f.events).toHaveBeenCalledExactlyOnceWith({ event: "security_settings_changed", phase: "requested", osToolSandbox: false });
   });
   it('classifies all protected flags for the generic settings refusal', () => {
     for (const key of SECURITY_FEATURE_KEYS) expect(containsSecuritySettings({ features: { [key]: false } })).toBe(true);

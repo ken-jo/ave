@@ -84,7 +84,7 @@ export function bootExtensionStartAsker(ctx: Pick<BootContext, "approvalGate" | 
       const body = EXTENSION_START_NOTICE_KEYS[start.cause][why];
       ctx.notificationService.deliver({ kind: "system", title: t("extensionStart.notStartedTitle"), body: t(body, { name: start.label }), bypassFocusGate: true });
     },
-    record: (_event, start) => logPermissionEvent("extension_start_decision", { sessionId: permissionLogId("extension-start"), kind: permissionLogId(start.kind) }),
+    record: (outcome, start) => logPermissionEvent("extension_start_decision", { kind: start.kind, outcome }),
   });
 }
 

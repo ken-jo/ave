@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { getLocale, setLocale } from "../../../i18n/index.js";
 import { bootExtensionStartAsker } from "../plugin-tool-executor.js";
 import type { PendingExtensionStart } from "../../../permissions/extension-start-consent.js";
@@ -8,9 +9,8 @@ const START: PendingExtensionStart = { key: "plugin-child:notes", identity: "fix
 function subject() {
   const requestAndWait = vi.fn(async (_request: { reason: string }) => ({ choice: "deny-once" }));
   const deliver = vi.fn((_notice: { body: string }) => {});
-  const log = vi.fn((_row: unknown) => {});
   const asker = bootExtensionStartAsker({ approvalGate: { requestAndWait }, notificationService: { deliver } } as never);
-  return { asker, requestAndWait, deliver, log };
+  return { asker, requestAndWait, deliver };
 }
 
 describe("the extension start card, notice and audit rows at boot", () => {
@@ -79,12 +79,13 @@ describe("the extension start card, notice and audit rows at boot", () => {
   });
 
   it("writes one audit row per waiting, unanswered, declined or confined start", () => {
-    const { asker, log } = subject();
-    for (const event of ["waiting", "unattended", "declined", "confined"] as const) asker.record?.(event, START);
-    expect(log.mock.calls.map(([row]) => row)).toEqual(["waiting", "unattended", "declined", "confined"].map((event) => expect.objectContaining({
-      sessionId: "extension-start", type: "info",
-      input: JSON.stringify({ event, kind: "plugin-child", key: "plugin-child:notes", cause: "no-backend" }),
-      output: `[extension_start_${event}] Notes (notes)`,
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { asker } = subject();
+    const outcomes = ["waiting", "unattended", "declined", "confined"] as const;
+    for (const outcome of outcomes) asker.record?.(outcome, START);
+    expect(capture.events).toEqual(outcomes.map((outcome) => ({
+      event: "extension_start_decision", kind: "plugin-child", outcome,
     })));
   });
 });

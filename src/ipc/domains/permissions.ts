@@ -640,15 +640,16 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     }
     if (!isSecuritySettingsPatch(body.patch)) return { ok: false, error: "invalid-security-settings" };
     const patch = body.patch;
+    const fields = { ...patch.features, ...patch.system };
     const write = securitySettingsWrite.then(async () => {
-      logPermissionEvent("security_settings_changed", { phase: "requested", groupCount: Object.keys(patch).length });
+      logPermissionEvent("security_settings_changed", { phase: "requested", ...fields });
       const updated = await deps.settingsService.patch(patch.system === undefined
         ? { features: patch.features }
         : { features: patch.features, system: {
           closeBehavior: deps.settingsService.getAll().system.closeBehavior,
           ...patch.system,
         } });
-      logPermissionEvent("security_settings_changed", { phase: "committed", groupCount: Object.keys(patch).length });
+      logPermissionEvent("security_settings_changed", { phase: "committed", ...fields });
       await deps.refreshSandboxNetworkConfig?.();
       await broadcastSettingsSnapshot(deps);
       return rendererSettingsSnapshot(deps.settingsService, updated);
@@ -1038,7 +1039,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         return { ok: false, error: error === "hook-review-stale" || error === "managed-hook-policy"
           ? error : "hook-review-failed" };
       }
-      logPermissionEvent("hook_trust_reviewed", {  });
+      logPermissionEvent("hook_trust_reviewed", { action: body.action });
       return { ok: true };
     } catch {
       return { ok: false, error: "hook-review-failed" };
