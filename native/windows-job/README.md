@@ -59,7 +59,9 @@ inherits only its three standard handles.
 
 The launcher allows ten seconds for the exchange. Missing, early, malformed or
 trailing control bytes, a lost owner, or a failed resume terminate the job with
-an `unconfirmed` verdict. Older launchers reject the mode before starting a
+an `unconfirmed` verdict. The resume and an observed owner loss are decided
+under one lock: a loss seen first ends the run with the command still
+suspended, and a later one reaps the job. Older launchers reject the mode before starting a
 command. Inline requests continue through `--hold`.
 
 Call `spawnWindowsJobProcess` with an absolute executable path already selected

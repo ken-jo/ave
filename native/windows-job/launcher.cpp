@@ -8,12 +8,25 @@
 #include <vector>
 #include <string>
 
+[[noreturn]] static void endHeld(const char* record, DWORD code);
+static const char kLost[] = "AVJ1 lost\n";
+static const char kUnconfirmed[] = "AVJ1 unconfirmed\n";
+// A held policy reader's resume and an observed owner stop are decided under one lock:
+// a stop seen before the resume ends the run with the child still suspended.
+static SRWLOCK startupLock = SRWLOCK_INIT;
+static HANDLE suspendedJob = nullptr;
 // The control pipe is never inherited by the command. EOF means its owner died
 // or released the job; a blocking reader and kernel wait avoid polling.
 static DWORD WINAPI watchOwner(void* pipe) {
   char byte;
   DWORD count;
   while (ReadFile(static_cast<HANDLE>(pipe), &byte, 1, &count, nullptr) && count) {}
+  AcquireSRWLockExclusive(&startupLock);
+  if (suspendedJob) {
+    CloseHandle(suspendedJob);
+    endHeld(kUnconfirmed, 125);
+  }
+  ReleaseSRWLockExclusive(&startupLock);
   return 0;
 }
 static int fail(const char* operation) {
@@ -148,8 +161,6 @@ static DWORD WINAPI enforceDeadline(void* context) {
   if (WaitForSingleObject(deadline->met, deadline->milliseconds) == WAIT_TIMEOUT) endHeld(deadline->record, 125);
   return 0;
 }
-static const char kLost[] = "AVJ1 lost\n";
-static const char kUnconfirmed[] = "AVJ1 unconfirmed\n";
 // Members still running when the root exits, other than console hosts the system attaches.
 static bool jobHasLiveDescendants(HANDLE job, DWORD root) {
   std::vector<unsigned char> buffer(sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + 1024 * sizeof(ULONG_PTR));
@@ -381,6 +392,7 @@ int wmain(int argc, wchar_t** argv) {
   if (!heldPolicy) CloseHandle(child.hThread);
   // A NUL stdin has no owner to watch; a held command is then bound to the hold helper alone.
   const bool watched = !held || GetFileType(GetStdHandle(STD_INPUT_HANDLE)) == FILE_TYPE_PIPE;
+  if (heldPolicy) suspendedJob = job;
   HANDLE owner = watched ? CreateThread(nullptr, 0, watchOwner, GetStdHandle(STD_INPUT_HANDLE), 0, nullptr) : nullptr;
   if (watched && !owner) {
     fail("owner watcher");
@@ -393,14 +405,24 @@ int wmain(int argc, wchar_t** argv) {
     HANDLE startupWaits[]{owner, child.hProcess, confirm};
     DWORD result = 1;
     const bool confirmed = confirm && WaitForMultipleObjects(3, startupWaits, FALSE, 10000) == WAIT_OBJECT_0 + 2 &&
-        GetExitCodeThread(confirm, &result) && result == 0 && WaitForSingleObject(owner, 0) == WAIT_TIMEOUT;
+        GetExitCodeThread(confirm, &result) && result == 0;
 #ifdef AVE_TEST_POLICY_READER
     if (confirmed) measureOtherReaders(argv[0], startup);
+    // Holds the resume decision until a stop requested at the gate reaches the owner watcher.
+    const bool stopBeforeResume = policyFixtureFault(L"stop before resume");
+    if (confirmed && stopBeforeResume && waitForPolicyFixture('R')) WaitForSingleObject(owner, 5000);
 #endif
+    AcquireSRWLockExclusive(&startupLock);
     if (!confirmed || ResumeThread(child.hThread) != 1) {
       CloseHandle(job);
       endHeld(kUnconfirmed, 125);
     }
+    suspendedJob = nullptr;
+    ReleaseSRWLockExclusive(&startupLock);
+#ifdef AVE_TEST_POLICY_READER
+    // A child resumed despite that stop gets time to show that it ran.
+    if (stopBeforeResume) WaitForSingleObject(child.hProcess, 5000);
+#endif
     CloseHandle(confirm);
     CloseHandle(policyChannel);
     CloseHandle(child.hThread);

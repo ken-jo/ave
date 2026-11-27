@@ -217,7 +217,7 @@ describe.skipIf(process.platform !== "win32")("native held policy delivery", () 
       }
       expect(await run.verdict, launcher.errors()).toEqual({ kind: "unconfirmed" });
       expect(launcher.output()).toBe("");
-      if (fault === "bind failure") expect(failed).toHaveBeenCalledOnce();
+      expect(failed).toHaveBeenCalledOnce();
       await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow("ESRCH"));
     });
   });
@@ -256,6 +256,37 @@ describe.skipIf(process.platform !== "win32")("native held policy delivery", () 
         expect(failed).toHaveBeenCalledOnce();
         expect(launcher.output()).toBe("");
         expect(launcher.child.exitCode).toBe(125);
+      });
+    },
+  );
+
+  it.for(["cancellation", "owner loss"] as const)(
+    "keeps the reader suspended on %s after the resume reply", async (fault, context) => {
+      if (!existsSync(fixture)) context.skip("Native policy reader fixture is absent");
+      await withHold(async (held) => {
+        const launcher = start(held, "process.stdout.write('resumed');", undefined, fixture, undefined, "stop before resume");
+        const { gate } = launcher;
+        if (gate === undefined) throw new Error("Native policy fixture gate is absent");
+        const gated = once(gate, "data");
+        let pid = 0;
+        const bindReader = vi.fn(async (reported: number) => { pid = reported; });
+        const failed = vi.fn();
+        const run = held.bind(launcher.child, { bindReader, onFailure: failed });
+        const [ready] = await gated as [Buffer];
+        expect(ready.toString()).toBe("R");
+        if (fault === "cancellation") {
+          void run.stop();
+          await Promise.resolve();
+          expect(failed).toHaveBeenCalledOnce();
+        } else launcher.child.stdin?.destroy();
+        gate.write("+");
+        expect(await run.verdict, launcher.errors()).toEqual({ kind: "unconfirmed" });
+        expect(launcher.output()).toBe("");
+        expect(launcher.child.exitCode).toBe(125);
+        expect(bindReader).toHaveBeenCalledOnce();
+        if (fault === "cancellation") expect(failed).toHaveBeenCalledOnce();
+        expect(pid).not.toBe(0);
+        await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow("ESRCH"));
       });
     },
   );

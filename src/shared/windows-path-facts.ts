@@ -329,7 +329,11 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       if (!done && deadline === undefined) {
         deadline = setTimeout(() => finish({ kind: "unconfirmed" }), TOOL_TIMEOUT_POLICY.windowsHoldStopMs);
         launcher.stdin?.destroy();
-        if (policy !== undefined) control?.destroy();
+        if (policy !== undefined) {
+          control?.destroy();
+          // A held policy stop revokes the invocation at once instead of at the verdict.
+          queueMicrotask(policy.onFailure);
+        }
       }
       return verdict;
     };
@@ -337,7 +341,6 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     const failPolicy = (): void => {
       if (done || deadline !== undefined) return;
       void stop();
-      if (policy !== undefined) queueMicrotask(policy.onFailure);
     };
     onLost = policy === undefined ? stop : failPolicy;
     for (const stream of [launcher.stdin, relay, report, channel]) stream?.on("error", () => {});
