@@ -24,7 +24,9 @@ import { errorMessage } from "../shared/error-message.js";
 import { raceWithAbort } from "../shared/abortable-deadline.js";
 import { compileGlobMatcher, globToRegExp } from "../lib/glob-matcher.js";
 import { isPlainWindowsPathComponent } from "../shared/windows-path-spelling.js";
-import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
+import type {
+  MxcRawIpProbeVerdict, MxcRawIpTarget, MxcRawIpUnknownReason, SandboxMxcUnavailableReason,
+} from "../shared/sandbox-capability-info.js";
 import { containerTarget } from "../shared/container-platform.js";
 import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
 import { openMxcRawIpUdpListener, type MxcRawIpUdpArrival, type MxcRawIpUdpSend } from "./mxc-raw-ip-udp.js";
@@ -157,20 +159,12 @@ const MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS = 6_000;
 const MXC_RAW_IP_EVIDENCE_MARKER = "AVE_MXC_RAW_IP ";
 const MXC_NETWORK_CAPABILITY_SIDS = new Set(["S-1-15-3-1", "S-1-15-3-2", "S-1-15-3-3"]);
 
-type MxcRawIpTarget = "t4" | "t6" | "tl";
 type MxcRawIpTargetResult = number | "connected" | "deadline" | "other";
 type MxcRawIpProbeEvidence = Readonly<Record<MxcRawIpTarget, MxcRawIpTargetResult>> & {
   readonly control: boolean;
   readonly capabilitySids: readonly string[] | null;
   readonly udp: MxcRawIpUdpSend;
 };
-type MxcRawIpUnknownReason = "listener-unavailable" | "no-evidence" | "control-failed" | "raw-ip-reachable"
-  | "ipv6-unmeasured" | "udp-unmeasured" | "no-route" | "timeout" | "unclassified" | "cleanup-failed";
-type MxcRawIpProbeVerdict = {
-  readonly reachableTargets: readonly (MxcRawIpTarget | "udp")[];
-  readonly udpArrival: MxcRawIpUdpArrival;
-} & ({ readonly rawIp: "blocked"; readonly reason: "blocked"; readonly evidenceKind: "measured" | "structural" }
-  | { readonly rawIp: "unknown"; readonly reason: MxcRawIpUnknownReason });
 type MxcStartDiagnostic = "STATUS_DLL_INIT_FAILED" | "nonzero-exit" | "launch-rejected" | "startup-deadline"
   | "unsupported-arch" | "runtime-root-unproved";
 type MxcStartSupport = Extract<MxcSupport, { state: "unavailable" }>
