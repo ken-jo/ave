@@ -41,6 +41,7 @@ import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { RoutinesStore } from "../../main/routines-store.js";
 import { createTailnetObserverConfigService } from "../../main/tailnet-observer-config-service.js";
+import { createTailnetOwnerIdentityPolicy } from "../../main/tailnet-owner-policy.js";
 import { maybeStartTailnetObserverServer, resetTailnetObserverServerForTests, stopTailnetObserverServer, type TailnetObserverConfigFile } from "../../main/tailnet-surface-server.js";
 import type { TailnetPairedSharingRuntime } from "../../main/tailnet-paired-sharing-runtime.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
@@ -2450,13 +2451,12 @@ it("reports the port as applied when manual enable binds a fileless observer", a
 });
 
 it.each([
-  { row: "A09", enableOverride: undefined, savedEnabled: true, pinMatchesSave: true, starts: 2 },
-  { row: "A09", enableOverride: undefined, savedEnabled: true, pinMatchesSave: false, starts: 2 },
-  { row: "A14", enableOverride: "1", savedEnabled: true, pinMatchesSave: true, starts: 2 },
-  { row: "A14", enableOverride: "1", savedEnabled: true, pinMatchesSave: false, starts: 2 },
-  { row: "A06", enableOverride: "1", savedEnabled: false, pinMatchesSave: false, starts: 1 },
+  { row: "A09", enableOverride: undefined, pinMatchesSave: true },
+  { row: "A09", enableOverride: undefined, pinMatchesSave: false },
+  { row: "A14", enableOverride: "1", pinMatchesSave: true },
+  { row: "A14", enableOverride: "1", pinMatchesSave: false },
 ])("replaces the live authorization key for $row (pin matches save: $pinMatchesSave)", async ({
-  enableOverride, savedEnabled, pinMatchesSave, starts,
+  enableOverride, pinMatchesSave,
 }) => {
   const port = await reservePort();
   const savedPort = pinMatchesSave ? port : port === 28_173 ? 28_174 : 28_173;
@@ -2505,12 +2505,71 @@ it.each([
     expect(await status(nextCapability)).toBe(401);
     const { saved } = await settings.snapshot();
     await expect(settings.apply({
-      ...saved, enabled: savedEnabled, authorization: { kind: "app-capability", capability: nextCapability },
-    })).resolves.toEqual({ outcome: savedEnabled ? "applied" : "saved", restartNeeded: false });
+      ...saved, enabled: true, authorization: { kind: "app-capability", capability: nextCapability },
+    })).resolves.toEqual({ outcome: "applied", restartNeeded: false });
     expect.soft(await status(CAPABILITY)).toBe(401);
     expect.soft(await status(nextCapability)).toBe(200);
-    expect.soft(startServer).toHaveBeenCalledTimes(starts);
+    expect.soft(startServer).toHaveBeenCalledTimes(2);
     expect(file.port).toBe(savedPort);
+  } finally {
+    await stopTailnetObserverServer();
+    resetTailnetObserverServerForTests();
+  }
+});
+
+it.each([
+  { row: "A06", changesPort: false, outcome: "saved" },
+  { row: "A07", changesPort: true, outcome: "restart-needed" },
+])("keeps the running observer grant requirement for $row", async ({ changesPort, outcome }) => {
+  const port = await reservePort();
+  const proposedPort = changesPort ? (port === 28_173 ? 28_174 : 28_173) : port;
+  const env = { AVE_TAILNET_OBSERVER: "1" };
+  let file: TailnetObserverConfigFile = { enabled: true, port, authorization: APP_CAPABILITY };
+  const readConfigFile = async () => file;
+  const projection = createSharedConversationProjectionStore(createPlatformConversationTimeline());
+  stores.push(projection);
+  const grantedHeaders = observerHeaders();
+  const identityOnlyHeaders = { "Tailscale-User-Login": grantedHeaders["Tailscale-User-Login"] };
+  const ownerPolicy = createTailnetOwnerIdentityPolicy({ getOwnerLogin: () => identityOnlyHeaders["Tailscale-User-Login"] });
+  const startServer = vi.fn((options: Parameters<typeof startTailnetSurfaceServer>[0]) =>
+    startTailnetSurfaceServer({ ...options, ...ownerPolicy }),
+  );
+  const settings = createTailnetObserverConfigService({
+    env, readConfigFile,
+    writeConfigFile: async saved => { file = saved; },
+    pairedSharingBootstrapFailed: () => false,
+    readOwnDeviceAdmission: async () => false,
+    probeEnvironment: async () => ({
+      state: "ready", cliPath: null, login: null, dnsName: null,
+      tailnetName: null, serveConfigured: false, serveTargetPort: null, detail: null,
+    }),
+  });
+  const status = async (headers: Record<string, string>) => {
+    const response = await fetch(`http://127.0.0.1:${port}/tailnet/v1/status`, {
+      headers: { ...headers, Connection: "close" },
+    });
+    await response.text();
+    return response.status;
+  };
+  try {
+    await maybeStartTailnetObserverServer({
+      env,
+      encryption: unavailableSecretEncryption,
+      conversationSurfaceRuntime: { sharedProjection: projection } as ConversationSurfaceRuntime,
+      getCurrentConversationId: () => CONVERSATION_ID,
+      isConversationBusy: () => false,
+      dependencies: { readConfigFile, startServer },
+    });
+    expect(await status(identityOnlyHeaders)).toBe(401);
+    expect(await status(grantedHeaders)).toBe(200);
+    const { saved } = await settings.snapshot();
+    await expect(settings.apply({
+      ...saved, enabled: false, port: proposedPort, authorization: { kind: "tailnet-identity" },
+    })).resolves.toEqual({ outcome, restartNeeded: changesPort });
+    expect.soft(file).toEqual({ port: proposedPort, authorization: { kind: "tailnet-identity" } });
+    expect.soft(await status(identityOnlyHeaders)).toBe(401);
+    expect.soft(await status(grantedHeaders)).toBe(200);
+    expect(startServer).toHaveBeenCalledOnce();
   } finally {
     await stopTailnetObserverServer();
     resetTailnetObserverServerForTests();
