@@ -14,6 +14,7 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { requireMxcPolicyPipeHelper } from "../../__tests__/support/mxc-capability.js";
 import { createPolicyPipeHelper } from "../../__tests__/support/policy-pipe-helper.js";
 import { holdWindowsDirectory, type HeldWindowsDirectory } from "../../shared/windows-path-facts.js";
+import { createContainedShellLifecycle } from "../../tools/contained-shell-lifecycle.js";
 
 const PIPE = String.raw`\\.\pipe\ave-mxc-0123456789abcdef0123456789abcdef`;
 
@@ -260,36 +261,74 @@ describe.skipIf(process.platform !== "win32")("native held policy delivery", () 
     },
   );
 
-  it.for(["cancellation", "owner loss"] as const)(
-    "keeps the reader suspended on %s after the resume reply", async (fault, context) => {
+  it.for([
+    { stop: "cancellation", watcher: "first" },
+    { stop: "owner loss", watcher: "first" },
+    { stop: "cancellation", watcher: "delayed" },
+    { stop: "owner loss", watcher: "delayed" },
+  ])(
+    "keeps the reader suspended on $stop after the resume reply (watcher: $watcher)", async ({ stop, watcher }, context) => {
       if (!existsSync(fixture)) context.skip("Native policy reader fixture is absent");
       await withHold(async (held) => {
-        const launcher = start(held, "process.stdout.write('resumed');", undefined, fixture, undefined, "stop before resume");
+        const fault = watcher === "delayed" ? "delay owner watcher" : "stop before resume";
+        const launcher = start(held, "process.stdout.write('resumed');", undefined, fixture, undefined, fault);
         const { gate } = launcher;
-        if (gate === undefined) throw new Error("Native policy fixture gate is absent");
+        const { stdin } = launcher.child;
+        if (gate === undefined || stdin === null) throw new Error("Native policy fixture pipes are absent");
         const gated = once(gate, "data");
+        let record = "";
+        launcher.child.stdio.at(4)?.on("data", (chunk: Buffer) => { record += chunk.toString("latin1"); });
         let pid = 0;
         const bindReader = vi.fn(async (reported: number) => { pid = reported; });
-        const failed = vi.fn();
-        const run = held.bind(launcher.child, { bindReader, onFailure: failed });
+        const lifecycle = createContainedShellLifecycle();
+        const revoked = vi.fn();
+        lifecycle.onRevoke(revoked);
+        const run = held.bind(launcher.child, { bindReader, onFailure: lifecycle.revoke });
+        lifecycle.jobStarted(run.verdict);
+        const disposed = run.verdict.then(() => lifecycle.dispose());
         const [ready] = await gated as [Buffer];
-        expect(ready.toString()).toBe("R");
-        if (fault === "cancellation") {
-          void run.stop();
-          await Promise.resolve();
-          expect(failed).toHaveBeenCalledOnce();
-        } else launcher.child.stdin?.destroy();
-        gate.write("+");
-        expect(await run.verdict, launcher.errors()).toEqual({ kind: "unconfirmed" });
-        expect(launcher.output()).toBe("");
-        expect(launcher.child.exitCode).toBe(125);
+        expect(ready.toString()).toBe(watcher === "delayed" ? "D" : "R");
         expect(bindReader).toHaveBeenCalledOnce();
-        if (fault === "cancellation") expect(failed).toHaveBeenCalledOnce();
         expect(pid).not.toBe(0);
+        expect(() => process.kill(pid, 0)).not.toThrow();
+        expect(launcher.output()).toBe("");
+        expect(lifecycle.signal.aborted).toBe(false);
+        const ownerClosed = once(stdin, "close");
+        if (stop === "cancellation") void run.stop();
+        else stdin.destroy();
+        await ownerClosed;
+        if (stop === "cancellation") expect(revoked).toHaveBeenCalledOnce();
+        gate.write("+");
+        const verdict = await run.verdict;
+        expect(await disposed).toEqual([]);
         await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow("ESRCH"));
+        expect({ verdict, record, exitCode: launcher.child.exitCode, output: launcher.output() }, launcher.errors()).toEqual({
+          verdict: { kind: "unconfirmed" }, record: "AVJ1 unconfirmed\n", exitCode: 125, output: "",
+        });
+        expect(lifecycle.signal.aborted).toBe(true);
+        expect(revoked).toHaveBeenCalledOnce();
       });
     },
   );
+
+  it("reaps a running held reader when the owner closes after resume", async () => {
+    await withHold(async (held) => {
+      const launcher = start(held, "process.stdout.write('resumed'); setInterval(() => {}, 1000);");
+      const { stdin, stdout } = launcher.child;
+      if (stdin === null || stdout === null) throw new Error("Native policy launcher pipes are absent");
+      const running = once(stdout, "data");
+      const bindReader = vi.fn(async (_pid: number) => {});
+      const run = held.bind(launcher.child, { bindReader, onFailure: vi.fn() });
+      await running;
+      expect(launcher.output()).toBe("resumed");
+      const pid = bindReader.mock.calls[0]?.[0];
+      if (pid === undefined) throw new Error("The reader PID was not bound");
+      stdin.destroy();
+      expect(await run.verdict, launcher.errors()).toEqual({ kind: "ok", stopped: false });
+      expect(launcher.child.exitCode).toBe(130);
+      await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow("ESRCH"));
+    });
+  });
 
   it("rejects a resume frame queued before the launcher reports the reader", async () => {
     await withHold(async (held) => {
