@@ -83,10 +83,12 @@ describe("reviewer reconfiguration authority", () => {
 
   it("keeps the newer settled chat hold when a rewire started for an older generation completes", async () => {
     const { manager, review } = subject();
-    const older = manager.beginChatRuntimeReviewerReconfiguration(true)!;
+    const older = manager.beginChatRuntimeReviewerReconfiguration(true);
+    if (older === undefined) throw new Error("Expected the older chat runtime generation");
     manager.settleChatRuntimeReviewerReconfiguration(older);
     const rewire = manager.beginReviewerReconfiguration();
-    const newer = manager.beginChatRuntimeReviewerReconfiguration(true)!;
+    const newer = manager.beginChatRuntimeReviewerReconfiguration(true);
+    if (newer === undefined) throw new Error("Expected the newer chat runtime generation");
     manager.settleChatRuntimeReviewerReconfiguration(newer);
     manager.completeReviewerReconfiguration(rewire);
     expect((await review()).permission.decision).toBe("ask");
