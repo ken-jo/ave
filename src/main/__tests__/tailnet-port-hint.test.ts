@@ -37,13 +37,21 @@ describe("Windows Tailnet port hints", () => {
   });
 
   it.each([
+    "----------    --------\r\n",
+    EXCLUDED_PORTS.slice(0, EXCLUDED_PORTS.indexOf("      5113")),
+    EXCLUDED_PORTS.slice(0, EXCLUDED_PORTS.indexOf("* - 관리 포트 제외입니다.")),
+  ])("uses generic guidance for a truncated table (%j)", output => {
+    expect(parseWindowsTailnetPortHint(output, 46_200)).toBeNull();
+  });
+
+  it.each([
     "     unreadable row",
     "     48715       44620",
     "     44620       99999",
     "     0           48715",
     "     44620       48715\r\n     unreadable row",
   ])("rejects a malformed body after the separator (%j)", body => {
-    const output = ["시작 포트    끝 포트", "----------    --------", body].join("\r\n");
+    const output = ["시작 포트    끝 포트", "----------    --------", body, "* - 관리 포트 제외입니다."].join("\r\n");
     expect(parseWindowsTailnetPortHint(output, 46_200)).toBeNull();
   });
 

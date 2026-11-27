@@ -11,7 +11,9 @@ const NETSH_MAX_OUTPUT_BYTES = 64 * 1024;
 export function parseWindowsTailnetPortHint(output: string, port: number): TailnetObserverPortHint | null {
   const lines = output.split(/\r?\n/);
   const separator = lines.findIndex(line => /^\s*-{2,}\s+-{2,}\s*$/.test(line));
-  if (separator === -1) return null;
+  if (separator < 1) return null;
+  const headings = lines[separator - 1].trim().split(/[ \t]{2,}/);
+  if (headings.length !== 2 || headings.some(heading => !/\p{L}/u.test(heading))) return null;
 
   let excluded = false;
   let sawLegend = false;
@@ -31,6 +33,7 @@ export function parseWindowsTailnetPortHint(output: string, port: number): Tailn
     if (start < 1 || end < start || end > 65_535) return null;
     if (port >= start && port <= end) excluded = true;
   }
+  if (!sawLegend) return null;
   if (excluded) return "excluded-range";
   return port >= MIRRORED_PORT_RANGE[0] && port <= MIRRORED_PORT_RANGE[1] ? "mirrored-range" : null;
 }
