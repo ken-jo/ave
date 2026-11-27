@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { Duplex } from "node:stream";
 import { randomBytes } from "node:crypto";
+import { once } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as helperPath from "../../main/windows-path-kind-launcher.js";
 import * as managedChildren from "../../main/managed-child-processes.js";
@@ -111,20 +112,26 @@ describe.skipIf(process.platform !== "win32")("native held policy delivery", () 
     }
   }
 
-  function start(held: HeldWindowsDirectory, script: string, pipe?: string, binary?: string, mode?: string) {
+  function start(held: HeldWindowsDirectory, script: string, pipe?: string, binary?: string, mode?: string, fault?: string) {
     const { executable, args } = held.command(process.execPath, ["-e", script, ...(pipe === undefined ? [] : [pipe])], true);
     if (mode !== undefined) args[0] = mode;
     const child = childProcess.spawn(binary ?? executable, args, {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", ...(pipe === undefined ? {} : { AVE_TEST_POLICY_READER_PIPE: pipe }) },
-      stdio: [...held.stdio, "pipe"], windowsHide: true,
+      env: {
+        ...process.env, ELECTRON_RUN_AS_NODE: "1",
+        ...(pipe === undefined ? {} : { AVE_TEST_POLICY_READER_PIPE: pipe }),
+        ...(fault === undefined ? {} : { AVE_TEST_POLICY_FAULT: fault }),
+      },
+      stdio: [...held.stdio, "pipe", "pipe", ...(fault === undefined ? [] : ["pipe" as const])], windowsHide: true,
     });
-    const control = child.stdio.at(5) as Duplex;
-    control.on("error", () => {});
+    const control = child.stdio[5] as Duplex;
+    const report = child.stdio[6] as Duplex;
+    const gate = child.stdio[7] as Duplex | undefined;
+    for (const stream of [control, report, gate]) stream?.on("error", () => {});
     let stdout = "";
     let stderr = "";
     child.stdout?.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
     child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
-    return { child, control, output: () => stdout.replaceAll("\r\n", "\n"), errors: () => stderr };
+    return { child, control, report, gate, output: () => stdout.replaceAll("\r\n", "\n"), errors: () => stderr };
   }
 
   it.for([
@@ -161,9 +168,10 @@ describe.skipIf(process.platform !== "win32")("native held policy delivery", () 
         const run = held.bind(launcher.child);
         let pid: number | undefined;
         const onReport = (): void => {
-          const reply = launcher.control.read(8) as Buffer | null;
-          if (reply === null) return;
-          launcher.control.off("readable", onReport);
+          const report = launcher.report.read(16) as Buffer | null;
+          if (report === null) return;
+          launcher.report.off("readable", onReport);
+          const reply = report.subarray(0, 8);
           pid = reply.readUInt32LE(4);
           if (fault === "timeout") return;
           if (fault === "owner loss") {
@@ -175,7 +183,7 @@ describe.skipIf(process.platform !== "win32")("native held policy delivery", () 
           const response = fault === "trailing data" ? Buffer.concat([reply, reply]) : fault === "partial" ? reply.subarray(0, 7) : reply;
           launcher.control.end(response, () => launcher.control.destroy());
         };
-        launcher.control.on("readable", onReport);
+        launcher.report.on("readable", onReport);
         expect(await run.verdict, launcher.errors()).toEqual({ kind: "unconfirmed" });
         expect(launcher.child.exitCode).toBe(125);
         expect(launcher.output()).toBe("");
@@ -217,7 +225,7 @@ describe.skipIf(process.platform !== "win32")("native held policy delivery", () 
   it("refuses a reader report with a non-ASCII header byte", async () => {
     await withHold(async (held) => {
       const launcher = start(held, "process.stdout.write('resumed');");
-      launcher.control.prependOnceListener("data", (chunk: Buffer) => { chunk[0] = chunk.readUInt8(0) | 0x80; });
+      launcher.report.prependOnceListener("data", (chunk: Buffer) => { chunk[0] = chunk.readUInt8(0) | 0x80; });
       const bindReader = vi.fn(async () => {});
       const failed = vi.fn();
       const run = held.bind(launcher.child, { bindReader, onFailure: failed });
@@ -228,11 +236,35 @@ describe.skipIf(process.platform !== "win32")("native held policy delivery", () 
     });
   });
 
+  it.for([{ fault: "early report", phase: "E" }, { fault: "delayed trailer", phase: "T" }])(
+    "rejects a $fault without binding or executing the child", async ({ fault, phase }, context) => {
+      if (!existsSync(fixture)) context.skip("Native policy reader fixture is absent");
+      await withHold(async (held) => {
+        const launcher = start(held, "process.stdout.write('resumed');", undefined, fixture, undefined, fault);
+        const { gate } = launcher;
+        if (gate === undefined) throw new Error("Native policy fixture gate is absent");
+        const report = once(launcher.report, fault === "early report" ? "end" : "data");
+        const gated = once(gate, "data");
+        const bindReader = vi.fn(async () => {});
+        const failed = vi.fn();
+        const run = held.bind(launcher.child, { bindReader, onFailure: failed });
+        const [[ready]] = await Promise.all([gated, report]) as [[Buffer], unknown[]];
+        expect(ready.toString()).toBe(phase);
+        gate.write("+");
+        expect(await run.verdict, launcher.errors()).toEqual({ kind: "unconfirmed" });
+        expect(bindReader).not.toHaveBeenCalled();
+        expect(failed).toHaveBeenCalledOnce();
+        expect(launcher.output()).toBe("");
+        expect(launcher.child.exitCode).toBe(125);
+      });
+    },
+  );
+
   it("rejects a resume frame queued before the launcher reports the reader", async () => {
     await withHold(async (held) => {
       const launcher = start(held, "process.stdout.write('resumed');");
       let reportedBytes = 0;
-      launcher.control.on("data", (chunk: Buffer) => { reportedBytes += chunk.length; });
+      launcher.report.on("data", (chunk: Buffer) => { reportedBytes += chunk.length; });
       // Keep hold admission pending until the unexpected record is in the control pipe.
       launcher.control.write(Buffer.from([0x41, 0x56, 0x52, 0x31, 1, 0, 0, 0]));
       const run = held.bind(launcher.child);

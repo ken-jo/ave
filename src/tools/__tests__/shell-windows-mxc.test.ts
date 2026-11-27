@@ -719,7 +719,7 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(command).toHaveBeenCalledWith(WXC_EXEC, ["--config", "policy-pipe"], true);
     expect(childProcessMock.spawn).toHaveBeenLastCalledWith(
       "ave-job.exe", ["--hold-policy-v1", WXC_EXEC, "--config", "policy-pipe"],
-      expect.objectContaining({ stdio: ["pipe", "pipe", "pipe", "pipe", "pipe", "pipe"] }),
+      expect.objectContaining({ stdio: ["pipe", "pipe", "pipe", "pipe", "pipe", "pipe", "pipe"] }),
     );
     expect(bindHeldPolicy).toHaveBeenCalledExactlyOnceWith(launcher, 5151, stop);
     expect(bindDirect).not.toHaveBeenCalled();

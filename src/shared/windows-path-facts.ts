@@ -1,4 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { isAbsolute, win32 } from "node:path";
 import type { Duplex } from "node:stream";
 import { toUSVString } from "node:util";
@@ -275,7 +276,9 @@ export interface HeldWindowsDirectory {
 const HOLD_VERDICT_LIMIT = 64;
 const HOLD_DRAIN_MS = 2_000;
 const HOLD_REQUEST_BYTES = 8;
+const HOLD_REPLY_BYTES = 9;
 const HELD_POLICY_FRAME_BYTES = 8;
+const HELD_POLICY_REPORT_BYTES = 16;
 
 /** Hold a directory and every ancestor against rename and delete until `release`; undefined when the helper did not hold it.
  * The handles and the kill-on-close job live in the helper, so its exit stops the launcher and everything it started. */
@@ -310,7 +313,8 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     let done = false;
     let deadline: NodeJS.Timeout | undefined;
     let record = "";
-    const [, , , relay, report, control] = launcher.stdio as readonly (Duplex | null | undefined)[];
+    const [, , , relay, report, control, readerReport] = launcher.stdio as readonly (Duplex | null | undefined)[];
+    let admissionProof: Buffer | undefined;
     let resumeAuthorized = false;
     const verdict = new Promise<WindowsHoldVerdict>((resolve) => {
       finish = (result) => {
@@ -357,6 +361,28 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       if (policy === undefined) void stop();
       else failPolicy();
     };
+    let challenged = false;
+    const relayPolicyAdmission = (): void => {
+      while (admissionProof === undefined && !done && deadline === undefined) {
+        const reply = channel.read(HOLD_REPLY_BYTES) as Buffer | null;
+        if (reply === null) return;
+        if (!challenged && reply[0] === 0x43 && reply.length === HOLD_REPLY_BYTES) {
+          challenged = true;
+          relay.write(reply);
+          continue;
+        }
+        channel.off("readable", relayPolicyAdmission);
+        if (!challenged || reply[0] !== 0x41 || reply.length !== HOLD_REPLY_BYTES) {
+          relay.end(reply);
+          return;
+        }
+        // The report must echo a proof first sent with the relayed admission.
+        admissionProof = randomBytes(HOLD_REPLY_BYTES - 1);
+        admissionProof.copy(reply, 1);
+        relay.write(reply);
+        channel.pipe(relay);
+      }
+    };
     const admitRelay = (): void => {
       const frame = relay.read(HOLD_REQUEST_BYTES) as Buffer | null;
       if (frame === null) return;
@@ -366,9 +392,10 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
         stopAdmission();
         return;
       }
-      channel.write(frame);
       relay.pipe(channel);
-      channel.pipe(relay);
+      if (policy === undefined) channel.pipe(relay);
+      else channel.on("readable", relayPolicyAdmission);
+      channel.write(frame);
     };
     relay.on("readable", admitRelay);
     relay.once("end", stopAdmission);
@@ -389,24 +416,33 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     if (policy !== undefined) {
       launcher.stdin?.on("error", failPolicy);
       relay.once("close", () => { if (!resumeAuthorized) failPolicy(); });
-      if (control == null) failPolicy();
+      if (control == null || readerReport == null) failPolicy();
       else {
         let frame = Buffer.alloc(0);
         control.on("error", failPolicy);
+        control.on("data", failPolicy);
         const controlEnded = (): void => { if (!resumeAuthorized) failPolicy(); };
         control.once("end", controlEnded);
         control.once("close", controlEnded);
-        control.on("data", (chunk: Buffer) => {
+        readerReport.on("error", failPolicy);
+        readerReport.once("close", () => { if (!readerReport.readableEnded) failPolicy(); });
+        readerReport.on("data", (chunk: Buffer) => {
           if (done || deadline !== undefined) return;
-          if (frame.length + chunk.length > HELD_POLICY_FRAME_BYTES) { failPolicy(); return; }
+          if (admissionProof === undefined || frame.length + chunk.length > HELD_POLICY_REPORT_BYTES) { failPolicy(); return; }
           frame = Buffer.concat([frame, chunk]);
-          if (frame.length !== HELD_POLICY_FRAME_BYTES) return;
+        });
+        readerReport.once("end", () => {
+          if (done || deadline !== undefined) return;
+          if (frame.length !== HELD_POLICY_REPORT_BYTES || !admissionProof?.equals(frame.subarray(HELD_POLICY_FRAME_BYTES))) {
+            failPolicy();
+            return;
+          }
           const pid = frame.readUInt32LE(4);
           if (frame.toString("latin1", 0, 4) !== "AVP1" || pid === 0 || pid === launcherPid) { failPolicy(); return; }
           const acknowledge = async (): Promise<void> => {
             await policy.bindReader(pid, failPolicy);
             if (done || deadline !== undefined || control.destroyed) return;
-            const reply = Buffer.from(frame);
+            const reply = Buffer.from(frame.subarray(0, HELD_POLICY_FRAME_BYTES));
             reply.write("AVR1");
             resumeAuthorized = true;
             control.end(reply, () => control.destroy());

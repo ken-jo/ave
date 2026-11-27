@@ -46,9 +46,12 @@ is not the signal: the host accepts only the exact record with its matching
 exit code and treats everything else as unconfirmed. Neither job allows
 breakaway.
 
-`--hold-policy-v1` adds a private sixth handle for pipe-backed policy delivery.
+`--hold-policy-v1` adds private sixth and seventh handles for pipe-backed policy delivery.
 After hold admission, the launcher creates the command suspended in both jobs.
-It writes `AVP1` followed by the little-endian PID returned by `CreateProcessW`.
+It writes `AVP1`, the little-endian PID returned by `CreateProcessW`, and the
+eight-byte proof carried by the relayed admission. It closes the report handle
+to delimit the record. The host validates that one complete record through EOF
+before asking the policy helper to bind.
 The host sends `AVR1` followed by that same PID and closes the control stream
 only after the policy helper acknowledges the binding. The launcher retains
 both process and thread handles until that exchange completes. The command

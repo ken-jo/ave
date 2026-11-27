@@ -4554,7 +4554,7 @@ async function spawnPowerShellInMxc(
         // nothing in the workspace sits beside it; the container's working
         // directory travels in the request.
         cwd: win32Path.dirname(cmd),
-        stdio: holdStdio === undefined ? ["ignore", "pipe", "pipe"] : bindHeldPolicy === undefined ? holdStdio : [...holdStdio, "pipe"],
+        stdio: holdStdio === undefined ? ["ignore", "pipe", "pipe"] : bindHeldPolicy === undefined ? holdStdio : [...holdStdio, "pipe", "pipe"],
         shell: false,
         windowsHide: true,
         // The launcher's own environment: the container's is in the request.

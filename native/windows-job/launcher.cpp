@@ -83,18 +83,36 @@ static bool holdTransfer(HANDLE channel, bool write, void* target, DWORD size) {
   }
   return true;
 }
-struct PolicyControl { HANDLE channel; DWORD pid; };
+struct PolicyReport { DWORD kind; DWORD pid; ULONGLONG admission; };
+static_assert(sizeof(PolicyReport) == 16);
+struct PolicyControl { HANDLE channel; HANDLE reportPipe; DWORD pid; ULONGLONG admission; };
+#ifdef AVE_TEST_POLICY_READER
+static bool policyFixtureFault(const wchar_t* fault) {
+  wchar_t value[32]{};
+  return GetEnvironmentVariableW(L"AVE_TEST_POLICY_FAULT", value, _countof(value)) != 0 && wcscmp(value, fault) == 0;
+}
+static bool waitForPolicyFixture(char phase) {
+  const HANDLE gate = inheritedHandle(7);
+  char next = 0;
+  return holdTransfer(gate, true, &phase, 1) && holdTransfer(gate, false, &next, 1) && next == '+';
+}
+#endif
 static bool controlEmpty(HANDLE channel) {
   DWORD available = 0;
   return PeekNamedPipe(channel, nullptr, 0, nullptr, &available, nullptr) && available == 0;
 }
 static DWORD WINAPI confirmPolicyReader(void* context) {
   const auto& control = *static_cast<const PolicyControl*>(context);
-  DWORD report[]{0x31505641, control.pid}; // AVP1
+  PolicyReport report{0x31505641, control.pid, control.admission}; // AVP1
   DWORD reply[2]{};
-  if (!controlEmpty(control.channel) ||
-      !holdTransfer(control.channel, true, report, sizeof(report)) ||
-      !holdTransfer(control.channel, false, reply, sizeof(reply)) ||
+  if (!controlEmpty(control.channel) || !holdTransfer(control.reportPipe, true, &report, sizeof(report))) return 1;
+#ifdef AVE_TEST_POLICY_READER
+  if (policyFixtureFault(L"delayed trailer")) {
+    char extra = '+';
+    if (!waitForPolicyFixture('T') || !holdTransfer(control.reportPipe, true, &extra, 1)) return 1;
+  }
+#endif
+  if (!CloseHandle(control.reportPipe) || !holdTransfer(control.channel, false, reply, sizeof(reply)) ||
       reply[0] != 0x31525641 || reply[1] != control.pid) return 1; // AVR1
   // The reply is the only host frame. Anything after it is invalid, including a duplicate.
   char extra;
@@ -250,7 +268,9 @@ int wmain(int argc, wchar_t** argv) {
     }
   }
   const HANDLE policyChannel = heldPolicy ? inheritedHandle(5) : INVALID_HANDLE_VALUE;
-  if (heldPolicy && (GetFileType(GetStdHandle(STD_INPUT_HANDLE)) != FILE_TYPE_PIPE || !controlEmpty(policyChannel)))
+  const HANDLE policyReport = heldPolicy ? inheritedHandle(6) : INVALID_HANDLE_VALUE;
+  if (heldPolicy && (GetFileType(GetStdHandle(STD_INPUT_HANDLE)) != FILE_TYPE_PIPE || !controlEmpty(policyChannel) ||
+      GetFileType(policyReport) != FILE_TYPE_PIPE))
     endHeld(kUnconfirmed, 125);
   if (argc <= first || !absolutePath(argv[first])) {
     std::fprintf(stderr, "Windows job launcher requires an absolute executable path\n");
@@ -315,6 +335,15 @@ int wmain(int argc, wchar_t** argv) {
   startup.StartupInfo.hStdOutput = inherited[1];
   startup.StartupInfo.hStdError = inherited[2];
   startup.lpAttributeList = attributes;
+  ULONGLONG admissionProof = 0;
+#ifdef AVE_TEST_POLICY_READER
+  if (heldPolicy && policyFixtureFault(L"early report")) {
+    PolicyReport report{0x31505641, GetCurrentProcessId() + 1, 0};
+    if (!holdTransfer(policyReport, true, &report, sizeof(report)) || !CloseHandle(policyReport) ||
+        !waitForPolicyFixture('E')) endHeld(kUnconfirmed, 125);
+    endHeld(kUnconfirmed, 125);
+  }
+#endif
   if (held) {
     // The helper challenges the process named on the private channel. 'A' follows once that process
     // signals the duplicated event and joins the helper's job.
@@ -329,6 +358,7 @@ int wmain(int argc, wchar_t** argv) {
       std::fprintf(stderr, "Windows job launcher: the working directory hold is not available\n");
       endHeld(kLost, 125);
     }
+    memcpy(&admissionProof, reply + 1, sizeof(admissionProof));
     SetEvent(admission.met);
   }
   PROCESS_INFORMATION child{};
@@ -358,7 +388,7 @@ int wmain(int argc, wchar_t** argv) {
     return 125;
   }
   if (heldPolicy) {
-    PolicyControl control{policyChannel, child.dwProcessId};
+    PolicyControl control{policyChannel, policyReport, child.dwProcessId, admissionProof};
     HANDLE confirm = CreateThread(nullptr, 0, confirmPolicyReader, &control, 0, nullptr);
     HANDLE startupWaits[]{owner, child.hProcess, confirm};
     DWORD result = 1;
