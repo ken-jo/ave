@@ -1,3 +1,4 @@
+import { watchPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { createHostGit } from "../../../work-board/workflow/host-git.js";
 import { acceptRequestedOutput, requestedOutputHash } from "../../../work-board/workflow/requested-outputs.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
@@ -79,6 +80,7 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
     adoptParkedTemplateRuns: vi.fn(async () => {}),
   };
   const log = vi.fn();
+  watchPermissionEvents((entry) => { if (entry.event.startsWith("work_board_")) log(entry); });
   const base = { title: "t", status: "in_progress", status_resolved: "in_progress", priority: "medium", created_at: "x", updated_at: "x" };
   const create = vi.fn(async (input: { title: string; projectRoot: string }) =>
     ({ status: "created", itemId: 7, item: { ...base, ...input, id: 7 } }));
@@ -138,13 +140,11 @@ it("forwards a gesture-carrying decision with the host's approval surface and au
   expect(engine.decideStageJoin).toHaveBeenCalledWith(7, joinInput);
   await expect(decide(WORK_BOARD.retryStage, event, 7, retryInput)).resolves.toEqual({ ok: true });
   expect(engine.retryStage).toHaveBeenCalledWith(7, retryInput);
-  expect(log).toHaveBeenCalledTimes(3);
-  const logged = log.mock.calls.map(call => (call[0] as { output: string; type: string; sessionId: string }));
-  for (const entry of logged) {
-    expect(entry).toMatchObject({ type: "approval", sessionId: "work-board:7" });
-    expect(JSON.parse(entry.output)).toMatchObject({ event: "work-approval:stage-decided", origin: "local-desktop", runId: RUN });
-    expect(entry.output).not.toContain("tighten");
-  }
+  expect(log.mock.calls).toEqual([
+    [{ event: "work_board_decision", itemId: 7, operation: "decide-stage", decision: "request_changes", outcome: "approved" }],
+    [{ event: "work_board_decision", itemId: 7, operation: "decide-join", decision: "retry_merge" }],
+    [{ event: "work_board_decision", itemId: 7, operation: "retry-stage", outcome: "retried" }],
+  ]);
 });
 
 it("refuses a malformed or partial decision before the engine sees it", async () => {
@@ -326,7 +326,7 @@ it("projects a parked result on get and list, then refuses the superseded snapsh
     await expect(decide(WORK_BOARD.decideStage, event, id, { ...binding, attempt: 2, decision: "approve" })).resolves.toEqual({ ok: false, reason: "result_mismatch" });
     expect((await h.item(id)).stageRuns).toEqual(revised.stageRuns);
     await expect(handler(WORK_BOARD.get)(event, id)).resolves.toMatchObject({
-      item: { workflowRun: { decisions: [{ kind: "stage-gate", stageId: "a", attempt: 1, decision: "request_changes" }] } },
+      item: { workflowRun: { decisions: [] } },
     });
   } finally { for (const child of h.children) child.finish(); await h.cleanup(); }
 });

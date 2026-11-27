@@ -1,4 +1,4 @@
-import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
+import { logPermissionEvent } from "../../lib/permission-log.js";
 import { exactRecord, parseDecidePlanInput, parseDecideStageInput, parseJoinBinding, parseTemplateRunTuple, PLAN_HASH_PATTERN, RUN_ID_PATTERN } from "../../work-board/work-decision-input.js";
 import { maskWorkflowText, withoutWorkflowProjection } from "../../work-board/workflow/run-read-projection.js";
 import { isStageId, isTemplateId, WorkflowTemplateError } from "../../work-board/template-graph.js";
@@ -573,7 +573,9 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
         { approvalSurface: e.sender },
       );
       if (!outcome.result.ok) return outcome.result;
-      logPermissionEvent("work_board_decision", { sessionId: permissionLogId(`work-board:${id}`) });
+      logPermissionEvent("work_board_decision", {
+        itemId: id, operation: "decide-plan", decision: parsed.decision, outcome: outcome.result.status,
+      });
       broadcastItemChanged(id, "updated");
       if (outcome.continuation) {
         broadcastToAppWindows(deps, WORK_BOARD.runStarted, { itemId: id, at: new Date().toISOString(), resumed: true });
@@ -609,9 +611,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     onProof?.(proof);
     return null;
   };
-  const auditStageDecision = (id: number, _detail: Record<string, unknown>): void => {
-    logPermissionEvent("work_board_cancelled", { sessionId: permissionLogId(`work-board:${id}`) });
-  };
 
   // The user's decision at a stage gate of a template run: the same boundary as decide-plan. The renderer names the run, the stage, the
   // attempt and the hash of the output it showed, never the output; the engine checks each against the stored run before anything changes.
@@ -637,7 +636,9 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       const result = await workBoardEngine.decideStageGate(id as number, decision, { kind: "local-desktop", receipt: proof });
       if (!result.ok) return result;
       // The decision only; the note body stays on the item.
-      auditStageDecision(id as number, { runId: parsed.runId, stageId: parsed.stageId, attempt: parsed.attempt, result: parsed.resultHash.slice(0, 8), decision: result.status, note: note !== undefined });
+      logPermissionEvent("work_board_decision", {
+        itemId: id as number, operation: "decide-stage", decision: parsed.decision, outcome: result.status,
+      });
       broadcastItemChanged(id as number, "updated");
       broadcastToAppWindows(deps, WORK_APPROVALS.changed, undefined);
       return redactedCount > 0 ? { ...result, redactedCount } : result;
@@ -655,7 +656,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       if (!binding || !workBoardEngine || (decision !== "retry_merge" && decision !== "reject")) return { ok: false, reason: "invalid-input" };
       const result = await workBoardEngine.decideStageJoin(id as number, { ...binding, decision });
       if (!result.ok) return result;
-      auditStageDecision(id as number, { runId: binding.runId, joinId: binding.joinId, generation: binding.generation, conflict: binding.conflictHash.slice(0, 8), decision });
+      logPermissionEvent("work_board_decision", { itemId: id as number, operation: "decide-join", decision });
       broadcastItemChanged(id as number, "updated");
       broadcastToAppWindows(deps, WORK_APPROVALS.changed, undefined);
       return result;
@@ -696,7 +697,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
         || typeof record.attempt !== "number" || !Number.isSafeInteger(record.attempt) || record.attempt < 1) return { ok: false, reason: "invalid-input" };
       const result = await workBoardEngine.retryStage(id as number, { runId: record.runId, stageId: record.stageId, attempt: record.attempt });
       if (!result.ok) return result;
-      auditStageDecision(id as number, { runId: record.runId, stageId: record.stageId, attempt: record.attempt, decision: "retry" });
+      logPermissionEvent("work_board_decision", { itemId: id as number, operation: "retry-stage", outcome: "retried" });
       broadcastItemChanged(id as number, "updated");
       return result;
     },

@@ -1,3 +1,4 @@
+import { watchPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { captureWorkBoardTestGesture, invokeWithWorkBoardTestKey, workBoardTestSender } from "../../../__tests__/support/work-board-ipc.js";
 // Steer and stop are local-user controls (permission-decision-tree.md S→T): sender-validated, board-owner frame, and a consumed keyboard
 // gesture. A call without the gesture is refused, never downgraded to another principal the way a chat guide without one is.
@@ -166,6 +167,7 @@ function setupDecide(opts: { privacy?: { piiRedactEnabled: boolean }; continuati
     ...(opts.continuation ? { continuation: opts.continuation } : {}),
   }));
   const log = vi.fn();
+  watchPermissionEvents((entry) => { if (entry.event.startsWith("work_board_")) log(entry); });
   registerWorkBoardHandlers({
     workBoardStore: {
       get: async (id: number) => id === 7
@@ -186,11 +188,11 @@ describe("work-board decide-plan IPC", () => {
     const { event, decidePlan, log, owner } = setupDecide();
     await expect(decidePlanAsUser(event, 7, { ...INPUT, note: "PRIVATE-NOTE" })).resolves.toEqual({ ok: true, status: "approved" });
     expect(decidePlan).toHaveBeenCalledWith(7, { runId: "run-1", planHash: HASH, decision: "approve", note: "PRIVATE-NOTE" }, { approvalSurface: owner });
-    expect(log).toHaveBeenCalledTimes(1);
-    const record = log.mock.calls[0]![0] as { sessionId: string; type: string; output: string };
-    expect(record).toMatchObject({ sessionId: "work-board:7", type: "approval" });
-    expect(JSON.parse(record.output)).toEqual({ event: "work-approval:decided", runId: "run-1", plan: HASH.slice(0, 8), decision: "approved", note: true });
-    expect(record.output).not.toContain("PRIVATE-NOTE");
+    await expect(decidePlanAsUser(event, 7, { ...INPUT, decision: "reject" })).resolves.toEqual({ ok: true, status: "rejected" });
+    expect(log.mock.calls).toEqual([
+      [{ event: "work_board_decision", itemId: 7, operation: "decide-plan", decision: "approve", outcome: "approved" }],
+      [{ event: "work_board_decision", itemId: 7, operation: "decide-plan", decision: "reject", outcome: "rejected" }],
+    ]);
   });
 
   it("broadcasts the continued run as resumed, then its result", async () => {
