@@ -8,6 +8,7 @@ import { t } from "../i18n/index.js";
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
   EgressProtocolCoverage,
+  SandboxMacExtensionReason,
   SandboxBootOutcome,
   SandboxConfinement,
   SandboxMacContainerShellInfo,
@@ -311,6 +312,26 @@ export function setMacExtensionPlan(plan: SandboxMacExtensionPlan): void {
 export function __resetMacExtensionPlanForTest(): void {
   if (_macExtensionPlan !== undefined) _sandboxGeneration += 1;
   _macExtensionPlan = undefined;
+  _macHolderCapability = undefined;
+}
+
+/** Whether this app run proved the macOS holder route (the boot check, boot sweep and watcher), whatever the extension
+ * setting: a user hook follows the shell setting and runs as a holder when this is ready. */
+export type MacHolderCapability = { readonly state: "checking" } | { readonly state: "ready" }
+  | { readonly state: "unavailable"; readonly reason: SandboxMacExtensionReason };
+let _macHolderCapability: MacHolderCapability | undefined;
+
+/** @internal — boot (`sandbox-init.ts`) and tests only. A change starts a new generation, as a plan change does. */
+export function setMacHolderCapability(capability: MacHolderCapability): void {
+  if (_macHolderCapability?.state === capability.state
+    && (capability.state !== "unavailable" || (_macHolderCapability as { reason?: string }).reason === capability.reason)) return;
+  _macHolderCapability = Object.freeze({ ...capability });
+  _sandboxGeneration += 1;
+  notifySandboxStatusChanged();
+}
+
+export function getMacHolderCapability(): MacHolderCapability | undefined {
+  return _macHolderCapability;
 }
 
 let _containerShellSubstrate: SandboxMacContainerShellSupport | undefined;

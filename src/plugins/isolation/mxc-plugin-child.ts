@@ -1,6 +1,6 @@
 import { win32 as winPath } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
-import type { OwnedMxcExtensionProcess } from "../../permissions/mxc-extension-process.js";
+import type { MxcHolderProcess } from "../../permissions/confined-child.js";
 import { isMxcConfinedChildLive, spawnMxcConfinedChild, type MxcConfinedChildSpawn } from "../../permissions/confined-child.js";
 import { assertMxcHolderStaging, type MxcExtensionFilesystemOwnership } from "../../permissions/mxc-filesystem-ownership.js";
 import { mxcStagingParent } from "../../permissions/mxc-runtime-root.js";
@@ -42,7 +42,7 @@ export interface MxcPluginChild {
 }
 
 /** Adapt the owned streams without letting stream payloads or the supervisor PID select the recipient. */
-export function attachMxcPluginChild(owned: OwnedMxcExtensionProcess, launch: Pick<MxcPluginChildLaunch, "signal" | "release">, pluginId: string): MxcPluginChild {
+export function attachMxcPluginChild(owned: MxcHolderProcess, launch: Pick<MxcPluginChildLaunch, "signal" | "release">, pluginId: string): MxcPluginChild {
   // Always take diagnostics, even when protocol construction has not begun.
   capturePluginStderr(owned.stderr, pluginId);
   let cleanup: Promise<void> | undefined;

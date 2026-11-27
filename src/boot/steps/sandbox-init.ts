@@ -314,26 +314,37 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             }
           }
           if (process.platform === "darwin") {
-            const { setMacExtensionPlan } = await import("../../permissions/sandbox-capability.js");
+            const { setMacExtensionPlan, setMacHolderCapability } = await import("../../permissions/sandbox-capability.js");
+            // The plan is the extension setting's; the holder capability is this run's proof, which a user hook also
+            // reads because it follows the shell setting. Extensions with confinement off start plain, never contained.
+            const off = { platform: "darwin", requestedBackend: "none", selectedBackend: "none", readiness: "off", reason: "not-requested", egressIdentity: "shared" } as const;
             const plan = { platform: "darwin", requestedBackend: "mxc", egressIdentity: "shared" } as const;
-            // A user hook follows the shell setting, so the holder route is proven when either kind was requested.
+            const publish = (capability: Parameters<typeof setMacHolderCapability>[0]): void => {
+              setMacHolderCapability(capability);
+              if (!workerRequested) {
+                setMacExtensionPlan(off);
+                return;
+              }
+              setMacExtensionPlan(capability.state === "ready" ? { ...plan, selectedBackend: "mxc", readiness: "ready", reason: "ready" }
+                : capability.state === "checking" ? { ...plan, selectedBackend: "none", readiness: "checking", reason: "checking" }
+                  : { ...plan, selectedBackend: "none", readiness: "unavailable", reason: capability.reason });
+            };
             if (isContainerHolderRouteEnabled("darwin") && (shellRequested || workerRequested)) {
               const [{ startSeatbeltHolderBootServices }, { getHostResources }, { aveHome }] = await Promise.all([
                 import("../../permissions/seatbelt-holder-boot.js"), import("../../main/host-resources.js"), import("../../shared/ave-home.js"),
               ]);
-              setMacExtensionPlan({ ...plan, selectedBackend: "none", readiness: "checking", reason: "checking" });
-              // Holder starts wait on this sequence; boot does not.
-              void startSeatbeltHolderBootServices({
+              publish({ state: "checking" });
+              // Boot waits for the decision (two canary starts and three helper runs, about 0.1 s): no extension start
+              // can then meet a "checking" plan, which has no retry path. Holder starts also wait on the sequence.
+              await startSeatbeltHolderBootServices({
                 resourcePath: getHostResources().resourcePath, home: aveHome(), signal: startupSignal,
-                publish: (readiness) => setMacExtensionPlan(readiness.ready
-                  ? { ...plan, selectedBackend: "mxc", readiness: "ready", reason: "ready" }
-                  : { ...plan, selectedBackend: "none", readiness: "unavailable", reason: readiness.reason }),
+                publish: (readiness) => publish(readiness.ready ? { state: "ready" } : { state: "unavailable", reason: readiness.reason }),
               }).catch((error: unknown) => {
                 log.error("boot: macOS holder route check failed: %s", errorMessage(error));
-                setMacExtensionPlan({ ...plan, selectedBackend: "none", readiness: "unavailable", reason: "sweep-unproven" });
+                publish({ state: "unavailable", reason: "sweep-unproven" });
               });
             } else {
-              setMacExtensionPlan({ platform: "darwin", requestedBackend: "none", selectedBackend: "none", readiness: "off", reason: "not-requested", egressIdentity: "shared" });
+              setMacExtensionPlan(off);
             }
           }
           const sandboxTempRoot = useAppOwnedSandboxTempRoot();

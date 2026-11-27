@@ -14,8 +14,8 @@ import {
   releaseManagedResources, type ManagedResources, type RelayBestEffortExit,
 } from "../main/managed-child-processes.js";
 import { randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { join, win32 as winPath } from "node:path";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { join, posix as posixPath, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { t } from "../i18n/index.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -26,17 +26,18 @@ import {
   spawnConfinedChild,
   spawnMxcConfinedChild,
   type MxcConfinedChildSpawn,
+  type MxcHolderProcess,
   type MxcConfinedChildSpec,
 } from "../permissions/confined-child.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
 import { assertMxcReleaseGateEvidence } from "../permissions/mxc-extension-admission.js";
 import { admitWindowsLookupPaths } from "../permissions/admitted-obligation.js";
 import { MxcProcessCleanupError, MxcProcessContractError } from "../permissions/mxc-extension-errors.js";
-import type { OwnedMxcExtensionProcess } from "../permissions/mxc-extension-process.js";
 import { planWindowsExtensionHolder } from "../permissions/mxc-extension-readiness.js";
 import { isWindowsPathAtOrUnder } from "../permissions/mxc-windows.js";
+import { posixHolderPaths } from "../permissions/holder-admission-darwin.js";
 import { isFullyQualifiedWindowsPath } from "../shared/windows-path-spelling.js";
-import { getExtensionBackendPlan } from "../permissions/sandbox-capability.js";
+import { getExtensionBackendPlan, getMacHolderCapability } from "../permissions/sandbox-capability.js";
 import { listAuthorizedWorkspaceRoots } from "../permissions/workspace-authorized-roots.js";
 import type { SandboxWindowsExtensionPlan } from "../shared/sandbox-capability-info.js";
 import { createSandboxProcessHome, resolvedHostProcessOwner } from "../permissions/sandbox-process-home.js";
@@ -286,6 +287,17 @@ export function isMxcExtensionBackendSelected(): boolean {
   return plan?.selectedBackend === "mxc" && plan.readiness === "ready";
 }
 
+/** macOS: this app run proved the holder route. A user hook admitted under a container shell plan runs as a holder when
+ * it did, whatever the extension setting: a user hook follows the shell setting. */
+function isMacHolderRouteReady(): boolean {
+  return process.platform === "darwin" && isContainerHolderRouteEnabled("darwin") && getMacHolderCapability()?.state === "ready";
+}
+
+/** Whether this holder start is routed to a container: the extension plan, or for a macOS user hook the holder route. */
+function isHolderStartRouted(owner: WorkerEgressOwner): boolean {
+  return isMxcExtensionBackendSelected() || (owner.role === "hook" && owner.pluginId === undefined && isMacHolderRouteReady());
+}
+
 /** The container executable is inside a workspace or a holder-writable root, is not a Windows executable, or cannot be resolved. */
 export class MxcExecutableNotAdmissibleError extends Error {
   readonly code = "executable-not-admissible";
@@ -373,7 +385,19 @@ export function assertMxcHolderNotBashForm(command: string, shellFlavor?: string
 }
 
 /** Lexical and admitted paths so a junction-spelled root compares as its target. */
+/** The staging and path rules of the platform this holder runs on: Windows, or macOS. */
+const windowsHost = (): boolean => process.platform === "win32";
+const hostPath = (): typeof winPath => windowsHost() ? winPath : posixPath;
+const atOrUnderOnHost = (path: string, root: string): boolean => windowsHost() ? isWindowsPathAtOrUnder(path, root) : posixHolderPaths.atOrUnder(path, root);
+
 function pathForms(paths: readonly string[]): string[] {
+  if (!windowsHost()) {
+    return paths.flatMap(path => {
+      const lexical = posixHolderPaths.normalize(path);
+      const target = posixHolderPaths.target(path);
+      return target === lexical ? [lexical] : [lexical, target];
+    });
+  }
   const local = admitWindowsLookupPaths(paths, "mxc-launch");
   return paths.flatMap(path => {
     const lexical = winPath.normalize(path);
@@ -383,12 +407,13 @@ function pathForms(paths: readonly string[]): string[] {
 }
 
 function overlaps(left: string, right: string): boolean {
-  return isWindowsPathAtOrUnder(left, right) || isWindowsPathAtOrUnder(right, left);
+  return atOrUnderOnHost(left, right) || atOrUnderOnHost(right, left);
 }
 
 /** PATH resolution as the legacy spawn would find it, restricted to absolute directories and `.exe` programs: a relative
  * PATH entry needs a working directory or drive, and a script shim needs an interpreter the container would run instead. */
 function resolveHolderExecutable(command: string, env: NodeJS.ProcessEnv): string {
+  if (!windowsHost()) return resolvePosixHolderExecutable(command, env);
   let canonical: string | undefined;
   if (winPath.isAbsolute(command)) {
     const entry = admitWindowsLookupPaths([command], "mxc-launch").get(command);
@@ -416,13 +441,37 @@ function resolveHolderExecutable(command: string, env: NodeJS.ProcessEnv): strin
   return canonical;
 }
 
+/** macOS: an absolute path, or a bare name found on an all-absolute PATH, resolved to the regular executable file it
+ * names. The holder runs that resolved file, whose identity row 2 measures. */
+function resolvePosixHolderExecutable(command: string, env: NodeJS.ProcessEnv): string {
+  let candidates: string[];
+  if (posixPath.isAbsolute(command)) {
+    candidates = [command];
+  } else if (command.includes("/")) {
+    throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableRelative", { command }));
+  } else {
+    const directories = (env.PATH ?? process.env.PATH ?? "").split(":");
+    if (directories.some(directory => !posixPath.isAbsolute(directory) || directory.split("/").includes(".."))) {
+      throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableNotFound", { command }));
+    }
+    candidates = directories.map(directory => posixPath.join(directory, command));
+  }
+  for (const candidate of candidates) {
+    let resolved: string;
+    try { resolved = realpathSync.native(candidate); } catch { continue; }
+    const entry = statSync(resolved, { throwIfNoEntry: false });
+    if (entry?.isFile() && (entry.mode & 0o111) !== 0) return resolved;
+  }
+  throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableNotFound", { command }));
+}
+
 /** Contract rule: never an executable from a workspace or any holder-writable root, this holder's own included. */
 function assertExecutableAdmissible(executable: string, ownWriteRoots: readonly string[], workspaceRoots: readonly string[]): void {
   const forbidden = [
     ...pathForms([...listAuthorizedWorkspaceRoots(), ...workspaceRoots, ...ownWriteRoots]),
     ...liveMxcHolderWritableRoots(),
   ];
-  const hit = forbidden.find((root) => isWindowsPathAtOrUnder(executable, root));
+  const hit = forbidden.find((root) => atOrUnderOnHost(executable, root));
   if (hit !== undefined) throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableInsideWorkspace", { path: executable }));
 }
 
@@ -435,15 +484,15 @@ function assertNoLiveWorkspaceWriter(allowWrite: readonly string[], workspaceRoo
   if (busy.length === 0) return;
   // The caller's workspace write contains another holder's private staging tree.
   let staging: string[] = [];
-  try { staging = pathForms([mxcStagingParent("win32")]); } catch { /* no staging parent: the busy root is not under one */ }
-  throw new MxcHolderWorkspaceBusyError(busy.some((live) => staging.some((root) => isWindowsPathAtOrUnder(live, root))));
+  try { staging = pathForms([mxcStagingParent(process.platform)]); } catch { /* no staging parent: the busy root is not under one */ }
+  throw new MxcHolderWorkspaceBusyError(busy.some((live) => staging.some((root) => atOrUnderOnHost(live, root))));
 }
 
 interface HolderStaging { readonly root: string; readonly home: string; readonly temp: string }
 
 /** Resolve the staging parent again, which re-reads the runtime root's path, and refuse one that is no longer `parent`. */
 function assertSameStagingParent(parent: string): void {
-  if (mxcStagingParent("win32") !== parent) throw new MxcProcessContractError("Container staging parent changed while a holder's directories were created");
+  if (mxcStagingParent(process.platform) !== parent) throw new MxcProcessContractError("Container staging parent changed while a holder's directories were created");
 }
 
 /** `instance` tells two copies of this module in one process apart: each copy knows only its own live holders.
@@ -468,11 +517,11 @@ const probedStagingParents = new Set<string>();
  * so a crash never leaves an unmarked tree. The marker sits in the staging parent, which no holder is granted.
  */
 function createHolderStaging(): HolderStaging {
-  const parent = mxcStagingParent("win32");
+  const parent = mxcStagingParent(process.platform);
   sweepHolderStaging(parent);
-  const dir = winPath.join(parent, randomBytes(16).toString("hex"));
-  const home = winPath.join(dir, "home");
-  const temp = winPath.join(dir, "temp");
+  const dir = hostPath().join(parent, randomBytes(16).toString("hex"));
+  const home = hostPath().join(dir, "home");
+  const temp = hostPath().join(dir, "temp");
   // The shared staging-shape check (also the plugin-child adapter's): exactly <staging parent>\<32-hex>\{home,temp}.
   const root = assertMxcHolderStaging({ stagingParent: parent, home, temp });
   const owner: StagingOwner = { pid: process.pid, start: resolvedHostProcessOwner()?.startTime ?? null, instance: STAGING_INSTANCE };
@@ -484,7 +533,7 @@ function createHolderStaging(): HolderStaging {
     // Exclusive: an existing entry under a fresh random name is not this holder's.
     for (const directory of [root, home, temp]) mkdirSync(directory);
     // Ave owns this fresh staging directory and can prepare the carrier here.
-    mkdirSync(winPath.join(root, ".ave"));
+    mkdirSync(hostPath().join(root, ".ave"));
   } catch (error) {
     liveStaging.delete(root);
     try { removeStagingTree(root); } catch { /* the marked remainder is left for a sweep */ }
@@ -499,7 +548,7 @@ function createHolderStaging(): HolderStaging {
     throw error;
   }
   // The one directory under the runtime root this holder may use as its working directory.
-  recordIssuedContainerHome(home, winPath.dirname(parent));
+  recordIssuedContainerHome(home, hostPath().dirname(parent));
   return Object.freeze({ root, home, temp });
 }
 
@@ -517,7 +566,7 @@ function removeTreeWithoutFollowingLinks(path: string): void {
     unlinkSync(path);
     return;
   }
-  for (const name of readdirSync(path)) removeTreeWithoutFollowingLinks(winPath.join(path, name));
+  for (const name of readdirSync(path)) removeTreeWithoutFollowingLinks(hostPath().join(path, name));
   rmdirSync(path);
 }
 
@@ -548,7 +597,7 @@ function removeStagingTree(root: string): void {
  * raise. A partial failure leaves the marked remainder for the next sweep. */
 async function removeHolderStaging(root: string): Promise<void> {
   if (!liveStaging.delete(root)) return;
-  forgetIssuedContainerHome(winPath.join(root, "home"));
+  forgetIssuedContainerHome(hostPath().join(root, "home"));
   try {
     try {
       await renameDirectory(root, `${root}${STAGING_RETIRED_SUFFIX}`);
@@ -625,7 +674,7 @@ function sweepHolderStaging(parent: string, probe: ProcessRunStateProbe = readWi
   }
   const running = new Map<string, StagingOwner>();
   for (const name of names) {
-    const root = winPath.join(parent, name.slice(0, -STAGING_OWNER_SUFFIX.length));
+    const root = hostPath().join(parent, name.slice(0, -STAGING_OWNER_SUFFIX.length));
     if (liveStaging.has(root)) continue;
     const owner = readStagingOwner(`${root}${STAGING_OWNER_SUFFIX}`);
     if (owner === null) continue;
@@ -685,8 +734,8 @@ export interface MxcBundledHolderInput {
 }
 
 export interface MxcBundledHolder {
-  readonly process: OwnedMxcExtensionProcess;
-  readonly confinement: "windows-mxc";
+  readonly process: MxcHolderProcess;
+  readonly confinement: "windows-mxc" | "macos-seatbelt";
   /** Resolves after verified termination, then removes the staging tree. Rejection means termination is unverified: the
    * holder stays quarantined with its listener, token and staging tree, and a later call retries the cleanup. */
   release(): Promise<void>;
@@ -711,9 +760,10 @@ export function prepareMxcHolderStart(input: {
 } {
   if (!isMxcExtensionBackendSelected()) throw new MxcProcessContractError(`${input.label}: the extension container backend is not selected`);
   assertHolderEnvironmentAdmissible(input.baseEnv);
-  assertMxcReleaseGateEvidence();
+  // macOS has no build-time release record; its readiness is the boot check's proof (lead decision L2).
+  if (windowsHost()) assertMxcReleaseGateEvidence();
   const executable = resolveHolderExecutable(input.executable, {});
-  assertMxcHolderNotBashForm(executable);
+  if (windowsHost()) assertMxcHolderNotBashForm(executable);
   assertExecutableAdmissible(executable, input.allowWrite, []);
   assertNoLiveWorkspaceWriter(input.allowWrite, []);
   // Caller writes only, before this holder's own staging root, which the state root holds, joins them.
@@ -724,24 +774,25 @@ export function prepareMxcHolderStart(input: {
 
 /** One holder incarnation per call: its own sibling roots and staging, never the caller's plan passed through. */
 export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promise<MxcBundledHolder> {
-  if (!isMxcExtensionBackendSelected()) throw new MxcProcessContractError(`${input.label}: the extension container backend is not selected`);
-  assertMxcHolderNotBashForm(input.command);
+  if (!isHolderStartRouted(input.egressOwner)) throw new MxcProcessContractError(`${input.label}: the extension container backend is not selected`);
+  // Git Bash cannot start in a Windows container; a POSIX shell is an ordinary macOS holder command.
+  if (windowsHost()) assertMxcHolderNotBashForm(input.command);
   assertHolderEnvironmentAdmissible(input.baseEnv, input.holderEnv);
-  // Before any staging: row 2 checks it again when it mints the receipt.
-  assertMxcReleaseGateEvidence();
+  // Before any staging: row 2 checks it again when it mints the receipt. macOS has no build-time record (L2).
+  if (windowsHost()) assertMxcReleaseGateEvidence();
   const executable = resolveHolderExecutable(input.command, input.baseEnv);
-  assertMxcHolderNotBashForm(executable);
+  if (windowsHost()) assertMxcHolderNotBashForm(executable);
   const workspaceRoots = input.workspaceRoots ?? [];
   assertExecutableAdmissible(executable, input.allowWrite, workspaceRoots);
   assertNoLiveWorkspaceWriter(input.allowWrite, workspaceRoots);
   assertWriteGrantsOutsideConfinementState(input.allowWrite, declaredConfinementStatePaths());
   const staging = createHolderStaging();
   const allowWrite = [...new Set([...input.allowWrite, staging.root])];
-  const allowRead = [...new Set([...input.allowRead, winPath.dirname(executable)])];
+  const allowRead = [...new Set([...input.allowRead, hostPath().dirname(executable)])];
   const cwd = input.cwd ?? staging.home;
   let spawned: Awaited<ReturnType<typeof spawnMxcConfinedChild>>;
   try {
-    if (![...allowRead, ...allowWrite].some((root) => isWindowsPathAtOrUnder(cwd, root))) {
+    if (![...allowRead, ...allowWrite].some((root) => atOrUnderOnHost(cwd, root))) {
       throw new MxcProcessContractError(`${input.label}: the working directory is outside this process's admitted folders`);
     }
     spawned = await spawnMxcConfinedChild({

@@ -258,6 +258,17 @@ export function runSeatbeltHolderBootSequence(deps: SeatbeltHolderBootDependenci
 }
 
 let runningWatcher: HolderWatcher | undefined;
+let provenRoute: Extract<SeatbeltHolderRouteProof, { state: "proven" }> | undefined;
+
+/** The helper and launcher identities this app run's boot check proved; undefined until it proved them. */
+export function provenSeatbeltHolderRoute(): { readonly helper: HolderSweepHelper; readonly launchers: SeatbeltHolderLaunchers } | undefined {
+  return provenRoute;
+}
+
+// @internal — tests that drive row 2 on a route they proved themselves.
+export function __setProvenSeatbeltHolderRouteForTest(route: { readonly helper: HolderSweepHelper; readonly launchers: SeatbeltHolderLaunchers } | undefined): void {
+  provenRoute = route === undefined ? undefined : { state: "proven", ...route };
+}
 
 /** Boot (`sandbox-init.ts`): run the sequence for this app run and publish the macOS extension plan from it. */
 export function startSeatbeltHolderBootServices(deps: SeatbeltHolderBootDependencies & {
@@ -265,6 +276,7 @@ export function startSeatbeltHolderBootServices(deps: SeatbeltHolderBootDependen
 }): Promise<SeatbeltHolderBootResult> {
   return runSeatbeltHolderBootSequence(deps).then((result) => {
     runningWatcher = result.watcher;
+    if (result.proof.state === "proven") provenRoute = result.proof;
     return result;
   });
 }

@@ -145,6 +145,7 @@ describe("container route call sites", () => {
     ]);
     expect(callers(/\bisContainerHolderRouteEnabled\s*\(/u, definition))
       // Boot runs the macOS holder route check only once the holder route is on.
-      .toEqual(["src/boot/steps/sandbox-init.ts", "src/permissions/asrt-sandbox.ts", "src/sandbox/wrap-bundled-command.ts"]);
+      // Row 2 admits a macOS user hook on the proven holder route.
+      .toEqual(["src/boot/steps/sandbox-init.ts", "src/permissions/asrt-sandbox.ts", "src/permissions/confined-child.ts", "src/sandbox/wrap-bundled-command.ts"]);
   });
 });

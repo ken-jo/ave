@@ -4674,6 +4674,7 @@ export const en = {
   "pluginConfigTab.confinementLinuxBubblewrap": "Linux sandbox (bubblewrap)",
   "pluginConfigTab.confinementWindowsSrt": "Windows sandbox",
   "pluginConfigTab.confinementWindowsMxc": "Windows container (MXC)",
+  "pluginConfigTab.confinementMacosSeatbelt": "macOS container (Seatbelt)",
   "pluginConfigTab.confinementUnconfined": "no OS sandbox",
   "pluginConfigTab.confinementNotSpawned": "process not started",
   "pluginConfigTab.doctorLifecycleQuarantined": "Ave could not confirm that this extension stopped, so it cannot be restarted until you restart Ave.",
