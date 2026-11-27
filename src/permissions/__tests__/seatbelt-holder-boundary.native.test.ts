@@ -187,12 +187,10 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     expect(await line(control.process.stdout)).toBe("up");
     expect(survivors(3310).length).toBeGreaterThanOrEqual(4);
     await target.release();
-    await new Promise(r => setTimeout(r, 300));
-    expect(survivors(3310)).toEqual([]);
+    await vi.waitFor(() => expect(survivors(3310)).toEqual([]), { timeout: 5_000, interval: 50 });
     expect(survivors(3320).length).toBeGreaterThanOrEqual(4);
     await control.release();
-    await new Promise(r => setTimeout(r, 300));
-    expect(survivors(3320)).toEqual([]);
+    await vi.waitFor(() => expect(survivors(3320)).toEqual([]), { timeout: 5_000, interval: 50 });
     expect(() => process.kill(target.process.id, 0)).toThrow();
   });
 
@@ -219,8 +217,8 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     expect(running()).toBe(true);
     await parent.release();
     await staging.release();
-    await new Promise(r => setTimeout(r, 300));
-    expect(running()).toBe(false);
+    // Release returns after the verified stop; poll only for the process table to catch up, bounded.
+    await vi.waitFor(() => expect(running()).toBe(false), { timeout: 5_000, interval: 50 });
     await expect(worker.process.completion).resolves.toBeDefined();
     // Control: with its parent gone, a new worker under it is refused, never started unparented.
     await expect(holder("true", { label: "worker:p15:w2", egressOwner: { kind: "worker", role: "worker", pluginId: "p15", instanceId: "w2" } as never,
@@ -293,8 +291,9 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
         const out: string[] = [];
         started.process.stdout.on("data", (chunk: Buffer) => out.push(chunk.toString()));
         await started.process.completion;
-        await new Promise(r => setTimeout(r, 50));
-        expect(out.join("").trim().split("\n")).toEqual(["tcp-refused", "unix-refused", "home-written", "data-refused"]);
+        // Completion waits for the output tail; poll bounded rather than assume a fixed delay.
+        await vi.waitFor(() => expect(out.join("").trim().split("\n")).toEqual(["tcp-refused", "unix-refused", "home-written", "data-refused"]),
+          { timeout: 5_000, interval: 25 });
       } finally {
         await started.release();
       }

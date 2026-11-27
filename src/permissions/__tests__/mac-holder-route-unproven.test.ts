@@ -77,6 +77,10 @@ describe.runIf(process.platform === "darwin")("macOS holder route on, holder cap
     setMacHolderCapability({ state: "ready" });
     try {
       expect(getHostShellExecutionPlan("default", "hook")).toMatchObject({ identity: "host-shell-execution-plan/v4:darwin:mxc", substrate: "mxc" });
+      // The real offline gate, unmocked: local inference is admitted on the holder and nothing else changed.
+      expect(isOfflineHolderConfinementActive()).toBe(true);
+      expect(() => assertLocalEmbeddingRuntime()).not.toThrow();
+      expect(isOfflineProcessConfinementActive()).toBe(false);
     } finally {
       setMacHolderCapability({ state: "unavailable", reason: "holder-start-failed" });
     }
