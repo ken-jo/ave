@@ -67,6 +67,15 @@ describe("SandboxStatusBadge", () => {
     expect(screen.getByTestId("sandbox-off-status")).toHaveTextContent("셸 격리 사용 불가");
   });
 
+  it("shows missing Linux container tools as unavailable even with an active wrap", () => {
+    render(<SandboxStatusBadge capability={{
+      ...capability({ platform: "linux", active: true }),
+      containerShell: { state: "unavailable", reason: "tools-missing", detail: ["slirp4netns"],
+        egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } },
+    }} />);
+    expect(screen.getByTestId("sandbox-off-status")).toHaveTextContent("셸 격리 사용 불가");
+  });
+
   it("shows unsupported platform status", () => {
     render(<SandboxStatusBadge capability={capability({ platform: "freebsd", requestedSandbox: false })} />);
     expect(screen.getByTestId("sandbox-off-status")).toHaveTextContent("지원하지 않는 플랫폼");

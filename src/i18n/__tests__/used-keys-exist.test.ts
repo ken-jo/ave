@@ -48,6 +48,15 @@ describe("i18n keys used in source", () => {
     expect(Object.hasOwn(ko, key)).toBe(true);
   });
 
+  it.each([
+    "UnsupportedArch", "BinaryMissing", "LauncherMismatch", "RuntimeRootUnproved", "RequestRejected", "ShellStartFailed",
+    "ToolsMissing", "NamespacesUnavailable",
+  ])("defines the Linux container reason %s in both locales", (suffix) => {
+    const key = `permissionsTab.osSandboxLinuxContainerReason${suffix}`;
+    expect(Object.hasOwn(messages.en, key)).toBe(true);
+    expect(Object.hasOwn(ko, key)).toBe(true);
+  });
+
   it("all resolve to a real catalog entry", () => {
     // English is the fallback catalog and is loaded eagerly; Korean, the only
     // other supported locale, is lazy, and the parity check next door already

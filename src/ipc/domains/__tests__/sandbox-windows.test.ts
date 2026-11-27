@@ -553,11 +553,22 @@ describe("sandboxCapability shell status (the permission card's checkbox)", () =
     return capability;
   }
 
-  // Linux has no container shell route (container-platform.ts), so its shells still run under the ASRT wrap.
-  it("is on when the shell plan runs Linux shells under ASRT", async () => {
-    await bootAsrt("linux");
+  it("is on when the verified Linux container carries shells", async () => {
+    const capability = await bootAsrt("linux");
+    capability.setContainerShellSubstrate("linux", { state: "available" });
     expect(await readShell({ osToolSandbox: true })).toEqual({
       state: "on", setting: true, envForced: false, causes: [],
+    });
+  });
+
+  it("sends missing Linux prerequisite details while the hook wrap is active", async () => {
+    const capability = await bootAsrt("linux");
+    capability.setContainerShellSubstrate("linux", { state: "unavailable", reason: "tools-missing", detail: ["slirp4netns", "iptables"] });
+    await setup({ osToolSandbox: true });
+    expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({
+      shell: { state: "unavailable", causes: ["shell-not-contained"] },
+      containerShell: { state: "unavailable", reason: "tools-missing", detail: ["slirp4netns", "iptables"],
+        egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } },
     });
   });
 
