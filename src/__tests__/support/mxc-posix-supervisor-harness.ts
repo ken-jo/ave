@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -11,10 +11,10 @@ const GENERATION = "b".repeat(64);
 const KEY = Buffer.alloc(32, 7);
 
 /** A minimal staged macOS request that the supervisor services accept and map. */
-export function stageSeatbeltWire(directory: string, overrides: { readonly timeout?: number } = {}) {
+export function stageSeatbeltWire(directory: string, overrides: { readonly timeout?: number; readonly cwd?: string } = {}) {
   const wire = {
     version: "1.0.0", containment: "seatbelt",
-    process: { commandLine: "/usr/bin/true", cwd: directory, timeout: overrides.timeout ?? 1_000, inheritDefaultEnv: false, env: ["PATH=/usr/bin:/bin"] },
+    process: { commandLine: "/usr/bin/true", cwd: overrides.cwd ?? directory, timeout: overrides.timeout ?? 1_000, inheritDefaultEnv: false, env: ["PATH=/usr/bin:/bin"] },
     filesystem: { readwritePaths: [directory], readonlyPaths: [], deniedPaths: [] },
     network: { egress: { default: "deny" }, ingress: { default: "deny", hostLoopback: "deny" } },
     runtimeConfig: { networkProxy: "http://127.0.0.1:9" },
@@ -24,7 +24,11 @@ export function stageSeatbeltWire(directory: string, overrides: { readonly timeo
   const bytes = Buffer.from(JSON.stringify(wire));
   const requestPath = join(directory, `request-${Math.random().toString(16).slice(2)}.json`);
   writeFileSync(requestPath, bytes, { mode: 0o600 });
-  return { requestPath, requestSha256: createHash("sha256").update(bytes).digest("hex") };
+  const cwd = statSync(wire.process.cwd, { bigint: true });
+  return {
+    requestPath, requestSha256: createHash("sha256").update(bytes).digest("hex"),
+    cwdIdentity: { realpath: wire.process.cwd, dev: String(cwd.dev), ino: String(cwd.ino) },
+  };
 }
 
 /**
@@ -32,7 +36,7 @@ export function stageSeatbeltWire(directory: string, overrides: { readonly timeo
  * receipt the service sends; `natives` holds each process the fake SDK handed out.
  */
 export function createPosixSupervisorHarness() {
-  const directory = mkdtempSync(join(tmpdir(), "ave-mxc-posix-service-"));
+  const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-mxc-posix-service-")));
   const toSupervisor = new PassThrough(), toHost = new PassThrough();
   const host = new MxcExtensionChannel(toHost, toSupervisor, GENERATION, KEY, "host");
   const supervisor = new MxcExtensionChannel(toSupervisor, toHost, GENERATION, KEY, "supervisor");
@@ -42,6 +46,9 @@ export function createPosixSupervisorHarness() {
   const spawned: unknown[] = [];
   let spawnGate: Promise<void> = Promise.resolve();
   let releaseSpawn: (() => void) | undefined;
+  // What the scripted workload's cwd prelude reports first on stdout, and whether the host side grants the run.
+  let verdict: "R" | "C" | "" = "R";
+  let grantOnVerified = true;
   class MxcError extends Error {
     constructor(readonly code: string) { super(code); }
   }
@@ -52,6 +59,7 @@ export function createPosixSupervisorHarness() {
       await spawnGate;
       const fixture = createMxcNativeProcess();
       natives.push(fixture);
+      if (verdict !== "") fixture.stdout.write(verdict);
       return fixture.native;
     },
   } as unknown as MxcShellSdk;
@@ -60,6 +68,7 @@ export function createPosixSupervisorHarness() {
     for await (const frame of host.frames()) {
       const { version: _v, generation: _g, sequence: _s, ...payload } = frame;
       frames.push(payload as MxcFramePayload);
+      if (payload.type === "shell-cwd-verified" && grantOnVerified) await host.send({ type: "spawn-authorized" });
     }
   })().catch(() => {});
   let fatal = 0;
@@ -70,6 +79,8 @@ export function createPosixSupervisorHarness() {
       if (!libraryInPlace) throw new Error("library replaced");
     } }),
     replaceLibrary() { libraryInPlace = false; },
+    reportVerdict(value: "R" | "C" | "") { verdict = value; },
+    withholdGrant() { grantOnVerified = false; },
     onFatal: () => { fatal += 1; },
     get fatal() { return fatal; },
     holdSpawn() { spawnGate = new Promise((resolve) => { releaseSpawn = resolve; }); },

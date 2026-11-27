@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { realpathSync, statSync } from "node:fs";
 import { Duplex, PassThrough } from "node:stream";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,11 +20,15 @@ vi.mock("../../main/managed-child-processes.js", () => ({
 const REFUSAL = { type: "error", code: "start-refused", sdkCode: "malformed_request", message: "Start refused" } as const;
 const BACKEND_LOSS = { type: "error", code: "capability-unavailable", backendLoss: "common", message: "Backend unavailable" } as const;
 
-function launchShell() {
+function launchShell(options: {
+  readonly authorize?: (grant: () => boolean) => Promise<boolean>;
+  readonly cwdIdentity?: { realpath: string; dev: string; ino: string };
+} = {}) {
   const owner = new PassThrough();
+  const written: Buffer[] = [];
   const control = new Duplex({
     read() {},
-    write(_chunk, _encoding, callback) { callback(); },
+    write(chunk: Buffer, _encoding, callback) { written.push(chunk); callback(); },
   });
   const stdout = new PassThrough();
   const stderr = new PassThrough();
@@ -35,8 +40,8 @@ function launchShell() {
   mockSpawn.mockReturnValueOnce(child as unknown as ChildProcess);
   const revoke = vi.fn();
   const { completion } = startMxcShellSupervisor(
-    { type: "shell-start", requestPath: process.cwd(), requestSha256: "a".repeat(64) },
-    5_000, undefined, revoke, "test:shell-receipt", { entry: "unit-entry", nodeModules: "unit-modules", isPackaged: false },
+    { type: "shell-start", requestPath: process.cwd(), requestSha256: "a".repeat(64), cwdIdentity: options.cwdIdentity ?? { realpath: process.cwd(), dev: "1", ino: "2" } },
+    5_000, undefined, revoke, "test:shell-receipt", { entry: "unit-entry", nodeModules: "unit-modules", isPackaged: false }, options.authorize,
   );
   const args = mockSpawn.mock.calls[0]?.[1];
   const generation = Array.isArray(args) ? args[2] : undefined;
@@ -51,12 +56,55 @@ function launchShell() {
     child.emit("exit", 0, null);
     return completion;
   };
-  return { header: { version: 1, generation, sequence: 0 } as const, key, finish, revoke };
+  /** The frame types the host has written so far, after the shell-start. */
+  const hostFrames = (): string[] => {
+    const decoder = new MxcFrameDecoder(generation, key, "host");
+    return written.flatMap((chunk) => [...decoder.read(chunk)].map((frame) => frame.type));
+  };
+  return { header: { version: 1, generation, sequence: 0 } as const, key, finish, revoke, control, hostFrames };
+}
+
+function ownCwdIdentity() {
+  const stats = statSync(process.cwd(), { bigint: true });
+  return { realpath: realpathSync.native(process.cwd()), dev: String(stats.dev), ino: String(stats.ino) };
 }
 
 afterEach(async () => {
   await setImmediate();
   vi.mocked(spawn).mockReset();
+});
+
+describe("macOS shell grant before user code", () => {
+  it("grants a verified workload through the caller's final check while the staged cwd still matches", async () => {
+    const authorize = vi.fn((grant: () => boolean) => Promise.resolve(grant()));
+    const { header, key, control, hostFrames, finish } = launchShell({ authorize, cwdIdentity: ownCwdIdentity() });
+    control.push(encodeMxcFrame({ ...header, type: "shell-cwd-verified", id: 7 }, key, "supervisor"));
+    await vi.waitFor(() => expect(hostFrames()).toEqual(["shell-start", "spawn-authorized"]));
+    control.push(encodeMxcFrame({ ...header, sequence: 1, type: "shell-ready", id: 7 }, key, "supervisor"));
+    const exit = encodeMxcFrame({ ...header, sequence: 2, type: "exit", exitCode: 197, timedOut: false }, key, "supervisor");
+    expect(await finish(exit)).toEqual({ code: 197, timedOut: false, cancelled: false, rejected: false, cleanupUnverified: false });
+    expect(authorize).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["the caller's check refuses", () => Promise.resolve(false), ownCwdIdentity],
+    ["the caller's check throws", () => Promise.reject(new Error("admission")), ownCwdIdentity],
+    ["the staged cwd no longer matches", (grant: () => boolean) => Promise.resolve(grant()), () => ({ ...ownCwdIdentity(), ino: "1" })],
+  ] as const)("withholds the grant and stops the run when %s, reporting nothing ran", async (_case, authorize, identity) => {
+    const { header, key, control, hostFrames, finish } = launchShell({ authorize, cwdIdentity: identity() });
+    control.push(encodeMxcFrame({ ...header, type: "shell-cwd-verified", id: 7 }, key, "supervisor"));
+    await vi.waitFor(() => expect(hostFrames()).toContain("stop"));
+    expect(hostFrames()).not.toContain("spawn-authorized");
+    const stopped = encodeMxcFrame({ ...header, sequence: 1, type: "stopped", spawnPendingAtCancellation: false }, key, "supervisor");
+    expect(await finish(stopped)).toMatchObject({ rejected: true, grantWithheld: true, cancelled: false, cleanupUnverified: false });
+  });
+
+  it("refuses a ready frame before the workload's verified cwd as a protocol failure", async () => {
+    const { header, key, finish, revoke } = launchShell({ cwdIdentity: ownCwdIdentity() });
+    const ready = encodeMxcFrame({ ...header, type: "shell-ready", id: 7 }, key, "supervisor");
+    expect(await finish(ready)).toMatchObject({ cleanupUnverified: true, startFailed: true });
+    expect(revoke).toHaveBeenCalled();
+  });
 });
 
 describe("macOS shell receipts", () => {

@@ -13,6 +13,10 @@ import { MxcExtensionChannel, type MxcFramePayload } from "./mxc-extension-chann
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
 import { isMxcSupervisorLoaderOverride } from "./mxc-supervisor-transport.js";
 import { onSandboxStatusChanged } from "./sandbox-capability.js";
+import {
+  captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, sameShellWorkingDirectoryIdentity,
+  type ShellWorkingDirectoryIdentity,
+} from "./shell-working-directory-identity.js";
 
 type ShellStart = Extract<MxcFramePayload, { type: "shell-start" }>;
 type ShellReceipt = Extract<MxcFramePayload, { type: "exit" | "stopped" | "error" }>;
@@ -26,11 +30,47 @@ export function mxcShellSupervisorLocation(resources: HostResources = getHostRes
   };
 }
 
-export async function stageMxcShellRequest(requestPath: string, request: object): Promise<ShellStart> {
+/**
+ * Stage the request beside the identity of its working directory: the realpath and its dev and inode. The supervisor
+ * restats that identity before the SDK call and the workload compares it with the cwd it inherited before user code.
+ * `expected` is an identity already bound earlier, such as the approved directory; the staged one must equal it.
+ */
+export async function stageMxcShellRequest(
+  requestPath: string, request: { readonly process: { readonly cwd: string } }, expected?: ShellWorkingDirectoryIdentity,
+): Promise<ShellStart> {
+  const identity = captureShellWorkingDirectoryIdentity(request.process.cwd);
+  if (identity === undefined || identity.realpath !== request.process.cwd
+    || (expected !== undefined && !sameShellWorkingDirectoryIdentity(identity, expected))) {
+    throw new MxcCwdChangedError();
+  }
   const bytes = Buffer.from(JSON.stringify(request));
   await writeFile(requestPath, bytes, { flag: "wx", mode: 0o600 });
-  return { type: "shell-start", requestPath, requestSha256: createHash("sha256").update(bytes).digest("hex") };
+  return {
+    type: "shell-start", requestPath, requestSha256: createHash("sha256").update(bytes).digest("hex"),
+    cwdIdentity: { realpath: identity.realpath, dev: String(identity.dev), ino: String(identity.ino) },
+  };
 }
+
+/** The container shell's working directory is not, or is no longer, the directory its request was staged for. */
+export class MxcCwdChangedError extends Error {
+  constructor() {
+    super("Container shell working directory changed before the run");
+    this.name = "MxcCwdChangedError";
+  }
+}
+
+function stagedCwdIdentity(request: ShellStart): ShellWorkingDirectoryIdentity {
+  return { realpath: request.cwdIdentity.realpath, dev: BigInt(request.cwdIdentity.dev), ino: BigInt(request.cwdIdentity.ino) };
+}
+
+/**
+ * The host's final check before user code runs: it may grant only by calling `grant` synchronously, with nothing
+ * awaited between its last check and that call, and returns whether it granted. The client has already compared the
+ * staged cwd identity when this runs.
+ */
+export type MxcShellRunAuthorizer = (grant: () => boolean) => Promise<boolean>;
+
+const AUTHORIZE_CWD_ONLY: MxcShellRunAuthorizer = (grant) => Promise.resolve(grant());
 
 const STOP_MS = TOOL_TIMEOUT_POLICY.mxcMacShellStopMs;
 const LOST = {
@@ -42,6 +82,10 @@ const LOST = {
 const START_LOST = { ...LOST, startFailed: true } as const;
 
 interface ShellOutcome {
+  /** The supervisor or the workload found the working directory changed before user code ran: nothing ran. */
+  readonly cwdChanged?: true;
+  /** The host's final check before user code refused its grant, and the stop that followed is confirmed: nothing ran. */
+  readonly grantWithheld?: true;
   readonly code: number | null;
   readonly timedOut: boolean;
   readonly cancelled: boolean;
@@ -55,6 +99,9 @@ interface ShellOutcome {
 }
 
 function shellOutcome(receipt: ShellReceipt, ready: boolean): ShellOutcome {
+  if (receipt.type === "error" && receipt.code === "cwd-changed" && !ready) {
+    return { ...LOST, cleanupUnverified: false, rejected: true, cwdChanged: true, failure: receipt };
+  }
   if (receipt.type === "error") {
     if (receipt.code === "cleanup-unverified" || receipt.code === "supervisor-lost") return LOST;
     // After the run began, a contract receipt follows a confirmed stop: the channel failed, the container did not refuse.
@@ -69,6 +116,11 @@ function shellOutcome(receipt: ShellReceipt, ready: boolean): ShellOutcome {
 
 function lostOutcome(ready: boolean): ShellOutcome {
   return ready ? LOST : START_LOST;
+}
+
+// A run the host refused to grant was stopped before user code: once that stop is confirmed, nothing ran.
+function withheldOutcome(outcome: ShellOutcome, withheld: boolean): ShellOutcome {
+  return withheld && outcome.cancelled ? { ...outcome, cancelled: false, rejected: true, grantWithheld: true } : outcome;
 }
 
 export { lostOutcome as _lostShellOutcomeForTest, shellOutcome as _shellOutcomeForTest };
@@ -194,12 +246,15 @@ function takeShellSupervisor(location: ShellSupervisorLocation, label: string): 
 
 export function startMxcShellSupervisor(
   request: ShellStart, timeoutMs: number, signal: AbortSignal | undefined, revoke: () => void,
-  label: string, location = mxcShellSupervisorLocation(),
+  label: string, location = mxcShellSupervisorLocation(), authorize: MxcShellRunAuthorizer = AUTHORIZE_CWD_ONLY,
 ) {
+  const cwdIdentity = stagedCwdIdentity(request);
   signal?.throwIfAborted();
   const supervisor = takeShellSupervisor(location, label);
   const { child, owner, control, channel, exited } = supervisor;
   let ready = false;
+  let verified = false;
+  let grantWithheld = false;
   let receipt: ShellReceipt | undefined;
   let stopping: Promise<void> | undefined;
   let stopDeadline: ReturnType<typeof setTimeout> | undefined;
@@ -230,10 +285,28 @@ export function startMxcShellSupervisor(
     handleFailure();
     closeControl();
   };
+  // The workload reported its inherited cwd matched. Grant only while that directory is still the staged one and the
+  // caller's own final check passes; otherwise stop it before user code runs.
+  const grantRun = (): void => {
+    const grant = (): boolean => {
+      if (settled || stopping !== undefined || !matchesShellWorkingDirectoryIdentity(cwdIdentity.realpath, cwdIdentity)) return false;
+      void channel.send({ type: "spawn-authorized" }).catch(handleFailure);
+      return true;
+    };
+    void authorize(grant).then((granted) => granted, () => false).then((granted) => {
+      // A run already stopping (cancelled, failed or quit) keeps that ending.
+      if (granted || stopping !== undefined || settled) return;
+      grantWithheld = true;
+      void stop();
+    });
+  };
   const readReceipts = (async () => {
     for await (const frame of channel.frames()) {
       if (receipt !== undefined) throw new MxcProcessContractError("Frame after shell terminal receipt");
-      if (frame.type === "shell-ready" && !ready) ready = true;
+      if (frame.type === "shell-cwd-verified" && !verified && !ready) {
+        verified = true;
+        grantRun();
+      } else if (frame.type === "shell-ready" && verified && !ready) ready = true;
       else if (frame.type === "exit" || frame.type === "stopped" || frame.type === "error") receipt = frame;
       else throw new MxcProcessContractError("Unexpected shell supervisor frame");
     }
@@ -246,7 +319,7 @@ export function startMxcShellSupervisor(
     const result = await Promise.race([
       Promise.all([exited, readReceipts]).then(() => receipt === undefined ? lostOutcome(ready) : shellOutcome(receipt, ready)),
       lost.then(() => lostOutcome(ready)),
-    ]);
+    ]).then((outcome) => withheldOutcome(outcome, grantWithheld && !ready));
     settled = true;
     clearTimeout(watchdog);
     clearTimeout(stopDeadline);

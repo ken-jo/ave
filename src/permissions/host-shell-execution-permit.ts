@@ -379,12 +379,18 @@ export async function withHostShellExecutionHandoff<T>(
 
 export function assertHostShellSpawnDirectory(authorization: HostShellSpawnAuthorization | undefined): void {
   if (authorization === undefined) return;
+  assertHostShellSpawnDirectoryCurrent(authorization);
+  pendingHandoffs.delete(authorization);
+}
+
+/** The same check without spending the permit, for a route that spends it later at its execution handoff. */
+export function assertHostShellSpawnDirectoryCurrent(authorization: HostShellSpawnAuthorization | undefined): void {
+  if (authorization === undefined) return;
   const record = pendingHandoffs.get(authorization);
   if (record === undefined ||
       !isHostShellSpawnDirectoryCurrent(record)) {
     throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
   }
-  pendingHandoffs.delete(authorization);
 }
 
 export function consumeHostShellExecutionPermit(

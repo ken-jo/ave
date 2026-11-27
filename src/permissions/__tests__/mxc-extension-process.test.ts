@@ -19,7 +19,8 @@ const STARTED = { requestDigest: "c".repeat(64), startEvidence: { installedPaylo
 describe("native shell supervisor protocol", () => {
   const header = { version: 1, generation: GENERATION, sequence: 0 } as const;
   const requestPath = resolve("request.json");
-  const shellStart = { ...header, type: "shell-start", requestPath, requestSha256: "c".repeat(64) } as const;
+  const cwdIdentity = { realpath: resolve("."), dev: "16777229", ino: "18446744073709551615" };
+  const shellStart = { ...header, type: "shell-start", requestPath, requestSha256: "c".repeat(64), cwdIdentity } as const;
 
   it("authenticates the staged start and native child receipts", () => {
     const shellReady = { ...header, type: "shell-ready", id: 42 } as const;
@@ -30,6 +31,20 @@ describe("native shell supervisor protocol", () => {
     expect(() => encode({ ...shellStart, requestSha256: "invalid" })).toThrow(MxcProcessContractError);
     expect(() => encode({ ...shellStart, requestPath: "relative.json" })).toThrow(MxcProcessContractError);
     expect(() => encode({ ...shellReady, id: 0 })).toThrow(MxcProcessContractError);
+    const verified = { ...header, type: "shell-cwd-verified", id: 42 } as const;
+    expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(verified))]).toEqual([verified]);
+  });
+
+  it("refuses a staged start without a complete, absolute cwd identity", () => {
+    const { cwdIdentity: _omitted, ...withoutIdentity } = shellStart;
+    for (const frame of [
+      withoutIdentity,
+      { ...shellStart, cwdIdentity: { ...cwdIdentity, realpath: "relative" } },
+      { ...shellStart, cwdIdentity: { ...cwdIdentity, dev: "-1" } },
+      { ...shellStart, cwdIdentity: { ...cwdIdentity, ino: "01" } },
+      { ...shellStart, cwdIdentity: { ...cwdIdentity, extra: "x" } },
+      { ...shellStart, cwdIdentity: { realpath: cwdIdentity.realpath, dev: cwdIdentity.dev } },
+    ]) expect(() => encodeMxcFrame(frame as never, KEY, "host")).toThrow(MxcProcessContractError);
   });
 
   it("retains the SDK refusal code in the terminal frame", () => {

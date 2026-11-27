@@ -53,14 +53,16 @@ describe("stage workspace session contract", () => {
 });
 
 describe("macOS container spawn directory contract", () => {
-  it("checks the approved directory just before the supervisor starts, for both callers", () => {
+  it("checks the approved directory just before the supervisor starts and spends the permit at the workload's grant, for both callers", () => {
     const posixRunner = shellTools.slice(shellTools.indexOf("async function runPosixContainerShell("), shellTools.indexOf("export async function spawnWithSandbox("));
-    const check = posixRunner.indexOf("assertHostShellSpawnDirectory(input.spawnAuthorization);");
-    const start = posixRunner.indexOf("launch.start(label)");
+    const check = posixRunner.indexOf("assertHostShellSpawnDirectoryCurrent(input.spawnAuthorization);");
+    const start = posixRunner.indexOf("launch.start(label, hostShellGrantAuthorizer(input.spawnAuthorization))");
     expect(check).toBeGreaterThan(-1);
     expect(start).toBeGreaterThan(check);
     expect(posixRunner.slice(check, start)).not.toMatch(/\bawait\b/u);
-    expect(posixRunner.match(/assertHostShellSpawnDirectory\(/gu)).toHaveLength(1);
+    expect(posixRunner.match(/assertHostShellSpawnDirectoryCurrent\(/gu)).toHaveLength(1);
+    // Spending the permit before the start would leave nothing for the grant's handoff.
+    expect(posixRunner).not.toMatch(/assertHostShellSpawnDirectory\(/u);
     for (const [start, end] of [["export async function spawnWithSandbox(", "async function spawnWithTimeout("], ["async function spawnPowerShellWithSandbox(", "async function spawnPowerShellInMxc("]] as const) {
       const route = shellTools.slice(shellTools.indexOf(start), shellTools.indexOf(end));
       const call = route.indexOf("return await runPosixContainerShell({");
