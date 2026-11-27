@@ -2,7 +2,7 @@
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { userEvent } from "@testing-library/user-event";
 import { renderApp } from "./render-app.js";
 import { submitChatMessage } from "./helpers.js";
 import { MOCK_DEFAULT_SESSION_ID } from "./mock-ave-api.js";
