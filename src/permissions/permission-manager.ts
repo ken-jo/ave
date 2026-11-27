@@ -2292,7 +2292,6 @@ export class PermissionManager {
     } else if ((!preparedReview || providerPromptHash !== undefined) && cacheResult.hit && cacheResult.verdict) {
       const ruleVerdict = preparedReview?.ruleVerdict ?? new RuleBasedRiskClassifier().classify(reviewerContext ?? buildReviewerContext());
       ruleVerdictForAudit = ruleVerdict.level;
-      if (preparedReview) llmVerdictForAudit = cacheResult.verdict.level;
       verdict = preparedReview ? maxVerdict(ruleVerdict, cacheResult.verdict) : cacheResult.verdict;
       outcome = "cache";
     } else {
