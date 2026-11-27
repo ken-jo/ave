@@ -25,7 +25,7 @@ import {
   buildHostShellExecutionPlan, exactRulePassesUnsandboxedShellAsk, HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL, requiresUnsandboxedShellAsk,
   type HostShellExecutionPlan,
 } from "../host-shell-execution-plan.js";
-import { assertLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from "../../main/memory-map/local-runtime.js";
+import { assertLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from "../../main/memory-map/local-runtime-win32.js";
 import type { MxcExtensionStartEvidence } from "../mxc-extension-protocol.js";
 import { classifyMxcExtensionReadiness, classifyMxcReleaseGate, planWindowsExtensionHolder, type MxcExtensionReleaseGateEvidence } from "../mxc-extension-readiness.js";
 import { synthesizeMxcAncestorQueries } from "../mxc-filesystem-policy.js";
