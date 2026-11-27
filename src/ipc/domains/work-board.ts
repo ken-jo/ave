@@ -1,5 +1,6 @@
 import { readWorkflowDecisionHistory } from "../workflow-decision-history.js";
 import { maskWorkflowText, withoutWorkflowProjection } from "../../work-board/workflow/run-read-projection.js";
+import { mintRequestedOutputDecision } from "../../work-board/workflow/requested-output-decision.js";
 import { isGraphHash, isStageId, isTemplateId, isTemplateVersion, WorkflowTemplateError } from "../../work-board/template-graph.js";
 import type { RunAuthoritySource, TemplateVersionPin } from "../../shared/workflow-template-types.js";
 import { registerWorkflowTemplateHandlers } from "../workflow-template-handlers.js";
@@ -176,6 +177,10 @@ function parseDecideStageInput(raw: unknown): StageGateDecideInput | null {
   return { runId, stageId, attempt, resultHash, decision: decision as WorkPlanDecision, ...(outputHash !== undefined ? { outputHash } : {}), ...(note !== undefined ? { note } : {}) };
 }
 
+function isRequestedOutputApproval(input: StageGateDecideInput): boolean {
+  return input.decision === "approve" && input.outputHash !== undefined;
+}
+
 /** The `Create and run` tuple the user saw, with the project the card showed. Null when the renderer sent none or a malformed one. */
 function parseJoinBinding(record: Record<string, unknown> | null): Omit<StageJoinDecideInput, "decision"> | null {
   if (!record) return null;
@@ -229,7 +234,17 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     }
     const channel = workBoardDecisionChannel(key);
     if (!channel || typeof token !== "string" || !/^[0-9a-f-]{36}$/u.test(token)) return false;
-    const proof = securitySettingsGestures.consume(e.sender, { channel, payload: key });
+    let keyboard = false;
+    if (channel === WORK_BOARD.decideStage && typeof key === "string") {
+      try {
+        const stage = parseDecideStageInput(JSON.parse(key)?.[2]);
+        keyboard = stage !== null && isRequestedOutputApproval(stage);
+      } catch {
+        return false;
+      }
+    }
+    const operation = { channel, payload: key };
+    const proof = keyboard ? securitySettingsGestures.consume(e.sender, operation, "keyboard") : securitySettingsGestures.consume(e.sender, operation);
     if (!proof) return false;
     decisionTokens.set(e.sender, { frame: e.sender.mainFrame, token, proof });
     return true;
@@ -270,7 +285,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
 
   /** What the board shows of a template run comes from the host (the run file and the scheduler), never from the row. */
   const withTemplateRuns = async (items: readonly WorkItemResolved[], detail?: { runId?: string }): Promise<WorkItemResolved[]> => {
-    if (workBoardEngine) return workBoardEngine.projectTemplateRuns(items, detail);
+    if (workBoardEngine) return workBoardEngine.projectTemplateRuns(items, detail, "local-desktop");
     return items.map(withoutWorkflowProjection);
   };
 
@@ -671,6 +686,8 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     if (typeof id !== "number" || !Number.isInteger(id)) return { ok: false as const, reason: "invalid-input" as const };
     const existing = await loadAuthorizedItem(id);
     if (existing.status !== "found") return { ok: false as const, reason: "not_found" as const };
+    const stage = channel === WORK_BOARD.decideStage ? parseDecideStageInput(input) : null;
+    if (stage && isRequestedOutputApproval(stage) && !canReadItem(e, existing.item)) return { ok: false as const, reason: "not_found" as const };
     return null;
   };
   const auditStageDecision = (id: number, detail: Record<string, unknown>): void => {
@@ -700,10 +717,13 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
           if (event.kind === "privacy.redacted") redactedCount += event.count;
         }, parsed.note);
       const { note: _sent, ...bound } = parsed;
-      const result = await workBoardEngine.decideStageGate(id as number, { ...bound, ...(note !== undefined ? { note } : {}) });
+      const decision = { ...bound, ...(note !== undefined ? { note } : {}) };
+      const result = isRequestedOutputApproval(parsed)
+        ? await workBoardEngine.decideStageGate(id as number, decision, mintRequestedOutputDecision(id as number, decision))
+        : await workBoardEngine.decideStageGate(id as number, decision);
       if (!result.ok) return result;
       // The decision only; the note body stays on the item.
-      auditStageDecision(id as number, { runId: parsed.runId, stageId: parsed.stageId, attempt: parsed.attempt, result: parsed.resultHash.slice(0, 8), decision: result.status, note: note !== undefined });
+      auditStageDecision(id as number, { runId: parsed.runId, stageId: parsed.stageId, attempt: parsed.attempt, result: parsed.resultHash.slice(0, 8), ...(parsed.outputHash !== undefined && { outputs: parsed.outputHash.slice(0, 8) }), decision: result.status, note: note !== undefined });
       broadcastItemChanged(id as number, "updated");
       broadcastToAppWindows(deps, WORK_APPROVALS.changed, undefined);
       return redactedCount > 0 ? { ...result, redactedCount } : result;

@@ -744,3 +744,64 @@ it("keeps a B stage and its descendant approval details out of the launching A w
     await h.cleanup();
   }
 });
+
+it("requires a native keyboard receipt for an output-bearing approval", async () => {
+  const { event, engine } = setup();
+  const input = { ...gateInput, outputHash: HASH };
+  const token = "a".repeat(36);
+  const key = workBoardDecisionKey(WORK_BOARD.decideStage, 7, input);
+  event.sender.emit("before-mouse-event", {}, { type: "mouseUp" });
+  await expect(handler(WORK_BOARD.captureDecisionIntent)(event, token, key)).resolves.toBe(false);
+  expect(engine.decideStageGate).not.toHaveBeenCalled();
+});
+
+it("shows the full output request on the desktop and executes it only with its bound keyboard receipt", async () => {
+  const execute = vi.fn(async () => ({ id: "delivery", status: "denied" as const, detail: "capability-unavailable" }));
+  const h = await stageRunHarness({ observeRunWork: true, workflow: { outputs: { execute } } });
+  await h.runThenEnd(async () => {
+    const decl = { kind: "send-message", owner: "plugin", ownerId: "delivery", toolName: "send" } as const;
+    const version = await h.confirm([stageOf("a", { requestedOutputs: [decl] })]);
+    const id = await h.addItem(version);
+    const start = h.start(id, h.local(version));
+    (await h.untilLive(1))[0].finish({ summary: JSON.stringify({
+      result: "Ready", requestedOutputs: [{ id: "delivery", ...decl, args: { recipient: "Review team", text: "Full message body" }, summary: "Notify" }],
+    }) });
+    await expect(start).resolves.toMatchObject({ status: "awaiting_approval" });
+
+    const owner = workBoardTestSender();
+    const event = { sender: owner, senderFrame: owner.mainFrame };
+    const window = { isDestroyed: () => false, webContents: owner };
+    const deps = {
+      workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
+      auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+    } as unknown as IpcDeps;
+    registerWorkBoardHandlers(deps);
+    registerWorkApprovalsHandlers(deps);
+    await bindDefaultProject(event);
+    const record = await h.item(id);
+    const stage = record.stageRuns[0];
+    const binding = { runId: record.runId, stageId: "a", attempt: 1, resultHash: stage.resultHash, outputHash: stage.outputHash };
+    const card = {
+      kind: "stage-gate", binding,
+      outputs: [{ id: "delivery", summary: "Notify", payload: expect.stringContaining('"text": "Full message body"') }],
+    };
+    await expect(handler(WORK_BOARD.get)(event, id)).resolves.toMatchObject({ item: { pendingWorkflowDecisions: [card] } });
+    await expect(handler(WORK_APPROVALS.list)(event, {})).resolves.toMatchObject({ items: [card] });
+    const allProjects = await handler(WORK_APPROVALS.list)(event, { allProjects: true });
+    expect(allProjects).toMatchObject({ items: [{ kind: "navigation", targetKind: "stage-gate" }] });
+    expect(JSON.stringify(allProjects)).not.toContain("Full message body");
+    const approval = { ...binding, decision: "approve" };
+    await expect(handler(WORK_BOARD.decideStage)(event, id, approval)).resolves.toMatchObject({ ok: false });
+    expect(execute).not.toHaveBeenCalled();
+
+    const token = "b".repeat(36);
+    pressWorkBoardTestKey(event);
+    await expect(handler(WORK_BOARD.captureDecisionIntent)(event, token, workBoardDecisionKey(WORK_BOARD.decideStage, id, approval))).resolves.toBe(true);
+    await expect(handler(WORK_BOARD.decideStage)(event, id, approval, token)).resolves.toEqual({ ok: true, status: "approved" });
+    expect(execute).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ output: expect.objectContaining({ decl }) }));
+    await expect(handler(WORK_BOARD.decideStage)(event, id, approval, token)).resolves.toMatchObject({ ok: false });
+    expect(execute).toHaveBeenCalledTimes(1);
+    const view = await handler(WORK_BOARD.get)(event, id);
+    expect(view).toMatchObject({ item: { workflowRun: { stages: [{ outputExecutions: [{ status: "denied", detail: "capability-unavailable" }] }] } } });
+  });
+});

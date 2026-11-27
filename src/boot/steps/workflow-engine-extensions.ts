@@ -7,6 +7,7 @@ import type { WorkflowTemplateStore } from "../../main/workflow-template-store.j
 import { boardRunState } from "../../work-board/workflow/run-state.js";
 import type { RemovedRunProject } from "../../work-board/workflow/stage-workspace.js";
 import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
+import { createRequestedOutputExecutor } from "../../work-board/workflow/requested-output-executor.js";
 import { bindStageWorkspace, unbindStageWorkspace } from "../../permissions/stage-workspace-binding.js";
 import type { PermissionManager } from "../../permissions/permission-manager.js";
 import { createRunScopeHooks } from "../../permissions/run-scope.js";
@@ -96,6 +97,7 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
   return {
     runs: boardRunState(store),
     workspace,
+    outputs: { execute: createRequestedOutputExecutor(workspace.keepOutputBranch) },
     workspaceBinding: { bind: bindStageWorkspace, unbind: unbindStageWorkspace },
     authoriseRunSource,
     passConditions: createPassConditionRegistry(),

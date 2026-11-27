@@ -14,6 +14,10 @@ type WorkspaceRefusal = typeof WORKSPACE_REFUSALS[number];
 /** What the host's run file named for a run when its record went: its project root, and the item it was a run of. */
 export interface RemovedRunProject { projectRoot: string; itemId: number }
 
+export type StageOutputBranchWriter = (run: RunRef, stageId: string, attempt: number, canExecute: () => boolean) => Promise<
+  { ok: true } | { ok: false; code: "workspace-unavailable" | "output-branch-unavailable" | "output-branch-taken" | "output-execution-interrupted" }
+>;
+
 /** Where a run's stages work. Every stage child gets its own folder under the run root; there is no shared-folder mode. */
 export interface StageWorkspaceProvider {
   /** Once, at start. */

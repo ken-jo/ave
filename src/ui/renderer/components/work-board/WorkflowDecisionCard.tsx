@@ -80,8 +80,12 @@ export function WorkflowDecisionCard({ review, itemId, stageName, api, onChanged
         <p>{stageDisplayName(stageName ?? review.binding.stageId)} · {t("workflowTemplates.attempt", { attempt: review.binding.attempt })}</p>
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-2">{revealHiddenCharacters(review.result, { lineBreaks: false })}</pre>
         {review.outputs?.length ? <ul aria-label={t("workflowTemplates.requestedOutputs")} className="list-disc ps-5">
-          {review.outputs.map(output => <li key={output.id}>{stageDisplayName(output.summary)}</li>)}
+          {review.outputs.map(output => <li key={output.id} className="space-y-1">
+            <p>{stageDisplayName(output.id)}{output.summary && ` · ${stageDisplayName(output.summary)}`}</p>
+            <pre dir="ltr" className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-2">{revealHiddenCharacters(output.payload, { lineBreaks: false })}</pre>
+          </li>)}
         </ul> : null}
+        {review.outputs?.length ? <p>{t("workflowTemplates.approveOutputsWithKeyboard")}</p> : null}
         {writingNote && <Label className="grid gap-1">
           {t("workflowTemplates.changeNote")}
           <Textarea autoFocus maxLength={MAX_PLAN_NOTE_LENGTH} value={note} onChange={event => setNote(event.target.value)} disabled={disabled} />

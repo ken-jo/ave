@@ -25,6 +25,7 @@ export interface StageEntry {
   base?: string;
   link?: string;
   sealCommit?: string;
+  requestedBranch?: true;
   /** Folder: the output globs, what was seeded (path → sha256) and the sealed manifest. */
   outputs?: string[];
   seeded?: Record<string, string>;
@@ -101,6 +102,7 @@ export function isWorkspaceRecord(value: unknown): value is WorkspaceRecord {
   if (!Object.entries(value.registrations).every(([key, entry]) => (key === JOIN_DIR || isStageId(key)) && isObject(entry) && absolute(entry.admin) && isFolderId(entry.id, ADMIN_MARK) && absolute(entry.gitdir))) return false;
   return Object.entries(value.stages).every(([id, entry]) => isStageId(id) && isObject(entry) && typeof entry.ready === "boolean" && Number.isInteger(entry.attempt)
     && optional(entry.dir, isNodeId) && (entry.ready !== true || entry.dir !== undefined) && optional(entry.base, commit) && optional(entry.sealCommit, commit)
+    && optional(entry.requestedBranch, flag => flag === true && value.kind === "git" && entry.sealed === true)
     && optional(entry.manifest, manifest => Array.isArray(manifest) && manifest.every(item => isObject(item) && isRecordFilePath(item.path))));
 }
 

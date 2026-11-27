@@ -1,5 +1,5 @@
 import type { WorkPlanDecision } from "../../shared/work-board-types.js";
-import { resultHashOf } from "../../shared/workflow-template-output.js";
+import { outputHashOf, resultHashOf } from "../../shared/workflow-template-output.js";
 import type { StageJoin, TemplateGraph, WorkItemStageRun } from "../../shared/workflow-template-types.js";
 import type { JoinConflict, StageFailure } from "./shipped-shapes.js";
 import { currentStepOf, joinIdOfStep, readyStages, stepsOf } from "./stage-graph.js";
@@ -20,7 +20,7 @@ export const MAX_STAGE_ATTEMPTS = 3;
 
 export type RunEvent =
   | { type: "started" } | { type: "stage_linked"; stageId: string; childSessionId: string }
-  | { type: "stage_ended"; stageId: string; attempt: number; ok: boolean; output?: string; taint?: WorkItemStageRun["taint"]; reason?: string; interrupted?: boolean; failure?: StageFailure }
+  | { type: "stage_ended"; stageId: string; attempt: number; ok: boolean; output?: string; requestedOutputs?: WorkItemStageRun["requestedOutputs"]; taint?: WorkItemStageRun["taint"]; reason?: string; interrupted?: boolean; failure?: StageFailure }
   | { type: "gate_evaluated"; stageId: string; attempt: number; passed: boolean; evidence: string; judgedBy: "host" | "model" }
   | { type: "gate_decided"; stageId: string; attempt: number; decision: WorkPlanDecision; note?: string }
   | { type: "retry_requested"; stageId: string } | { type: "continue_requested" } | { type: "stop_requested" }
@@ -32,6 +32,7 @@ export type RunEvent =
 export type RunEffect =
   | { type: "spawn"; stageId: string; attempt: number } | { type: "evaluate_gate"; stageId: string; attempt: number }
   | { type: "interrupt"; stageId: string } | { type: "seal"; stageId: string } | { type: "integrate"; joinId: string; stageIds: string[] }
+  | { type: "execute_outputs"; stageId: string; attempt: number }
   | { type: "settle"; runStatus: "completed" | "denied" | "error" | "cancelled" } | { type: "release_workspace"; stageIds: string[] };
 
 export interface RunSnapshot {
@@ -59,7 +60,7 @@ export interface RunStep {
 function rerun(run: WorkItemStageRun): void {
   run.attempt += 1;
   run.status = "waiting";
-  for (const key of ["failure", "resultHash", "childSessionId", "startedAt", "endedAt", "blocked"] as const) delete run[key];
+  for (const key of ["failure", "resultHash", "outputHash", "requestedOutputs", "outputExecutions", "childSessionId", "startedAt", "endedAt", "blocked"] as const) delete run[key];
 }
 
 /** The whole scheduler as one pure step. It never spawns, writes or reads a clock; the engine runs the effects it returns. */
@@ -107,6 +108,10 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
         run.output ??= "";
         run.status = "awaiting_gate";
         run.resultHash = resultHashOf(run.output);
+        if (event.requestedOutputs?.length) {
+          run.requestedOutputs = event.requestedOutputs;
+          run.outputHash = outputHashOf(run.output, event.requestedOutputs);
+        }
         run.gate = { type: "human", status: "pending", revision: run.attempt - 1 };
       } else {
         run.output ??= "";
@@ -136,6 +141,10 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
         run.status = "passed";
         run.gate = { ...decided, status: "approved" };
         effects.push({ type: "seal", stageId: run.stageId });
+        if (run.requestedOutputs?.length) {
+          run.outputExecutions = run.requestedOutputs.map(output => ({ id: output.id, status: "pending" }));
+          effects.push({ type: "execute_outputs", stageId: run.stageId, attempt: run.attempt });
+        }
       } else if (event.decision === "reject") {
         run.status = "rejected";
         run.gate = { ...decided, status: "rejected" };

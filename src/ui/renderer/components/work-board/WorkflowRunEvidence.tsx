@@ -20,6 +20,14 @@ export function WorkflowStageEvidence({ stage, stageName }: {
         <summary className="cursor-pointer font-semibold">{t("workflowTemplates.stageResult")}</summary>
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{revealHiddenCharacters(stage.result, { lineBreaks: false })}</pre>
       </details>}
+      {stage.failure === "requested-output-invalid" && <p>{t("reasonCodes.requested-output-invalid")}</p>}
+      {!!stage.outputExecutions?.length && <section className="space-y-1">
+        <h4 className="font-semibold">{t("workflowTemplates.requestedOutputs")}</h4>
+        <ul className="space-y-1">{stage.outputExecutions.map(output => <li key={output.id}>
+          {stageDisplayName(output.id)} · {t(`workflowTemplates.outputStatus.${output.status}`)}
+          {output.detail && ` · ${t(`reasonCodes.${output.detail}`)}`}
+        </li>)}</ul>
+      </section>}
       {!!stage.receivedInputs?.length && <section className="space-y-1">
         <h4 className="font-semibold">{t("workflowTemplates.receivedInputs")}</h4>
         {stage.receivedInputs.map(input => <details key={input.stageId}>

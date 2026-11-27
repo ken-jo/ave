@@ -1,4 +1,4 @@
-import { outputHashOf, resultHashOf } from "../../shared/workflow-template-output.js";
+import { hasMatchingOutputHash, resultHashOf } from "../../shared/workflow-template-output.js";
 import type { WorkItemResolved } from "../../shared/work-board-types.js";
 import type { SerializedHistoryMessage } from "../../shared/chat-history.js";
 import { redactHomePathsInText } from "../../audit/dlp-filter.js";
@@ -9,6 +9,7 @@ import type { PendingWorkflowDecision, WorkflowDecisionHistoryEntry, WorkflowRun
 import { toolStepsOf } from "../tool-steps.js";
 import { boundedStageInputs, stageInputsOf } from "./stage-prompt.js";
 import { isAwaitingStageReview } from "./run-state.js";
+import { requestedOutputsMatchStage } from "./requested-output.js";
 
 const TURN_TEXT_LIMIT = 4_000;
 const RECENT_TURN_LIMIT = 40;
@@ -26,18 +27,26 @@ export function withoutWorkflowProjection<T extends WorkItemResolved>(item: T): 
   return clean;
 }
 
-export function pendingWorkflowDecisions(run: WorkflowRunRecord): PendingWorkflowDecision[] {
+export function pendingWorkflowDecisions(run: WorkflowRunRecord, localVersion?: TemplateVersion): PendingWorkflowDecision[] {
   if (!isAwaitingStageReview(run)) return [];
   const pending: PendingWorkflowDecision[] = [];
   for (const stage of run.stageRuns) {
     if (stage.status !== "awaiting_gate" || stage.gate?.type !== "human" || stage.gate.status !== "pending"
       || stage.output === undefined || stage.resultHash === undefined || resultHashOf(stage.output) !== stage.resultHash
-      || (stage.requestedOutputs?.length && outputHashOf(stage.output, stage.requestedOutputs) !== stage.outputHash)) continue;
+      || !hasMatchingOutputHash(stage, stage.outputHash)) continue;
+    const outputs = stage.requestedOutputs;
+    if (outputs?.length) {
+      const definition = localVersion?.stages.find(candidate => candidate.id === stage.stageId);
+      if (!definition || !requestedOutputsMatchStage(definition, run.runId, outputs)) continue;
+    }
     pending.push({
       kind: "stage-gate",
       binding: { runId: run.runId, stageId: stage.stageId, attempt: stage.attempt, resultHash: stage.resultHash, ...(stage.outputHash !== undefined && { outputHash: stage.outputHash }) },
       result: maskWorkflowText(stage.output),
-      ...(stage.requestedOutputs?.length && { outputs: stage.requestedOutputs.map(output => ({ id: output.id, summary: maskWorkflowText(output.summary) })) }),
+      ...(outputs?.length && { outputs: outputs.map(output => ({
+        id: output.id, summary: maskWorkflowText(output.summary),
+        payload: JSON.stringify({ ...output.decl, args: JSON.parse(output.args) }, null, 2),
+      })) }),
       arrivedAt: stage.endedAt ?? null,
     });
   }
@@ -102,7 +111,7 @@ export function projectWorkflowRun(
   return {
     runId: run.runId, pin: { ...run.pin }, startedAt: run.startedAt,
     stages: run.stageRuns.map(stage => {
-      const { stageId, attempt, status, childSessionId, startedAt, endedAt, failure, gate, output, resultHash } = stage;
+      const { stageId, attempt, status, childSessionId, startedAt, endedAt, failure, gate, output, resultHash, outputExecutions } = stage;
       const definition = version?.stages.find(candidate => candidate.id === stageId);
       const receivedInputs = childSessionId && version && definition
         ? boundedStageInputs(stageInputsOf(version, definition, run.stageRuns))
@@ -112,6 +121,7 @@ export function projectWorkflowRun(
         : gate && { ...gate, ...(gate.note !== undefined && { note: maskWorkflowText(gate.note) }) };
       return {
         stageId, attempt, status, childSessionId, startedAt, endedAt, failure, gate: shownGate, receivedInputs,
+        ...(outputExecutions?.length && { outputExecutions: outputExecutions.map(({ id, status, detail }) => ({ id, status, ...(detail !== undefined && { detail: maskWorkflowText(detail) }) })) }),
         ...(output !== undefined && { result: maskWorkflowText(output) }), resultHash, ...sessionFacts?.(stage),
       };
     }),

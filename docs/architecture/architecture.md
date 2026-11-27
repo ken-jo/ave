@@ -1549,6 +1549,21 @@ resuming (`templateRunState`, added by the host on every list and get, never
 taken from a row) until the scheduler has taken it over; nothing starts by
 itself, and the user continues, decides or stops it. Deleting a run's row
 cancels the run and interrupts its live stage children.
+
+A human-gated stage can return requested outputs with its result. The host
+validates the effect fields against the stage's pinned declarations and stores
+the requests and `outputHash` with the result. The desktop gate shows the
+effect arguments and their declared owner. Approval spends a local keyboard
+receipt bound to the item, run, stage, attempt, decision and hashes. The
+submitted, stored and recomputed output hashes must agree. A branch request
+retains the host-sealed stage result at `ave/run-<runId>/<stageId>` in the
+owned repository using hardened workspace Git. An occupied ref is preserved.
+Push and tool-based requests are refused as `capability-unavailable` until
+an executor can use the ordinary tool policy with the declared registry
+owner. Outcomes are recorded on the stage. A restart can recover ordinary
+stage collection and leaves an unconfirmed requested effect for the user
+to inspect. It starts no requested effect.
+
 `ave:work-board:decide-plan` (internal, sender-validated board-window main
 frame, `CHANNEL_GESTURE: "required"`) carries the run id, the hash of the plan
 the card showed and the decision, never the plan text. The store checks all of

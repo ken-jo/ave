@@ -329,6 +329,24 @@ it("moves focus to the run heading when the keyboard decision removes its card",
   expect(view.getByRole("heading", { name: item.title })).toHaveFocus();
 });
 
+it("shows the requested effect payload and approves the hash on the keyboard", async () => {
+  const binding = { runId: "run-a", stageId: "summarize", attempt: 1, resultHash: graphHash, outputHash: "b".repeat(64) };
+  const payload = JSON.stringify({ kind: "send-message", owner: "plugin", ownerId: "delivery", toolName: "send", args: { recipient: "Review team", text: "Exact body" } }, null, 2);
+  const row: WorkItemResolved = { ...item, runPin: pin, pendingWorkflowDecisions: [
+    { kind: "stage-gate", binding, result: "Ready", outputs: [{ id: "send", summary: "Notify", payload }], arrivedAt: at },
+  ] };
+  const { api } = mount([row]);
+  api.decideWorkStage.mockResolvedValue({ ok: true, status: "approved" });
+  fireEvent.click(await screen.findByRole("button", { name: t("workflowTemplates.openRun") }));
+  const view = within(await screen.findByRole("dialog", { name: item.title }));
+  expect(await view.findByText(payload, { normalizer: value => value })).toBeInTheDocument();
+  expect(view.getByText(t("workflowTemplates.approveOutputsWithKeyboard"))).toBeInTheDocument();
+  const approve = view.getByRole("button", { name: t("workflowTemplates.approveStage") });
+  approve.focus();
+  await userEvent.keyboard("{Enter}");
+  expect(api.decideWorkStage).toHaveBeenCalledExactlyOnceWith(item.id, { ...binding, decision: "approve" });
+});
+
 it("presents enabled controls for a reissued join conflict of the same files", async () => {
   const first = { runId: "run-a", joinId: "step-1", generation: 1, conflictHash: graphHash };
   const next = { ...first, generation: 2, conflictHash: "e".repeat(64) };

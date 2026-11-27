@@ -2,7 +2,7 @@ import type { RunClass } from "../../main/run-classification.js";
 import type { WorkBoardStore } from "../../main/work-board-store.js";
 import type { DeleteIntent, HeldEvent, HeldIdentity, RunEnd, RunRemovalCause } from "../../main/workflow-run-store.js";
 import type { WorkItemResolved, WorkItemUpdateResult } from "../../shared/work-board-types.js";
-import { resultHashOf } from "../../shared/workflow-template-output.js";
+import { hasMatchingOutputHash, resultHashOf } from "../../shared/workflow-template-output.js";
 import type { StageJoin, TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkItemStageRun } from "../../shared/workflow-template-types.js";
 import { issueJoinConflict } from "./stage-machine.js";
 import { WorkflowTemplateError } from "../template-graph.js";
@@ -156,7 +156,8 @@ export async function reconcileRunRecord(run: RunRecord, now: string, folderExis
   const collected = new Set(joins.filter(join => join.status === "integrated").flatMap(join => join.stageIds));
   const stageRuns: WorkItemStageRun[] = [];
   for (const stage of run.stageRuns) {
-    const gateWhole = stage.status === "awaiting_gate" && typeof stage.output === "string" && stage.resultHash === resultHashOf(stage.output);
+    const gateWhole = stage.status === "awaiting_gate" && typeof stage.output === "string" && stage.resultHash === resultHashOf(stage.output)
+      && hasMatchingOutputHash(stage, stage.outputHash);
     const kept = gateWhole || (stage.status === "passed" && !collected.has(stage.stageId));
     let failure: WorkItemStageRun["failure"];
     if (stage.status === "running" || (stage.status === "awaiting_gate" && !gateWhole)) failure = "interrupted";

@@ -122,7 +122,7 @@ export interface WorkItemStageRun {
   stageId: string;
   attempt: number;
   status: "waiting" | "running" | "awaiting_gate" | "passed" | "failed" | "cancelled" | "rejected";
-  failure?: "error" | "gate" | "interrupted" | "denied-tool" | "workspace-lost" | "workspace-revoked" | "budget" | "seed";
+  failure?: "error" | "gate" | "interrupted" | "denied-tool" | "workspace-lost" | "workspace-revoked" | "budget" | "seed" | "requested-output-invalid";
   taint?: "file-content" | "agent-message";
   workspace?: { root: string; kind: "git" | "folder"; baseCommit?: string; sealCommit?: string; manifest?: OutputFile[] };
   blocked?: { code: LaneBlockCode; at: string };
@@ -148,7 +148,7 @@ export type RunAuthoritySource = { kind: "local-create-and-run"; pin: RunPin; pr
 export interface RunWorkspace { kind: "git" | "folder"; runRoot: string; branch?: string; baseCommit?: string; outputDir?: string }
 type LaneBlockCode = "envelope-missing" | "isolation-unproven" | "lane-unavailable";
 interface OutputFile { path: string; sha256: string; size: number }
-export interface RequestedOutput { id: string; decl: RequestedOutputDecl; args: string; files?: OutputFile[]; summary: string }
+export interface RequestedOutput { id: string; decl: RequestedOutputDecl | { kind: "branch"; owner: "host"; ownerId: "host:git"; toolName: "git_branch" }; args: string; files?: OutputFile[]; summary: string }
 interface OutputExecution { id: string; status: "pending" | "done" | "failed" | "denied"; at?: string; detail?: string }
 interface JoinConflict { conflictHash: string; reason: "merge-conflict" | "same-path" | "identity-missing" | "interrupted"; files: { path: string; stageIds: string[] }[]; excerpt?: string }
 export interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflictGeneration?: number; conflict?: JoinConflict; decidedAt?: string }

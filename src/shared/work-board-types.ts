@@ -471,7 +471,7 @@ export interface StageGateDecideInput {
 type StageStoreRefusal = WorkBoardRefusalCode | "invalid-template-run";
 /** Decision refusals are snake_case. One with text shows reasonCodes.<the refusal with "-" for "_">, as run reason codes do. */
 type StageGateRefusal = "not_found" | "not_pending" | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "attempt_mismatch" | "result_mismatch" | "output_mismatch" | "attempts_exhausted"
-  | "note_required" | "note_too_long" | "note_invalid" | "version_missing" | "graph_mismatch";
+  | "note_required" | "note_too_long" | "note_invalid" | "version_missing" | "graph_mismatch" | "user-keyboard-required";
 export type StageGateDecideResult = { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending"> } | { ok: false; reason: StageGateRefusal };
 export type StageGateDecideIpcResult =
   | { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending">; redactedCount?: number }
