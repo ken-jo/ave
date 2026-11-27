@@ -1385,12 +1385,13 @@ function applySandboxFilesystemPolicy(
 }
 
 // Dynamically import the ESM-only ASRT package. Kept in one place so the dynamic-import shape (and the ESM-in-Electron rationale above) lives in a single spot. Resolved lazily — importing this module has no side effects.
-async function loadSandboxRuntime() {
-  return await import("@anthropic-ai/sandbox-runtime");
+async function loadSandboxManager() {
+  const mod = await import("@anthropic-ai/sandbox-runtime");
+  return mod.SandboxManager;
 }
 
-async function loadSandboxManager() {
-  return (await loadSandboxRuntime()).SandboxManager;
+async function loadWindowsSandboxRuntime() {
+  return await import("@anthropic-ai/sandbox-runtime");
 }
 
 // Whether initializeAsrtSandbox has run to completion in this process. This is the host-tool spawn path's gate: tool code (bash.ts/powershell.ts) asks THIS module — not the settings service — whether to route through ASRT, so the gate is decided once at boot and cannot be re-evaluated mid-run. That preserves the seal-after-boot security property the registry had: there is no runtime channel to flip the sandbox on/off after boot. Set to `true` only on a successful `initialize`; stays `false` after resetAsrtSandbox.
@@ -3244,8 +3245,9 @@ async function initializeSandboxRuntime(
     assertAveHomePrivacyForConfinement();
   }
   // Containers confine this session's Windows children, so only the egress relay serves them: the wrap runtime stays unloaded.
-  const runtime = process.platform === "win32" && trustedSettings.windows?.externalConfinement === true
-    ? undefined : await loadSandboxRuntime();
+  const runtime = process.platform === "win32"
+    ? (trustedSettings.windows?.externalConfinement === true ? undefined : await loadWindowsSandboxRuntime())
+    : await import("@anthropic-ai/sandbox-runtime");
   const SandboxManager = runtime?.SandboxManager;
   startupSignal?.throwIfAborted();
   const linuxWrapperPrograms = process.platform === "linux" ? preflightLinuxPrograms ?? requireLinuxWrapperPrograms() : undefined;
