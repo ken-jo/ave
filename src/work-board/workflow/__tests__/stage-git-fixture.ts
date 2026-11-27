@@ -77,8 +77,21 @@ function madeIn(base: string, seed?: GitFixture): GitFixture {
       return handle;
     },
     done: async () => {
-      for (const { provider, run } of opened.splice(0)) await provider.release(run, "all");
-      removeTree(base);
+      const errors: unknown[] = [];
+      for (const { provider, run } of opened.splice(0)) {
+        try {
+          await provider.release(run, "all");
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      try {
+        removeTree(base);
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, "git fixture cleanup failed");
     },
   };
 }

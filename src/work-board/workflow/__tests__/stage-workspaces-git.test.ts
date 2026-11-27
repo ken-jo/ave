@@ -713,3 +713,21 @@ it("a git fixture that cannot be made leaves nothing of itself in the temp folde
     vi.unstubAllEnvs();
   }
 });
+
+it("fixture teardown attempts every release and removes the repository when releases reject", async () => {
+  const firstError = new Error("first release failed");
+  const secondError = new Error("second release failed");
+  vi.spyOn(start().provider, "release").mockRejectedValueOnce(firstError);
+  vi.spyOn(start().provider, "release").mockRejectedValueOnce(secondError);
+  const last = start();
+  const release = vi.spyOn(last.provider, "release");
+
+  const error: unknown = await fx.done().catch((error: unknown) => error);
+  expect.soft(release).toHaveBeenCalledWith(last.run, "all");
+  expect.soft(existsSync(base)).toBe(false);
+  expect(error).toBeInstanceOf(AggregateError);
+  const errors: unknown[] = (error as AggregateError).errors;
+  expect(errors).toHaveLength(2);
+  expect(errors[0]).toBe(firstError);
+  expect(errors[1]).toBe(secondError);
+});
