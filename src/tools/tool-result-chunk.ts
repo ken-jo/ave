@@ -74,6 +74,7 @@ export function createReadToolResultChunkTool(): Tool {
       " This works for builtin, plugin, and MCP tool results across LLM providers.",
     source: "builtin",
     category: "read",
+    unattendedEffect: "safe",
     isReadOnly: () => true,
     jsonSchema: {
       type: "object",

@@ -7,8 +7,9 @@ import { useTranslation } from "../../../../i18n/react.js";
 import { revealHiddenCharacters } from "../../../../shared/display-safe-text.js";
 import { WorkflowTemplateDetails } from "./workflow-template-details.js";
 import { WorkflowDraftReview } from "./WorkflowDraftReview.js";
+import { WorkflowUnattendedMark } from "./WorkflowUnattendedMark.js";
 import { isRecord } from "../../../../shared/is-record.js";
-import { isWorkflowTemplateProposalId, WORKFLOW_TEMPLATE_PROPOSE_TOOL, type WorkflowTemplateProposal } from "../../../../shared/workflow-template-types.js";
+import { isWorkflowTemplateProposalId, WORKFLOW_TEMPLATE_PROPOSE_TOOL, type UnattendedQualification, type WorkflowTemplateProposal } from "../../../../shared/workflow-template-types.js";
 
 function proposalIdFromResult(result: unknown): string | undefined {
   if (typeof result !== "string") return undefined;
@@ -31,7 +32,7 @@ export function WorkflowTemplateProposalCard({ name, result, completed }: {
   const [open, setOpen] = useState(false);
   const [proposal, setProposal] = useState<WorkflowTemplateProposal>();
   const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [saved, setSaved] = useState<UnattendedQualification>();
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<"workflowTemplates.unavailable" | "workflowTemplates.saveFailed" | undefined>();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -65,7 +66,7 @@ export function WorkflowTemplateProposalCard({ name, result, completed }: {
         expectedDraftRevision: proposal.id,
       });
       if (response.ok) {
-        setSaved(true);
+        setSaved(response.value.unattended);
         setOpen(false);
       } else if (response.error === "no-draft" || response.error === "stale-draft" || response.error === "scope-not-authorised") {
         setError("workflowTemplates.unavailable");
@@ -78,7 +79,10 @@ export function WorkflowTemplateProposalCard({ name, result, completed }: {
     }
   }
 
-  if (saved) return <p className="px-3 text-sm" role="status" tabIndex={-1} ref={element => { element?.focus(); }}>{t("workflowTemplates.saved")}</p>;
+  if (saved) return <div className="px-3 text-sm">
+    <p role="status" tabIndex={-1} ref={element => { element?.focus(); }}>{t("workflowTemplates.saved")}</p>
+    <WorkflowUnattendedMark qualification={saved} />
+  </div>;
   return (
     <>
       <Button ref={trigger} type="button" variant="outline" size="sm" className="m-2" disabled={busy} onClick={() => void openProposal(id)}>
@@ -92,7 +96,7 @@ export function WorkflowTemplateProposalCard({ name, result, completed }: {
           </DialogHeader>
           {proposal && editing ? (
             <WorkflowDraftReview api={window.aveApi} templateId={null} initialDraft={proposal.draft} projects={[]}
-              onBusyChange={setBusy} onSaved={() => { setSaved(true); setOpen(false); }} />
+              onBusyChange={setBusy} onSaved={({ unattended }) => { setSaved(unattended); setOpen(false); }} />
           ) : (
             <>
               {proposal && <WorkflowTemplateDetails {...proposal} />}

@@ -1,3 +1,4 @@
+import { unknownToolEffects } from "../../__tests__/support/tool-effect-resolver.js";
 import { requiredValue } from "../../__tests__/support/required-value.js";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -13,7 +14,7 @@ const actor = { who: "user", origin: "local-desktop" } as const;
 let dir: string; let path: string; let store: WorkflowTemplateStore;
 beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), "capabilities-")); path = join(dir, "templates.json"); store = new WorkflowTemplateStore(path); });
 afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
-async function confirmVersion(graph = input()) { const r = await store.draft(null, graph); return store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, actor); }
+async function confirmVersion(graph = input()) { const r = await store.draft(null, graph); return store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, actor, unknownToolEffects).then(({ version }) => version); }
 it.each(["tools", "writePaths", "readRoots", "network", "commands", "mcpReadOnlyTools", "mcpGenerationTools", "pluginGenerationTools", "outputs", "rounds", "minutes", "costUsd", "dataSent", "effect", "setupCommands", "requestedOutputs"])("hash binds capability field %s", field => {
   const a = input(); a.stages[0].toolScope = "all"; const b = structuredClone(a); const e = requiredValue(b.stages[0].envelope);
   if (field === "setupCommands") b.setupCommands = ["prepare-assets"];
@@ -45,7 +46,7 @@ it("persists setup, generation declarations and requested outputs without execut
 it("binds an attachment to the exact tuple and keeps v1 after confirming v2", async () => {
   const v = await confirmVersion(); const request = { templateId: v.templateId, version: v.version, graphHash: v.graphHash, scheduleId: "daily" };
   const attachment = await store.attachSchedule(request, mintHostDecisionProof("local-desktop"), { kind: "all" }); expect(attachment).toEqual({ ...request, approvedScope: { kind: "all" }, id: expect.any(String), ...actor, at: expect.any(String) });
-  const draft = input(); draft.stages[0].goal = "New sources"; const r = await store.draft(v.templateId, draft); await store.confirmDraft(v.templateId, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, actor);
+  const draft = input(); draft.stages[0].goal = "New sources"; const r = await store.draft(v.templateId, draft); await store.confirmDraft(v.templateId, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, actor, unknownToolEffects);
   const record = await new WorkflowTemplateStore(path).get(v.templateId); expect(record.scheduleAttachments).toEqual([attachment]); expect(record.template.currentVersion).toBe(2);
   await expect(store.attachSchedule({ ...request, graphHash: "a".repeat(64) }, mintHostDecisionProof("local-desktop"), { kind: "all" })).rejects.toMatchObject({ code: "graph-hash-mismatch" });
   await expect(store.attachSchedule({ ...request, version: 99 }, mintHostDecisionProof("local-desktop"), { kind: "all" })).rejects.toMatchObject({ code: "unknown-version" });
@@ -81,7 +82,7 @@ it("binds setup command order and preserves it through confirmation", async () =
 });
 it("allows only explicit reattachment to move a schedule pin", async () => {
   const v1 = await confirmVersion(); const request = { templateId: v1.templateId, version: 1, graphHash: v1.graphHash, scheduleId: "daily" }; await store.attachSchedule(request, mintHostDecisionProof("local-desktop"), { kind: "all" });
-  const draft = input(); draft.stages[0].goal = "Different sources"; const r = await store.draft(v1.templateId, draft); const v2 = await store.confirmDraft(v1.templateId, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, actor);
+  const draft = input(); draft.stages[0].goal = "Different sources"; const r = await store.draft(v1.templateId, draft); const { version: v2 } = await store.confirmDraft(v1.templateId, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, actor, unknownToolEffects);
   await store.attachSchedule({ ...request, version: 2, graphHash: v2.graphHash }, mintHostDecisionProof("local-desktop"), { kind: "all" }); expect((await store.listByRoutine("daily")).filter(a => !a.detachedAt)).toEqual([expect.objectContaining({ version: 2, graphHash: v2.graphHash })]);
   await store.archive(v1.templateId); await expect(store.attachSchedule(request, mintHostDecisionProof("local-desktop"), { kind: "all" })).rejects.toMatchObject({ code: "template-archived" });
 });

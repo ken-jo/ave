@@ -69,7 +69,9 @@ function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [
     draftWorkflowTemplate: vi.fn(async (_id: string, input: WorkflowTemplateDraftInput) => ({
       ok: true, value: { template, versions: [older, version], draft: { ...input, graphHash, revision: "draft-a", updatedAt: at } },
     })),
-    confirmWorkflowTemplate: vi.fn(async () => ({ ok: true, value: { ...version, version: 3 } })),
+    confirmWorkflowTemplate: vi.fn<AveApi["confirmWorkflowTemplate"]>(async () => ({
+      ok: true, value: { version: { ...version, version: 3 }, unattended: { ok: true } },
+    })),
     addWorkBoardItem: vi.fn(async (_input: unknown, _launch?: unknown) => ({ status: "created", itemId: 8, item: { ...item, ...project } })),
     completeWorkBoardItem: vi.fn(async () => ({ status: "completed", itemId: 8, item: { ...item, status: "completed" } })),
     runWorkBoardItem: vi.fn(async () => ({ status: "completed" })),
@@ -106,7 +108,7 @@ it("opens the empty template library by keyboard and returns focus on Escape", a
   await vi.waitFor(() => expect(button).toHaveFocus());
 });
 
-it("browses immutable versions and confirms an edited graph against the saved draft revision", async () => {
+it("confirms an edited graph at its saved revision and starts the marked current version attended", async () => {
   const { api } = mount();
   const library = await templates();
   fireEvent.click(await library.findByRole("button", { name: template.name }));
@@ -125,8 +127,24 @@ it("browses immutable versions and confirms an edited graph against the saved dr
     stages: expect.arrayContaining([expect.objectContaining({ id: "summarize", gate: { type: "human" } })]),
   }));
   expect(api.confirmWorkflowTemplate).not.toHaveBeenCalled();
+  const updated = { ...version, version: 3 };
+  api.getWorkflowTemplate.mockResolvedValue({ ok: true, value: { template: { ...template, currentVersion: 3 }, versions: [older, version, updated] } });
+  api.confirmWorkflowTemplate.mockResolvedValue({
+    ok: true, value: { version: updated, unattended: { ok: false, code: "outward-effect-tool", tool: {
+      stageId: "summarize", collection: "mcpGenerationTools", name: "report_delivery",
+    } } },
+  });
   fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.confirmVersion", { version: 3 }) }));
   expect(api.confirmWorkflowTemplate).toHaveBeenCalledExactlyOnceWith(template.id, { expectedGraphHash: graphHash, expectedDraftRevision: "draft-a" });
+  expect(await library.findByText(t("workflowTemplates.unattendedMark", {
+    tool: "report_delivery", reason: t("reasonCodes.outward-effect-tool"),
+  }))).toBeVisible();
+  fireEvent.click(await library.findByRole("button", { name: t("workflowTemplates.startRun") }));
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.workTitle")), { target: { value: "Wednesday report" } });
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.createAndRun") }));
+  await vi.waitFor(() => expect(api.addWorkBoardItem).toHaveBeenCalledExactlyOnceWith(
+    { templateId: template.id, title: "Wednesday report", ...project }, { ...pin, version: 3, projectRoot: project.projectRoot },
+  ));
 });
 
 it("creates and launches a board item in one request with the displayed template pin", async () => {
