@@ -7,19 +7,14 @@ import { CHANNELS } from '../../contract/app-contract.js';
 import { validateHostRendererSender } from '../gated.js';
 import type { IpcDeps } from '../types.js';
 import type { MemoryMapScope, MemoryEmbeddingSettings } from '../../shared/memory-map.js';
-import type { MemoryModelStatus } from '../../shared/memory-model.js';
 import type { z } from 'zod';
 import type { MemoryEmbeddingSettingsSchema, MemoryRetrievalSchema } from '../../shared/memory-map-validation.js';
-import { assertLocalEmbeddingRuntime, bindLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from '../../main/memory-map/local-runtime.js';
-import type { WindowsBackgroundAdmission } from '../../permissions/windows-background-features.js';
-import { runMemoryWorker } from '../../main/memory-map/worker-client.js';
+import { assertLocalEmbeddingRuntime } from '../../main/memory-map/local-runtime.js';
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager.js';
 import { MemoryMapHost, MemoryMapHostError } from '../../main/memory-map/host.js';
 import { readGraphCatalog, memoryFacets, graphMemoryRevision, isGraphMemory, matchesGraphRecord, memoryMapScopeId, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 import { ProviderEmbeddings } from '../../main/memory-map/provider-embeddings.js';
 import { createMemoryProviderEgress } from '../../main/memory-map/provider-egress.js';
-import { DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX } from '../../shared/memory-embedding-config.js';
-import { SettingsWriteRefusedError } from '../../data/settings-store.js';
 import { getLlmVendorSettings, LLM_VENDORS } from '../../shared/llm-vendor-defaults.js';
 import { defaultWorkspaceProject } from '../../main/project-root-authorization.js';
 import { sendToWebContents } from '../safe-send.js';
@@ -38,18 +33,17 @@ const MEMORY_EMBEDDING_ALLOWED_DOMAINS = [
 
 type MemoryRetrievalRequest = z.infer<typeof MemoryRetrievalSchema>;
 type MemoryEmbeddingSettingsInput = z.infer<typeof MemoryEmbeddingSettingsSchema>;
-type OnReplyAdmission = (assertLive: () => void) => void;
 
 export interface MemoryMapRuntime {
   get(scope: MemoryMapScope | undefined): unknown;
-  build(scope: MemoryMapScope | undefined, event: IpcMainInvokeEvent, onAdmission: OnReplyAdmission): unknown;
+  build(scope: MemoryMapScope | undefined, event: IpcMainInvokeEvent): unknown;
   cancel(): null;
   facets(scope: MemoryMapScope | undefined): unknown;
-  retrieve(request: MemoryRetrievalRequest, onAdmission: OnReplyAdmission): unknown;
-  modelStatus(onAdmission: OnReplyAdmission): unknown;
-  modelDownload(event: IpcMainInvokeEvent, onAdmission: OnReplyAdmission): unknown;
+  retrieve(request: MemoryRetrievalRequest): unknown;
+  modelStatus(): unknown;
+  modelDownload(event: IpcMainInvokeEvent): unknown;
   modelCancel(): null;
-  modelUseExisting(event: IpcMainInvokeEvent, onAdmission: OnReplyAdmission): unknown;
+  modelUseExisting(event: IpcMainInvokeEvent): unknown;
   settingsGet(): Promise<MemoryEmbeddingSettings>;
   settingsSet(input: MemoryEmbeddingSettingsInput): unknown;
   errorCode(error: unknown): string | undefined;
@@ -66,33 +60,13 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     });
   });
   const provider = new ProviderEmbeddings(deps.settingsService, send);
-  const storedLocalInferencePreference = () => deps.settingsService.get('memoryEmbedding')?.localInferenceWithoutSandbox
-    ?? DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX;
-  let pendingInferenceDisables = 0;
-  const localInferencePreference = () => pendingInferenceDisables === 0 && storedLocalInferencePreference();
-  const localRuntime = (admission: WindowsBackgroundAdmission) => assertLocalEmbeddingRuntime(localInferencePreference(), admission);
-  const refreshLocalAdmission = async () => {
-    const admission = await refreshLocalInferenceAdmission();
-    return bindLocalEmbeddingRuntime(() => localRuntime(admission)).assertStillValid;
-  };
-  let buildGeneration = 0;
-  let modelGeneration = 0;
   let settingsGeneration = 0;
   let settingsWrite: Promise<unknown> = Promise.resolve();
-  let buildEvent: IpcMainInvokeEvent | undefined;
+  let buildEvent: IpcMainInvokeEvent | undefined; let modelEvent: IpcMainInvokeEvent | undefined;
   const model = new LocalModelManager({
-    refreshAdmission: refreshLocalAdmission,
     readPath: () => deps.settingsService.get('memoryEmbedding')?.localModelPath,
-    savePath: async (path, assertStillValid) => {
-      try {
-        await deps.settingsService.set('memoryEmbedding', { ...deps.settingsService.get('memoryEmbedding'), localModelPath: path },
-          { field: ['memoryEmbedding', 'localModelPath'], canCommit: () => { assertStillValid(); return true; } });
-      } catch (error) {
-        if (!(error instanceof SettingsWriteRefusedError)) throw error;
-        assertStillValid();
-        throw new MemoryMapHostError('local-runtime-unavailable');
-      }
-    },
+    savePath: path => deps.settingsService.set('memoryEmbedding', { ...deps.settingsService.get('memoryEmbedding'), localModelPath: path }),
+    onProgress: status => { if (modelEvent && validateHostRendererSender(modelEvent)) sendToWebContents(modelEvent.sender, CHANNELS.memoryMap.modelProgress, status); },
   });
   const watchAuthority = (cancel: () => void) => {
     const stopNotes = deps.memoryManager.watchMemoryNotes(cancel);
@@ -113,41 +87,15 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   const host = new MemoryMapHost({
     provider,
     watchAuthority,
-    refreshLocalAdmission,
-    runWorker: (folder, task, signal, onProgress, onAdmission) => runMemoryWorker(folder, task, signal, onProgress, onAdmission, localInferencePreference),
-    validatedModelPath: async (signal, onAdmission) => {
-      const admission = await refreshLocalInferenceAdmission();
-      signal.throwIfAborted();
-      const { assertStillValid } = bindLocalEmbeddingRuntime(() => localRuntime(admission));
+    validatedModelPath: () => {
+      assertLocalEmbeddingRuntime();
       if (!deps.settingsService.get('memoryEmbedding')?.localModelPath) throw new MemoryMapHostError('model-unconfigured');
-      const folder = await model.validatedPath();
-      signal.throwIfAborted();
-      assertStillValid();
-      onAdmission?.(assertStillValid);
-      return folder;
+      return model.validatedPath();
     },
     onProgress: progress => {
       if (buildEvent && validateHostRendererSender(buildEvent)) sendToWebContents(buildEvent.sender, CHANNELS.memoryMap.progress, progress);
     },
   });
-  const cancelBuild = () => { buildGeneration += 1; host.cancel(); };
-  const cancelModel = () => { modelGeneration += 1; model.cancel(); };
-  const assertCurrentModelRequest = (generation: number) => {
-    if (generation !== modelGeneration) throw new MemoryModelError('model-cancelled');
-  };
-  const startModelOperation = async (
-    generation: number,
-    event: IpcMainInvokeEvent,
-    start: (onProgress: (status: MemoryModelStatus) => void) => Promise<MemoryModelStatus>,
-  ) => {
-    const admission = await refreshLocalInferenceAdmission();
-    assertCurrentModelRequest(generation);
-    localRuntime(admission);
-    cancelBuild();
-    return start(status => {
-      if (validateHostRendererSender(event)) sendToWebContents(event.sender, CHANNELS.memoryMap.modelProgress, status);
-    });
-  };
   let sourceIndex: { scopeId: string; filenames: Map<string, string> } | undefined;
   const catalog = (scope?: MemoryMapScope): ReadMemoryMapCatalog => {
     const filenames = new Map<string, string>();
@@ -173,111 +121,60 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     const providers = await provider.providers();
     const namespace = provider.namespace();
     const consent = provider.currentConsent();
-    return {
-      source: namespace.source, namespace, providers, providerAvailable: providers.some(value => value.models.length > 0),
-      ...(consent ? { consent } : {}),
-      ...((await refreshLocalInferenceAdmission("switches")).areSwitchesAvailable() ? { localInferenceWithoutSandbox: storedLocalInferencePreference() } : {}),
-    };
+    return { source: namespace.source, namespace, providers, providerAvailable: providers.some(value => value.models.length > 0), ...(consent ? { consent } : {}) };
   };
   return {
     get: scope => host.get(catalog(scope)),
-    build: async (scope, event, onAdmission) => {
-      const generation = ++buildGeneration;
-      if (deps.settingsService.get('memoryEmbedding')?.source !== 'provider') {
-        const admission = await refreshLocalInferenceAdmission();
-        if (generation !== buildGeneration) throw new MemoryMapHostError('request-stale');
-        localRuntime(admission);
-      }
+    build: (scope, event) => {
+      if (deps.settingsService.get('memoryEmbedding')?.source !== 'provider') assertLocalEmbeddingRuntime();
       buildEvent = event;
-      return host.build(catalog(scope), assertLive => onAdmission(() => {
-        if (generation !== buildGeneration) throw new MemoryMapHostError('request-stale');
-        assertLive();
-      }));
+      return host.build(catalog(scope));
     },
-    cancel: () => { cancelBuild(); return null; },
+    cancel: () => { host.cancel(); return null; },
     facets: async scope => { await host.get(catalog(scope)); return memoryFacets(catalog(scope)().records); },
-    retrieve: (request, onAdmission) => host.retrieve(catalog(request.scope), request, onAdmission),
-    modelStatus: async onAdmission => {
-      const assertStillValid = await refreshLocalAdmission();
-      return model.status(assertStillValid, onAdmission);
+    retrieve: request => host.retrieve(catalog(request.scope), request),
+    modelStatus: () => {
+      assertLocalEmbeddingRuntime();
+      return model.status();
     },
-    modelDownload: (event, onAdmission) => startModelOperation(++modelGeneration, event, onProgress => model.download(onProgress, onAdmission)),
-    modelCancel: () => { cancelModel(); return null; },
-    modelUseExisting: async (event, onAdmission) => {
-      const generation = ++modelGeneration;
-      const admission = await refreshLocalInferenceAdmission();
-      assertCurrentModelRequest(generation);
-      localRuntime(admission);
+    modelDownload: event => {
+      assertLocalEmbeddingRuntime();
+      host.cancel(); modelEvent = event;
+      return model.download();
+    },
+    modelCancel: () => { model.cancel(); return null; },
+    modelUseExisting: async event => {
+      assertLocalEmbeddingRuntime();
       const selection = await pickNativeFiles({ properties: ['openDirectory'] });
-      const folder = selection.filePaths[0];
-      if (selection.canceled || !folder) return null;
-      return startModelOperation(generation, event, onProgress => model.adoptExistingFolder(folder, onProgress, onAdmission));
+      if (selection.canceled || !selection.filePaths[0]) return null;
+      host.cancel(); modelEvent = event; return model.adoptExistingFolder(selection.filePaths[0]);
     },
     settingsGet: settings,
     settingsSet: async input => {
-      if ('localInferenceWithoutSandbox' in input) {
-        const enabled = input.localInferenceWithoutSandbox;
-        // Host work can share the very probe this settings write is waiting for.
-        if (!enabled) pendingInferenceDisables += 1;
-        const pending = settingsWrite.catch(() => {}).then(async () => {
-          const admission = await refreshLocalInferenceAdmission();
-          if (!admission.areSwitchesAvailable()) throw new MemoryMapHostError('local-runtime-unavailable');
-          const previous = deps.settingsService.get('memoryEmbedding');
-          if (!enabled && previous?.localInferenceWithoutSandbox !== false) {
-            let usingHostChild = false;
-            try { usingHostChild = assertLocalEmbeddingRuntime(storedLocalInferencePreference(), admission) === 'unconfined'; } catch (error) {
-              if (!(error instanceof MemoryMapHostError)) throw error;
-            }
-            if (usingHostChild) {
-              if (previous?.source !== 'provider') cancelBuild();
-              cancelModel();
-            }
-          }
-          try {
-            await deps.settingsService.set('memoryEmbedding', { ...previous, localInferenceWithoutSandbox: enabled },
-              { field: ['memoryEmbedding', 'localInferenceWithoutSandbox'], canCommit: () => admission.areSwitchesAvailable() });
-          } catch (error) {
-            if (error instanceof SettingsWriteRefusedError) throw new MemoryMapHostError('local-runtime-unavailable');
-            throw error;
-          }
-          return settings();
-        }).finally(() => {
-          if (!enabled) pendingInferenceDisables -= 1;
-        });
-        settingsWrite = pending;
-        return pending;
-      }
       if (input.source === 'provider') {
         if (!input.consent) throw new MemoryMapHostError('provider-consent-required');
         provider.assertCurrentEndpoint(input.providerId, input.endpointId);
       }
       const generation = ++settingsGeneration;
-      provider.suspend(); cancelBuild();
+      provider.suspend(); host.cancel();
       const pending = settingsWrite.catch(() => {}).then(async () => {
         if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
         const consent = input.source === 'provider' ? await provider.issueConsent(input.providerId, input.modelId, input.endpointId) : undefined;
         if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
         if (input.source === 'provider') provider.assertCurrentEndpoint(input.providerId, input.endpointId);
         const previous = deps.settingsService.get('memoryEmbedding');
-        try {
-          await deps.settingsService.set('memoryEmbedding', {
-            localModelPath: previous?.localModelPath,
-            localInferenceWithoutSandbox: previous?.localInferenceWithoutSandbox,
-            ...(input.source === 'local' ? { source: 'local' as const } : { source: 'provider' as const, providerId: input.providerId, modelId: input.modelId, consent }),
-          }, { field: ['memoryEmbedding', 'source', 'providerId', 'modelId', 'consent'], canCommit: () => {
-            if (generation !== settingsGeneration) return false;
-            if (input.source === 'provider') provider.assertCurrentEndpoint(input.providerId, input.endpointId);
-            return true;
-          } });
-        } catch (error) {
-          if (error instanceof SettingsWriteRefusedError) throw new MemoryMapHostError('request-stale');
-          throw error;
-        }
+        await deps.settingsService.set('memoryEmbedding', {
+          ...(previous?.localModelPath ? { localModelPath: previous.localModelPath } : {}),
+          ...input.source === 'local' ? { source: 'local' as const } : {
+            source: 'provider' as const, providerId: input.providerId, modelId: input.modelId,
+            consent,
+          },
+        });
         if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
         await host.invalidate();
         if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
         provider.resume(); return settings();
-      }).finally(() => { if (generation === settingsGeneration) provider.resume(); });
+      });
       settingsWrite = pending;
       return pending;
     },
