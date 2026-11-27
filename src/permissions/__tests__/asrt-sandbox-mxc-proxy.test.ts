@@ -7,18 +7,20 @@ import { configureHostResources } from "../../main/host-resources.js";
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 import * as policyHome from "../../shared/policy-home.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
-import type { ParentProxyRouter, SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
+import { SandboxManager, type ParentProxyRouter, type SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import {
   annotateWithSandboxViolations,
   closeAllEgressConnections,
   closeEgressConnections,
   getWindowsProxyPortRange,
   initializeAsrtSandbox,
+  isAsrtSandboxActive,
   resetAsrtSandbox,
 } from "../asrt-sandbox.js";
 import { openInvocationProxyListener, type InvocationProxyListener } from "../egress-invocation-listener.js";
 import { openHostEgressListener } from "../egress-host-listener.js";
 import { EgressGrantStore } from "../egress-grants.js";
+import { startEgressRelayService } from "../egress-relay/relay.js";
 
 const TOKEN = "proxy-only-invocation-token-00001";
 const DESTINATION = { host: "8.8.8.8", port: 443, network: "public" as const };
@@ -169,6 +171,16 @@ describe.skipIf(process.platform !== "win32")("proxy-only connection revocation"
     }
   });
 
+  it("resets the runtime promptly with a live CONNECT tunnel and stops traffic", async () => {
+    const upstream = await startTunnelUpstream();
+    const relay = await startRelay(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: upstream.port }] }));
+    const tunnel = await openTunnel(relay);
+
+    await expectPromptClose(resetAsrtSandbox());
+    await expectTunnelStopped(tunnel, upstream);
+    expect(closeAllEgressConnections()).toBe(0);
+  });
+
   it("closes the upstream socket while its CONNECT response is still pending", async () => {
     const upstream = await startTunnelUpstream(true);
     const relay = await startRelay(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: upstream.port }] }));
@@ -225,6 +237,28 @@ describe.skipIf(process.platform !== "win32")("proxy-only connection revocation"
     expect(second.received.join("")).toBe("before-close");
   });
 
+  it("keeps proxy-only boot and revocation on their own relay service", async () => {
+    const initialize = vi.spyOn(SandboxManager, "initialize");
+    const closeAll = vi.spyOn(SandboxManager, "closeAllInvocationConnections");
+    const closeSome = vi.spyOn(SandboxManager, "closeInvocationConnections");
+    await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } }, async () => true);
+    expect(initialize).not.toHaveBeenCalled();
+    expect(SandboxManager.getProxyPort()).toBeUndefined();
+    expect(isAsrtSandboxActive()).toBe(true);
+    expect(closeAllEgressConnections()).toBe(0);
+    expect(closeEgressConnections([TOKEN], DESTINATION.host, DESTINATION.port)).toBe(0);
+    await resetAsrtSandbox();
+    expect(closeAllEgressConnections()).toBe(0);
+    expect(closeAll).not.toHaveBeenCalled();
+    expect(closeSome).not.toHaveBeenCalled();
+    expect(isAsrtSandboxActive()).toBe(false);
+  });
+
+  it("opens no route without an ask callback", async () => {
+    await initializeAsrtSandbox({ allowedDomains: ["example.com"], windows: { externalConfinement: true } });
+    await expect(openHostEgressListener(TOKEN)).rejects.toThrow("the service is not started");
+  });
+
   it("annotates a command's output with its relay's refusals", async () => {
     const relay = await startRelay(async () => ({ routes: [{ kind: "direct" }] }), async () => false);
     const client = connectClient(relay);
@@ -235,4 +269,11 @@ describe.skipIf(process.platform !== "win32")("proxy-only connection revocation"
     expect(await annotateWithSandboxViolations("another-invocation-token-00000002", "stderr")).toBe("stderr");
   });
 
+  it("discards a session whose initialization fails, and its relay service", async () => {
+    startEgressRelayService({ ask: async () => true });
+    await expect(initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } }, async () => true))
+      .rejects.toThrow("the service is already started");
+    expect(isAsrtSandboxActive()).toBe(false);
+    await expect(openHostEgressListener(TOKEN)).rejects.toThrow("the service is not started");
+  });
 });
