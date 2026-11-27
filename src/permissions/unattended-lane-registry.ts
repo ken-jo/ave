@@ -72,11 +72,9 @@ export function reportUnattendedDenial({ sessionId, code, call }: UnattendedDeni
 }
 
 export const unattendedLaneHooks = {
-  // The interim schedule predicate still limits admission to read-only versions.
-  admit: async () => ({ ok: true }),
   sessionLinked: ({ sessionId, ...entry }) => {
     registerUnattendedStage(sessionId, { ...entry, isolation: { proven: false } });
   },
   sessionEnded: endUnattendedStage,
   onDenied: onUnattendedDenied,
-} satisfies LaneHooks;
+} satisfies Omit<LaneHooks, "admit">;
