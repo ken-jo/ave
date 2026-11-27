@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, open, symlink, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { mkdir, mkdtemp, open, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FeatureNamespaceHandle } from "../../storage/feature-namespace.js";
@@ -31,9 +30,6 @@ export function createModelManagerFixtures<Manager>(
       },
       createFile: (name) => open(join(namespaceDir, name), "wx"),
     };
-    const server = createServer((_, response) => { response.end(body); });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const port = (server.address() as { port: number }).port;
     const manager = new ModelManager({
       namespace,
       files,
@@ -42,7 +38,10 @@ export function createModelManagerFixtures<Manager>(
         beforeSave?.();
         saved = path;
       },
-      downloadFile: (_, signal) => fetch(`http://127.0.0.1:${port}`, { signal }),
+      downloadFile: async (_, signal) => {
+        signal.throwIfAborted();
+        return new Response(body);
+      },
     });
     return {
       manager,
@@ -50,7 +49,7 @@ export function createModelManagerFixtures<Manager>(
       files,
       saved: () => saved,
       setSaved: (path: string) => { saved = path; },
-      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+      close: () => rm(root, { recursive: true, force: true }),
     };
   }
 
