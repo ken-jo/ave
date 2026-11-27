@@ -1796,6 +1796,7 @@ jobs:
           test/scripts/build-macos-dir-ops.test.ts
           test/scripts/build-macos-holder-sweep.test.ts
           src/permissions/__tests__/seatbelt-holder-start.test.ts
+          src/permissions/__tests__/seatbelt-holder-boot.test.ts
           test/scripts/macho-image-digest.test.ts
 
   linux-confinement-tests:

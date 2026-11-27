@@ -169,7 +169,7 @@ export async function runHolderSweep(helper: HolderSweepHelper, mode: "sweep" | 
       }
       if (mode === "prove") {
         const proven = PROVE_RESULT.exec(last)?.[1];
-        if ((code === 0) !== (proven === "proven") || proven === undefined) return finish({ verified: false, reason: `the helper's proof failed (exit ${code}: ${last})` });
+        if (code !== 0 || proven !== "proven") return finish({ verified: false, reason: `the helper's proof failed (exit ${code}: ${last})` });
         return finish({ verified: true, signalled: 0 });
       }
       const match = SWEEP_RESULT.exec(last);

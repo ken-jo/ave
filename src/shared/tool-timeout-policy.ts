@@ -57,6 +57,8 @@ export const TOOL_TIMEOUT_POLICY = {
   mxcMacHolderTermGraceMs: 2_000,
   // One label sweep of a macOS holder (two clean passes, at most 50), and the watcher's exit at quit.
   mxcMacHolderSweepMs: 2_000,
+  // At a macOS holder's stop, the tail of its output may drain this long before Ave lets go of its streams.
+  mxcMacHolderOutputDrainMs: 1_000,
   // A holder's own start must report its ready-frame evidence inside this bound, from supervisor start, or it is refused.
   mxcExtensionReadinessMs: 30_000,
   // Share the exact workload-identity handshake budget with the protocol.

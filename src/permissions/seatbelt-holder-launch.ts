@@ -297,6 +297,26 @@ function startRefusal(code: number | null, signal: NodeJS.Signals | null, diagno
  * inside the sandbox; a start that ends or stalls before that is stopped, swept, and refused with no fallback route.
  */
 export async function startSeatbeltHolder(launch: SeatbeltHolderLaunch, options: StartSeatbeltHolderOptions): Promise<SeatbeltHolder> {
+  // Every holder profile allows its instance's label, so no holder may run while the boot sweep could see it.
+  await holderBootSequence;
+  return startSeatbeltHolderNow(launch, options);
+}
+
+let holderBootSequence: Promise<unknown> | undefined;
+
+/** Boot: holder starts wait on this sequence (boot check, boot sweep, watcher start) and never race it. */
+export function gateSeatbeltHolderStartsOn(sequence: Promise<unknown>): void {
+  if (holderBootSequence !== undefined) throw new Error("The holder boot sequence was already gated this app run");
+  holderBootSequence = sequence.then(() => undefined, () => undefined);
+}
+
+// @internal — test teardown only.
+export function __resetSeatbeltHolderBootGateForTest(): void {
+  holderBootSequence = undefined;
+}
+
+/** The boot check's own canaries start here: they are part of the sequence the gate waits on. */
+export async function startSeatbeltHolderNow(launch: SeatbeltHolderLaunch, options: StartSeatbeltHolderOptions): Promise<SeatbeltHolder> {
   assertSeatbeltHolderLaunchersUnchanged(options.launchers);
   assertHolderSweepHelperUnchanged(options.helper);
   let observed: ReturnType<typeof observeManagedProcessGroup> | undefined;
@@ -323,9 +343,12 @@ export async function startSeatbeltHolder(launch: SeatbeltHolderLaunch, options:
     throw error;
   });
   const exit = observed as ReturnType<typeof observeManagedProcessGroup>;
+  // The holder's own exit: a descendant that keeps its stdout open does not delay it.
   const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-    child.once("close", (code, signal) => resolve({ code, signal }));
+    if (child.exitCode !== null || child.signalCode !== null) resolve({ code: child.exitCode, signal: child.signalCode });
+    else child.once("exit", (code, signal) => resolve({ code, signal }));
   });
+  const streamsClosed = new Promise<void>((resolve) => { child.once("close", () => resolve()); });
   let diagnostic = "";
   const onDiagnostic = (chunk: Buffer): void => {
     if (diagnostic.length < DIAGNOSTIC_BYTES) diagnostic += chunk.toString("utf8").slice(0, DIAGNOSTIC_BYTES - diagnostic.length);
@@ -346,6 +369,10 @@ export async function startSeatbeltHolder(launch: SeatbeltHolderLaunch, options:
     options.egress?.release();
     terminateManagedProcessGroup(child, TOOL_TIMEOUT_POLICY.mxcMacHolderTermGraceMs);
     await Promise.race([exit.wait(), sleep(TOOL_TIMEOUT_POLICY.mxcMacHolderTermGraceMs, undefined, { ref: false })]);
+    // A process that left the group may still hold the holder's stdout; the group check must not wait on it. The tail
+    // of the output gets a bounded drain, then Ave lets go of the streams.
+    await Promise.race([streamsClosed, sleep(TOOL_TIMEOUT_POLICY.mxcMacHolderOutputDrainMs, undefined, { ref: false })]);
+    for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.destroy();
     const receipt = await exit.confirmExit(reason);
     const sweep = await runHolderSweep(options.helper, "sweep", launch.labels.holder, TOOL_TIMEOUT_POLICY.mxcMacHolderSweepMs);
     if (receipt !== undefined && sweep.verified) {
