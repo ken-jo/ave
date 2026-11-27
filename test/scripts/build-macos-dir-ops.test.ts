@@ -127,6 +127,12 @@ describe("buildMacosDirOps", () => {
 describe("macOS download file helper wiring", () => {
   const packageJson = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
 
+  it("documents the packaged macOS floor in the provider spawn contract", () => {
+    const doc = readFileSync(resolve("docs/architecture/openai-provider-integration.md"), "utf8");
+    const documented = /\[minimum macOS version\]\(\.\.\/\.\.\/package\.json(?:#L\d+)?\) is (\d+)\./u.exec(doc)?.[1];
+    expect(documented).toBe(packageJson.build.mac.minimumSystemVersion.split(".")[0]);
+  });
+
   it("restricts both installer formats to arm64 while keeping the macOS 15 floor", () => {
     expect(packageJson.build.mac.target).toEqual([
       { target: "dmg", arch: ["arm64"] },
