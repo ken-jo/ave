@@ -93,7 +93,12 @@ let _bootOutcome: SandboxBootOutcome | null = null;
 let _sandboxGatePendingAtBoot = false;
 let _windowsSubstrate: SandboxWindowsSubstrateInfo | null = null;
 let _mxcShellCapability: SandboxCapability | undefined;
-let _measuredMxcShellEgress: EgressProtocolCoverage | undefined;
+export interface WindowsMxcShellEgressMeasurement {
+  readonly coverage: EgressProtocolCoverage;
+  readonly evidenceKind: "measured" | "structural";
+}
+
+let _windowsMxcShellEgressMeasurement: WindowsMxcShellEgressMeasurement | undefined;
 let _statusChangeListener: (() => void) | undefined;
 const sandboxStatusObservers = new Set<() => void>();
 
@@ -195,7 +200,7 @@ export function __resetSandboxBootOutcomeForTest(): void {
 export function setWindowsSandboxSubstrate(
   info: SandboxWindowsSubstrateInfo,
   mxcShellCapability?: SandboxCapability,
-  measuredContainerEgress?: EgressProtocolCoverage,
+  measurement?: WindowsMxcShellEgressMeasurement,
 ): void {
   if (info.shells === "mxc" && mxcShellCapability === undefined) {
     throw new Error("setWindowsSandboxSubstrate: shells run in MXC but no MXC shell capability was given");
@@ -203,8 +208,8 @@ export function setWindowsSandboxSubstrate(
   if (info.shells !== "mxc" && mxcShellCapability !== undefined) {
     throw new Error("setWindowsSandboxSubstrate: an MXC shell capability needs shells: \"mxc\"");
   }
-  const measured = acceptMeasuredContainerEgress(process.platform, "process-container", measuredContainerEgress);
-  if (measuredContainerEgress !== undefined && (info.shells !== "mxc" || info.mxc.state !== "available" || measured === undefined)) {
+  const measured = acceptMeasuredContainerEgress(process.platform, "process-container", measurement?.coverage);
+  if (measurement !== undefined && (info.shells !== "mxc" || info.mxc.state !== "available" || measured === undefined)) {
     throw new Error("setWindowsSandboxSubstrate: measured egress requires available MXC shells");
   }
   if (info.extensionPlan !== undefined) assertSandboxWindowsExtensionPlan(info.extensionPlan);
@@ -251,7 +256,8 @@ export function setWindowsSandboxSubstrate(
     ...(coverage === undefined ? {} : { shellEgressProtocolCoverage: coverage }),
     ...(extensionPlan ? { extensionPlan } : {}),
   });
-  _measuredMxcShellEgress = measured;
+  _windowsMxcShellEgressMeasurement = measurement && measured !== undefined
+    ? Object.freeze({ coverage: measured, evidenceKind: measurement.evidenceKind }) : undefined;
   if (!coverageOnly) {
     _mxcShellCapability = mxcShellCapability === undefined ? undefined : Object.freeze({ ...mxcShellCapability });
     _sandboxGeneration += 1;
@@ -274,6 +280,10 @@ function sameExtensionPlan(left: SandboxWindowsExtensionPlan, right: SandboxWind
 // What boot recorded for Windows, or null (off Windows, or before the gate ran).
 export function getWindowsSandboxSubstrate(): SandboxWindowsSubstrateInfo | null {
   return _windowsSubstrate;
+}
+
+export function getWindowsMxcShellEgressMeasurement(): WindowsMxcShellEgressMeasurement | undefined {
+  return _windowsMxcShellEgressMeasurement;
 }
 
 /** Selected extension plan; absent records confer no MXC authority. Per-process markers remain mandatory. */
@@ -339,7 +349,7 @@ export function __resetWindowsSandboxSubstrateForTest(): void {
   if (_windowsSubstrate !== null || _mxcShellCapability !== undefined) _sandboxGeneration += 1;
   _windowsSubstrate = null;
   _mxcShellCapability = undefined;
-  _measuredMxcShellEgress = undefined;
+  _windowsMxcShellEgressMeasurement = undefined;
 }
 
 // @internal — test teardown only.
@@ -420,7 +430,8 @@ export function getHostShellExecutionPlan(
     requestedSandbox: isShellSandboxRequestedAtBoot(),
     activeCapability: mxc ?? detectShellSandboxCapability(),
     shellSubstrate: mxc !== undefined ? "mxc" : selectsMacContainer ? "none" : "asrt",
-    measuredContainerEgress: process.platform === "win32" && _windowsSubstrate?.shells === "mxc" ? _measuredMxcShellEgress : undefined,
+    measuredContainerEgress: process.platform === "win32" && _windowsSubstrate?.shells === "mxc"
+      ? getWindowsMxcShellEgressMeasurement()?.coverage : undefined,
     executionMode,
     unavailableCauses: _bootOutcome?.causes,
     unavailableSandboxRequiresAsk: privacyFailure !== undefined || windowsDenyUnenforceableAtBoot() !== undefined,

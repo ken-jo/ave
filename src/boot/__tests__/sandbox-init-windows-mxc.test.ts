@@ -107,6 +107,7 @@ import {
   detectShellSandboxCapability,
   getHostShellExecutionPlan,
   getSandboxBootOutcome,
+  getWindowsMxcShellEgressMeasurement,
   getWindowsSandboxSubstrate,
   setSandboxStatusChangeListener,
 } from "../../permissions/sandbox-capability.js";
@@ -747,10 +748,11 @@ describe("initSandboxGate — Windows MXC substrate", () => {
   });
 
   it.each([
+    { rawIp: "blocked", reason: "blocked", evidenceKind: "measured", reachableTargets: [], udpArrival: "absent" },
     { rawIp: "blocked", reason: "blocked", evidenceKind: "structural", reachableTargets: [], udpArrival: "absent" },
     { rawIp: "unknown", reason: "raw-ip-reachable", reachableTargets: ["udp"], udpArrival: "arrived" },
     { rawIp: "unknown", reason: "ipv6-unmeasured", reachableTargets: [], udpArrival: "absent" },
-  ])("publishes the start measurement with the available shell route ($reason)", async (rawIpProbe) => {
+  ])("publishes the start measurement with the available shell route ($reason, $evidenceKind)", async (rawIpProbe) => {
     h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
     h.detectMxc.mockResolvedValue(MXC_OK);
     h.startProbe.mockResolvedValue({ ...MXC_OK, rawIpProbe });
@@ -765,6 +767,9 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(h.startProbe).toHaveBeenCalledOnce();
     expect(published.size).toBe(1);
     const coverage = { dns: "host-resolver", rawIp: rawIpProbe.rawIp };
+    expect(getWindowsMxcShellEgressMeasurement()).toEqual(rawIpProbe.evidenceKind === undefined
+      ? undefined : { coverage, evidenceKind: rawIpProbe.evidenceKind });
+    expect(getWindowsSandboxSubstrate()).not.toHaveProperty("evidenceKind");
     expect(getWindowsSandboxSubstrate()?.shellEgressProtocolCoverage).toEqual(coverage);
     expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual(coverage);
   });

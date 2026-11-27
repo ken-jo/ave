@@ -19,6 +19,7 @@ import {
   type WindowsSandboxPlanInputs,
 } from "./windows-sandbox-plan.js";
 import type { EgressProtocolCoverage, SandboxStartFailureCause, SandboxWindowsSubstrateInfo } from "../../shared/sandbox-capability-info.js";
+import type { WindowsMxcShellEgressMeasurement } from "../../permissions/sandbox-capability.js";
 import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start-failure.js";
 import { denyUnenforceableKind, isObligationRefusal, setWindowsDenyUnenforceableAtBoot } from "../../permissions/admitted-obligation.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -167,12 +168,13 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
       // Track proxy-only startup separately from the requested runtime plan.
       let windowsStart = windowsPlan?.start;
       let windowsMxc = windowsInputs?.mxc;
-      let windowsShellEgress: EgressProtocolCoverage | undefined;
+      let windowsShellEgress: WindowsMxcShellEgressProbe | undefined;
       let shellStartProbe: ReturnType<typeof settleWindowsMxcStartProbe> | undefined;
       const publishWindows = (substrate: SandboxWindowsSubstrateInfo): void => {
         const capability = substrate.shells === "mxc" ? mxcShellCapability() : undefined;
-        const coverage = substrate.shellEgressProtocolCoverage;
-        setWindowsSandboxSubstrate(substrate, capability, coverage?.rawIp === "blocked" ? coverage : undefined);
+        const measurement = capability !== undefined && windowsShellEgress !== undefined && "evidenceKind" in windowsShellEgress
+          ? windowsShellEgress : undefined;
+        setWindowsSandboxSubstrate(substrate, capability, measurement);
       };
       /** Publish slow shell-probe results only if the startup record has not been replaced meanwhile. */
       const recordWindows = (started: "srt-win" | "proxy-only" | "none", failed: boolean): void => {
@@ -181,7 +183,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
           const substrate = windowsSubstrateFor({ ...windowsInputs, mxc }, started);
           if (failed) return windowsSubstrateWithoutAsrt(substrate);
           return substrate.shells === "mxc" && windowsShellEgress !== undefined
-            ? { ...substrate, shellEgressProtocolCoverage: windowsShellEgress } : substrate;
+            ? { ...substrate, shellEgressProtocolCoverage: windowsShellEgress.coverage } : substrate;
         };
         const first = at(windowsMxc ?? windowsInputs.mxc);
         publishWindows(first);
@@ -192,10 +194,10 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
         if (windowsMxc?.state !== "checking" || failed || started === "none" || !windowsInputs.shellRequested) return;
         const recordedMxc = getWindowsSandboxSubstrate()?.mxc;
         shellStartProbe ??= settleWindowsMxcStartProbe();
-        void shellStartProbe.then(({ mxc, coverage }) => {
+        void shellStartProbe.then(({ mxc, egress }) => {
           if (getWindowsSandboxSubstrate()?.mxc !== recordedMxc) return;
           windowsMxc = mxc;
-          windowsShellEgress = coverage;
+          windowsShellEgress = egress;
           const settled = at(mxc);
           publishWindows(settled);
           if (started === "proxy-only") {
@@ -721,8 +723,10 @@ async function detectWindowsBootInputs(
   };
 }
 
+type WindowsMxcShellEgressProbe = WindowsMxcShellEgressMeasurement | { coverage: EgressProtocolCoverage };
+
 /** Probe a real shell start after boot. */
-async function settleWindowsMxcStartProbe(): Promise<{ mxc: WindowsSandboxPlanInputs["mxc"]; coverage?: EgressProtocolCoverage }> {
+async function settleWindowsMxcStartProbe(): Promise<{ mxc: WindowsSandboxPlanInputs["mxc"]; egress?: WindowsMxcShellEgressProbe }> {
   const started = Date.now();
   try {
     const { probeHostMxcPowerShellStart } = await import("../../permissions/mxc-windows.js");
@@ -730,7 +734,11 @@ async function settleWindowsMxcStartProbe(): Promise<{ mxc: WindowsSandboxPlanIn
     if (mxc.state === "available") {
       log.info({ mxcShellState: mxc.state }, "boot: MXC shell start probe succeeded in %d ms", Date.now() - started);
       const rawIpProbe = mxc.rawIpProbe;
-      return { mxc: { state: "available" }, coverage: rawIpProbe ? { dns: "host-resolver", rawIp: rawIpProbe.rawIp } : undefined };
+      if (rawIpProbe === undefined) return { mxc: { state: "available" } };
+      const coverage: EgressProtocolCoverage = { dns: "host-resolver", rawIp: rawIpProbe.rawIp };
+      const egress: WindowsMxcShellEgressProbe = rawIpProbe.rawIp === "blocked"
+        ? { coverage, evidenceKind: rawIpProbe.evidenceKind } : { coverage };
+      return { mxc: { state: "available" }, egress };
     }
     log.warn({ mxcShellState: mxc.state, mxcShellReason: mxc.reason },
       "boot: MXC shell start probe failed in %d ms (build %s): %s", Date.now() - started, mxc.windowsBuild ?? "unknown", mxc.detail);

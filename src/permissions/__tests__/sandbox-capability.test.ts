@@ -689,7 +689,8 @@ describe("sandbox-capability — Windows MXC substrate", () => {
     const generation = getSandboxGeneration();
     const before = getHostShellExecutionPlan();
     const measured = { dns: "host-resolver", rawIp: "blocked" } as const;
-    setWindowsSandboxSubstrate({ ...substrate }, mxcShellCapability(), measured);
+    const measurement = { coverage: measured, evidenceKind: "measured" } as const;
+    setWindowsSandboxSubstrate({ ...substrate }, mxcShellCapability(), measurement);
     expect(detectMxcShellCapability()).toBe(capability);
     expect(getSandboxGeneration()).toBe(generation);
     expect(getWindowsSandboxSubstrate()?.shellEgressProtocolCoverage).toEqual(measured);
@@ -697,7 +698,7 @@ describe("sandbox-capability — Windows MXC substrate", () => {
     expect(before.egressProtocolCoverage.rawIp).toBe("unknown");
 
     const nonMxc = { ...substrate, shells: "approved-host", shellEgressIdentity: "shared" } as const;
-    expect(() => setWindowsSandboxSubstrate(nonMxc, undefined, measured)).toThrow(/egress/);
+    expect(() => setWindowsSandboxSubstrate(nonMxc, undefined, measurement)).toThrow(/egress/);
     setWindowsSandboxSubstrate(nonMxc);
     setWindowsSandboxSubstrate(substrate, mxcShellCapability());
     expect(getHostShellExecutionPlan().egressProtocolCoverage.rawIp).toBe("unknown");
