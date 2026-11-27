@@ -7020,7 +7020,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.args-too-large": "요청 인수 또는 요약이 잘못되었거나 크기 제한을 초과했습니다.",
   "reasonCodes.output-args-not-displayable": "승인 카드에 요청된 인자를 모두 표시할 수 없습니다.",
   "reasonCodes.requested-output-card-unavailable": "요청된 출력의 검토 정보를 가져올 수 없습니다. 작업 검토를 새로고침하세요.",
-  "reasonCodes.approval-already-resolved": "이 실행 승인은 이미 처리되었습니다.",
+  "reasonCodes.approval-already-resolved": "이 승인 요청은 이미 처리되었습니다.",
   "reasonCodes.output-execution-not-dispatched": "출력을 실행하지 못했습니다.",
   "reasonCodes.output-retry-effect-unknown": "이전 시도에서 외부 효과가 없었는지 확인할 수 없습니다.",
   "tailnetWorkReviews.outputApprovalExpired": "실행 승인 요청이 만료되었습니다.",

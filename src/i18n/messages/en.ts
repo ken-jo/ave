@@ -7018,7 +7018,7 @@ export const en = {
   "reasonCodes.args-too-large": "The request arguments or summary are invalid or exceed their size limit.",
   "reasonCodes.output-args-not-displayable": "The approval card cannot show all of the requested arguments.",
   "reasonCodes.requested-output-card-unavailable": "The requested-output review is unavailable. Refresh Work reviews to continue.",
-  "reasonCodes.approval-already-resolved": "This execution approval has already been resolved.",
+  "reasonCodes.approval-already-resolved": "This approval request has already been handled.",
   "reasonCodes.output-execution-not-dispatched": "The output could not start.",
   "reasonCodes.output-retry-effect-unknown": "The host could not verify that the previous attempt had no effect.",
   "tailnetWorkReviews.outputApprovalExpired": "The execution approval expired.",

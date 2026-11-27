@@ -1172,6 +1172,12 @@ export class ApprovalGate {
     const decision = this.resolveDecision(requestId, { requestId, choice, nonce: entry.nonce, hmac: entry.expectedHmac }, "tailnet-surface", false, undefined, true, { winner, login: page.login });
     return decision && !isHostApprovalRejectedDecision(decision) ? "accepted" : "requested-output-card-unavailable";
   }
+
+  hasRecentRequestedOutputResolution(requestId: string): boolean {
+    const resolution = this.requestedOutputResolutions.get(requestId);
+    return resolution !== undefined && Date.now() < resolution.expiresAt;
+  }
+
   private readonly ruleSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
   private readonly approvedPolicyTransitions = new WeakMap<ApprovalDecision, { from: string; to: string }>();
   // The card each decided answer settled, for the stale-answer audit row.

@@ -342,6 +342,7 @@ it.each(["desktop", "phone"] as const)("lets the %s win a shared output card onc
   expect(second.content).toEqual(first.content);
   expect(first.content.argsText).toContain("내용".repeat(500));
   expect(first.handle).not.toBe(second.handle);
+  expect(gate.hasRecentRequestedOutputResolution(card.id)).toBe(false);
   expect(gate.listRequestedOutputCards(phone)).toEqual([first]);
   await expect(gate.answerRequestedOutputCard(first.handle, "allow-once", other)).resolves.toBe("requested-output-card-unavailable");
   const answer = gate.answerRequestedOutputCard(first.handle, "allow-once", phone);
@@ -357,6 +358,7 @@ it.each(["desktop", "phone"] as const)("lets the %s win a shared output card onc
   await expect(decision).resolves.toMatchObject({ ok: true });
   expect(handler).toHaveBeenCalledTimes(winningSurface === "phone" ? 1 : 0);
   if (winningSurface === "phone") expect(handler).toHaveBeenCalledWith(PLUGIN_OUTPUT.toolName, exactArgs);
+  expect(gate.hasRecentRequestedOutputResolution(card.id)).toBe(true);
   expect(gate.listRequestedOutputCards(other)).toEqual([{ requestId: card.id, resolvedBy: winningSurface === "phone" ? "tailnet-surface" : "desk" }]);
   await expect(gate.answerRequestedOutputCard(second.handle, "allow-once", other)).resolves.toBe("approval-already-resolved");
   await audit.flush();
