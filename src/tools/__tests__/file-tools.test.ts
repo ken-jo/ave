@@ -773,7 +773,7 @@ describe("file native tools", () => {
     const uuid = vi.spyOn(crypto, "randomUUID").mockReturnValue(id);
     syncBuiltinESMExports();
     try {
-      expect((await new WriteFileTool().execute({ path: target, content: "new" }, ctx())).isError).toBe(true);
+      await expect(new WriteFileTool().execute({ path: target, content: "new" }, ctx())).rejects.toMatchObject({ code: "EEXIST" });
       expect(existsSync(staging)).toBe(false);
       expect(existsSync(target)).toBe(false);
     } finally {
