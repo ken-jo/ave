@@ -54,14 +54,15 @@ paths are missing or the shell reports failed verification or unavailable native
 confinement, report that prerequisite and leave the workbook untouched. Never
 install another runtime, download packages or request an unsandboxed retry.
 
-The script admits files up to 20 MiB. Above 8 MiB it creates
-`<workbook>.ave-bak` exclusively, writes the original bytes, calls `fsync`,
-re-reads the copy and checks its length and SHA-256 before replacing the
-workbook. If any of that fails, the edit removes the backup it created and leaves
-the workbook unchanged; retry is then possible. An interrupted write can leave a
-partial `.ave-bak` under the final name: never treat such a file as a valid
-copy. On Windows every new file the edit writes (the backup and the edited
-workbook) must carry exactly the workbook's access list. A workbook with its own
+The script admits files up to 20 MiB. Above 8 MiB it saves the original bytes,
+calls `fsync`, then re-reads the copy and checks its length and SHA-256 before
+replacing the workbook. On macOS and Linux it writes to a sibling temporary
+file and links the verified copy to `<workbook>.ave-bak`. On Windows it creates
+the final recovery name exclusively and removes a failed copy if the path still
+names the file created by this edit. An interrupted Windows write can
+leave a partial `.ave-bak` under the final name. Treat only verified backups
+as valid copies. On Windows both the backup and the edited file must keep the
+workbook's owner and access list. A workbook with its own
 access rules, or one whose rules cannot be read, is refused with "The workbook
 has its own access rules; Ave cannot keep them on its backup." or "... on the
 edited file." and a reason code (`backup-acl-differs`, `backup-acl-unreadable`,
