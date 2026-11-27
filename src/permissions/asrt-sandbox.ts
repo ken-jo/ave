@@ -50,6 +50,8 @@ import { isBoundStageWorkspacePath } from "./stage-workspace-binding.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, resolvePathForPolicy, SENSITIVE_PATH_ENTRIES, sensitiveEntryOnSandboxFloor } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata, followNamedEntry, macAppOwnedDirectoryWriteRules, macLinkedNameTargetRules, macWriteRootNameRules } from "./macos-sandbox-wrap.js";
+import { onTailnetListenerPortsChanged, tailnetListenerPorts, TAILNET_LOOPBACK_DESTINATION } from "../shared/tailnet-listener-port.js";
+import { isDeepStrictEqual } from "node:util";
 import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-cleanup.js";
 import { createLogger } from "../lib/logger.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
@@ -329,6 +331,31 @@ export function closeAllEgressConnections(): number {
 
 // Retained after initialization so revocation can close connections synchronously.
 let loadedSandboxManagerForRelease: Awaited<ReturnType<typeof loadSandboxManager>> | undefined;
+
+function withTailnetPortDenies(network: NetworkConfig, ownerDenies: readonly string[]): NetworkConfig {
+  const { deniedDomainReasons, ...rest } = network;
+  const reasons = { ...deniedDomainReasons };
+  const denies = new Set(network.deniedDomains.filter(entry => reasons[entry] !== TAILNET_LOOPBACK_DESTINATION));
+  for (const [entry, reason] of Object.entries(reasons)) if (reason === TAILNET_LOOPBACK_DESTINATION) delete reasons[entry];
+  for (const entry of ownerDenies) denies.add(entry);
+  // A port rule runs before the proxy allowlists and before parent routing can choose a resolver.
+  for (const port of tailnetListenerPorts()) {
+    const entry = `*:${port}`;
+    denies.add(entry);
+    reasons[entry] = TAILNET_LOOPBACK_DESTINATION;
+  }
+  return { ...rest, deniedDomains: [...denies], ...(Object.keys(reasons).length > 0 ? { deniedDomainReasons: reasons } : {}) };
+}
+
+function refreshTailnetPortDenies(manager: Awaited<ReturnType<typeof loadSandboxManager>> | undefined): void {
+  if (!manager) return;
+  const current = manager.getConfig();
+  if (!current) return;
+  const network = withTailnetPortDenies(current.network, _baseTrustedSettings?.deniedDomains ?? []);
+  if (!isDeepStrictEqual(network, current.network)) manager.updateConfig({ ...current, network });
+}
+
+onTailnetListenerPortsChanged(() => refreshTailnetPortDenies(loadedSandboxManagerForRelease));
 // The session's config when Windows children are confined in containers only: the wrap runtime is then never loaded or initialized.
 let containerOnlyConfig: SandboxRuntimeConfig | undefined;
 
@@ -2647,7 +2674,7 @@ export function buildSandboxConfig(
   if (srtWinPath !== undefined) {
     assertPrivateHelperGrants(trustedSettings.allowRead ?? [], trustedSettings.allowWrite ?? []);
   }
-  const network: NetworkConfig = {
+  const network = withTailnetPortDenies({
     // Deny-by-default — empty allow-list ⇒ no network egress.
     allowedDomains: [...(trustedSettings.allowedDomains ?? [])],
     deniedDomains: [...(trustedSettings.deniedDomains ?? [])],
@@ -2672,7 +2699,7 @@ export function buildSandboxConfig(
         : {}),
       ...(trustedSettings.upstreamProxy?.resolvesNames === true ? { resolvesNames: true } : {}),
     },
-  };
+  }, trustedSettings.deniedDomains ?? []);
 
   // denyRead floor: ALWAYS union the centralized host-secret / sensitive read deny-list (getDefaultSensitiveReadDenyPaths) onto any caller-supplied denyRead. This is the SHARED config's read deny — the floor ASRT applies when a per-command wrap supplies NO `customConfig.filesystem.denyRead` of its own (ASRT's wrapWithSandbox does `customConfig?.filesystem?.denyRead ?? config.filesystem.denyRead` — a per-command denyRead REPLACES this, it does not union, so wraps that need this floor must restate it; see openWrapped in mcp-client.ts). Deduped, order-stable (sensitive floor first, then caller's).
   const sensitiveDenyRead = sensitiveReadFloorRows(trustedSettings.userDataDir);
@@ -3320,12 +3347,14 @@ async function initializeSandboxRuntime(
           ? { ...context, attributionKey: undefined } : context);
       };
     await SandboxManager.initialize(initialConfig, sharedAsk, enableLogMonitor);
+    refreshTailnetPortDenies(SandboxManager);
     startupSignal?.throwIfAborted();
     if (sandboxSession !== session) throw new Error("Sandbox initialization was cancelled");
     // A host may reject a configured profile even when every dependency exists. Publish activity only after a real confined workload starts.
     await verifyAsrtRuntime(SandboxManager);
     startupSignal?.throwIfAborted();
     if (sandboxSession !== session) throw new Error("Sandbox initialization was cancelled");
+    refreshTailnetPortDenies(SandboxManager);
     publishRequiredWindowsWriteDenies(protectedRows);
   } catch (error) {
     await discardFailedAsrtInitialization(SandboxManager);

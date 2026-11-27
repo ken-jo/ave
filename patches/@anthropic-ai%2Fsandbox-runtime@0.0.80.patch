@@ -2797,7 +2797,7 @@ index 810b0aa54..e4f008dac 100644
      });
      const mux = muxProxyServer;
      // Backend first so the front-end never accepts a connection that would
-@@ -588,10 +1013,942 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -588,10 +1013,946 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -3318,6 +3318,10 @@ index 810b0aa54..e4f008dac 100644
 + */
 +async function planDestination(host, port, plainHttp) {
 +    const canonical = canonicalizeHost(host) ?? host;
++    // A route replan can reuse the earlier allow decision. Apply live denies before routing again.
++    const deniedEntry = config?.network.deniedDomains.find(entry => matchesDomainPatternWithPort(canonical, port, entry));
++    if (deniedEntry !== undefined)
++        return { reason: deniedDomainReason(deniedEntry) };
 +    const routed = await routesFor(canonical, port, plainHttp ? 'http' : 'https');
 +    if (routed.failure !== undefined) return { failure: routed.failure };
 +    if (routed.reason !== undefined)
@@ -3740,7 +3744,7 @@ index 810b0aa54..e4f008dac 100644
      try {
          await initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonitor);
      }
-@@ -604,6 +1961,222 @@ async function initialize(runtimeConfig, sandboxAskCallback, enableLogMonitor =
+@@ -604,6 +1965,222 @@ async function initialize(runtimeConfig, sandboxAskCallback, enableLogMonitor =
          throw error;
      }
  }
@@ -3963,7 +3967,7 @@ index 810b0aa54..e4f008dac 100644
  async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonitor) {
      // Return if already initializing
      if (initializationPromise) {
-@@ -616,7 +2189,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -616,7 +2193,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -3976,7 +3980,7 @@ index 810b0aa54..e4f008dac 100644
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -705,171 +2283,18 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -705,171 +2287,18 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // sandboxed child can be spawned. Doing this at initialize() (not
      // wrap-time) means the host gets a single actionable error before
      // any per-exec work happens, instead of exit-15 on every command.
@@ -4160,7 +4164,7 @@ index 810b0aa54..e4f008dac 100644
      }
      // Initialize network infrastructure
      initializationPromise = (async () => {
-@@ -992,6 +2417,12 @@ function checkDependenciesCommon(ripgrepConfig) {
+@@ -992,6 +2421,12 @@ function checkDependenciesCommon(ripgrepConfig) {
          errors.push(...linuxDeps.errors);
          warnings.push(...linuxDeps.warnings);
      }
@@ -4173,7 +4177,7 @@ index 810b0aa54..e4f008dac 100644
      else if (platform === 'windows') {
          let srtWin;
          try {
-@@ -1284,6 +2715,17 @@ function getFsWriteConfig() {
+@@ -1284,6 +2719,17 @@ function getFsWriteConfig() {
   *
   * `maskedFiles`: see {@link windowsMaskedFileDenies}.
   */
@@ -4191,7 +4195,7 @@ index 810b0aa54..e4f008dac 100644
  function computeWindowsFsAccessSet(c, maskedFiles) {
      const fs = c.filesystem;
      // filesystem.disabled bypasses ALL filesystem rule generation —
-@@ -1306,16 +2748,17 @@ function computeWindowsFsAccessSet(c, maskedFiles) {
+@@ -1306,16 +2752,17 @@ function computeWindowsFsAccessSet(c, maskedFiles) {
      // creates a placeholder chain and stamps it (deny lands on the
      // exact target path). `mode: 'grant'` drops them (a grant on
      // nothing is meaningless).
@@ -4218,7 +4222,7 @@ index 810b0aa54..e4f008dac 100644
  }
  /**
   * The `mode: "mask"` files, as credential denies: an ACL cannot redirect a
-@@ -1515,6 +2958,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2962,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -4228,7 +4232,7 @@ index 810b0aa54..e4f008dac 100644
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +3156,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +3160,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -4250,7 +4254,7 @@ index 810b0aa54..e4f008dac 100644
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1728,29 +3177,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1728,29 +3181,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  setEnvVars: credentialRestrictions.setEnvVars,
                  maskedFileBinds: credentialRestrictions.maskedFileBinds,
                  degradeToDenyPaths: credentialRestrictions.degradeToDenyPaths,
@@ -4293,7 +4297,7 @@ index 810b0aa54..e4f008dac 100644
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1769,7 +3226,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1769,7 +3230,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  maskedFileStoreDir: credentialRestrictions.maskedFileStoreDir,
                  enableWeakerNestedSandbox: getEnableWeakerNestedSandbox(),
                  allowNestedUserNamespaces,
@@ -4303,7 +4307,7 @@ index 810b0aa54..e4f008dac 100644
                  binShell,
                  ripgrepConfig: getRipgrepConfig(),
                  mandatoryDenySearchDepth: getMandatoryDenySearchDepth(),
-@@ -1786,6 +3244,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +3248,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -4311,7 +4315,7 @@ index 810b0aa54..e4f008dac 100644
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,7 +3280,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,7 +3284,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -4328,7 +4332,7 @@ index 810b0aa54..e4f008dac 100644
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
              config?.network?.allowedDomains !== undefined;
-@@ -1853,6 +3321,7 @@ async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal,
+@@ -1853,6 +3325,7 @@ async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal,
          // Per-exec allowRead/allowWrite throw — `srt-win exec` only
          // exposes `--deny-*`; per-exec grants are not implemented.
          const fsCfg = customConfig?.filesystem;
@@ -4336,7 +4340,7 @@ index 810b0aa54..e4f008dac 100644
          const maskedFiles = windowsMaskedFileDenies(credentialRestrictions);
          let rawRead = [];
          let rawWrite = [];
-@@ -1877,16 +3346,10 @@ async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal,
+@@ -1877,16 +3350,10 @@ async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal,
              maskedFiles.length > 0) {
              const sessRead = new Set(windowsFsStampedSet?.denyRead ?? []);
              const sessWrite = new Set(windowsFsStampedSet?.denyWrite ?? []);
@@ -4354,7 +4358,7 @@ index 810b0aa54..e4f008dac 100644
                  held: windowsFsStampedSet,
              });
              perExecDenyRead = ranked.denyRead.filter(p => !sessRead.has(p));
-@@ -1950,7 +3413,7 @@ function getConfig() {
+@@ -1950,7 +3417,7 @@ function getConfig() {
   *
   * **Network/allowlist changes are a live swap**: the running
   * mux proxy reads `config.network.allowedDomains` /
@@ -4363,7 +4367,7 @@ index 810b0aa54..e4f008dac 100644
   * reassigning `config` here takes effect on the next connection
   * with no proxy rebind and no port change — on every platform,
   * including Windows. This is what lets a host enable/deny domains
-@@ -1965,6 +3428,9 @@ function getConfig() {
+@@ -1965,6 +3432,9 @@ function getConfig() {
   * @param newConfig - The new configuration to use
   */
  function updateConfig(newConfig) {
@@ -4373,7 +4377,7 @@ index 810b0aa54..e4f008dac 100644
      if (getPlatform() === 'windows' &&
          config &&
          !sameWindowsStampSet(newConfig)) {
-@@ -1989,6 +3455,7 @@ function updateConfig(newConfig) {
+@@ -1989,6 +3459,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -4381,7 +4385,7 @@ index 810b0aa54..e4f008dac 100644
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2113,7 +3580,30 @@ function forceCloseHttpServer(server) {
+@@ -2113,7 +3584,30 @@ function forceCloseHttpServer(server) {
          });
      });
  }
@@ -4413,7 +4417,7 @@ index 810b0aa54..e4f008dac 100644
      // Windows: release this session's sandbox-user ACEs. Best-effort
      // — log anomalies rather than throw, so teardown always
      // completes. Leftover ACEs are recoverable later via
-@@ -2123,28 +3613,54 @@ async function reset() {
+@@ -2123,28 +3617,54 @@ async function reset() {
          // Captured at initialize() — the SAME binary the grants/stamps
          // were applied with, immune to `config` mutation between.
          const srtWin = srtWinSpawn;
@@ -4487,7 +4491,7 @@ index 810b0aa54..e4f008dac 100644
      // windowsWfpVerified is NOT cleared — per-process, not per-session.
      // Clean up any leftover bwrap mount points. Force past the
      // active-sandbox counter — reset() means the session is over.
-@@ -2222,6 +3738,8 @@ async function reset() {
+@@ -2222,6 +3742,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -4496,7 +4500,7 @@ index 810b0aa54..e4f008dac 100644
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,7 +3747,50 @@ async function reset() {
+@@ -2229,7 +3751,50 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -4547,7 +4551,7 @@ index 810b0aa54..e4f008dac 100644
  }
  function getSandboxViolationStore() {
      return sandboxViolationStore;
-@@ -2314,6 +3875,7 @@ function getLinuxGlobPatternWarnings() {
+@@ -2314,6 +3879,7 @@ function getLinuxGlobPatternWarnings() {
   */
  export const SandboxManager = {
      initialize,
@@ -4555,7 +4559,7 @@ index 810b0aa54..e4f008dac 100644
      isSupportedPlatform,
      isSandboxingEnabled,
      checkDependencies,
-@@ -2336,6 +3898,12 @@ export const SandboxManager = {
+@@ -2336,6 +3902,12 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,
@@ -4568,7 +4572,7 @@ index 810b0aa54..e4f008dac 100644
      askCallbackDenyReason: true,
      cleanupAfterCommand,
      reset,
-@@ -2349,4 +3917,4 @@ export const SandboxManager = {
+@@ -2349,4 +3921,4 @@ export const SandboxManager = {
      getConfig,
      updateConfig,
  };

@@ -214,9 +214,18 @@ export function preparePrivateFileDirectory(filePath: string): Promise<void> {
   return ensureDir(dirname(filePath));
 }
 
-export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean): Promise<boolean> {
+/** Finish directory preparation, then check authority, commit and deliver the commit receipt without yielding. */
+export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean, didCommit?: () => void): Promise<boolean> {
   await preparePrivateFileDirectory(filePath);
-  return replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
+  let committed: boolean;
+  try {
+    committed = replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
+  } catch (error) {
+    if (isCommittedAtomicWriteError(error)) didCommit?.();
+    throw error;
+  }
+  if (committed) didCommit?.();
+  return committed;
 }
 
 const ATOMIC_COMMIT_REFUSED = Symbol("atomic commit refused");

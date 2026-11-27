@@ -29,17 +29,17 @@ const probeMocks = vi.hoisted(() => ({
 }));
 
 // Gate state only: these tests do not claim OS confinement.
-vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
-  setParentProxyRouter: () => undefined,
-  initialize: async () => undefined,
-  wrapWithSandboxArgv: probeMocks.wrapWithSandboxArgv,
-  // The runtime probe runs through an attributed egress listener, as shells do.
-  openInvocationListener: async () => undefined,
-  closeInvocationListener: () => undefined,
-  updateConfig: () => undefined,
-  reset: async () => undefined,
-  cleanupAfterCommand: () => undefined,
-} }));
+vi.mock("@anthropic-ai/sandbox-runtime", async () => {
+  const { withSandboxManagerConfig } = await import("../../__tests__/support/linux-wrapper-programs.js");
+  return { SandboxManager: withSandboxManagerConfig({
+    setParentProxyRouter: () => undefined,
+    wrapWithSandboxArgv: probeMocks.wrapWithSandboxArgv,
+    // The runtime probe runs through an attributed egress listener, as shells do.
+    openInvocationListener: async () => undefined,
+    closeInvocationListener: () => undefined,
+    cleanupAfterCommand: () => undefined,
+  }) };
+});
 
 vi.mock("node:child_process", () => ({ spawn: probeMocks.spawn }));
 

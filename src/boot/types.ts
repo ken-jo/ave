@@ -184,6 +184,7 @@ export interface AppServices {
   /** Work board agent-orchestration engine; owns the plan→approve→execute run for one item. Wired after the
    * SubAgentRunner exists at boot; reached by the work-board IPC `run` handler and the `work_board_run` LLM tool. */
   workBoardEngine?: import("../core/work-board-engine.js").WorkBoardEngine;
+  tailnetWorkDecisions?: import("../main/tailnet-work-decisions.js").TailnetWorkDecisions;
   /** Host Work Board reporter (daily / weekly). Constructed at boot after the one-shot LLM caller exists; the work-board IPC domain's `generate-report`
    * channel forwards renderer requests here. Absent ⇒ boot did not construct it (the IPC handler then returns `{ ok: false, error: "no-reporter" }`). */
   workBoardReport?: import("../work-board/work-report.js").WorkBoardReporter;

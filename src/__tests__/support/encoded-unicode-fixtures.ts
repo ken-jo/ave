@@ -1,11 +1,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { vitestTierEnabled } from "../../../scripts/lib/vitest-tiers.mjs";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { encodedPowerShellExecutionReason } from "../../permissions/rules/powershell-encoded-command.js";
 import { proveLiteralPowerShell } from "../../permissions/rules/powershell-exfiltration.js";
+import * as projectRuleFiles from "../../permissions/rules/project-rule-files.js";
 import { proveLiteralShell } from "../../permissions/rules/shell-rule-matcher.js";
 import { canonicalRuleSpecifier, RuleSpecifierError } from "../../permissions/rules/rule-specifier.js";
 import { buildShellRuleApproval } from "../../permissions/rules/shell-rule-approval.js";
@@ -124,7 +125,21 @@ export function useEncodedUnicodeFixture() {
 // Physical files let the normal suite sharding and worker pool distribute the census.
 // Each test checks its own points against the representative classes, so no test depends on another.
 export function registerEncodedUnicodePartition(dialect: Dialect, position: Position, half: "first" | "second"): void {
-  const { traceCommand } = useEncodedUnicodeFixture();
+  const fixture = useEncodedUnicodeFixture();
+  const { traceCommand } = fixture;
+  if (CENSUS_TIER) {
+    let restoreProjectRoot: (() => void) | undefined;
+    beforeAll(() => {
+      const cwd = fixture.cwd;
+      const resolveProjectRoot = projectRuleFiles.projectRuleRoot;
+      // Approval cards all report the same project root for this fixed fixture directory.
+      const root = resolveProjectRoot(cwd);
+      const lookup = vi.spyOn(projectRuleFiles, "projectRuleRoot")
+        .mockImplementation((path) => path === cwd ? root : resolveProjectRoot(path));
+      restoreProjectRoot = () => lookup.mockRestore();
+    });
+    afterAll(() => restoreProjectRoot?.());
+  }
   const cases = codePointCases.filter(row => row.position === position && row.half === half);
   const once = <T>(build: () => T) => { let value: T | undefined; return () => (value ??= build()); };
   const representedClasses = (trace: (point: number) => { failure: string | null; key: string }) => () => {

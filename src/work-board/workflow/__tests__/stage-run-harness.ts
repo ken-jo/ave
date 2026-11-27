@@ -94,6 +94,7 @@ export async function stageRunHarness(opts: {
   /** Track detached work for each engine. */
   observeRunWork?: boolean;
   onRunWorkScheduled?: () => void;
+  onSpawn?: (input: SubAgentSpawnInput) => void;
   onProgress?: import("../../../core/work-board-engine.js").WorkBoardEngineDeps["emitProgress"];
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ave-stage-run-"));
@@ -208,6 +209,7 @@ export async function stageRunHarness(opts: {
   let generation = 0;
   const ofCurrentEngine = (list: FakeChild[]) => list.filter(child => !strays.has(child));
   async function spawnChild(by: number, input: SubAgentSpawnInput, hooks?: Parameters<SubAgentRunner["spawn"]>[1]): Promise<SubAgentSpawnResult> {
+    opts.onSpawn?.(input);
     await Promise.resolve();
     const sessionId = `child-${children.length + 1}`;
     const launch = launches.getStore();
