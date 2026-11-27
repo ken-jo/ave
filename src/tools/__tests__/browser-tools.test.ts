@@ -4,7 +4,7 @@ import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
  * who is asked when (agent tab vs user tab, per origin, per action), the TOCTOU re-check, window scope, denied schemes, the untrusted-content fence, and user takeover cancelling a pending action. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync } from "node:fs";
-import { t } from "../../i18n/index.js";
+import { getLocale, setLocale, t } from "../../i18n/index.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -734,6 +734,23 @@ describe("browser tools", () => {
     expect(result).toMatchObject({ isError: true, output: expect.stringContaining("Action fixture failed") });
     expect(observed.begun).toEqual(["click"]);
     expect(observed.completed).toEqual([]);
+  });
+
+  it.each([
+    ["en", /pane chat.*bound browser tab.*rail chat/i, /empty browser pane.*main chat/i, /Only a main chat.*Rail chats.*empty browser pane/i],
+    ["ko", /창 채팅.*연결된 브라우저 탭.*사이드 패널 채팅/, /빈 브라우저 창.*메인 채팅/, /메인 채팅만.*사이드 패널 채팅.*빈 브라우저 창/],
+  ] as const)("describes pane and rail routing in the %s browser schemas", (locale, tabId, navigate, tabNew) => {
+    const previousLocale = getLocale();
+    try {
+      setLocale(locale);
+      const { browserTools } = harness();
+      const navigateTool = browserTools.find((tool) => tool.name === BROWSER_TOOL.navigate)!;
+      expect(navigateTool.toJsonSchema()).toMatchObject({ properties: { tabId: { description: expect.stringMatching(tabId) } } });
+      expect(navigateTool.description).toMatch(navigate);
+      expect(browserTools.find((tool) => tool.name === BROWSER_TOOL.tabNew)?.description).toMatch(tabNew);
+    } finally {
+      setLocale(previousLocale);
+    }
   });
 
   it("refuses browser_tab_new at once in a chat that cannot open tabs, naming its attached page, under its ordinary network card", async () => {

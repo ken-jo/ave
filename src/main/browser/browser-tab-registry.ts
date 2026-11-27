@@ -1337,6 +1337,19 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return { ok: true, handle: tab.handle };
   }
 
+  browserPaneTarget(windowId: number, sessionId: string):
+    | { kind: "live"; handle: string; url: string }
+    | { kind: "empty" | "unavailable" }
+    | undefined {
+    const bound = this.conversationSurface(windowId, sessionId);
+    if (bound?.kind !== "browser") return undefined;
+    const key = windowTabKey(windowId, bound.tabId);
+    if (this.retiredWorkspaceTabs.has(key) || this.isClosedByAgent(windowId, bound.tabId)) return { kind: "unavailable" };
+    const target = this.defaultBrowserTab(windowId, sessionId);
+    if (!target.ok) return { kind: this.handleByWindowTab.has(key) ? "unavailable" : "empty" };
+    return { kind: "live", handle: target.handle, url: this.tabs.get(target.handle)?.guest?.getURL() ?? "" };
+  }
+
   // A live tab by handle, in any window. For approval hooks, which have no session.
   liveTab(handle: string): BrowserTabRecord<G> | undefined {
     const tab = this.tabs.get(handle);
