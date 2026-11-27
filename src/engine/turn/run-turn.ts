@@ -926,6 +926,7 @@ async function runTurnInSpan(
         tokensIn: turnTokensIn,
         freshInputTokens: turnFreshInput,
         tokensOut: turnTokensOut,
+        usageReported: billableTurnUsage !== undefined || billableUsageByModel.length > 0 || subscriptionTurnUsage.length > 0,
         ...(turnCacheRead > 0 ? { cacheReadTokens: turnCacheRead } : {}),
         ...(turnCacheWrite > 0 ? { cacheWriteTokens: turnCacheWrite } : {}),
         ...(singleUsageModel

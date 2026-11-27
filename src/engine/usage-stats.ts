@@ -422,6 +422,8 @@ function toUsageTurn(sessionId: string, timestamp: string, summary: Record<strin
   const cacheWriteTokens = validTokens(summary.cacheWriteTokens) ? summary.cacheWriteTokens : 0;
   const tokenUsage = !segments.length && !Array.isArray(summary.subscriptionUsage)
     && validTokens(summary.freshInputTokens) && validTokens(summary.tokensOut)
+    && (summary.usageReported === true || (summary.usageReported === undefined
+      && summary.freshInputTokens + summary.tokensOut + cacheReadTokens + cacheWriteTokens > 0))
     ? { inputTokens: summary.freshInputTokens + cacheReadTokens + cacheWriteTokens,
         outputTokens: summary.tokensOut, cacheReadTokens, cacheWriteTokens }
     : undefined;

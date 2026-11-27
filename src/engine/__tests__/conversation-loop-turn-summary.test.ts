@@ -966,13 +966,16 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(summaries[0]!.endedByEndTurn).toBeUndefined();
   });
 
-  it("persists turnSummary on the final post-summary save", async () => {
+  it.each([
+    { usage: { inputTokens: 42, outputTokens: 7 }, usageReported: true },
+    { usage: { inputTokens: 0, outputTokens: 0 }, usageReported: true },
+    { usage: undefined, usageReported: false },
+  ])("persists turnSummary with usage $usage", async ({ usage, usageReported }) => {
     const toolRegistry = new ToolRegistry();
     const provider = new FakeProvider([
       [
         { type: "text_delta", text: "저장된 답변" },
-        { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 42, outputTokens: 7 },
-        },
+        { type: "message_complete", stopReason: "end_turn", usage },
       ],
     ]);
     const saveSession = vi.fn(async () => {});
@@ -989,13 +992,12 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(finalAssistant?.meta?.turnSummary).toMatchObject({
       endedByEndTurn: true,
       tokensIn: expect.any(Number),
-      tokensOut: 7,
-      freshInputTokens: 42,
-      vendorProvider: "openai",
-      vendorModel: "gpt-5.4-mini",
+      tokensOut: usage?.outputTokens ?? 0,
+      freshInputTokens: usage?.inputTokens ?? 0,
+      usageReported,
+      ...(usage ? { vendorProvider: "openai", vendorModel: "gpt-5.4-mini" } : {}),
     });
-    expect(finalAssistant?.meta?.turnSummary?.tokensIn ?? 0).toBeGreaterThan(42,
-    );
+    expect(finalAssistant?.meta?.turnSummary?.tokensIn ?? 0).toBeGreaterThan(usage?.inputTokens ?? 0);
   });
 
   it("attributes fallback-served turns to the provider/model that actually streamed", async () => {

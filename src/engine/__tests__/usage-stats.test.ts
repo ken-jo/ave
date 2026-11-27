@@ -792,4 +792,29 @@ describe("saved turn usage", () => {
     const rolling = await getUsageSummary(sessions, 2, now);
     expect(rolling.thisMonth.totalTokens).toBe(240);
   });
+
+  it("counts reported zero usage and skips unmeasured summaries with pricing", async () => {
+    const now = new Date(2026, 5, 16, 12);
+    const sessions = {
+      listSessions: () => [{ id: "missing" }, { id: "reported" }, { id: "legacy" }] as
+        ReturnType<Parameters<typeof getUsageRange>[0]["listSessions"]>,
+      loadSession: (id: string) => [{
+        role: "assistant",
+        meta: {
+          createdAt: now.getTime(),
+          turnSummary: {
+            tokensIn: 512,
+            freshInputTokens: 0,
+            tokensOut: 0,
+            ...(id === "legacy" ? {} : { usageReported: id === "reported" }),
+            vendorProvider: "openai",
+            vendorModel: "gpt-4o",
+            modelSettings: { pricing: { source: "user", rates: { inputPer1M: 10, outputPer1M: 20 } } },
+          },
+        },
+      }],
+    };
+    const range = await getUsageRange(sessions, { dateFrom: "2026-06-16", dateTo: "2026-06-16" }, now);
+    expect(range.topConversationsByTokens).toMatchObject([{ sessionId: "reported", turns: 1, cost: 0, hasPricedCost: true }]);
+  });
 });
