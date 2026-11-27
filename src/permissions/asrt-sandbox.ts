@@ -3450,11 +3450,11 @@ export async function checkAsrtDependencies(): Promise<{
         return { errors: [], warnings: [], accountBackendAbsent: true };
       }
       if (user.provisioned !== true || user.groupExists !== true || user.credPresent !== true) {
-        return { errors: [`Windows sandbox account setup is incomplete. ${mod.windowsInstallInstructions()}`], warnings: [] };
+        return { errors: [`Windows sandbox account setup is incomplete. ${mod.windowsInstallInstructions(undefined)}`], warnings: [] };
       }
       // When enumeration is unavailable, initialization still requires the behavioral egress probe.
       if (wfp.state === "installed" || wfp.state === "cannot-read") return { errors: [], warnings: [] };
-      return { errors: [`Windows sandbox network filters are unavailable. ${mod.windowsInstallInstructions()}`], warnings: [] };
+      return { errors: [`Windows sandbox network filters are unavailable. ${mod.windowsInstallInstructions(undefined)}`], warnings: [] };
     } catch (error) {
       return { errors: [errorMessage(error)], warnings: [], dependencyFailure: error };
     }

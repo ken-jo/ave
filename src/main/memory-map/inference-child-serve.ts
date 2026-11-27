@@ -4,7 +4,7 @@ import type { MemoryMapProgress } from '../../shared/memory-map.js';
 import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import type { LocalModelBytes } from './embedding.js';
 import { MemoryMapHostError } from './errors.js';
-import { checkedInferenceFrameBytes, INFERENCE_PREFIX_BYTES } from './inference-request.js';
+import { checkedInferenceFrameBytes, INFERENCE_ACCOUNT_RELAY_ARG, INFERENCE_PREFIX_BYTES } from './inference-request.js';
 import type { MemoryInferenceTask } from './worker-client.js';
 
 export type InferenceHandler = (task: MemoryInferenceTask, files: LocalModelBytes, onProgress: (progress: MemoryMapProgress) => void) => Promise<unknown>;
@@ -54,7 +54,14 @@ async function serve(input: Readable, output: Writable, handle: InferenceHandler
 
 /** The child's side of one request: stdio where the host owns the pipes, the authenticated loopback channel under the Windows sandbox. */
 export async function serveInferenceChild(handle: InferenceHandler): Promise<void> {
-  const mode = parseChildLaunchArgs(process.argv.slice(2));
+  const args = process.argv.slice(2);
+  const accountRelay = args[0] === INFERENCE_ACCOUNT_RELAY_ARG;
+  const mode = parseChildLaunchArgs(accountRelay ? args.slice(1) : args);
+  if (accountRelay) {
+    if (mode.transport !== 'loopback') throw new Error('Inference account relay requires loopback');
+    const { serveInferenceAccountRelay } = await import('./inference-account-relay.js');
+    return serveInferenceAccountRelay(mode.env);
+  }
   if (mode.transport === 'relay') throw new Error('The inference child has no relay transport');
   if (mode.transport === 'stdio') return serve(process.stdin, process.stdout, handle);
   for (const [name, value] of Object.entries(mode.env)) process.env[name] = value;

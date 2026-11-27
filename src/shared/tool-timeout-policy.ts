@@ -91,6 +91,8 @@ export const TOOL_TIMEOUT_POLICY = {
   // The child listener outlasts the host's announce and connect deadline.
   windowsInferenceChildAcceptMs: 60_000,
   windowsInferenceChildHandshakeMs: 10_000,
+  windowsInferenceTargetExitMs: 5_000,
+  windowsInferenceRelayStopMs: 10_000,
   pluginStartupDefaultMs: 10_000,
   pluginStartupMaxMs: 60_000,
   // Allow retiring generations to drain existing calls before shutdown aborts their scope.

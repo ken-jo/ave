@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { cleanupAsrtSandboxAfterCommand } from '../../../permissions/asrt-sandbox.js';
 import { appendFileSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -16,7 +17,7 @@ import type { ConfinedChildSpec } from '../../../permissions/confined-child.js';
 import type { WindowsBackgroundAdmission } from '../../../permissions/windows-background-features.js';
 import { parseChildLaunchArgs } from '../../../plugins/isolation/child-loopback-link.js';
 import { runInferenceChild } from '../inference-child-win32.js';
-import { MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
+import { INFERENCE_ACCOUNT_EXIT_RECEIPT, INFERENCE_ACCOUNT_RELAY_ARG, MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
 import { MODEL_FILES } from '../model-manifest.js';
 
 const { spawn, spawnMxc, spawnHost, route, refreshAdmission, grant, createHome, connectLoopback, helperIdentity } = vi.hoisted(() => ({
@@ -96,6 +97,11 @@ afterEach(async () => {
   await rm(folder, { recursive: true, force: true });
 });
 
+function publishAccountReceipt(child: { stderr: PassThrough; emit: EventEmitter['emit'] }) {
+  child.stderr.write(INFERENCE_ACCOUNT_EXIT_RECEIPT + '\n');
+  child.emit('close', 0, null);
+}
+
 function serveReply(beforeWrite?: (received: number) => void | Promise<void>) {
   let received = 0;
   const stdout = new PassThrough();
@@ -126,7 +132,7 @@ function serveReply(beforeWrite?: (received: number) => void | Promise<void>) {
     const [socket, peer] = duplexPair();
     peer.pipe(stdin);
     stdout.pipe(peer);
-    socket.once('close', () => peer.destroy());
+    socket.once('close', () => { peer.destroy(); publishAccountReceipt(child); });
     return socket;
   });
   return { child, completed };
@@ -182,6 +188,7 @@ describe('inference model stream', () => {
       const [socket, peer] = duplexPair();
       peer.pipe(child.stdin);
       child.stdout.pipe(peer);
+      socket.once('close', () => { peer.destroy(); publishAccountReceipt(child); });
       connectLoopback.mockResolvedValueOnce(socket);
       child.stdin = processStdin;
       child.stdout = new PassThrough();
@@ -191,7 +198,8 @@ describe('inference model stream', () => {
     expect(spawn).toHaveBeenCalledOnce();
     const launch = spawn.mock.calls[0]?.[0];
     expect(launch?.stdio).toStrictEqual(['pipe', 'pipe', 'pipe']);
-    const mode = parseChildLaunchArgs(launch?.args.slice(1) ?? []);
+    expect(launch?.args[1]).toBe(INFERENCE_ACCOUNT_RELAY_ARG);
+    const mode = parseChildLaunchArgs(launch?.args.slice(2) ?? []);
     const env = { ...launch?.baseEnv, ...launch?.extraEnv, ...launch?.windowsCommandLineEnv, ...(mode.transport === 'loopback' ? mode.env : {}) };
     expect(Object.keys(env).map(name => name.toUpperCase())).not.toContain('NODE_CHANNEL_FD');
     expect(Buffer.concat(requestWrite.mock.calls.map(([chunk]) => chunk as Buffer))).toEqual(REQUEST_FRAME);
@@ -206,13 +214,13 @@ describe('inference model stream', () => {
     const cleanup = vi.fn();
     createHome.mockReturnValue({ env: {}, cleanup });
     const { child, completed } = serveReply();
-    child.kill.mockImplementation(() => child.emit('close'));
     const [socket, peer] = duplexPair();
     const requestWrite = vi.spyOn(socket, 'write');
     peer.pipe(child.stdin);
     child.stdout.pipe(peer);
     const connecting = deferred<void>();
     const connect = deferred<typeof socket>();
+    socket.once('close', () => publishAccountReceipt(child));
     connectLoopback.mockImplementationOnce(() => { connecting.resolve(); return connect.promise; });
 
     const inference = runInferenceChild(folder, TASK, new AbortController().signal);
@@ -224,7 +232,7 @@ describe('inference model stream', () => {
       expect.soft(requestWrite).not.toHaveBeenCalled();
       expect.soft(completed).not.toHaveBeenCalled();
       expect.soft(socket.destroyed).toBe(true);
-      expect(child.kill).toHaveBeenCalledOnce();
+      expect(child.kill).not.toHaveBeenCalled();
       expect(cleanup).toHaveBeenCalledOnce();
     } finally {
       socket.destroy();
@@ -273,7 +281,7 @@ describe('inference model stream', () => {
     });
     await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
     expect(completed).toHaveBeenCalledOnce();
-    expect(child.kill).toHaveBeenCalledOnce();
+    expect(child.kill).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -325,25 +333,94 @@ it('uses the Windows system directory as cwd without a profile ACL grant', async
   expect(home.cleanup).toHaveBeenCalledOnce();
 });
 
-it('keeps the private home until a child acquired during a failed launch exits', async () => {
+it.each(['cancellation', 'late startup refusal'] as const)('retains HOME and wrap when the wrapper exits before the target during %s', async reason => {
+  vi.mocked(cleanupAsrtSandboxAfterCommand).mockClear();
   const cleanup = vi.fn();
   createHome.mockReturnValue({ env: {}, cleanup });
-  const { child } = serveReply();
-  const refusal = new Error('relay setup refused');
+  const wrapper = Object.assign(new EventEmitter(), {
+    pid: 2200, stdout: new PassThrough(), stdin: new PassThrough(), stderr: new PassThrough(),
+    exitCode: null, signalCode: null, kill: vi.fn(),
+  });
+  const target = new EventEmitter();
+  const targetExit = vi.fn();
+  target.once('exit', targetExit);
+  const [socket, peer] = duplexPair();
+  const acquired = deferred<void>();
+  const control = new AbortController();
   spawn.mockImplementationOnce(spec => {
     spec.onWrapped?.();
-    spec.onSpawn?.(child as unknown as ChildProcess);
-    throw refusal;
+    spec.onSpawn?.(wrapper as unknown as ChildProcess);
+    acquired.resolve();
+    if (reason === 'late startup refusal') throw new Error('late startup refusal');
+    return { child: wrapper };
+  });
+  const connected = deferred<void>();
+  connectLoopback.mockImplementation(async () => {
+    connected.resolve();
+    return socket;
   });
 
+  const result = runInferenceChild(folder, TASK, control.signal);
+  const observed = result.catch((error: unknown) => error);
   try {
-    await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toBe(refusal);
-    expect.soft(child.kill).toHaveBeenCalledOnce();
+    await acquired.promise;
+    if (reason === 'cancellation') {
+      await connected.promise;
+      control.abort();
+    }
+    wrapper.emit('exit', 0, null);
+    wrapper.emit('close', 0, null);
+    await expect.soft(observed).resolves.toMatchObject({ name: 'ManagedExitUnconfirmedError' });
+    expect.soft(targetExit).not.toHaveBeenCalled();
     expect.soft(cleanup).not.toHaveBeenCalled();
+    expect.soft(cleanupAsrtSandboxAfterCommand).not.toHaveBeenCalled();
   } finally {
-    child.emit('close');
+    target.emit('exit');
+    socket.destroy();
+    peer.destroy();
+    wrapper.stdout.destroy();
   }
-  await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
+});
+
+it('releases only after the relay confirms the stopped target tree', async () => {
+  vi.mocked(cleanupAsrtSandboxAfterCommand).mockClear();
+  const cleanup = vi.fn();
+  createHome.mockReturnValue({ env: {}, cleanup });
+  const { child: wrapper } = serveReply();
+  const target = new EventEmitter();
+  const [socket, peer] = duplexPair();
+  const connected = deferred<void>();
+  const stopRequested = deferred<void>();
+  const control = new AbortController();
+  connectLoopback.mockImplementationOnce(async () => {
+    socket.once('close', stopRequested.resolve);
+    connected.resolve();
+    return socket;
+  });
+  spawn.mockImplementationOnce(spec => {
+    spec.onWrapped?.();
+    spec.onSpawn?.(wrapper as unknown as ChildProcess);
+    return { child: wrapper };
+  });
+  target.once('exit', () => publishAccountReceipt(wrapper));
+
+  const result = runInferenceChild(folder, TASK, control.signal).catch((error: unknown) => error);
+  try {
+    await connected.promise;
+    control.abort();
+    await stopRequested.promise;
+    wrapper.emit('exit', 0, null);
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(cleanupAsrtSandboxAfterCommand).not.toHaveBeenCalled();
+    target.emit('exit');
+    await expect(result).resolves.toMatchObject({ message: 'Memory worker cancelled' });
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(cleanupAsrtSandboxAfterCommand).toHaveBeenCalledOnce();
+    expect(wrapper.kill).not.toHaveBeenCalled();
+  } finally {
+    socket.destroy();
+    peer.destroy();
+  }
 });
 
 it('streams verified bytes through the container holder and releases it', async () => {

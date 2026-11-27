@@ -15,9 +15,9 @@ import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import { win32SystemBinary } from '../../shared/windows-system-path.js';
 import { buildSafeChildEnv } from '../../tools/safe-env.js';
 import { mainDir } from '../main-paths.js';
-import { spawnManaged } from '../managed-child-processes.js';
+import { ManagedExitUnconfirmedError, spawnManaged } from '../managed-child-processes.js';
 import { MemoryMapHostError } from './errors.js';
-import { checkedInferenceFrameBytes, INFERENCE_FILES, INFERENCE_PREFIX_BYTES } from './inference-request.js';
+import { checkedInferenceFrameBytes, INFERENCE_ACCOUNT_EXIT_RECEIPT, INFERENCE_ACCOUNT_RELAY_ARG, INFERENCE_FILES, INFERENCE_PREFIX_BYTES } from './inference-request.js';
 import { assertLocalEmbeddingRuntime, bindLocalEmbeddingRuntime, refreshLocalInferenceAdmission, type LocalInferenceRoute } from './local-runtime-win32.js';
 import type { ModelFile } from './model-manifest.js';
 import type { MemoryInferenceTask } from './worker-client.js';
@@ -83,9 +83,9 @@ async function writeRequest(output: Writable, folder: string, taskJson: string, 
   } finally { await Promise.all(handles.map(handle => handle.close())); }
 }
 
-function sandboxHomeOrRefusal(): ReturnType<typeof prepareManagedWindowsProcessHome> {
+function sandboxHomeOrRefusal(requireTreeExit: boolean): ReturnType<typeof prepareManagedWindowsProcessHome> {
   try {
-    return prepareManagedWindowsProcessHome(INFERENCE_CHILD_LABEL);
+    return prepareManagedWindowsProcessHome(INFERENCE_CHILD_LABEL, requireTreeExit ? INFERENCE_ACCOUNT_EXIT_RECEIPT : undefined);
   } catch (error) {
     if (isSandboxHomeUnavailable(error)) throw new MemoryMapHostError('sandbox-home-unavailable');
     throw error;
@@ -128,7 +128,7 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
     return { input: holder.process.stdout, output: holder.process.stdin, stop: holder.release, assertStillValid };
   }
 
-  const home = sandboxHomeOrRefusal();
+  const home = sandboxHomeOrRefusal(route === 'offline-sandbox');
   try {
     let running: ChildProcess;
     const cwd = win32SystemBinary('');
@@ -143,7 +143,7 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
       // The account backend delivers no spawn environment or stdin, so it uses authenticated loopback.
       ({ child: running } = await spawnConfinedChild({
         command: process.execPath,
-        args: [...NODE_PRESERVE_SYMLINK_FLAGS, entry, CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv(srtWinTargetEnv(baseEnv, extraEnv))],
+        args: [...NODE_PRESERVE_SYMLINK_FLAGS, entry, INFERENCE_ACCOUNT_RELAY_ARG, CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv(srtWinTargetEnv(baseEnv, extraEnv))],
         windowsShell: 'cmd',
         windowsCommandLineEnv: { ELECTRON_RUN_AS_NODE: '1', ...TELEMETRY_OPT_OUT },
         cwd,
@@ -167,7 +167,7 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
       running.once('error', error => resolve(error.message));
     });
     const socket = await connectToAnnouncedChild({ stdout, exited, timeoutMs: TOOL_TIMEOUT_POLICY.windowsInferenceChildConnectMs, assertStillValid });
-    return { input: socket, output: socket, stop: home.stop, assertStillValid };
+    return { input: socket, output: socket, stop: () => { socket.destroy(); return home.stop(); }, assertStillValid };
   } catch (error) {
     await home.stop();
     throw error;
@@ -207,7 +207,7 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
             });
           } catch (refusal) { reject(refusal as Error); }
         },
-        (cleanupError: unknown) => reject(error ?? cleanupError),
+        (cleanupError: unknown) => reject(cleanupError instanceof ManagedExitUnconfirmedError ? cleanupError : error ?? cleanupError),
       );
     };
     const abort = () => finish(new Error('Memory worker cancelled'));

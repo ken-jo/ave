@@ -15,6 +15,7 @@ import type { WindowsBackgroundAdmission } from '../../permissions/windows-backg
 import { runMemoryWorker } from '../../main/memory-map/worker-client-win32.js';
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager-win32.js';
 import { downloadModelFile } from '../../main/memory-map/model-download-win32.js';
+import { ManagedExitUnconfirmedError } from '../../main/managed-child-processes.js';
 import { MemoryMapHost, MemoryMapHostError } from '../../main/memory-map/host-win32.js';
 import { readGraphCatalog, memoryFacets, graphMemoryRevision, isGraphMemory, matchesGraphRecord, memoryMapScopeId, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 import { ProviderEmbeddings } from '../../main/memory-map/provider-embeddings-win32.js';
@@ -283,7 +284,10 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
       settingsWrite = pending;
       return pending;
     },
-    errorCode: error => error instanceof MemoryModelError || error instanceof MemoryMapHostError ? error.code : undefined,
+    errorCode: error => {
+      if (error instanceof ManagedExitUnconfirmedError) return 'local-runtime-unavailable';
+      return error instanceof MemoryModelError || error instanceof MemoryMapHostError ? error.code : undefined;
+    },
     readSource: (id, rawScope, contentRevision) => {
       const result = resolveScope(rawScope);
       if (!result.ok || sourceIndex?.scopeId !== memoryMapScopeId(result.options)) return undefined;

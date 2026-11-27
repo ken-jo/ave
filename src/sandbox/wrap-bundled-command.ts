@@ -10,7 +10,8 @@ import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-
 import { buildLauncherEnvironment, prepareSandboxTargetLaunch, type SandboxTargetLaunch } from "../permissions/launcher-environment.js";
 import type { ChildProcess } from "node:child_process";
 import {
-  abandonManagedLaunch, createManagedRelayResources, observeManagedWindowsRelayExit, recordManagedCleanup,
+  abandonManagedLaunch, createManagedRelayResources, createManagedResources, ManagedExitUnconfirmedError,
+  observeManagedWindowsRelayExit, observeManagedWindowsRelayTreeExit, recordManagedCleanup,
   releaseManagedResources, type ManagedResources, type RelayBestEffortExit,
 } from "../main/managed-child-processes.js";
 import { randomBytes } from "node:crypto";
@@ -18,6 +19,8 @@ import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, 
 import { join, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { t } from "../i18n/index.js";
+import { raceWithTimeout } from "../shared/abortable-deadline.js";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
 import { isContainerHolderRouteEnabled } from "../shared/container-platform.js";
 import { createLogger } from "../lib/logger.js";
@@ -150,12 +153,12 @@ export async function wrapManagedBundledCommand(input: Omit<BundledWrapInput, "s
 }
 
 /** Own a private HOME and command wrap for a Windows launch with no lifetime ACL grants. */
-export function prepareManagedWindowsProcessHome(label: string) {
+export function prepareManagedWindowsProcessHome(label: string, treeReceiptLine?: string) {
   if (process.platform !== "win32") throw new Error("Managed Windows process HOME requires Windows");
-  const home = createSandboxProcessHome();
-  // The process or relay settling is the available exit evidence for these launches.
-  const resources = createManagedRelayResources();
+  const home = treeReceiptLine === undefined ? createSandboxProcessHome() : createSandboxProcessHome("win32", undefined, null);
+  const resources = treeReceiptLine === undefined ? createManagedRelayResources() : createManagedResources();
   let child: ChildProcess | undefined;
+  let treeExit: ReturnType<typeof observeManagedWindowsRelayTreeExit> | undefined;
   let wrapped = false;
   recordManagedCleanup(resources, home.cleanup, () => wrapped ? cleanupAsrtSandboxAfterCommand() : undefined);
   return {
@@ -163,13 +166,30 @@ export function prepareManagedWindowsProcessHome(label: string) {
     onWrapped() { wrapped = true; },
     onSpawn(running: ChildProcess) {
       child = running;
+      if (treeReceiptLine !== undefined) {
+        treeExit = observeManagedWindowsRelayTreeExit(running, resources, treeReceiptLine);
+        return;
+      }
       void observeManagedWindowsRelayExit(running, resources)
         .then(receipt => releaseManagedResources(resources, receipt))
         .catch((error: unknown) => log.warn(`[${label}] sandbox home release failed: ${errorMessage(error)}`));
     },
-    stop() {
+    async stop() {
       if (child === undefined) return abandonManagedLaunch(resources);
-      terminateChildBestEffort(child);
+      if (treeExit === undefined) {
+        terminateChildBestEffort(child);
+        return;
+      }
+      try {
+        const receipt = await raceWithTimeout(treeExit, TOOL_TIMEOUT_POLICY.windowsInferenceRelayStopMs,
+          () => new ManagedExitUnconfirmedError());
+        if (receipt === undefined) throw new ManagedExitUnconfirmedError();
+        await releaseManagedResources(resources, receipt);
+      } catch (error) {
+        terminateChildBestEffort(child);
+        log.warn(`[${label}] sandbox teardown refused: ${errorMessage(error)}`);
+        throw error;
+      }
     },
   };
 }
