@@ -112,11 +112,13 @@ export interface TailnetPairingDeviceStatus {
 }
 // Browser access requires paired sharing and same-origin checks; native routes reject browser context.
 export type TailnetWorkDecisionHandler = (request: TailnetWorkDecisionRequest, evidence: RemoteWorkDecisionEvidence) => Promise<TailnetWorkDecisionResponse>;
+/** Finish a prepared output snapshot synchronously at the response boundary. */
+export type TailnetOutputSnapshot = () => Pick<TailnetWorkReviewSnapshot, "outputCards" | "outputRetries">;
 
 interface TailnetWebWorkDecisions {
   readonly decide: TailnetWorkDecisionHandler;
   readonly list?: (evidence: RemoteWorkDecisionEvidence) => Promise<readonly TailnetWorkReview[]>;
-  readonly outputSnapshot?: (evidence: RemoteWorkDecisionEvidence) => Promise<Pick<TailnetWorkReviewSnapshot, "outputCards" | "outputRetries">>;
+  readonly outputSnapshot?: (evidence: RemoteWorkDecisionEvidence) => Promise<TailnetOutputSnapshot | undefined>;
   readonly verifyServeTarget: () => Promise<boolean>;
   readonly receipts: TailnetControllerReceiptStore;
 }
@@ -1070,7 +1072,7 @@ async function routeTailnetWebSnapshot(
   const work = web.workDecisions;
   const { pairedShare, scope } = authorization;
   let workReviews: readonly TailnetWorkReview[] | undefined;
-  let outputSnapshot: Pick<TailnetWorkReviewSnapshot, "outputCards" | "outputRetries"> = {};
+  let outputSnapshot: TailnetOutputSnapshot | undefined;
   if (work?.list && pairedShare.permission === "control"
     && authorizedTailnetLogin(req.headers, options.authorization, TAILNET_WORK_DECISION_CAPABILITY) !== undefined) {
     const supportsOutput = work.outputSnapshot !== undefined && singleHeader(req.headers, TAILNET_OUTPUT_CARD_HEADER) === "1";
@@ -1081,6 +1083,7 @@ async function routeTailnetWebSnapshot(
       return;
     }
     try {
+      // Register the page before the work list builds stage-gate review offers.
       if (evidence.outputPage && work.outputSnapshot) outputSnapshot = await work.outputSnapshot(evidence);
       workReviews = await work.list(evidence);
     } catch {
@@ -1095,7 +1098,7 @@ async function routeTailnetWebSnapshot(
   const snapshot: TailnetObserverSnapshot = {
     ...toTailnetObserverSnapshot(options.projectionStore.snapshot(scope.conversationId, { busy: options.isConversationBusy() }), scope.value),
     ...(workReviews === undefined ? {} : { workReviews }),
-    ...outputSnapshot,
+    ...outputSnapshot?.(),
   };
   sendTailnetWebJson(res, web, 200, {
     ok: true,

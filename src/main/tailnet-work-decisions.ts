@@ -1,7 +1,7 @@
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { redactForLLM } from "../audit/dlp-filter.js";
 import { hasUnsafeDirectiveControlChars } from "../engine/parent-directive.js";
-import type { TailnetWorkDecisionHandler } from "../api/tailnet-surface-server.js";
+import type { TailnetOutputSnapshot, TailnetWorkDecisionHandler } from "../api/tailnet-surface-server.js";
 import type { WorkBoardEngine } from "../core/work-board-engine.js";
 import type { SettingsService } from "../data/settings-store.js";
 import { createToolEffectResolver } from "../permissions/tool-effect-evidence.js";
@@ -50,7 +50,7 @@ interface RequestedOutputDecisions {
 export interface TailnetWorkDecisions {
   readonly decide: TailnetWorkDecisionHandler;
   list(evidence: RemoteWorkDecisionEvidence): Promise<readonly TailnetWorkReview[]>;
-  outputSnapshot(evidence: RemoteWorkDecisionEvidence): Promise<Pick<TailnetWorkReviewSnapshot, "outputCards" | "outputRetries">>;
+  outputSnapshot(evidence: RemoteWorkDecisionEvidence): Promise<TailnetOutputSnapshot | undefined>;
   registerRequestedOutputDecision(handler: RequestedOutputDecisions): () => void;
 }
 
@@ -370,9 +370,9 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
     list,
     async outputSnapshot(evidence) {
       const page = outputPage(evidence);
-      if (!page || !gate) return {};
+      if (!page || !gate) return;
       const items = await board.readApprovalItems();
-      if (!items) return {};
+      if (!items) return;
       const runs = await board.runs.view();
       const outputRetries: NonNullable<TailnetWorkReviewSnapshot["outputRetries"]>[number][] = [];
       for (const item of items) {
@@ -393,7 +393,9 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
           }
         }
       }
-      return page.authority.isCurrent() ? { outputCards: gate.listRequestedOutputCards(page), outputRetries } : {};
+      if (!page.authority.isCurrent()) return;
+      const cards = gate.listRequestedOutputCards(page);
+      return () => ({ outputCards: gate.filterCurrentRequestedOutputCards(page, cards), outputRetries });
     },
     registerRequestedOutputDecision(handler) {
       if (outputRegistration) throw new Error("Requested output decision handler already registered");

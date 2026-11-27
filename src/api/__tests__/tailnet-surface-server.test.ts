@@ -11,6 +11,7 @@ import {
   isAuthorizedTailnetObserver,
   startTailnetSurfaceServer,
   type TailnetPairingOptions,
+  type TailnetOutputSnapshot,
   type TailnetSurfaceServer,
   type TailnetWebOptions,
 } from "../tailnet-surface-server.js";
@@ -29,7 +30,9 @@ import { unknownToolEffects } from "../../__tests__/support/tool-effect-resolver
 import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
 import { openEgressRelay, startEgressRelayService, stopEgressRelayService } from "../../permissions/egress-relay/relay.js";
 import { openEgressInvocation } from "../../permissions/egress-invocations.js";
-import { TAILNET_WORK_DECISION_PATH, type TailnetWorkDecisionRequest, type TailnetWorkDecisionResponse, type TailnetWorkReview, type TailnetWorkReviewSnapshot } from "../../shared/tailnet-work-decisions.js";
+import { ApprovalGate } from "../../permissions/approval-gate.js";
+import * as allowedDirectories from "../../permissions/allowed-directories.js";
+import { TAILNET_OUTPUT_CARD_HEADER, TAILNET_WORK_DECISION_PATH, type TailnetWorkDecisionRequest, type TailnetWorkDecisionResponse, type TailnetWorkReview, type TailnetWorkReviewSnapshot } from "../../shared/tailnet-work-decisions.js";
 import type { TemplateGraph } from "../../shared/workflow-template-types.js";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 import * as tailnetListenerPolicy from "../../permissions/tailnet-listener-policy.js";
@@ -2230,7 +2233,7 @@ it("refuses the live listener through an agent egress relay while the paired Web
   }
 });
 
-async function pairedWorkFixture(h: Awaited<ReturnType<typeof stageRunHarness>>) {
+async function pairedWorkFixture(h: Awaited<ReturnType<typeof stageRunHarness>>, approvalGate?: ApprovalGate) {
   if (process.platform === "win32") {
     const home = aveHome();
     protectAveHomeFixture(home);
@@ -2242,13 +2245,13 @@ async function pairedWorkFixture(h: Awaited<ReturnType<typeof stageRunHarness>>)
   const log = vi.fn();
   const runtime = createTailnetWorkDecisions({
     workBoardStore: h.board, workBoardEngine: h.engine, workflowTemplateStore: h.templates, routinesStore: routines,
-    settingsService: { get: key => DEFAULT_SETTINGS[key] }, auditLogger: { log }, toolRegistry: new ToolRegistry(),
+    settingsService: { get: key => DEFAULT_SETTINGS[key] }, auditLogger: { log }, toolRegistry: new ToolRegistry(), approvalGate,
   });
   if (!runtime) throw new Error("Work decision runtime unavailable");
   const list = vi.fn(runtime.list);
   const { server } = await fixture({
     pairedSharing: sharing.authorizer,
-    web: { origin: WEB_ORIGIN, workDecisions: { decide: runtime.decide, list, verifyServeTarget: async () => true, receipts: createReceiptStore() } },
+    web: { origin: WEB_ORIGIN, workDecisions: { ...runtime, list, verifyServeTarget: async () => true, receipts: createReceiptStore() } },
   });
   const snapshot = url(server, "/tailnet/v2/web/snapshot");
   const session = await openWebSession(server);
@@ -2265,6 +2268,67 @@ async function pairedWorkFixture(h: Awaited<ReturnType<typeof stageRunHarness>>)
   }
   return { server, sharing, snapshot, session, headers, list, log, routines, readReviews, postDecision };
 }
+
+it.each(["project access is revoked", "the approval settles"])(
+  "withholds prepared output card arguments and its handle when %s during the work list",
+  async change => {
+    const h = await stageRunHarness();
+    await h.runThenEnd(async () => {
+      const gate = new ApprovalGate(() => null);
+      const allowed = vi.spyOn(allowedDirectories, "sanitizeRuntimeAllowedDirectories").mockReturnValue([h.dir]);
+      const listing = deferred<void>();
+      const release = deferred<void>();
+      const invocation = new AbortController();
+      const sessionId = "output-review-session";
+      const outputId = "send";
+      const toolName = "send_report";
+      const requestId = crypto.randomUUID();
+      const body = "Arguments visible only while this project is authorized";
+      const unbind = gate.bindRequestedOutput(sessionId, {
+        binding: { itemId: 1, runId: "run", stageId: "review", attempt: 1, resultHash: "result", outputHash: "outputs", outputId },
+        toolName, source: "mcp", ownerId: "reports", projectRoot: h.dir, signal: invocation.signal,
+        canExecute: () => true, refuseDisplay: () => { throw new Error("Expected displayable args"); }, recordWinner: () => {},
+      });
+      try {
+        const { snapshot, headers, list } = await pairedWorkFixture(h, gate);
+        const read = () => fetch(snapshot, { headers: { ...headers, [TAILNET_OUTPUT_CARD_HEADER]: "1" } });
+        expect((await read()).status).toBe(200);
+        const pending = gate.requestAndWait({
+          id: requestId, sessionId, category: "tool", toolName, source: "mcp", args: { body },
+          reason: "Send report", invocationToolUseId: outputId, abortSignal: invocation.signal, createdAt: Date.now(),
+        });
+        await vi.waitFor(() => expect(gate.pendingCount).toBe(1));
+        const live: TailnetWorkReviewSnapshot = (await (await read()).json()).snapshot;
+        const [card] = live.outputCards ?? [];
+        if (!card || !("handle" in card)) throw new Error("Expected a live execution card");
+        expect(card.content.argsText).toContain(body);
+        list.mockImplementationOnce(async () => {
+          listing.resolve();
+          await release.promise;
+          return [];
+        });
+        const inFlight = read();
+        await within(listing.promise, "work list to pause with a prepared output card");
+        if (change === "project access is revoked") allowed.mockReturnValue([]);
+        else {
+          invocation.abort();
+          await pending;
+        }
+        release.resolve();
+        const response = await inFlight;
+        expect(response.status).toBe(200);
+        const payload = await response.text();
+        expect(payload).not.toContain(body);
+        expect(payload).not.toContain(card.handle);
+      } finally {
+        release.resolve();
+        unbind();
+        gate.disposeAll();
+        allowed.mockRestore();
+      }
+    });
+  },
+);
 
 it("posts a real plan binding from the paired snapshot and withholds reviews after revocation", async () => {
   const h = await stageRunHarness();
@@ -2978,7 +3042,7 @@ describe("phone work reviews", () => {
     const handle = `${requestId}.${Date.now() + 30_000}.${"a".repeat(64)}`;
     const argsText = JSON.stringify({ body: `<img src="not-a-node"> ${"자료".repeat(500)}` }, null, 2);
     let settled = false;
-    const projection = vi.fn(async (): Promise<Pick<TailnetWorkReviewSnapshot, "outputCards">> => ({ outputCards: settled
+    const projection = vi.fn(async (): Promise<TailnetOutputSnapshot> => () => ({ outputCards: settled
       ? [{ requestId, resolvedBy: "tailnet-surface" }]
       : [{ requestId, handle, content: { toolName: "send_report", ownerId: "reports", argsText, serviceEndpoint: "https://reports.example.test/tool" } }] }));
     const { browser, received, waitForDecisions } = await openPhoneReviews([], () => {

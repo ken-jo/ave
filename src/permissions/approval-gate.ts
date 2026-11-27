@@ -1109,6 +1109,10 @@ export class ApprovalGate {
     return `${requestId}.${deadline}.${signature}`;
   }
 
+  private canOfferRequestedOutput(output: NonNullable<PendingEntry["requestedOutput"]>, page: RequestedOutputPage, now: number): boolean {
+    return now < output.deadline && page.canViewProject(output.invocation.projectRoot) && output.invocation.canExecute();
+  }
+
   listRequestedOutputCards(page: RequestedOutputPage): readonly RequestedOutputCardView[] {
     if (this.isHeadlessExec || !page.authority.isCurrent()) return [];
     const now = Date.now();
@@ -1124,7 +1128,7 @@ export class ApprovalGate {
     for (const [requestId, entry] of this.pending) {
       const output = entry.requestedOutput;
       const content = entry.rendererRequest?.requestedOutputCard;
-      if (!output || !content || !page.canViewProject(output.invocation.projectRoot) || !output.invocation.canExecute() || now >= output.deadline) continue;
+      if (!output || !content || !this.canOfferRequestedOutput(output, page, now)) continue;
       const offered = offers.get(requestId);
       const deadline = offered !== undefined && offered > now ? offered : Math.min(output.deadline, now + REQUESTED_OUTPUT_OFFER_TTL_MS);
       offers.set(requestId, deadline);
@@ -1135,6 +1139,20 @@ export class ApprovalGate {
       else if (page.canViewProject(resolution.projectRoot)) cards.push({ requestId, resolvedBy: resolution.by });
     }
     return cards;
+  }
+
+  filterCurrentRequestedOutputCards(page: RequestedOutputPage, cards: readonly RequestedOutputCardView[]): readonly RequestedOutputCardView[] {
+    const registered = this.currentOutputPage(page);
+    if (!registered) return [];
+    const now = Date.now();
+    return cards.filter(card => {
+      if (!("handle" in card)) return true;
+      const entry = this.pending.get(card.requestId);
+      const deadline = registered.offers.get(card.requestId);
+      return entry?.requestedOutput !== undefined && entry.rendererRequest?.requestedOutputCard === card.content
+        && deadline !== undefined && now < deadline && this.canOfferRequestedOutput(entry.requestedOutput, page, now)
+        && card.handle === this.requestedOutputHandle(page.id, card.requestId, deadline, entry);
+    });
   }
 
   async answerRequestedOutputCard(handle: string, choice: RequestedOutputCardChoice, page: RequestedOutputPage): Promise<"accepted" | "approval-already-resolved" | "requested-output-card-unavailable"> {
