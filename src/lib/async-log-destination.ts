@@ -9,6 +9,7 @@ export function createAsyncLogDestination(
 ) {
   const stream = new SonicBoom({ ...options, maxWriteRetries: 3 });
   const pending = new Map<number, { bytes: number; counted: boolean }>();
+  let pendingBytes = 0;
   let sequence = 0;
   let dropped = 0;
   let failed = false;
@@ -24,15 +25,20 @@ export function createAsyncLogDestination(
       if (record.counted) dropped += 1;
     }
     pending.clear();
+    pendingBytes = 0;
     onProgress?.();
     stream.destroy();
   });
   const recordDrop = () => {
-    if (pending.get(sequence)?.counted) dropped += 1;
+    const record = pending.get(sequence);
+    if (!record) return;
+    if (record.counted) dropped += 1;
+    pendingBytes -= record.bytes;
     pending.delete(sequence);
   };
   stream.on("drop", recordDrop);
   stream.on("write", (bytes: number) => {
+    pendingBytes = Math.max(0, pendingBytes - bytes);
     for (const [id, record] of pending) {
       if (bytes < record.bytes) {
         record.bytes -= bytes;
@@ -54,15 +60,17 @@ export function createAsyncLogDestination(
       dropped = 0;
       return count;
     },
-    write(chunk: string, countDrops = true): void {
-      if (failed) {
+    write(chunk: string, countDrops = true, maxPendingBytes = Infinity): void {
+      const bytes = Buffer.byteLength(chunk);
+      if (failed || pendingBytes + bytes > maxPendingBytes) {
         if (countDrops) {
           dropped += 1;
           onProgress?.();
         }
         return;
       }
-      pending.set(++sequence, { bytes: Buffer.byteLength(chunk), counted: countDrops });
+      pending.set(++sequence, { bytes, counted: countDrops });
+      pendingBytes += bytes;
       try { stream.write(chunk); } catch { recordDrop(); }
     },
     flush(): Promise<void> {

@@ -25,6 +25,8 @@ export const LOG_MAX_FILES_PER_DAY = 20;
 /** Independently cap total bytes across days, pruning oldest date and sequence first. */
 export const LOG_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
 
+const ROLLOVER_RETRY_INTERVAL_MS = 1_000;
+
 function baseFileName(dateStr: string): string {
   return `ave-${dateStr}.log`;
 }
@@ -246,7 +248,8 @@ export interface LogFileSinkOptions {
   maxBytes?: number;
 }
 
-export interface LogFileSink extends Omit<ReturnType<typeof createAsyncLogDestination>, "stream"> {
+export interface LogFileSink extends Omit<ReturnType<typeof createAsyncLogDestination>, "stream" | "write"> {
+  write(chunk: string, countDrops?: boolean): void;
   destroy(): void;
   readonly currentFile: string;
 }
@@ -255,7 +258,9 @@ export interface LogFileSink extends Omit<ReturnType<typeof createAsyncLogDestin
 export function createLogFileSink(options: LogFileSinkOptions = {}, onProgress?: () => void): LogFileSink {
   const dir = options.dir ?? join(aveHome(), "logs");
   const retentionDays = options.retentionDays ?? LOG_RETENTION_DAYS;
-  const maxBytes = options.maxBytes ?? LOG_MAX_BYTES;
+  const maxBytes = Math.min(options.maxBytes ?? LOG_MAX_BYTES, LOG_MAX_TOTAL_BYTES - LOG_MAX_BYTES);
+  // Leave room for one full buffer to drain to the active file on a failed reopen.
+  const hardMaxBytes = maxBytes + LOG_MAX_BYTES;
 
   ensureLogDir(dir);
   pruneOldLogs(dir, retentionDays);
@@ -269,11 +274,13 @@ export function createLogFileSink(options: LogFileSinkOptions = {}, onProgress?:
   try { activeBytes = statSync(currentFile).size; } catch { /* New or unavailable file. */ }
   let closed = false;
   let nextFile: string | undefined;
+  let retryRollAt: number | undefined;
   const destination = createAsyncLogDestination({
     dest: currentFile, sync: false, mode: PRIVATE_FILE_MODE, maxLength: LOG_MAX_BYTES,
   }, onProgress, (error) => {
     if (!nextFile || error.syscall !== "open" || error.path !== nextFile) return false;
     nextFile = undefined;
+    retryRollAt ??= 0;
     // Settle reopen listeners while the old descriptor is still current.
     boom.emit("ready");
     if (!closed) boom.flush();
@@ -299,17 +306,37 @@ export function createLogFileSink(options: LogFileSinkOptions = {}, onProgress?:
     })().catch(() => {});
   };
 
+  const tryRoll = (): void => {
+    if (closed || nextFile || activeBytes < maxBytes) return;
+    if (retryRollAt !== undefined) {
+      const now = performance.now();
+      if (now < retryRollAt) return;
+      retryRollAt = now + ROLLOVER_RETRY_INTERVAL_MS;
+    }
+    const path = join(dir, seqFileName(dateStr, seq + 1));
+    // Reopen waits for the in-flight write before sending buffered lines to the new file.
+    try {
+      // On Windows, append-open can succeed on a directory and fail on the first write.
+      if (process.platform === "win32" && statSync(path, { throwIfNoEntry: false })?.isDirectory()) {
+        retryRollAt ??= 0;
+        return;
+      }
+      nextFile = path;
+      boom.reopen(path);
+    } catch {
+      nextFile = undefined;
+      retryRollAt ??= 0;
+    }
+  };
   boom.on("write", (bytes: number) => {
     activeBytes += bytes;
-    if (closed || nextFile || activeBytes < maxBytes) return;
-    // Reopen waits for the in-flight write before sending buffered lines to the new file.
-    nextFile = join(dir, seqFileName(dateStr, seq + 1));
-    try { boom.reopen(nextFile); } catch { nextFile = undefined; }
+    tryRoll();
   });
   boom.on("ready", () => {
     if (!nextFile) return;
     currentFile = nextFile;
     nextFile = undefined;
+    retryRollAt = undefined;
     seq += 1;
     activeBytes = 0;
     requestCap();
@@ -324,7 +351,8 @@ export function createLogFileSink(options: LogFileSinkOptions = {}, onProgress?:
     },
     write(chunk: string, countDrops?: boolean): void {
       if (closed) return;
-      destination.write(chunk, countDrops);
+      if (retryRollAt !== undefined) tryRoll();
+      destination.write(chunk, countDrops, hardMaxBytes - activeBytes);
     },
     destroy(): void {
       if (closed) return;

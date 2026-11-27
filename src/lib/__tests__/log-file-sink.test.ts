@@ -254,6 +254,67 @@ describe("createLogFileSink — size-based sequence rolling", () => {
     }
   });
 
+  it.each(["directory", "open error"])("bounds the active file during a persistent %s", async (obstruction) => {
+    const maxBytes = 1024 * 1024;
+    const onProgress = vi.fn();
+    const sink = createLogFileSink({ dir: logDir, maxBytes }, onProgress);
+    const base = sink.currentFile;
+    const rolled = join(logDir, `ave-${todayDateStr()}.1.log`);
+    const open = fs.open;
+    let blocked = true;
+    const opens = vi.spyOn(fs, "open").mockImplementation((...args: Parameters<typeof open>) => {
+      if (args[0] === rolled && obstruction === "open error" && blocked) {
+        const callback = args[args.length - 1] as (error: NodeJS.ErrnoException) => void;
+        setImmediate(() => callback(Object.assign(new Error("Rollover open failed"), {
+          code: "EACCES", syscall: "open", path: rolled,
+        })));
+        return;
+      }
+      Reflect.apply(open, fs, args);
+    });
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      if (obstruction === "directory") fs.mkdirSync(rolled);
+      const line = "x".repeat(maxBytes - 1) + "\n";
+      for (let i = 0; i < 8; i++) {
+        sink.write(line);
+        await sink.flush();
+      }
+      for (let i = 0; i < 8; i++) sink.write(line);
+      await sink.flush();
+
+      expect(sink.currentFile).toBe(base);
+      expect(statSync(base).size).toBe(maxBytes + LOG_MAX_BYTES);
+      expect(sink.dropped).toBe(5);
+      onProgress.mockClear();
+      sink.write("discarded\n");
+      sink.write("loss report\n", false);
+      expect(onProgress).toHaveBeenCalledTimes(1);
+      expect(sink.takeDropped()).toBe(6);
+
+      if (obstruction === "directory") fs.rmdirSync(rolled);
+      blocked = false;
+      opens.mockClear();
+      clock.mockReturnValue(999);
+      sink.write("too soon\n", false);
+      expect(opens.mock.calls.filter(([path]) => path === rolled)).toHaveLength(0);
+
+      clock.mockReturnValue(1_000);
+      sink.write("retry\n", false);
+      await vi.waitFor(() => expect(sink.currentFile).toBe(rolled));
+      expect(opens.mock.calls.filter(([path]) => path === rolled)).toHaveLength(1);
+      sink.write("later\n");
+      await sink.flush();
+      expect(fs.readFileSync(rolled, "utf8")).toBe("later\n");
+      expect(statSync(base).size).toBe(maxBytes + LOG_MAX_BYTES);
+      expect(sink.dropped).toBe(0);
+    } finally {
+      clock.mockRestore();
+      opens.mockRestore();
+      sink.destroy();
+    }
+  });
+
   it("resumes into a fresh sequence when today's base file is already oversized", async () => {
     const base = join(logDir, `ave-${todayDateStr()}.log`);
     writeFileSync(base, "y".repeat(200));
