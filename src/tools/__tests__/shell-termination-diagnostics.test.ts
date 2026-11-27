@@ -38,6 +38,7 @@ const containerLaunch = vi.hoisted(() => ({
   child: undefined as undefined | import("node:child_process").ChildProcess & { stdout: import("node:stream").PassThrough; stderr: import("node:stream").PassThrough },
   // Runs once the launch is prepared: after the permit is consumed, before the supervisor starts.
   prepared: undefined as undefined | (() => void),
+  narrowedWriteRoots: [] as { root: string; reason: string; link?: string }[],
 }));
 vi.mock("../mxc-posix-shell-launch.js", async () => {
   const { ChildProcess } = await import("node:child_process");
@@ -46,7 +47,7 @@ vi.mock("../mxc-posix-shell-launch.js", async () => {
     prepareMxcPosixShellLaunch: vi.fn(async (_input: unknown, lifecycle: import("../contained-shell-lifecycle.js").ContainedShellLifecycle) => {
       containerLaunch.prepared?.();
       return {
-        carvedReadLimitedAt: undefined, proxyPort: 1, narrowedWriteRoots: [],
+        carvedReadLimitedAt: undefined, proxyPort: 1, narrowedWriteRoots: containerLaunch.narrowedWriteRoots,
         // As the real route: macOS spends a permit at the workload's grant, Linux before start.
         spendsPermitAtGrant: process.platform !== "linux",
         start(_label: string, authorize: (grant: () => boolean) => Promise<boolean>) {
@@ -453,6 +454,20 @@ describe("linux container run that lost its launcher", () => {
     containerLaunch.child = undefined;
   });
   afterEach(() => { setContainerShellSubstrate("linux", { state: "unavailable", reason: "shell-start-failed" }); });
+
+  it("names the link when a symlinked protected name withheld a write root", async () => {
+    containerLaunch.narrowedWriteRoots = [{ root: "/work", reason: "routing-link", link: "/work/.vscode" }, { root: "/other", reason: "entry-budget" }];
+    try {
+      const pending = new BashTool().execute({ command: "echo ready", timeoutSeconds: 1 }, { cwd: process.cwd(), extraAllowedDirectories: [], metadata: {} });
+      await vi.waitFor(() => expect(containerLaunch.settle).toBeTypeOf("function"));
+      containerLaunch.settle?.({ code: 0, timedOut: false, cancelled: false, rejected: false, cleanupUnverified: false });
+      const result = await pending;
+      expect(result.output).toContain(t("sandboxPolicy.containerWriteWithheldLink", { root: "/work", link: "/work/.vscode" }));
+      expect(result.output).toContain(t("sandboxPolicy.containerWriteWithheld", { root: "/other" }));
+    } finally {
+      containerLaunch.narrowedWriteRoots = [];
+    }
+  });
 
   it("returns the command's output with a named failed run, never the refused-start message", async () => {
     const pending = new BashTool().execute({ command: "echo ready", timeoutSeconds: 1 }, { cwd: process.cwd(), extraAllowedDirectories: [], metadata: {} });

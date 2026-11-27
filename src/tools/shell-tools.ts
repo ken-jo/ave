@@ -2888,7 +2888,8 @@ async function runPosixContainerShell(input: {
     } else {
       const policyNotices = [...read.policyNotices,
         ...(launch.carvedReadLimitedAt?.map(folder => t("sandboxPolicy.carvedReadLimited", { folder })) ?? []),
-        ...launch.narrowedWriteRoots.map(({ root }) => t("sandboxPolicy.containerWriteWithheld", { root })),
+        ...launch.narrowedWriteRoots.map(({ root, link }) => link === undefined
+          ? t("sandboxPolicy.containerWriteWithheld", { root }) : t("sandboxPolicy.containerWriteWithheldLink", { root, link })),
         ...("cleanupNotice" in exit && typeof exit.cleanupNotice === "string" ? [exit.cleanupNotice] : []),
       ];
       // The SDK reports a shell ended by a signal, or a child lost before exec, as -1; 255 is a literal exit status.

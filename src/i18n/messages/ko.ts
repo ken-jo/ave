@@ -5236,6 +5236,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "sandboxPolicy.placeholderLeftovers": "이전 Ave 버전이 다음 보호 경로에 빈 자리표시 항목을 남겼습니다. Ave 는 지우지 않았습니다. 각 항목을 확인하고 쓰지 않으면 삭제하세요:\n{paths}",
   "sandboxPolicy.carvedReadLimited": "항목이 너무 많아 샌드박스에서 읽기 범위를 열 수 없습니다: {folder}.",
   "sandboxPolicy.containerWriteWithheld": "샌드박스가 {root}의 쓰기 권한을 제한했습니다.",
+  "sandboxPolicy.containerWriteWithheldLink": "샌드박스가 {root} 의 쓰기 권한을 보류했습니다. 보호되는 이름 {link} 이(가) 심볼릭 링크라 샌드박스가 그 자리를 지킬 수 없습니다. 다시 쓰려면 링크를 실제 폴더나 파일로 바꾸세요.",
   "sandboxPolicy.containerShellCancelled": "셸 명령을 취소했습니다.",
   "sandboxPolicy.containerShellTimedOut": "셸 명령이 {seconds}초 후 시간 초과되었습니다.",
   "sandboxPolicy.containerShellNoExitCode": "셸이 신호를 받았거나 시작 전에 끝나 종료 코드를 보고하지 않았습니다.",

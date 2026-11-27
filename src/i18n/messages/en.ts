@@ -5234,6 +5234,7 @@ export const en = {
   "sandboxPolicy.placeholderLeftovers": "An earlier Ave version left empty placeholder entries at these protected paths. Ave did not remove them; check each one and delete it if you do not use it:\n{paths}",
   "sandboxPolicy.carvedReadLimited": "Too many entries to open for reading inside the sandbox: {folder}.",
   "sandboxPolicy.containerWriteWithheld": "The sandbox withheld write access to {root}.",
+  "sandboxPolicy.containerWriteWithheldLink": "The sandbox withheld write access to {root}: the protected name {link} is a symbolic link, which the sandbox cannot hold in place. Replace the link with a real folder or file to write there again.",
   "sandboxPolicy.containerShellCancelled": "Shell command cancelled.",
   "sandboxPolicy.containerShellTimedOut": "Shell command timed out after {seconds} seconds.",
   "sandboxPolicy.containerShellNoExitCode": "The shell ended by a signal or before it started, so it reported no exit code.",

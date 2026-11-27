@@ -605,7 +605,7 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
       symlinkSync(target, join(work, ".vscode"));
       const { launch } = await prepare("rm .vscode && mkdir .vscode && printf x > .vscode/tasks.json");
       // A bind mount cannot hold a link's own entry, so the write policy withholds the root that could replace it.
-      expect(launch.narrowedWriteRoots).toContainEqual({ root: work, reason: "routing-link" });
+      expect(launch.narrowedWriteRoots).toContainEqual({ root: work, reason: "routing-link", link: join(work, ".vscode") });
       const result = await run(launch);
       expect(result.code, result.stderr).not.toBe(0);
       expect(lstatSync(join(work, ".vscode")).isSymbolicLink()).toBe(true);
