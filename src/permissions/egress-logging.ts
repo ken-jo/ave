@@ -29,7 +29,9 @@ export async function emitSandboxAudit(
   }
   switch (entry.entryKind) {
     case "egress-deny":
-      logPermissionEvent("sandbox_egress_denied", { sandboxKind: entry.sandbox.kind, attribution: entry.invocation.kind });
+      logPermissionEvent("sandbox_egress_denied", {
+        sandboxKind: entry.sandbox.kind, attribution: entry.invocation.kind, action: entry.deny.action,
+      });
       break;
     case "egress-decision":
       logPermissionEvent("sandbox_egress_decision", {
