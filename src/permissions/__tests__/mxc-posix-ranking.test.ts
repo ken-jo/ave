@@ -11,6 +11,7 @@ const lookups: PosixPolicyLookups = {
   home: "/users/example", foldsCase: false,
   children: () => [],
   exists: (path) => !path.includes("/missing"),
+  readable: () => true,
   canonical: (path) => path.replace(/^\/tmp(?=\/|$)/u, "/private/tmp"),
 };
 
@@ -234,6 +235,22 @@ describe("POSIX container filesystem ranking", () => {
   it("gives an equal-path deny precedence for bubblewrap", () => {
     const ranked = rankPosixContainerRows(model([deny("/work/private")], read("/work"), write("/work/private")), "bubblewrap", lookups);
     expect(ranked).toMatchObject({ readwrite: [], readonly: ["/work"], denied: ["/work/private"] });
+  });
+
+  it("opens only readable root children outside the private mounts", () => {
+    const rootLookups = {
+      ...lookups,
+      children: () => ["bin", "dev", "proc", "root", "run", "system-link", "sys", "tmp", "usr"],
+      canonical: (path: string) => ({ "/bin": "/usr/bin", "/system-link": "/run/host" })[path] ?? path,
+      readable: (path: string) => path !== "/root",
+    };
+    const ranked = rankPosixContainerRows(model([], read("/")), "bubblewrap", rootLookups);
+    expect(ranked.readonly).toEqual(["/sys", "/tmp", "/usr"]);
+  });
+
+  it("rejects a writable root even when a deny also names it", () => {
+    expect(() => rankPosixContainerRows(model([deny("/")], write("/")), "bubblewrap", lookups))
+      .toThrow(expect.objectContaining({ code: "root-write-grant" }));
   });
 
   it("preserves the Seatbelt lists for a carved read", () => {

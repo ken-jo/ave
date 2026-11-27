@@ -95,7 +95,7 @@ describe("macOS container shell request", () => {
   const input = {
     model, cwd: "/fixture", proxyUrl: "http://127.0.0.1:8444", timeoutMs: 2500,
     env: { HOME: "/fixture/private/open", PATH: "/usr/bin:/bin", HTTPS_PROXY: "http://example.invalid", NO_PROXY: "*" },
-    lookups: { home: "/fixture", foldsCase: true, exists: () => true, canonical: (path: string) => path, children: () => [] },
+    lookups: { home: "/fixture", foldsCase: true, exists: () => true, canonical: (path: string) => path, children: () => [], readable: () => true },
     commandLine: "exec '/bin/sh' '-c' 'printf control'",
   };
 
