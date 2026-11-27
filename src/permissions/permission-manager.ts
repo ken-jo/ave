@@ -374,6 +374,7 @@ export interface ReviewerDispatchResult {
 }
 
 type ReviewerAssessmentResult = Omit<ReviewerDispatchResult, "judge">;
+type ReviewerReconfigurationScope = "wiring" | "chat-runtime";
 
 interface JudgeDispatchResult {
   outcome: JudgeOutcome;
@@ -672,7 +673,7 @@ export class PermissionManager {
   private modeGeneration = 0;
   private permissionStoreError: string | undefined;
   private reviewerSettingsError: string | undefined;
-  private reviewerReconfiguration: object | undefined;
+  private readonly reviewerReconfigurations = new Map<ReviewerReconfigurationScope, object>();
   // Optional broadcast for memory-hit auto-approve disclosure.
   private broadcastUserApprovalHit: ((payload: UserApprovalHitPayload) => void) | null = null;
   // Architectural choke point for permission config fan-out — every persisted mutation through PermissionManager (addAlwaysAllowedPersist, addAlwaysDeniedPersist, removeRule) fires this callback so multi-window PermissionsTab refreshes without each call site re-implementing the broadcast wiring. Wired by boot from `ipc/domains/permissions.ts:broadcastPermissionConfigChanged`.
@@ -911,21 +912,22 @@ export class PermissionManager {
     return this.mode;
   }
 
-  // Host-owned tokens cannot be reconstructed by settings, tool arguments or renderer decisions.
-  beginReviewerReconfiguration(): object {
+  // Each host operation holds the same fence until its latest token completes.
+  beginReviewerReconfiguration(scope: ReviewerReconfigurationScope = "wiring"): object {
     const token = Object.freeze({});
-    this.reviewerReconfiguration = token;
+    this.reviewerReconfigurations.set(scope, token);
     this.policyGeneration += 1;
     return token;
   }
 
-  completeReviewerReconfiguration(token: object): void {
-    if (this.reviewerReconfiguration === undefined || token !== this.reviewerReconfiguration) {
-      this.reviewerReconfiguration ??= Object.freeze({});
+  completeReviewerReconfiguration(token: object, scope: ReviewerReconfigurationScope = "wiring"): void {
+    const current = this.reviewerReconfigurations.get(scope);
+    if (current === undefined || token !== current) {
+      if (current === undefined) this.reviewerReconfigurations.set(scope, Object.freeze({}));
       this.policyGeneration += 1;
       throw new JudgeContractError("Reviewer reconfiguration requires its current host token");
     }
-    this.reviewerReconfiguration = undefined;
+    this.reviewerReconfigurations.delete(scope);
     this.policyGeneration += 1;
   }
 
@@ -2118,7 +2120,7 @@ export class PermissionManager {
     routineScope?: Record<string, unknown>,
     options?: { lane?: ReviewerLane; abortSignal?: AbortSignal; purpose?: "approval-scope" },
   ): Promise<ReviewerDispatchResult> {
-    const settingsError = this.reviewerReconfiguration !== undefined
+    const settingsError = this.reviewerReconfigurations.size > 0
       ? "Permission reviewer reconfiguration did not complete; automatic review is unavailable."
       : this.refreshReviewerSettingsError();
     if (settingsError !== undefined) {

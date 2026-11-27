@@ -492,14 +492,18 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   };
   /** Bind every execution consumer to the runtime in memory. Each step runs even when an earlier one fails: a
    * restored selection stays authoritative, and a reviewer that cannot be rewired stays on its fail-closed path. */
-  const bindExecutionToSettings = async (): Promise<void> => {
+  const bindExecutionToSettings = async (): Promise<boolean> => {
     try {
       await refreshChatRuntimeProviders(deps);
     } catch {
       // Each loop was still cleared/rebuilt independently above.
     }
+    let reviewerBound = false;
     try {
-      await deps.rewireReviewerAgent?.();
+      if (deps.rewireReviewerAgent) {
+        await deps.rewireReviewerAgent();
+        reviewerBound = true;
+      }
     } catch {
       // Preserve the original selection error instead of masking it with a best-effort rewire error.
     }
@@ -508,11 +512,13 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     } catch {
       // See reviewer rewire above.
     }
+    return reviewerBound;
   };
   const rollbackActiveChatRuntime = async (
     previousActiveChatRuntime: LLMSettings["activeChatRuntime"],
     failedActiveChatRuntime: LLMSettings["activeChatRuntime"],
     transitionRevision: number,
+    completeReviewerReconfiguration: () => void,
   ): Promise<{ runtime: LLMSettings["activeChatRuntime"] } | null> => {
     // Only the request that still owns the active selection may undo it; a newer selection binds execution itself.
     if (transitionRevision !== activeChatRuntimeTransitionRevision) return null;
@@ -526,7 +532,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       : settingsService.patch({ llm: { activeChatRuntime: previousActiveChatRuntime } });
     // SettingsService mutates memory before its first await. Restore every executable binding in that same
     // synchronous turn; waiting for disk here would leave the failed API/subscription provider reachable meanwhile.
-    await bindExecutionToSettings();
+    const reviewerBound = await bindExecutionToSettings();
     const ownsRestoration = (): boolean => (
       transitionRevision === activeChatRuntimeTransitionRevision
       && sameActiveChatRuntime(settingsService.get("llm").activeChatRuntime, restoredRuntime)
@@ -536,13 +542,14 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     } catch {
       // The restoring save failed as well, so memory is back on the settings on disk. Bind execution to them rather than to the runtime that could not be saved.
       if (transitionRevision === activeChatRuntimeTransitionRevision) {
-        await bindExecutionToSettings();
+        if (await bindExecutionToSettings()) completeReviewerReconfiguration();
         await broadcastSettingsSnapshot(deps, () => transitionRevision === activeChatRuntimeTransitionRevision);
       }
       return null;
     }
     if (!ownsRestoration()) return null;
 
+    if (reviewerBound) completeReviewerReconfiguration();
     await broadcastSettingsSnapshot(deps, ownsRestoration);
     return ownsRestoration() ? { runtime: restoredRuntime } : null;
   };
@@ -564,8 +571,16 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       deps.sideChatConversationLoop?.abortCurrentTurn?.(reason);
       for (const paneLoop of deps.paneChatLoops?.all() ?? []) paneLoop.abortCurrentTurn?.(reason);
     }
-    const persistSelection = settingsService.patch({ llm: { activeChatRuntime } });
+    const permissionManager = conversationLoop.permissionManager;
+    // A reviewer rewire can finish while the chat provider refresh or settings save is pending.
+    const reconfiguration = permissionManager?.beginReviewerReconfiguration("chat-runtime");
     const transitionRevision = ++activeChatRuntimeTransitionRevision;
+    const completeReviewerReconfiguration = (): void => {
+      if (reconfiguration && transitionRevision === activeChatRuntimeTransitionRevision) {
+        permissionManager?.completeReviewerReconfiguration(reconfiguration, "chat-runtime");
+      }
+    };
+    const persistSelection = settingsService.patch({ llm: { activeChatRuntime } });
     const ownsTransition = (): boolean => (
       transitionRevision === activeChatRuntimeTransitionRevision
       && sameActiveChatRuntime(settingsService.get("llm").activeChatRuntime, activeChatRuntime)
@@ -587,6 +602,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
           previousLlm.activeChatRuntime,
           activeChatRuntime,
           transitionRevision,
+          completeReviewerReconfiguration,
         );
       } catch {
         // The renderer must never be told that the new runtime became active when its exact persisted predecessor could not be restored.
@@ -603,6 +619,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     // broadcast/status effects; its executable bindings were already applied synchronously by its own call.
     if (!ownsTransition()) return;
 
+    if (deps.rewireReviewerAgent) completeReviewerReconfiguration();
     await broadcastSettingsSnapshot(deps, ownsTransition);
     if (!ownsTransition()) return;
     if (previousSubscriptionProvider && previousSubscriptionProvider !== nextSubscriptionProvider) {

@@ -9,6 +9,10 @@ import type { LLMProvider } from "../../../engine/llm/types.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
 import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
+import { deferred } from "../../../__tests__/test-helpers.js";
+import type { LLMSettings } from "../../../data/settings-store.js";
+import { makeAppIpcInvoker } from "../../../ipc/domains/__tests__/test-helpers.js";
+import { CHANNELS } from "../../../contract/app-contract.js";
 import { RuleBasedRiskClassifier } from "../../../permissions/reviewer/risk-classifier.js";
 import { VerdictCache } from "../../../permissions/reviewer/verdict-cache.js";
 import { UnavailableRationaleScopeReviewer } from "../../../permissions/reviewer/rationale-scope-reviewer.js";
@@ -343,6 +347,12 @@ async function withLiveReviewer(
     seedVerdict: (headless: boolean) => Promise<ReturnType<PermissionManager["resolveReviewedPermission"]>>;
     loseAuth: () => Promise<void>;
     reply: ReturnType<typeof vi.fn<LLMProvider["streamTurn"]>>;
+    apiReply: ReturnType<typeof vi.fn<LLMProvider["streamTurn"]>>;
+    registerRouteSelection: (refreshProvider: () => Promise<void>, refreshActiveLlmWildcard?: () => void) => Promise<{
+      invoke: ReturnType<typeof makeAppIpcInvoker>;
+      getSelection: () => LLMSettings["activeChatRuntime"];
+      rewire: () => Promise<void>;
+    }>;
     dispatch: (headless: boolean) => Promise<{
       review: Awaited<ReturnType<PermissionManager["dispatchReviewer"]>>;
       result: ReturnType<PermissionManager["resolveReviewedPermission"]>;
@@ -355,7 +365,11 @@ async function withLiveReviewer(
   const resources = await import("../../../main/host-resources.js");
   resources.configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   const { DEFAULT_JUDGE_SETTINGS } = await import("../../../permissions/judge/judge-settings.js");
-  vi.doMock("electron", () => ({ BrowserWindow: { getAllWindows: () => [] } }));
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  vi.doMock("electron", () => ({
+    BrowserWindow: { getAllWindows: () => [] },
+    ipcMain: { handle: (channel: string, handler: (...args: unknown[]) => unknown) => handlers.set(channel, handler) },
+  }));
   vi.doMock("../../../permissions/permission-settings-store.js", async importOriginal => ({
     ...await importOriginal<typeof import("../../../permissions/permission-settings-store.js")>(),
     readJudgeSettings: () => ({ settings: DEFAULT_JUDGE_SETTINGS, issues: [] }),
@@ -366,6 +380,7 @@ async function withLiveReviewer(
     yield { type: "message_complete", stopReason: "end_turn" };
   };
   const reply = vi.fn(replyWithVerdict);
+  const apiReply = vi.fn(replyWithVerdict);
   let cache: VerdictCache | undefined;
   vi.doMock("../reviewer-wiring.js", async importOriginal => {
     const original = await importOriginal<typeof import("../reviewer-wiring.js")>();
@@ -374,7 +389,9 @@ async function withLiveReviewer(
       wireReviewerAgent: (deps: Parameters<typeof original.wireReviewerAgent>[0]) => {
         const wired = original.wireReviewerAgent({
           ...deps,
-          ...(provider === "api" ? { streamProviderFor: (): LLMProvider => ({ vendor: "openai", streamTurn: reply }) } : {}),
+          ...(provider === "api" ? { streamProviderFor: (id: string) => id.startsWith("subscription:")
+            ? deps.streamProviderFor?.(id) ?? null
+            : { vendor: "openai" as const, streamTurn: apiReply } } : {}),
           readSettings: () => ({ mode: "llm", fallbackOnError: "deny" }),
           verdictCachePath: join(tempDir, "cache.jsonl"),
           recentlyDenied: makeRecentlyDeniedStore(join(tempDir, "recent.json")),
@@ -391,21 +408,23 @@ async function withLiveReviewer(
     const { PermissionManager } = await import("../../../permissions/permission-manager.js");
     const manager = new PermissionManager(join(tempDir, "permissions.json"));
     manager.setMode("auto");
-    const selection = provider === "api" ? { kind: "api" } as const :
-      { kind: "subscription", provider, model: "fixture-model" } as const;
+    let selection: LLMSettings["activeChatRuntime"] = provider === "api" ? { kind: "api" } :
+      { kind: "subscription", provider, model: "fixture-model" };
+    const getLlm = () => ({
+      provider: "openai", activeChatRuntime: selection, vendors: { openai: { model: "fixture-model" } },
+    });
     const context = {
       host: createBootHostFixture(), toolRegistry: { setDenyRules: vi.fn() }, permissionManager: manager,
       approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() }, getMainWindow: () => null,
       settingsService: {
         onChanged: vi.fn(), getSecret: vi.fn(() => "fixture-key"),
-        get: (key: string) => key === "llm" ? {
-          provider: "openai", activeChatRuntime: selection, vendors: { openai: { model: "fixture-model" } },
-        } : {},
+        get: (key: string) => key === "llm" ? getLlm() : {},
       },
       llmFetch: vi.fn(), singleHopNetworkFetch: vi.fn(),
       bootAuditLogger: { appendPermissionAuditEntry: vi.fn(), logShadow: vi.fn() },
       resolveRootSessionId: (id: string) => id,
       subscriptionProviderFactory: vi.fn((): LLMProvider => ({ vendor: "openai", streamTurn: reply })),
+      rewireReviewerAgent: undefined as (() => Promise<void>) | undefined,
     };
     const setReviewer = vi.spyOn(manager, "setReviewer");
     await wireReviewerAndPermissions(context as never);
@@ -417,7 +436,7 @@ async function withLiveReviewer(
         invocationId: String(++invocation), sessionId, source: "builtin", category: "network",
         pathFields: [], finalInput: { url: "http://localhost:3456" }, trustOrigin: "llm-tool-arg",
         executionCwd: tempDir, allowedDirectories: [tempDir], sensitivePathsAdjacent: [], permissionDecision: permission,
-      });
+      }, undefined, { lane: headless ? "headless" : "foreground-auto" });
       return { review, result: manager.resolveReviewedPermission(permission, review) };
     };
     const seedVerdict = async (headless: boolean) => {
@@ -449,7 +468,36 @@ async function withLiveReviewer(
       if (!installedCache) throw new Error("Missing reviewer cache");
       return installedCache;
     };
-    await test({ manager, directory: tempDir, getCache, reply, dispatch, seedVerdict, loseAuth });
+    const registerRouteSelection = async (refreshProvider: () => Promise<void>, refreshActiveLlmWildcard?: () => void) => {
+      vi.doMock("../../../main/subscription-runtime-service.js", async importOriginal => ({
+        ...await importOriginal<typeof import("../../../main/subscription-runtime-service.js")>(),
+        getSubscriptionRuntimeService: async () => ({
+          verify: async () => ({ capabilities: { chat: true } }),
+          invalidateCachedReads: vi.fn(),
+        }),
+        onSubscriptionRuntimeStatusChanged: () => vi.fn(),
+      }));
+      const { registerSettingsHandlers } = await import("../../../ipc/domains/settings.js");
+      const rewire = context.rewireReviewerAgent;
+      if (!rewire) throw new Error("Missing reviewer rewire");
+      registerSettingsHandlers({
+        settingsService: {
+          ...context.settingsService,
+          getAll: () => ({ llm: getLlm() }),
+          hasStoredSecret: async () => true,
+          patch: async (value: { llm: { activeChatRuntime: LLMSettings["activeChatRuntime"] } }) => {
+            selection = value.llm.activeChatRuntime;
+          },
+        },
+        conversationLoop: { permissionManager: manager, refreshProvider },
+        auditLogger: { log: vi.fn() },
+        getAppWindows: () => [],
+        rewireReviewerAgent: rewire,
+        refreshActiveLlmWildcard,
+      } as never);
+      return { invoke: makeAppIpcInvoker(handlers), getSelection: () => selection, rewire };
+    };
+    await test({ manager, directory: tempDir, getCache, reply, apiReply, dispatch, seedVerdict, loseAuth, registerRouteSelection });
     if (loss === "startup") expect(auth?.openAcp).toHaveBeenCalled();
   } finally {
     await auth?.stop();
@@ -457,6 +505,7 @@ async function withLiveReviewer(
     vi.doUnmock("electron");
     vi.doUnmock("../reviewer-wiring.js");
     vi.doUnmock("../../../permissions/permission-settings-store.js");
+    vi.doUnmock("../../../main/subscription-runtime-service.js");
     vi.resetModules();
     await cleanupTmpDir(tempDir);
   }
@@ -492,10 +541,95 @@ it.each(AUTH_LOSS_CASES)("re-reviews an identical request after %s despite a per
 });
 
 it("keeps cache hits for an API-key follow-chat reviewer", async () => {
-  await withLiveReviewer("api", async ({ reply, dispatch }) => {
+  await withLiveReviewer("api", async ({ apiReply, dispatch }) => {
     expect((await dispatch(true)).review.outcome).toBe("fresh");
     expect((await dispatch(true)).review.outcome).toBe("cache");
-    expect(reply).toHaveBeenCalledOnce();
+    expect(apiReply).toHaveBeenCalledOnce();
+  });
+});
+
+it("fences both Settings route switches while the chat provider refresh is pending", async () => {
+  await withLiveReviewer("api", async ({ apiReply, reply, getCache, dispatch, registerRouteSelection }) => {
+    const refreshProvider = vi.fn(async () => {});
+    const { invoke, getSelection, rewire } = await registerRouteSelection(refreshProvider);
+    for (const headless of [false, true]) {
+      expect((await dispatch(headless)).result.decision).toBe("allow");
+      expect((await dispatch(headless)).review.outcome).toBe("cache");
+    }
+    await getCache().flush();
+
+    for (const kind of ["subscription", "api"] as const) {
+      const refreshStarted = deferred<void>();
+      const releaseRefresh = deferred<void>();
+      refreshProvider.mockImplementationOnce(async () => {
+        refreshStarted.resolve();
+        await releaseRefresh.promise;
+      });
+      const pending = kind === "subscription"
+        ? invoke(CHANNELS.settings.subscriptionUseForChat, "grok-build")
+        : invoke(CHANNELS.settings.subscriptionUseApiForChat);
+      await refreshStarted.promise;
+      const currentCache = getCache();
+      const lookup = vi.spyOn(currentCache, "lookup");
+      apiReply.mockClear();
+      reply.mockClear();
+      try {
+        expect(getSelection()?.kind).toBe(kind);
+        for (const headless of [false, true]) {
+          const { review, result } = await dispatch(headless);
+          expect.soft(review.outcome, kind).toBe("error");
+          expect.soft(result.decision, kind).toBe(headless ? "deny" : "ask");
+        }
+        expect.soft(lookup, kind).not.toHaveBeenCalled();
+        expect.soft(apiReply, kind).not.toHaveBeenCalled();
+        expect.soft(reply, kind).not.toHaveBeenCalled();
+        await rewire();
+        expect.soft((await dispatch(true)).result.decision, kind).toBe("deny");
+      } finally {
+        lookup.mockRestore();
+        releaseRefresh.resolve();
+        await expect(pending).resolves.toMatchObject({ ok: true });
+      }
+
+      apiReply.mockClear();
+      reply.mockClear();
+      const expectedOutcome = kind === "subscription" ? "fresh" : "cache";
+      for (const headless of [false, true, true]) {
+        const { review, result } = await dispatch(headless);
+        expect(review.outcome).toBe(expectedOutcome);
+        expect(result.decision).toBe("allow");
+      }
+      expect(apiReply).not.toHaveBeenCalled();
+      expect(reply).toHaveBeenCalledTimes(kind === "subscription" ? 3 : 0);
+    }
+  });
+});
+
+it("keeps review fenced until Settings rebinds the restored route after a failed switch", async () => {
+  await withLiveReviewer("api", async ({ apiReply, reply, getCache, dispatch, registerRouteSelection }) => {
+    const rollbackStarted = deferred<void>();
+    const releaseRollback = deferred<void>();
+    const refreshProvider = vi.fn(async () => {}).mockImplementationOnce(async () => {}).mockImplementationOnce(async () => {
+      rollbackStarted.resolve();
+      await releaseRollback.promise;
+    });
+    const refreshActiveLlmWildcard = vi.fn().mockImplementationOnce(() => { throw new Error("Wildcard refresh failed"); });
+    const { invoke, getSelection } = await registerRouteSelection(refreshProvider, refreshActiveLlmWildcard);
+    expect((await dispatch(true)).review.outcome).toBe("fresh");
+    await getCache().flush();
+    const pending = invoke(CHANNELS.settings.subscriptionUseForChat, "grok-build");
+    await rollbackStarted.promise;
+    try {
+      expect(getSelection()?.kind).toBe("api");
+      expect((await dispatch(false)).result.decision).toBe("ask");
+      expect((await dispatch(true)).result.decision).toBe("deny");
+      expect(reply).not.toHaveBeenCalled();
+    } finally {
+      releaseRollback.resolve();
+      await expect(pending).resolves.toMatchObject({ ok: false, error: "subscription-operation-failed" });
+    }
+    expect((await dispatch(true)).review.outcome).toBe("cache");
+    expect(apiReply).toHaveBeenCalledOnce();
   });
 });
 
