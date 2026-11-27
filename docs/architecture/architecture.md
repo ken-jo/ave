@@ -3452,7 +3452,24 @@ system tools. This includes bubblewrap, slirp4netns, iptables with its restore
 tools, and the namespace and interface commands from util-linux and iproute2.
 The backend must advertise proxy enforcement and a canary must exercise a real
 launch and its filesystem, loopback, socket and namespace boundaries. Host
-settings that restrict user namespaces can prevent that proof. Settings names
+settings that restrict user namespaces can prevent that proof.
+
+After those checks pass, the same canary container measures raw-IP coverage
+by the verdict rules shared with macOS and Windows. A bash prober runs every
+target at once, each with a 3 s deadline, under a 12 s bound, and writes only
+to its own file, so it cannot change availability. The control is a CONNECT
+through the container's proxy to a per-boot `<nonce>.localhost`. The
+container must read the listener's 403 refusal, and the host must record the
+nonce. The other targets are `192.0.2.1:443` and `[2001:db8::1]:443`, a
+just-closed port on the host's primary IPv4, and a UDP nonce sent to a
+host-side listener, which is checked by arrival only. `rawIp` is `blocked`
+only when the control passed, both documentation addresses were refused
+locally (EPERM or EACCES), and nothing reached the host. With no IPv6 route, a
+network namespace holding only `lo` stands in for the IPv6 target. The
+launcher's slirp4netns network drops direct connects rather than refusing them,
+and its namespace has `tap0`, so this backend measures `unknown` (timeout).
+The verdict lives in memory for the boot. An unmeasured or unavailable
+container reports `unknown`. Settings names
 missing packages and provides distribution-specific install commands. An
 unavailable shell route applies the existing no-confinement floor, including
 its session waiver and exact saved host-command rule when the floor is the only

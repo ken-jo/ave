@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { createSocket, type Socket as UdpSocket } from "node:dgram";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { connect, createServer, type Server } from "node:net";
+import { networkInterfaces } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -13,7 +15,8 @@ import { prepareMxcPosixShellLaunch } from "../../tools/mxc-posix-shell-launch.j
 import { openEgressInvocation } from "../egress-invocations.js";
 import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
 import { launcherPathFor, pinnedLauncherSha256 } from "../mxc-launcher.js";
-import { detectHostMxcLinuxShellSupport } from "../mxc-linux.js";
+import { _runLinuxCanaryForTest as runCanary, detectHostMxcLinuxShellSupport, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
+import { primaryIpv4 } from "../mxc-linux-raw-ip.js";
 import { _forgetMxcRuntimeRootForTest, currentMxcRuntimeHost, establishMxcRuntimeRoot, requireMxcContainerStartRoot } from "../mxc-runtime-root.js";
 import { __resetActiveSandboxCapabilityForTest, __resetContainerShellSubstrateForTest, __resetSandboxRequestedAtBootForTest,
   setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
@@ -28,6 +31,7 @@ describe.runIf(NATIVE)("native Linux shell container boundary", () => {
   let cache: string;
   let leases: ReturnType<typeof createContainedShellLifecycle>[];
   let servers: Server[];
+  let sockets: UdpSocket[];
   const resources = { resourcePath: resolve("resources"), isPackaged: false };
 
   beforeEach(() => {
@@ -47,12 +51,14 @@ describe.runIf(NATIVE)("native Linux shell container boundary", () => {
     setContainerShellSubstrate("linux", { state: "available" });
     leases = [];
     servers = [];
+    sockets = [];
   });
 
   afterEach(async () => {
     const failures = (await Promise.all(leases.map(lease => lease.dispose()))).flat();
     await stopEgressRelayService();
     for (const server of servers) server.close();
+    for (const socket of sockets) socket.close();
     __resetActiveSandboxCapabilityForTest();
     __resetSandboxRequestedAtBootForTest();
     __resetContainerShellSubstrateForTest();
@@ -100,12 +106,41 @@ describe.runIf(NATIVE)("native Linux shell container boundary", () => {
     return address === null || typeof address === "string" ? 0 : address.port;
   }
 
+  async function listenOn(server: Server, host: string): Promise<number> {
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, host, resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("Invalid native listener");
+    return address.port;
+  }
+
+  async function bindUdp(host: string, onMessage: (data: Buffer) => void): Promise<{ readonly port: number }> {
+    const socket: UdpSocket = createSocket("udp4");
+    sockets.push(socket);
+    socket.on("message", onMessage);
+    await new Promise<void>((resolve, reject) => {
+      socket.once("error", reject);
+      socket.bind(0, host, resolve);
+    });
+    return { port: socket.address().port };
+  }
+
+  async function sendTcp(host: string, port: number, line: string): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const socket = connect(port, host, () => socket.end(`${line}\n`, resolve));
+      socket.once("error", reject);
+    });
+  }
+
   it("proves the detected launcher and its pin natively", async () => {
     const target = containerTarget(process.platform, process.arch);
     const launcher = launcherPathFor(resources.resourcePath, process.platform, process.arch);
     if (target === undefined || launcher === undefined) throw new Error("Native launcher target is unavailable");
     expect(createHash("sha256").update(readFileSync(launcher)).digest("hex")).toBe(pinnedLauncherSha256(target));
-    expect(await detectHostMxcLinuxShellSupport(resources)).toEqual({ state: "available" });
+    expect(await detectHostMxcLinuxShellSupport(resources)).toEqual({ state: "available", rawIp: { verdict: "unknown", reason: "timeout" } });
   });
 
   it("ranks nested scopes, protects existing and absent names and keeps ordinary writes", async () => {
@@ -177,7 +212,7 @@ a, b = socket.socketpair(); a.send(b'own'); assert b.recv(3) == b'own'
 listener = socket.socket(); listener.bind(('127.0.0.1', 0)); listener.listen()
 client = socket.create_connection(listener.getsockname(), .5); peer, _ = listener.accept()
 client.send(b'local'); assert peer.recv(5) == b'local'
-for endpoint in (('127.0.0.1', ${hostPort}), ('10.0.2.2', ${hostPort}), ('192.0.2.1', 443)):
+for endpoint in (('127.0.0.1', ${hostPort}), ('10.0.2.2', ${hostPort})):
     try: socket.create_connection(endpoint, .25)
     except OSError: pass
     else: raise AssertionError('direct TCP connection')
@@ -189,6 +224,77 @@ print('socket-controls')
     expect(result.stdout).toBe("socket-controls\n");
     expect(connections).toBe(0);
   });
+
+  it("refuses raw IP that an unconfined process delivers to the host's own addresses, over TCP, UDP and IPv6", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const address4 = primaryIpv4();
+    if (address4 === undefined) throw new Error("The native raw-IP control needs a non-loopback IPv4 address");
+    const address6 = Object.values(networkInterfaces()).flat()
+      .find(entry => entry?.family === "IPv6" && !entry.internal && !entry.address.startsWith("fe80"))?.address;
+    const arrived = new Set<string>();
+    const record = (data: Buffer) => { for (const line of data.toString("utf8").split("\n")) if (line) arrived.add(line); };
+    const tcp4 = await listenOn(createServer(socket => socket.on("data", record)), address4);
+    const tcp6 = address6 === undefined ? undefined : await listenOn(createServer(socket => socket.on("data", record)), address6);
+    const udp = await bindUdp(address4, record);
+    const nonce = randomBytes(8).toString("hex");
+    // Positive control: the same endpoints accept an unconfined process.
+    await sendTcp(address4, tcp4, `unconfined-tcp4-${nonce}`);
+    if (tcp6 !== undefined && address6 !== undefined) await sendTcp(address6, tcp6, `unconfined-tcp6-${nonce}`);
+    await new Promise<void>((resolve, reject) => {
+      const sender = createSocket("udp4");
+      sender.send(`unconfined-udp-${nonce}`, udp.port, address4, error => { sender.close(); if (error) reject(error); else resolve(); });
+    });
+    await vi.waitFor(() => expect(arrived).toEqual(new Set([`unconfined-tcp4-${nonce}`, `unconfined-udp-${nonce}`,
+      ...(tcp6 === undefined ? [] : [`unconfined-tcp6-${nonce}`])])));
+    const program = `
+import socket
+def tcp(family, address, message):
+    try: s = socket.create_connection(address, 1.5)
+    except OSError: return 'refused'
+    s.sendall(message.encode() + b'\\n'); return 'connected'
+def udp(address, message):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try: s.sendto(message.encode(), address)
+    except OSError: return 'refused'
+    return 'sent'
+print(tcp(socket.AF_INET, ('${address4}', ${tcp4}), 'confined-tcp4-${nonce}'))
+print(udp(('${address4}', ${udp.port}), 'confined-udp-${nonce}'))
+print(tcp(socket.AF_INET6, ('2001:db8::1', 443), 'confined-doc6-${nonce}'))
+${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${address6}', ${tcp6}), 'confined-tcp6-${nonce}'))`}
+`;
+    const { launch } = await prepare(`python3 -c ${quote(program)}`);
+    const result = await run(launch);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe("refused\nrefused\nrefused\nrefused\n");
+    await new Promise(resolve => setTimeout(resolve, 500));
+    expect([...arrived].filter(line => line.startsWith("confined-"))).toEqual([]);
+  });
+
+  it("measures raw IP at the boot canary with both sides of the control and never reports a dropping firewall as blocked", async () => {
+    const programs = await requireMxcLinuxShellPrograms(resources);
+    // This backend drops a direct connect rather than refusing it, so the documentation target times out: unknown.
+    expect(await runCanary(requireMxcContainerStartRoot(), programs)).toEqual({
+      state: "available", rawIp: { verdict: "unknown", reason: "timeout" },
+    });
+  });
+
+  it("does not take a prober's printed refusals without the host recording the control nonce", async () => {
+    const programs = await requireMxcLinuxShellPrograms(resources);
+    const forged = ["C status=403 refused=loopback destination", "T4 Operation not permitted", "T6 Operation not permitted",
+      "TL Operation not permitted", "UA Operation not permitted", "IF lo"].map(line => `printf '%s\\n' ${quote(line)}`).join("\n");
+    expect(await runCanary(requireMxcContainerStartRoot(), programs, undefined, { prober: forged })).toEqual({
+      state: "available", rawIp: { verdict: "unknown", reason: "control-failed" },
+    });
+  });
+
+  it("keeps the container available when the raw-IP prober stalls", async () => {
+    const programs = await requireMxcLinuxShellPrograms(resources);
+    const started = Date.now();
+    expect(await runCanary(requireMxcContainerStartRoot(), programs, undefined, { prober: "sleep 600" })).toEqual({
+      state: "available", rawIp: { verdict: "unknown", reason: "no-evidence" },
+    });
+    expect(Date.now() - started).toBeLessThan(5_000 + 12_000 + 2_000);
+  }, 30_000);
 
   it("tunnels a verified TLS response through the invocation proxy", async () => {
     const hostname = "shell-boundary.example";

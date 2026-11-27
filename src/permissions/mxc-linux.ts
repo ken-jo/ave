@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
@@ -12,10 +12,14 @@ import type { HostResources } from "../main/host-resources.js";
 import { containerTarget } from "../shared/container-platform.js";
 import { errorMessage } from "../shared/error-message.js";
 import { isRecord } from "../shared/is-record.js";
-import type { SandboxContainerShellSupport, SandboxContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
+import type { ContainerRawIpVerdict, SandboxContainerShellSupport, SandboxContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { INVOCATION_PROXY_REFUSED_STATUS, openInvocationProxyListener } from "./egress-invocation-listener.js";
 import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
 import { holdMxcLinuxPlaceholders } from "./mxc-linux-placeholders.js";
+import {
+  LINUX_RAW_IP_PROBER, linuxRawIpProberArguments, linuxRawIpVerdict, openLinuxRawIpHostTargets, parseLinuxRawIpProbeOutput, primaryIpv4,
+} from "./mxc-linux-raw-ip.js";
 import filterPins from "./mxc-linux-seccomp-pins.json" with { type: "json" };
 import { atOrUnder, canonicalPath, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants, type PosixPolicyLookups } from "./mxc-posix.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
@@ -112,6 +116,10 @@ function trustedTool(path: string): boolean {
   }
 }
 
+type LinuxCanaryResult =
+  | { readonly state: "available"; readonly rawIp: ContainerRawIpVerdict }
+  | { readonly state: "request-rejected" | "shell-start-failed" };
+
 interface LinuxShellProbeDependencies {
   readonly supportedHelper: boolean;
   readonly launcherExists: boolean;
@@ -119,7 +127,7 @@ interface LinuxShellProbeDependencies {
   requireRuntimeRoot(): string;
   missingTools(): readonly string[];
   listBackends(): Promise<unknown>;
-  canary(root: string): Promise<"available" | "request-rejected" | "shell-start-failed">;
+  canary(root: string): Promise<LinuxCanaryResult>;
 }
 
 async function detectMxcLinuxShellSupport(deps: LinuxShellProbeDependencies): Promise<SandboxContainerShellSupport> {
@@ -135,7 +143,7 @@ async function detectMxcLinuxShellSupport(deps: LinuxShellProbeDependencies): Pr
   if (!Array.isArray(backends) || !backends.some((entry: unknown) => isRecord(entry) && entry.backend === "bubblewrap"
     && Array.isArray(entry.capabilities) && entry.capabilities.includes("proxyEnforcement"))) return unavailable("namespaces-unavailable");
   const verdict = await deps.canary(root);
-  return verdict === "available" ? { state: "available" } : unavailable(verdict);
+  return verdict.state === "available" ? { state: "available", rawIp: verdict.rawIp } : unavailable(verdict.state);
 }
 
 export interface MxcLinuxShellPrograms {
@@ -227,10 +235,10 @@ export async function detectHostMxcLinuxShellSupport(resources: HostResources, s
       }
     },
     async canary(root) {
-      if (launcher === undefined || helper === undefined) return "shell-start-failed";
+      if (launcher === undefined || helper === undefined) return { state: "shell-start-failed" };
       try { return await runLinuxCanary(root, { launcher, helper, env }, signal); } catch {
         signal?.throwIfAborted();
-        return "shell-start-failed";
+        return { state: "shell-start-failed" };
       }
     },
   });
@@ -291,9 +299,21 @@ async function listenLoopback(server: Server): Promise<number> {
   return address.port;
 }
 
-async function runLinuxCanary(root: string, programs: MxcLinuxShellPrograms, signal?: AbortSignal) {
+/** Native tests only: replace the prober text to drive the raw-IP failure and control cases. */
+interface LinuxCanaryTestOverrides {
+  readonly prober?: string;
+}
+
+async function runLinuxCanary(
+  root: string, programs: MxcLinuxShellPrograms, signal?: AbortSignal, overrides: LinuxCanaryTestOverrides = {},
+): Promise<LinuxCanaryResult> {
   const scratch = await mkdtemp(posix.join(root, "p-"));
-  const proxy = createServer(socket => { socket.resume(); socket.end(); });
+  // The raw-IP control goes through a real invocation listener: it refuses `<nonce>.localhost` as a loopback
+  // destination and reports that refusal here. It forwards nothing, since the canary holds no egress grant.
+  const nonce = randomBytes(16).toString("hex");
+  let nonceRecorded = false;
+  let proxy: Awaited<ReturnType<typeof openInvocationProxyListener>> | undefined;
+  let targets: Awaited<ReturnType<typeof openLinuxRawIpHostTargets>>;
   let hostConnected = false;
   const host = createServer(socket => { hostConnected = true; socket.destroy(); });
   const unix = createServer(socket => { hostConnected = true; socket.destroy(); });
@@ -304,23 +324,30 @@ async function runLinuxCanary(root: string, programs: MxcLinuxShellPrograms, sig
     await mkdir(working);
     await mkdir(sealed);
     await writeFile(posix.join(sealed, "secret"), "container-canary-secret");
+    await writeFile(posix.join(working, "raw-ip.sh"), overrides.prober ?? LINUX_RAW_IP_PROBER, { flag: "wx", mode: 0o600 });
     const model = buildPolicyModel({
       floors: [policyFloorRow(sealed, "denied", "read-boundary", true), policyFloorRow(protectedLeaf, "ro", "protected-name", true)],
       launchGrants: [policyGrantRow(scratch, "ro", "launch-grant", true), policyGrantRow(working, "rw", "launch-grant", true)],
       userGrants: [], extensionManifests: [],
     });
-    const proxyPort = await listenLoopback(proxy);
+    proxy = await openInvocationProxyListener({
+      upstream: () => undefined,
+      onRefused: (destination) => { if (destination === `${nonce}.localhost`) nonceRecorded = true; },
+    });
+    const proxyPort = proxy.port;
     const otherPort = await listenLoopback(host);
     await new Promise<void>((resolve, reject) => {
       unix.once("error", reject);
       unix.listen(posix.join(working, "u"), resolve);
     });
+    targets = await openLinuxRawIpHostTargets(primaryIpv4(), nonce);
+    const udp = targets?.udp;
     const lookups = posixPolicyLookups(working, false);
     const held = await holdMxcLinuxPlaceholders(lookups, (current) => rankPosixContainerRows(model, "bubblewrap", current));
     try {
       const connectTimeout = TOOL_TIMEOUT_POLICY.mxcLinuxShellProbeConnectionMs / 1000;
       const connect = (port: number) => `/usr/bin/timeout ${connectTimeout} /bin/bash -c 'exec 3<>/dev/tcp/10.0.2.2/${port}'`;
-      const commandLine = [
+      const availability = [
         "printf 'boundary-control\\n' > control && /bin/cat control || exit 11",
         `if /bin/cat ${quote(posix.join(sealed, "secret"))}; then exit 12; fi`,
         `if (printf x > ${quote(posix.join(sealed, "new"))}); then exit 13; fi`,
@@ -330,40 +357,63 @@ async function runLinuxCanary(root: string, programs: MxcLinuxShellPrograms, sig
         `if ${connect(otherPort)}; then exit 17; fi`,
         `${quote(programs.helper)} --check-unix-socket u || exit 18`,
         "if unshare -Ur /bin/true; then exit 19; fi",
+      ];
+      // Availability is decided by the checks above alone: their status is taken first, and the raw-IP prober writes
+      // only to its own file, so nothing it does or prints can change it. It runs only after availability passed, and
+      // the watcher bounds it, so a stalled prober leaves only missing lines.
+      const proberArguments = linuxRawIpProberArguments({ nonce, host: targets?.address, closedPort: targets?.closedPort, udpPort: udp?.port })
+        .map(quote).join(" ");
+      const commandLine = [
+        "(", ...availability, ")",
+        "status=$?",
+        `if [ "$status" -eq 0 ]; then /usr/bin/timeout -s KILL ${TOOL_TIMEOUT_POLICY.mxcLinuxRawIpProbeMs / 1000} `
+          + `/bin/bash raw-ip.sh ${proberArguments} > raw-ip.out 2> /dev/null < /dev/null; fi`,
+        'exit "$status"',
       ].join("\n");
-      const timeout = TOOL_TIMEOUT_POLICY.mxcLinuxShellProbeMs;
+      const timeout = TOOL_TIMEOUT_POLICY.mxcLinuxShellProbeMs + TOOL_TIMEOUT_POLICY.mxcLinuxRawIpProbeMs;
       const request = buildBubblewrapShellRequest({
         grants: held.grants, lookups, cwd: working, commandLine, timeoutMs: timeout,
         env: { HOME: working, TMPDIR: working, PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
-        proxyUrl: `http://127.0.0.1:${proxyPort}`, helper: programs.helper,
+        proxyUrl: proxy.url, helper: programs.helper,
       });
       const config = posix.join(scratch, "request.json");
       await writeFile(config, JSON.stringify(request), { mode: 0o600, flag: "wx" });
-      const options = { signal, env: programs.env, timeout, killSignal: "SIGKILL" as const };
+      const options = { signal, env: programs.env, timeout: timeout + TOOL_TIMEOUT_POLICY.mxcLinuxShellStopMs, killSignal: "SIGKILL" as const };
       try { await runFile(programs.launcher, ["--dry-run", "--config", config], options); } catch {
         signal?.throwIfAborted();
-        return "request-rejected" as const;
+        return { state: "request-rejected" };
       }
       held.validate();
       const execution = runFile(programs.launcher, ["--config", config], options);
       const pid = execution.child.pid;
       const [{ stdout }] = await Promise.all([execution, pid === undefined ? undefined : held.recordLauncher(pid)]);
       const control = await readFile(posix.join(working, "control"), "utf8");
-      return !hostConnected && stdout === "boundary-control\n" && control === stdout
-        ? "available" as const : "shell-start-failed" as const;
+      if (hostConnected || stdout !== "boundary-control\n" || control !== stdout) return { state: "shell-start-failed" };
+      // A prober that left no readable output is no evidence; it never makes the container unavailable.
+      const output = await readFile(posix.join(working, "raw-ip.out"), "utf8").then(parseLinuxRawIpProbeOutput, (error: unknown) => {
+        log.warn("Linux raw-IP prober output unreadable: %s", (error as NodeJS.ErrnoException).code);
+        return undefined;
+      });
+      const udpArrived = udp !== undefined && output?.targets.UA === "0" ? await udp.settle() : udp?.arrived === true;
+      const rawIp = linuxRawIpVerdict({
+        ran: true, ...(output === undefined ? {} : { output }), expectedStatus: INVOCATION_PROXY_REFUSED_STATUS,
+        nonceRecorded, tlRan: targets !== undefined, udpArrived,
+      });
+      return { state: "available", rawIp };
     } finally {
       await held.release();
     }
   } catch (error) {
     signal?.throwIfAborted();
     log.warn("Linux container canary failed (%s): %s", isRecord(error) ? error.code : undefined, errorMessage(error));
-    return "shell-start-failed" as const;
+    return { state: "shell-start-failed" };
   } finally {
-    proxy.close();
+    await proxy?.close();
+    await targets?.udp.close();
     host.close();
     unix.close();
     await rm(scratch, { recursive: true, force: true });
   }
 }
 
-export { detectMxcLinuxShellSupport as _detectMxcLinuxShellSupportForTest, trustedLinuxPath as _trustedLinuxPathForTest };
+export { detectMxcLinuxShellSupport as _detectMxcLinuxShellSupportForTest, runLinuxCanary as _runLinuxCanaryForTest, trustedLinuxPath as _trustedLinuxPathForTest };

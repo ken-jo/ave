@@ -244,12 +244,30 @@ export function egressProtocolCoverageFor(substrate: "mxc" | "asrt" | "srt-win" 
   return substrate === "mxc" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
 }
 
-const POSIX_CONTAINER_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "blocked" });
-
-export function containerEgressProtocolCoverage(backend: ContainerBackend): EgressProtocolCoverage {
+/**
+ * A container backend's coverage. A POSIX container has no raw-IP constant: its `rawIp` is what this boot's canary
+ * measured, passed in as `rawIp`, and anything unmeasured is `unknown`.
+ */
+export function containerEgressProtocolCoverage(backend: ContainerBackend, rawIp?: ContainerRawIpVerdict): EgressProtocolCoverage {
   if (backend === "process-container") return MXC_EGRESS_PROTOCOL_COVERAGE;
-  return POSIX_CONTAINER_EGRESS_PROTOCOL_COVERAGE;
+  // The container's only egress is the proxy endpoint, so DNS does not leave it. The shared rules measure raw IP only.
+  return Object.freeze({ dns: "blocked", rawIp: rawIp?.verdict === "blocked" ? "blocked" : "unknown" });
 }
+
+/** Why a container's raw-IP verdict is not `blocked`: the reasons the shared verdict rules name. */
+export type ContainerRawIpUnknownReason =
+  | "raw-ip-reachable" | "ipv6-unmeasured" | "no-route" | "timeout" | "unclassified" | "no-evidence" | "control-failed";
+
+/**
+ * Whether a process in the shell container can reach an IP address directly, as this boot's canary measured it inside
+ * a real container. TCP is classified by its connect result. UDP is checked by arrival only: a datagram that reaches a
+ * host-side listener makes the verdict `unknown`; one that does not arrive leaves the TCP verdict standing.
+ * `evidence` is `structural` when IPv6 had no route and the container's own structure stood in for its measurement.
+ * Memory only, never persisted, re-measured every boot.
+ */
+export type ContainerRawIpVerdict =
+  | { readonly verdict: "blocked"; readonly evidence: "measured" | "structural" }
+  | { readonly verdict: "unknown"; readonly reason: ContainerRawIpUnknownReason };
 
 /** The scopes an egress grant can be given. A shell tool call's card offers Deny plus once, session, project, always (owner 2026-10-25, five-choice network card); a workspace terminal
  * tab's ladder is once, tab, always (`tab` takes the place of `session`: a terminal belongs to no conversation, design F). */
@@ -280,7 +298,8 @@ export type SandboxContainerShellUnavailableReason = Extract<SandboxMxcUnavailab
 > | "shell-start-failed" | "tools-missing" | "namespaces-unavailable";
 
 export type SandboxContainerShellSupport =
-  | { readonly state: "available" }
+  // An available shell container without a measurement has an unknown raw-IP verdict. The unavailable arm has no field.
+  | { readonly state: "available"; readonly rawIp?: ContainerRawIpVerdict }
   | { readonly state: "unavailable"; readonly reason: SandboxContainerShellUnavailableReason; readonly detail?: readonly string[] };
 
 export type SandboxContainerShellInfo = SandboxContainerShellSupport & {

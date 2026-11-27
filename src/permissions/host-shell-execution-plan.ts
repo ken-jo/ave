@@ -4,7 +4,7 @@ import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { en } from "../i18n/messages/en.js";
 import { containerPlatform } from "../shared/container-platform.js";
 import type { DisposableSubstrate, SandboxCapability } from "./sandbox-capability.js";
-import { containerEgressProtocolCoverage, egressProtocolCoverageFor, type EgressProtocolCoverage, type SandboxConfinement, type SandboxStartFailureCause } from "../shared/sandbox-capability-info.js";
+import { containerEgressProtocolCoverage, egressProtocolCoverageFor, type ContainerRawIpVerdict, type EgressProtocolCoverage, type SandboxConfinement, type SandboxStartFailureCause } from "../shared/sandbox-capability-info.js";
 import { isRecord } from "../shared/is-record.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
@@ -222,6 +222,8 @@ export function buildHostShellExecutionPlan(input: {
   unconfinedShellDenied?: boolean;
   // Boot published a positive Ave home privacy result. Only then may an exact saved rule pass the no-confinement floor (tree T:151); absent means unverified.
   homePrivacyVerified?: boolean;
+  // The POSIX container's raw-IP verdict as this boot's canary measured it. Absent means unmeasured: `unknown`.
+  containerRawIp?: ContainerRawIpVerdict;
 }): HostShellExecutionPlan {
   if (input.unconfinedShellDenied === true) {
     const route = buildHostShellExecutionPlan({ ...input, unconfinedShellDenied: false });
@@ -332,7 +334,7 @@ export function buildHostShellExecutionPlan(input: {
     sandboxed: true,
     substrate: shellSubstrate,
     egressProtocolCoverage: container === undefined
-      ? egressProtocolCoverageFor(shellSubstrate) : containerEgressProtocolCoverage(container.backend),
+      ? egressProtocolCoverageFor(shellSubstrate) : containerEgressProtocolCoverage(container.backend, input.containerRawIp),
     capability,
     fallbackReason: "none" as const,
     requiresExplicitUserApproval: false,

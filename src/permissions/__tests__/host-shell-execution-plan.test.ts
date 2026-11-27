@@ -10,6 +10,7 @@ import {
   isHomePrivacyHelperUnavailablePlan,
   requiresUnsandboxedShellAsk,
 } from "../host-shell-execution-plan.js";
+import type { ContainerRawIpVerdict } from "../../shared/sandbox-capability-info.js";
 
 const FULL_ASRT = {
   kind: "asrt" as const,
@@ -438,15 +439,17 @@ describe("host shell execution plan — Windows MXC substrate", () => {
   });
 
   it.each([
-    ["darwin", "host-shell-execution-plan/v4:darwin:mxc", { dns: "blocked", rawIp: "blocked" }],
-    ["linux", "host-shell-execution-plan/v4:linux:mxc", { dns: "blocked", rawIp: "blocked" }],
-  ] as const)("describes the container egress evidence on %s", (platform, identity, coverage) => {
-    expect(buildHostShellExecutionPlan({
+    ["darwin", "host-shell-execution-plan/v4:darwin:mxc"],
+    ["linux", "host-shell-execution-plan/v4:linux:mxc"],
+  ] as const)("describes the container egress evidence on %s only from this boot's measurement", (platform, identity) => {
+    const plan = (containerRawIp?: ContainerRawIpVerdict) => buildHostShellExecutionPlan({
       platform, requestedSandbox: true, activeCapability: { ...FULL_ASRT, platform }, shellSubstrate: "mxc",
-    })).toMatchObject({
-      identity, mode: "asrt", substrate: "mxc", sandboxed: true,
-      egressProtocolCoverage: coverage,
+      ...(containerRawIp === undefined ? {} : { containerRawIp }),
     });
+    expect(plan()).toMatchObject({ identity, mode: "asrt", substrate: "mxc", sandboxed: true,
+      egressProtocolCoverage: { dns: "blocked", rawIp: "unknown" } });
+    expect(plan({ verdict: "unknown", reason: "timeout" }).egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "unknown" });
+    expect(plan({ verdict: "blocked", evidence: "measured" }).egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "blocked" });
   });
 
   it.each([

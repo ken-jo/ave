@@ -12,10 +12,12 @@ function probeInputs() {
     requireRuntimeRoot: vi.fn(() => "/private/runtime"),
     missingTools: vi.fn<() => readonly string[]>(() => []),
     listBackends: vi.fn<() => Promise<unknown>>(async () => [{ backend: "bubblewrap", capabilities: ["proxyEnforcement"] }]),
-    canary: vi.fn<Parameters<typeof detect>[0]["canary"]>(async () => "available"),
+    canary: vi.fn<Parameters<typeof detect>[0]["canary"]>(async () => ({ state: "available", rawIp: TIMED_OUT })),
   };
 }
 
+
+const TIMED_OUT = { verdict: "unknown", reason: "timeout" } as const;
 describe("Linux container shell boot proof", () => {
   it("stops at the first helper, launcher, integrity or runtime-root failure", async () => {
     const deps = probeInputs();
@@ -42,8 +44,9 @@ describe("Linux container shell boot proof", () => {
 
   it.each(["request-rejected", "shell-start-failed", "available"] as const)("publishes the canary result %s", async (verdict) => {
     const deps = probeInputs();
-    deps.canary.mockResolvedValueOnce(verdict);
-    expect(await detect(deps)).toEqual(verdict === "available" ? { state: "available" } : { state: "unavailable", reason: verdict });
+    deps.canary.mockResolvedValueOnce(verdict === "available" ? { state: verdict, rawIp: TIMED_OUT } : { state: verdict });
+    expect(await detect(deps)).toEqual(verdict === "available"
+      ? { state: "available", rawIp: TIMED_OUT } : { state: "unavailable", reason: verdict });
     expect(deps.canary).toHaveBeenCalledWith("/private/runtime");
   });
 

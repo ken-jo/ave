@@ -567,8 +567,9 @@ describe("sandboxCapability shell status (the permission card's checkbox)", () =
     await setup({ osToolSandbox: true });
     expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({
       shell: { state: "unavailable", causes: ["shell-not-contained"] },
+      // An unavailable container has no coverage of its own.
       containerShell: { state: "unavailable", reason: "tools-missing", detail: ["slirp4netns", "iptables"],
-        egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } },
+        egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" } },
     });
   });
 

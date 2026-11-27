@@ -295,7 +295,10 @@ export function getContainerShellInfo(): SandboxContainerShellInfo | undefined {
   if (recorded === undefined) return undefined;
   const support = recorded.state === "available" && detectMxcShellCapability() === undefined
     ? { state: "unavailable", reason: "shell-start-failed" } as const : recorded;
-  return { ...support, egressProtocolCoverage: containerEgressProtocolCoverage(platform === "darwin" ? "seatbelt" : "bubblewrap") };
+  // raw IP only from an available container's own measurement; an unavailable container has no coverage.
+  const egressProtocolCoverage = support.state === "available"
+    ? containerEgressProtocolCoverage(platform === "darwin" ? "seatbelt" : "bubblewrap", support.rawIp) : egressProtocolCoverageFor("none");
+  return { ...support, egressProtocolCoverage };
 }
 
 // Windows: no sandbox HOME can be made this run (the container runtime root is unproved, or its HOME parent was replaced).
@@ -397,6 +400,9 @@ export function getHostShellExecutionPlan(
   const selectsPosixContainer = posix && consumer === "shell" && isContainerShellRouteEnabled(process.platform);
   const mxc = posix && consumer === "hook" ? undefined : detectMxcShellCapability();
   const privacyFailure = getAveHomePrivacyFailure();
+  // Only a live POSIX container route carries its own measurement; every other route is unmeasured.
+  const recorded = posix && mxc !== undefined ? containerShellSubstrates[process.platform as "darwin" | "linux"] : undefined;
+  const containerRawIp = recorded?.state === "available" ? recorded.rawIp : undefined;
   const plan = buildHostShellExecutionPlan({
     platform: process.platform,
     requestedSandbox: isShellSandboxRequestedAtBoot(),
@@ -407,6 +413,7 @@ export function getHostShellExecutionPlan(
     unavailableSandboxRequiresAsk: privacyFailure !== undefined || windowsDenyUnenforceableAtBoot() !== undefined,
     unconfinedShellDenied: privacyFailure !== undefined && !isAveHomePrivacyApprovable(privacyFailure.category),
     homePrivacyVerified: isAveHomePrivacyVerifiedAtBoot(),
+    ...(containerRawIp === undefined ? {} : { containerRawIp }),
   });
   recordIssuedHostShellExecutionPlan(plan, generation);
   return plan;
