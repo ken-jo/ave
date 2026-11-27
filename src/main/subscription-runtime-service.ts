@@ -1088,6 +1088,9 @@ type AccountStatus = Omit<SubscriptionRuntimeStatus, keyof PendingLoginProjectio
 
 const NO_PENDING_LOGIN: PendingLoginProjection = Object.freeze({ pendingLogin: null, pendingDeviceCode: null });
 
+const SETTLEMENT_CONFIRMATION_ATTEMPTS = 2;
+const HINTED_CONFIRMATION_ATTEMPTS = 7;
+
 type HostConnection = {
   intent: number;
   busy: number;
@@ -1107,7 +1110,7 @@ type HostConnection = {
   safetyEpoch: number;
   proven: boolean;
   // The host auth home owns the pending confirmation and its timer.
-  target?: { attempts: number; timer?: ReturnType<typeof setTimeout> };
+  target?: { attempts: number; maxAttempts: number; timer?: ReturnType<typeof setTimeout> };
   confirming: boolean;
 };
 
@@ -1766,7 +1769,7 @@ export class SubscriptionRuntimeService {
       state.intent = intent;
       state.busy += 1;
       // Register the settlement read before a sign-out or logout can withdraw it.
-      state.target ??= { attempts: 0 };
+      state.target ??= { attempts: 0, maxAttempts: SETTLEMENT_CONFIRMATION_ATTEMPTS };
       this.latchConnection(provider, state, state.status.connection === "signed-out" ? "signed-out" : "unknown");
     } else {
       this.authChangeRevisionByProvider.set(provider, intent);
@@ -2053,11 +2056,8 @@ export class SubscriptionRuntimeService {
   }
 
   private requireConfirmation(state: HostConnection): void {
-    state.target ??= { attempts: 0 };
-    const target = state.target;
-    clearTimeout(target.timer);
-    target.timer = undefined;
-    target.attempts = 0;
+    state.target ??= { attempts: 0, maxAttempts: HINTED_CONFIRMATION_ATTEMPTS };
+    state.target.maxAttempts = HINTED_CONFIRMATION_ATTEMPTS;
   }
 
   private clearConfirmation(state: HostConnection): void {
@@ -2068,14 +2068,18 @@ export class SubscriptionRuntimeService {
   private confirmAccount(provider: CliProvider, state: HostConnection, delay?: number): void {
     const target = state.target;
     if (this.stopped || !target || state.busy || state.confirming || target.timer || state.status.connection === "connected") return;
+    if (target.attempts >= target.maxAttempts) {
+      this.clearConfirmation(state);
+      return;
+    }
     target.timer = setTimeout(() => {
       target.timer = undefined;
       if (this.stopped || state.target !== target || state.busy || state.status.connection === "connected") return;
       state.confirming = true;
+      target.attempts += 1;
       void this.readCliStatus(provider, {}).catch(() => undefined).finally(() => {
         state.confirming = false;
-        target.attempts += 1;
-        this.confirmAccount(provider, state);
+        if (state.target) this.confirmAccount(provider, state);
       });
     }, delay ?? (target.attempts === 0 ? 0 : Math.min(250 * 2 ** Math.min(target.attempts - 1, 5), 8000)));
     target.timer.unref();

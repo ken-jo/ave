@@ -5,6 +5,7 @@ import type { AcpSubscriptionStatus } from "../../shared/acp-subscription.js";
 import type { CodexSubscriptionStatus } from "../../shared/codex-subscription.js";
 import type { CodexAppServerClient } from "../codex-app-server-client.js";
 import { claudeCodeSubscriptionStatus, type ClaudeCodeSubscriptionStatus } from "../../shared/claude-code-subscription.js";
+import type { SubscriptionEvidenceSink } from "../subscription-connection-evidence.js";
 import type { ClaudeCodeSubscriptionClient } from "../claude-code-subscription-client.js";
 import { onSubscriptionRuntimeStatusChanged, SubscriptionRuntimeService, type AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
 import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace as namespace } from "../../__tests__/support/subscription-runtime-namespace.js";
@@ -36,6 +37,7 @@ function claudeClient(initial = claudeCodeSubscriptionStatus("ready", "connected
   const client = {
     getStatus: vi.fn(async () => status),
     getCachedStatus: vi.fn(() => status),
+    startBrowserLogin: vi.fn(async () => status),
     cancelLogin: vi.fn(async () => status),
     verify: vi.fn(async () => status),
     logout: vi.fn(async () => {
@@ -84,6 +86,41 @@ describe("SubscriptionRuntimeService settings read cache", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
+
+  it.each(["failed sign-in", "permanently unavailable probe", "recovery within the budget"] as const)(
+    "bounds host confirmation after %s", async (scenario) => {
+      vi.useRealTimers();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const signedOut = claudeCodeSubscriptionStatus("unverified", "signed-out", "2.1.0");
+      const { client } = claudeClient(signedOut);
+      let evidence: SubscriptionEvidenceSink | undefined;
+      Object.defineProperty(client, "connectionEvidence", { get: () => evidence, set: (sink: SubscriptionEvidenceSink) => { evidence = sink; } });
+      const runtime = await service({ claude: client });
+      try {
+        await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "signed-out" });
+        client.getStatus.mockReset().mockRejectedValue(new Error("Runtime probe unavailable"));
+        if (scenario === "failed sign-in") {
+          client.startBrowserLogin.mockRejectedValueOnce(new Error("Executable unavailable"));
+          await expect(runtime.startLogin("claude-code", "browser")).rejects.toThrow();
+        } else {
+          evidence?.({ kind: "advertisement", source: client });
+        }
+        if (scenario === "recovery within the budget") {
+          await vi.advanceTimersByTimeAsync(750);
+          const ready = claudeCodeSubscriptionStatus("ready", "connected", "2.1.0");
+          client.getStatus.mockResolvedValueOnce(ready);
+        }
+        await vi.advanceTimersByTimeAsync(120_000);
+        const recovered = scenario === "recovery within the budget";
+        expect(client.getStatus).toHaveBeenCalledTimes(recovered ? 4 : scenario === "failed sign-in" ? 2 : 7);
+        await expect(runtime.getCachedStatus("claude-code")).resolves.toMatchObject({
+          connection: recovered ? "connected" : scenario === "failed sign-in" ? "signed-out" : "unknown",
+        });
+      } finally {
+        await runtime.stop();
+      }
+    },
+  );
 
   it("lists Claude Code models from the status the settings card just read", async () => {
     const { client } = claudeClient();
