@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync, readdirSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -7,6 +7,9 @@ import JSZip from "jszip";
 import * as XLSX from "xlsx";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { build } from "esbuild";
+import { buildSkillScripts } from "../../../scripts/build-skill-scripts.mjs";
+import { windowsPeImageDigest } from "../../../scripts/lib/windows-path-kind-image-digest.mjs";
+import { windowsPathKindHelperIn } from "../../main/windows-path-kind-launcher.js";
 import { stageWindowsPathKindHelper } from "../../__tests__/support/bundled-skill-resources.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { editWorkbookFile } from "../../skills/xlsx-edit.js";
@@ -18,9 +21,9 @@ let commandDirectory: string;
 let script: string;
 beforeAll(async () => {
   commandDirectory = mkdtempSync(join(tmpdir(), "ave-workbook-command-"));
-  const scripts = join(commandDirectory, "skill-scripts");
-  mkdirSync(scripts);
-  stageWindowsPathKindHelper(commandDirectory);
+  const scripts = join(commandDirectory, "dist", "skill-scripts");
+  mkdirSync(scripts, { recursive: true });
+  stageWindowsPathKindHelper(join(commandDirectory, "resources"));
   script = join(scripts, "edit-xlsx.cjs");
   configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   await build({ entryPoints: [resolve("src/skills/xlsx-edit-cli.ts")], outfile: script,
@@ -55,13 +58,54 @@ async function save(zip: JSZip, name = "book.xlsx"): Promise<string> {
   return path;
 }
 
-function run(path: string, edits: unknown, sheet = 0) {
+function run(path: string, edits: unknown, sheet = 0, scriptPath = script, nodeArgs: string[] = []) {
   const request = join(directory, "edits.json");
   writeFileSync(request, JSON.stringify({ sheet, edits }));
-  return spawnSync(process.execPath, [script, path, request], { encoding: "utf8" });
+  return spawnSync(process.execPath, [...nodeArgs, scriptPath, path, request], { encoding: "utf8" });
 }
 
 describe("XLSX skill command", () => {
+  it.skipIf(process.platform !== "win32").each(["matching", "missing", "mismatched"])(
+    "requires a verified packaged helper with a %s digest", async (pin) => {
+      const resources = join(directory, "resources");
+      const scripts = join(resources, "skill-scripts");
+      stageWindowsPathKindHelper(resources);
+      const modules = join(resources, "app.asar.unpacked", "node_modules");
+      for (const pkg of ["koffi", `@koromix/koffi-win32-${process.arch}`]) {
+        cpSync(resolve("node_modules", pkg), join(modules, pkg), { recursive: true, dereference: true });
+      }
+      const pathKindSha256 = pin === "missing" ? null : pin === "mismatched" ? "0".repeat(64)
+        : windowsPeImageDigest(readFileSync(windowsPathKindHelperIn(resources)));
+      const built = await buildSkillScripts({ pathKindSha256, directory: join(directory, "built-scripts") });
+      const scriptPath = join(scripts, "edit-xlsx.cjs");
+      mkdirSync(scripts);
+      cpSync(join(built, "edit-xlsx.cjs"), scriptPath);
+      const path = await save(await fixture());
+      const before = readFileSync(path);
+      const marker = join(directory, "spawned");
+      const preload = join(directory, "observe-native-spawn.cjs");
+      writeFileSync(preload, `const child = require("node:child_process");
+const execute = child.execFileSync;
+child.execFileSync = (...args) => {
+  require("node:fs").writeFileSync(${JSON.stringify(marker)}, "");
+  return execute(...args);
+};
+`);
+      const result = run(path, [{ cell: "B1", value: 21 }], 0, scriptPath, ["--require", preload]);
+
+      if (pin === "matching") {
+        expect(result.status, result.stderr).toBe(0);
+        expect(existsSync(marker)).toBe(true);
+        expect(readFileSync(path).equals(before)).toBe(false);
+      } else {
+        expect(existsSync(marker)).toBe(false);
+        expect(result.status, result.stderr).toBe(1);
+        expect(result.stderr).toContain("[workbook-acl-unreadable]");
+        expect(readFileSync(path).equals(before)).toBe(true);
+      }
+    },
+  );
+
   it("runs the bundled command without package resolution", async () => {
     const path = await save(await fixture());
     expect(run(path, [{ cell: "B1", value: 21 }]).status).toBe(0);

@@ -44,7 +44,7 @@ if (process.platform === "win32") {
   pathKindSha256 = buildWindowsPathKind({ root: repoRoot }).imageSha256;
   execFileSync(process.execPath, [resolve(repoRoot, "scripts/build-srt-win.mjs")], { stdio: "inherit" });
 }
-await buildSkillScripts();
+await buildSkillScripts({ pathKindSha256 });
 if (!mxcVerificationBuild()) rmSync(resolve(outdir, "mxc-packaged-probe.js"), { force: true });
 
 const buildOptions = {

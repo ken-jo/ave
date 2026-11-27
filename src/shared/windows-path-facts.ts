@@ -180,7 +180,7 @@ function requestNative(mode: "--pin" | "--dacl", flags: readonly string[], paths
         windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
         maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
       });
-    }));
+    }, undefined, flags.includes("--file-access")));
   } catch (error) {
     // Spawn and timeout errors name the helper's install path; only their code is kept.
     if (isWindowsPathKindHelperTimeout(error)) {
