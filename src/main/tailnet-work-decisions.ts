@@ -140,7 +140,9 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
       .filter(({ routine }) => routine.attachmentId !== undefined).map(({ routine }) => routine.id));
     const attachments = attachedScheduleIds.size === 0 ? undefined : await templates.listActiveScheduleAttachments(attachedScheduleIds);
     for (const { template, versions, draft } of records) {
-      if (!scopeAuthorised(template.scope)) continue;
+      const { name, scope } = template;
+      const scopedRoot = scope.kind === "project" ? resolveAuthorizedWorkspaceProject(scope.projectRoot).project?.projectRoot : undefined;
+      if (scope.kind === "project" && scopedRoot === undefined) continue;
       if (draft) {
         const { revision, graphHash, updatedAt: _updatedAt, ...graph } = draft;
         confirmations(template.id, revision, graphHash, graph);
@@ -149,8 +151,7 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
       if (!current) continue;
       const { templateId, version, graphHash, stages, edges, setupCommands } = current;
       const pin = { templateId, version, graphHash };
-      const { name, scope } = template;
-      const choices = scope.kind === "all" ? projects : projects.filter(project => project.projectRoot === scope.projectRoot);
+      const choices = scope.kind === "all" ? projects : projects.filter(project => project.projectRoot === scopedRoot);
       const projectRoot = choices.find(project => project.isDefault)?.projectRoot ?? choices[0]?.projectRoot;
       review.push({
         kind: "create-and-run", deny: "dismiss",
@@ -188,7 +189,8 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
     const project = projectRoot === undefined ? null : resolveAuthorizedWorkspaceProject(projectRoot);
     requireTemplate(project === null || (project.authorized && project.project), "scope-not-authorised");
     const root = project?.project?.projectRoot;
-    requireTemplate(template.scope.kind === "all" || template.scope.projectRoot === root, "project-mismatch");
+    requireTemplate(template.scope.kind === "all" || (root !== undefined
+      && resolveAuthorizedWorkspaceProject(template.scope.projectRoot).project?.projectRoot === root), "project-mismatch");
 
     const { authority } = withProjectAuthority(evidence, root);
     if (!await authority.refreshCurrent()) return refused(WORK_DECISION_AUTHORITY_REVOKED);

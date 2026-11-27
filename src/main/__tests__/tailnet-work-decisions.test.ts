@@ -1,10 +1,13 @@
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { expect, it, vi } from "vitest";
 import { setupCommittedAveHome } from "../../__tests__/support/committed-ave-home.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { parseTailnetWorkDecision } from "../../api/tailnet-work-decision-input.js";
 import { outputHashOf } from "../../shared/workflow-template-output.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
+import * as allowedDirectories from "../../permissions/allowed-directories.js";
+import { foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
 import type { TailnetRequestedOutputDecision, TailnetWorkDecisionRequest } from "../../shared/tailnet-work-decisions.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
@@ -116,6 +119,39 @@ it("rejects a stale template revision and starts only the exact confirmed remote
     expect(log).toHaveBeenCalledTimes(2);
     const { confirmation } = await h.templates.resolveVersion(confirmed.pin);
     expect(JSON.parse(log.mock.calls[0][0].output)).toMatchObject({ kind: "template-confirmation", auditId: confirmation.auditId });
+  });
+});
+
+it("lists and binds the registered Windows project when a template uses native separators", async () => {
+  const nativeRoot = win32.join("C:\\", "Projects", "Selected");
+  const otherNativeRoot = win32.join("C:\\", "Projects", "Selected-neighbor");
+  const host = process.platform;
+  const [root, otherRoot] = (() => {
+    setProcessPlatform("win32");
+    try { return [foldCanonicalPathSeparators(nativeRoot), foldCanonicalPathSeparators(otherNativeRoot)]; }
+    finally { setProcessPlatform(host); }
+  })();
+  expect(root).toBe("c:/Projects/Selected");
+
+  const { h, runtime, decide } = await fixture();
+  await h.runThenEnd(async () => {
+    const allowed = vi.spyOn(allowedDirectories, "sanitizeRuntimeAllowedDirectories").mockReturnValue([root, otherRoot]);
+    const create = vi.spyOn(h.board, "create").mockResolvedValue({ status: "invalid", reason: "board-unavailable" });
+    try {
+      const version = await h.confirm([stageOf("a")], { scope: { kind: "project", projectRoot: nativeRoot } });
+      const review = (await runtime.list(evidence)).find(entry => entry.kind === "create-and-run");
+      expect(review).toMatchObject({ binding: { input: { projectRoot: root } }, review: { projects: [{ projectRoot: root }] } });
+
+      const start = { ...base, kind: "create-and-run", input: { ...h.pinOf(version), title: "Scoped work" } } as const;
+      await expect(decide(start)).resolves.toEqual({ ok: false, error: "project-mismatch" });
+      await expect(decide({ ...start, input: { ...start.input, projectRoot: otherNativeRoot } })).resolves.toEqual({ ok: false, error: "project-mismatch" });
+      expect(create).not.toHaveBeenCalled();
+      await expect(decide({ ...start, input: { ...start.input, projectRoot: nativeRoot } })).resolves.toEqual({ ok: false, error: "work-item-create-refused" });
+      expect(create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ projectRoot: root }), expect.anything());
+    } finally {
+      create.mockRestore();
+      allowed.mockRestore();
+    }
   });
 });
 

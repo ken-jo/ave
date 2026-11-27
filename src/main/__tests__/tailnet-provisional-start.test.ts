@@ -9,6 +9,7 @@ import { deferred } from "../../__tests__/support/deferred.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import * as atomicFile from "../../lib/atomic-file.js";
 import { ensureAveHomePrivate } from "../../shared/ave-home.js";
+import { projectRootKey } from "../../shared/project-identity.js";
 import type { TailnetWorkDecisionRequest } from "../../shared/tailnet-work-decisions.js";
 import type { WorkItem } from "../../shared/work-board-types.js";
 import { ToolRegistry } from "../../tools/registry.js";
@@ -352,7 +353,10 @@ it.each([
         const branches = () => fixture.userGit(fixture.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads");
         const worktrees = () => fixture.userGit(fixture.repo, "worktree", "list", "--porcelain");
         if (addsWorktree) {
-          expect(row.remoteProvisional?.workspace).toEqual({ runId, projectRoot: fixture.repo });
+          const reservation = row.remoteProvisional?.workspace;
+          expect(reservation?.runId).toBe(runId);
+          expect(projectRootKey(reservation?.projectRoot)).toBe(projectRootKey(fixture.repo));
+          expect(reservation?.projectRoot).toBe(row.projectRoot);
           expect(worktreePath && existsSync(worktreePath)).toBe(true);
           expect(branches().split("\n")).toContain(branch);
           expect(worktrees()).toContain(`branch refs/heads/${branch}`);

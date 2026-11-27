@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 import { setupCommittedAveHome } from "../../../__tests__/support/committed-ave-home.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { foldCanonicalPathSeparators } from "../../../permissions/sensitive-paths.js";
 import { aveHome } from "../../../shared/ave-home.js";
 import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
@@ -56,20 +57,21 @@ it.each([
     }) });
     await h.runThenEnd(async () => {
       const version = await h.confirm([stageOf("a")]);
-      const created = await h.board.create({ title: "Remote work", templateId: version.templateId, projectRoot: repo },
+      const canonicalRoot = realpathSync.native(repo);
+      const projectRoot = foldCanonicalPathSeparators(canonicalRoot);
+      const created = await h.board.create({ title: "Remote work", templateId: version.templateId, projectRoot },
         { isCurrent: () => true, refreshCurrent: async () => true });
       if (created.status !== "created" || !created.item.remoteProvisional?.workspace) throw new Error("The provisional workspace was not reserved");
       const itemId = created.itemId;
       const { runId } = created.item.remoteProvisional.workspace;
       const branch = runBranch(runId);
       const fullRef = `refs/heads/${branch}`;
-      const canonicalRoot = realpathSync.native(repo);
       const runRoot = runRootOf(realpathSync.native(aveHome()), process.platform === "win32" ? canonicalRoot.toLowerCase() : canonicalRoot, itemId, runId);
       const boardOnDisk = () => JSON.parse(readFileSync(h.boardPath, "utf8"));
       const branches = () => userGit(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads").split("\n");
       const worktrees = () => userGit(repo, "worktree", "list", "--porcelain");
       const initial = createStageWorkspaceProvider({ git: { ...git, run: openingGit } });
-      const opening = initial.open({ itemId, runId, runKey: `work-board:${itemId}#${runId}`, projectRoot: repo }, repo);
+      const opening = initial.open({ itemId, runId, runKey: `work-board:${itemId}#${runId}`, projectRoot }, projectRoot);
       try {
         await Promise.race([reached.promise, opening.then(result => { throw new Error(`Workspace opening returned early: ${JSON.stringify(result)}`); })]);
         expect(branches()).toContain(branch);
@@ -108,7 +110,7 @@ it.each([
         if (unverified || refLock !== undefined) {
           expect(branches()).toContain(branch);
           expect(existsSync(runRoot)).toBe(true);
-          expect(boardOnDisk().provisionalWorkspaces).toEqual({ [runId]: { itemId, projectRoot: repo } });
+          expect(boardOnDisk().provisionalWorkspaces).toEqual({ [runId]: { itemId, projectRoot } });
           if (refLock !== undefined) {
             expect(worktrees()).not.toContain(`branch ${fullRef}`);
             unlinkSync(refLock);
