@@ -1,6 +1,6 @@
 import { ipcRenderer } from 'electron';
 import { CHANNELS } from '../contract/app-contract.js';
-import type { MemoryMapApi } from '../shared/memory-map.js';
+import type { MemoryMapApi, MemoryMapScope } from '../shared/memory-map.js';
 import { MemoryMapProgressSchema, MemoryModelStatusSchema } from '../shared/memory-map-validation.js';
 import type { z } from 'zod';
 function subscribe<T>(channel: string, schema: z.ZodType<T>, callback: (value: T) => void): () => void {
@@ -10,6 +10,7 @@ function subscribe<T>(channel: string, schema: z.ZodType<T>, callback: (value: T
 }
 export const memoryMapApiSurface: MemoryMapApi = {
   get: scope => ipcRenderer.invoke(CHANNELS.memoryMap.get, scope),
+  ...(process.platform === 'win32' ? { buildView: (scope?: MemoryMapScope) => ipcRenderer.invoke(CHANNELS.memoryMap.buildView, scope) } : {}),
   build: (scope, buildId) => ipcRenderer.invoke(CHANNELS.memoryMap.build,
     process.platform === 'win32' && buildId !== undefined ? { scope, buildId } : scope),
   cancel: buildId => process.platform !== 'win32' || buildId === undefined

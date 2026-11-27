@@ -37,7 +37,7 @@ export function registerWindowsMemoryMapHandlers(deps: IpcDeps, resolveScope: Me
       if (!parsed.success || extra.length) return { ok: false, error: 'invalid-input' };
       const scope = channel === CHANNELS.memoryMap.retrieve || channel === CHANNELS.memoryMap.build
         ? (parsed.data as { scope?: MemoryMapScope }).scope : parsed.data;
-      const scoped = [CHANNELS.memoryMap.get, CHANNELS.memoryMap.build, CHANNELS.memoryMap.facets, CHANNELS.memoryMap.retrieve].includes(channel as never);
+      const scoped = [CHANNELS.memoryMap.get, CHANNELS.memoryMap.build, CHANNELS.memoryMap.buildView, CHANNELS.memoryMap.facets, CHANNELS.memoryMap.retrieve].includes(channel as never);
       const original = scoped ? resolveScope(scope) : undefined;
       const projectDenied = { ok: false, error: 'project-not-allowed' } as const;
       if (original?.ok === false) return projectDenied;
@@ -70,6 +70,7 @@ export function registerWindowsMemoryMapHandlers(deps: IpcDeps, resolveScope: Me
     });
   }
   handle(CHANNELS.memoryMap.get, MemoryMapScopeSchema.optional(), (current, scope) => current.get(scope));
+  handle(CHANNELS.memoryMap.buildView, MemoryMapScopeSchema.optional(), (current, scope) => current.buildView(scope));
   handle(CHANNELS.memoryMap.build, MemoryBuildRequestSchema, (current, { scope, buildId }, event, onAdmission, { options, assert }) => {
     if (!options) throw new MemoryMapHostError('project-not-allowed');
     return current.build(scope, buildId, event, onAdmission, options, assert);

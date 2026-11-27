@@ -64,6 +64,7 @@ export interface MemoryBuildView {
 }
 export interface MemoryMapApi {
   get: (scope?: MemoryMapScope) => Promise<MemoryMapResult<GraphSnapshot | null>>;
+  buildView?: (scope?: MemoryMapScope) => Promise<MemoryMapResult<MemoryBuildView>>;
   build: (scope?: MemoryMapScope, buildId?: string) => Promise<MemoryMapResult<GraphSnapshot>>;
   cancel: (buildId?: string) => Promise<MemoryMapResult<null>>;
   facets: (scope?: MemoryMapScope) => Promise<MemoryMapResult<MemoryFacets>>;
