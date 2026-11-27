@@ -9,13 +9,13 @@ import { win32SystemBinary } from "../ave-home.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { resolve } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { localDrive } from "../../__tests__/support/windows-drive-locality.js";
 import { readWindowsReadDenyEvidence, recheckWindowsReadDenyEvidence, windowsReadDenyEvidence, windowsReadDenyKey, type WindowsReadDenySnapshot } from "../windows-read-deny-evidence.js";
 import { setWindowsDriveQueryForTest } from "../windows-drive-locality.js";
 import * as windowsPathFacts from "../windows-path-facts.js";
 
 vi.unmock("../windows-drive-locality.js");
 
-const localDrive = () => String.raw`\Device\HarddiskVolume1`;
 setWindowsDriveQueryForTest(localDrive);
 
 describe.runIf(process.platform === "win32")("Windows read deny native evidence", () => {

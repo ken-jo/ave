@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { session, type IpcMainInvokeEvent } from "electron";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { table } from "../../__tests__/support/preview-table-fixture.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import type { PreviewTableDocument } from "../../shared/preview-document.js";
 import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
 import { configureHostResources } from "../host-resources.js";
@@ -20,12 +20,6 @@ vi.mock("../../permissions/permission-settings-store.js", () => ({
 import { DocumentObservationRuntime } from "../document-observation.js";
 
 const LOCAL_DRIVE = String.raw`\Device\HarddiskVolume1`;
-
-function table(value: string): PreviewTableDocument {
-  return { format: "csv", needsRecalculation: false, sheetNames: ["Sheet1"], totalSheets: 1, sheetsTruncated: false,
-    sheet: { index: 0, name: "Sheet1", rows: [[value]], firstRow: 0, firstColumn: 0, totalRows: 1, totalColumns: 1,
-      rowsTruncated: false, columnsTruncated: false, cellsTruncated: false, clippedCells: [] } };
-}
 
 describe.runIf(process.platform === "win32")("document observation readability per judgment", () => {
   const query = vi.fn<(drive: string) => string | null>();

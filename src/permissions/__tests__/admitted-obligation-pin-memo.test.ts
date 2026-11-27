@@ -3,6 +3,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { localDrive } from "../../__tests__/support/windows-drive-locality.js";
 import { takeWindowsHelperLaunches } from "../../__tests__/support/windows-helper-spawns.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
@@ -12,7 +13,6 @@ import { admitObligations, admitWindowsLookupPaths } from "../admitted-obligatio
 
 vi.unmock("../../shared/windows-drive-locality.js");
 
-const localDrive = () => String.raw`\Device\HarddiskVolume1`;
 setWindowsDriveQueryForTest(localDrive);
 
 const failNextPin = vi.hoisted(() => ({ armed: false }));
