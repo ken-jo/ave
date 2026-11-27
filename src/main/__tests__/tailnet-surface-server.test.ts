@@ -58,7 +58,7 @@ vi.mock(import("@anthropic-ai/sandbox-runtime"), async importOriginal => {
 
 vi.mock(import("node:net"), async importOriginal => {
   const net = await importOriginal();
-  return { ...net, createServer: vi.fn(net.createServer) };
+  return { ...net, createServer: vi.fn(net.createServer) as typeof net.createServer };
 });
 
 const CAPABILITY = "ave.example.com/cap/conversation-observer";
