@@ -181,10 +181,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       return { ok: false, result: failure(`no browser tab ${JSON.stringify(handle)}; call browser_tabs to list this window's tabs`) };
     }
     const signals = [...(mutation ? [resolved.tab.actions.signal] : []), ...(ctx.abortSignal ? [ctx.abortSignal] : [])];
-    if (mutation) {
-      deps.tabs.assertActorAccess(resolved.tab, actorOf(ctx, deps));
-      if (resolved.tab.controlMode === "human-paused") return { ok: false, result: failure("browser control is paused; ask the user to resume this tab") };
-    }
+    if (mutation && resolved.paused) return { ok: false, result: failure("browser control is paused; ask the user to resume this tab") };
     return { ok: true, windowId: scope.windowId, resolved, signal: AbortSignal.any(signals) };
   };
 
@@ -314,9 +311,10 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
   };
 
   const openAgentTab = async (url: { url: string; origin: string }, ctx: ToolExecutionContext, beforeOpen: () => void = () => {}, lifecycleSignal?: AbortSignal): Promise<ToolExecutionResult> => {
-      const scope = policy.windowOf(toolSessionId(ctx));
+      const sessionId = toolSessionId(ctx);
+      const scope = policy.windowOf(sessionId);
       if (!scope) return failure(NO_WINDOW);
-      const opening = policy.tabNewTarget(scope);
+      const opening = policy.tabNewTarget(scope, sessionId);
       if (!opening.ok) return failure(opening.reason);
       const authorizeSite = ctx.authorizeBrowserSite;
       if (!authorizeSite) return failure("Missing browser site authorization");
@@ -324,6 +322,9 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       await authorizeSite(url.url, openingSignal);
       openingSignal?.throwIfAborted();
       beforeOpen();
+      if (opening.inTabId !== undefined && deps.tabs.emptyBrowserPaneTab(scope.windowId, scope.hostSessionId) !== opening.inTabId) {
+        return failure("this chat's browser pane is no longer empty; nothing was done");
+      }
       const outcome = await deps.tabs.requestTabOp(
         scope.windowId,
         { op: "new", url: url.url, sessionId: scope.hostSessionId, ...(opening.inTabId === undefined ? {} : { inTabId: opening.inTabId }),
@@ -423,7 +424,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         if (result.isError) return result;
       }
       const tabs = input.scope === "conversation" ? deps.tabs.listSessionTabs(scope.windowId, actor, input.includeDirectChildren === true) : deps.tabs.listTabs(scope.windowId);
-      const opening = policy.tabNewTarget(scope);
+      const opening = policy.tabNewTarget(scope, actor.sessionId);
       const note = !opening.ok ? opening.reason
         : opening.inTabId !== undefined ? "This chat's page is empty; browser_tab_new loads a URL into it."
           : tabs.length === 0 ? t("be_browserTools.noTabs") : undefined;
