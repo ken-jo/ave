@@ -46,7 +46,7 @@ vi.mock('../../../permissions/sandbox-capability.js', () => ({
   detectMxcShellCapability: () => state.substrate?.shells === 'mxc' ? state.verifiedShell : undefined,
   getSandboxGeneration: () => "0",
   getSandboxHomesUnavailable: () => false,
-  getWindowsExtensionBackendPlan: () => state.plan,
+  getExtensionBackendPlan: () => state.plan,
   getWindowsSandboxSubstrate: () => state.substrate,
   isSandboxGateUndecidedAtBoot: () => false,
 }));

@@ -51,6 +51,14 @@ export const TOOL_TIMEOUT_POLICY = {
   mxcRawIpProbeMs: 12_000,
   mxcMacShellStopMs: 12_000,
   mxcMacShellOutputDrainMs: 1_000,
+  // A macOS holder must write its ready byte from inside the sandbox within this bound, or it is stopped and refused.
+  mxcMacHolderStartMs: 10_000,
+  // SIGTERM to a macOS holder's group, then SIGKILL after this grace.
+  mxcMacHolderTermGraceMs: 2_000,
+  // One label sweep of a macOS holder (two clean passes, at most 50), and the watcher's exit at quit.
+  mxcMacHolderSweepMs: 2_000,
+  // At a macOS holder's stop, the tail of its output may drain this long before Ave lets go of its streams.
+  mxcMacHolderOutputDrainMs: 1_000,
   mxcLinuxShellProbeMs: 5_000,
   mxcLinuxShellProbeConnectionMs: 750,
   mxcLinuxShellStopMs: 2_000,
@@ -158,10 +166,24 @@ export const TOOL_TIMEOUT_POLICY = {
   processGroupRetentionWarningMs: 5 * 60 * 1000,
 } as const;
 
+/** A container holder's start deadline on the platform it runs on: the Windows ACL host, or a macOS holder's ready byte. */
+export function containerHolderStartMs(platform: NodeJS.Platform = process.platform): number {
+  return platform === "darwin" ? TOOL_TIMEOUT_POLICY.mxcMacHolderStartMs : TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs;
+}
+
+/** Disposing a container holder: Windows' process-tree kill, or a macOS holder's group stop with its grace, the group
+ * confirmation, the output drain and the label sweep (`seatbelt-holder-launch.ts`). */
+export function containerHolderStopMs(platform: NodeJS.Platform = process.platform): number {
+  return platform === "darwin"
+    ? TOOL_TIMEOUT_POLICY.mxcMacHolderTermGraceMs + TOOL_TIMEOUT_POLICY.mxcMacHolderOutputDrainMs
+      + TOOL_TIMEOUT_POLICY.processTreeKillMs + TOOL_TIMEOUT_POLICY.mxcMacHolderSweepMs
+    : TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
+}
+
 /** Stopping a native plugin child: optional stop hook, stdin EOF grace, then owned process disposal. */
 export function nativePluginChildStopBudgetMs(): number {
   return TOOL_TIMEOUT_POLICY.pluginStartupDefaultMs + TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs
-    + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
+    + containerHolderStopMs();
 }
 
 /** An srt-win plugin child's factory: host-side setup, then the channel connect and the construct request, each under its own deadline. */
@@ -174,8 +196,8 @@ export function windowsSrtPluginChildFactoryBudgetMs(): number {
  * refused bring-up, the disposal deadline, so a termination verified in time never becomes a factory timeout.
  * Row-2 admission also runs inside this budget: the egress lease and the holder's own start with its `mxcExtensionReadinessMs` (30 s) deadline. */
 export function nativePluginChildFactoryBudgetMs(): number {
-  return TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.pluginImportMs
-    + TOOL_TIMEOUT_POLICY.pluginFactoryMs + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
+  return containerHolderStartMs() + TOOL_TIMEOUT_POLICY.pluginImportMs
+    + TOOL_TIMEOUT_POLICY.pluginFactoryMs + containerHolderStopMs();
 }
 
 /** Broker wall clock adds handshake, terminal receipt, and post-effect host work to semantic effect time. */

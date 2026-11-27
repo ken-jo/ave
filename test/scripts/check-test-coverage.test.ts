@@ -193,7 +193,7 @@ describe("check-test-coverage", () => {
     const coverageVersion = packageJson.devDependencies["@vitest/coverage-v8"].replace(/^[^\d]*/, "");
 
     expect(packageJson.scripts["test:prepare"]).toBe(
-      "bun run build:icons && node scripts/prepare-windows-job.mjs && node scripts/build-macos-dir-ops.mjs --if-stale --test-builds",
+      "bun run build:icons && node scripts/prepare-windows-job.mjs && node scripts/build-macos-dir-ops.mjs --if-stale --test-builds && node scripts/build-macos-holder-sweep.mjs --if-stale --test-builds",
     );
     expect(packageJson.scripts["test:vitest"]).toBe(
       "node scripts/run-vitest-under-electron.mjs",

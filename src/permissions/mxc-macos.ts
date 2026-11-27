@@ -23,6 +23,13 @@ import { quoteSandboxWrappedWord } from "./sandbox-wrapped-command.js";
 
 const PROXY_ENV_KEYS = new Set(["http_proxy", "https_proxy", "all_proxy", "no_proxy", "ftp_proxy"]);
 
+/**
+ * The only environment names a container shell is given. The SDK starts every command under /bin/sh, and macOS's
+ * /bin/sh (bash 3.2) imports a function from any `BASH_FUNC_<name>%%` entry, which would stand in for the cwd
+ * prelude's own builtins (`read`, `pwd`, `[`). The host builds this request and the supervisor checks it again.
+ */
+export const SEATBELT_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+
 class SeatbeltShellRequestError extends Error {
   constructor(readonly code: "cwd-ungranted" | "proxy-invalid" | "env-invalid", message: string) {
     super(message);
@@ -53,8 +60,10 @@ export function buildSeatbeltShellRequest(input: {
     throw new SeatbeltShellRequestError("cwd-ungranted", `Container shell working directory is outside its filesystem grants: ${cwd}`);
   }
   const profileOverride = buildSeatbeltShellProfile({ model, grants, lookups, unixSocketRoots: [], proxyPort });
-  const env = Object.entries(input.env).flatMap(([key, value]) =>
-    key && !key.includes("=") && !PROXY_ENV_KEYS.has(key.toLowerCase()) ? [`${key}=${value}`] : []);
+  const env = Object.entries(input.env).flatMap(([key, value]) => {
+    if (!SEATBELT_ENV_NAME.test(key)) throw new SeatbeltShellRequestError("env-invalid", "Container environment name is not a plain identifier");
+    return PROXY_ENV_KEYS.has(key.toLowerCase()) ? [] : [`${key}=${value}`];
+  });
   return {
     grants,
     request: {
@@ -91,6 +100,15 @@ export function mapSeatbeltShellRequest(wire: ReturnType<typeof buildSeatbeltShe
     network: { ...network as ContainerRequest["network"], runtimeConfig },
     ui: { disable: ui.disable, clipboard: ui.clipboard as NonNullable<ContainerRequest["ui"]>["clipboard"], allowInputInjection: ui.injection },
   };
+}
+
+// What the prober's UDP send code means. Only EPERM (1) and EACCES (13) are the profile refusing the send; any other
+// failure (no route, address unavailable, …) means nothing was sent, which is unmeasured, as on Windows (10013 only).
+const UDP_POLICY_REFUSALS = new Set(["1", "13"]);
+
+export function udpSendOutcome(printed: string | undefined): MxcRawIpUdpSend {
+  if (printed === "0") return "sent";
+  return printed !== undefined && UDP_POLICY_REFUSALS.has(printed) ? "refused-local" : "unmeasured";
 }
 
 type CanaryVerdict = "available" | "request-rejected" | "shell-start-failed" | "launcher-mismatch";
@@ -368,9 +386,7 @@ async function runSeatbeltCanary(
     const output = existsSync(rawIpOutput) ? parseRawIpProbeOutput(await readFile(rawIpOutput, "utf8")) : undefined;
     // An arrival counts whatever the prober printed. A datagram that was sent is waited for up to its own window; a
     // send refused in the container leaves nothing to wait on; no send at all is unmeasured.
-    const udpPrinted = output?.targets.UA;
-    const udpSend: MxcRawIpUdpSend = udpPrinted === "0" ? "sent"
-      : udpPrinted !== undefined && /^\d+$/u.test(udpPrinted) ? "refused-local" : "unmeasured";
+    const udpSend = udpSendOutcome(output?.targets.UA);
     const udpArrival: MxcRawIpUdpArrival = host === undefined ? "unmeasured"
       : await host.udp.observe(udpSend, RAW_IP_TARGET_DEADLINE_S * 1_000);
     return {

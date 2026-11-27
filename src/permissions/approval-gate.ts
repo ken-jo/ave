@@ -29,7 +29,10 @@ import { pendingAnswerDefersAllowSaves, spendStandingAnswer, type PermissionQues
 import { NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { isIssuedToolApprovalWait, withToolApprovalWait, type ToolApprovalWait } from "../tools/executor-ceiling.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
-import { maskArgsForDisplay } from "../shared/approval-args-display.js";
+import { formatApprovalArgs, isExactApprovalText, maskArgsForDisplay, requestedOutputArgsError } from "../shared/approval-args-display.js";
+import type { RequestedOutputCardChoice, RequestedOutputCardContent, RequestedOutputCardResolution, RequestedOutputCardView } from "../shared/requested-output-card.js";
+import type { RequestedOutputApproval, RequestedOutputPage, RequestedOutputResolution } from "./requested-output-approval.js";
+import type { WorkDecisionAuthority } from "../work-board/work-decision-authority.js";
 import { runSessionOf } from "./run-grants.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { isSessionOnlyApprovalMemoryScope, isUserOwnedSurface, isUserOwnedSurfaceChoice, resolveUserApprovalVerdict, type ApprovalMemory, type UserOwnedSurface, type UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
@@ -180,6 +183,8 @@ export interface PendingApprovalSummary {
 }
 
 export interface ApprovalRequest {
+  /** Shared lossless presentation of a requested workflow output. */
+  requestedOutputCard?: RequestedOutputCardContent;
   browserSite?: string;
   // Display-only: the tool call a site request asks about, so the panel can mark that call's page. Never an approval capability.
   toolUseId?: string;
@@ -311,7 +316,7 @@ export function signApprovalRequest(
 // Input accepted by ApprovalGate.requestAndWait before the host seals nonce/HMAC and derives the renderer-facing `requireExplicit` field. `forceExplicit` is deliberately one-way: callers can only make a prompt stricter than the current policy, never relax it. It is used by execution routes whose substrate requires per-invocation, affirmative consent.
 export type ApprovalRequestInput = Omit<
   ApprovalRequest,
-  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused" | "requestingAgentTitle" | "runStage" | "workBoardProjectApproval" | "readjudication"
+  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused" | "requestingAgentTitle" | "runStage" | "workBoardProjectApproval" | "readjudication" | "requestedOutputCard"
 > & {
   // Host-only: the tool call this card asks about. Its accepted answer is bound to it and never sent to the renderer.
   readonly invocationToolUseId?: string;
@@ -807,6 +812,7 @@ function isExactSaveStep(before: string, after: string, scope: string): boolean 
 }
 
 interface PendingEntry {
+  requestedOutput?: { invocation: RequestedOutputApproval; deadline: number; resolvedBy?: RequestedOutputCardResolution };
   /** The pending-answer owner judges this card: an allow its person asks to remember is held until that answer stands. */
   defersAllowSaves?: true;
   stagedAllowSave?: StagedAllowSave;
@@ -924,6 +930,7 @@ const APPROVAL_ANSWERER_AUDIT_TOKENS = {
   desk: "desk",
   // Only a verified paired owner button press may identify this host-only answerer.
   "platform-bridge": "platform-bridge",
+  "tailnet-surface": "tailnet-surface",
   // The headless one-shot runner (`--exec`): no window, no owner, no dock. It answers every parked request with a deny so an unattended process cannot sit on the gate's timeout. Distinct from every token above for the reason the dimension exists — a reviewer must be able to tell "the owner declined this call" from "nobody was there and the host declined it on their behalf", and only this token can carry the second.
   "headless-exec": "headless-exec",
 } as const;
@@ -933,6 +940,7 @@ const APPROVAL_ANSWERER_AUDIT_TOKENS = {
 const APPROVAL_ANSWERER_TRUST_ORIGINS = {
   desk: "user-keyboard",
   "platform-bridge": "platform-bridge",
+  "tailnet-surface": "tailnet-surface",
   "headless-exec": "unknown",
 } as const satisfies Record<ApprovalAnswerer, TrustOriginWithUnknown>;
 
@@ -991,38 +999,6 @@ interface ApprovalAuditFields {
   answeredBy?: ApprovalAnswerer;
 }
 
-function formatApprovalAuditFields(
-  fields: ApprovalAuditFields,
-  executionPlan?: HostShellExecutionPlanAuditProjection,
-): string {
-  return [
-    `toolName=${fields.toolName}`,
-    `category=${fields.category}`,
-    `toolCategory=${fields.toolCategory ?? "unknown"}`,
-    `kind=${fields.kind ?? "tool"}`,
-    `source=${fields.source ?? "unknown"}`,
-    `sourcePluginId=${fields.sourcePluginId ?? "none"}`,
-    `approvalScope=${fields.approvalScope ?? "none"}`,
-    `trustOrigin=${fields.trustOrigin ?? "unknown"}`,
-    `remoteControllerOrigin=${remoteControllerOriginAuditToken(fields.remoteControllerOrigin)}`,
-    ...(fields.answeredBy === undefined
-      ? []
-      : [`answeredBy=${approvalAnswererAuditToken(fields.answeredBy)}`]),
-    ...(executionPlan === undefined ? [] : [
-      `executionPlan.version=${executionPlan.version}`,
-      `executionPlan.identity=${executionPlan.identity}`,
-      `executionPlan.platform=${executionPlan.platform}`,
-      `executionPlan.requestedSandbox=${executionPlan.requestedSandbox}`,
-      `executionPlan.executionRequest=${executionPlan.executionRequest}`,
-      `executionPlan.mode=${executionPlan.mode}`,
-      `executionPlan.fallbackReason=${executionPlan.fallbackReason}`,
-      `executionPlan.requiresExplicitUserApproval=${executionPlan.requiresExplicitUserApproval}`,
-      `executionPlan.capability.kind=${executionPlan.capability.kind}`,
-      `executionPlan.capability.confidence=${executionPlan.capability.confidence}`,
-      `executionPlan.capability.confines=${JSON.stringify(executionPlan.capability.confines ?? {})}`,
-    ]),
-  ].join(" ");
-}
 // Constant-time comparison of the echoed (nonce, hmac) pair against the pending entry's expected values (confused-deputy defense). Returns false if either field is missing or malformed; returns true only when both the nonce and HMAC match byte-for-byte.
 function verifyApprovalIntegrity(
   entry: PendingEntry,
@@ -1065,12 +1041,119 @@ export class ApprovalFreshIdentityRequiredError extends Error {
   }
 }
 
+const MAX_REQUESTED_OUTPUT_PAGES = 256;
+const MAX_REQUESTED_OUTPUT_RESOLUTIONS = 256;
+const REQUESTED_OUTPUT_OFFER_TTL_MS = 30_000;
+
 export class ApprovalGate {
   private readonly pending = new Map<string, PendingEntry>();
+  private readonly requestedOutputInvocations = new Map<string, RequestedOutputApproval>();
+  private readonly requestedOutputPages = new Map<string, { page: RequestedOutputPage; expiresAt: number; offers: Map<string, number> }>();
+  private readonly requestedOutputResolutions = new Map<string, RequestedOutputResolution>();
+
+  bindRequestedOutput(sessionId: string, invocation: RequestedOutputApproval): () => void {
+    if (this.requestedOutputInvocations.has(sessionId)) throw new Error("Requested output invocation already bound");
+    this.requestedOutputInvocations.set(sessionId, invocation);
+    return () => { this.requestedOutputInvocations.delete(sessionId); };
+  }
+
+  private currentOutputPage(page: RequestedOutputPage) {
+    const registered = this.requestedOutputPages.get(page.id);
+    if (!registered) return;
+    if (Date.now() >= registered.expiresAt || !registered.page.authority.isCurrent()) {
+      this.requestedOutputPages.delete(page.id);
+      return;
+    }
+    return registered.page.login === page.login && page.authority.isCurrent() ? registered : undefined;
+  }
+
+  hasRequestedOutputPage(projectRoot?: string): boolean {
+    return !this.isHeadlessExec && [...this.requestedOutputPages.values()].some(({ page }) =>
+      this.canReceiveRequestedOutputs(page, projectRoot));
+  }
+
+  canReceiveRequestedOutputs(page: RequestedOutputPage, projectRoot?: string): boolean {
+    return this.currentOutputPage(page) !== undefined && page.canViewProject(projectRoot);
+  }
+
+  private requestedOutputHandle(pageId: string, requestId: string, deadline: number, entry: PendingEntry): string {
+    const signature = createHmac("sha256", this.sessionKey).update(JSON.stringify([pageId, requestId, deadline, entry.expectedHmac])).digest("hex");
+    return `${requestId}.${deadline}.${signature}`;
+  }
+
+  private canOfferRequestedOutput(output: NonNullable<PendingEntry["requestedOutput"]>, page: RequestedOutputPage, now: number): boolean {
+    return now < output.deadline && page.canViewProject(output.invocation.projectRoot) && output.invocation.canExecute();
+  }
+
+  listRequestedOutputCards(page: RequestedOutputPage): readonly RequestedOutputCardView[] {
+    if (this.isHeadlessExec || !page.authority.isCurrent()) return [];
+    const now = Date.now();
+    const offers = this.currentOutputPage(page)?.offers ?? new Map<string, number>();
+    this.requestedOutputPages.delete(page.id);
+    this.requestedOutputPages.set(page.id, { page, expiresAt: now + REQUESTED_OUTPUT_OFFER_TTL_MS, offers });
+    for (const oldest of this.requestedOutputPages.keys()) {
+      if (this.requestedOutputPages.size <= MAX_REQUESTED_OUTPUT_PAGES) break;
+      this.requestedOutputPages.delete(oldest);
+    }
+    const cards: RequestedOutputCardView[] = [];
+    for (const id of offers.keys()) if (!this.pending.has(id)) offers.delete(id);
+    for (const [requestId, entry] of this.pending) {
+      const output = entry.requestedOutput;
+      const content = entry.rendererRequest?.requestedOutputCard;
+      if (!output || !content || !this.canOfferRequestedOutput(output, page, now)) continue;
+      const offered = offers.get(requestId);
+      const deadline = offered !== undefined && offered > now ? offered : Math.min(output.deadline, now + REQUESTED_OUTPUT_OFFER_TTL_MS);
+      offers.set(requestId, deadline);
+      cards.push({ requestId, content, handle: this.requestedOutputHandle(page.id, requestId, deadline, entry) });
+    }
+    for (const [requestId, resolution] of this.requestedOutputResolutions) {
+      if (now >= resolution.expiresAt) this.requestedOutputResolutions.delete(requestId);
+      else if (page.canViewProject(resolution.projectRoot)) cards.push({ requestId, resolvedBy: resolution.by });
+    }
+    return cards;
+  }
+
+  filterCurrentRequestedOutputCards(page: RequestedOutputPage, cards: readonly RequestedOutputCardView[]): readonly RequestedOutputCardView[] {
+    const registered = this.currentOutputPage(page);
+    if (!registered) return [];
+    const now = Date.now();
+    return cards.filter(card => {
+      if (!("handle" in card)) return true;
+      const entry = this.pending.get(card.requestId);
+      const deadline = registered.offers.get(card.requestId);
+      return entry?.requestedOutput !== undefined && entry.rendererRequest?.requestedOutputCard === card.content
+        && deadline !== undefined && now < deadline && this.canOfferRequestedOutput(entry.requestedOutput, page, now)
+        && card.handle === this.requestedOutputHandle(page.id, card.requestId, deadline, entry);
+    });
+  }
+
+  async answerRequestedOutputCard(handle: string, choice: RequestedOutputCardChoice, page: RequestedOutputPage): Promise<"accepted" | "approval-already-resolved" | "requested-output-card-unavailable"> {
+    const [requestId, deadlineText] = handle.split(".");
+    const entry = this.pending.get(requestId);
+    if (!entry) return "approval-already-resolved";
+    const output = entry.requestedOutput;
+    const deadline = Number(deadlineText);
+    if (!output) return "requested-output-card-unavailable";
+    const current = () => output.invocation.canExecute() && page.canViewProject(output.invocation.projectRoot)
+      && Date.now() < deadline && this.currentOutputPage(page)?.offers.get(requestId) === deadline;
+    if (!current() || handle !== this.requestedOutputHandle(page.id, requestId, deadline, entry)) return "requested-output-card-unavailable";
+    if (!await page.authority.refreshCurrent() || !await refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId)) return "requested-output-card-unavailable";
+    if (this.pending.get(requestId) !== entry) return "approval-already-resolved";
+    if (!current()) return "requested-output-card-unavailable";
+    const winner = { isCurrent: page.authority.isCurrent, refreshCurrent: page.authority.refreshCurrent };
+    const decision = this.resolveDecision(requestId, { requestId, choice, nonce: entry.nonce, hmac: entry.expectedHmac }, "tailnet-surface", false, undefined, true, winner);
+    return decision && !isHostApprovalRejectedDecision(decision) ? "accepted" : "requested-output-card-unavailable";
+  }
+
+  hasRecentRequestedOutputResolution(requestId: string): boolean {
+    const resolution = this.requestedOutputResolutions.get(requestId);
+    return resolution !== undefined && Date.now() < resolution.expiresAt;
+  }
+
   private readonly ruleSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
   private readonly approvedPolicyTransitions = new WeakMap<ApprovalDecision, { from: string; to: string }>();
   // The card each decided answer settled, for the stale-answer audit row.
-  private readonly decidedCards = new WeakMap<ApprovalDecision, { requestId: string; sessionId: string; fields: string }>();
+  private readonly decidedCards = new WeakMap<ApprovalDecision, { requestId: string; sessionId: string }>();
   private readonly approvedPolicyMutations = new WeakMap<ApprovalDecision, ApprovalPolicyMutation>();
   private readonly authenticatedDirectoryAnswers = new WeakSet<ApprovalDecision>();
   private readonly exactSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
@@ -1219,7 +1302,6 @@ export class ApprovalGate {
   private readonly timeoutMs: number;
   // Active policy, replaceable at runtime via setPolicy.
   private currentPolicy: PolicyFile;
-  // Audit logger for scenario S8; silent when not provided.
   // optional NotificationService — when supplied, the gate fires an `approval` system notification at the entry of `requestAndWait` so the user sees the prompt even if the window is backgrounded.
   private readonly notificationService?: NotificationService;
   private conversationTitleResolver?: (sessionId: string) => string;
@@ -1326,11 +1408,11 @@ export class ApprovalGate {
   }
 
   // Tell the renderer one request is no longer answerable — see IPC_APPROVAL_SETTLED. Announced for EVERY settlement, including the renderer's own answer: an announcement the renderer has already acted on costs it a set lookup, and a closed list of "which settlements get announced" would be one more thing to keep in step with every caller of `settle`. The renderer reconciles rather than obeys — a request whose answer is in flight there is left to the answer.
-  private announceSettledToRenderer(requestId: string, targets: ReadonlyArray<WebContents | null>): void {
+  private announceSettledToRenderer(requestId: string, targets: ReadonlyArray<WebContents | null>, resolvedBy?: RequestedOutputCardResolution): void {
     for (const target of new Set(targets)) {
       try {
         if (!target || target.isDestroyed()) continue;
-        target.send(IPC_APPROVAL_SETTLED, { requestId });
+        target.send(IPC_APPROVAL_SETTLED, { requestId, ...(resolvedBy === undefined ? {} : { resolvedBy }) });
       } catch {
         // A renderer that went away between the check above and the send has no card left to take down. Nothing else depends on this reaching it.
       }
@@ -1474,6 +1556,7 @@ export class ApprovalGate {
       requestingAgentTitle: _requestedAgentTitle,
       runStage: _requestedRunStage,
       workBoardProjectApproval: _requestedProjectApproval,
+      requestedOutputCard: _requestedOutputCard,
       reviewerOutcome,
       reviewerApprovalBasis,
       approvalRuleBasis,
@@ -1483,7 +1566,7 @@ export class ApprovalGate {
       hostShellExecutionPlan,
       invocationToolUseId,
       ...request
-    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown; runStage?: unknown; workBoardProjectApproval?: unknown; readjudication?: unknown };
+    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown; runStage?: unknown; workBoardProjectApproval?: unknown; readjudication?: unknown; requestedOutputCard?: unknown };
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
       return rejectBeforeAnswer("Approval execution budget was not issued by the host");
     }
@@ -1493,7 +1576,33 @@ export class ApprovalGate {
     if (remoteControllerOrigin !== undefined && remoteControllerOrigin !== remoteControllerAuthority?.kind) {
       return rejectBeforeAnswer(REMOTE_CONTROLLER_REFUSAL);
     }
-    const forceExplicit = requestedForceExplicit || childProvenance !== undefined;
+    const outputInvocation = req.sessionId === undefined ? undefined : this.requestedOutputInvocations.get(req.sessionId);
+    const requestedOutput = outputInvocation && req.category === "tool" && (req.kind === undefined || req.kind === "tool")
+      && invocationToolUseId === outputInvocation.binding.outputId && req.toolName === outputInvocation.toolName && req.source === outputInvocation.source
+      && req.browserSite === undefined && requestedUserOwnedSurface === undefined && hostTerminal === undefined && hostShellExecutionPermitBinding === undefined
+      ? outputInvocation : undefined;
+    let outputCard: RequestedOutputCardContent | undefined;
+    if (requestedOutput) {
+      requestedOutput.recordWinner(undefined);
+      if (this.isHeadlessExec || requestedOutput.signal.aborted || !requestedOutput.canExecute()) return rejectBeforeAnswer(NO_APPROVER_MESSAGE);
+      const { filePath: target, canonicalPath: canonicalTarget } = req.target ?? {};
+      const { serviceEndpoint } = requestedOutput;
+      const endpointUrl = serviceEndpoint === undefined || !URL.canParse(serviceEndpoint) ? undefined : new URL(serviceEndpoint);
+      let argsText: string | undefined;
+      try {
+        const serialized = exactCanonicalStringify(req.args);
+        if (requestedOutputArgsError(req.args, serialized) === undefined) argsText = formatApprovalArgs(req.args);
+      } catch { /* A value that cannot be represented in JSON cannot be sent for consent. */ }
+      if (argsText === undefined || (serviceEndpoint !== undefined && (!endpointUrl || endpointUrl.username || endpointUrl.password || endpointUrl.search || endpointUrl.hash))
+        || ![requestedOutput.toolName, requestedOutput.ownerId, target, canonicalTarget, serviceEndpoint].every(value => value === undefined || isExactApprovalText(value))) {
+        requestedOutput.refuseDisplay();
+        return rejectBeforeAnswer(t("reasonCodes.output-args-not-displayable"));
+      }
+      outputCard = { toolName: req.toolName, ownerId: requestedOutput.ownerId, argsText,
+        ...(serviceEndpoint === undefined ? {} : { serviceEndpoint }),
+        ...(target === undefined ? {} : { target }), ...(canonicalTarget === undefined ? {} : { canonicalTarget }) };
+    }
+    const forceExplicit = requestedForceExplicit || childProvenance !== undefined || requestedOutput !== undefined;
     if ((requestedUserOwnedSurface !== undefined && (!isUserOwnedSurface(requestedUserOwnedSurface) || !req.sessionId)) ||
       (requestedSurfaceReviewFallback !== undefined && (requestedSurfaceReviewFallback !== true || requestedUserOwnedSurface === undefined))) {
       return rejectBeforeAnswer("Invalid user-owned surface approval");
@@ -1621,6 +1730,9 @@ export class ApprovalGate {
       }
     }
     const deliveryProject = this.resolveSurface?.projectOf?.(req.sessionId);
+    if (outputInvocation && !requestedOutput && deliveryProject !== undefined && !this.projectRecipient(deliveryProject)) {
+      return rejectBeforeAnswer(NO_APPROVER_MESSAGE);
+    }
     if (executionPlanAudit?.executionRequest === "host") {
       const hasDesktopDelivery = deliveryProject !== undefined
         || this.liveSurfaceFor(req.sessionId, req.egressHost?.terminalTabId) !== null;
@@ -1730,6 +1842,7 @@ export class ApprovalGate {
         : { executionPlan: executionPlanAudit }),
       ...(boundShellCwd === undefined ? {} : { executionCwd: boundShellCwd }),
       reason: req.reason,
+      ...(outputCard === undefined ? {} : { requestedOutputCard: outputCard }),
       // A sealed execution plan is the only renderer-safe authority description for canonical host shells. Its projection deliberately excludes the host capability's free-form reason, so never retain or inject the raw capability alongside it.
       ...(executionPlanAudit === undefined
         ? {
@@ -1752,7 +1865,8 @@ export class ApprovalGate {
     };
 
     // A project ask can wait for its desktop surface to open.
-    if (deliveryProject === undefined && this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId) === null) {
+    const canDeliverToPhone = () => requestedOutput !== undefined && this.hasRequestedOutputPage(requestedOutput.projectRoot);
+    if (deliveryProject === undefined && this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId) === null && !canDeliverToPhone()) {
       if (isAborted()) return denyForAbortedTurn(fullReq, executionPlanAudit);
       const headless = this.headlessDenied !== undefined;
       logPermissionEvent("approval_surface_unavailable", {
@@ -1842,10 +1956,13 @@ export class ApprovalGate {
       let detachAbortListener: (() => void) | undefined;
       let detachOwnerRelease: (() => void) | undefined;
       let detachOwnerDestroyed: (() => void) | undefined;
+      let checkRecipients: ReturnType<typeof setInterval> | undefined;
+      let outputEntry: PendingEntry["requestedOutput"];
       // The renderer the card was sent to; the settle announcement reaches it and whichever renderer shows the session by then.
       let sentTo: WebContents | null = null;
       const projectDelivery: PendingEntry["projectDelivery"] = deliveryProject === undefined ? undefined : { project: deliveryProject, recipient: null };
       const settle = (decision: ApprovalDecision): void => {
+        clearInterval(checkRecipients);
         detachAbortListener?.();
         detachAbortListener = undefined;
         detachOwnerRelease?.();
@@ -1854,14 +1971,21 @@ export class ApprovalGate {
         detachOwnerDestroyed = undefined;
         try { onSettled?.(decision); } catch { /* An observer cannot change the settled answer. */ }
         // Every way a PARKED request ends passes through here — desk answer, remote answer, timeout, turn abort, cancel, shutdown sweep — so this is the one place an observer's card — and the renderer's — can be told the request is no longer answerable.
-        this.notifyPendingSettled(fullReq.id, decision);
+        if (outputEntry) {
+          const by = outputEntry.resolvedBy ?? "expired";
+          this.requestedOutputResolutions.set(fullReq.id, { by, expiresAt: Date.now() + REQUESTED_OUTPUT_OFFER_TTL_MS, projectRoot: outputEntry.invocation.projectRoot });
+          for (const oldest of this.requestedOutputResolutions.keys()) {
+            if (this.requestedOutputResolutions.size <= MAX_REQUESTED_OUTPUT_RESOLUTIONS) break;
+            this.requestedOutputResolutions.delete(oldest);
+          }
+        } else this.notifyPendingSettled(fullReq.id, decision);
         const refetchers = this.refetchedBy.get(fullReq.id) ?? [];
         this.refetchedBy.delete(fullReq.id);
         // Finalization is independent of optional delivery to a new owner.
         // Ownership contract errors still propagate on reads and answers.
         resolve(decision);
         const recipients = [projectDelivery?.recipient ?? sentTo, ...refetchers, toastSurface];
-        this.announceSettledToRenderer(fullReq.id, recipients);
+        this.announceSettledToRenderer(fullReq.id, recipients, outputEntry && (outputEntry.resolvedBy ?? "expired"));
         if (projectDelivery) return;
         try {
           const currentOwner = this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId);
@@ -1881,6 +2005,7 @@ export class ApprovalGate {
         ? this.ownerAwayAutoSkipMinutes * 60_000
         : this.timeoutMs;
       const deadline = Date.now() + waitMs;
+      outputEntry = requestedOutput === undefined ? undefined : { invocation: requestedOutput, deadline };
       let timer: ReturnType<typeof setTimeout> | undefined;
       const expire = (): void => {
         const remaining = deadline - Date.now();
@@ -1921,6 +2046,7 @@ export class ApprovalGate {
       }
 
       this.pending.set(fullReq.id, {
+        ...(outputEntry === undefined ? {} : { requestedOutput: outputEntry }),
         ...(defersAllowSaves ? { defersAllowSaves: true as const } : {}),
         ...(projectDelivery === undefined ? {} : { projectDelivery }),
         ...(fullReq.browserSite === undefined ? {} : { browserSite: fullReq.browserSite }),
@@ -2002,7 +2128,7 @@ export class ApprovalGate {
 
       // Announce the parked request to host-internal observers. Positioned after `pending.set` so an observer's answer through `resolve` finds the entry, and below every host-only short circuit above (which all returned before a pending entry existed).
       // Desktop-only requests are never announced to host-internal observers (Telegram and other remote surfaces answer through them).
-      if (userOwnedSurface === undefined && oneShotPermitBinding?.executionMode !== "host" && hostTerminal === undefined) this.notifyPendingParked({
+      if (requestedOutput === undefined && userOwnedSurface === undefined && oneShotPermitBinding?.executionMode !== "host" && hostTerminal === undefined) this.notifyPendingParked({
         requestId: fullReq.id,
         toolName: fullReq.toolName,
         ...(req.invocationToolUseId === undefined ? {} : { toolUseId: req.invocationToolUseId }),
@@ -2075,6 +2201,17 @@ export class ApprovalGate {
         }, "warn");
         settle(rejectBeforeAnswer(surfaceUnavailable ? NO_APPROVER_MESSAGE : undefined, fullReq, executionPlanAudit));
       };
+      if (requestedOutput) {
+        const check = () => {
+          const desktop = deliveryProject ? this.projectRecipient(deliveryProject) : this.liveSurfaceFor(fullReq.sessionId);
+          if (!requestedOutput.canExecute() || (!desktop && !canDeliverToPhone())) {
+            this.cancelPendingRequest(fullReq.id, fullReq.sessionId);
+          }
+        };
+        checkRecipients = setInterval(check, 1_000);
+        checkRecipients.unref();
+        if (!requestedOutput.canExecute()) { this.cancelPendingRequest(fullReq.id, fullReq.sessionId); return; }
+      }
       if (projectDelivery) {
         detachOwnerRelease = this.resolveSurface?.observeOwnerReleased?.(owner => {
           if (projectDelivery.recipient === owner) this.reconcileWorkBoardProjectApprovals();
@@ -2088,6 +2225,7 @@ export class ApprovalGate {
         // Resolve the live owner again before sending; a conversation may have moved.
         const surface = this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId);
         if (!surface) {
+          if (canDeliverToPhone()) return;
           surfaceUnavailable = true;
           throw new Error("no approval surface");
         }
@@ -2118,7 +2256,7 @@ export class ApprovalGate {
         sentTo = surface;
         requireApprovalCardPresenters().presentApprovalCard(surface, maskedSignedReq);
       } catch (sendErr) {
-        denySendFailure(sendErr, surfaceUnavailable);
+        if (!canDeliverToPhone()) denySendFailure(sendErr, surfaceUnavailable);
       }
     });
     // The wait wrapper can throw before running the callback (a budget that cannot pause), so the catch sits outside it.
@@ -2257,9 +2395,14 @@ export class ApprovalGate {
     nativeRenderer: boolean,
     responder?: WebContents,
     identityRefreshed = false,
+    outputAnswer?: WorkDecisionAuthority,
   ): ApprovalDecision | null {
     const entry = this.pending.get(requestId);
     if (!entry) return null;
+    const output = entry.requestedOutput;
+    if (output ? (!nativeRenderer && outputAnswer === undefined) || !output.invocation.canExecute() || Date.now() >= output.deadline
+      || (decision.choice !== "allow-once" && decision.choice !== "deny-once") || !verifyApprovalIntegrity(entry, decision)
+      : outputAnswer !== undefined) return null;
     if ((nativeRenderer || entry.egressTerminalTabId !== undefined) && !this.canAccessRendererRequest(requestId, responder, answeredBy)) {
       // Reject before integrity checks: a foreign response cannot settle or
       // damage the owner's pending request, even with valid signed contents.
@@ -2457,7 +2600,7 @@ export class ApprovalGate {
     // User-owned surface choices carry only their authenticated selection, never auxiliary renderer content.
     // Every accepted answer is a fresh frozen object: consumers read the settled choice, never the caller's mutable response.
     const resolvedDecision: ApprovalDecision = Object.freeze(
-      entry.userOwnedSurface !== undefined
+      entry.userOwnedSurface !== undefined || output !== undefined
         ? {
             requestId,
             choice: decision.choice,
@@ -2468,6 +2611,13 @@ export class ApprovalGate {
         : { ...decision, requestId });
     clearTimeout(entry.timer);
     this.pending.delete(requestId);
+    if (output) {
+      output.resolvedBy = outputAnswer ? "tailnet-surface" : "desk";
+      if (resolvedDecision.choice === "allow-once") {
+        const desktopCurrent = () => this.isRendererOwner(entry, responder);
+        output.invocation.recordWinner(outputAnswer ?? { isCurrent: desktopCurrent, refreshCurrent: async () => desktopCurrent() });
+      }
+    }
     if (nativeRenderer && entry.userOwnedSurface !== undefined && entry.sessionId !== undefined && resolvedDecision.choice === "allow-once" && isUserOwnedSurfaceChoice(resolvedDecision.userOwnedSurfaceChoice)) {
       this.approvedSurfaceChoices.set(resolvedDecision, { sessionId: entry.sessionId, surface: entry.userOwnedSurface, choice: resolvedDecision.userOwnedSurfaceChoice });
     }
@@ -2509,13 +2659,21 @@ export class ApprovalGate {
         entry.hostShellExecutionPermitBinding,
       );
     }
-    this.decidedCards.set(resolvedDecision, { requestId, sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-      fields: formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan) });
-    // Derive answeredBy from the host caller, never response fields; renderer/plugin responses cannot forge the audit answerer.
+    this.decidedCards.set(resolvedDecision, { requestId, sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID });
+    const outputBinding = output?.invocation.binding;
+    // The host caller determines who answered.
     logPermissionEvent("approval_decided", {
       requestId: permissionLogId(requestId),
       sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
       choice: approvalLogChoice(resolvedDecision.choice),
+      answeredBy: approvalAnswererAuditToken(answeredBy),
+      ...(outputBinding && {
+        itemId: outputBinding.itemId,
+        runId: permissionLogId(outputBinding.runId),
+        stageId: permissionLogId(outputBinding.stageId),
+        attempt: outputBinding.attempt,
+        outputId: permissionLogId(outputBinding.outputId),
+      }),
     });
     if (Object.hasOwn(APPROVAL_ANSWERER_TRUST_ORIGINS, answeredBy)) mintAnsweredProvenance(resolvedDecision, answeredBy, entry.toolName, entry.invocationToolUseId);
     entry.resolve(resolvedDecision);

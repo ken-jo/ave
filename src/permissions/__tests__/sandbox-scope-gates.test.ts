@@ -172,9 +172,12 @@ describe("each spawn path reads only its own scope's gate", () => {
     const plan = text.slice(text.indexOf("export function getHostShellExecutionPlan"));
     const body = plan.slice(0, plan.indexOf("\n}\n"));
     expect(body).toContain("requestedSandbox: isShellSandboxRequestedAtBoot()");
-    // The shell plan takes its own published container proof, and POSIX hooks retain the scope of the wrap.
+    // The shell plan takes its own published container proof. POSIX hooks retain the scope of the wrap; a Darwin hook,
+    // once the holder route is on, takes the container only with the holder capability proven, never the wrap.
     expect(body).toContain("activeCapability: mxc ?? detectShellSandboxCapability()");
-    expect(body).toContain('const mxc = posix && consumer === "hook" ? undefined : detectMxcShellCapability();');
+    expect(body).toContain('const holderHook = darwin && consumer === "hook" && isContainerHolderRouteEnabled("darwin");');
+    expect(body).toContain('const shellContainer = posix && consumer === "hook" && !holderHook ? undefined : detectMxcShellCapability();');
+    expect(body).toContain('const mxc = holderHook && _macHolderCapability?.state !== "ready" ? undefined : shellContainer;');
     expect(body).toContain('shellSubstrate: mxc !== undefined ? "mxc" : selectsPosixContainer ? "none" : "asrt"');
   });
 });

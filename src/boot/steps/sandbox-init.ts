@@ -26,7 +26,7 @@ import type { WindowsMxcShellEgressMeasurement } from "../../permissions/sandbox
 import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start-failure.js";
 import { denyUnenforceableKind, isObligationRefusal, setWindowsDenyUnenforceableAtBoot } from "../../permissions/admitted-obligation.js";
 import { errorMessage } from "../../shared/error-message.js";
-import { isContainerShellRouteEnabled } from "../../shared/container-platform.js";
+import { isContainerHolderRouteEnabled, isContainerShellRouteEnabled } from "../../shared/container-platform.js";
 import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
 import { AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, aveHomeBoundaryFailure, getAveHomePrivacyFailure, isAveHomePrivacyApprovable, setAveHomePrivacyAtBoot, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
@@ -335,6 +335,40 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             if (support.state === "unavailable") {
               if (shellExplicitEnv) throw new Error(`macOS container shell unavailable (${support.reason})`);
               log.warn("boot: macOS container shell unavailable (%s)", support.reason);
+            }
+          }
+          if (process.platform === "darwin") {
+            const { setMacExtensionPlan, setMacHolderCapability } = await import("../../permissions/sandbox-capability.js");
+            // The plan is the extension setting's; the holder capability is this run's proof, which a user hook also
+            // reads because it follows the shell setting. Extensions with confinement off start plain, never contained.
+            const off = { platform: "darwin", requestedBackend: "none", selectedBackend: "none", readiness: "off", reason: "not-requested", egressIdentity: "shared" } as const;
+            const plan = { platform: "darwin", requestedBackend: "mxc", egressIdentity: "shared" } as const;
+            const publish = (capability: Parameters<typeof setMacHolderCapability>[0]): void => {
+              setMacHolderCapability(capability);
+              if (!workerRequested) {
+                setMacExtensionPlan(off);
+                return;
+              }
+              setMacExtensionPlan(capability.state === "ready" ? { ...plan, selectedBackend: "mxc", readiness: "ready", reason: "ready" }
+                : capability.state === "checking" ? { ...plan, selectedBackend: "none", readiness: "checking", reason: "checking" }
+                  : { ...plan, selectedBackend: "none", readiness: "unavailable", reason: capability.reason });
+            };
+            if (isContainerHolderRouteEnabled("darwin") && (shellRequested || workerRequested)) {
+              const [{ startSeatbeltHolderBootServices }, { getHostResources }, { aveHome }] = await Promise.all([
+                import("../../permissions/seatbelt-holder-boot.js"), import("../../main/host-resources.js"), import("../../shared/ave-home.js"),
+              ]);
+              publish({ state: "checking" });
+              // Boot waits for the decision (two canary starts and three helper runs, about 0.1 s): no extension start
+              // can then meet a "checking" plan, which has no retry path. Holder starts also wait on the sequence.
+              await startSeatbeltHolderBootServices({
+                resourcePath: getHostResources().resourcePath, home: aveHome(), signal: startupSignal,
+                publish: (readiness) => publish(readiness.ready ? { state: "ready" } : { state: "unavailable", reason: readiness.reason }),
+              }).catch((error: unknown) => {
+                log.error("boot: macOS holder route check failed: %s", errorMessage(error));
+                publish({ state: "unavailable", reason: "sweep-unproven" });
+              });
+            } else {
+              setMacExtensionPlan(off);
             }
           }
           const sandboxTempRoot = useAppOwnedSandboxTempRoot();

@@ -1,4 +1,27 @@
 import { maskSensitiveData } from "./dlp.js";
+import { hasHiddenCharacters, hasInvisibleOrReorderingChars, hasNonWhitespaceControlChars } from "./display-safe-text.js";
+
+export const MAX_REQUESTED_OUTPUT_ARGS_BYTES = 32 * 1024;
+
+export function formatApprovalArgs(args: unknown): string {
+  return JSON.stringify(args, null, 2) ?? "";
+}
+
+export function isExactApprovalText(text: string): boolean {
+  return !hasHiddenCharacters(text) && new TextEncoder().encode(text).length <= MAX_REQUESTED_OUTPUT_ARGS_BYTES && maskSensitiveData(text).masked === text;
+}
+
+export function requestedOutputArgsError(args: unknown, serialized: string): "args-too-large" | "output-args-not-displayable" | undefined {
+  if (new TextEncoder().encode(serialized).length > MAX_REQUESTED_OUTPUT_ARGS_BYTES || hasInvisibleOrReorderingChars(serialized)) return "args-too-large";
+  let invisible = false;
+  JSON.parse(serialized, (key, value: unknown) => {
+    if (hasInvisibleOrReorderingChars(key) || hasNonWhitespaceControlChars(key)
+      || typeof value === "string" && (hasInvisibleOrReorderingChars(value) || hasNonWhitespaceControlChars(value))) invisible = true;
+    return value;
+  });
+  if (!approvalArgsAreDisplayable(args)) return "output-args-not-displayable";
+  return invisible || maskSensitiveData(serialized).masked !== serialized ? "args-too-large" : undefined;
+}
 
 export function maskArgsForDisplay(value: unknown, detections: Set<string>): unknown {
   if (typeof value === "string") {

@@ -6,6 +6,9 @@ module.exports = async function afterSign(context) {
   if (context.electronPlatformName === "darwin") {
     const { assertPackagedMxcMacLibrary } = await import("./lib/mxc-sdk-packaging.mjs");
     assertPackagedMxcMacLibrary(join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, "Contents", "Resources"));
+    const app = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
+    const { assertSignedMacosHolderSweep } = await import("./lib/macos-holder-sweep-package.mjs");
+    assertSignedMacosHolderSweep(context.appOutDir, join(app, "Contents", "Resources"), app, "arm64");
     return;
   }
   if (context.electronPlatformName !== "win32") return;

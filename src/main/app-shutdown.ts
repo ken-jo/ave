@@ -348,6 +348,8 @@ export async function runAppShutdownCleanup(options: {
       if (signal.aborted) return;
       holderDrainAttempted = true;
       await drainMxcHolderLifetimes();
+      // macOS: the holder label watcher's quit sweep, after every holder was drained.
+      if (process.platform === "darwin") await (await import("../permissions/seatbelt-holder-boot.js")).stopSeatbeltHolderBootServices();
       await heldCleanup;
       if (signal.aborted) return;
       // Runtime stop hooks can return after scheduling TERM→KILL. Keep the app alive for a bounded definitive-exit drain so ASRT/HOME finalizers run before

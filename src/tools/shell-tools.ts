@@ -100,6 +100,7 @@ import { openEgressInvocation, type ShellEgressContext } from "../permissions/eg
 import { isWindowsPathAtOrUnder, mayIndicateMxcShellStartupFailure, MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
 import { recheckWindowsContainerBackendAfterShellFailure, type WindowsBackendObservation } from "../permissions/windows-confinement-evidence.js";
 import { prepareMxcPosixShellLaunch } from "./mxc-posix-shell-launch.js";
+import { MxcCwdChangedError } from "../permissions/mxc-shell-supervisor-client.js";
 import { prepareMxcShellLaunch, type MxcParserPreparationStage, type MxcShellLaunch, type MxcShellPreparationStage } from "./mxc-shell-launch.js";
 import { deferWatchedReceipt } from "../permissions/windows-watched-rows.js";
 import { createContainedShellLifecycle } from "./contained-shell-lifecycle.js";
@@ -134,12 +135,13 @@ import {
   hostShellPermitDirectoryIdentity,
   HostShellDirectoryHoldError,
   assertHostShellSpawnDirectory,
+  assertHostShellSpawnDirectoryCurrent,
   type HostShellSpawnAuthorization,
   type HostShellSpawnDirectoryHold,
 } from "../permissions/host-shell-execution-permit.js";
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { hostShellWorkingDirectoryPrelude } from "./host-shell-cwd-guard.js";
-import { attachHostShellControlChannel } from "./host-shell-control-channel.js";
+import { attachHostShellControlChannel, hostShellGrantAuthorizer } from "./host-shell-control-channel.js";
 import { containerShellAllowedDirectories, deriveSandboxWritePaths } from "../permissions/sandbox-write-jail.js";
 import { resolveShellTimeoutMs, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
@@ -2845,6 +2847,7 @@ async function runPosixContainerShell(input: {
       egressToken: egress.token, commandLine: input.commandLine, cwd: input.cwd,
       allowRead: read.allowRead, allowWrite: writePaths, denyRead: read.denyRead, floorPierces: read.floorPierces,
       env: input.env, timeoutMs,
+      ...(input.spawnAuthorization === undefined ? {} : { cwdIdentity: input.spawnAuthorization.cwdIdentity }),
     }, lifecycle));
     await refreshShellRemoteAuthority();
     input.signal?.throwIfAborted();
@@ -2852,8 +2855,11 @@ async function runPosixContainerShell(input: {
       { mode: "isolated", detail: "filesystem/process confinement" }, egress.token);
     assertShellRemoteAuthority();
     assertManagedChildProcessAdmissionOpen(label);
-    assertHostShellSpawnDirectory(input.spawnAuthorization);
-    const { child, completion } = launch.start(label);
+    // macOS spends the permit's execution handoff at the grant, after the workload has checked the cwd it inherited;
+    // Linux spends it here, before the start.
+    if (launch.spendsPermitAtGrant) assertHostShellSpawnDirectoryCurrent(input.spawnAuthorization);
+    else assertHostShellSpawnDirectory(input.spawnAuthorization);
+    const { child, completion } = launch.start(label, hostShellGrantAuthorizer(input.spawnAuthorization));
     // Own the spawned supervisor even when output setup throws.
     void completion.catch(() => {});
     collector = createOutputCollector(child, {
@@ -2866,7 +2872,12 @@ async function runPosixContainerShell(input: {
     const interrupted = exit.cancelled || exit.timedOut || exit.cleanupUnverified || failure !== undefined;
     const artifact = await collector.finish(interrupted);
     collector.finishObservation(exit.code, exit.cancelled ? "cancelled" : interrupted || exit.rejected ? "failed" : undefined);
-    if (exit.rejected) {
+    if (("cwdChanged" in exit && exit.cwdChanged) || ("grantWithheld" in exit && exit.grantWithheld)) {
+      // Nothing ran. A permit's refusal reads as the host route's revoked approval.
+      result = input.spawnAuthorization === undefined
+        ? { output: t("sandboxPolicy.containerShellNotStarted"), isError: true, metadata: { sandboxed: false, sandboxAttempted: true } }
+        : { output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true, metadata: { sandboxed: false, sandboxAttempted: true } };
+    } else if (exit.rejected) {
       result = {
         output: [process.platform === "linux" ? t("sandboxPolicy.linuxContainerStartRefused") : t("sandboxPolicy.containerStartRefused"),
           // A launcher that failed after the command began still had its writes quarantined; say so.
@@ -2914,10 +2925,12 @@ async function runPosixContainerShell(input: {
     }
     // A revoked approval is a refused spawn, worded as the wrap route words it. The container was not what failed,
     // and nothing ran, so the result claims no isolation either way.
-    const revoked = error instanceof Error && error.message === HOST_SHELL_AUTHORIZATION_REVOKED_ERROR;
+    const cwdChanged = error instanceof MxcCwdChangedError;
+    const revoked = (error instanceof Error && error.message === HOST_SHELL_AUTHORIZATION_REVOKED_ERROR) || (cwdChanged && input.spawnAuthorization !== undefined);
     result = input.signal?.aborted
       ? { output: t("sandboxPolicy.containerShellCancelled"), isError: true, metadata: { aborted: true, sandboxed: false } }
       : revoked ? { output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true, metadata: { sandboxed: false, sandboxAttempted: true } }
+        : cwdChanged ? { output: t("sandboxPolicy.containerShellNotStarted"), isError: true, metadata: { sandboxed: false, sandboxAttempted: true } }
         : { output: t(process.platform === "linux" ? "sandboxPolicy.linuxContainerShellRefused" : "sandboxPolicy.containerShellRefused",
           { reason: shellFailureText([error], "code") }), isError: true,
           metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } };

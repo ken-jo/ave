@@ -126,7 +126,26 @@ const FILE_WRITE_DENY = "file-write* file-write-create file-write-unlink";
 const WRITE_DENY = `${FILE_WRITE_DENY} network-bind network-outbound`;
 const READ_DENY = `file-read* file-read-metadata ${WRITE_DENY}`;
 const MOVE_DENY = "file-write-unlink file-write-create";
-const RESERVED_PROFILE_TEXT = "com.microsoft.mxc.run.";
+// The SDK's run-cleanup names, and Ave's holder labels: only their own builders write rules for them.
+const RESERVED_PROFILE_TEXT = ["com.microsoft.mxc.run.", "dev.ave.holder."] as const;
+/** Every holder label starts with this; `holder-label-sweep.ts` builds the labels under it. */
+export const HOLDER_LABEL_PREFIX = "dev.ave.holder.";
+const HOLDER_LABEL = /^dev\.ave\.holder\.[a-z0-9.]{1,96}$/u;
+/**
+ * A shell or holder profile (a holder's label included) larger than this is refused before anything is spawned. The
+ * kernel's compile time grows with profile size, faster than linearly for the write-root rules (probe V-P1, this Mac:
+ * 290 KB of rows for 380 write roots 1.2 s; synthetic 256 KiB 5-10 s, 512 KiB about 20 s), and longer profiles are
+ * refused by the kernel outright, so a larger bound would turn an oversized policy into a stalled or unnamed failure.
+ * Real holder profiles measured 25-32 KB on a real account.
+ */
+const SEATBELT_PROFILE_MAX_BYTES = 128 * 1024;
+
+function assertSeatbeltProfileSize(profile: string, what: string): string {
+  if (Buffer.byteLength(profile) > SEATBELT_PROFILE_MAX_BYTES) {
+    throw new SeatbeltDenyError("profile-string-too-long", `${what} profile exceeds the size limit`);
+  }
+  return profile;
+}
 
 function checkProfileString(value: string): void {
   if (CONTROL_CHARACTER.test(value)) {
@@ -135,7 +154,7 @@ function checkProfileString(value: string): void {
   if (Buffer.byteLength(value) > MAX_SEATBELT_STRING_BYTES) {
     throw new SeatbeltDenyError("profile-string-too-long", `Container profile string exceeds the limit: ${value}`);
   }
-  if (value.includes(RESERVED_PROFILE_TEXT)) {
+  if (RESERVED_PROFILE_TEXT.some(reserved => value.includes(reserved))) {
     throw new SeatbeltDenyError("profile-reserved-name", `Container profile string uses a reserved name: ${value}`);
   }
 }
@@ -214,10 +233,28 @@ const sameForm = (left: SeatbeltForm, right: SeatbeltForm): boolean => typeof le
  * operation (or `default`) passes only with Unix-socket filters or that one proxy filter, and an allow with no filter
  * at all opens every address. The rule is compared with what `buildSeatbeltShellProfile` itself writes.
  */
+/** True when a rule could hide below the top level: an `allow` or `import` inside another form. */
+function hidesNestedRule(form: SeatbeltForm, depth: number): boolean {
+  if (typeof form === "string") return false;
+  if (depth > 0 && (form[0] === "allow" || form[0] === "import")) return true;
+  return form.some(item => hidesNestedRule(item, depth + 1));
+}
+
+/** A Unix-socket filter exactly as the builder writes it: `(local|remote unix-socket (subpath|literal|regex <literal>))`. */
+function isUnixSocketFilter(filter: SeatbeltForm): boolean {
+  if (typeof filter === "string" || filter.length !== 3) return false;
+  const [side, kind, path] = filter;
+  return (side === "local" || side === "remote") && kind === "unix-socket" && typeof path !== "string" && path !== undefined
+    && path.length === 2 && (path[0] === "subpath" || path[0] === "literal" || path[0] === "regex")
+    && typeof path[1] === "string" && (path[1].startsWith("\"") || path[1].startsWith("#\""));
+}
+
 export function seatbeltProfileAllowsOnlyProxyIpEgress(profile: string, proxyPort: number): boolean {
   const forms = parseSeatbeltForms(profile);
   const proxyAllow = parseSeatbeltForms(seatbeltProxyEgressAllow(proxyPort))?.[0];
   if (forms === undefined || proxyAllow === undefined || typeof proxyAllow === "string") return false;
+  // The check reads top-level rules only, so anything that could carry a rule elsewhere fails it.
+  if (forms.some(form => typeof form === "string" || form[0] === "import" || hidesNestedRule(form, 0))) return false;
   if (!forms.some(form => sameForm(form, ["deny", "default"]))) return false;
   let proxyAllows = 0;
   for (const form of forms) {
@@ -229,22 +266,54 @@ export function seatbeltProfileAllowsOnlyProxyIpEgress(profile: string, proxyPor
       continue;
     }
     const filters = form.slice(1).filter(item => typeof item !== "string");
-    const unixSocketOnly = filters.length > 0 && filters.every(filter => filter.length === 3
-      && (filter[0] === "local" || filter[0] === "remote") && filter[1] === "unix-socket");
+    const unixSocketOnly = filters.length > 0 && filters.every(isUnixSocketFilter);
     if (!unixSocketOnly) return false;
   }
   return proxyAllows === 1;
 }
 
-export function buildSeatbeltShellProfile(input: {
+interface SeatbeltProfileInput {
   readonly model: PolicyModel;
   readonly grants: PosixFilesystemGrants;
   readonly lookups: PosixPolicyLookups;
   readonly unixSocketRoots: readonly string[];
-  readonly proxyPort: number;
+}
+
+export function buildSeatbeltShellProfile(input: SeatbeltProfileInput & { readonly proxyPort: number }): string {
+  return assertSeatbeltProfileSize(buildSeatbeltProfile(input, input.proxyPort), "Container shell");
+}
+
+/** One holder start's label names (`holder-label-sweep.ts`): its own, its app run's, and its instance's. */
+export interface SeatbeltHolderLabels {
+  readonly holder: string;
+  readonly boot: string;
+  readonly instance: string;
+}
+
+/**
+ * A holder's profile: the shell's profile for the same rows, then the label lines, always last. The label is how the
+ * stop finds every process the holder started (`native/macos-holder-sweep/README.md`); no row may render a rule for it.
+ * An offline holder (`proxyPort: null`) has no network allow at all.
+ */
+export function buildSeatbeltHolderProfile(input: SeatbeltProfileInput & {
+  readonly proxyPort: number | null;
+  readonly labels: SeatbeltHolderLabels;
 }): string {
-  const { model, grants, lookups, unixSocketRoots, proxyPort } = input;
-  if (!Number.isInteger(proxyPort) || proxyPort < 1 || proxyPort > 65535) {
+  const { labels } = input;
+  const names = [labels.holder, labels.boot, labels.instance];
+  if (!names.every(name => HOLDER_LABEL.test(name)) || new Set(names).size !== names.length) {
+    throw new SeatbeltDenyError("profile-reserved-name", "Container holder labels are malformed");
+  }
+  const profile = buildSeatbeltProfile(input, input.proxyPort);
+  const withLabels = `${profile}(deny mach-lookup (global-name-prefix ${JSON.stringify(HOLDER_LABEL_PREFIX)}))
+(allow mach-lookup ${names.map(name => `(global-name ${JSON.stringify(name)})`).join(" ")})
+`;
+  return assertSeatbeltProfileSize(withLabels, "Container holder");
+}
+
+function buildSeatbeltProfile(input: SeatbeltProfileInput, proxyPort: number | null): string {
+  const { model, grants, lookups, unixSocketRoots } = input;
+  if (proxyPort !== null && (!Number.isInteger(proxyPort) || proxyPort < 1 || proxyPort > 65535)) {
     throw new SeatbeltDenyError("proxy-invalid", "Container profile requires a valid loopback proxy port");
   }
   const { literalModel, patternRows } = splitSeatbeltPolicyRows(model);
@@ -261,7 +330,7 @@ export function buildSeatbeltShellProfile(input: {
     forms.push(`(allow network-bind (local unix-socket ${subpath(root)}))`);
     forms.push(`(allow network-outbound (remote unix-socket ${subpath(root)}))`);
   }
-  forms.push(seatbeltProxyEgressAllow(proxyPort));
+  if (proxyPort !== null) forms.push(seatbeltProxyEgressAllow(proxyPort));
 
   const strips = readonly.flatMap(path => {
     const root = readwrite.filter(parent => atOrBelow(path, parent)).sort((a, b) => b.length - a.length)[0];
@@ -304,7 +373,7 @@ export function buildSeatbeltShellProfile(input: {
   }
   addDeny(forms, MOVE_DENY, [...pins].map(literal));
   const profile = `${forms.filter(Boolean).join("\n")}\n`;
-  if (profile.includes(RESERVED_PROFILE_TEXT)) {
+  if (RESERVED_PROFILE_TEXT.some(reserved => profile.includes(reserved))) {
     throw new SeatbeltDenyError("profile-reserved-name", "Container profile uses a reserved name");
   }
   return profile;

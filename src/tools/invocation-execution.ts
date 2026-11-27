@@ -210,6 +210,7 @@ export interface ExecutionStageContext {
   permissionRecheckResult?: PermissionCheckResult;
   replayRootBinding?: ReplayRootBinding;
   approvedInvocation?: ExecuteOptions["approvedInvocation"];
+  refreshApprovedInvocation?: ExecuteOptions["refreshApprovedInvocation"];
   /** The file targets and project anchors the authorization judged; verified at handler admission. */
   fileTargetSeal?: TargetSeal;
   imageTargetPath?: string;
@@ -1280,7 +1281,7 @@ export async function executeAuthorizedToolInvocation(
       abortSignal: signal,
     };
     if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
-    if (context.approvedInvocation && !context.approvedInvocation(tool, finalInput)) throw new Error("The approved output changed");
+    if (context.refreshApprovedInvocation && !await context.refreshApprovedInvocation()) throw new Error("Approval authority expired");
     let execution: ReturnType<Tool["execute"]>;
     try {
       execution = runWithToolExecutionCwd(executionCwd, () =>
@@ -1303,11 +1304,12 @@ export async function executeAuthorizedToolInvocation(
                 const replayRoot = checkReplayRootBinding(context.replayRootBinding);
                 if (!replayRoot.valid) throw new Error(replayRoot.reason);
               }
-              handlerAdmissionBlocked = false;
               return runWithAgentObservationInvocation({ sessionId, toolUseId: toolUse.id },
                 () => {
                   const denial = services.skillAdmissionCheck?.(sessionId, toolUse.name, finalInput);
                   if (denial) throw new Error(denial);
+                  if (context.approvedInvocation && !context.approvedInvocation(tool, finalInput)) throw new Error("The approved output changed");
+                  handlerAdmissionBlocked = false;
                   return tool.execute(finalInput, ctx);
                 },
                 preparedShellInvocation ? preparedShellCommand(preparedShellInvocation).homePath : undefined, signal);

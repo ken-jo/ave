@@ -1,6 +1,7 @@
+import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { win32 as winPath } from "node:path";
 import { PassThrough } from "node:stream";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { createMxcExtensionRequest } from "../../../__tests__/support/mxc-supervisor.js";
 import type { MxcConfinedChildSpawn, MxcConfinedChildSpec } from "../../../permissions/confined-child.js";
@@ -25,7 +26,7 @@ vi.mock("../../../permissions/mxc-runtime-root.js", async (importOriginal) => {
   const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../../__tests__/support/mxc-staging-parent.js");
   return {
     ...await importOriginal<typeof import("../../../permissions/mxc-runtime-root.js")>(),
-    mxcStagingParent: () => SYNTHETIC_MXC_STAGING_PARENT,
+    mxcStagingParent: (platform: NodeJS.Platform) => platform === "darwin" ? "/ave-runtime/staging" : SYNTHETIC_MXC_STAGING_PARENT,
   };
 });
 vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
@@ -75,9 +76,13 @@ function fixture() {
 }
 
 describe("native plugin stream ownership", () => {
+  // Windows-shaped launches: the adapter branches on the platform it runs on.
+  const hostPlatform = process.platform;
+  beforeEach(() => { setProcessPlatform("win32"); });
+  afterEach(() => { setProcessPlatform(hostPlatform); });
   it("uses native streams and the container identity without a relay or process facade", async () => {
     const { owned, launch, resolve } = fixture();
-    const child = attachMxcPluginChild(owned, launch, "native-probe");
+    const child = attachMxcPluginChild(owned, launch, "native-probe", "windows-mxc");
     const request = Buffer.from("request\n");
     const response = Buffer.from("response\n");
     const sent = new Promise<Buffer>((done) => owned.stdin.once("data", done));
@@ -107,7 +112,7 @@ describe("native plugin stream ownership", () => {
     const { owned, launch, controller, resolve } = fixture();
     let settleDisposal!: () => void;
     vi.mocked(owned.dispose).mockImplementation(() => new Promise<void>((yes) => { settleDisposal = yes; }));
-    const child = attachMxcPluginChild(owned, launch, "native-probe");
+    const child = attachMxcPluginChild(owned, launch, "native-probe", "windows-mxc");
     const fault = vi.fn(); const gone = vi.fn();
     child.link.onFault(fault); child.link.onGone(gone);
     controller.abort();
@@ -126,7 +131,7 @@ describe("native plugin stream ownership", () => {
     const { owned, launch, reject } = fixture();
     const error = new MxcProcessCleanupError("Termination unverified");
     vi.mocked(owned.dispose).mockRejectedValue(error);
-    const child = attachMxcPluginChild(owned, launch, "native-probe");
+    const child = attachMxcPluginChild(owned, launch, "native-probe", "windows-mxc");
     const gone = vi.fn(); child.link.onGone(gone);
     reject(error);
     await expect(child.waitForExit()).rejects.toBe(error);
@@ -137,7 +142,7 @@ describe("native plugin stream ownership", () => {
     const { owned, launch } = fixture();
     const error = new MxcProcessCleanupError("No terminal receipt");
     vi.mocked(owned.dispose).mockRejectedValue(error);
-    const child = attachMxcPluginChild(owned, launch, "native-probe");
+    const child = attachMxcPluginChild(owned, launch, "native-probe", "windows-mxc");
     const gone = vi.fn(); child.link.onGone(gone);
     child.link.terminate("revoke");
     await expect(child.waitForExit()).rejects.toBe(error);
@@ -146,7 +151,7 @@ describe("native plugin stream ownership", () => {
 
   it("reports the start of termination once, synchronously, and replays it to late listeners", async () => {
     const { owned, launch } = fixture();
-    const child = attachMxcPluginChild(owned, launch, "native-probe");
+    const child = attachMxcPluginChild(owned, launch, "native-probe", "windows-mxc");
     const early = vi.fn();
     child.onTerminating(early);
     child.link.terminate("first"); child.link.terminate("second");
@@ -158,7 +163,7 @@ describe("native plugin stream ownership", () => {
 
   it("remembers faults for listeners attached after process failure", async () => {
     const { owned, launch, reject } = fixture();
-    const child = attachMxcPluginChild(owned, launch, "native-probe");
+    const child = attachMxcPluginChild(owned, launch, "native-probe", "windows-mxc");
     reject(new Error("Supervisor lost"));
     await child.waitForExit();
     const fault = vi.fn(); child.link.onFault(fault);
@@ -372,7 +377,7 @@ describe("plugin stderr diagnostics", () => {
     const log = vi.spyOn(console, "log").mockImplementation((...args) => { records.push(args); });
     const warn = vi.spyOn(console, "warn").mockImplementation((...args) => { records.push(args); });
     const error = vi.spyOn(console, "error").mockImplementation((...args) => { records.push(args); });
-    const child = attachMxcPluginChild(owned, launch, "diagnostic-probe");
+    const child = attachMxcPluginChild(owned, launch, "diagnostic-probe", "windows-mxc");
     try {
       await run(owned.stderr, records);
     } finally {
@@ -438,5 +443,51 @@ describe("plugin stderr diagnostics", () => {
       expect(JSON.stringify(records)).not.toContain("private-token-123");
       expect(JSON.stringify(records)).toContain("REDACTED");
     });
+  });
+});
+
+describe("macOS plugin child admission", () => {
+  const hostPlatform = process.platform;
+  beforeEach(() => { setProcessPlatform("darwin"); });
+  afterEach(() => { setProcessPlatform(hostPlatform); });
+
+  it("stages under the macOS parent, ranks POSIX read roots, sends no Windows request check and reports macos-seatbelt", async () => {
+    const { owned } = fixture();
+    const staging = "/ave-runtime/staging/0123456789abcdef0123456789abcdef";
+    const launch = {
+      home: `${staging}/home`, temp: `${staging}/temp`,
+      filesystemOwnership: { readRoots: [], writeRoots: [staging], hostStorageRoots: [] },
+      signal: new AbortController().signal, assertCurrent: vi.fn(), release: vi.fn(),
+    };
+    const intent = {
+      pluginId: "mac-probe", command: "/Applications/Ave.app/Contents/MacOS/Ave",
+      args: ["/Applications/Ave.app/Contents/Resources/app.asar/dist/plugin-child-main.js"], cwd: "/Users/u/.ave/plugins/Kit",
+      envelope: { read: ["/Users/u/.ave/plugins/Kit"], write: ["/Users/u/.ave/plugins/Kit/data"] }, floorPierces: [], baseEnv: { ELECTRON_RUN_AS_NODE: "1" },
+    };
+    spawn.mockReset().mockImplementation(async () => ({ process: owned, confinement: "macos-seatbelt", release: vi.fn(async () => {}) }));
+    const child = await spawnMxcPluginChild(launch, intent);
+    const spec = spawn.mock.calls[0]?.[0] as MxcConfinedChildSpec;
+    expect(spec).toMatchObject({ stagingRoot: staging, allowWrite: ["/Users/u/.ave/plugins/Kit/data", staging],
+      // The entry sits in the packaged archive, which the runtime's own directory covers.
+      allowRead: ["/Users/u/.ave/plugins/Kit", "/Applications/Ave.app/Contents/MacOS"] });
+    expect(spec).not.toHaveProperty("assertRequest");
+    expect(child.containerConfinement).toBe("macos-seatbelt");
+    child.link.terminate("done");
+    await child.waitForExit();
+  });
+
+  it("grants an entry directory outside every read root once, with POSIX containment", async () => {
+    const { owned } = fixture();
+    const staging = "/ave-runtime/staging/0123456789abcdef0123456789abcdef";
+    spawn.mockReset().mockImplementation(async () => ({ process: owned, confinement: "macos-seatbelt", release: vi.fn(async () => {}) }));
+    const child = await spawnMxcPluginChild({ home: `${staging}/home`, temp: `${staging}/temp`,
+      filesystemOwnership: { readRoots: [], writeRoots: [staging], hostStorageRoots: [] },
+      signal: new AbortController().signal, assertCurrent: vi.fn(), release: vi.fn() }, {
+      pluginId: "mac-probe", command: "/opt/ave/runtime", args: ["/srv/ave-dev/dist/plugin-child-main.js"], cwd: "/srv/kit",
+      envelope: { read: ["/srv/kit"], write: [] }, floorPierces: [], baseEnv: {},
+    });
+    expect(spawn.mock.calls[0]?.[0]).toMatchObject({ allowRead: ["/srv/kit", "/opt/ave", "/srv/ave-dev/dist"] });
+    child.link.terminate("done");
+    await child.waitForExit();
   });
 });

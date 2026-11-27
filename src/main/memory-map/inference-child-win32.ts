@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { NODE_PRESERVE_SYMLINK_FLAGS, spawnConfinedChild, srtWinTargetEnv } from '../../permissions/confined-child.js';
-import { MxcProcessCleanupError } from '../../permissions/mxc-extension-errors.js';
+import { MxcProcessCleanupError, MxcProcessContractError } from '../../permissions/mxc-extension-errors.js';
 import { isSandboxHomeUnavailable } from '../../permissions/sandbox-process-home.js';
 import { CHILD_LOOPBACK_TRANSPORT_ARG, connectToAnnouncedChild, encodeChildEnv } from '../../plugins/isolation/child-loopback-link.js';
 import { prepareManagedWindowsProcessHome, spawnMxcBundledHolder } from '../../sandbox/wrap-bundled-command.js';
@@ -134,6 +134,8 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
       exit?.confirmed();
     };
     try {
+      // Local inference runs only in a Windows container, whose supervisor owns the input fence.
+      if (holder.confinement !== 'windows-mxc') throw new MxcProcessContractError('Local inference holder is not a Windows container');
       // The supervisor splits a write into frames across yields; each frame takes the same check.
       holder.process.fenceInput(assertStillValid);
       holder.process.stderr.resume();

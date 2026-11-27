@@ -4,7 +4,8 @@ import {
   isOfflineProcessConfinementActive,
 } from "../../permissions/asrt-sandbox.js";
 import { getMxcReleaseGateGeneration } from "../../permissions/mxc-extension-admission.js";
-import { getWindowsExtensionBackendPlan } from "../../permissions/sandbox-capability.js";
+import { getExtensionBackendPlan } from "../../permissions/sandbox-capability.js";
+import { windowsExtensionPlan } from "../../shared/sandbox-capability-info.js";
 import {
   isWindowsBackgroundFeatureReleaseEnabled,
   refreshWindowsBackgroundAdmission,
@@ -18,7 +19,7 @@ import { MemoryMapHostError } from "./errors.js";
 export type LocalInferenceRoute = "offline-sandbox" | "mxc" | "unconfined";
 
 function confinedLocalInferenceRoute(): Exclude<LocalInferenceRoute, "unconfined"> | undefined {
-  const plan = getWindowsExtensionBackendPlan();
+  const plan = windowsExtensionPlan(getExtensionBackendPlan());
   if (isWindowsBackgroundFeatureReleaseEnabled() && plan?.selectedBackend === "mxc" && plan.readiness === "ready" && isAveHomePrivacyVerifiedAtBoot()) return "mxc";
   const planRefuses = plan !== undefined && (plan.readiness === "checking" || plan.readiness === "rejected" || plan.selectedBackend === "mxc");
   if (!planRefuses && isOfflineProcessConfinementActive()) return "offline-sandbox";
@@ -50,7 +51,7 @@ export function assertLocalEmbeddingRuntime(preference = DEFAULT_LOCAL_INFERENCE
 export function bindLocalEmbeddingRuntime(readRoute: () => LocalInferenceRoute) {
   const route = readRoute();
   const readIdentity = (): readonly unknown[] => {
-    if (route === "mxc") return [getWindowsExtensionBackendPlan(), getMxcReleaseGateGeneration(), getWindowsContainerBackendLossEpoch()];
+    if (route === "mxc") return [windowsExtensionPlan(getExtensionBackendPlan()), getMxcReleaseGateGeneration(), getWindowsContainerBackendLossEpoch()];
     if (route === "offline-sandbox") {
       return [...getWindowsConfinementRoute(), getWindowsAccountConfinementHelperIdentity()];
     }

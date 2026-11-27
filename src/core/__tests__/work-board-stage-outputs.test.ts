@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import type { WebContents } from "electron";
 import { expect, it, vi } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { within } from "../../__tests__/support/signal-wait.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 import { governedWorkflowOutput } from "../../boot/steps/workflow-output-invocation.js";
@@ -35,6 +37,8 @@ import { ko } from "../../i18n/messages/ko.js";
 import { WORK_BOARD } from "../../shared/ipc-channels.js";
 import { workBoardDecisionKey } from "../../shared/work-board-decision-intent.js";
 import { canonicalWorkflowJson } from "../../shared/workflow-template-output.js";
+import type { RequestedOutputPage } from "../../permissions/requested-output-approval.js";
+import type { TailnetControllerAuthority } from "../../shared/chat-origin.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { ToolExecutor } from "../../tools/executor.js";
 import { ToolRegistry } from "../../tools/registry.js";
@@ -201,12 +205,13 @@ const DEFAULT_WORKSPACE = process.cwd();
 const PLUGIN_OUTPUT = { ...DECLARATION, owner: "plugin", kind: "upload" } as const;
 
 async function withOutputExecutor(
-  opts: { args: Record<string, unknown>; owner?: "plugin" | "server"; kind?: "upload" | "other"; rewrite?: boolean; install?: "git" | "folder" },
+  opts: { args: Record<string, unknown>; owner?: "plugin" | "server"; kind?: "upload" | "other"; rewrite?: true | Record<string, unknown>; install?: "git" | "folder" },
   body: (fixture: {
     h: Awaited<ReturnType<typeof stageRunHarness>>;
     hooks: RequestedOutputHooks;
     surface: WebContents;
     gate: ApprovalGate;
+    permissionEvents: ReturnType<typeof collectPermissionEvents>["events"];
     shown: Promise<ApprovalRequest>;
     nextApproval: () => Promise<ApprovalRequest>;
     /** The run authority each output execution was handed. */
@@ -243,7 +248,6 @@ async function withOutputExecutor(
     if (channel === IPC_APPROVAL_SETTLED && "requestId" in request) settled.resolve(request.requestId);
   });
   const gate = new ApprovalGate(sessionId => approvalSurfaceRegistry.resolve(sessionId));
-
   const registry = new ToolRegistry();
   const handler = vi.fn(async (_name: string, _input: Record<string, unknown>) => {
     events.push("handler");
@@ -281,7 +285,7 @@ async function withOutputExecutor(
         accountScopeHash: "sample-account-scope", accountHash: "sample-account", appGrantRequired: false,
       }));
     if (opts.rewrite) executor.getHookRunner().registerPreHook("rewrite", () => ({
-      action: "modify", updatedInput: { ...opts.args, body: "Changed by hook" },
+      action: "modify", updatedInput: opts.rewrite === true ? { ...opts.args, body: "Changed by hook" } : opts.rewrite,
     }));
     const dispatch = executor.executeAll.bind(executor);
     vi.spyOn(executor, "executeAll").mockImplementation((calls, options) => {
@@ -291,9 +295,14 @@ async function withOutputExecutor(
         return approve(candidate, input);
       } }) : dispatch(calls, options);
     });
-    hooks = createRequestedOutputHooks(createHostGit(), governedWorkflowOutput(registry, executor), DEFAULT_WORKSPACE);
-    await body({ h, hooks, surface, gate, shown: nextCard.promise, nextApproval: () => nextCard.promise, authorities,
-      settled: settled.promise, events, handler, executor, registry });
+    hooks = createRequestedOutputHooks(createHostGit(), governedWorkflowOutput(registry, executor, gate), DEFAULT_WORKSPACE);
+    const capture = collectPermissionEvents();
+    try {
+      await body({ h, hooks, surface, gate, permissionEvents: capture.events, shown: nextCard.promise, nextApproval: () => nextCard.promise, authorities,
+        settled: settled.promise, events, handler, executor, registry });
+    } finally {
+      capture.restore();
+    }
   } finally {
     gate.disposeAll();
     await h.drainRunWork();
@@ -309,6 +318,167 @@ function answerOutput({ gate, events, surface }: OutputExecutorFixture, card: Ap
   events.push("card answered");
   gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice, nonce: card.nonce, hmac: card.hmac }, surface);
 }
+
+function outputPhonePage(id: string, authority: RequestedOutputPage["authority"] = { refreshCurrent: async () => true, isCurrent: () => true }): RequestedOutputPage {
+  return { id, login: "owner@example.test", authority, canViewProject: () => true };
+}
+
+function outputPhoneController(): TailnetControllerAuthority {
+  return { kind: "tailnet-controller", actorId: "tailnet:owner", pairedShare: { pairingId: "owner", pairingEpoch: 1,
+    shareId: "current", shareEpoch: 1, scope: "current" }, pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => true } };
+}
+
+it.each(["desktop", "phone"] as const)("lets the %s win a shared output card once across paired pages", winningSurface => withOutputExecutor({
+  args: plainArgs,
+}, async fixture => {
+  const { gate, handler, permissionEvents } = fixture;
+  const releaseIdentity = deferred<boolean>();
+  const phone = outputPhonePage("first-page", { isCurrent: () => true, refreshCurrent: () => releaseIdentity.promise });
+  const other = outputPhonePage("second-page");
+  gate.listRequestedOutputCards(phone);
+  gate.listRequestedOutputCards(other);
+  const exactArgs = { ...plainArgs, body: `<img src="external">\n${"내용".repeat(500)}` };
+  const { card, decision } = await openOutputGate(fixture, 1, [], exactArgs);
+  const [first] = gate.listRequestedOutputCards(phone);
+  const [second] = gate.listRequestedOutputCards(other);
+  if (!first || !second || !("handle" in first) || !("handle" in second)) throw new Error("Both paired pages must receive the request");
+  expect(first.content).toEqual(card.requestedOutputCard);
+  expect(second.content).toEqual(first.content);
+  expect(first.content.argsText).toContain("내용".repeat(500));
+  expect(first.handle).not.toBe(second.handle);
+  expect(gate.hasRecentRequestedOutputResolution(card.id)).toBe(false);
+  expect(gate.listRequestedOutputCards(phone)).toEqual([first]);
+  await expect(gate.answerRequestedOutputCard(first.handle, "allow-once", other)).resolves.toBe("requested-output-card-unavailable");
+  const answer = gate.answerRequestedOutputCard(first.handle, "allow-once", phone);
+  if (winningSurface === "desktop") {
+    answerOutput(fixture, card, "deny-once");
+    releaseIdentity.resolve(true);
+    await expect(answer).resolves.toBe("approval-already-resolved");
+  } else {
+    releaseIdentity.resolve(true);
+    await expect(answer).resolves.toBe("accepted");
+    answerOutput(fixture, card, "deny-once");
+  }
+  await expect(decision).resolves.toMatchObject({ ok: true });
+  expect(handler).toHaveBeenCalledTimes(winningSurface === "phone" ? 1 : 0);
+  if (winningSurface === "phone") expect(handler).toHaveBeenCalledWith(PLUGIN_OUTPUT.toolName, exactArgs);
+  expect(gate.hasRecentRequestedOutputResolution(card.id)).toBe(true);
+  expect(gate.listRequestedOutputCards(other)).toEqual([{ requestId: card.id, resolvedBy: winningSurface === "phone" ? "tailnet-surface" : "desk" }]);
+  await expect(gate.answerRequestedOutputCard(second.handle, "allow-once", other)).resolves.toBe("approval-already-resolved");
+  const entries = permissionEvents.filter(row => row.event === "approval_decided" && row.requestId === card.id);
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({ answeredBy: winningSurface === "phone" ? "tailnet-surface" : "desk" });
+  expect(JSON.stringify(entries[0])).not.toContain(JSON.stringify(exactArgs.body).slice(1, -1));
+  expect(JSON.stringify(entries[0])).not.toContain(phone.login);
+}));
+
+it("requires a fresh one-shot phone card when retrying a refused output", () => withOutputExecutor({ args: plainArgs }, async fixture => {
+  const { gate, h, handler } = fixture;
+  const page = outputPhonePage("retry-page");
+  gate.listRequestedOutputCards(page);
+  const { itemId, card, decision, binding } = await openOutputGate(fixture);
+  const [original] = gate.listRequestedOutputCards(page);
+  if (!original || !("handle" in original)) throw new Error("No original output card");
+  answerOutput(fixture, card, "deny-once");
+  await expect(decision).resolves.toMatchObject({ ok: true });
+  await h.until(itemId, row => row.runStatus === "completed");
+  const [outcome] = (await h.stageRun(itemId, binding.stageId)).outputExecutions ?? [];
+  expect(outcome).toMatchObject({ status: "denied" });
+  const input = { ...binding, outputId: outcome.id };
+  const decider = { kind: "tailnet" as const, controller: outputPhoneController(), authority: page.authority, canDeliver: () => true };
+  const shown = deferred<void>();
+  const requestAndWait = gate.requestAndWait.bind(gate);
+  vi.spyOn(gate, "requestAndWait").mockImplementationOnce(request => {
+    const answer = requestAndWait(request);
+    shown.resolve();
+    return answer;
+  });
+  const reserved = await h.engine.retryOutput(itemId, input, decider);
+  expect(reserved).toEqual({ ok: true });
+  await expect(h.engine.retryOutput(itemId, input, decider)).resolves.toEqual({ ok: false, reason: "not_pending" });
+  await within(shown.promise, "fresh phone retry card");
+  const retry = gate.listRequestedOutputCards(page).find(entry => "handle" in entry);
+  if (!retry || !("handle" in retry)) throw new Error("No new output card");
+  expect(retry.requestId).not.toBe(original.requestId);
+  expect(retry.content).toEqual(original.content);
+  await expect(gate.answerRequestedOutputCard(original.handle, "allow-once", page)).resolves.toBe("approval-already-resolved");
+  expect(handler).not.toHaveBeenCalled();
+  await expect(gate.answerRequestedOutputCard(retry.handle, "allow-once", page)).resolves.toBe("accepted");
+  await h.drainRunWork();
+  expect(handler).toHaveBeenCalledOnce();
+  expect((await h.stageRun(itemId, binding.stageId)).outputExecutions).toMatchObject([{ status: "done" }]);
+}));
+
+it.each(["desktop", "phone"] as const)("refuses %s retry after the previous handler ran and failed", caller => withOutputExecutor({ args: plainArgs }, async fixture => {
+  const { h, handler, surface } = fixture;
+  handler.mockRejectedValueOnce(new Error("Delivery outcome unavailable"));
+  const { itemId, card, decision, binding } = await openOutputGate(fixture);
+  answerOutput(fixture, card);
+  await expect(decision).resolves.toMatchObject({ ok: true });
+  await h.until(itemId, row => row.runStatus === "completed");
+  const [outcome] = (await h.stageRun(itemId, binding.stageId)).outputExecutions ?? [];
+  expect(outcome).toMatchObject({ status: "failed", detail: "output-execution-failed" });
+  const authority = { isCurrent: () => true, refreshCurrent: async () => true };
+  const input = { ...binding, outputId: outcome.id };
+  const shown = fixture.nextApproval();
+  const retry = caller === "desktop" ? h.engine.retryOutput(itemId, input, { surface, proof: outputRetryGesture(surface, itemId, input) })
+    : h.engine.retryOutput(itemId, input, {
+      kind: "tailnet", controller: outputPhoneController(), authority, canDeliver: () => true,
+    });
+  const reopened = await Promise.race([shown, retry.then(() => undefined)]);
+  if (reopened) answerOutput(fixture, reopened, "deny-once");
+  await expect(retry).resolves.toEqual({ ok: false, reason: "output-retry-effect-unknown" });
+  expect((await h.stageRun(itemId, binding.stageId)).outputExecutions).toEqual([outcome]);
+  expect(handler).toHaveBeenCalledOnce();
+}));
+
+it("omits desktop Retry after handler entry", () => withOutputExecutor({ args: plainArgs }, async fixture => {
+  const { h, handler } = fixture;
+  handler.mockRejectedValueOnce(new Error("Delivery outcome unavailable"));
+  const { itemId, card, decision, binding } = await openOutputGate(fixture);
+  answerOutput(fixture, card);
+  await expect(decision).resolves.toMatchObject({ ok: true });
+  const item = await h.until(itemId, row => row.runStatus === "completed");
+  const [projected] = await h.engine.projectTemplateRuns([item], { runId: binding.runId }, "local-desktop");
+  const stage = projected.workflowRun?.stages.find(row => row.stageId === binding.stageId);
+  expect(stage?.outputExecutions).toMatchObject([{ status: "failed", detail: "output-execution-failed" }]);
+  expect(stage).not.toHaveProperty("outputRetry");
+}));
+
+it("refuses handler entry when the winning phone loses authority after Allow once", () => withOutputExecutor({ args: plainArgs }, async fixture => {
+  const { gate, handler } = fixture;
+  const refreshCurrent = vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
+  const page = outputPhonePage("winning-page", { isCurrent: () => true, refreshCurrent });
+  gate.listRequestedOutputCards(page);
+  const { decision } = await openOutputGate(fixture);
+  const [offered] = gate.listRequestedOutputCards(page);
+  if (!offered || !("handle" in offered)) throw new Error("Missing phone offer");
+  await expect(gate.answerRequestedOutputCard(offered.handle, "allow-once", page)).resolves.toBe("accepted");
+  await expect(decision).resolves.toMatchObject({ ok: true });
+  expect(refreshCurrent).toHaveBeenCalledTimes(2);
+  expect(handler).not.toHaveBeenCalled();
+}));
+
+it("refuses unrenderable hook output on both approval surfaces before it reaches a card", () => withOutputExecutor({
+  args: plainArgs, rewrite: { ...plainArgs, body: "Hidden\u200btext" },
+}, async fixture => {
+  const { gate, h, handler, hooks, surface } = fixture;
+  const page = outputPhonePage("display-page");
+  gate.listRequestedOutputCards(page);
+  const run = { itemId: 1, runId: "delivery", runKey: "delivery" };
+  const { toolName, owner, ownerId } = PLUGIN_OUTPUT;
+  const request = await hooks.accept({ stage: stageOf("review", { requestedOutputs: [PLUGIN_OUTPUT] }), workspaceRoot: h.dir,
+    run, raw: { toolName, owner, ownerId, args: plainArgs, summary: "Deliver" } });
+  if (!request.ok) throw new Error(request.code);
+  const signal = new AbortController().signal;
+  await expect(hooks.execute({ run, stageId: "review", output: request.output, approvalSurface: surface,
+    binding: { itemId: run.itemId, runId: run.runId, stageId: "review", attempt: 1, resultHash: "result", outputHash: "outputs" },
+    workspace: { root: h.dir }, canExecute: () => true, signal, authority: signal }))
+    .resolves.toMatchObject({ status: "failed", detail: "output-args-not-displayable" });
+  expect(gate.listRequestedOutputCards(page)).toEqual([]);
+  expect(fixture.events).toEqual([]);
+  expect(handler).not.toHaveBeenCalled();
+}));
 
 const OUTPUT_SOURCE_PATHS = [
   "../../work-board/workflow/requested-outputs.ts",
@@ -355,6 +525,7 @@ it.each(cases)("shows and executes identical args for %s after the ordinary appr
   const readFile = vi.spyOn(fs, "readFileSync").mockImplementation(observeReadFile);
   try {
     const pending = hooks.execute({ run, stageId: "review", output: request.output, approvalSurface: fixture.surface,
+      binding: { itemId: run.itemId, runId: run.runId, stageId: "review", attempt: 1, resultHash: "result", outputHash: "outputs" },
       workspace: { root: h.dir }, canExecute: () => true, signal: new AbortController().signal, authority: new AbortController().signal });
     const card = await Promise.race([shown, pending.then(() => undefined)]);
     expect(card).toBeDefined();
@@ -378,7 +549,7 @@ it.each(cases)("shows and executes identical args for %s after the ordinary appr
   }
 }));
 
-async function openOutputGate(fixture: OutputExecutorFixture, count = 1, later: TemplateStage[] = []) {
+async function openOutputGate(fixture: OutputExecutorFixture, count = 1, later: TemplateStage[] = [], args = plainArgs) {
   const { h, surface } = fixture;
   const version = await h.confirm([stageOf("review", { requestedOutputs: [PLUGIN_OUTPUT] }), ...later]);
   const itemId = await h.addItem(version);
@@ -386,7 +557,7 @@ async function openOutputGate(fixture: OutputExecutorFixture, count = 1, later: 
   const [child] = await h.untilLive(1);
   const { toolName, owner, ownerId } = PLUGIN_OUTPUT;
   for (let n = 0; n < count; n++) {
-    await expect(child.input.stageOutputTool?.execute({ toolName, owner, ownerId, args: plainArgs, summary: "Deliver" },
+    await expect(child.input.stageOutputTool?.execute({ toolName, owner, ownerId, args, summary: "Deliver" },
       { cwd: child.input.projectRoot ?? "", metadata: {}, extraAllowedDirectories: [] })).resolves.toMatchObject({ isError: false });
   }
   child.finish({ summary: "Ready" });
@@ -417,7 +588,7 @@ it("a hook that rewrites the input ends the output failed and the handler never 
   answerOutput(fixture, card);
   await expect(decision).resolves.toMatchObject({ ok: true });
   expect((await fixture.h.stageRun(itemId, "review")).outputExecutions)
-    .toMatchObject([{ status: "failed", detail: "output-execution-failed" }]);
+    .toMatchObject([{ status: "failed", detail: "output-execution-not-dispatched" }]);
   expect(fixture.handler).not.toHaveBeenCalled();
 }));
 
@@ -454,7 +625,7 @@ it.each(["Stop", "row removal"] as const)("%s cancels an unanswered output card"
       expect(h.workspaceCalls.filter(call => call.startsWith("integrate:"))).toEqual([]);
       expect((await h.stageRun(itemId, "review")).outputExecutions)
         .toMatchObject([
-          { status: "failed", detail: "output-execution-interrupted" },
+          { status: "failed", detail: "output-execution-not-dispatched" },
           { status: "failed", detail: "output-execution-interrupted" },
         ]);
     } else {
@@ -487,10 +658,10 @@ it("refuses Allow after deletion commits while both removal subscribers are pend
     // Revoked inside the deleting commit, while neither subscriber has seen the delete; the output holds that same signal.
     expect(h.board.runAuthority(itemId, binding.runId).aborted).toBe(true);
     expect(fixture.authorities).toEqual([h.board.runAuthority(itemId, binding.runId)]);
-    expect(gate.pendingCount).toBe(1);
+    expect(gate.pendingCount).toBe(0);
     answerOutput(fixture, card);
     await expect(decision).resolves.toMatchObject({ ok: true });
-    expect(fixture.events).toEqual(["card shown", "card answered", "approvedInvocation"]);
+    expect(fixture.events).toEqual(["card shown", "card answered"]);
     expect(handler).not.toHaveBeenCalled();
     expect(h.workspaceCalls.filter(call => call.startsWith("integrate:"))).toEqual([]);
   } finally {
@@ -500,20 +671,44 @@ it("refuses Allow after deletion commits while both removal subscribers are pend
   }
 }));
 
+function outputRetryGesture(surface: WebContents, itemId: number, input: Parameters<OutputExecutorFixture["h"]["engine"]["retryOutput"]>[1]) {
+  (surface as unknown as EventEmitter).emit("before-mouse-event", {}, { type: "mouseUp" });
+  const proof = securitySettingsGestures.consume(surface, { channel: WORK_BOARD.retryOutput, payload: workBoardDecisionKey(WORK_BOARD.retryOutput, itemId, input) });
+  if (!proof) throw new Error("Missing retry gesture");
+  return proof;
+}
+
 /** Retry the output `outputId` of the gated stage with a fresh gesture, up to its approval card. */
 async function openRetryCard(fixture: OutputExecutorFixture, itemId: number, binding: Awaited<ReturnType<typeof openOutputGate>>["binding"], outputId: string) {
   const { h, surface } = fixture;
   const { runId, stageId, attempt, outputHash } = binding;
   const input = { runId, stageId, attempt, outputHash, outputId };
-  (surface as unknown as EventEmitter).emit("before-mouse-event", {}, { type: "mouseUp" });
-  const proof = securitySettingsGestures.consume(surface, { channel: WORK_BOARD.retryOutput, payload: workBoardDecisionKey(WORK_BOARD.retryOutput, itemId, input) });
-  if (!proof) throw new Error("Missing retry gesture");
+  const proof = outputRetryGesture(surface, itemId, input);
   const shown = fixture.nextApproval();
   const retry = h.engine.retryOutput(itemId, input, { surface, proof });
   const retryCard = await Promise.race([shown, retry.then(() => undefined)]);
   if (!retryCard) throw new Error("The retry did not reach its approval card");
   return { retry, retryCard };
 }
+
+it("requires a fresh desktop Allow for a proven-safe retry", () => withOutputExecutor({ args: plainArgs }, async fixture => {
+  const { h, handler } = fixture;
+  const { itemId, card, decision, binding } = await openOutputGate(fixture);
+  answerOutput(fixture, card, "deny-once");
+  await expect(decision).resolves.toMatchObject({ ok: true });
+  const item = await h.until(itemId, row => row.runStatus === "completed");
+  const [outcome] = (await h.stageRun(itemId, binding.stageId)).outputExecutions ?? [];
+  const [projected] = await h.engine.projectTemplateRuns([item], { runId: binding.runId }, "local-desktop");
+  expect(projected.workflowRun?.stages.find(row => row.stageId === binding.stageId)?.outputRetry?.ids).toEqual([outcome.id]);
+  const { retry, retryCard } = await openRetryCard(fixture, itemId, binding, outcome.id);
+  expect(retryCard.id).not.toBe(card.id);
+  answerOutput(fixture, card);
+  expect(handler).not.toHaveBeenCalled();
+  answerOutput(fixture, retryCard);
+  await expect(retry).resolves.toEqual({ ok: true });
+  expect(handler).toHaveBeenCalledOnce();
+  expect((await h.stageRun(itemId, binding.stageId)).outputExecutions).toMatchObject([{ status: "done" }]);
+}));
 
 it("refuses Allow on a detached retry after its completed run's row is deleted", () => withOutputExecutor({ args: plainArgs }, async fixture => {
   const { h, gate, handler } = fixture;
@@ -525,7 +720,7 @@ it("refuses Allow on a detached retry after its completed run's row is deleted",
   expect(outcome).toMatchObject({ status: "denied" });
   const { retry, retryCard } = await openRetryCard(fixture, itemId, binding, outcome.id);
   await expect(h.board.remove(itemId)).resolves.toMatchObject({ status: "deleted" });
-  expect(gate.pendingCount).toBe(1);
+  expect(gate.pendingCount).toBe(0);
   answerOutput(fixture, retryCard);
   await expect(retry).resolves.toEqual({ ok: false, reason: "run_mismatch" });
   expect(handler).not.toHaveBeenCalled();
@@ -543,12 +738,13 @@ it("keeps a retry opened during an active run revoked after Stop settles that ru
   expect(h.engine.cancelRun(itemId)).toEqual({ ok: true });
   await h.until(itemId, row => row.runStatus === "cancelled");
   await h.drainRunWork();
-  expect(gate.pendingCount).toBe(1);
+  expect(gate.pendingCount).toBe(0);
   answerOutput(fixture, retryCard);
   await retry;
-  expect(fixture.events.at(-1)).toBe("approvedInvocation");
+  expect(fixture.events.at(-1)).toBe("card answered");
   expect(handler).not.toHaveBeenCalled();
-  expect((await h.stageRun(itemId, binding.stageId)).outputExecutions).toMatchObject([{ status: "failed" }]);
+  expect((await h.stageRun(itemId, binding.stageId)).outputExecutions)
+    .toMatchObject([{ status: "failed", detail: "output-execution-not-dispatched" }]);
   // The retry holds the run's own authority, which Stop revoked and the run's settlement left revoked.
   expect(fixture.authorities.at(-1)).toBe(h.board.runAuthority(itemId, binding.runId));
   expect(fixture.authorities.at(-1)?.aborted).toBe(true);
@@ -579,6 +775,8 @@ it("a failed delete invalidates an open retry and permits a fresh approval on th
   answerOutput(fixture, open.retryCard);
   await open.retry;
   expect(handler).not.toHaveBeenCalled();
+  expect((await h.stageRun(itemId, binding.stageId)).outputExecutions)
+    .toMatchObject([{ status: "failed", detail: "output-execution-not-dispatched" }]);
   const fresh = await openRetryCard(fixture, itemId, binding, outcome.id);
   answerOutput(fixture, fresh.retryCard);
   await expect(fresh.retry).resolves.toEqual({ ok: true });
@@ -600,7 +798,7 @@ it("refuses tool execution without an approval surface", () => withOutputExecuto
 it.each([
   "output-not-declared", "remote-not-configured", "too-many", "args-too-large", "needs-human-gate",
   "output-remote-local-unsupported", "output-args-not-displayable", "output-execution-failed",
-  "output-execution-interrupted", "workspace-unavailable", "user-gesture-required", "outputs-need-local-approver",
+  "output-execution-interrupted", "workspace-unavailable", "user-gesture-required", "requested-output-card-unavailable",
   "push-url-unverified", "push-url-changed", "push-ref-changed", "push-authentication", "push-non-fast-forward", "push-failed",
 ] as const)("localizes the requested output reason %s in both catalogs", code => {
   expect(en[`reasonCodes.${code}`]).toBeTruthy();

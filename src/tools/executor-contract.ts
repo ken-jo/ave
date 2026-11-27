@@ -181,6 +181,8 @@ export interface ExecuteOptions {
   replayRootBinding?: ReplayRootBinding;
   /** Host-only pre-dispatch check for a separately approved exact payload. Grants no tool authority. */
   approvedInvocation?: (tool: import("./base.js").Tool, input: Record<string, unknown>) => boolean;
+  /** Refresh the answering surface's live authority before the synchronous dispatch check. */
+  refreshApprovedInvocation?: () => Promise<boolean>;
   /** Host-only lifecycle for an exact governed auth Tool; never plugin data. */
   pluginAuthLifecycle?: HostPluginAuthLifecycle;
 }

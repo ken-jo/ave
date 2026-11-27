@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { _detectMxcMacShellSupportForTest, _seatbeltCanaryPassedForTest, buildSeatbeltShellRequest, mapSeatbeltShellRequest } from "../mxc-macos.js";
+import { _detectMxcMacShellSupportForTest, _seatbeltCanaryPassedForTest, buildSeatbeltShellRequest, mapSeatbeltShellRequest, udpSendOutcome } from "../mxc-macos.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-model.js";
 import type { MacRawIpVerdict } from "../../shared/sandbox-capability-info.js";
 
@@ -61,6 +61,15 @@ describe("macOS container shell detector", () => {
     // Even a canary that measured blocked cannot publish it on an unavailable container: that arm has no field.
     deps.canary.mockResolvedValue({ verdict: reason });
     await expect(_detectMxcMacShellSupportForTest(deps)).resolves.toEqual({ state: "unavailable", reason });
+  });
+});
+
+describe("macOS raw-IP UDP send code", () => {
+  it("counts only a policy refusal as refused-local; any other failed send was never sent", () => {
+    expect(udpSendOutcome("0")).toBe("sent");
+    expect(udpSendOutcome("1")).toBe("refused-local");
+    expect(udpSendOutcome("13")).toBe("refused-local");
+    for (const code of ["49", "51", "65", "61", "x", undefined]) expect(udpSendOutcome(code)).toBe("unmeasured");
   });
 });
 
@@ -172,5 +181,14 @@ describe("macOS container shell request", () => {
       .toThrow(expect.objectContaining({ code: "cwd-ungranted" }));
     expect(() => buildSeatbeltShellRequest({ ...input, proxyUrl: "https://127.0.0.1:8444" }))
       .toThrow(expect.objectContaining({ code: "proxy-invalid" }));
+  });
+
+  it("refuses an environment name the container's /bin/sh could import as a function, or any other non-identifier name", () => {
+    for (const name of ["BASH_FUNC_read%%", "BASH_FUNC_pwd%%", "BASH_FUNC_[%%", "1LEADING", "WITH-DASH", "", "A=B"]) {
+      expect(() => buildSeatbeltShellRequest({ ...input, env: { ...input.env, [name]: "() { aveHostHandoff=G; }" } }), name)
+        .toThrow(expect.objectContaining({ code: "env-invalid" }));
+    }
+    // Proxy keys are still dropped: the container's proxy is set by its runtime config.
+    expect(buildSeatbeltShellRequest(input).request.process.env).toEqual(["HOME=/fixture/private/open", "PATH=/usr/bin:/bin"]);
   });
 });

@@ -1,4 +1,4 @@
-import type { SandboxWindowsSubstrateInfo } from "../shared/sandbox-capability-info.js";
+import { windowsExtensionPlan, type SandboxWindowsSubstrateInfo } from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
   checkAsrtDependencies,
@@ -7,7 +7,7 @@ import {
   isWindowsAccountConfinementOperational,
 } from "./asrt-sandbox.js";
 import { detectHostMxcPrerequisites, getHostWxcExecIdentity, mayIndicateMxcShellStartupFailure, probeHostMxcPowerShellStart, resolveHostWxcExecPath } from "./mxc-windows.js";
-import { detectMxcShellCapability, getSandboxGeneration, getWindowsExtensionBackendPlan, getWindowsSandboxSubstrate } from "./sandbox-capability.js";
+import { detectMxcShellCapability, getSandboxGeneration, getExtensionBackendPlan, getWindowsSandboxSubstrate } from "./sandbox-capability.js";
 
 export type WindowsBackendState = "operational" | "absent" | "unavailable";
 
@@ -158,7 +158,7 @@ export function onWindowsContainerEvidenceChanged(listener: () => void): () => v
 const containerBackend = new WindowsBackendEvidenceOwner({
   route: () => {
     const capability = detectMxcShellCapability();
-    const plan = getWindowsExtensionBackendPlan();
+    const plan = windowsExtensionPlan(getExtensionBackendPlan());
     return [getSandboxGeneration(), ...getWindowsConfinementRoute(), getWindowsSandboxSubstrate(), capability, plan,
       capability?.confidence === "verified" || plan?.selectedBackend === "mxc" ? getHostWxcExecIdentity() : undefined];
   },
@@ -169,7 +169,7 @@ const containerBackend = new WindowsBackendEvidenceOwner({
       && support.containerBackendAbsent === true && support.baseContainerApiPresent === false;
   },
   isRoutePublished: (substrate) => {
-    const plan = getWindowsExtensionBackendPlan();
+    const plan = windowsExtensionPlan(getExtensionBackendPlan());
     return (plan?.selectedBackend === "mxc" && plan.readiness === "ready")
       || (substrate.mxc.state === "available" && substrate.shells === "mxc" && detectMxcShellCapability()?.confidence === "verified");
   },
@@ -206,7 +206,7 @@ const observations = new WeakMap<WindowsBackendObservation, {
   extensionEpoch: number;
   extensionRoute: readonly unknown[];
 }>();
-const extensionRoute = () => [getSandboxGeneration(), ...getWindowsConfinementRoute(), getWindowsExtensionBackendPlan()];
+const extensionRoute = () => [getSandboxGeneration(), ...getWindowsConfinementRoute(), windowsExtensionPlan(getExtensionBackendPlan())];
 
 /** Taken before a failure observer starts measuring, so its later report can only reach the evidence it measured. */
 export function observeWindowsBackend(backend: WindowsBackend, scope: ContainerObservationScope = "common"): WindowsBackendObservation {

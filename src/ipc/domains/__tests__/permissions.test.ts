@@ -174,6 +174,7 @@ function makeDeps(options: {
       requestAndWait: answeringRequestAndWait(() => ({ choice: options.approvalChoice ?? "allow-once" })),
       resolve: vi.fn((_requestId: string, decision: unknown) => decision),
       resolveFromDesktopRendererWithFreshIdentity: vi.fn((_requestId: string, decision: unknown) => decision),
+      hasRecentRequestedOutputResolution: vi.fn((_requestId: string) => false),
       defersAllowSaves: vi.fn(() => false),
       capturePendingRequestAuthority: vi.fn(() => ({
         controller: { refresh: vi.fn(async () => true), isCurrent: vi.fn(() => true) },
@@ -382,6 +383,18 @@ describe("permissions IPC handlers", () => {
     expect(await invoke(PERMISSIONS.setMode, { mode: "auto", intent: USER_INTENT }))
       .toEqual({ ok: true, mode: "auto" });
     expect(permissionManager.setModePersist).toHaveBeenCalledWith("auto");
+  });
+
+  it("reports an already settled requested-output card to the desktop", async () => {
+    const { deps } = await setup();
+    deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity.mockResolvedValueOnce(null);
+    deps.approvalGate.hasRecentRequestedOutputResolution.mockReturnValueOnce(true);
+
+    expect(await invoke(PERMISSIONS.approvalRespond, { requestId: "output-card", choice: "allow-once" })).toEqual({
+      ok: false,
+      error: "approval-already-resolved",
+    });
+    expect(deps.approvalGate.hasRecentRequestedOutputResolution).toHaveBeenCalledWith("output-card");
   });
 
   it("suggests LLM permission review after repeated default-mode approvals", async () => {

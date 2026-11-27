@@ -62,7 +62,7 @@ vi.mock('../../permissions/mxc-windows.js', async importOriginal => ({
 }));
 vi.mock('../../permissions/sandbox-capability.js', async importOriginal => ({
   ...await importOriginal<typeof import('../../permissions/sandbox-capability.js')>(),
-  getWindowsExtensionBackendPlan: () => state.plan,
+  getExtensionBackendPlan: () => state.plan,
   getWindowsSandboxSubstrate: () => state.substrate,
   isSandboxGateUndecidedAtBoot: () => false,
 }));

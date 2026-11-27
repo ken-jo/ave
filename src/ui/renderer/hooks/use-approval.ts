@@ -81,7 +81,7 @@ export interface ApprovalQueueApi {
 
 /** Approval queue hook. Owns: the window's FIFO of pending requests (via approvalQueueReducer), the window.ave.approval.onRequest subscription, the one-time read of requests parked before this renderer subscribed, the settlement reconciliation that retires a card whose surface is
  * no longer here to retire it, the per-request in-flight guard on `decide`, and the claims register the drawing surfaces attach to. A decided request stays in the queue; and so on screen; until the host acknowledges the answer, so every surfaced request is actionable exactly once. */
-export function useApproval(): ApprovalQueueApi {
+export function useApproval(notifyOutputResolution?: (requestId: string, by: "tailnet-surface" | "expired") => void): ApprovalQueueApi {
   const [queue, setQueue] = useState<ApprovalRequest[]>([]);
   const queueRef = useRef<ApprovalRequest[]>([]);
   // In-flight guard; one answer per request. A request leaves this set when it leaves the queue, never earlier:
@@ -140,6 +140,9 @@ export function useApproval(): ApprovalQueueApi {
       if (!aliveRef.current) return;
       const requestId = payload?.requestId;
       if (typeof requestId !== "string" || requestId.length === 0) return;
+      if ((payload.resolvedBy === "tailnet-surface" || payload.resolvedBy === "expired") && queueRef.current.some(request => request.id === requestId)) {
+        notifyOutputResolution?.(requestId, payload.resolvedBy);
+      }
       rememberRetiredUntilReconciled(requestId);
       if (inFlightRequestIdsRef.current.has(requestId)) return;
       setQueue((q) => approvalQueueReducer(q, { type: "drop", ids: [requestId] }));
@@ -175,7 +178,7 @@ export function useApproval(): ApprovalQueueApi {
       unsub();
       unsubSettled();
     };
-  }, [finishParkedReconciliation, rememberRetiredUntilReconciled]);
+  }, [finishParkedReconciliation, rememberRetiredUntilReconciled, notifyOutputResolution]);
 
   /** Forget requests the host has already settled without an answer from here; a turn that timed out or was cancelled while
    * its ask was parked. A request whose answer is in flight is left to `decide`, which removes it once the host acknowledges. */

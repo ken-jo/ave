@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { rankPosixContainerRows, type PosixPolicyLookups } from "../mxc-posix.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel, type PolicyRow } from "../policy-model.js";
-import { _seatbeltDenyGlobForTest, buildSeatbeltShellProfile, seatbeltProfileAllowsOnlyProxyIpEgress, splitSeatbeltPolicyRows } from "../seatbelt-profile.js";
+import { _seatbeltDenyGlobForTest, buildSeatbeltHolderProfile, buildSeatbeltShellProfile, seatbeltProfileAllowsOnlyProxyIpEgress, splitSeatbeltPolicyRows } from "../seatbelt-profile.js";
 
 const lookups: PosixPolicyLookups = {
   home: "/users/example", foldsCase: true, canonical: path => path,
@@ -179,7 +179,37 @@ describe("Seatbelt structural IP egress evidence", () => {
     ["two proxy allows", (profile: string) => `${profile}\n(allow network-outbound (remote ip "localhost:9000"))`, 9000],
     ["an unbalanced form", (profile: string) => `${profile}\n(allow network-outbound (remote ip "*:*")`, 9000],
     ["an unterminated string", (profile: string) => `${profile}\n(allow file-read* (literal "/x))`, 9000],
+    ["an allow nested in another form", (profile: string) => `${profile}\n(if #t (allow network* (remote ip "*:*")))`, 9000],
+    ["an import", (profile: string) => `${profile}\n(import "system.sb")`, 9000],
+    ["a top-level atom", (profile: string) => `${profile}\nallow`, 9000],
+    ["a Unix-socket filter with an IP third item", (profile: string) =>
+      `${profile}\n(allow network-outbound (remote unix-socket (remote ip "*:*")))`, 9000],
+    ["a Unix-socket filter with a bare third item", (profile: string) => `${profile}\n(allow network-outbound (remote unix-socket any))`, 9000],
   ])("does not hold with %s", (_name, edit, port) => {
     expect(seatbeltProfileAllowsOnlyProxyIpEgress(edit(built()), port)).toBe(false);
+  });
+});
+
+describe("Seatbelt shell and holder profile size", () => {
+  const labels = { holder: "dev.ave.holder.i0.b0.h1", boot: "dev.ave.holder.i0.b0.all", instance: "dev.ave.holder.i0.any" };
+  const withDenies = (count: number) => {
+    const model = buildPolicyModel({
+      userGrants: [], extensionManifests: [],
+      floors: Array.from({ length: count }, (_, index) => policyFloorRow(`/vault/folder-${String(index).padStart(5, "0")}/with/some/depth`, "denied", "secrets", true)),
+      launchGrants: [policyGrantRow("/workspace", "rw", "launch-grant", true)],
+    });
+    const grants = rankPosixContainerRows(splitSeatbeltPolicyRows(model).literalModel, "seatbelt", lookups);
+    return { model, grants, lookups, unixSocketRoots: [], proxyPort: null, labels };
+  };
+
+  it("builds a profile within the bound and refuses one past it by name, before the kernel compiles it", () => {
+    expect(Buffer.byteLength(buildSeatbeltHolderProfile(withDenies(100)))).toBeLessThan(128 * 1024);
+    expect(() => buildSeatbeltHolderProfile(withDenies(3_000))).toThrow(expect.objectContaining({ code: "profile-string-too-long" }));
+  });
+
+  it("bounds a shell profile the same way: a policy within the bound builds, one past it is refused by name", () => {
+    const shell = (count: number) => ({ ...withDenies(count), proxyPort: 4100 });
+    expect(Buffer.byteLength(buildSeatbeltShellProfile(shell(100)))).toBeLessThan(128 * 1024);
+    expect(() => buildSeatbeltShellProfile(shell(3_000))).toThrow(expect.objectContaining({ code: "profile-string-too-long", message: expect.stringContaining("shell") }));
   });
 });

@@ -1002,7 +1002,7 @@ export function createOutOfProcessPluginFactory(
     }
     if (spec.prepareMxcChild) {
       // Native spawn and transport setup have both succeeded; a child that began terminating meanwhile is never reported.
-      if (!nativeRevoked) withdrawConfinement = spec.onChildSpawned?.("windows-mxc") ?? undefined;
+      if (!nativeRevoked) withdrawConfinement = spec.onChildSpawned?.((child as MxcPluginChild).containerConfinement) ?? undefined;
       // The channel and `teardown` stay here: the lifecycle gets the instance, whose `stop` is its one hand on the child's lifetime.
       nativeInstances.add(session.instance);
     }

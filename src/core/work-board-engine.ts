@@ -38,10 +38,9 @@ import type {
   WorkItemUpdateResult,
 } from "../shared/work-board-types.js";
 import type { EnvelopeToolRef, RemoteProvisionalStart, RunAuthoritySource } from "../shared/workflow-template-types.js";
-import type { SecuritySettingsDecision } from "../ipc/security-settings-gesture.js";
 import type { RunRecord } from "../work-board/workflow/run-state.js";
 import type { ScheduledRunOutcome } from "../work-board/workflow/schedule-breaker.js";
-import { createStageRunEngine, type StageGateDecider, type StageRunEngineDeps, type ScheduledTemplateSource, type ScheduledTemplateStart } from "../work-board/workflow/stage-run-engine.js";
+import { createStageRunEngine, type StageGateDecider, type StageOutputRetryDecider, type StageRunEngineDeps, type ScheduledTemplateSource, type ScheduledTemplateStart } from "../work-board/workflow/stage-run-engine.js";
 import {
   MAX_PLAN_NOTE_LENGTH,
   BRIEFING_PROPOSAL_KINDS,
@@ -212,7 +211,7 @@ export interface WorkBoardEngine {
   decideStageGate(itemId: number, input: StageGateDecideInput, decider?: StageGateDecider): Promise<StageGateDecideResult>;
   decideStageJoin(itemId: number, input: StageJoinDecideInput, authority?: WorkDecisionAuthority): Promise<StageJoinDecideResult>;
   openStageJoin(itemId: number, input: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
-  retryOutput(itemId: number, input: StageOutputRetryInput, receipt: SecuritySettingsDecision): Promise<StageOutputRetryResult>;
+  retryOutput(itemId: number, input: StageOutputRetryInput, decider: StageOutputRetryDecider): Promise<StageOutputRetryResult>;
   retryStage(itemId: number, input: StageRetryInput): Promise<StageRetryResult>;
   continueRun(itemId: number, input: { runId: string }): Promise<StageRetryResult>;
   /** Called beside the workspace revocation fan-out: stops every live stage child of template runs on that project. */

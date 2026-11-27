@@ -2,11 +2,32 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+const logged = vi.hoisted(() => ({ warn: [] as string[] }));
+vi.mock("../../lib/logger.js", () => ({
+  createLogger: () => ({ warn: (message: string) => logged.warn.push(message), info: () => {}, error: () => {}, debug: () => {} }),
+}));
+
 import * as info from "../../shared/sandbox-capability-info.js";
 import { acceptMeasuredContainerEgress, containerEgressProtocolCoverage, type MacRawIpVerdict } from "../../shared/sandbox-capability-info.js";
 import {
   classifyRawIpTarget, parseRawIpProbeOutput, rawIpVerdict, type RawIpMeasurement,
 } from "../mxc-macos-raw-ip.js";
+
+describe("macOS raw-IP verdict warnings", () => {
+  afterEach(() => { logged.warn.length = 0; });
+
+  it("warns about a reachable target even when the control failed, as Windows does", () => {
+    expect(rawIpVerdict(blockedRun({ T4: "0" }, { nonceRecorded: false }))).toEqual(unknown("control-failed", ["t4"]));
+    expect(logged.warn).toEqual([expect.stringContaining("raw-ip-reachable (t4) with the control failed")]);
+  });
+
+  it("warns when blocked rests on structural IPv6 evidence, and not when it was measured", () => {
+    expect(rawIpVerdict(blockedRun({}))).toEqual(blocked("measured"));
+    expect(logged.warn).toEqual([]);
+    expect(rawIpVerdict(blockedRun({ T6: "65" }))).toEqual(blocked("structural"));
+    expect(logged.warn).toEqual([expect.stringContaining("structural IPv6 evidence")]);
+  });
+});
 
 describe("macOS raw-IP target classification", () => {
   it.each([

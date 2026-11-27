@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { machoImageDigest } from "../../scripts/lib/macho-image-digest.mjs";
+import { macosHolderSweepBundlePinDeclaration } from "../../scripts/lib/macos-holder-sweep-package.mjs";
 import { assertSkillScriptInventory, SKILL_SCRIPT_ENTRIES } from "../../scripts/lib/skill-script-inventory.mjs";
 import { copyMxcLauncherPackageInputs } from "../../src/__tests__/support/mxc-runtime-package.js";
 
@@ -100,7 +102,17 @@ describe("packaged skill script inventory", () => {
       // The macOS package also builds its download file helper, from the fixture's copy of its sources.
       mkdirSync(join(root, "native", "macos-dir-ops"), { recursive: true });
       copyFileSync(join("native", "macos-dir-ops", "dir-ops.c"), join(root, "native", "macos-dir-ops", "dir-ops.c"));
-      writeFileSync(join(root, "package.json"), JSON.stringify({ build: { mac: { minimumSystemVersion: "13.0" } } }));
+      writeFileSync(join(root, "package.json"), JSON.stringify({ build: { mac: { minimumSystemVersion: "15.0" } } }));
+      // And its holder label sweep helper, which must be the image the main bundle pins: the build is reproducible, so
+      // the pin of this checkout's own build is the pin of the fixture's fresh one.
+      for (const source of ["rust-toolchain.toml", "native/macos-holder-sweep/Cargo.toml", "native/macos-holder-sweep/Cargo.lock", "native/macos-holder-sweep/src/main.rs"]) {
+        mkdirSync(dirname(join(root, source)), { recursive: true });
+        copyFileSync(source, join(root, source));
+      }
+      if (process.platform === "darwin") {
+        const pin = machoImageDigest(readFileSync(join("resources", "macos-holder-sweep", "arm64", "ave-holder-sweep")));
+        writeFileSync(join(root, "dist", "src", "main", "main.js"), `${macosHolderSweepBundlePinDeclaration(pin)}\n`);
+      }
     }
     if (platform === "darwin" && process.platform !== "darwin") {
       await expect(beforePack(context)).rejects.toThrow(/requires a native macOS build/);
@@ -109,9 +121,10 @@ describe("packaged skill script inventory", () => {
       await expect(beforePack(context)).resolves.toBeUndefined();
     }
     if (platform === "darwin") expect(existsSync(join(root, "resources", "macos-dir-ops", "arm64", "ave-dir-ops"))).toBe(process.platform === "darwin");
+    if (platform === "darwin") expect(existsSync(join(root, "resources", "macos-holder-sweep", "arm64", "ave-holder-sweep"))).toBe(process.platform === "darwin");
     writeFileSync(join(directory, "xlsx-publication-012345abcdef.cjs"), "leftover fixture");
     await expect(beforePack(context)).rejects.toThrow(/xlsx-publication-012345abcdef\.cjs/);
-  });
+  }, 180_000);
 
   it("rejects an extra script before entering native platform preparation", async () => {
     vi.stubEnv("AVE_MXC_VERIFICATION_BUILD", "0");

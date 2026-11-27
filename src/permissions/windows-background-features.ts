@@ -1,11 +1,12 @@
 import type { SessionSearchIndexPolicy, SessionSearchIndexPolicySource } from "../memory/session-search-index.js";
 import { isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
+import { windowsExtensionPlan } from "../shared/sandbox-capability-info.js";
 import { isWindowsBackgroundConfinementRuntimeActive } from "./asrt-sandbox.js";
 import { getMxcReleaseGateGeneration, hasMxcReleaseGateEvidence } from "./mxc-extension-admission.js";
 import { mxcSandboxHomesParent } from "./mxc-runtime-root.js";
 import {
   getSandboxHomesUnavailable,
-  getWindowsExtensionBackendPlan,
+  getExtensionBackendPlan,
   getWindowsSandboxSubstrate,
   isSandboxGateUndecidedAtBoot,
   markSandboxHomesUnavailable,
@@ -52,7 +53,7 @@ function admissionOver(stateOf: (owner: WindowsBackendEvidenceOwner) => WindowsB
   // Absence needs the boot record and the current evidence of every backend to agree.
   const hasDefinitiveBackendAbsence = (): boolean => {
     const substrate = getWindowsSandboxSubstrate();
-    const plan = getWindowsExtensionBackendPlan();
+    const plan = windowsExtensionPlan(getExtensionBackendPlan());
     if (plan?.selectedBackend !== "none" || substrate?.shells !== "none"
       || !BACKEND_OWNERS.every((owner) => owner.provider.isAbsentAtBoot(substrate) && stateOf(owner) === "absent")) return false;
     return plan.readiness === "off" || (plan.readiness === "unavailable"
@@ -83,13 +84,13 @@ export async function refreshWindowsBackgroundAdmission(scope: "all" | "switches
   const releaseIsCurrent = () => releaseGeneration === getMxcReleaseGateGeneration();
   if (scope === "extension") {
     if (!isWindowsBackgroundFeatureReleaseEnabled() || isSandboxGateUndecidedAtBoot()) return INACTIVE_ADMISSION;
-    const plan = getWindowsExtensionBackendPlan();
+    const plan = windowsExtensionPlan(getExtensionBackendPlan());
     const epoch = getWindowsContainerBackendLossEpoch();
     return {
       ...INACTIVE_ADMISSION,
       // The holder separately verifies its own native start. Shell startup evidence cannot admit or withdraw it.
       isBackendOperational: (backend) => backend === "container" && plan?.selectedBackend === "mxc" && plan.readiness === "ready"
-        && releaseIsCurrent() && getWindowsExtensionBackendPlan() === plan && epoch === getWindowsContainerBackendLossEpoch()
+        && releaseIsCurrent() && windowsExtensionPlan(getExtensionBackendPlan()) === plan && epoch === getWindowsContainerBackendLossEpoch()
         && hasWindowsBackgroundHealth(),
     };
   }

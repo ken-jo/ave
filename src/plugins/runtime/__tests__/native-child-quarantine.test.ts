@@ -19,7 +19,7 @@ import { servePluginChild } from "../../isolation/plugin-child-main.js";
 import type { PluginManifest } from "../../types.js";
 import { MxcProcessContractError } from "../../../permissions/mxc-extension-errors.js";
 import { pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../../isolation/out-of-process-plugin.js";
-import { nativePluginChildFactoryBudgetMs, TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
+import { containerHolderStartMs, containerHolderStopMs, nativePluginChildFactoryBudgetMs, TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import type { PluginRuntime } from "../../runtime.js";
 import type { MxcConfinedChildSpec } from "../../../permissions/confined-child.js";
 import { planWindowsExtensionHolder } from "../../../permissions/mxc-extension-readiness.js";
@@ -48,7 +48,7 @@ const accountRoute = vi.hoisted(() => vi.fn(() => { throw new Error("account rou
 const backendPlan = vi.hoisted(() => ({ current: undefined as unknown }));
 vi.mock("../../../permissions/sandbox-capability.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/sandbox-capability.js")>(),
-  getWindowsExtensionBackendPlan: () => backendPlan.current,
+  getExtensionBackendPlan: () => backendPlan.current,
 }));
 
 const PLUGIN_ID = "nativequarantine";
@@ -438,7 +438,11 @@ describe("native plugin child quarantine through the runtime", () => {
     const policy = TOOL_TIMEOUT_POLICY;
     // Startup, the construct request, then a refused bring-up's disposal all fit inside the factory deadline.
     expect(pluginFactoryDeadlineMs(native, policy.pluginFactoryMs)).toBeGreaterThanOrEqual(
-      policy.windowsAclHostStartupMs + policy.pluginImportMs + policy.pluginFactoryMs + policy.windowsProcessTreeKillMs);
+      containerHolderStartMs() + policy.pluginImportMs + policy.pluginFactoryMs + containerHolderStopMs());
+    // Each platform's own holder deadlines: Windows' ACL host and tree kill, a macOS holder's ready byte and full stop.
+    expect([containerHolderStartMs("win32"), containerHolderStopMs("win32")]).toEqual([policy.windowsAclHostStartupMs, policy.windowsProcessTreeKillMs]);
+    expect([containerHolderStartMs("darwin"), containerHolderStopMs("darwin")]).toEqual([policy.mxcMacHolderStartMs,
+      policy.mxcMacHolderTermGraceMs + policy.mxcMacHolderOutputDrainMs + policy.processTreeKillMs + policy.mxcMacHolderSweepMs]);
     expect(pluginFactoryDeadlineMs(legacy, policy.pluginFactoryMs)).toBe(policy.pluginFactoryMs);
     expect(pluginStopBudgetMs({ handlers: {} }, 2_000)).toBe(2_000);
   });

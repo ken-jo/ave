@@ -1,0 +1,22 @@
+[package]
+name = "ave-holder-sweep"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+build = false
+
+[features]
+# A test-only variant that finds members but never signals them; it is never packaged.
+fixture = []
+
+[[bin]]
+name = "ave-holder-sweep"
+path = "src/main.rs"
+
+[profile.release]
+strip = "symbols"
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1

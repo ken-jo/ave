@@ -1,13 +1,15 @@
 import { join, win32 } from "node:path";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { setupCommittedAveHome } from "../../__tests__/support/committed-ave-home.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { parseTailnetWorkDecision } from "../../api/tailnet-work-decision-input.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import * as allowedDirectories from "../../permissions/allowed-directories.js";
+import { ApprovalGate } from "../../permissions/approval-gate.js";
 import { foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
 import type { TailnetRequestedOutputDecision, TailnetWorkDecisionRequest } from "../../shared/tailnet-work-decisions.js";
+import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
@@ -16,8 +18,12 @@ import { createRequestedOutputHooks, requestedOutputHash } from "../../work-boar
 import { RoutinesStore } from "../routines-store.js";
 import { createTailnetWorkDecisions } from "../tailnet-work-decisions.js";
 import { itemDigestOf, planHashOf } from "../work-board-store.js";
+import type { RemoteWorkDecisionEvidence } from "../workflow-template-decision.js";
 
 setupCommittedAveHome("tailnet-work-decisions-");
+
+const logCaptures: ReturnType<typeof watchPermissionEvents>[] = [];
+afterEach(() => { for (const capture of logCaptures.splice(0).reverse()) capture.mockRestore(); });
 
 const base = { id: "0f3b6ea5-4de9-444e-9aee-8a1691e2e005", scope: "7e63f524-3125-445f-a4c0-726cf9341848" };
 const login = "owner@example.com";
@@ -32,21 +38,22 @@ function fromWire(request: TailnetWorkDecisionRequest): TailnetWorkDecisionReque
   return parsed;
 }
 
-async function fixture(options: Parameters<typeof stageRunHarness>[0] = {}) {
+async function fixture(options: Parameters<typeof stageRunHarness>[0] = {}, approvalGate?: ApprovalGate) {
   const h = await stageRunHarness({ observeRunWork: true, ...options });
   const routines = new RoutinesStore(join(h.dir, "routines.json"));
   routines.bindTemplateAttachments(h.templates);
-  const log = vi.fn();
+  const log = vi.fn<(event: Record<string, unknown>) => void>();
+  logCaptures.push(watchPermissionEvents(event => { if (event.event === "remote_work_decision") log(event); }));
   const settings = DEFAULT_SETTINGS;
   const runtime = createTailnetWorkDecisions({
     workBoardStore: h.board, workBoardEngine: h.engine, workflowTemplateStore: h.templates, routinesStore: routines,
-    settingsService: { get: key => settings[key] }, toolRegistry: new ToolRegistry(),
+    settingsService: { get: key => settings[key] }, toolRegistry: new ToolRegistry(), approvalGate,
   });
   if (!runtime) throw new Error("Work decision runtime unavailable");
   return { h, routines, log, runtime, decide: (request: TailnetWorkDecisionRequest) => runtime.decide(request, evidence) };
 }
 
-it("decides the current stored plan and audits the verified login without the note", async () => {
+it("decides the current stored plan and logs the remote decision without private data", async () => {
   const { h, decide, log } = await fixture();
   await h.runThenEnd(async () => {
     const created = await h.board.create({ title: "Review work" });
@@ -60,10 +67,11 @@ it("decides the current stored plan and audits the verified login without the no
     expect(log).not.toHaveBeenCalled();
     await expect(decide({ ...request, input: { ...request.input, planHash: planHashOf(plan) } })).resolves.toEqual({ ok: true, kind: "plan", status: "rejected" });
     expect(log).toHaveBeenCalledOnce();
-    const data = log.mock.calls[0][0].output;
-    expect(data).not.toContain(privateNote);
-    expect(data).not.toContain(plan);
-    expect(JSON.parse(data)).toMatchObject({ origin: "tailnet-surface", login, runId });
+    const data = log.mock.calls[0][0];
+    expect(data).toMatchObject({ origin: "tailnet-surface", runId, decision: "rejected" });
+    expect(JSON.stringify(data)).not.toContain(privateNote);
+    expect(JSON.stringify(data)).not.toContain(plan);
+    expect(JSON.stringify(data)).not.toContain(login);
     expect(h.children).toHaveLength(0);
   });
 });
@@ -92,7 +100,7 @@ it.each(["stage", "join"] as const)("binds a remote %s decision to the current w
     }
     expect(log).toHaveBeenCalledOnce();
     expect(JSON.stringify(log.mock.calls)).not.toContain(privateNote);
-    expect(JSON.parse(log.mock.calls[0][0].output)).toMatchObject({ origin: "tailnet-surface", login, runId: binding.input.runId, decision: kind === "join" ? "reject" : "rejected" });
+    expect(log.mock.calls[0][0]).toMatchObject({ origin: "tailnet-surface", runId: binding.input.runId, decision: kind === "join" ? "reject" : "rejected" });
   });
 });
 
@@ -119,7 +127,7 @@ it("rejects a stale template revision and starts only the exact confirmed remote
     expect(child.input).not.toHaveProperty("remoteControllerAuthority");
     expect(log).toHaveBeenCalledTimes(2);
     const { confirmation } = await h.templates.resolveVersion(confirmed.pin);
-    expect(JSON.parse(log.mock.calls[0][0].output)).toMatchObject({ kind: "template-confirmation", auditId: confirmation.auditId });
+    expect(log.mock.calls[0][0]).toMatchObject({ kind: "template-confirmation", auditId: confirmation.auditId });
   });
 });
 
@@ -169,7 +177,7 @@ it("attaches a schedule with the exact pin and removes a routine created for a r
     const attachment = await h.templates.getAttachment(result.attachmentId);
     expect(attachment).toMatchObject({ ...pin, who: login, origin: "tailnet-surface", scheduleId: result.scheduleId, auditId: expect.any(String) });
     expect(log).toHaveBeenCalledOnce();
-    expect(JSON.parse(log.mock.calls[0][0].output)).toMatchObject({ kind: "schedule-attachment", auditId: attachment?.auditId });
+    expect(log.mock.calls[0][0]).toMatchObject({ kind: "schedule-attachment", auditId: attachment?.auditId });
   });
 });
 
@@ -266,7 +274,7 @@ it.each(["reject", "request_changes"] as const)("requires a local approver for a
     if (!runId || !stage.resultHash || !outputHash) throw new Error("Missing pending output binding");
     const binding = { runId, stageId: stage.stageId, attempt: stage.attempt, resultHash: stage.resultHash, outputHash };
     const request = { ...base, kind: "stage", itemId, input: { ...binding, decision: "approve" } } as const;
-    await expect(decide(fromWire(request))).resolves.toEqual({ ok: false, error: "outputs-need-local-approver" });
+    await expect(decide(fromWire(request))).resolves.toEqual({ ok: false, error: "requested-output-card-unavailable" });
     await expect(decide({ ...request, input: { ...request.input, outputHash: staleHash } }))
       .resolves.toEqual({ ok: false, error: "output_mismatch" });
     expect((await h.item(itemId)).stageRuns[0]).toMatchObject({ gate: { status: "pending" } });
@@ -313,7 +321,7 @@ it("dispatches requested outputs only while their owner is registered", async ()
     const request = { ...base, kind: "requested-output", input } as const;
     expect(parseTailnetWorkDecision(request)).toEqual(request);
     expect(parseTailnetWorkDecision({ ...request, input: { ...input, outputId: "first" } })).toBeNull();
-    await expect(decide(request)).resolves.toEqual({ ok: false, error: "outputs-need-local-approver" });
+    await expect(decide(request)).resolves.toEqual({ ok: false, error: "requested-output-card-unavailable" });
     const reject = { ...request, input: { ...input, decision: "reject" } } as const;
     await expect(decide(reject)).resolves.toEqual({ ok: false, error: "requested-output-unavailable" });
     const handler = vi.fn(async (_decision: TailnetRequestedOutputDecision) => ({ ok: true as const }));
@@ -328,12 +336,12 @@ it("dispatches requested outputs only while their owner is registered", async ()
     await expect(decide({ ...request, input: { ...input, runId: "stale-run" } })).resolves.toEqual({ ok: false, error: "run_mismatch" });
     await expect(decide({ ...request, input: { ...input, outputHash: staleHash } })).resolves.toEqual({ ok: false, error: "output_mismatch" });
     await expect(decide(fromWire({ ...base, kind: offered.kind, input: { ...offered.binding.input, decision: "approve" } })))
-      .resolves.toEqual({ ok: false, error: "outputs-need-local-approver" });
+      .resolves.toEqual({ ok: false, error: "requested-output-card-unavailable" });
     await expect(decide(fromWire({ ...base, kind: offered.kind, input: { ...offered.binding.input, decision: "reject" } })))
       .resolves.toEqual({ ok: true, kind: "requested-output" });
     const { itemId: _itemId, ...stageBinding } = input;
     await expect(decide({ ...base, kind: "stage", itemId, input: { ...stageBinding, resultHash: stage.resultHash ?? "" } }))
-      .resolves.toEqual({ ok: false, error: "outputs-need-local-approver" });
+      .resolves.toEqual({ ok: false, error: "requested-output-card-unavailable" });
     expect(handler).toHaveBeenLastCalledWith(reject.input, expect.objectContaining({ login, conversationId: evidence.conversationId }), undefined);
     expect((await h.item(itemId)).stageRuns[0].gate).toMatchObject({ status: "pending" });
     expect(h.children).toHaveLength(1);
@@ -410,5 +418,60 @@ it("shares the desktop review binding for a conversation proposal and makes owne
     expect(parseTailnetWorkDecision(reattach)).toEqual(reattach);
     expect(parseTailnetWorkDecision({ ...reattach, input: { ...reattach.input, decision: "reject" } })).toBeNull();
     await expect(decide(fromWire(reattach))).resolves.toMatchObject({ ok: true, kind: "schedule-attachment", scheduleId: attachment.scheduleId });
+  });
+});
+
+it.each(["stage", "requested-output"] as const)("commits a reviewed %s before its execution card is answered", async kind => {
+  const gate = new ApprovalGate(() => null);
+  const invocationStarted = deferred<void>();
+  const execution = deferred<"done">();
+  const invoke = vi.fn(async () => {
+    invocationStarted.resolve();
+    return await execution.promise;
+  });
+  const { h, runtime } = await fixture({ workflow: { outputs: createRequestedOutputHooks(createHostGit(), { invoke }, process.cwd()) } }, gate);
+  const pageEvidence: RemoteWorkDecisionEvidence = { ...evidence, outputPage: { id: "review-page", controller: {
+    kind: "tailnet-controller", actorId: "tailnet:owner", pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: base.scope },
+    pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => true },
+  } } };
+  const decide = (request: TailnetWorkDecisionRequest, seen = pageEvidence) => runtime.decide(fromWire(request), seen);
+  await h.runThenEnd(async () => {
+    try {
+      const decl = { kind: "external-write", toolName: "publish_note", owner: "plugin", ownerId: "notes" } as const;
+      const version = await h.confirm([stageOf("a", { requestedOutputs: [decl] })]);
+      const itemId = await h.addItem(version);
+      const start = h.start(itemId, h.local(version));
+      const [child] = await h.untilLive(1, itemId);
+      const { stageOutputTool, projectRoot } = child.input;
+      if (!stageOutputTool || !projectRoot) throw new Error("Missing stage output intake");
+      const args = { body: "Content reserved for the execution card" };
+      await stageOutputTool.execute({ toolName: decl.toolName, owner: decl.owner, ownerId: decl.ownerId, args, summary: "Publish note" },
+        { cwd: projectRoot, metadata: {}, extraAllowedDirectories: [] });
+      child.finish();
+      await start;
+      await runtime.outputSnapshot(pageEvidence);
+      const reviews = await runtime.list(pageEvidence);
+      const offered = reviews.find(review => review.kind === kind);
+      if (!offered || (offered.kind !== "stage" && offered.kind !== "requested-output") || !offered.reviewHandle) throw new Error("Missing page-bound gate review");
+      expect(JSON.stringify(reviews)).not.toContain(args.body);
+      const request = offered.kind === "stage" ? { ...base, kind: offered.kind, itemId, input: { ...offered.binding.input, decision: "approve" as const } }
+        : { ...base, kind: offered.kind, input: { ...offered.binding.input, decision: "approve" as const } };
+      await expect(decide(request)).resolves.toEqual({ ok: false, error: "requested-output-card-unavailable" });
+      const reviewedRequest = { ...request, reviewHandle: offered.reviewHandle };
+      await expect(decide(reviewedRequest, evidence)).resolves.toEqual({ ok: false, error: "requested-output-card-unavailable" });
+      const other = pageEvidence.outputPage && { ...pageEvidence, outputPage: { ...pageEvidence.outputPage, id: "another-page" } };
+      await expect(decide(reviewedRequest, other)).resolves.toEqual({ ok: false, error: "requested-output-card-unavailable" });
+      expect(invoke).not.toHaveBeenCalled();
+      await expect(decide(reviewedRequest)).resolves.toMatchObject({ ok: true, kind });
+      await invocationStarted.promise;
+      expect((await h.stageRun(itemId, "a")).outputExecutions).toMatchObject([{ status: "pending" }]);
+      execution.resolve("done");
+      await h.drainRunWork();
+      expect((await h.stageRun(itemId, "a")).outputExecutions).toMatchObject([{ status: "done" }]);
+      expect(invoke).toHaveBeenCalledOnce();
+    } finally {
+      execution.resolve("done");
+      gate.disposeAll();
+    }
   });
 });

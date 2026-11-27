@@ -1,6 +1,7 @@
 // The shared extension-start card on the approval dock: the request the gate accepts, the answers it honours (one yes or no for
 // exactly each start the card listed) and what reaches the starts.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 
 import { FIXTURE_START_IDENTITY as ID } from "../../__tests__/support/approved-extension-start.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
@@ -19,9 +20,10 @@ const KEYS = ["plugin-child:a", "mcp-stdio:b", "plugin-child:c"];
 
 function makeGate() {
   const wc = { send: vi.fn(), isDestroyed: vi.fn(() => false) };
-  const auditLogger = { log: vi.fn() };
+  const capture = collectPermissionEvents();
+  logCaptures.push(capture);
   const gate = new ApprovalGate(wc as never, undefined, 5_000);
-  const audit = () => auditLogger.log.mock.calls.map(([row]) => String((row as { output?: string }).output ?? ""));
+  const audit = () => capture.events;
   return { wc, gate, audit };
 }
 
@@ -51,7 +53,11 @@ const rowsOf = (card: ApprovalRequest) => extensionStartApprovalRows(card.args) 
 const answers = (card: ApprovalRequest, choices: readonly ExtensionStartChoice[]): Record<string, ExtensionStartChoice> =>
   Object.fromEntries(rowsOf(card).map((row, index) => [row.id, choices[index] ?? "no"]));
 
-afterEach(() => __resetExtensionStartsForTest());
+const logCaptures: ReturnType<typeof collectPermissionEvents>[] = [];
+afterEach(() => {
+  for (const capture of logCaptures.splice(0).reverse()) capture.restore();
+  __resetExtensionStartsForTest();
+});
 
 describe("the shared extension-start card", () => {
   it("shows three waiting starts as one card and starts exactly the two answered yes", async () => {
@@ -92,7 +98,7 @@ describe("the shared extension-start card", () => {
     for (const key of KEYS) expect(takeExtensionStartGrant(key)).toBeUndefined();
     // Nobody answered: every start still waits for a person.
     expect(listPendingExtensionStarts().map((entry) => entry.state)).toEqual(["pending", "pending", "pending"]);
-    expect(audit().some((row) => row.startsWith(`[approval:extension-start-answers-rejected] ${card.id}`))).toBe(true);
+    expect(audit().some((row) => row.event === "approval_extension_start_answers_rejected" && row.requestId === card.id)).toBe(true);
   });
 
   it("refuses a deny whose answers hold a yes", async () => {
@@ -123,7 +129,7 @@ describe("the shared extension-start card", () => {
     const card = await cardSent(wc);
     expect(gate.resolve(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac })).toBeNull();
     expect(spawned).toEqual([]);
-    expect(audit().some((row) => row.startsWith(`[approval:native-desktop-required] ${card.id}`))).toBe(true);
+    expect(audit().some((row) => row.event === "approval_native_desktop_required" && row.requestId === card.id)).toBe(true);
     gate.resolveFromDesktopRenderer(card.id, {
       requestId: card.id, choice: "allow-once", extensionStartChoices: answers(card, ["no", "yes", "no"]), nonce: card.nonce, hmac: card.hmac,
     }, wc as never);
@@ -149,8 +155,8 @@ describe("the shared extension-start card", () => {
     expect(row(third, "allow-once")).toMatchObject({ choice: "allow-once", extensionStartChoices: { [first ?? ""]: "yes", [second ?? ""]: "no", [third ?? ""]: "yes" } });
     await settling;
     expect(spawned).toEqual(["plugin-child:a", "plugin-child:c"]);
-    expect(audit().filter((line) => line.startsWith(`[approval:extension-start-row] ${card.id}`))).toHaveLength(3);
-    expect(audit().filter((line) => line.startsWith(`[approval:extension-start-row-rejected] ${card.id}`))).toHaveLength(3);
+    expect(audit().filter((line) => line.event === "approval_extension_start_row" && line.requestId === card.id)).toHaveLength(3);
+    expect(audit().filter((line) => line.event === "approval_extension_start_row_rejected" && line.requestId === card.id)).toHaveLength(3);
   });
 
   it("shows the desk card each row another surface answered, and the desk answer for the rest settles the card exactly once", async () => {
@@ -208,7 +214,7 @@ describe("the shared extension-start card", () => {
       expect(await answer).toBe(decision);
       expect(isHostApprovalRejectedDecision(decision)).toBe(true);
       expect(sentApprovalCards(wc)).toHaveLength(1);
-      expect(audit()).toEqual(expect.arrayContaining([expect.stringContaining("[approval:unattended-approval-denied]")]));
+      expect(audit()).toEqual(expect.arrayContaining([expect.objectContaining({ event: "approval_response_refused", reasonCode: "unattended-approval-denied" })]));
     } finally {
       gate.disposeAll();
     }
@@ -248,8 +254,8 @@ describe("the shared extension-start card", () => {
     const settled = gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", extensionStartChoices: answers(resent, ["yes", "no", "yes"]), nonce: card.nonce, hmac: card.hmac }, wc as never);
     expect(settled).toMatchObject({ choice: "allow-once", extensionStartChoices: { "row-a": "no", [MASKABLE]: "yes", "row-c": "yes" } });
     await expect(answer).resolves.toBe(settled);
-    expect(audit().filter((row) => row.startsWith("[approval:extension-start-row-late]"))).toHaveLength(2);
-    expect(audit().filter((row) => row.startsWith("[approval:extension-start-answers-rejected]"))).toEqual([]);
+    expect(audit().filter((row) => row.event === "approval_extension_start_row_late")).toHaveLength(2);
+    expect(audit().filter((row) => row.event === "approval_extension_start_answers_rejected")).toEqual([]);
   });
 
   it("refuses per-start answers on a request that is not an extension-start card", async () => {

@@ -715,7 +715,7 @@ describe("invocation audit and sealed resume", () => {
       ["rate-limit", "services.rateLimiter.check(toolUse.name, trust)"],
       ["tool-start-emit-boundary", "    emitToolStart(callbacks, toolUse.name, finalInput, meta);\n\n    // ── Step 6: Execute"],
       ["during-execute-effect-gate-context", "runWithEffectGateContext("],
-      ["tool-execute", "return runWithAgentObservationInvocation({ sessionId, toolUseId: toolUse.id },\n                () => {\n                  const denial = services.skillAdmissionCheck?.(sessionId, toolUse.name, finalInput);\n                  if (denial) throw new Error(denial);\n                  return tool.execute(finalInput, ctx);"],
+      ["tool-execute", "return runWithAgentObservationInvocation({ sessionId, toolUseId: toolUse.id },\n                () => {\n                  const denial = services.skillAdmissionCheck?.(sessionId, toolUse.name, finalInput);\n                  if (denial) throw new Error(denial);\n                  if (context.approvedInvocation && !context.approvedInvocation(tool, finalInput)) throw new Error(\"The approved output changed\");\n                  handlerAdmissionBlocked = false;\n                  return tool.execute(finalInput, ctx);"],
       ["effect-shadow-reconciliation", "const effectSummary = effectLedger.summary()"],
       ["post-tool-use-hooks", "postFeedback = await services.hookRunner.runPostHooks("],
       ["post-failure-lifecycle", "\"PostToolUseFailure\","],

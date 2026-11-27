@@ -64,7 +64,7 @@ vi.mock("../../../permissions/mxc-extension-admission.js", async (importOriginal
 vi.mock("../../../permissions/sandbox-capability.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/sandbox-capability.js")>(),
   getWindowsSandboxSubstrate: () => backgroundState.noBackend ? backgroundState.substrate : null,
-  getWindowsExtensionBackendPlan: () => backgroundState.noBackend ? backgroundState.plan : undefined,
+  getExtensionBackendPlan: () => backgroundState.noBackend ? backgroundState.plan : undefined,
 }));
 vi.mock("../../../shared/ave-home.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../shared/ave-home.js")>(),

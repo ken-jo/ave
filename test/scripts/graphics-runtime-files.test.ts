@@ -23,6 +23,20 @@ const { readUpstreamSrtWinInput } = require("../../scripts/lib/srt-win-integrity
 const PATH_KIND_HELPER = "fixture helper";
 const PATH_KIND_SHA256 = createHash("sha256").update(PATH_KIND_HELPER).digest("hex");
 const PATH_KIND_BUNDLE = `const __aveWindowsPathKindPin = "${PATH_KIND_SHA256}";\n`;
+// The macOS holder helper's before-pack record, as the packager process holds it for after-pack (byte check only here).
+const HOLDER_SWEEP_HELPER = "fixture holder helper";
+const HOLDER_SWEEP_SHA256 = createHash("sha256").update(HOLDER_SWEEP_HELPER).digest("hex");
+const HOLDER_SWEEP_PACKAGE = pathToFileURL(require.resolve("../../scripts/lib/macos-holder-sweep-package.mjs")).href;
+function recordMacHolderSweep(appOutDir: string): void {
+  const { macosHolderSweepBundlePinDeclaration, recordMacosHolderSweepPackageBuild } = require("../../scripts/lib/macos-holder-sweep-package.mjs") as {
+    macosHolderSweepBundlePinDeclaration(imageSha256: string): string;
+    recordMacosHolderSweepPackageBuild(input: { appOutDir: string; arch: string; build: { binarySha256: string; imageSha256: string }; bundleDir: string }): void;
+  };
+  const bundleDir = join(appOutDir, "holder-staging");
+  mkdirSync(bundleDir, { recursive: true });
+  writeFileSync(join(bundleDir, "main.js"), `${macosHolderSweepBundlePinDeclaration(HOLDER_SWEEP_SHA256)}\n`);
+  recordMacosHolderSweepPackageBuild({ appOutDir, arch: "arm64", build: { binarySha256: HOLDER_SWEEP_SHA256, imageSha256: HOLDER_SWEEP_SHA256 }, bundleDir });
+}
 const packageHook = require("../../scripts/electron-after-pack.cjs") as (
   context: Awaited<ReturnType<typeof createPackage>>["context"],
 ) => Promise<void>;
@@ -40,6 +54,7 @@ const substitutedMacPins = new Map<string, string>();
 
 async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["context"], copy?: { mapping: "file" | "directory"; substitute: boolean }): Promise<void> {
   const macPins = substitutedMacPins.get(context.appOutDir);
+  if (context.electronPlatformName === "darwin") recordMacHolderSweep(context.appOutDir);
   if (context.electronPlatformName === "darwin" && macPins === undefined) return packageHook(context);
   if (context.electronPlatformName === "linux") {
     if (process.platform !== "win32") return packageHook(context);
@@ -96,6 +111,14 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
       (await import(process.argv[5])).recordWindowsPathKindPackageBuild({
         appOutDir: context.appOutDir, arch, bundleDir, build, receiptPath,
       });
+      if (context.electronPlatformName === 'darwin') {
+        const holder = await import(process.argv[9]);
+        const holderSha256 = createHash('sha256').update(process.argv[10]).digest('hex');
+        const holderBundle = join(context.appOutDir, 'holder-staging');
+        mkdirSync(holderBundle, { recursive: true });
+        writeFileSync(join(holderBundle, 'main.js'), holder.macosHolderSweepBundlePinDeclaration(holderSha256) + '\\n');
+        holder.recordMacosHolderSweepPackageBuild({ appOutDir: context.appOutDir, arch: 'arm64', build: { binarySha256: holderSha256, imageSha256: holderSha256 }, bundleDir: holderBundle });
+      }
       const copy = JSON.parse(process.argv[7]);
       if (copy) {
         require('app-builder-lib');
@@ -131,7 +154,7 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, JSON.stringify(context),
     macPins ?? join(context.appOutDir, "resources", "fixture-sdk-pins.json"), require.resolve("../../scripts/electron-after-pack.cjs"),
     require.resolve("../../scripts/lib/srt-win-integrity.cjs"),
-    pathToFileURL(require.resolve("../../scripts/lib/windows-path-kind-package.mjs")).href, PATH_KIND_HELPER, JSON.stringify(copy ?? null), PATH_KIND_BUNDLE], {
+    pathToFileURL(require.resolve("../../scripts/lib/windows-path-kind-package.mjs")).href, PATH_KIND_HELPER, JSON.stringify(copy ?? null), PATH_KIND_BUNDLE, HOLDER_SWEEP_PACKAGE, HOLDER_SWEEP_HELPER], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", AVE_TEST_SRT_RECEIPTS: JSON.stringify(SRT_WIN_BUILD_RECEIPTS) }, encoding: "utf8",
   });
   if (result.error) throw result.error;
@@ -183,6 +206,7 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
     binarySha256: createHash("sha256").update(uv).digest("hex"),
   }));
   putFile(join(resources, "licenses", "uv", "LICENSE-MIT"));
+  if (platform === "darwin") putFile(join(resources, "macos-holder-sweep", "arm64", "ave-holder-sweep"), HOLDER_SWEEP_HELPER);
   if (platform !== "darwin") {
     const vendorPath = join(modules, "@anthropic-ai", "sandbox-runtime", "vendor",
       platform === "linux" ? "seccomp" : "srt-win", "x64",

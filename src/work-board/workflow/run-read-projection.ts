@@ -11,6 +11,7 @@ import { boundedStageInputs, stageInputsOf } from "./stage-prompt.js";
 import { isAwaitingStageReview } from "./run-state.js";
 import { requestedOutputHash, requestedOutputsMatchStage } from "./requested-outputs.js";
 import { isWorkflowPush } from "./host-git.js";
+import { canRetryRequestedOutput } from "./requested-output-retry.js";
 
 const TURN_TEXT_LIMIT = 4_000;
 const RECENT_TURN_LIMIT = 40;
@@ -132,7 +133,7 @@ export function projectWorkflowRun(
       const retryIds = hash && status === "passed" && gate?.type === "human" && gate.status === "approved"
         ? outputExecutions?.flatMap(entry => {
           const request = stage.requestedOutputs?.find(candidate => candidate.id === entry.id);
-          return request && !isWorkflowPush(request.decl) && (entry.status === "failed" || entry.status === "denied") ? [entry.id] : [];
+          return request && !isWorkflowPush(request.decl) && canRetryRequestedOutput(entry) ? [entry.id] : [];
         }) : undefined;
       return {
         stageId, attempt, status, childSessionId, startedAt, endedAt, failure, gate: shownGate, receivedInputs,
