@@ -249,7 +249,7 @@ describe("browser capture stitch process", () => {
     expect(getManagedChildProcessCount()).toBeLessThanOrEqual(1);
     decoder.stalled = false;
     await recovered(session);
-    await expect.poll(getManagedChildProcessCount).toBe(0);
+    await expect.poll(getManagedChildProcessCount, { timeout: RECOVERY_BOUND_MS }).toBe(0);
     expect(session.restore).toHaveBeenCalledOnce();
   });
 
@@ -281,7 +281,7 @@ describe("browser capture stitch process", () => {
     }
     // A completed capture owes no decode, so an immediate retake is admitted.
     await expect(session.capture({ fullPage: true })).resolves.toMatchObject({ height: CONTENT_HEIGHT });
-    await expect.poll(getManagedChildProcessCount).toBe(0);
+    await expect.poll(getManagedChildProcessCount, { timeout: RECOVERY_BOUND_MS }).toBe(0);
   });
 
   it("accepts consecutive IDAT chunks from the production child", async () => {
@@ -300,7 +300,7 @@ describe("browser capture stitch process", () => {
       expect((await sharp(png, { failOn: "warning" }).raw().toBuffer()).equals(pixels)).toBe(true);
     } finally {
       stitcher.stop();
-      await expect.poll(getManagedChildProcessCount).toBe(0);
+      await expect.poll(getManagedChildProcessCount, { timeout: RECOVERY_BOUND_MS }).toBe(0);
     }
   });
 
@@ -325,7 +325,7 @@ describe("browser capture stitch process", () => {
     runtime.mainDir = entryDir(replyEntry(replyFrame({ id: 0, error: { message: { toString: null } } })));
     const session = tiledSession();
     const failure = await session.capture({ fullPage: true }, 2_000).catch((error: unknown) => error);
-    await expect.poll(getManagedChildProcessCount).toBe(0);
+    await expect.poll(getManagedChildProcessCount, { timeout: RECOVERY_BOUND_MS }).toBe(0);
     expect(failure).toMatchObject({ code: "screenshot-failed" });
     expect(session.restore).toHaveBeenCalledOnce();
     await recovered(session);
@@ -360,13 +360,13 @@ describe("browser capture stitch process", () => {
     } finally {
       termination.hold = undefined;
       release.resolve();
-      await expect.poll(getManagedChildProcessCount).toBe(0);
+      await expect.poll(getManagedChildProcessCount, { timeout: RECOVERY_BOUND_MS }).toBe(0);
     }
     await recovered(session);
     expect(session.restore).toHaveBeenCalledOnce();
     runtime.mainDir = healthyEntry;
     await expect(session.capture({ fullPage: true })).resolves.toMatchObject({ height: CONTENT_HEIGHT });
-    await expect.poll(getManagedChildProcessCount).toBe(0);
+    await expect.poll(getManagedChildProcessCount, { timeout: RECOVERY_BOUND_MS }).toBe(0);
   });
 
   it.each([0, BROWSER_CAPTURE_LIMITS.bytes + 1])("rejects an encode acknowledgement with %i payload bytes", async (payloadBytes) => {
@@ -379,7 +379,7 @@ describe("browser capture stitch process", () => {
       expect(reply).toMatchObject({ code: "screenshot-failed" });
     } finally {
       stitcher.stop();
-      await expect.poll(getManagedChildProcessCount).toBe(0);
+      await expect.poll(getManagedChildProcessCount, { timeout: RECOVERY_BOUND_MS }).toBe(0);
     }
   });
 
@@ -457,7 +457,7 @@ describe("browser capture stitch process", () => {
       await expect(session.capture({ fullPage: true })).resolves.toMatchObject({
         mimeType: "image/png", width: WIDTH, height: CONTENT_HEIGHT, data: expect.any(String),
       });
-      await expect.poll(getManagedChildProcessCount).toBe(0);
+      await expect.poll(getManagedChildProcessCount, { timeout: RECOVERY_BOUND_MS }).toBe(0);
     },
   );
 
@@ -570,7 +570,7 @@ describe("browser capture stitch process", () => {
     const session = tiledSession();
     await expect(session.capture({ fullPage: true })).rejects.toMatchObject({ code: "screenshot-failed" });
     await recovered(session);
-    await expect.poll(getManagedChildProcessCount).toBe(0);
+    await expect.poll(getManagedChildProcessCount, { timeout: RECOVERY_BOUND_MS }).toBe(0);
     expect(session.restore).toHaveBeenCalledOnce();
   });
 
