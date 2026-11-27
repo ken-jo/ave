@@ -9,7 +9,7 @@ import { appendRequestOnlyText } from "./request-only-text.js";
 import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import { randomUUID } from "node:crypto";
 import type { ConversationLoop as LoopContext } from "../conversation-loop.js";
-import type { GuidanceInjectionSource, RunTurnOptions, TurnCallbacks, TurnDecisionEvent, TurnInputRequired, TurnStopReason, ToolScope } from "./types.js";
+import type { GuidanceInjectionSource, RunTurnOptions, TurnCallbacks, TurnDecisionEvent, TurnInputRequired, TurnStopReason, TurnToolCall, ToolScope } from "./types.js";
 import type { GenericMessage, LLMProvider, LLMVendor, MessageMeta, TokenUsage, TokenUsageByModel, ToolCallBlock, ToolSchema } from "../llm/types.js";
 import type { ChatInputOrigin } from "../../shared/chat-origin.js";
 import type { PermissionReviewEvent } from "../../shared/permission-review-status.js";
@@ -144,7 +144,7 @@ export async function queryLoop(
     },
   ): Promise<{
     text: string;
-    toolCalls: Array<{ name: string; input: Record<string, unknown>; result: string }>;
+    toolCalls: TurnToolCall[];
     usage?: TokenUsage;
     stopReason?: TurnStopReason;
     inputRequired?: TurnInputRequired;
@@ -264,7 +264,7 @@ export async function queryLoop(
     const withServingIdentity = (
       result: {
         text: string;
-        toolCalls: Array<{ name: string; input: Record<string, unknown>; result: string }>;
+        toolCalls: TurnToolCall[];
         usage?: TokenUsage;
         stopReason?: TurnStopReason;
         inputRequired?: TurnInputRequired;
@@ -306,7 +306,7 @@ export async function queryLoop(
         },
       })
       : self.provider!;
-    const allToolCalls: Array<{ name: string; input: Record<string, unknown>; result: string }> = [];
+    const allToolCalls: TurnToolCall[] = [];
     const toolMetaByUseId = new Map<string, ToolCallMeta>();
     // Persist the last live review verdict on its tool result so reload shows the same decision.
     const permissionReviewByUseId = new Map<string, PermissionReviewEvent>();
@@ -1333,7 +1333,7 @@ export async function queryLoop(
           content,
           isError: true,
         });
-        allToolCalls.push({ name: tc.name, input: {}, result: content });
+        allToolCalls.push({ name: tc.name, input: {}, result: content, isError: true });
         decide({
           kind: "tool_call.invalid_arguments",
           branch: tc.invalidInput.reason,
@@ -1421,6 +1421,7 @@ export async function queryLoop(
           name: denied.toolName,
           input: toolUses.find((toolUse) => toolUse.id === denied.toolUseId)?.input ?? {},
           result: denied.content,
+          isError: true,
         });
       }
 
@@ -1947,6 +1948,7 @@ export async function queryLoop(
           name: toolUsesForExecutor[i].name,
           input: toolUsesForExecutor[i].input,
           result: toolResults[i]?.content ?? "(missing)",
+          ...((toolResults[i] === undefined || toolResults[i].is_error === true) && { isError: true }),
         });
       }
 

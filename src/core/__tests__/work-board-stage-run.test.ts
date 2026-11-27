@@ -638,3 +638,23 @@ it("a scheduled run parks at its human gate after reconcile and a local approve 
   second.finish();
   await h.until(started.itemId, item => item.runStatus === "completed");
 }));
+
+it.each(["all failed", "recovered", "no calls"] as const)("uses the tool outcome for stage_ok when tools were %s", async outcome => {
+  await withHarness(async h => {
+    const version = await h.confirm([auto("a")]);
+    const id = await h.addItem(version);
+    const settled = h.start(id, h.local(version));
+    const [child] = await h.untilLive(1);
+    child.finish({
+      stopReason: "end_turn", toolCallCount: outcome === "no calls" ? 0 : outcome === "all failed" ? 1 : 2,
+      ...(outcome === "all failed" ? { allToolCallsFailed: true } : {}),
+    });
+    if (outcome === "all failed") {
+      await expect(settled).resolves.toMatchObject({ status: "awaiting_approval" });
+      expect(await h.stageRun(id, "a")).toMatchObject({ status: "failed", failure: "error" });
+    } else {
+      await expect(settled).resolves.toMatchObject({ status: "completed" });
+      expect(await h.stageRun(id, "a")).toMatchObject({ status: "passed" });
+    }
+  });
+});

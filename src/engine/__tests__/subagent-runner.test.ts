@@ -548,11 +548,12 @@ describe("SubAgentRunner — authorization terminal propagation", () => {
     });
     const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
     try {
-      await runner.spawn({
+      const result = await runner.spawn({
         title: "Scheduled report", instructions: "Read report input", toolScope: exactToolScope(["read_file", name]),
         projectRoot: dir, originSessionId: workBoardOriginSessionId(97), unattendedStage: { runKey: "report-run", stageId: "read" },
       });
       expect(execute).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ ok: true, stopReason: "end_turn", allToolCallsFailed: true });
       expect(provider.observedToolNames[0]).toEqual(["read_file", "read_tool_result_chunk"]);
       expect(provider.observedMessages[1]).toContainEqual(expect.objectContaining({
         role: "tool_result", toolUseId: "outside-scope", content: t("be_executor.toolNotFound", { name }), isError: true,

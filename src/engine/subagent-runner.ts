@@ -268,6 +268,8 @@ export interface SubAgentSpawnResult {
   /** Structural success signal. `true` only when the child loop completed a clean `runTurn` (the `summary` is the agent's final message). `false` when the run could not produce a real result; the LLM provider was not configured, or the child loop threw; in which case
    * `summary` carries the error text and {@link error} repeats it. Callers (WorkBoardEngine, agent_spawn) MUST branch on this rather than treating any returned `summary` as a completed run: a failed run that surfaced its error string as `summary` must not be recorded as success. */
   ok: boolean;
+  /** Host-observed failure of every tool call in a nonempty turn. */
+  allToolCallsFailed?: true;
   /** Failure reason when `ok === false`. Absent on a clean completion. */
   error?: string;
   /** Why the child loop stopped, forwarded verbatim from the child's `runTurn`. Undefined when the
@@ -3197,6 +3199,7 @@ export class SubAgentRunner {
     this.updateRun(trackedRun, { taskState: projectSubAgentRunState("running") });
 
     let totalToolCalls = 0;
+    let allToolCallsFailed = false;
     let lastText = "";
     let turn = 0;
 
@@ -3293,6 +3296,7 @@ export class SubAgentRunner {
       // `result.toolCalls.length` is the authoritative final count (the incremental `totalToolCalls`
       // matches it round-by-round; pin to the engine's number in case a round dropped a callback).
       totalToolCalls = result.toolCalls.length;
+      allToolCallsFailed = totalToolCalls > 0 && result.toolCalls.every(call => call.isError === true);
       lastText = result.text;
       childStopReason = result.stopReason;
       childEndTrustOrigin = result.endTrustOrigin;
@@ -3361,7 +3365,7 @@ export class SubAgentRunner {
       inputRequired: childInputRequired,
       suspensionSessionId: child.sessionId,
     });
-    return await persistFinalResult(result);
+    return await persistFinalResult(allToolCallsFailed ? { ...result, allToolCallsFailed: true } : result);
   }
 
   /** Resume rehydrates frozen authorization; never consult the current parent registry or grant tools from unreadable metadata.

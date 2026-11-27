@@ -1650,14 +1650,16 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         return;
       }
       state.results.set(stageId, result);
+      const toolsFailed = result.ok && result.stopReason === "end_turn" && result.allToolCallsFailed === true;
       // A child that reports no end origin is treated as having read files: an unknown origin never passes as clean.
       const end = result.endTrustOrigin;
       const taint: WorkItemStageRun["taint"] = end === "agent-message" ? "agent-message"
         : inputTaint || end === undefined || end === "file-content" ? "file-content" : undefined;
       next = {
-        type: "stage_ended", stageId, attempt, ok: result.ok && budgetFailure === undefined, ...(taint ? { taint } : {}),
+        type: "stage_ended", stageId, attempt, ok: result.ok && !toolsFailed && budgetFailure === undefined, ...(taint ? { taint } : {}),
         ...(usage ? { usage } : {}), ...(deniedCalls ? { deniedCalls } : {}),
         ...(budgetFailure !== undefined ? { reason: budgetFailure, failure: "budget" }
+          : toolsFailed ? { reason: "All stage tool calls failed", failure: "error" }
           : result.ok ? { output: result.summary.slice(0, STAGE_OUTPUT_MAX_CHARS), ...(requestedOutputs?.length && { requestedOutputs }) } : { reason: result.error ?? result.summary, failure: failureOf(state, stageId, result) }),
         ...(result.stopReason === "interrupted" ? { interrupted: true } : {}),
       };
