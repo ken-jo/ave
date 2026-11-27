@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { rankPosixContainerRows, type PosixPolicyLookups } from "../mxc-posix.js";
-import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-model.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel, type PolicyRow } from "../policy-model.js";
 import { _seatbeltDenyGlobForTest, buildSeatbeltShellProfile, splitSeatbeltPolicyRows } from "../seatbelt-profile.js";
 
 const lookups: PosixPolicyLookups = {
@@ -133,5 +133,21 @@ describe("Seatbelt shell profile", () => {
     expect(splitSeatbeltPolicyRows(model)).toEqual({ literalModel: { rows: [literal] }, patternRows: [pattern] });
     expect(() => buildSeatbeltShellProfile({ ...fixture(), model }))
       .toThrow(expect.objectContaining({ code: "pattern-undecidable" }));
+  });
+  it.each([true, false])("refuses a row whose reason the model does not know (literal %s), before it can read as a grant", (literal) => {
+    const unknown = { path: "/workspace", literal, access: "rw", reason: "plugin-grant" } as unknown as PolicyRow;
+    const model = { rows: [unknown] } as unknown as PolicyModel;
+    expect(() => splitSeatbeltPolicyRows(model)).toThrow(expect.objectContaining({ code: "unknown-row" }));
+    expect(() => buildSeatbeltShellProfile({ ...fixture(), model })).toThrow(expect.objectContaining({ code: "unknown-row" }));
+  });
+  it("still accepts every known grant and floor reason", () => {
+    const rows: PolicyRow[] = [
+      ...(["user-grant", "extension-manifest", "launch-grant"] as const).map(reason => policyGrantRow(`/g/${reason}`, "ro", reason, true)),
+      policyGrantRow("/g/pierce", "ro", "floor-pierce", true),
+      ...(["secrets", "ave-home", "read-boundary", "protected-name", "user-deny"] as const)
+        .map(reason => policyFloorRow(`/f/${reason}`, "denied", reason, true)),
+      policyFloorRow("/f/required", "ro", "required-write-deny", true),
+    ];
+    expect(splitSeatbeltPolicyRows({ rows } as unknown as PolicyModel).literalModel.rows).toEqual(rows);
   });
 });

@@ -1,7 +1,7 @@
 import { posix } from "node:path";
 import { GIT_METADATA_RULES, MAX_SEATBELT_STRING_BYTES, macWriteRootLinkedNameRules, macWriteRootNameRules } from "./macos-sandbox-wrap.js";
 import { atOrUnder, canonicalPath, type PosixFilesystemGrants, type PosixPolicyLookups } from "./mxc-posix.js";
-import { isPolicyFloorRow, type PolicyFloorRow, type PolicyModel } from "./policy-model.js";
+import { isPolicyFloorRow, isPolicyGrantRow, type PolicyFloorRow, type PolicyModel } from "./policy-model.js";
 
 interface SuffixLookups {
   readonly home: string;
@@ -13,7 +13,7 @@ const PATTERN_SPELLING = /[*?[\]{}]/u;
 const CONTROL_CHARACTER = /[\p{Cc}\p{Cs}]/u;
 
 class SeatbeltDenyError extends Error {
-  constructor(readonly code: "pattern-row" | "pattern-undecidable" | "relative-row"
+  constructor(readonly code: "unknown-row" | "pattern-row" | "pattern-undecidable" | "relative-row"
     | "profile-control-character" | "profile-string-too-long" | "profile-reserved-name" | "proxy-invalid", detail: string) {
     super(detail);
     this.name = "SeatbeltDenyError";
@@ -27,6 +27,10 @@ export function splitSeatbeltPolicyRows(model: PolicyModel): {
   const literalRows: PolicyModel["rows"][number][] = [];
   const patternRows: PolicyFloorRow[] = [];
   for (const row of model.rows) {
+    // The kind is checked before anything reads the row: past this boundary a row that is not a floor is a grant.
+    if (!isPolicyFloorRow(row) && !isPolicyGrantRow(row)) {
+      throw new SeatbeltDenyError("unknown-row", `Container row has an unknown reason: ${String((row as { reason: unknown }).reason)}`);
+    }
     checkProfileString(row.path);
     const unanchored = !posix.isAbsolute(row.path) && row.path !== "~" && !row.path.startsWith("~/");
     if (row.literal || !(unanchored || PATTERN_SPELLING.test(row.path))) {
