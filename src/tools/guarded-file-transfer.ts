@@ -369,8 +369,12 @@ class OwnedTransfer {
       if (hasErrno(error, "EEXIST")) throw new FileTransferError("destination-exists", `Destination already exists: ${path}`, { cause: error });
       throw error;
     }
-    await this.verifyOwned(entry);
+    if (process.platform !== "win32") await this.verifyOwned(entry);
     if (relativePath === "") this.seal = this.seal?.afterMutation?.(path) ?? this.seal;
+    if (process.platform === "win32") {
+      this.check();
+      await this.verifyOwned(entry);
+    }
     this.check();
     return entry;
   }
