@@ -256,6 +256,13 @@ int wmain(int argc, wchar_t** argv) {
     std::fprintf(stderr, "Windows job launcher requires an absolute executable path\n");
     return 125;
   }
+  if (held && !heldPolicy) {
+    constexpr wchar_t pipePrefix[] = L"\\\\.\\pipe\\";
+    for (int i = first + 1; i + 1 < argc; ++i) {
+      if (wcscmp(argv[i], L"--config") == 0 && _wcsnicmp(argv[i + 1], pipePrefix, _countof(pipePrefix) - 1) == 0)
+        endHeld(kUnconfirmed, 125);
+    }
+  }
   // Strip only this launcher's own arguments. Forward the original command tail
   // so arguments undergo precisely the same quoting as a direct pipe spawn.
   bool same = true;

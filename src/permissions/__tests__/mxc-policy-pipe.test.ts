@@ -252,6 +252,20 @@ describe.skipIf(process.platform !== "win32")("native held policy delivery", () 
       expect(launcher.output()).toBe("");
     });
   });
+
+  it("rejects a pipe-backed request from a legacy held host before starting a child", async () => {
+    await withHold(async (held) => {
+      const target = held.command(process.execPath, ["-e", "process.stdout.write('started');", "--", "--config", PIPE]);
+      const child = childProcess.spawn(target.executable, target.args, {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, stdio: held.stdio, windowsHide: true,
+      });
+      const output: Buffer[] = [];
+      child.stdout?.on("data", (chunk: Buffer) => { output.push(chunk); });
+      const run = held.bind(child);
+      const result = { verdict: await run.verdict, exit: child.exitCode, output: Buffer.concat(output).toString() };
+      expect(result).toEqual({ verdict: { kind: "unconfirmed" }, exit: 125, output: "" });
+    });
+  });
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
