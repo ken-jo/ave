@@ -227,6 +227,11 @@
         "package": "@koromix/koffi-win32-arm64",
         "version": "3.3.6",
         "tarballSha512Base64": "WDVsrvWAaHbA7xiCMXX3PBmfDf4+VnfY67ryRAW86QNW8109W9WPS3YVGGD2YoPswDmSZsMBVzzZCEFUrLdJuA=="
+      },
+      "darwin-arm64": {
+        "package": "@koromix/koffi-darwin-arm64",
+        "version": "3.3.6",
+        "tarballSha512Base64": "++V4qscXff/Ya5cE6vOPOomcxk3T5JQu81Uc0fvoso3VVELcoHt2/dz9E0FY0EPyQNIRcWOVg7CgvsPCKId9lg=="
       }
     },
     "packages": {
@@ -236,6 +241,11 @@
       "node-pty": "node-pty"
     },
     "packageMetadata": {
+      "@koromix/koffi-darwin-arm64/package.json": {
+        "name": "@koromix/koffi-darwin-arm64",
+        "version": "3.3.6",
+        "main": "./index.js"
+      },
       "@koromix/koffi-win32-arm64/package.json": {
         "name": "@koromix/koffi-win32-arm64",
         "version": "3.3.6",
@@ -309,6 +319,11 @@
         "pattern": "{node-pty/node_modules/node-addon-api,node-addon-api}/**/*",
         "reason": "Native build headers and build-tool scripts are not loaded by prebuilt addons and are excluded in nested and hoisted locations."
       }
-    ]
+    ],
+    "darwinFiles": {
+      "@koromix/koffi-darwin-arm64/darwin_arm64/koffi.node": "7a5d64ee3ce5e25a00a1cb48312355d1b2ea919e4dbf83f39d83ceda4f3f1e4b",
+      "@koromix/koffi-darwin-arm64/index.js": "0decaa09f32cdb5b9aa1ed250f9c4ba9a4a15adc761cda6c6d1613e378f1cd0b",
+      "@koromix/koffi-darwin-arm64/package.json": "3649612f534265edf0caf3475657ac310f8b05460d4a3d8b12480989528479dc"
+    }
   }
 }

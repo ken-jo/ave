@@ -10,7 +10,11 @@ module.exports = async function afterPack(context) {
   const product = context.packager.appInfo.productFilename;
   const resources = platform === "darwin"
     ? join(context.appOutDir, `${product}.app`, "Contents", "Resources") : join(context.appOutDir, "resources");
-  const { assertPackagedLauncher, finalizePackagedMxcSdk } = await import("./lib/mxc-sdk-packaging.mjs");
+  const { assertPackagedLauncher, finalizePackagedMxcSdk, prunePackagedMxcSdk } = await import("./lib/mxc-sdk-packaging.mjs");
+  if (platform === "darwin") {
+    prunePackagedMxcSdk(resources, arch, platform);
+    return;
+  }
   assertPackagedLauncher(resources, target);
   if (platform === "win32") {
     finalizePackagedMxcSdk(resources, arch, join(context.appOutDir, `${product}.exe`));

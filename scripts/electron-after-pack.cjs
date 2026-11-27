@@ -351,10 +351,13 @@ module.exports = async function afterPack(context) {
   if (context.electronPlatformName === "win32") {
     const { finalizePackagedMxcSdk } = await import("./lib/mxc-sdk-packaging.mjs");
     finalizePackagedMxcSdk(electronResourcesDir(context), ARCH_DIR_BY_ENUM[context.arch], join(context.appOutDir, `${context.packager.appInfo.productFilename}.exe`));
+  } else if (context.electronPlatformName === "darwin") {
+    const { prunePackagedMxcSdk } = await import("./lib/mxc-sdk-packaging.mjs");
+    prunePackagedMxcSdk(electronResourcesDir(context), ARCH_DIR_BY_ENUM[context.arch], "darwin");
   } else {
     const resources = electronResourcesDir(context);
     rmSync(join(resources, "app.asar.unpacked", "node_modules", "@microsoft", "mxc-sdk", "bin"), { recursive: true, force: true });
-    if (context.electronPlatformName === "darwin" || context.electronPlatformName === "linux") {
+    if (context.electronPlatformName === "linux") {
       const { assertPackagedLauncher } = await import("./lib/mxc-sdk-packaging.mjs");
       assertPackagedLauncher(resources, `${context.electronPlatformName}-${ARCH_DIR_BY_ENUM[context.arch]}`);
     }
