@@ -176,6 +176,24 @@ describe("ave:mcp:ui-message — path A: notification meta", () => {
 });
 
 describe("ave:mcp:ui-message — path B: turn policy", () => {
+  it("logs the validated server and disposition or refusal code", async () => {
+    const { collectPermissionEvents } = await import("../../../__tests__/support/permission-events.js");
+    const { serverId, queueGuidance } = await setup({ queueGuidance: () => "queued" });
+    const capture = collectPermissionEvents();
+    try {
+      await expect(invoke(CHANNEL, serverId, SESSION, textParams("private queued text")))
+        .resolves.toMatchObject({ disposition: "queued" });
+      queueGuidance.mockReturnValueOnce("too-long");
+      await expect(invoke(CHANNEL, serverId, SESSION, textParams("private refused text")))
+        .resolves.toMatchObject({ ok: false });
+      expect(capture.events.filter(({ event }) => event === "mcp_app_tool_decision")).toEqual([
+        { event: "mcp_app_tool_decision", sessionId: "mcp-app", serverId, outcome: "queued" },
+        { event: "mcp_app_tool_decision", sessionId: "mcp-app", serverId, outcome: "denied", reasonCode: "too-long" },
+      ]);
+    } finally {
+      capture.restore();
+    }
+  });
   it("stages a panel message into the composer even during an active conversation turn", async () => {
     const { serverId, send, queueGuidance, fire } = await setup({ queueGuidance: () => "queued" });
     const result = await invoke(CHANNEL, serverId, "", textParams("review this item"));

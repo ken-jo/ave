@@ -30,7 +30,6 @@ import type { IpcDeps } from "../types.js";
 import { sendToWindow } from "../safe-send.js";
 import { broadcastToAppWindows } from "../window-fanout.js";
 import { createLogger } from "../../lib/logger.js";
-import { redactFsPath } from "../../audit/dlp-filter.js";
 import {
   cloneThemePayload,
   getLastThemePayload,
@@ -81,8 +80,8 @@ import {
   MCP_RESOURCE_TEMPLATE_VALUE_MAX_CHARS,
 } from "../../shared/mcp-resource-template-bounds.js";
 import { isUsableMcpServerId } from "../../shared/mcp-app-partition.js";
+import { maskSensitiveData } from "../../shared/dlp.js";
 import { parseBundledConfigId } from "../../mcp/bundled-credential.js";
-import { scrubShortError } from "../../shared/dlp.js";
 import {
   isUsablePromptName,
   MCP_PROMPT_ARG_NAME_MAX_CHARS,
@@ -116,7 +115,6 @@ import {
   handlePluginBundleE2eSnapshot,
   handlePluginCards,
 } from "../handlers/plugins.js";
-import { errorMessage } from "../../shared/error-message.js";
 const log = createLogger("ave");
 
 export {
@@ -168,6 +166,10 @@ function sanitizeNotificationContextRef(value: unknown): NotificationContextRef 
     }
   }
   return Object.keys(contextRef).length > 0 ? contextRef : undefined;
+}
+
+function mcpServerLogId(serverId: unknown): string | undefined {
+  return isUsableMcpServerId(serverId) && maskSensitiveData(serverId).detections.length === 0 ? serverId : undefined;
 }
 
 // Plugin callbacks may throw non-Error values; normalize them for logging.
@@ -1049,29 +1051,29 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       auditUnauthorized(CHANNELS.mcp.uiMessage);
       return UNAUTHORIZED_FRAME;
     }
-    const auditMcpApp = (_type: "info" | "error", _input: string) => {
-      logPermissionEvent("mcp_app_tool_decision", { sessionId: permissionLogId("mcp-app") });
-    };
     if (typeof serverId !== "string" || !isAppMessageOrigin(appMessageSource(serverId))) {
       return { ok: false, error: "invalid-server-id", message: "serverId must be a valid MCP server id" } satisfies McpUiMessageOutcome;
     }
     const source = appMessageSource(serverId);
+    const logFields = { sessionId: "mcp-app", serverId: mcpServerLogId(serverId) };
 
     if (triggerConversationRateLimiter.isOverCap(serverId)) {
-      auditMcpApp("error", `[mcp-app:${serverId}] ui/message rate limited`);
+      logPermissionEvent("mcp_app_tool_decision", { ...logFields, outcome: "denied", reasonCode: "rate-limited" }, "warn");
       return { ok: false, error: "rate-limited", message: "too many messages from this app" } satisfies McpUiMessageOutcome;
     }
     triggerConversationRateLimiter.record(serverId);
 
     const intent = parseUiMessageIntent(params);
     if (intent.kind === "invalid") {
+      logPermissionEvent("mcp_app_tool_decision", { ...logFields, outcome: "denied", reasonCode: intent.error }, "warn");
       return { ok: false, error: intent.error, message: intent.message } satisfies McpUiMessageOutcome;
     }
 
     // The host owns title attribution and delivery policy; app text cannot bypass focus gates or claim urgency.
-    const notify = (title: string, body: string, severity?: string): McpUiMessageOutcome => {
+    const notify = (title: string, body: string, reasonCode?: "session-mismatch"): McpUiMessageOutcome => {
       const notificationService = deps.notificationService;
       if (!notificationService) {
+        logPermissionEvent("mcp_app_tool_decision", { ...logFields, outcome: "denied", reasonCode: "notification-unavailable" }, "warn");
         return { ok: false, error: "notification-unavailable", message: "notification service is not running" };
       }
       const appTitle = title.trim();
@@ -1080,26 +1082,21 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         title: appTitle ? `${source} · ${appTitle}` : source,
         body,
       });
-      auditMcpApp(
-        "info",
-        `[mcp-app:${serverId}] ui/message → notification` +
-          (severity ? ` severityClaimed=${severity}` : ""),
-      );
+      logPermissionEvent("mcp_app_tool_decision", { ...logFields, outcome: "notified", ...(reasonCode ? { reasonCode } : {}) });
       return { ok: true, disposition: "notified" };
     };
 
     if (intent.kind === "notification") {
-      const { title, body, severity } = intent.notification;
-      return notify(title, body, severity);
+      const { title, body } = intent.notification;
+      return notify(title, body);
     }
 
     // Deliver only to a loop still holding the card's session; otherwise use notification delivery.
     const cardSession = typeof cardSessionId === "string" ? cardSessionId : "";
     const cardLoop = cardSession ? deps.findLoopBySessionId(cardSession) : undefined;
     if (cardSession && !cardLoop) {
-      auditMcpApp("info", `[mcp-app:${serverId}] ui/message session mismatch → notification fallback`);
       // No app-authored title on this path — the source tag IS the title.
-      return notify("", intent.text);
+      return notify("", intent.text, "session-mismatch");
     }
 
     const envelope = formatAppMessageEnvelope(intent.text, source);
@@ -1107,11 +1104,11 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     // queueGuidance is the atomic active-turn check.
     const queued = cardLoop ? cardLoop.queueGuidance(envelope) : "no-active-turn";
     if (queued === "queued") {
-      auditMcpApp("info", `[mcp-app:${serverId}] ui/message → guidance queued (active turn)`);
+      logPermissionEvent("mcp_app_tool_decision", { ...logFields, outcome: "queued" });
       return { ok: true, disposition: "queued" } satisfies McpUiMessageOutcome;
     }
     if (queued !== "no-active-turn") {
-      auditMcpApp("error", `[mcp-app:${serverId}] ui/message guidance rejected: ${queued}`);
+      logPermissionEvent("mcp_app_tool_decision", { ...logFields, outcome: "denied", reasonCode: queued }, "warn");
       return { ok: false, error: queued, message: `guidance rejected: ${queued}` } satisfies McpUiMessageOutcome;
     }
 
@@ -1130,10 +1127,11 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     };
     const win = getMainWindow();
     if (!win || win.isDestroyed()) {
+      logPermissionEvent("mcp_app_tool_decision", { ...logFields, outcome: "denied", reasonCode: "no-window" }, "warn");
       return { ok: false, error: "no-window", message: "host window is unavailable" } satisfies McpUiMessageOutcome;
     }
     sendToWindow(win, OVERLAY_V1.show, overlayItem, log);
-    auditMcpApp("info", `[mcp-app:${serverId}] ui/message → staged for user confirmation (no active turn)`);
+    logPermissionEvent("mcp_app_tool_decision", { ...logFields, outcome: "staged" });
     return { ok: true, disposition: "staged" } satisfies McpUiMessageOutcome;
   });
 
@@ -1143,10 +1141,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       auditUnauthorized(CHANNELS.mcp.getPrompt);
       return UNAUTHORIZED_FRAME;
     }
-    const auditPrompt = (_type: "info" | "error", _input: string) => {
-      logPermissionEvent("mcp_prompt_decision", { sessionId: permissionLogId("mcp-prompt") });
-    };
-    // Bound prompt names before audit and server requests using the shared discovery predicate.
+    // Bound prompt names using the shared discovery predicate.
     if (typeof serverId !== "string" || !isUsablePromptName(name, MCP_PROMPT_NAME_MAX_CHARS)) {
       return { ok: false, error: "invalid-request" };
     }
@@ -1160,9 +1155,10 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     if (!kind.sourcePattern.test(source)) {
       return { ok: false, error: "invalid-server-id" };
     }
+    const logFields = { sessionId: "mcp-prompt", serverId: mcpServerLogId(serverId) };
     // User-initiated prompt requests need a separate budget from autonomous app proposals.
     if (userPromptRateLimiter.isOverCap(serverId)) {
-      auditPrompt("error", `[mcp-prompt:${serverId}] prompts/get rate limited`);
+      logPermissionEvent("mcp_prompt_decision", { ...logFields, outcome: "denied", reasonCode: "rate-limited" }, "warn");
       return { ok: false, error: "rate-limited" };
     }
     userPromptRateLimiter.record(serverId);
@@ -1181,25 +1177,18 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       // Report clipping by either the client or renderer.
       const truncated = rendered.truncated || result.droppedBlocks > 0;
       if (rendered.text.length === 0) {
-        auditPrompt("error", `[mcp-prompt:${serverId}] prompts/get '${name}' returned no text`);
+        logPermissionEvent("mcp_prompt_decision", { ...logFields, outcome: "denied", reasonCode: "empty-prompt" }, "warn");
         return { ok: false, error: "empty-prompt" };
       }
-      auditPrompt(
-        "info",
-        `[mcp-prompt:${serverId}] prompts/get '${name}' → ${rendered.text.length} chars`
-          + `${truncated ? " (truncated)" : ""}`
-          + `${rendered.omittedBlocks > 0 ? ` (${rendered.omittedBlocks} non-text block(s))` : ""}`,
-      );
+      logPermissionEvent("mcp_prompt_decision", { ...logFields, outcome: "accepted" });
       return {
         ok: true,
         envelope: formatStagedEnvelope(kind, rendered.text, source),
         truncated,
         omittedBlocks: rendered.omittedBlocks,
       };
-    } catch (err) {
-      // Scrub and bound server errors before audit storage.
-      const message = scrubShortError(errorMessage(err));
-      auditPrompt("error", `[mcp-prompt:${serverId}] prompts/get '${name}' failed: ${message}`);
+    } catch {
+      logPermissionEvent("mcp_prompt_decision", { ...logFields, outcome: "denied", reasonCode: "prompt-failed" }, "warn");
       return { ok: false, error: "prompt-failed" };
     }
   });
@@ -1219,18 +1208,16 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       auditUnauthorized(CHANNELS.mcp.attachResource);
       return UNAUTHORIZED_FRAME;
     }
-    const auditAttach = (_type: "info" | "error", _input: string) => {
-      logPermissionEvent("mcp_resource_decision", { sessionId: permissionLogId("mcp-resource") });
-    };
     if (typeof serverId !== "string" || !isUsableResourceUri(uri)) {
       return { ok: false, error: "invalid-request" };
     }
-    // Bound server ids before allocating rate keys or storing audit text.
+    // Bound server ids before allocating rate keys.
     if (!isUsableMcpServerId(serverId)) {
       return { ok: false, error: "invalid-server-id" };
     }
+    const logFields = { sessionId: "mcp-resource", serverId: mcpServerLogId(serverId) };
     if (userPromptRateLimiter.isOverCap(serverId)) {
-      auditAttach("error", `[mcp-resource:${serverId}] attach rate limited`);
+      logPermissionEvent("mcp_resource_decision", { ...logFields, outcome: "denied", reasonCode: "rate-limited" }, "warn");
       return { ok: false, error: "rate-limited" };
     }
     userPromptRateLimiter.record(serverId);
@@ -1239,15 +1226,10 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       const rendered = renderResourceAttachment(serverId, uri, read);
       // Check the body, not the rendered fence; empty framing is not an attachment.
       if (rendered.bodyChars === 0) {
-        auditAttach("error", `[mcp-resource:${serverId}] read returned no text`);
+        logPermissionEvent("mcp_resource_decision", { ...logFields, outcome: "denied", reasonCode: "empty-resource" }, "warn");
         return { ok: false, error: "empty-resource" };
       }
-      auditAttach(
-        "info",
-        `[mcp-resource:${serverId}] attached ${uri.slice(0, 256)} → ${rendered.text.length} chars`
-          + `${rendered.truncated ? " (truncated)" : ""}`
-          + `${rendered.omittedBlocks > 0 ? ` (${rendered.omittedBlocks} non-text block(s))` : ""}`,
-      );
+      logPermissionEvent("mcp_resource_decision", { ...logFields, outcome: "attached" });
       return {
         ok: true,
         // Return the complete host-built user-content part; renderer code must not assemble the trust fence.
@@ -1255,13 +1237,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         truncated: rendered.truncated,
         omittedBlocks: rendered.omittedBlocks,
       };
-    } catch (err) {
-      // Scrub and bound server errors for audit; renderer callers receive a stable code.
-      auditAttach(
-        "error",
-        `[mcp-resource:${serverId}] attach ${uri.slice(0, 256)} failed: `
-          + scrubShortError(errorMessage(err)),
-      );
+    } catch {
+      logPermissionEvent("mcp_resource_decision", { ...logFields, outcome: "denied", reasonCode: "resource-failed" }, "warn");
       return { ok: false, error: "resource-failed" };
     }
   });
@@ -1283,16 +1260,14 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         auditUnauthorized(CHANNELS.mcp.attachResourceTemplate);
         return UNAUTHORIZED_FRAME;
       }
-      const auditAttach = (_type: "info" | "error", _input: string) => {
-        logPermissionEvent("mcp_resource_subscription_decision", { sessionId: permissionLogId("mcp-resource") });
-      };
-      // Validate template syntax before audit and rate limiting; legal braces differ from URI syntax.
+      // Validate template syntax before rate limiting; legal braces differ from URI syntax.
       if (typeof serverId !== "string" || !isUsableResourceUriTemplate(uriTemplate)) {
         return { ok: false, error: "invalid-request" };
       }
       if (!isUsableMcpServerId(serverId)) {
         return { ok: false, error: "invalid-server-id" };
       }
+      const logFields = { sessionId: "mcp-resource", serverId: mcpServerLogId(serverId) };
       // Use a Map through expansion so __proto__ and inherited method names remain ordinary variables.
       const templateValues = new Map<string, string>();
       if (values && typeof values === "object" && !Array.isArray(values)) {
@@ -1300,6 +1275,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
           if (typeof value !== "string" || !isUsableTemplateVariableName(key)) continue;
           // Reject overlong path segments; clipping would silently read a different resource.
           if (value.length > MCP_RESOURCE_TEMPLATE_VALUE_MAX_CHARS) {
+            logPermissionEvent("mcp_resource_subscription_decision", { ...logFields, outcome: "denied", reasonCode: "invalid-request" }, "warn");
             return { ok: false, error: "invalid-request" };
           }
           // Validate every value before applying the variable cap so entry order cannot hide an overlong value.
@@ -1308,7 +1284,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         }
       }
       if (userPromptRateLimiter.isOverCap(serverId)) {
-        auditAttach("error", `[mcp-resource:${serverId}] template attach rate limited`);
+        logPermissionEvent("mcp_resource_subscription_decision", { ...logFields, outcome: "denied", reasonCode: "rate-limited" }, "warn");
         return { ok: false, error: "rate-limited" };
       }
       userPromptRateLimiter.record(serverId);
@@ -1321,17 +1297,10 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         // Reuse attachment authorization and accounting with the host-expanded URI.
         const rendered = renderResourceAttachment(serverId, read.uri, read);
         if (rendered.bodyChars === 0) {
-          auditAttach("error", `[mcp-resource:${serverId}] template read returned no text`);
+          logPermissionEvent("mcp_resource_subscription_decision", { ...logFields, outcome: "denied", reasonCode: "empty-resource" }, "warn");
           return { ok: false, error: "empty-resource" };
         }
-        auditAttach(
-          "info",
-          `[mcp-resource:${serverId}] attached ${read.uri.slice(0, 256)}`
-            + ` (from template ${uriTemplate.slice(0, 256)})`
-            + ` → ${rendered.text.length} chars`
-            + `${rendered.truncated ? " (truncated)" : ""}`
-            + `${rendered.omittedBlocks > 0 ? ` (${rendered.omittedBlocks} non-text block(s))` : ""}`,
-        );
+        logPermissionEvent("mcp_resource_subscription_decision", { ...logFields, outcome: "attached" });
         return {
           ok: true,
           attachment: { type: "text", text: rendered.text },
@@ -1341,12 +1310,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
           // Discovery rejects ui: resources and templates, so expanded core URIs cannot replay through the app path.
           uri: read.uri,
         };
-      } catch (err) {
-        auditAttach(
-          "error",
-          `[mcp-resource:${serverId}] template attach ${uriTemplate.slice(0, 256)} failed: `
-            + scrubShortError(errorMessage(err)),
-        );
+      } catch {
+        logPermissionEvent("mcp_resource_subscription_decision", { ...logFields, outcome: "denied", reasonCode: "resource-failed" }, "warn");
         return { ok: false, error: "resource-failed" };
       }
     },
@@ -1359,16 +1324,14 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       auditUnauthorized(CHANNELS.mcp.uiDownloadFile);
       return UNAUTHORIZED_FRAME;
     }
-    const auditDownload = (_type: "info" | "error", _input: string) => {
-      logPermissionEvent("mcp_app_permission_event", { sessionId: permissionLogId("mcp-app") });
-    };
     if (typeof serverId !== "string" || !serverId.trim()) {
       return { ok: false, error: "invalid-server-id", message: "serverId must be a non-empty string" } satisfies McpUiDownloadOutcome;
     }
+    const logFields = { sessionId: "mcp-app", serverId: mcpServerLogId(serverId) };
 
     const parsed = parseMcpAppDownload(params);
     if (parsed.kind === "invalid") {
-      auditDownload("error", `[mcp-app:${serverId}] ui/download-file rejected: ${parsed.error}`);
+      logPermissionEvent("mcp_app_permission_event", { ...logFields, outcome: "denied", reasonCode: parsed.error }, "warn");
       return { ok: false, error: parsed.error, message: parsed.message } satisfies McpUiDownloadOutcome;
     }
 
@@ -1384,20 +1347,12 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         ? await pickNativeSavePath(win, dialogOptions)
         : await pickNativeSavePath(dialogOptions);
       if (result.canceled || !result.filePath) {
-        auditDownload("info", `[mcp-app:${serverId}] ui/download-file cancelled by user`);
+        logPermissionEvent("mcp_app_permission_event", { ...logFields, outcome: "cancelled" });
         return { ok: true, disposition: "cancelled" } satisfies McpUiDownloadOutcome;
       }
       await writeFile(result.filePath, file.bytes);
-      // Audit file writes with a redacted destination path.
-      auditDownload(
-        "info",
-        `[mcp-app:${serverId}] ui/download-file saved ${JSON.stringify({
-          bytes: file.bytes.byteLength,
-          mimeType: file.mimeType,
-          path: redactFsPath(result.filePath),
-        })}`,
-      );
     }
+    logPermissionEvent("mcp_app_permission_event", { ...logFields, outcome: "saved" });
     return { ok: true, disposition: "saved" } satisfies McpUiDownloadOutcome;
   });
 
@@ -1410,15 +1365,13 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         auditUnauthorized(CHANNELS.mcp.uiModelContext);
         return UNAUTHORIZED_FRAME;
       }
-      const auditContext = (_type: "info" | "error", _input: string) => {
-        logPermissionEvent("mcp_app_permission_recheck", { sessionId: permissionLogId("mcp-app") });
-      };
       if (typeof serverId !== "string" || typeof cardId !== "string") {
         return { ok: false, error: "invalid-binding", message: "serverId and cardId must be strings" } satisfies McpUiModelContextOutcome;
       }
+      const logFields = { sessionId: "mcp-app", serverId: mcpServerLogId(serverId) };
       // Any open tile may hold the card's session; primary-only checks would drop valid secondary updates.
       if (typeof cardSessionId !== "string" || !deps.findLoopBySessionId(cardSessionId)) {
-        auditContext("info", `[mcp-app:${serverId}] ui/update-model-context dropped: session mismatch`);
+        logPermissionEvent("mcp_app_permission_recheck", { ...logFields, outcome: "denied", reasonCode: "session-mismatch" }, "warn");
         return { ok: false, error: "session-mismatch", message: "the card's session is not an open conversation" } satisfies McpUiModelContextOutcome;
       }
 
@@ -1430,13 +1383,9 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         content: record.content,
         structuredContent: record.structuredContent,
       });
-      // The app receives EmptyResult even on refusal, so audit rejected updates here.
-      auditContext(
-        outcome.ok ? "info" : "error",
-        outcome.ok
-          ? `[mcp-app:${serverId}] ui/update-model-context ${outcome.disposition}`
-          : `[mcp-app:${serverId}] ui/update-model-context refused: ${outcome.error}`,
-      );
+      logPermissionEvent("mcp_app_permission_recheck", outcome.ok
+        ? { ...logFields, outcome: outcome.disposition }
+        : { ...logFields, outcome: "denied", reasonCode: outcome.error }, outcome.ok ? "info" : "warn");
       return outcome;
     },
   );
