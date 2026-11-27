@@ -727,7 +727,7 @@ describe("Tailnet observer configuration surface", () => {
     })).resolves.toEqual({ port });
     expect.soft(startServer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port }));
     await expect.soft(settings.snapshot()).resolves.toMatchObject({
-      saved: { port: 28_173, enabled: false },
+      saved: { port, enabled: false },
       effective: { port, enabled: true },
       listeningPort: port,
       provenance: { port: override === undefined ? "unset" : "env-override" },
@@ -805,6 +805,51 @@ describe("Tailnet observer configuration surface", () => {
     })).resolves.toEqual({ port });
     await expect.soft(probeEnvironment()).resolves.toMatchObject({ serveConfigured: true, serveTargetPort: port });
     expect(startServer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port }));
+  });
+
+  it.each([
+    { name: "without editing the port", override: undefined, edit: undefined, savedPort: 46_173, listeningPort: 46_173 },
+    { name: "with an explicit port edit", override: undefined, edit: 29_123, savedPort: 29_123, listeningPort: 29_123 },
+    { name: "with a port edit under an environment override", override: "46173", edit: 29_123, savedPort: 29_123, listeningPort: 46_173 },
+  ])("takes over an environment-only listener $name", async ({ override, edit, savedPort, listeningPort }) => {
+    const env = {
+      AVE_TAILNET_OBSERVER: "1",
+      AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
+      AVE_TAILNET_OBSERVER_PORT: override,
+    };
+    const { input, startServer } = options(env);
+    const probeEnvironment = async () => ({
+      ...tailscaleEnvironment(null), serveConfigured: true, serveTargetPort: 46_173,
+    });
+    let saved: TailnetObserverConfigFile | null = null;
+    const readConfigFile = async () => saved;
+    const writeConfigFile = vi.fn(async (file: TailnetObserverConfigFile) => { saved = file; });
+    const runServe = vi.fn();
+    const settings = createTailnetObserverConfigService({
+      pairedSharingBootstrapFailed: () => false,
+      env, readConfigFile, writeConfigFile, probeEnvironment, runServe,
+      readOwnDeviceAdmission: async () => false,
+    });
+
+    await expect(maybeStartTailnetObserverServer({
+      ...input, dependencies: { ...input.dependencies, readConfigFile, probeEnvironment },
+    })).resolves.toEqual({ port: 46_173 });
+
+    const initial = await settings.snapshot();
+    if (edit === undefined) expect.soft(initial.saved.port).toBe(46_173);
+    await settings.apply({
+      ...initial.saved, enabled: true, authorization: APP_CAPABILITY, port: edit ?? initial.saved.port,
+    });
+
+    expect.soft(writeConfigFile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port: savedPort }));
+    expect.soft(startServer.mock.calls.map(([config]) => config.port)).toEqual([46_173, listeningPort]);
+    await expect(settings.snapshot()).resolves.toMatchObject({
+      saved: { port: savedPort },
+      effective: { port: listeningPort },
+      provenance: { port: override === undefined ? "file" : "env-override" },
+      environment: { serveTargetPort: 46_173 },
+    });
+    expect(runServe).not.toHaveBeenCalled();
   });
 
   it("boots a portless upgrade fixture on its existing Serve target and saves the legacy port", async () => {

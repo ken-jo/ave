@@ -11,6 +11,7 @@ import {
   probeTailscaleEnvironment,
   readTailnetObserverConfigFile,
   reduceTailnetObserverCapabilities,
+  resolveTailnetObserverPort,
   restartTailnetObserverServer,
   setTailnetOwnDeviceAdmission,
   tailnetObserverEnableOverride,
@@ -64,12 +65,12 @@ export interface TailnetObserverConfigServiceOptions {
   readonly writeOwnDeviceAdmission?: (enabled: boolean) => Promise<void>;
 }
 
-// Project file values, not merged overrides; displayed authorization defaults remain unset until explicitly saved.
-function savedView(file: TailnetObserverConfigFile | null): TailnetObserverConfigView {
+// Project the saved values and seed a missing port from the listener configuration.
+function savedView(file: TailnetObserverConfigFile | null, port: number): TailnetObserverConfigView {
   return Object.freeze({
     enabled: file?.enabled === true,
     authorization: file?.authorization ?? { kind: "tailnet-identity" as const },
-    port: file?.port ?? DEFAULT_TAILNET_OBSERVER_PORT,
+    port,
     controllerEnabled: file?.controllerEnabled === true,
     pairedSharingEnabled: file?.pairedSharingEnabled === true,
     webEnabled: file?.webEnabled === true,
@@ -82,7 +83,6 @@ function savedView(file: TailnetObserverConfigFile | null): TailnetObserverConfi
 function effectiveView(
   resolution: TailnetObserverResolution,
   saved: TailnetObserverConfigView,
-  runtimePort: number | null,
 ): TailnetObserverConfigView {
   const config = resolution.config;
   if (config === null) {
@@ -91,9 +91,7 @@ function effectiveView(
   return Object.freeze({
     enabled: true,
     authorization: config.authorization,
-    port: !resolution.fileConfigured && resolution.provenance.port === "unset"
-      ? runtimePort ?? config.port
-      : config.port,
+    port: config.port,
     controllerEnabled: config.controllerEnabled,
     pairedSharingEnabled: config.pairedSharingEnabled,
     webEnabled: config.webOrigin !== undefined,
@@ -203,14 +201,18 @@ export function createTailnetObserverConfigService(
           ? err.message
           : "tailnet-observer-config-file-unreadable";
       }
-      const saved = savedView(file);
-      const resolution = await loadTailnetObserverConfig({
-        ...(options.env === undefined ? {} : { env: options.env }),
-        readConfigFile: async () => file,
-      });
-      const state = runtimeState();
-      const effective = effectiveView(resolution, saved, state.listeningPort ?? state.portBlock?.port ?? null);
       const environment = await probeEnvironment();
+      const state = runtimeState();
+      const portEvidence = { environment, establishedPort: state.establishedPort };
+      const resolution = await loadTailnetObserverConfig({
+        env: options.env,
+        readConfigFile: async () => file,
+        portEvidence,
+      });
+      const savedPort = file?.port ?? (file === null ? resolution.config?.port : undefined)
+        ?? resolveTailnetObserverPort(file, {}, portEvidence).port;
+      const saved = savedView(file, savedPort);
+      const effective = effectiveView(resolution, saved);
       return Object.freeze({
         saved,
         effective,
