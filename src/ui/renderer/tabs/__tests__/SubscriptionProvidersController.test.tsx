@@ -163,14 +163,22 @@ afterEach(() => {
 });
 
 describe("SubscriptionProvidersController", () => {
-  it("keeps polling and showing Cancel while a device login is pending on a signed-out account", async () => {
-    const { api, subscriptionRuntimeStatus } = controllerApi();
-    subscriptionRuntimeStatus.mockImplementation(async (provider) => ({
-      ok: true,
-      status: provider === "codex" ? {
-        ...signedOutStatus(provider), pendingLogin: "device-code", pendingDeviceCode: "Q7KD-9P2M",
-      } : connectedStatus(provider),
-    }));
+  it("polls while a device login is owned and clears its controls after retirement and a failed refresh", async () => {
+    const { api } = controllerApi();
+    let retired = false;
+    let emitStatusUpdated: ((event: SubscriptionRuntimeStatusUpdatedEvent) => void) | undefined;
+    api.onSubscriptionRuntimeStatusUpdated = (listener) => {
+      emitStatusUpdated = listener;
+      return () => {};
+    };
+    const subscriptionRuntimeStatus = vi.fn(async (provider: SubscriptionRuntimeId): Promise<SubscriptionRuntimeActionResult> => {
+      if (provider !== "codex") return { ok: true, status: connectedStatus(provider) };
+      const status = signedOutStatus(provider);
+      return retired
+        ? { ok: false, error: "subscription-operation-failed", status: { ...status, revision: 1 } }
+        : { ok: true, status: { ...status, pendingLogin: "device-code", pendingDeviceCode: "Q7KD-9P2M" } };
+    });
+    api.subscriptionRuntimeStatus = subscriptionRuntimeStatus;
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
       await act(async () => { render(<SubscriptionProvidersController api={api} />); });
@@ -183,6 +191,13 @@ describe("SubscriptionProvidersController", () => {
         expect(screen.getByTestId("subscription-provider:codex:cancel-login")).toBeVisible();
         expect(screen.getByTestId("subscription-state:codex")).toHaveTextContent("signed-out");
       }
+      retired = true;
+      await act(async () => emitStatusUpdated?.({ provider: "codex", revision: 1, connected: false }));
+      expect(accountReads()).toHaveLength(4);
+      expect(screen.queryByTestId("subscription-provider:codex:device-code")).toBeNull();
+      expect(screen.queryByTestId("subscription-provider:codex:cancel-login")).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
+      expect(accountReads()).toHaveLength(4);
     } finally {
       vi.useRealTimers();
     }

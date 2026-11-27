@@ -1,3 +1,4 @@
+import type { CodexSubscriptionLoginMethod } from "../shared/codex-subscription.js";
 import type { CodexExecutableArtifact } from "./codex-executable-artifact.js";
 
 export function executableEvidenceKey(artifact: CodexExecutableArtifact): string {
@@ -12,6 +13,8 @@ export type SubscriptionAccountVerdict =
 export type SubscriptionConnectionEvidence =
   | { kind: "read"; source: object; artifact: string | null; version: string | null }
   | { kind: "artifact"; source: object; artifact: string | null; version: string | null; runtime?: "not-configured" | "unavailable" }
+  | { kind: "login-started"; attempt: object; method: CodexSubscriptionLoginMethod; deviceCode: string | null; version: string | null }
+  | { kind: "login-retired"; attempt: object; completionSource?: object }
   | { kind: "advertisement" | "login-completed" | "logout" | "sign-out" | "transport-lost" | "retired"; source: object };
 
 export type SubscriptionEvidenceSink = (

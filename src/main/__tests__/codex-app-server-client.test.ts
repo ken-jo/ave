@@ -18,6 +18,7 @@ import { createPrivateDirectory } from "../codex-executable-location.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { requiredFixture } from "../../__tests__/support/required-fixture.js";
+import type { SubscriptionConnectionEvidence } from "../subscription-connection-evidence.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
   (await import("../../__tests__/support/native-executable.js")).fakeFixtureAcl(await importOriginal()));
@@ -689,6 +690,35 @@ describe("CodexAppServerClient", () => {
     await vi.waitFor(() => expect(harness.server.requests).toContainEqual(expect.objectContaining({ method: "account/login/cancel" })));
     await expect(harness.client.getStatus()).rejects.toMatchObject({ code: "codex-login-failed" });
     await expect(login.completion).resolves.toBeUndefined();
+  });
+
+  it("keeps a successor login when an older window cancellation finishes", async () => {
+    const harness = await createHarness((request) => {
+      if (request.method === "initialize") return standardInitialize(request);
+      if (request.method === "account/login/start") {
+        return { type: "chatgpt", loginId: "reused-login", authUrl: "https://auth.openai.com/authorize" };
+      }
+      if (request.method === "account/login/cancel") return DEFER_RESPONSE;
+      throw new Error("Unexpected login request");
+    });
+    const records = vi.fn<(evidence: SubscriptionConnectionEvidence) => undefined>(() => undefined);
+    harness.client.connectionEvidence = records;
+    await harness.client.startBrowserLogin();
+    const first = harness.openAuthorizationUrl.mock.calls[0][1] as import("../oauth-login.js").OAuthLoginOptions;
+    first.onCancel();
+    expect(harness.client.getCachedStatus().pendingLogin).toBeNull();
+    const cancel = requiredFixture(harness.server.requests.find(({ method }) => method === "account/login/cancel"));
+
+    await harness.client.startBrowserLogin();
+    harness.server.stdout.write(`${JSON.stringify({ id: cancel.id, result: {} })}\n`);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(harness.client.getCachedStatus().pendingLogin).toBe("browser");
+    const attempts = records.mock.calls.map(([evidence]) => evidence).filter(
+      (evidence) => evidence.kind === "login-started" || evidence.kind === "login-retired",
+    );
+    expect(attempts.map(({ kind }) => kind)).toEqual(["login-started", "login-retired", "login-started"]);
+    expect(attempts[1]?.attempt).toBe(attempts[0]?.attempt);
+    expect(attempts[2]?.attempt).not.toBe(attempts[0]?.attempt);
   });
 
   it("rejects an untrusted login URL without opening it", async () => {

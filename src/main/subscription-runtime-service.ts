@@ -1100,6 +1100,8 @@ type HostConnection = {
   accountKey?: string;
   status: AccountStatus;
   login: PendingLoginProjection;
+  // Once attempt receipts arrive, only the client that owns the attempt can change its projection.
+  loginAttempt?: object | null;
   revision: number;
   scope: string;
   safetyEpoch: number;
@@ -1765,7 +1767,7 @@ export class SubscriptionRuntimeService {
       await this.stopSessionsFor(provider);
       const status = await mutation();
       if (state && isCliProvider(provider)) {
-        if (state.intent === intent) this.projectLogin(provider, state, status);
+        if (state.intent === intent && state.loginAttempt === undefined) this.projectLogin(provider, state, status);
         return this.currentProjection(provider);
       }
       if (this.authChangeRevisionByProvider.get(provider) !== intent) {
@@ -1860,11 +1862,11 @@ export class SubscriptionRuntimeService {
         ? this.projectCodexStatus(await this.codexClient.getStatus(!options.allowCached || !this.planUsage.get(provider)))
         : this.projectClaudeCodeStatus(await this.claudeCodeClient.getStatus()));
       this.assertRunning();
-      if (state.intent === intent) this.projectLogin(provider, state, ui);
+      if (state.intent === intent && state.loginAttempt === undefined) this.projectLogin(provider, state, ui);
     } catch (error) {
       this.assertRunning();
       if (state.intent === intent) {
-        if (subscriptionRuntimeErrorCode(error) === "subscription-login-failed") {
+        if (state.loginAttempt === undefined && subscriptionRuntimeErrorCode(error) === "subscription-login-failed") {
           this.projectLogin(provider, state, NO_PENDING_LOGIN);
         }
         if (state.acceptedRead <= start && (state.latch <= start || state.failedRead > start)) throw error;
@@ -1941,10 +1943,29 @@ export class SubscriptionRuntimeService {
       }
       return undefined;
     }
-    if (evidence.kind === "advertisement" || evidence.kind === "login-completed") {
-      this.replaceConfirmation(state, { source: evidence.source, attempts: 0, retry: true });
+    if (evidence.kind === "login-started") {
+      state.loginAttempt = evidence.attempt;
+      this.projectLogin(provider, state, {
+        pendingLogin: evidence.method, pendingDeviceCode: evidence.deviceCode, version: evidence.version,
+      });
+      return undefined;
+    }
+    if (evidence.kind === "login-retired") {
+      if (state.loginAttempt !== evidence.attempt) return undefined;
+      state.loginAttempt = null;
+      if (!evidence.completionSource) {
+        this.projectLogin(provider, state, NO_PENDING_LOGIN);
+        return undefined;
+      }
+      state.login = NO_PENDING_LOGIN;
+    }
+    if (evidence.kind === "advertisement" || evidence.kind === "login-completed" || evidence.kind === "login-retired") {
+      const revision = state.revision;
+      const source = evidence.kind === "login-retired" ? evidence.completionSource : evidence.source;
+      this.replaceConfirmation(state, { source, attempts: 0, retry: true });
       state.accountKey = undefined;
       this.latchConnection(provider, state, "unknown");
+      if (evidence.kind === "login-retired" && state.revision === revision) this.publishConnection(provider);
       this.confirmAccount(provider, state);
       return undefined;
     }

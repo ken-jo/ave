@@ -200,6 +200,7 @@ it.each([
   "account notification retry replaced by a new account",
   "account notification retries after supersession", "account notification retry withdrawn by sign-out",
   "account notification retry withdrawn by shutdown", "matching login completion", "account read during cancel",
+  "device login completion while account probes fail", "device login cancel failure while account probes fail",
 ] as const)("invalidates a cached windowless reviewer verdict on %s and restores the saved route", async (scenario) => {
   const tempDir = mkdtempSync(join(tmpdir(), "windowless-reviewer-"));
   vi.resetModules();
@@ -252,7 +253,8 @@ it.each([
   let proofChild: RuntimeProcessFixture | undefined;
   const threadStarted = deferred<{ child: RuntimeProcessFixture; id: number }>();
   const holdsCatalog = scenario === "sign-out during catalog" || scenario === "process exit during catalog";
-  const usesAccountNotification = scenario.startsWith("account notification") || scenario === "matching login completion" || scenario === "account read during cancel";
+  const retiresDeviceLogin = scenario.startsWith("device login");
+  const usesAccountNotification = scenario.startsWith("account notification") || scenario === "matching login completion" || scenario === "account read during cancel" || retiresDeviceLogin;
   const realCancelRace = scenario === "cancel detects sign-out during failed login";
   const accountReads: number[] = [];
   let holdAccountReads = false;
@@ -355,6 +357,12 @@ it.each([
                 server.stdout.write(`${JSON.stringify({ id, result: { account: { type: "chatgpt", email: accountEmail } } })}\n`);
               } else if (method === "account/login/start" && scenario === "matching login completion") {
                 server.stdout.write(`${JSON.stringify({ id, result: { type: "chatgpt", loginId: "fixture-login", authUrl: "https://auth.openai.com/authorize" } })}\n`);
+              } else if (method === "account/login/start" && retiresDeviceLogin) {
+                server.stdout.write(`${JSON.stringify({ id, result: {
+                  type: "chatgptDeviceCode", loginId: "fixture-login", verificationUrl: "https://auth.openai.com/device", userCode: "Q7KD-9P2M",
+                } })}\n`);
+              } else if (method === "account/login/cancel" && retiresDeviceLogin) {
+                server.stdout.write(`${JSON.stringify({ id, error: { code: -32603, message: "Cancel failed" } })}\n`);
               } else if (id !== undefined) server.stdout.write(`${JSON.stringify({
                 id, result: method === "account/read"
                   ? { account: accountConnected ? { type: "chatgpt", planType: "plus" } : null } : {},
@@ -539,6 +547,45 @@ it.each([
       await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
       expect(subscriptionProviderFactory.mock.lastCall).toEqual([selection]);
       expect(await dispatch(true)).toMatchObject({ review: { outcome: "fresh" }, result: { decision: "allow" } });
+      return;
+    } else if (retiresDeviceLogin) {
+      const server = requiredFixture(child);
+      const send = (message: object) => server.stdout.write(`${JSON.stringify(message)}\n`);
+      const rejectAccountRead = (index: number) => send({
+        id: requiredFixture(accountReads[index]), error: { code: -32603, message: "Account read temporarily unavailable" },
+      });
+      const pending = { pendingLogin: "device-code", pendingDeviceCode: "Q7KD-9P2M" };
+      accountConnected = false;
+      send({ method: "account/updated", params: { authMode: null } });
+      await expect(runtime.startLogin(provider, "device-code")).resolves.toMatchObject(pending);
+      for (let poll = 0; poll < 2; poll++) {
+        await expect(runtime.getStatus(provider)).resolves.toMatchObject({ ...pending, connection: "signed-out" });
+      }
+
+      holdAccountReads = true;
+      if (scenario === "device login completion while account probes fail") {
+        send({ method: "account/login/completed", params: { loginId: "fixture-login", success: true } });
+      } else {
+        await expect(runtime.cancelLogin(provider)).rejects.toMatchObject({ code: "subscription-operation-failed" });
+      }
+      await vi.waitFor(() => expect(accountReads).toHaveLength(1));
+      rejectAccountRead(0);
+      const cardProbe = runtime.getStatus(provider);
+      const failedCardProbe = expect(cardProbe).rejects.toMatchObject({ code: "subscription-operation-failed" });
+      await vi.waitFor(() => expect(accountReads).toHaveLength(2));
+      rejectAccountRead(1);
+      await failedCardProbe;
+      // Settings supplies this cached projection with a failed refresh.
+      expect(await runtime.getCachedStatus(provider)).toMatchObject({
+        pendingLogin: null, pendingDeviceCode: null, capabilities: { chat: false },
+      });
+      expect(await dispatch(true)).toMatchObject({ result: { decision: "deny", reasonCode: "no-approver" } });
+
+      accountConnected = true;
+      holdAccountReads = false;
+      await expect(runtime.getStatus(provider)).resolves.toMatchObject({ connection: "connected", pendingLogin: null });
+      await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
+      expect(await dispatch(true)).toMatchObject({ result: { decision: "allow" } });
       return;
     } else if (usesAccountNotification) {
       const server = requiredFixture(child);

@@ -202,8 +202,7 @@ export class CodexAppServerClient {
     this.accountStatus = this.projectAccountStatus(result);
     if (this.accountStatus.connection === "connected") {
       if (pendingLogin === this.pendingLogin) {
-        pendingLogin?.window.finish();
-        this.pendingLogin = null;
+        this.retireLogin(pendingLogin);
         this.completedLoginError = null;
       }
       if (this.onPlanUsage && refreshPlanUsage) {
@@ -247,8 +246,7 @@ export class CodexAppServerClient {
       if (response?.type !== "chatgpt" || !loginId || !authUrl) {
         throw new CodexAppServerError("codex-login-failed");
       }
-      this.pendingLogin = { loginId, method: "browser", deviceCode: null, window: new OAuthLoginAttempt() };
-      this.openLoginWindow(authUrl, this.pendingLogin);
+      this.beginLogin(authUrl, { loginId, method: "browser", deviceCode: null, window: new OAuthLoginAttempt() });
       return this.currentStatus();
     });
   }
@@ -269,8 +267,7 @@ export class CodexAppServerClient {
       if (response?.type !== "chatgptDeviceCode" || !loginId || !verificationUrl || !userCode) {
         throw new CodexAppServerError("codex-login-failed");
       }
-      this.pendingLogin = { loginId, method: "device-code", deviceCode: userCode, window: new OAuthLoginAttempt() };
-      this.openLoginWindow(verificationUrl, this.pendingLogin);
+      this.beginLogin(verificationUrl, { loginId, method: "device-code", deviceCode: userCode, window: new OAuthLoginAttempt() });
       return { status: this.currentStatus(), userCode };
     });
   }
@@ -283,8 +280,7 @@ export class CodexAppServerClient {
       try {
         await this.request("account/login/cancel", { loginId: pending.loginId });
       } finally {
-        pending.window.finish();
-        if (this.pendingLogin?.loginId === pending.loginId) this.pendingLogin = null;
+        this.retireLogin(pending);
       }
       return this.currentStatus();
     });
@@ -296,8 +292,7 @@ export class CodexAppServerClient {
       this.invalidatePlanUsage();
       // Do not leave an abandoned login attempt blocking future sign-ins when the server rejects logout. The account projection remains unchanged until the
       // parameterless logout request succeeds.
-      this.pendingLogin?.window.finish();
-      this.pendingLogin = null;
+      this.retireLogin(this.pendingLogin);
       this.completedLoginError = null;
       await this.request("account/logout");
       return this.currentStatus();
@@ -527,14 +522,11 @@ export class CodexAppServerClient {
     }
   }
 
-  private async cancelPendingLoginQuietly(loginId: string): Promise<void> {
-    try {
-      await this.request("account/login/cancel", { loginId });
-    } catch {
-      // Browser launch already failed. Avoid leaking a secondary transport error.
-    } finally {
-      if (this.pendingLogin?.loginId === loginId) this.pendingLogin = null;
-    }
+  private retireLogin(pending: PendingLogin | null, completionSource?: object): void {
+    if (!pending || this.pendingLogin !== pending) return;
+    this.pendingLogin = null;
+    pending.window.finish();
+    this.connectionEvidence?.({ kind: "login-retired", attempt: pending.window, completionSource });
   }
 
   private request(method: string, params?: CodexJsonRecord): Promise<unknown> {
@@ -662,17 +654,10 @@ export class CodexAppServerClient {
     }
     if (method === "account/login/completed" && payload) {
       const loginId = boundedString(payload.loginId, 128);
-      if (loginId && this.pendingLogin?.loginId === loginId) {
-        this.pendingLogin.window.finish();
-        if (payload.success === true) {
-          this.pendingLogin = null;
-          this.connectionEvidence?.({ kind: "login-completed", source: child });
-        }
-      }
-      if (loginId && this.pendingLogin?.loginId === loginId && payload.success !== true) {
-        this.pendingLogin = null;
-        this.completedLoginError = "codex-login-failed";
-      }
+      const pending = this.pendingLogin;
+      if (!loginId || pending?.loginId !== loginId) return;
+      if (payload.success !== true) this.completedLoginError = "codex-login-failed";
+      this.retireLogin(pending, payload.success === true ? child : undefined);
     }
   }
 
@@ -748,23 +733,29 @@ export class CodexAppServerClient {
     this.transportReader?.close();
     this.transportReader = null;
     this.startPromise = null;
-    this.pendingLogin?.window.finish();
-    this.pendingLogin = null;
+    const pending = this.pendingLogin;
     this.accountStatus = blankStatus("ready");
     this.completedLoginError = null;
     if (retired) {
       this.publishAccountChange();
       this.connectionEvidence?.({ kind: unexpected ? "transport-lost" : "retired", source: retired });
     }
+    this.retireLogin(pending);
     this.accountReceipts.clear();
     this.pendingRequests.rejectAll(error);
   }
 
-  private openLoginWindow(url: string, pending: PendingLogin): void {
+  private beginLogin(url: string, pending: PendingLogin): void {
+    this.pendingLogin = pending;
+    this.connectionEvidence?.({
+      kind: "login-started", attempt: pending.window, method: pending.method,
+      deviceCode: pending.deviceCode, version: this.lastKnownVersion(),
+    });
     pending.window.open(url, this.openAuthorizationUrl, TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs, () => {
       if (this.pendingLogin !== pending) return;
       this.completedLoginError = "codex-login-failed";
-      void this.cancelPendingLoginQuietly(pending.loginId);
+      this.retireLogin(pending);
+      void this.request("account/login/cancel", { loginId: pending.loginId }).catch(() => undefined);
     });
   }
 }
