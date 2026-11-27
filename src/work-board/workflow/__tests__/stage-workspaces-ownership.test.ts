@@ -3,12 +3,12 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync,
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { aveHome } from "../../../shared/ave-home.js";
-import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
+import { type HostGit, HostGitError } from "../host-git.js";
 import { nodeIdOf } from "../owned-fs.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { JOIN_DIR, RUN_FILE, runBranch, runRootOf, runSlug } from "../workspace-layout.js";
 import { removeTree, setPath, stageOf, writeUnder as write } from "./stage-fixtures.js";
-import { type GitFixture, type GitHandle, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
+import { type GitFixture, type GitHandle, sealed, stageRoot, seedGitFixtures } from "./stage-git-fixture.js";
 
 const warned = vi.hoisted(() => [] as string[]);
 vi.mock("../../../lib/logger.js", () => {
@@ -16,12 +16,13 @@ vi.mock("../../../lib/logger.js", () => {
   return { createLogger: () => ({ warn: (...said: unknown[]) => { warned.push(said.join(" ")); }, info: quiet, debug: quiet, error: quiet }) };
 });
 
+const createFixture = seedGitFixtures();
 let fx: GitFixture;
 /** Set while a group of tests that change nothing shares one fixture. */
 let shared = false;
 
 beforeEach(() => {
-  if (!shared) fx = gitFixture();
+  if (!shared) fx = createFixture();
   warned.length = 0;
 });
 
@@ -82,7 +83,7 @@ async function scene(): Promise<Scene> {
 const named = ({ run }: GitHandle): [string, { projectRoot: string; itemId: number }] => [run.runId, { projectRoot: fx.repo, itemId: run.itemId }];
 
 async function operate(operation: "discard" | "sweep" | "release" | "swept" | "discarded", at?: Scene): Promise<void> {
-  const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => run => run.itemId !== 8 });
+  const provider = createStageWorkspaceProvider({ git: fx.git, removable: async () => run => run.itemId !== 8 });
   if (operation === "release") await provider.release((at as Scene).target.run, "all");
   else if (operation === "swept") await provider.sweep([], new Map([[(at as Scene).target.run.runId, fx.repo]]));
   else if (operation === "discarded") await provider.discard(new Map([named((at as Scene).target)]));
@@ -159,7 +160,7 @@ it.each(["discard", "sweep"] as const)("a %s has no project open: a git run stay
 
 it("a sweep leaves a git run whose project it is given under another run's id", async () => {
   const at = await scene();
-  await createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }) }).sweep([], new Map([[at.other.run.runId, fx.repo], [`${at.target.run.runId}-other`, fx.repo]]));
+  await createStageWorkspaceProvider({ git: fx.git }).sweep([], new Map([[at.other.run.runId, fx.repo], [`${at.target.run.runId}-other`, fx.repo]]));
   expectLeftWhole(at, "project.root");
   expect(existsSync(at.otherRoot)).toBe(false);
 });
@@ -168,7 +169,7 @@ it("a run whose release was refused for want of its project goes at a discard gi
   const at = await scene();
   const { projectRoot, ...closed } = at.target.run;
   expect(projectRoot).toBe(fx.repo);
-  const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => run => run.itemId !== 8 });
+  const provider = createStageWorkspaceProvider({ git: fx.git, removable: async () => run => run.itemId !== 8 });
   await provider.release(closed, "all");
   expectLeftWhole(at, "project.root");
   // An entry the run file held with no project carries none. Left whole or taken apart, the run was taken in hand: what the caller
@@ -184,7 +185,7 @@ it("a run whose release was refused for want of its project goes at a discard gi
 
 it("a run a discard left whole on the root it was given is not judged again by a discard given none for it, another run's own included: one report, until a root is told anew", async () => {
   const at = await scene();
-  const real = createHostGit({ env: fx.env });
+  const real = fx.git;
   let answers = false;
   const git: HostGit = {
     drivers: real.drivers, floorHolds: real.floorHolds,
@@ -206,7 +207,7 @@ it("a run a discard left whole on the root it was given is not judged again by a
 
 it("a run left whole on the root it was given is still checked by a later discard given none: a stage folder replaced since is told once", async () => {
   const at = await scene();
-  const real = createHostGit({ env: fx.env });
+  const real = fx.git;
   const git: HostGit = { drivers: real.drivers, floorHolds: real.floorHolds, run: (cwd, args, call) => args.includes("--git-common-dir") ? Promise.reject(new HostGitError("timeout", "git gave no answer")) : real.run(cwd, args, call) };
   const provider = createStageWorkspaceProvider({ git, removable: async () => run => run.itemId !== 8 });
   await provider.discard(new Map([named(at.target)]));
@@ -236,7 +237,7 @@ it("a registration whose `gitdir` holds bytes that are no text is not read as ot
 });
 
 it("a folder run left whole because a stage folder was replaced is taken apart by a later discard once the folder is its own again", async () => {
-  const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => () => true });
+  const provider = createStageWorkspaceProvider({ git: fx.git, removable: async () => () => true });
   const run = { itemId: 9, runId: `run-folder-${process.pid}-${Date.now()}`, runKey: "key" };
   const open = await provider.open(run, undefined);
   if (!open.ok) throw new Error(open.code);
@@ -255,7 +256,7 @@ it("a folder run left whole because a stage folder was replaced is taken apart b
 
 it("a discard tells of a run it was given a root for that has no folder left, whatever another run's folder it cannot read holds; not while a folder it cannot read carries the run's own name", async () => {
   const at = await scene();
-  const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => run => run.itemId !== 8 });
+  const provider = createStageWorkspaceProvider({ git: fx.git, removable: async () => run => run.itemId !== 8 });
   await provider.release(at.target.run, "all");
   expect(existsSync(at.runRoot)).toBe(false);
   // Item 8's run has its folder and its row: it is not taken in hand, and what is held for it waits.
@@ -282,7 +283,7 @@ it("a discard tells of a run it was given a root for that has no folder left, wh
 
 it("a folder a discard cannot read keeps the root of the run whose name it carries in another case", async () => {
   const at = await scene();
-  const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => run => run.itemId !== 8 });
+  const provider = createStageWorkspaceProvider({ git: fx.git, removable: async () => run => run.itemId !== 8 });
   await provider.release(at.target.run, "all");
   // A run of item 7 with no folder, and its folder's name in capitals: a volume that folds case finds the one by the other.
   const runId = "run-case";
@@ -314,7 +315,7 @@ describe.each(["release", "swept", "discarded"] as const)("what a %s with its pr
     let at: Scene;
 
     beforeAll(async () => {
-      fx = gitFixture();
+      fx = createFixture();
       shared = true;
       at = await scene();
     });
@@ -414,7 +415,7 @@ describe("the run branch", () => {
 
   it("an open that loses the race for its branch leaves the other branch", async () => {
     const { repo, userGit } = fx;
-    const real = createHostGit({ env: fx.env });
+    const real = fx.git;
     let raced = false;
     const run: HostGit["run"] = async (cwd, args, call) => {
       if (makesBranch(args) && !raced) {
@@ -433,7 +434,7 @@ describe("the run branch", () => {
 
   it("an open whose branch creation ends without an answer leaves the branch", async () => {
     const { repo, userGit } = fx;
-    const real = createHostGit({ env: fx.env });
+    const real = fx.git;
     const run: HostGit["run"] = async (cwd, args, call) => {
       const result = await real.run(cwd, args, call);
       if (makesBranch(args)) throw new HostGitError("terminated", "fixture: no answer");
@@ -572,7 +573,7 @@ describe("the repository's identity", () => {
     userGit(repo, "update-ref", `refs/heads/${branch}`, base);
     const listed = userGit(repo, "worktree", "list", "--porcelain");
     await handle.provider.release(handle.run, "all");
-    await createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => () => true }).sweep([]);
+    await createStageWorkspaceProvider({ git: fx.git, removable: async () => () => true }).sweep([]);
     expect(userGit(repo, "rev-parse", `refs/heads/${branch}`)).toBe(base);
     expect(userGit(repo, "worktree", "list", "--porcelain")).toBe(listed);
     // The repository git now gives for the project is not the record's by text: the run stays whole, with its record.
@@ -633,7 +634,7 @@ it("a stage's commit that the record gives as an option is no record: a join con
 });
 
 it("every commit and ref git is given comes after the end of its options", async () => {
-  const real = createHostGit({ env: fx.env });
+  const real = fx.git;
   const calls: (readonly string[])[] = [];
   const { handle } = await conflicting({ drivers: real.drivers, floorHolds: real.floorHolds, run: (cwd, args, call) => { calls.push(args); return real.run(cwd, args, call); } });
   expect(await handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).toMatchObject({ ok: false });
@@ -648,7 +649,7 @@ it("every commit and ref git is given comes after the end of its options", async
 
 it("a release that git gives no answer to about the repository leaves the run whole: no answer is not another repository", async () => {
   const at = await scene();
-  const real = createHostGit({ env: fx.env });
+  const real = fx.git;
   const git: HostGit = {
     drivers: real.drivers, floorHolds: real.floorHolds,
     run: (cwd, args, call) => args.includes("--git-common-dir") ? Promise.reject(new HostGitError("timeout", "git gave no answer")) : real.run(cwd, args, call),
@@ -669,7 +670,7 @@ it("git in a folder of the run is given the registration the host checked: a lin
   const decoy = join(fx.base, "decoy");
   userGit(elsewhere, "worktree", "add", "-q", "--detach", decoy);
   const decoyLink = `gitdir: ${adminOf(decoy)}\n`;
-  const real = createHostGit({ env: fx.env });
+  const real = fx.git;
   let runRoot = "";
   let swaps = 0;
   // Every git call in a folder of the run finds that folder's link pointing into the other repository, from after the host's check

@@ -1,10 +1,10 @@
-import { existsSync, readdirSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
+import { type HostGit, HostGitError } from "../host-git.js";
 import { RUN_FILE } from "../workspace-layout.js";
 import { stageOf, writeUnder as write } from "./stage-fixtures.js";
-import { type GitFixture, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
+import { type GitFixture, sealed, stageRoot, seedGitFixtures } from "./stage-git-fixture.js";
 
 /** How a git call gives no answer: by its exit, or by throwing as the host's git does for a process that could not run or finish. */
 export type FailureKind = "exit 128" | "exit 1 with stderr" | "thrown";
@@ -24,7 +24,7 @@ const registrationsOf = (fx: GitFixture): number => {
 /** Opens a run on a repository whose configuration requires a filter no file uses, seals two stages that conflict, joins them and
  * releases the run. */
 const gitRun: Lifecycle = async (fx, git, stop) => {
-  fx.userGit(fx.repo, "config", "filter.unused.required", "true");
+  appendFileSync(join(fx.repo, ".git", "config"), "[filter \"unused\"]\n\trequired = true\n");
   const handle = fx.start({ git });
   const open = await handle.provider.open(handle.run, fx.repo);
   if (!open.ok) { stop(); return { recordsGone: true, registrations: 0 }; }
@@ -83,12 +83,13 @@ const discardAndSweep: Lifecycle = async (fx, git, stop) => {
 
 const LIFECYCLES = { "git run": gitRun, "folder in a repository": folderInRepo, "discard and sweep": discardAndSweep } as const;
 type LifecycleName = keyof typeof LIFECYCLES;
+const createFixture = seedGitFixtures();
 
 /** Runs `name` on a fixture of its own, with git failing the call `fails` names in the way `kind` says. */
 async function lifecycle(name: LifecycleName, fails: (call: string) => boolean, kind: FailureKind, reason: typeof THROWN[number] = "timeout", seen?: string[]): Promise<Outcome> {
-  const fx = gitFixture();
+  const fx = createFixture();
   try {
-    const real = createHostGit({ env: fx.env });
+    const real = fx.git;
     const made = new Map<string, number>();
     const call = (signature: string): string => {
       const nth = (made.get(signature) ?? 0) + 1;
