@@ -221,7 +221,7 @@ async function bindRawIpHostTargets(
  */
 interface CanaryTestOverrides {
   readonly prober?: string;
-  readonly editProfile?: (profile: string) => string;
+  readonly editProfile?: (profile: string, hostPorts: { readonly tl: number; readonly udp: number } | undefined) => string;
   readonly hostAddress?: string;
   /** The watchdog's delay in seconds, so a test can find its own watchdog among the host's processes. */
   readonly watchdogSeconds?: string;
@@ -342,7 +342,8 @@ async function runSeatbeltCanary(
       model, lookups, commandLine, cwd: working, timeoutMs,
       env: { HOME: working, PATH: "/usr/bin:/bin" }, proxyUrl: proxy.url,
     });
-    if (overrides.editProfile !== undefined) request.seatbelt.profileOverride = overrides.editProfile(request.seatbelt.profileOverride);
+    if (overrides.editProfile !== undefined) request.seatbelt.profileOverride = overrides.editProfile(request.seatbelt.profileOverride,
+      host === undefined ? undefined : { tl: host.tlPort, udp: host.udp.port });
     const staged = await stageMxcShellRequest(config, request);
     const launch = startMxcShellSupervisor(staged, timeoutMs, signal,
       () => { void proxy?.close(); }, "macos-shell-canary", location);

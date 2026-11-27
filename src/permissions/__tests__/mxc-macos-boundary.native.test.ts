@@ -214,13 +214,21 @@ describe.runIf(NATIVE)("native macOS shell boundary", () => {
     expect(readdirSync(root)).toEqual(["work"]);
   }, 30_000);
 
-  it("sees an open network when the profile allows all remote outbound traffic", async () => {
+  it("names the host-side targets that saw an open network when the profile lets them through", async () => {
+    // Aimed at loopback, the closed TCP port and the UDP listener are the only addresses the edit opens. Every other
+    // availability check still holds, the documentation addresses stay denied, and the run is the same on any network.
     const result = await _runSeatbeltCanaryForTest(supervisor.location, root, undefined, {
-      // Every remote address opens; loopback stays closed except the proxy, so the availability checks still hold.
-      editProfile: profile => profile.replace(/\(allow network-outbound \(remote ip "localhost:\d+"\)\)/u, proxyAllow =>
-        ['(allow network-outbound (remote ip "*:*"))', "(allow system-socket)", '(deny network-outbound (remote ip "localhost:*"))', proxyAllow].join("\n")),
+      hostAddress: "127.0.0.1",
+      editProfile: (profile, ports) => {
+        if (ports === undefined) throw new Error("Expected the host-side targets to bind on loopback");
+        return `${profile}\n(allow network-outbound (remote ip "localhost:${ports.tl}") (remote ip "localhost:${ports.udp}"))`;
+      },
     });
-    expect(result).toMatchObject({ verdict: "available", rawIpProbe: { rawIp: "unknown", reason: "raw-ip-reachable" } });
+    // The closed port answers with ECONNREFUSED, so a packet reached a peer, and the UDP nonce arrives.
+    expect(result).toEqual({
+      verdict: "available",
+      rawIpProbe: { rawIp: "unknown", reason: "raw-ip-reachable", reachableTargets: ["tl", "udp"], udpArrival: "arrived" },
+    });
   }, 30_000);
 
   it.each([
