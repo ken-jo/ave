@@ -175,7 +175,10 @@ describe('memory map host boundary', () => {
     expect(set).not.toHaveBeenCalled();
     expect(transport).not.toHaveBeenCalled();
   });
-  it.each(Object.keys(CHANNELS.memoryMap).filter(key => !['progress','modelProgress'].includes(key)) as (keyof typeof CHANNELS.memoryMap)[])('rejects an untrusted frame before parsing %s', async key => {
+  it('does not register the Windows build view on the POSIX host', () => {
+    expect(state.handles.has(CHANNELS.memoryMap.buildView)).toBe(false);
+  });
+  it.each(Object.keys(CHANNELS.memoryMap).filter(key => !['progress','modelProgress','buildView'].includes(key)) as (keyof typeof CHANNELS.memoryMap)[])('rejects an untrusted frame before parsing %s', async key => {
     const event = { ...hostEvent, senderFrame: { url: 'ave-mcp-app://isolated/index.html' } } as unknown as IpcMainInvokeEvent;
     expect(await invoke(key, {}, event)).toEqual({ ok: false, error: 'unauthorized-frame' });
     expect(state.audit).toHaveBeenCalledOnce(); expect(state.download).not.toHaveBeenCalled(); expect(state.build).not.toHaveBeenCalled();

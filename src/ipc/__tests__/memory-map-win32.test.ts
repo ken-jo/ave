@@ -635,7 +635,7 @@ describe('memory map host boundary', () => {
   });
   it.each(Object.keys(CHANNELS.memoryMap).filter(key => !['progress','modelProgress'].includes(key)) as (keyof typeof CHANNELS.memoryMap)[])('rejects an untrusted frame before parsing %s', async key => {
     const event = { ...hostEvent, senderFrame: { url: 'ave-mcp-app://isolated/index.html' } } as unknown as IpcMainInvokeEvent;
-    expect(await invoke(key, {}, event)).toEqual({ ok: false, error: 'unauthorized-frame' });
+    expect(await invoke(key, { invalid: true }, event)).toEqual({ ok: false, error: 'unauthorized-frame' });
     expect(state.audit).toHaveBeenCalledOnce(); expect(state.download).not.toHaveBeenCalled(); expect(state.build).not.toHaveBeenCalled();
   });
   it('validates strict payloads and rejects unauthorized projects before catalog access', async () => {
