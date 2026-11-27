@@ -39,6 +39,8 @@ import {
 } from "../shared/chat-origin.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { t } from "../i18n/index.js";
+import { fileTargetSealFailureKey } from "../permissions/target-seal.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostShutdownDenial, isSettledRefusal, refusal } from "./pipeline/approval-outcome.js";
 import { toolInvocationShutdownStarted } from "./invocation-ledger.js";
 import { createLogger } from "../lib/logger.js";
@@ -128,6 +130,7 @@ export interface AuthorizationStageContext {
   targetFilePath: string | undefined;
   linkedTargets: readonly LinkedApprovalTarget[];
   canonicalTargets: Array<{ filePath: string; canonicalPath: string }>;
+  assertFileTargetsUnchanged?: () => void;
   approvalCacheKey: string | undefined;
   executionCwd: string;
   auditCurrentToolCall: AuditToolCall;
@@ -430,10 +433,10 @@ export async function authorizeToolInvocation(
           reason: "Permission manager is unavailable",
           forceModal: true,
         };
-    const checkPermission = (): PermissionCheckResult => {
+    const checkPermission = (): PermissionCheckResult => checkWithCurrentFileTargets(() => {
       const current = readPermission();
       return context.hostTerminalReapproval && current.decision === "allow" ? readPermission(true) : current;
-    };
+    });
     checkCurrentPermission = checkPermission;
     if (hostTerminalScope && services.permissionManager) {
       const manager = services.permissionManager;
@@ -445,11 +448,28 @@ export async function authorizeToolInvocation(
       };
     }
   }
+  function checkWithCurrentFileTargets(evaluate: () => PermissionCheckResult): PermissionCheckResult {
+    const { assertFileTargetsUnchanged } = context;
+    if (!assertFileTargetsUnchanged) return evaluate();
+    let targetsChecked = false;
+    try {
+      return withLocalityDecision(() => {
+        assertFileTargetsUnchanged();
+        targetsChecked = true;
+        return evaluate();
+      });
+    } catch (error) {
+      if (targetsChecked) throw error;
+      return refusal(t(fileTargetSealFailureKey(error)), RULE_PROVENANCE);
+    }
+  }
   if (needsCentralDecision && checkCurrentPermission) {
-    permissionResult = context.reviewedPermissionForCard !== undefined && services.permissionManager !== undefined
-      ? services.permissionManager.recheckPermission(context.reviewedPermissionForCard)
-      : context.directoryAuthorization?.pendingRationale
-      ? context.directoryAuthorization.permission
+    const { reviewedPermissionForCard, directoryAuthorization } = context;
+    const manager = services.permissionManager;
+    permissionResult = reviewedPermissionForCard !== undefined && manager !== undefined
+      ? checkWithCurrentFileTargets(() => manager.recheckPermission(reviewedPermissionForCard))
+      : directoryAuthorization?.pendingRationale
+      ? checkWithCurrentFileTargets(() => directoryAuthorization.permission)
       : checkCurrentPermission();
     if (!permissionResult) {
       throw new Error("Permission evaluation returned no result");

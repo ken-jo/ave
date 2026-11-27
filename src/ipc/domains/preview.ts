@@ -13,7 +13,7 @@
  * Not in PUBLIC_CHANNELS → external surfaces (local-api / cli / sdk) can never
  * reach it (fail-closed). Restricted to registered app-window main frames.
  */
-import { ipcMain, type WebContents, type WebFrameMain } from "electron";
+import { ipcMain, type IpcMainInvokeEvent, type WebContents, type WebFrameMain } from "electron";
 import { registerDocumentOpenHandlers } from "../../main/document-open.js";
 import { promises as fs } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
@@ -36,8 +36,8 @@ import { TableDocumentError } from "../../tools/table-document-error.js";
 import { readJudgedDocumentInput } from "../../tools/preview-document-input.js";
 import { installDocumentObservation } from "../../main/document-observation.js";
 import { parseObservedTextDocument } from "../../observation/text-document.js";
-import { recordPreviewFileAccess } from "../../main/preview-file-access.js";
-import { OBSERVATION_LIMITS, type ObservationBinding, type PreviewObservedTextDocument } from "../../shared/agent-observation.js";
+import { preparePreviewFileAccess, recordPreviewFileAccess } from "../../main/preview-file-access.js";
+import { OBSERVATION_LIMITS, type ObservationBinding, type ObservedDocument, type PreviewObservedTextDocument } from "../../shared/agent-observation.js";
 import { acquireParseSlot } from "../../tools/preview-document-process.js";
 import { DOCUMENT_PARSE_MESSAGES } from "../../tools/preview-document-protocol.js";
 import { previewPageFormatOf } from "../../shared/preview-page-document.js";
@@ -91,6 +91,13 @@ function currentReadScope(): { cwd: string; extraAllowed: string[] } {
   return { cwd, extraAllowed: buildRuntimeAllowedDirectories(additional) };
 }
 
+function checkPreviewReadPath(path: string, audience?: Parameters<typeof assertReadableFilePath>[3]): ReturnType<typeof assertReadableFilePath> {
+  return withLocalityDecision(() => {
+    const { cwd, extraAllowed } = currentReadScope();
+    return assertReadableFilePath(path, cwd, extraAllowed, audience);
+  });
+}
+
 function observeDocumentOwner(sender: WebContents, frame: WebFrameMain, abort: () => void): () => void {
   const hasLostFrame = (): boolean => sender.isDestroyed() || frame.isDestroyed() || frame.detached;
   const checkFrame = (): void => { if (hasLostFrame()) abort(); };
@@ -124,6 +131,23 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
   registerDocumentOpenHandlers(deps);
   const { auditLogger } = deps;
   const observation = installDocumentObservation(deps);
+  const finishPreview = (e: IpcMainInvokeEvent, sessionId: unknown, resolved: string, bytes: Buffer | undefined,
+    document: ObservedDocument | undefined, recordAccess: boolean): (() => ObservationBinding | undefined) => {
+    if (process.platform === "win32") {
+      const view = document && bytes ? observation.prepareView(e, sessionId, resolved, bytes, document) : undefined;
+      const receipt = recordAccess ? preparePreviewFileAccess(e, deps, resolved, sessionId) : undefined;
+      return () => {
+        const binding = view?.();
+        receipt?.();
+        return binding;
+      };
+    }
+    return () => withLocalityDecision(() => {
+      const binding = document && bytes ? observation.registerView(e, sessionId, resolved, bytes, document) : undefined;
+      if (recordAccess) recordPreviewFileAccess(e, deps, resolved, sessionId);
+      return binding;
+    });
+  };
   const textRequests = new Map<string, TextPreviewRequest>();
   ipcMain.handle(CHANNELS.preview.observationAck, (e, request: unknown) => {
     if (!validateAppWindowMainFrameSender(e, deps)) {
@@ -177,11 +201,10 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         hasLineWindow = window.offset !== undefined || window.limit !== undefined;
       }
 
-      const { cwd, extraAllowed } = currentReadScope();
       const requestedPath = workspaceRoot === undefined ? rawPath : resolve(workspaceRoot, rawPath);
       // This read is drawn on the person's own screen: a key-extension file is refused here only when it holds a key.
       // Handing the document to the agent's observation is judged separately, as the agent's read.
-      const verdict = assertReadableFilePath(requestedPath, cwd, extraAllowed, "person");
+      const verdict = checkPreviewReadPath(requestedPath, "person");
       if (!verdict.ok) {
         // "not-a-file" here means glob/argument, never a concrete file.
         return { ok: false, error: verdict.error, message: `read guard rejected: ${verdict.error}` };
@@ -237,35 +260,34 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         const window = imageFormat ? undefined : textDocument
           ? { content: textDocument.content, lines: textDocument.lines, truncated: textDocument.truncated }
           : await readTextFileWindow(resolved, offset, limit);
-        const liveScope = currentReadScope();
-        const currentVerdict = assertReadableFilePath(requestedPath, liveScope.cwd, liveScope.extraAllowed, "person");
-        if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {
-          return { ok: false, error: currentVerdict.ok ? "read-failed" : currentVerdict.error, message: "Preview read scope changed" };
-        }
-        if (!validateAppWindowMainFrameSender(e, deps)) return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
-        // Audit the preview read the same way a `read_file` tool call is audited
-        // — a file left the sandbox boundary for display. The path is redacted
-        // (username stripped) via the shared DLP filter, consistent with the
-        // frame-guard audit above.
-        auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "preview-read",
-          type: "info",
-          input: JSON.stringify({
-            channel: CHANNELS.preview.readFile,
-            path: redactFsPath(resolved),
-            bytes: input?.length ?? stat.size,
-          }),
-        });
-        if (request && (request.controller.signal.aborted || textRequests.get(ownerKey!) !== request)) {
-          return { ok: false, error: "read-failed", message: "Preview read was superseded." };
-        }
-        // The agent's observation and the frame's open grant are judged in one decision; the recheck above stays its own.
-        const binding = withLocalityDecision(() => {
-          const view = textDocument && input ? observation.registerView(e, sessionId, resolved, input, textDocument) : undefined;
-          if (!hasLineWindow) recordPreviewFileAccess(e, deps, resolved, sessionId);
-          return view;
-        });
+        const judge = (): PreviewReadFileResult | (() => ObservationBinding | undefined) => {
+          const currentVerdict = checkPreviewReadPath(requestedPath, "person");
+          if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {
+            return { ok: false, error: currentVerdict.ok ? "read-failed" : currentVerdict.error, message: "Preview read scope changed" };
+          }
+          if (!validateAppWindowMainFrameSender(e, deps)) return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
+          // Audit the preview read the same way a `read_file` tool call is audited
+          // — a file left the sandbox boundary for display. The path is redacted
+          // (username stripped) via the shared DLP filter, consistent with the
+          // frame-guard audit above.
+          auditLogger.log({
+            timestamp: new Date().toISOString(),
+            sessionId: "preview-read",
+            type: "info",
+            input: JSON.stringify({
+              channel: CHANNELS.preview.readFile,
+              path: redactFsPath(resolved),
+              bytes: input?.length ?? stat.size,
+            }),
+          });
+          if (request && (request.controller.signal.aborted || textRequests.get(ownerKey!) !== request)) {
+            return { ok: false, error: "read-failed", message: "Preview read was superseded." };
+          }
+          return finishPreview(e, sessionId, resolved, input, textDocument, !hasLineWindow);
+        };
+        const judged = process.platform === "win32" ? withLocalityDecision(() => judge()) : judge();
+        if (typeof judged !== "function") return judged;
+        const binding = judged();
         return {
           ok: true,
           ...(imageFormat && input ? { image: { dataUrl: `data:${imageFormat.mimeType};base64,${input.toString("base64")}`, mimeType: imageFormat.mimeType } }
@@ -308,8 +330,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         return { ok: false, error: "invalid-index", message: "sheetIndex must be a non-negative integer" };
       }
 
-      const { cwd, extraAllowed } = currentReadScope();
-      const verdict = assertReadableFilePath(rawPath, cwd, extraAllowed);
+      const verdict = checkPreviewReadPath(rawPath);
       if (!verdict.ok) {
         return { ok: false, error: verdict.error, message: `read guard rejected: ${verdict.error}` };
       }
@@ -365,13 +386,16 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
                 sheetIndex,
               }),
             });
-            const scope = currentReadScope();
-            const currentVerdict = assertReadableFilePath(resolved, scope.cwd, scope.extraAllowed);
-            if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {
-              return { ok: false, error: "path-not-allowed", message: "Preview read scope changed" };
-            }
-            const binding = observation.registerView(e, sessionId, resolved, bytes, document);
-            recordPreviewFileAccess(e, deps, resolved, sessionId);
+            const judge = (): PreviewReadDocumentResult | (() => ObservationBinding | undefined) => {
+              const currentVerdict = checkPreviewReadPath(resolved);
+              if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {
+                return { ok: false, error: "path-not-allowed", message: "Preview read scope changed" };
+              }
+              return finishPreview(e, sessionId, resolved, bytes, document, true);
+            };
+            const judged = process.platform === "win32" ? withLocalityDecision(() => judge()) : judge();
+            if (typeof judged !== "function") return judged;
+            const binding = judged();
             return { ok: true, path: resolved, bytes: bytes.length, document, ...(binding ? { observation: binding } : {}) };
           } catch (err) {
             slot.signal.throwIfAborted();

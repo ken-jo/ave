@@ -1,3 +1,4 @@
+import * as persistenceGuards from "../../permissions/approval-persistence-guard.js";
 import type { ApprovalPersistenceGuard } from "../../permissions/approval-persistence-guard.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
@@ -619,18 +620,8 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     throw new Error("Missing native AST fixture");
   };
 
-  it.each([
-    ["sensitive env-home operand", "Get-Content $HOME/.ssh/id_rsa"],
-    ["sensitive quoted operand", "Get-Content '~/.ssh/id_rsa'"],
-  ])("checks parsed shell paths before execution or durable approval: %s", async (_label, command) => {
-    const registry = new ToolRegistry();
-    registry.register(new PowerShellTool());
-    const dir = mkdtempSync(join(tmpdir(), "ave-powershell-path-policy-"));
-    const startup = vi.spyOn(powerShellStartupPolicy, "isPowerShellStartupPinned").mockReturnValue(true);
-    const installation = vi.spyOn(powerShellExecutable, "resolveTrustedPowerShellExecutable").mockReturnValue({ executable: "/protected-fixture/pwsh", kind: "pwsh" });
-    const preflight = vi.spyOn(shellTools, "findPowerShellCommandPathViolation");
-    const parserInputs: string[] = [];
-    const spawn = vi.spyOn(childProcess, "spawn").mockImplementation((_executable, argv) => {
+  function installPathPolicyParser(parserInputs: string[]) {
+    return vi.spyOn(childProcess, "spawn").mockImplementation((_executable, argv) => {
       const args = Array.isArray(argv) ? argv : [];
       const encodedIndex = args.indexOf("-EncodedCommand");
       const script = encodedIndex >= 0 ? Buffer.from(args[encodedIndex + 1]!, "base64").toString("utf16le") : args.join(" ");
@@ -644,6 +635,12 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       stdin.on("finish", () => queueMicrotask(() => {
         const source = Buffer.concat(chunks).toString("utf8");
         parserInputs.push(source);
+        if (source === "Write-Output later") {
+          Object.defineProperty(child, "exitCode", { value: 1, configurable: true });
+          stderr.emit("data", Buffer.from("fixture parser failure"));
+          child.emit("close", 1);
+          return;
+        }
         stdout.emit("data", Buffer.from(JSON.stringify(pathPolicyAst(source))));
         Object.defineProperty(child, "exitCode", { value: 0, configurable: true });
         child.emit("close", 0);
@@ -651,6 +648,41 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       Object.assign(child, { stdin, stdout, stderr });
       return child;
     });
+  }
+
+  it.skipIf(process.platform === "win32")("stops POSIX PowerShell preflight before parsing a later field", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "powershell-field-order-"));
+    const startup = vi.spyOn(powerShellStartupPolicy, "isPowerShellStartupPinned").mockReturnValue(true);
+    const installation = vi.spyOn(powerShellExecutable, "resolveTrustedPowerShellExecutable").mockReturnValue({ executable: "/protected-fixture/pwsh", kind: "pwsh" });
+    const parserInputs: string[] = [];
+    const spawn = installPathPolicyParser(parserInputs);
+    syncBuiltinESMExports();
+    try {
+      const first = "Get-Content $HOME/.ssh/id_rsa";
+      const result = await shellTools.findPowerShellCommandPathViolation([first, "Write-Output later"], directory, directory, [], true);
+      expect(result).not.toBeNull();
+      expect(parserInputs).toEqual([first]);
+    } finally {
+      startup.mockRestore();
+      installation.mockRestore();
+      spawn.mockRestore();
+      syncBuiltinESMExports();
+      await cleanupTmpDir(directory);
+    }
+  });
+
+  it.each([
+    ["sensitive env-home operand", "Get-Content $HOME/.ssh/id_rsa"],
+    ["sensitive quoted operand", "Get-Content '~/.ssh/id_rsa'"],
+  ])("checks parsed shell paths before execution or durable approval: %s", async (_label, command) => {
+    const registry = new ToolRegistry();
+    registry.register(new PowerShellTool());
+    const dir = mkdtempSync(join(tmpdir(), "ave-powershell-path-policy-"));
+    const startup = vi.spyOn(powerShellStartupPolicy, "isPowerShellStartupPinned").mockReturnValue(true);
+    const installation = vi.spyOn(powerShellExecutable, "resolveTrustedPowerShellExecutable").mockReturnValue({ executable: "/protected-fixture/pwsh", kind: "pwsh" });
+    const preflight = vi.spyOn(shellTools, "findPowerShellCommandPathViolation");
+    const parserInputs: string[] = [];
+    const spawn = installPathPolicyParser(parserInputs);
     syncBuiltinESMExports();
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
@@ -2809,13 +2841,14 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     expect(results[0].is_error).toBeUndefined();
   });
 
-  it("allow-always resolves the central workspace lifecycle lazily and persists through it", async () => {
+  async function exerciseFolderPersistence(expectedGuard?: ApprovalPersistenceGuard): Promise<void> {
     const executeSpy = vi.fn(async () => "ok");
     const registry = new ToolRegistry();
     registry.register(makeWriteFileTool(executeSpy));
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
     const allowDirectory = vi.fn(async (root: string, _source: "permission-slash", authority?: ApprovalPersistenceGuard) => {
+      if (expectedGuard !== undefined) expect(authority).toBe(expectedGuard);
       expect(await authority?.refresh()).toBe(true);
       expect(authority?.isCurrent()).toBe(true);
       return [root];
@@ -2874,6 +2907,18 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       "permission-slash",
       expect.anything(),
     );
+  }
+
+  it("allow-always resolves the central workspace lifecycle lazily and persists through it", () => exerciseFolderPersistence());
+
+  it.skipIf(process.platform === "win32")("passes the original POSIX always-folder persistence guard to the lifecycle", async () => {
+    const guard: ApprovalPersistenceGuard = { refresh: async () => true, isCurrent: () => true };
+    const createGuard = vi.spyOn(persistenceGuards, "invocationApprovalPersistenceGuard").mockReturnValue(guard);
+    try {
+      await exerciseFolderPersistence(guard);
+    } finally {
+      createGuard.mockRestore();
+    }
   });
 
   it("applies a folder allow-always once to the exact target while boot refuses the home folder", async () => {
@@ -3174,6 +3219,31 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       expect(sentApprovalCards(wc)).toHaveLength(0);
     } finally {
       await cleanupTmpDir(outside);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("propagates a POSIX saved Edit permission observation error", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "posix-edit-permission-"));
+    const registry = new ToolRegistry();
+    registry.register(new WriteFileTool());
+    const manager = new PermissionManager(join(directory, "permissions.json"));
+    manager.setMode("allow");
+    const check = manager.checkDetailed.bind(manager);
+    const failure = new Error("saved Edit permission lookup failed");
+    const evaluate = vi.spyOn(manager, "checkDetailed").mockImplementation((...args) => {
+      if (args[4]?.ruleSubject?.kind === "edit") throw failure;
+      return check(...args);
+    });
+    const executor = new ToolExecutor(registry, undefined, manager);
+    try {
+      await expect(executor.executeAll(
+        [{ id: "posix-edit-error", name: "write_file", input: { path: "new.txt", content: "notes" } }],
+        { executionCwd: directory, sessionId: "session-edit-error", permissionContext: userPermissionContext() },
+      )).rejects.toBe(failure);
+      expect(existsSync(join(directory, "new.txt"))).toBe(false);
+    } finally {
+      evaluate.mockRestore();
+      await cleanupTmpDir(directory);
     }
   });
 

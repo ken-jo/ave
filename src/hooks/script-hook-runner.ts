@@ -1,5 +1,6 @@
 // Blocking hooks fail closed on command failures; successful commands may be silent or return decisions, and exit 2 uses stderr as denial feedback. Shell admission, sandbox policy, safe env and caller-side DLP apply; hook allows never upgrade upstream denies (docs/guides/user-hooks.md).
 // Generic argv never passes through an implicit shell; legacy scripts keep the resolved interpreter path.
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import type { ChildProcess } from "node:child_process";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { resolveHostProgram } from "../shared/host-program-path.js";
@@ -360,9 +361,9 @@ export async function runOneHookScript(
     ? isPluginWorkerConfinementActive()
     : (admittedPlan ?? getHostShellExecutionPlan("default", "hook")).mode === "asrt";
   // Only host-recorded, reviewed file dependencies inside this hook directory can pierce its read floor.
-  const userScriptReads = (runnable.fileDependencies ?? [])
+  const userScriptReads = withLocalityDecision(() => (runnable.fileDependencies ?? [])
     .map((file) => resolve(canonicalizePathForMatch(resolve(cwd, file))))
-    .filter((file) => isPathWithin(caseFoldForMatch(resolve(defaultHooksDir())), caseFoldForMatch(file)));
+    .filter((file) => isPathWithin(caseFoldForMatch(resolve(defaultHooksDir())), caseFoldForMatch(file))));
   // A user hook has no plugin, so its egress gets no extension allowlist.
   const hookEgressOwner: WorkerEgressOwner = confinement
     ? { kind: "worker", role: "hook", pluginId: confinement.pluginId }

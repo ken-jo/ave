@@ -515,6 +515,7 @@ export class MemoryManager implements PromptMemorySource {
   // Revalidate every candidate and imported path, including absent files, so newly created instructions invalidate the cache.
   getProjectAgentsMd(projectRoot: string): ProjectAgentsMd {
     const root = resolve(projectRoot);
+    if (process.platform === "win32") return discoverProjectAgentsMd(root);
     const cached = this.projectAgentsMdCache;
     if (cached && cached.root === root && cached.sig === this.projectAgentsMdSignature(cached.value)) {
       return cached.value;

@@ -24,16 +24,17 @@ export function projectLocalWindowsFilesystemPath(path: string, maxSymlinkHops =
 }
 
 // Follow existing links before collapsing operand components: path.resolve changes link/.. targets. Refuse ambiguous link-parent semantics on Windows; new suffixes inherit the observed existing parent identity.
-export function resolveShellFilesystemPath(path: string, cwd: string, model: Omit<ShellPathModel, "location"> = { dialect: "native" }): string {
+export function resolveShellFilesystemPath(path: string, cwd: string, model: Omit<ShellPathModel, "location"> = { dialect: "native" },
+  observe?: (absolute: string) => string): string {
   return withLocalityDecision(() => {
     rejectNetworkOrDevicePath(path);
     if (sep === "\\") {
       const absolute = anchorFilesystemPath(path, cwd, model);
       rejectNetworkOrDevicePath(absolute);
       const { normalizedPath, volumeRoot: root } = modelShellPath(absolute, { dialect: "native" });
-      const lexical = resolveExistingShellPath(normalizedPath);
+      const lexical = (observe ?? resolveExistingShellPath)(normalizedPath);
       // Children can collapse parents before following links or follow each prefix first. Neither reading alone establishes the operand's identity.
-      const physical = resolveExistingShellPath(physicalParentPath(absolute, root));
+      const physical = (observe ?? resolveExistingShellPath)(physicalParentPath(absolute, root, observe));
       if (lexical !== physical) {
         throw Object.assign(new Error("Shell path has ambiguous directory-link parents"), { code: "EAMBIGUOUSLINKPARENT" });
       }
@@ -43,10 +44,10 @@ export function resolveShellFilesystemPath(path: string, cwd: string, model: Omi
   });
 }
 
-function physicalParentPath(absolute: string, root: string): string {
+function physicalParentPath(absolute: string, root: string, resolvePath = resolveExistingShellPath): string {
   let cursor = root;
   for (const component of absolute.slice(root.length).split(/[\\/]+/)) {
-    if (component === "..") cursor = cursor === root ? root : dirname(resolveExistingShellPath(cursor));
+    if (component === "..") cursor = cursor === root ? root : dirname(resolvePath(cursor));
     else if (component) cursor = join(cursor, component);
   }
   return cursor;

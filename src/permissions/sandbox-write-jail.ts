@@ -1,4 +1,5 @@
 // The write jail is the canonical union of plugin DATA storage and user-authorized directories; never grant the plugin root containing executable bundles or manifests, since self-rewrite enables later host execution. Reads use separate policy.
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { aveHome } from "../shared/ave-home.js";
 import { baseAllowedDirectories } from "./base-allowed-directories.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
@@ -11,7 +12,7 @@ export interface SandboxWriteJailInput {
   allowedDirectories: readonly string[];
 }
 
-// Compute the canonicalized, de-duplicated set of filesystem paths the sandbox may grant write access to for this invocation. Canonicalization uses canonicalizePathForMatch (the same normalization the reviewer's sensitive-path layer uses) so the OS jail and the reviewer judgement see bit-identical path strings. That helper performs a bounded synchronous `realpath` walk-up (the only I/O here); the function has no global state and does not spawn, so it stays testable in isolation. Builtins / no-plugin shell: `ownerPluginSandboxRoot` is undefined, so the jail is exactly the allowed directories. A plugin-owned tool additionally gains its own writable data root.
+// Compute the canonicalized, de-duplicated set of filesystem paths the sandbox may grant write access to for this invocation. Canonicalization uses canonicalizePathForMatch (the same normalization the reviewer's sensitive-path layer uses) so the OS jail and the reviewer judgement see bit-identical path strings. Path resolution uses one locality decision for the whole write scope. Builtins / no-plugin shell: `ownerPluginSandboxRoot` is undefined, so the jail is exactly the allowed directories. A plugin-owned tool additionally gains its own writable data root.
 export function deriveSandboxWritePaths(input: SandboxWriteJailInput): string[] {
   const raw: string[] = [];
   if (input.ownerPluginSandboxRoot !== undefined && input.ownerPluginSandboxRoot !== "") {
@@ -26,15 +27,17 @@ export function deriveSandboxWritePaths(input: SandboxWriteJailInput): string[] 
   // The Ave home itself is never a write root. Runtime allowed directories carry it for the file tools, but a sandboxed shell may change
   // only the project without asking (decision tree: sandbox-auto is "inside the project"; Ave config/home dirs are protected). A
   // directory inside the home, such as the default workspace, stays a root of its own.
-  const home = caseFoldForMatch(canonicalizePathForMatch(aveHome()));
-  for (const path of raw) {
-    const canonical = canonicalizePathForMatch(path);
-    if (caseFoldForMatch(canonical) === home) continue;
-    if (seen.has(canonical)) continue;
-    seen.add(canonical);
-    out.push(canonical);
-  }
-  return out;
+  return withLocalityDecision(() => {
+    const home = caseFoldForMatch(canonicalizePathForMatch(aveHome()));
+    for (const path of raw) {
+      const canonical = canonicalizePathForMatch(path);
+      if (caseFoldForMatch(canonical) === home) continue;
+      if (seen.has(canonical)) continue;
+      seen.add(canonical);
+      out.push(canonical);
+    }
+    return out;
+  });
 }
 
 // The directories a container shell's roots are derived from. On Windows: the working directory and the extra allowed directories, without the host temp directory the per-turn base carries for the file tools (`baseAllowedDirectories`). Other processes keep files there, and the shell's own temp directory is inside its HOME. Only that exact directory is dropped; the working directory and any other directory stay, wherever they are. Elsewhere nothing is dropped.
@@ -44,7 +47,9 @@ export function containerShellAllowedDirectories(
   platform: NodeJS.Platform = process.platform,
 ): string[] {
   if (platform !== "win32") return [cwd, ...extraAllowedDirectories];
-  const fold = (path: string): string => caseFoldForMatch(canonicalizePathForMatch(path));
-  const base = new Set(baseAllowedDirectories().map(fold));
-  return [cwd, ...extraAllowedDirectories.filter((directory) => !base.has(fold(directory)))];
+  return withLocalityDecision(() => {
+    const fold = (path: string): string => caseFoldForMatch(canonicalizePathForMatch(path));
+    const base = new Set(baseAllowedDirectories().map(fold));
+    return [cwd, ...extraAllowedDirectories.filter((directory) => !base.has(fold(directory)))];
+  });
 }

@@ -200,6 +200,9 @@ describe("PermissionManager.dispatchReviewer", () => {
   });
 
   it("second dispatch hits cache", async () => {
+    setReviewerForTest(pm, { classifier: new LlmRiskClassifier({ complete: async () => ({
+      text: '{"level":"low","reason":"bounded write"}', tokensIn: 1, tokensOut: 1, costUsd: 0,
+    }) }, "fixture", "deny"), cache, recentlyDenied: queue });
     const input = {
       sessionId: "permission-manager-reviewer-session",
       source: "builtin" as const,
@@ -635,6 +638,9 @@ describe("PermissionManager.dispatchReviewer", () => {
   });
 
   it("settings change invalidates stale cache (different allowedDirectories)", async () => {
+    setReviewerForTest(pm, { classifier: new LlmRiskClassifier({ complete: async () => ({
+      text: '{"level":"low","reason":"bounded write"}', tokensIn: 1, tokensOut: 1, costUsd: 0,
+    }) }, "fixture", "deny"), cache, recentlyDenied: queue });
     const ctxA = {
       sessionId: "permission-manager-reviewer-session",
       source: "builtin" as const,

@@ -61,10 +61,20 @@ function baseProgram(token: string): string {
 export function analyzeShellForRules(input: ShellCommandInput, cwd?: string): ShellRuleShape {
   if ((typeof input === "string" ? input : input.command).length > MAX_LITERAL_COMMAND_LENGTH) return { ok: false, reason: "literal command length limit exceeded" };
   const parsed = asParsedShellCommand(input);
-  return shellFact(parsed, `rule-shape\0${cwd ?? ""}`, () => shapeOf(parsed, cwd));
+  if (process.platform !== "win32") {
+    return shellFact(parsed, `rule-shape\0${cwd ?? ""}`, () => buildSyntaxShape(parsed, { cwd }));
+  }
+  const shape = syntaxShapeOf(parsed);
+  if (!shape.ok || shape.ordinaryAsk !== undefined) return shape;
+  const ordinaryAsk = shellScanOrdinaryAsk(parsed, cwd);
+  return ordinaryAsk === null ? shape : { ...shape, ordinaryAsk };
 }
 
-function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRuleShape {
+function syntaxShapeOf(parsed: ParsedShellCommand): ShellRuleShape {
+  return shellFact(parsed, "rule-syntax-shape", () => buildSyntaxShape(parsed));
+}
+
+function buildSyntaxShape(parsed: ParsedShellCommand, hostScan?: { cwd: string | undefined }): ShellRuleShape {
   // A broken parser runtime is an internal failure the matcher cannot reason around; report it as unparseable (asks, never allows).
   if (parsed.parserError !== undefined) return { ok: false, reason: `shell parser failed: ${errorMessage(parsed.parserError)}` };
   const analysis = parsed.analysis;
@@ -214,7 +224,7 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
   visit(analysis.program);
   const encoded = encodedPowerShellExecutionReason(commands.flatMap((command) => command.argv), commands.flatMap((command) => command.rawWords));
   if (encoded !== null) globalBlockers.push(encoded);
-  ordinaryAsk ??= shellScanOrdinaryAsk(parsed, cwd) ?? undefined;
+  if (hostScan !== undefined) ordinaryAsk ??= shellScanOrdinaryAsk(parsed, hostScan.cwd) ?? undefined;
   return { ok: true, commands, hidden, ...(ordinaryAsk ? { ordinaryAsk } : {}), allowBlockers: globalBlockers };
 }
 
@@ -329,9 +339,13 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   if (!hasRestrictions && rules.allow.length === 0) return { decision: null, reason: "no shell rules" };
   const proofLimited = command.length > MAX_LITERAL_COMMAND_LENGTH;
   // Restrictive rules use the bounded syntax even when reusable identity is too long.
-  const shape = hasRestrictions && proofLimited
-    ? shellFact(parsed, `restriction-shape\0${cwd ?? ""}`, () => shapeOf(parsed, cwd))
-    : analyzeShellForRules(parsed, cwd);
+  const isWindows = process.platform === "win32";
+  if (isWindows && proofLimited && !hasRestrictions) return { decision: null, reason: "literal command length limit exceeded" };
+  const shape = isWindows
+    ? syntaxShapeOf(parsed)
+    : hasRestrictions && proofLimited
+      ? shellFact(parsed, `restriction-shape\0${cwd ?? ""}`, () => buildSyntaxShape(parsed, { cwd }))
+      : analyzeShellForRules(parsed, cwd);
 
   if (hasRestrictions) {
     // deny > ask: a deny rule that matches a visible command wins even when another part of the input is hidden; hidden code then asks, because a deny rule the matcher could not evaluate must not be bypassed.

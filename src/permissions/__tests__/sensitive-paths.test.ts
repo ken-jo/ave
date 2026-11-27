@@ -1,7 +1,8 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { isAbsolute, join } from "node:path";
+import { protectedReadDenyMatcher } from "../asrt-sandbox.js";
 import {
   SENSITIVE_PATH_PATTERNS,
   SENSITIVE_PATH_ENTRIES,
@@ -9,6 +10,8 @@ import {
   isSensitivePath,
   allowKeyMaterialInspectionUnder,
   isAdmissionDeniedPath,
+  createConfiguredSessionReadPathMatcher,
+  createSensitiveLocationMatcher,
   createSensitivePathMatcher,
   policyMatchPaths,
   canonicalizePathForMatch,
@@ -17,6 +20,7 @@ import {
 } from "../sensitive-paths.js";
 import { PermissionTestResources } from "./test-resources.js";
 import { AVE_HOME_PROTECTED_DIRECTORIES } from "../../shared/ave-home.js";
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 
 const resources = new PermissionTestResources();
 
@@ -33,16 +37,70 @@ it("keeps protected boundaries aligned with credential directories", () => {
 });
 
 describe("per-decision sensitive matcher", () => {
-  it("reuses configured filesystem roots after the first match", () => {
-    const match = createSensitivePathMatcher("read");
-    expect(match("/work/project/ordinary")).toBeNull();
-    const canonical = vi.spyOn(realpathSync, "native");
-    try {
-      for (let index = 0; index < 1024; index += 1) expect(match(`/work/project/x${index}`)).toBeNull();
-      expect(canonical).not.toHaveBeenCalled();
-      expect(match("/work/project/.env")).not.toBeNull();
-    } finally { canonical.mockRestore(); }
+  it("reuses configured filesystem roots within one decision", () => {
+    withLocalityDecision(() => {
+      const match = createSensitivePathMatcher("read");
+      expect(match("/work/project/ordinary")).toBeNull();
+      const canonical = vi.spyOn(realpathSync, "native");
+      try {
+        for (let index = 0; index < 1024; index += 1) expect(match(`/work/project/x${index}`)).toBeNull();
+        expect(canonical).not.toHaveBeenCalled();
+        expect(match("/work/project/.env")).not.toBeNull();
+      } finally { canonical.mockRestore(); }
+    });
   });
+});
+
+it.skipIf(process.platform === "win32")("keeps session root, search anchors and application index for the matcher's lifetime", () => {
+  const directory = realpathSync(resources.makeTmpDir("sensitive-matcher-home-"));
+  const initial = join(directory, "initial");
+  const next = join(directory, "next");
+  for (const home of [initial, next]) {
+    mkdirSync(join(home, "sessions"), { recursive: true });
+    mkdirSync(join(home, "secrets"));
+  }
+  const factsAt = (home: string) => [
+    canonicalizePathForMatch(join(home, "sessions", "session.jsonl")),
+    caseFoldForMatch(canonicalizePathForMatch(join(home, "secrets"))),
+    canonicalizePathForMatch(join(home, "secrets", "data.txt")),
+  ] as const;
+  const matchers = () => [createConfiguredSessionReadPathMatcher(), createSensitiveLocationMatcher(), createSensitivePathMatcher("read")] as const;
+  vi.stubEnv("AVE_HOME", initial);
+  try {
+    const [isSession, secretUnder, sensitive] = matchers();
+    const [initialSession, initialSearch, initialSecret] = factsAt(initial);
+    expect([isSession(initialSession), secretUnder(initialSearch), sensitive(initialSecret)])
+      .toEqual([true, initialSearch, "ave-home:secrets"]);
+
+    vi.stubEnv("AVE_HOME", next);
+    const [nextSession, nextSearch, nextSecret] = factsAt(next);
+    const [freshSession, freshSearch, freshSensitive] = matchers();
+    expect([freshSession(nextSession), freshSearch(nextSearch), freshSensitive(nextSecret)])
+      .toEqual([true, nextSearch, "ave-home:secrets"]);
+    expect([isSession(nextSession), secretUnder(nextSearch), sensitive(nextSecret)]).toEqual([false, null, null]);
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
+it.skipIf(process.platform === "win32")("keeps compiled protected-read aliases for the matcher's lifetime", () => {
+  const root = realpathSync(resources.makeTmpDir("read-deny-matcher-"));
+  const first = join(root, "first");
+  const second = join(root, "second");
+  const alias = join(root, "alias");
+  const firstFile = join(first, "file.txt");
+  const secondFile = join(second, "file.txt");
+  mkdirSync(first);
+  mkdirSync(second);
+  symlinkSync(first, alias, "dir");
+  const floor = [{ path: alias, literal: true as const }];
+  const retained = protectedReadDenyMatcher(floor);
+  expect(retained(firstFile)).toBe(alias);
+
+  unlinkSync(alias);
+  symlinkSync(second, alias, "dir");
+  expect(protectedReadDenyMatcher(floor)(secondFile)).toBe(alias);
+  expect([retained(firstFile), retained(secondFile)]).toEqual([alias, undefined]);
 });
 
 afterEach(async () => {

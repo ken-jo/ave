@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { pickNativeFiles } from "../../main/desktop-approval-presentation.js";
 import { app, ipcMain, nativeImage } from "electron";
 import { t } from "../../i18n/index.js";
@@ -73,12 +74,13 @@ function unauthorizePath(p: string): void {
   CHOSEN_FILES.delete(p);
 }
 
-function authorizePath(p: string): void {
+/** Authorize `p`. Its chosen-file key is computed before anything changes, so a failed lookup leaves no authority. */
+function authorizePath(p: string, key: string = chosenFileKey(p)): void {
   const held = ATTACH_PATH_ALLOWLIST.get(p) ?? 0;
   // Re-inserted so the map's order stays oldest-authorization-first for the bound below.
   ATTACH_PATH_ALLOWLIST.delete(p);
   ATTACH_PATH_ALLOWLIST.set(p, held + 1);
-  CHOSEN_FILES.set(p, chosenFileKey(p));
+  CHOSEN_FILES.set(p, key);
   while (ATTACH_PATH_ALLOWLIST.size > ATTACH_ALLOWLIST_MAX) {
     const oldest = ATTACH_PATH_ALLOWLIST.keys().next().value;
     if (oldest === undefined) break;
@@ -327,15 +329,17 @@ function senderIdOf(e: IpcMainInvokeEvent): number | null {
 /** Judge a file the person is bringing in right now. Dropping it is what lets a `.pem` or `.key` name be opened to see
  * whether it holds a private key; without that, a presentation document from the desktop could not be attached. */
 function sensitiveForRead(p: string): boolean {
-  const key = chosenFileKey(p);
-  const added = !BEING_CHOSEN.has(key);
-  if (added) BEING_CHOSEN.add(key);
-  try {
-    // The person's own drop: a key-extension file is refused only when it holds a key.
-    return isSensitivePath(p, "read", "person") !== null;
-  } finally {
-    if (added) BEING_CHOSEN.delete(key);
-  }
+  return withLocalityDecision(() => {
+    const key = chosenFileKey(p);
+    const added = !BEING_CHOSEN.has(key);
+    if (added) BEING_CHOSEN.add(key);
+    try {
+      // The person's own drop: a key-extension file is refused only when it holds a key.
+      return isSensitivePath(p, "read", "person") !== null;
+    } finally {
+      if (added) BEING_CHOSEN.delete(key);
+    }
+  });
 }
 
 async function validateDroppedPath(
@@ -563,7 +567,9 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         return { ok: false, error: "drop-token-invalid" };
       }
       if (Date.now() > pending.expires) return { ok: false, error: "drop-token-expired" };
-      for (const file of pending.files) authorizePath(file.path);
+      // Every key first, in one decision; the batch is authorized only when all of them are known.
+      const keys = withLocalityDecision(() => pending.files.map((file) => chosenFileKey(file.path)));
+      pending.files.forEach((file, index) => { authorizePath(file.path, keys[index]); });
       return { ok: true, files: pending.files };
     },
   );

@@ -275,6 +275,12 @@ export interface MxcFilesystemGrants {
   readonly watched?: readonly MxcWatchedRow[];
 }
 
+const rankedGrantIdentities = new WeakMap<MxcFilesystemGrants, string>();
+
+export function mxcRankedGrantIdentity(grants: MxcFilesystemGrants): string | undefined {
+  return rankedGrantIdentities.get(grants);
+}
+
 /** An absent protected name with the deepest existing folder above it, as admitted for this launch. */
 export interface MxcWatchedRow {
   readonly path: string;
@@ -890,13 +896,15 @@ export function assertMxcDenyOutcomes(input: MxcDenyOutcomeInput): void {
 // The Windows container adapter: policy rows in, the three container lists out. Every row is admitted to the object it names
 // first, and the ranking compares those objects, never spellings.
 export function rankMxcFilesystem(model: PolicyModel): MxcFilesystemGrants {
-  const { patterns, userPatterns, required } = obligationRowsOf(model);
-  return rankAdmittedMxcFilesystem(admitMxcFilesystem(model), patterns, userPatterns, required);
+  return withLocalityDecision(() => {
+    const { patterns, userPatterns, required } = obligationRowsOf(model);
+    return rankAdmittedMxcFilesystem(admitMxcFilesystem(model), patterns, userPatterns, required);
+  });
 }
 
 /** The model's literal rows admitted for one container launch; pattern denies are admitted when the launch is ranked. */
 export function admitMxcFilesystem(model: PolicyModel): ObligationSet {
-  return admitObligations({ purpose: "mxc-launch", principal: "mxc", rows: obligationRowsOf(model).rows });
+  return withLocalityDecision(() => admitObligations({ purpose: "mxc-launch", principal: "mxc", rows: obligationRowsOf(model).rows }));
 }
 
 function rankAdmittedMxcFilesystem(
@@ -1018,6 +1026,7 @@ function rankAdmittedMxcFilesystem(
   ];
   assertMxcDenyOutcomes({ denies: [...allReadDenies, ...writeDenies, ...patternDenies], exceptions, patterns,
     outcomes: patternOutcomes, reachable: baseAllows, reach: allows, result });
+  if (process.platform === "win32") rankedGrantIdentities.set(result, JSON.stringify(allows.map(entry => [entry.target, entry.identity])));
   return result;
 }
 

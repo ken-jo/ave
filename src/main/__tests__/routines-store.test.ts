@@ -1,12 +1,13 @@
 import { TEST_OWNER } from "./routines-fixture.js";
 import { withRoutinesStore } from "./support/routines-store.js";
 import { describe, it, expect, vi } from "vitest";
-import { withTz } from "../../__tests__/test-helpers.js";
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { deferred, withTz } from "../../__tests__/test-helpers.js";
+import { mkdirSync, symlinkSync, unlinkSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import { RoutinesStore, MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES, MAX_CRON_EXPR_LENGTH, MAX_ROUTINE_SOURCE_LENGTH, MAX_ROUTINE_FAILURE_REASON_LENGTH } from "../routines-store.js";
 import { futureIso, tempRoutinesStore } from "./routines-fixture.js";
+import { withInProcessFileQueue } from "../../lib/with-file-lock.js";
 
 describe("RoutinesStore v2 — basic persistence", () => {
   it("adds a notification-only routine and reads it back", withRoutinesStore(async ({ store }) => {
@@ -610,6 +611,34 @@ describe("RoutinesStore v2 — source marker", () => {
 });
 
 describe("RoutinesStore workspace scope revocation", () => {
+  it.skipIf(process.platform === "win32")("captures the POSIX routine removal root before entering the store queue", withRoutinesStore(async ({ store, dir }) => {
+    const first = join(dir, "first");
+    const second = join(dir, "second");
+    const alias = join(dir, "removed");
+    for (const path of [first, second]) mkdirSync(path);
+    symlinkSync(first, alias);
+    await store.add({ ...TEST_OWNER,
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso() },
+      notificationTitle: "scope snapshot",
+      scope: { pluginIds: { mode: "deny-all" }, forcedPluginIds: [], directories: [first, second] },
+    });
+    const barrier = deferred<void>();
+    const queued = withInProcessFileQueue(join(dir, "routines.json"), () => barrier.promise);
+    const result = store.revokeWorkspaceRoot(alias);
+    try {
+      unlinkSync(alias);
+      symlinkSync(second, alias);
+    } finally {
+      barrier.resolve();
+      await queued;
+    }
+
+    await expect(result).resolves.toEqual({ routinesUpdated: 1, directoriesRemoved: 1 });
+    expect(store.list()[0]?.scope?.directories).toEqual([second]);
+  }));
+
   it("atomically removes a canonical root and descendants and persists the shrink", withRoutinesStore(async ({ store, dir }) => {
     const removedRoot = join(dir, "workspace");
     const segmentSibling = join(dir, "workspace-sibling");

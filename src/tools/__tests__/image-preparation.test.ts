@@ -1,11 +1,13 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, symlink, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { existsSync, realpathSync, symlinkSync, unlinkSync } from "node:fs";
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import sharp from "sharp";
 import { buildImagePreparationEntry, imageFixturePath } from "../../__tests__/support/image-preparation-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { AuditLogger } from "../../audit/audit-logger.js";
 import { buildMainBoundaryBundle, childBundleDir, repositoryRoot } from "../../plugins/isolation/__tests__/child-entry-bundle.js";
 import { IMAGE_PREPARATION_POLICY, ImagePreparationOptionsSchema, ImagePreparationRequestSchema, type ImagePreparationOptions } from "../../shared/image-preparation-policy.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -14,6 +16,11 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { projectSubscriptionImageHistory } from "../../main/subscription-image-history.js";
 import { MAX_ACP_SUBSCRIPTION_IMAGE_BYTES } from "../../main/acp-subscription-session-client.js";
 import type { GenericMessage } from "../../engine/llm/types.js";
+import { PermissionManager } from "../../permissions/permission-manager.js";
+import { sealTargets } from "../../permissions/target-seal.js";
+import { ToolExecutor } from "../executor.js";
+import { ViewImageTool } from "../file-tools.js";
+import { ToolRegistry } from "../registry.js";
 
 const runtime = vi.hoisted(() => ({ directory: "" }));
 vi.mock("../../main/main-paths.js", async (original) => ({
@@ -35,6 +42,27 @@ function observeNextImageChild(): Promise<ChildProcess> {
       const child = original(...args); resolve(child); return child;
     });
   });
+}
+
+async function executeSealedImage(path: string, abortSignal?: AbortSignal) {
+  const tool = new ViewImageTool();
+  const registry = new ToolRegistry();
+  registry.register(tool);
+  const permissions = new PermissionManager(join(directory, "image-permissions.json"));
+  permissions.setMode("allow");
+  const audit = new AuditLogger(join(directory, "image-audit"));
+  try {
+    const executor = new ToolExecutor(registry, undefined, permissions, undefined, undefined, undefined, audit);
+    const [result] = await executor.executeAll([{ id: "sealed-image", name: tool.name, input: { path } }], {
+      executionCwd: dirname(path),
+      sessionId: "sealed-image",
+      permissionContext: { trustOrigin: "llm-tool-arg", approvalSurface: "unavailable" },
+      abortSignal,
+    });
+    return result;
+  } finally {
+    await audit.close();
+  }
 }
 
 async function useStalledImageRuntime(): Promise<void> {
@@ -140,6 +168,98 @@ describe("bounded image preparation", () => {
     expect((await admitted).width).toBe(8);
   });
 
+  it.skipIf(process.platform === "win32")("denies a missing out-of-scope image before native source resolution", async () => {
+    const cwd = join(directory, "allowed-image-directory");
+    const path = join(directory, "missing-out-of-scope.png");
+    const calls = join(directory, "denied-image-realpath-calls");
+    const preload = join(directory, "trace-denied-realpath.mjs");
+    await mkdir(cwd);
+    await writeFile(preload, `
+      import { appendFileSync, writeFileSync } from "node:fs";
+      import fs from "node:fs/promises";
+      import { syncBuiltinESMExports } from "node:module";
+      const calls = ${JSON.stringify(calls)};
+      writeFileSync(calls, "");
+      const realpath = fs.realpath;
+      fs.realpath = (path, ...args) => {
+        if (path === ${JSON.stringify(path)}) appendFileSync(calls, "lookup\\n");
+        return realpath(path, ...args);
+      };
+      syncBuiltinESMExports();
+    `);
+    const spawn = managed.spawnManaged;
+    vi.spyOn(managed, "spawnManaged").mockImplementationOnce((program, args, ...options) =>
+      spawn(program, ["--import", pathToFileURL(preload).href, ...args], ...options));
+
+    const result = await prepareImageFile(path, {
+      cwd, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true,
+    }).catch((error: unknown) => error);
+    expect(await readFile(calls, "utf8")).toBe("");
+    expect(result).toMatchObject({ message: expect.stringMatching(/^invalid-image: Sandbox:/) });
+  });
+
+  it.skipIf(process.platform === "win32")("decodes the sealed image through a symlink target containing dot-dot", async () => {
+    const root = join(directory, "posix-image-links");
+    const actual = join(root, "actual");
+    await mkdir(join(actual, "nested"), { recursive: true });
+    await writeFile(join(actual, "image.png"), await readFile(imageFixturePath("grid.png")));
+    await writeFile(join(root, "image.png"), await sharp({
+      create: { width: 3, height: 3, channels: 3, background: "red" },
+    }).png().toBuffer());
+    await symlink("actual/nested", join(root, "hop"));
+    const path = join(root, "alias.png");
+    await symlink("hop/../image.png", path);
+    const approved = realpathSync.native(join(actual, "image.png"));
+    expect(realpathSync.native(path)).toBe(approved);
+    const result = await prepareImageFile(path, {
+      cwd: root, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true,
+    });
+    expect(result).toMatchObject({ originalWidth: 8, originalHeight: 4 });
+  });
+
+  it.runIf(process.platform === "win32")("does not open an in-scope replacement selected during decoder spawn", async () => {
+    const original = join(directory, "original");
+    const replacement = join(directory, "replacement");
+    const alias = join(directory, "alias");
+    await mkdir(original);
+    await mkdir(replacement);
+    const bytes = await readFile(imageFixturePath("grid.png"));
+    await writeFile(join(original, "image.png"), bytes);
+    await writeFile(join(replacement, "image.png"), bytes);
+    const linkType = process.platform === "win32" ? "junction" : "dir";
+    await symlink(original, alias, linkType);
+    const path = join(alias, "image.png");
+    const seal = sealTargets(() => realpathSync.native(path));
+    const marker = join(directory, "replacement-opened");
+    const trace = join(directory, "trace-open.mjs");
+    await writeFile(trace, `
+      import fs from "node:fs";
+      import fsPromises from "node:fs/promises";
+      import { syncBuiltinESMExports } from "node:module";
+      const open = fsPromises.open;
+      fsPromises.open = (path, ...args) => {
+        if (path === ${JSON.stringify(realpathSync.native(join(replacement, "image.png")))}) {
+          fs.writeFileSync(${JSON.stringify(marker)}, "opened");
+        }
+        return open(path, ...args);
+      };
+      syncBuiltinESMExports();
+    `);
+    const spawn = managed.spawnManaged;
+    vi.spyOn(managed, "spawnManaged").mockImplementationOnce((program, args, ...options) => {
+      unlinkSync(alias);
+      symlinkSync(replacement, alias, linkType);
+      return spawn(program, ["--import", pathToFileURL(trace).href, ...args], ...options);
+    });
+    const result = prepareImageFile(path, {
+      cwd: directory, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true,
+    }, {}, undefined, seal);
+    const error = await result.catch((failure: unknown) => failure);
+    expect(existsSync(marker)).toBe(false);
+    expect(error).toEqual(expect.objectContaining({ message: expect.stringContaining("Target identity changed") }));
+    await unlink(alias);
+  });
+
   it("recovers from an active transport delivery limit by requesting a smaller real image", async () => {
     const pixels = Buffer.alloc(512 * 512 * 3);
     let state = 17;
@@ -167,6 +287,125 @@ describe("bounded image preparation", () => {
     const controller = new AbortController(); controller.abort();
     await expect(prepareFixtureImage(imageFixturePath("grid.png"), {}, controller.signal)).rejects.toThrow("image-cancelled");
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === "win32")("cancels a stalled native lookup in the decoder", async () => {
+    const path = imageFixturePath("grid.png");
+    const preload = join(directory, "stall-realpath.mjs");
+    await writeFile(preload, `
+      import fs from "node:fs/promises";
+      import { syncBuiltinESMExports } from "node:module";
+      const realpath = fs.realpath;
+      fs.realpath = async (path, ...args) => {
+        if (path === ${JSON.stringify(path)}) {
+          process.stderr.write("lookup-stalled");
+          await new Promise(() => { setInterval(() => {}, 1000); });
+        }
+        return realpath(path, ...args);
+      };
+      syncBuiltinESMExports();
+    `);
+    const hostLookup = vi.spyOn(realpathSync, "native");
+    const controller = new AbortController();
+    const spawn = managed.spawnManaged;
+    let diagnostics = "";
+    let closed = false;
+    vi.spyOn(managed, "spawnManaged").mockImplementationOnce((program, args, ...options) => {
+      const child = spawn(program, ["--import", pathToFileURL(preload).href, ...args], ...options);
+      child.stderr?.on("data", (chunk: Buffer) => {
+        diagnostics += chunk.toString();
+        if (diagnostics.includes("lookup-stalled")) controller.abort();
+      });
+      child.once("close", () => { closed = true; });
+      return child;
+    });
+
+    await expect(prepareFixtureImage(path, {}, controller.signal)).rejects.toThrow("image-cancelled");
+    expect(hostLookup.mock.calls.filter(([operand]) => operand === path)).toEqual([]);
+    expect(diagnostics).toContain("lookup-stalled");
+    expect(closed).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")("returns a sealed image after its source is removed following the read", async () => {
+    const path = join(directory, "removed-after-read.png");
+    await writeFile(path, await readFile(imageFixturePath("grid.png")));
+    const canonical = realpathSync.native(path);
+    const preload = join(directory, "remove-image-after-read.mjs");
+    await writeFile(preload, `
+      import { unlinkSync } from "node:fs";
+      import fs from "node:fs/promises";
+      import { syncBuiltinESMExports } from "node:module";
+      const open = fs.open;
+      fs.open = async (path, ...args) => {
+        const handle = await open(path, ...args);
+        if (path === ${JSON.stringify(canonical)}) {
+          const close = handle.close.bind(handle);
+          handle.close = async () => {
+            await close();
+            unlinkSync(path);
+          };
+        }
+        return handle;
+      };
+      syncBuiltinESMExports();
+    `);
+    const spawn = managed.spawnManaged;
+    vi.spyOn(managed, "spawnManaged").mockImplementationOnce((program, args, ...options) =>
+      spawn(program, ["--import", pathToFileURL(preload).href, ...args], ...options));
+
+    const result = await executeSealedImage(path);
+    expect(existsSync(path)).toBe(false);
+    expect(result).toMatchObject({ image: { width: 8, height: 4, bytes: expect.any(Number) } });
+    expect(result?.is_error).not.toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")("cancels a POSIX image invocation using the path-only decoder request", async () => {
+    const path = imageFixturePath("grid.png");
+    const preload = join(directory, "stall-sealed-realpath.mjs");
+    await writeFile(preload, `
+      import fs from "node:fs/promises";
+      import { syncBuiltinESMExports } from "node:module";
+      const realpath = fs.realpath;
+      fs.realpath = async (path, ...args) => {
+        if (path === ${JSON.stringify(path)}) {
+          process.stderr.write("sealed-lookup-stalled");
+          await new Promise(() => { setInterval(() => {}, 1000); });
+        }
+        return realpath(path, ...args);
+      };
+      syncBuiltinESMExports();
+    `);
+    const controller = new AbortController();
+    const hostLookup = vi.spyOn(realpathSync, "native");
+    const spawn = managed.spawnManaged;
+    let request: unknown;
+    let lookupCountAtSpawn = 0;
+    let closed = false;
+    let diagnostics = "";
+    vi.spyOn(managed, "spawnManaged").mockImplementationOnce((program, args, ...options) => {
+      const requestArgument = args[1];
+      if (requestArgument === undefined) throw new Error("Missing image decoder request argument");
+      request = JSON.parse(requestArgument);
+      lookupCountAtSpawn = hostLookup.mock.calls.filter(([operand]) => operand === path).length;
+      const child = spawn(program, ["--import", pathToFileURL(preload).href, ...args], ...options);
+      child.stderr?.on("data", (chunk: Buffer) => {
+        diagnostics += chunk.toString();
+        if (diagnostics.includes("sealed-lookup-stalled")) controller.abort();
+      });
+      child.once("close", () => { closed = true; });
+      return child;
+    });
+
+    const result = await executeSealedImage(path, controller.signal);
+
+    expect(request).toMatchObject({ path });
+    expect(request).not.toHaveProperty("expectedPath");
+    expect(request).not.toHaveProperty("source");
+    expect(hostLookup.mock.calls.filter(([operand]) => operand === path)).toHaveLength(lookupCountAtSpawn);
+    expect(diagnostics).toContain("sealed-lookup-stalled");
+    expect(result).toMatchObject({ is_error: true, content: expect.stringMatching(/cancelled/i) });
+    expect(result).not.toHaveProperty("image");
+    expect(closed).toBe(true);
   });
 
   it("waits for child termination on cancellation, then admits a queued request", async () => {
@@ -226,6 +465,7 @@ describe("bounded image preparation", () => {
   it("refuses to read when the decoder is started without the host resources", () => {
     const request = ImagePreparationRequestSchema.parse({
       path: imageFixturePath("grid.png"), options: {},
+      expectedPath: realpathSync.native(imageFixturePath("grid.png")),
       scope: { cwd: repositoryRoot(), extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true },
     });
     const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;

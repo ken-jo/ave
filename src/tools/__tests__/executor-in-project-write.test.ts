@@ -1,5 +1,6 @@
 import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
+import { t } from "../../i18n/index.js";
 import { mkdtemp, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -221,7 +222,7 @@ describe("checkpointed project file writes", () => {
       expect((await run("write_file", { path: priorPath, content: "recoverable" }))[0].is_error).toBeFalsy();
       const result = await run("copy_path", { sourcePath, destinationPath });
       expect(result[0].is_error).toBe(true);
-      expect(result[0].content).toMatch(/checkpoint unavailable/i);
+      expect(result[0].content).toMatch(process.platform === "win32" ? t("be_executor.fileTargetChanged") : /checkpoint unavailable/i);
     });
     expect(requestAndWait).not.toHaveBeenCalled();
     await expect(readFile(destinationPath)).rejects.toMatchObject({ code: "ENOENT" });
@@ -257,7 +258,7 @@ describe("checkpointed project file writes", () => {
       permissionContext: { trustOrigin: "user-keyboard", additionalDirectories: [root] },
     }));
     expect(result[0].is_error).toBe(true);
-    expect(result[0].content).toMatch(/project/i);
+    expect(result[0].content).toMatch(process.platform === "win32" ? t("be_executor.fileTargetChanged") : /project/i);
     expect(requestAndWait).not.toHaveBeenCalled();
     await expect(readFile(join(outside, "new.txt"))).rejects.toMatchObject({ code: "ENOENT" });
   });

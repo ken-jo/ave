@@ -1,6 +1,6 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +11,7 @@ import { createAveHomeBoundarySnapshot } from "../ave-home-boundary-snapshot.js"
 import { aveHomeReadBoundaryCovering, getBuiltinShellReadPolicy } from "../asrt-sandbox.js";
 import { decidePermission } from "../decision-pipeline.js";
 import { PermissionManager } from "../permission-manager.js";
-import { bindStageWorkspace, boundStageWorkspace, isOwnStageWorkspacePath, unbindStageWorkspace } from "../stage-workspace-binding.js";
+import { bindStageWorkspace, boundStageWorkspace, createStageWorkspacesMatcher, isBoundStageWorkspacePath, isOwnStageWorkspacePath, unbindStageWorkspace } from "../stage-workspace-binding.js";
 
 installVerifiedAveHomePrivacy();
 
@@ -90,6 +90,41 @@ afterEach(() => {
 });
 
 describe("stage workspace binding", () => {
+  it.skipIf(process.platform === "win32")("propagates ENOENT when a stage disappears during the component walk", () => {
+    const nativeRealpath = realpathSync.native;
+    const realpath = vi.spyOn(realpathSync, "native").mockImplementation((...args) => {
+      const result = nativeRealpath(...args);
+      if (args[0] === sibling) renameSync(sibling, join(runRoot, "moved"));
+      return result;
+    });
+    try {
+      expect(() => bindStageWorkspace(OTHER, sibling)).toThrow(expect.objectContaining({ code: "ENOENT", path: sibling }));
+      expect(boundStageWorkspace(OTHER)).toBeUndefined();
+    } finally {
+      realpath.mockRestore();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("resolves the stage-workspaces home when the matcher is created", () => {
+    const next = join(home, "relocated-home");
+    const match = createStageWorkspacesMatcher();
+    const previousHome = process.env.AVE_HOME;
+    process.env.AVE_HOME = next;
+    try {
+      const relocatedPath = join(next, "worktrees", "project", "file.txt");
+      expect(createStageWorkspacesMatcher()(relocatedPath)).toBe(true);
+      expect([match(own), match(relocatedPath)]).toEqual([true, false]);
+    } finally {
+      if (previousHome === undefined) delete process.env.AVE_HOME;
+      else process.env.AVE_HOME = previousHome;
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("keeps the lexical POSIX stage binding after the directory moves", () => {
+    renameSync(own, join(runRoot, "moved"));
+    expect(isBoundStageWorkspacePath(STAGE, join(own, "notes.txt"))).toBe(true);
+  });
+
   it("a read and a write inside the bound workspace are not a protected-path floor", async () => {
     expect(boundStageWorkspace(STAGE)).toBe(own);
     expect(await floors(STAGE, join(own, "notes.txt"))).toEqual(CARVED);

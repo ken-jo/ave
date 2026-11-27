@@ -48,6 +48,7 @@ import {
 import { TOOL_RESULT_READ_MAX_CHARS } from "../shared/bounded-tool-output.js";
 import { TOOL_RESULT_CHUNK_READER_METADATA_KEY } from "./tool-result-chunk.js";
 import { t } from "../i18n/index.js";
+import { fileTargetSealFailureKey, type TargetSeal } from "../permissions/target-seal.js";
 import { createLogger } from "../lib/logger.js";
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
 import type { Tool } from "./base.js";
@@ -209,6 +210,9 @@ export interface ExecutionStageContext {
   permissionRecheckResult?: PermissionCheckResult;
   replayRootBinding?: ReplayRootBinding;
   approvedInvocation?: ExecuteOptions["approvedInvocation"];
+  /** The file targets and project anchors the authorization judged; verified at handler admission. */
+  fileTargetSeal?: TargetSeal;
+  imageTargetPath?: string;
   abortSignal: AbortSignal | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
   /** The kinds of use this call's cards declare for a standing answer. */
@@ -1001,6 +1005,17 @@ export async function executeAuthorizedToolInvocation(
   // Nothing asynchronous may separate this check from the handler call.
   const assertHandlerAdmission = (signal: AbortSignal): void => {
     signal.throwIfAborted();
+    if (context.fileTargetSeal) {
+      try { context.fileTargetSeal.verify(); }
+      catch (error) {
+        const key = fileTargetSealFailureKey(error);
+        const reason = key === "be_executor.fileTargetUnverified"
+          ? "File target locality could not be verified before execution."
+          : "File target changed before execution.";
+        permissionResult = refusal(reason, RULE_PROVENANCE);
+        throw new Error(t(key));
+      }
+    }
     if (services.requirePermissionAuditChain) {
       try {
         services.auditLogger.assertPermissionAuditWritable();
@@ -1314,6 +1329,8 @@ export async function executeAuthorizedToolInvocation(
       : await finalizeExecutionRouteGrant();
     const ctx: ToolExecutionContext = {
       ...executionContext,
+      ...(context.fileTargetSeal === undefined ? {} : { fileTargetSeal: context.fileTargetSeal }),
+      ...(context.imageTargetPath === undefined ? {} : { imageTargetPath: context.imageTargetPath }),
       ...(approvalMemory?.kind === "key" ? { metadata: {
         ...executionContext.metadata, [APPROVAL_MEMORY_SCOPE_METADATA_KEY]: approvalMemory.scope,
       } } : {}),

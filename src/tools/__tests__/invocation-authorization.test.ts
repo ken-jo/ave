@@ -27,6 +27,7 @@ import * as shellFilesystemPath from "../../shared/shell-filesystem-path.js";
 import { withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import * as sensitivePaths from "../../permissions/sensitive-paths.js";
+import * as targetSeal from "../../permissions/target-seal.js";
 import { ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
@@ -310,7 +311,9 @@ it.each([
   const unsubscribe = onUnattendedDenied(onDenied);
   const resolveTarget = effect === "write"
     ? vi.spyOn(shellFilesystemPath, "resolveShellFilesystemPath")
-    : vi.spyOn(sensitivePaths, "resolvePathForPolicy");
+    : process.platform === "win32"
+      ? vi.spyOn(targetSeal, "observeWindowsTarget")
+      : vi.spyOn(sensitivePaths, "resolvePathForPolicy");
   resolveTarget.mockImplementationOnce(() => { throw new Error("Target identity unavailable"); });
   try {
     const [result] = await runWithToolExecutionCwd(directory, () => executor.executeAll([

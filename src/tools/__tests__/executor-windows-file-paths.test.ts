@@ -3,9 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const filesystem = vi.hoisted(() => ({
   active: false,
   brokerActive: false,
-  entries: new Map<string, { path: string; directory: boolean; target?: string }>(),
+  entries: new Map<string, { path: string; directory: boolean; target?: string; ino: bigint }>(),
+  nextInode: 0n,
   acquire: vi.fn(),
   execute: vi.fn(),
+  observeLstat: undefined as ((path: string) => void) | undefined,
 }));
 
 vi.mock("node:path", async (original) => {
@@ -42,12 +44,13 @@ vi.mock("node:fs", async (original) => {
     },
     lstatSync: (path: Parameters<typeof actual.lstatSync>[0], options?: { throwIfNoEntry?: boolean }) => {
       if (!isVirtual(path)) return actual.lstatSync(path, options as never);
+      filesystem.observeLstat?.(win32.normalize(path).toLowerCase());
       const entry = filesystem.entries.get(win32.normalize(path).toLowerCase());
       if (!entry) {
         if (options?.throwIfNoEntry === false) return undefined;
         throw Object.assign(new Error("Virtual path does not exist"), { code: "ENOENT" });
       }
-      return { isSymbolicLink: () => entry.target !== undefined, isDirectory: () => entry.directory, isFile: () => !entry.directory };
+      return { dev: 1n, ino: entry.ino, isSymbolicLink: () => entry.target !== undefined, isDirectory: () => entry.directory, isFile: () => !entry.directory };
     },
     statSync: (path: Parameters<typeof actual.statSync>[0], options?: unknown) => {
       if (!isVirtual(path)) return actual.statSync(path, options as never);
@@ -65,6 +68,7 @@ vi.mock("node:fs", async (original) => {
 });
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.unmock("../../shared/windows-drive-locality.js");
 vi.mock("../../workload/runtime.js", async original => ({ ...await original<typeof import("../../workload/runtime.js")>(),
   isWorkloadBrokerActive: () => filesystem.brokerActive,
   isActiveWorkloadBrokerCwd: () => filesystem.brokerActive,
@@ -74,8 +78,10 @@ vi.mock("../../workload/runtime.js", async original => ({ ...await original<type
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { AuditLogger } from "../../audit/audit-logger.js";
+import { t } from "../../i18n/index.js";
+import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { caseFoldForMatch, createProjectMembership, foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
@@ -86,20 +92,23 @@ import { ToolRegistry } from "../registry.js";
 import { createDynamicTool, type Tool, type ToolExecutionContext } from "../base.js";
 import { ApplyPatchTool, ReadFileTool, WriteFileTool, createFileTools } from "../file-tools.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import { ApprovalPersistenceError } from "../../permissions/approval-persistence-guard.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 const PROJECT = String.raw`D:\Fixture\Project`;
 const OUTSIDE = String.raw`D:\Fixture\Outside-Target.txt`;
 const LINKED_ROOT = String.raw`D:\Fixture\Linked-Root`;
+const LOCAL_DRIVE = String.raw`\Device\HarddiskVolume1`;
 let root: string;
 let audit: AuditLogger;
 let manager: PermissionManager;
 let requests: ApprovalRequestInput[];
 
 function entry(path: string, directory: boolean, target?: string) {
-  filesystem.entries.set(path.toLowerCase(), { path, directory, target });
+  filesystem.entries.set(path.toLowerCase(), { path, directory, target, ino: ++filesystem.nextInode });
 }
 beforeEach(() => {
+  setWindowsDriveQueryForTest(() => LOCAL_DRIVE);
   root = mkdtempSync(join(tmpdir(), "ave-windows-file-paths-"));
   vi.stubEnv("AVE_HOME", join(root, "profile"));
   audit = new AuditLogger(join(root, "audit"));
@@ -121,6 +130,7 @@ beforeEach(() => {
   setProcessPlatform("win32");
 });
 afterEach(async () => {
+  filesystem.observeLstat = undefined;
   filesystem.active = false;
   filesystem.brokerActive = false;
   setProcessPlatform(ORIGINAL_PLATFORM);
@@ -128,6 +138,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   rmSync(root, { recursive: true, force: true });
+  setWindowsDriveQueryForTest();
 });
 
 async function run(tool: Tool, input: Record<string, unknown>, cwd = PROJECT, additionalDirectories: string[] = []) {
@@ -190,16 +201,86 @@ describe("native Windows file permission targets", () => {
       canonicalPath: `d:/fixture/project/${path}`,
       runtimePath: targets.get(path),
     })));
-    // Only the sealed resolved targets reach the deny; every lexical operand is public.
+    // Only the resolved targets reach the deny; every lexical operand is public.
     const publicPaths = subject.paths.map((_, index) => `src/public-${index}.txt`);
     const readRuntimePath = vi.fn(() => String.raw`Z:\Public\Unrelated.txt`);
-    const matchingTargets = subject.targets?.map((target, index) => Object.defineProperty({
-      filePath: `${PROJECT}\\src\\public-${index}.txt`, canonicalPath: target.canonicalPath,
-    }, "runtimePath", {
-      get: readRuntimePath,
-    }));
+    const matchingTargets = subject.targets?.map((target, index) => {
+      const filePath = `${PROJECT}\\src\\public-${index}.txt`;
+      const resolved = targets.get(subject.paths[index] ?? "");
+      if (resolved === undefined) throw new Error("Target fixture is missing");
+      entry(filePath, false, resolved);
+      return Object.defineProperty({ filePath, canonicalPath: target.canonicalPath }, "runtimePath", { get: readRuntimePath });
+    });
     expect(evaluateScopedRules({ ...subject, paths: publicPaths, targets: matchingTargets }, PROJECT, [rule])).toMatchObject({ decision: "deny", pattern: rule.pattern });
     expect(readRuntimePath).not.toHaveBeenCalled();
+  });
+
+  it("shares drive observations across the resolution and scope checks of a native patch", async () => {
+    const first = `${PROJECT}\\patch-first.txt`.toLowerCase();
+    const second = `${PROJECT}\\patch-second.txt`.toLowerCase();
+    const observations = new Map<string, number>();
+    const queries: string[] = [];
+    setWindowsDriveQueryForTest(drive => { queries.push(drive); return LOCAL_DRIVE; });
+    filesystem.observeLstat = path => {
+      if ((path === first || path === second) && !observations.has(path)) observations.set(path, queries.length);
+    };
+    const checkPathScope = PermissionManager.checkPathScope;
+    const scopeQueries: string[][] = [];
+    vi.spyOn(PermissionManager, "checkPathScope").mockImplementation(args => {
+      const start = queries.length;
+      const result = checkPathScope(args);
+      scopeQueries.push(queries.slice(start));
+      return result;
+    });
+    const patch = ["*** Begin Patch", "*** Add File: patch-first.txt", "+first", "*** Add File: patch-second.txt", "+second", "*** End Patch"].join("\n");
+    await run(new ApplyPatchTool(), { patch });
+
+    expect([...observations.keys()]).toEqual([first, second]);
+    const firstObservation = observations.get(first) ?? 0;
+    expect(queries[firstObservation - 1]).toBe("D:");
+    expect(observations.get(second)).toBe(firstObservation);
+    const homeDrive = win32.parse(root).root.slice(0, 2).toUpperCase();
+    expect(scopeQueries).toEqual([ORIGINAL_PLATFORM === "win32" && homeDrive !== "D:" ? [homeDrive] : [], []]);
+  });
+
+  it("queries the policy home drive once for a standalone multi-target scope check", () => {
+    const query = vi.fn(() => LOCAL_DRIVE);
+    setWindowsDriveQueryForTest(query);
+    expect(PermissionManager.checkPathScope({
+      canonicalTargets: ["first.txt", "second.txt"].map(name => ({
+        filePath: `${PROJECT}\\${name}`, canonicalPath: `d:/fixture/project/${name}`,
+      })),
+      allowedDirectories: ["d:/fixture/project"], effect: "write", blockReadsOutsideWorkingDirectories: true,
+    })).toEqual({ sensitiveHit: null, outOfAllowed: null, readOutsideScope: null });
+    const homeDrive = win32.parse(root).root.slice(0, 2).toUpperCase();
+    expect(query.mock.calls).toEqual(ORIGINAL_PLATFORM === "win32" ? [[homeDrive]] : []);
+  });
+
+  it.each([
+    { change: "drive remap", pass: "saved Edit", load: 1 },
+    { change: "link retarget", pass: "saved Edit", load: 1 },
+    { change: "link retarget", pass: "central authorization", load: 2 },
+  ] as const)("refuses a $change during $pass rule loading", async ({ change, load }) => {
+    const path = `${PROJECT}\\linked.txt`;
+    const original = `${PROJECT}\\inside.txt`;
+    entry(path, false, original);
+    await manager.addRulePersist({ pattern: "Edit(inside.txt)", action: "allow" }, { kind: "user" });
+    const loadRules = manager.ensureProjectRulesLoaded.bind(manager);
+    let loads = 0;
+    vi.spyOn(manager, "ensureProjectRulesLoaded").mockImplementation(async cwd => {
+      await loadRules(cwd);
+      if (++loads !== load) return;
+      if (change === "drive remap") setWindowsDriveQueryForTest(drive => drive === "D:" ? String.raw`\??\UNC\host.example\share` : LOCAL_DRIVE);
+      else entry(path, false, OUTSIDE);
+    });
+    const tool = new WriteFileTool();
+    const execute = vi.spyOn(tool, "execute");
+
+    expect(await run(tool, { path: "linked.txt", content: "changed" })).toMatchObject({
+      is_error: true, content: expect.stringContaining(t("be_executor.fileTargetChanged")),
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(requests).toEqual([]);
   });
 
   it.each(["file", "directory"])("keeps the native spelling of a %s directory suggestion", async (kind) => {
@@ -267,5 +348,110 @@ describe("native Windows file permission targets", () => {
     expect(check.mock.results.at(-1)?.value.pipelineRequest.paths).toContainEqual(expect.objectContaining({ canonical: identity }));
     if (linkedRoot) expect(requests[0]?.forceExplicit).toBeUndefined();
     else expect(requests[0]).toMatchObject({ forceExplicit: true, allowedChoices: ["allow-once", "deny-once"] });
+  });
+});
+
+describe("sealed file targets up to their effects", () => {
+  const INSIDE = `${PROJECT}\\inside.txt`;
+
+  async function runAnswered(choice: "allow-once" | "allow-session" | "allow-always", drift: () => void, lifecycle?: { allowDirectory: (root: string, source: "permission-slash", authority?: { isCurrent(): boolean }) => Promise<string[]>; denyDirectory: () => Promise<string[]> }, getAdditionalDirectories?: () => readonly string[]) {
+    const tool = new WriteFileTool();
+    const execute = vi.spyOn(tool, "execute");
+    const registry = new ToolRegistry();
+    registry.register(tool);
+    let answered = false;
+    const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => {
+      requests.push(request);
+      answered = true;
+      return { requestId: request.id, choice };
+    }) };
+    const ready = audit.isPermissionAuditChainReady.bind(audit);
+    vi.spyOn(audit, "isPermissionAuditChainReady").mockImplementation(() => {
+      if (answered && !lifecycle) { answered = false; drift(); }
+      return ready();
+    });
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined, lifecycle ? () => lifecycle as never : undefined);
+    const onTurnDirectoryGrant = vi.fn();
+    const onSessionDirectoryGrant = vi.fn();
+    const [result] = await executor.executeAll([{ id: "sealed-grant", name: tool.name, input: { path: OUTSIDE, content: "changed" } }], {
+      executionCwd: PROJECT, sessionId: "sealed-grant", permissionContext: { trustOrigin: "user-keyboard", onTurnDirectoryGrant, onSessionDirectoryGrant, getAdditionalDirectories },
+    });
+    return { result, execute, grants: [...onTurnDirectoryGrant.mock.calls, ...onSessionDirectoryGrant.mock.calls] };
+  }
+
+  it.each(["allow-once", "allow-session"] as const)("commits no %s folder grant when the target changes during its audit", async (choice) => {
+    const { result, execute, grants } = await runAnswered(choice, () => entry(OUTSIDE, false, INSIDE));
+    expect(requests).toHaveLength(1);
+    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(t("be_executor.fileTargetChanged")) });
+    expect(grants).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("refuses a same-name replacement before granting or entering the file effect", async () => {
+    const { result, execute, grants } = await runAnswered("allow-once", () => entry(OUTSIDE, false));
+    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(t("be_executor.fileTargetChanged")) });
+    expect(grants).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each(["allow-once", "allow-session"] as const)("keeps both scopes unpublished when preparing a %s grant fails", async (choice) => {
+    let auditReached = false;
+    const query = vi.fn((drive: string) => {
+      if (drive === "Z:") throw new Error("Additional directory drive query failed");
+      return LOCAL_DRIVE;
+    });
+    const { result, execute, grants } = await runAnswered(choice, () => {
+      auditReached = true;
+      setWindowsDriveQueryForTest(query);
+    }, undefined, () => auditReached ? [String.raw`Z:\example`] : []);
+    expect(query.mock.calls.filter(([drive]) => drive === "Z:")).toHaveLength(1);
+    expect(result.is_error).toBe(true);
+    expect(grants).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("persists no always folder grant when the staged scope cannot be rebuilt", async () => {
+    const writes: string[] = [];
+    let committing = false;
+    const query = vi.fn((drive: string) => {
+      if (drive === "Z:") throw new Error("Additional directory drive query failed");
+      return LOCAL_DRIVE;
+    });
+    const lifecycle = {
+      allowDirectory: async (root: string, _source: "permission-slash", authority?: { isCurrent(): boolean }) => {
+        await Promise.resolve();
+        committing = true;
+        setWindowsDriveQueryForTest(query);
+        if (authority && !authority.isCurrent()) throw new ApprovalPersistenceError();
+        writes.push(root);
+        return writes;
+      },
+      denyDirectory: async () => writes,
+    };
+    const { result, execute } = await runAnswered("allow-always", () => undefined, lifecycle,
+      () => committing ? [String.raw`Z:\example`] : []);
+    expect(result.is_error).toBe(true);
+    expect(writes).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+    expect(query.mock.calls.filter(([drive]) => drive === "Z:")).toHaveLength(1);
+  });
+
+  it("persists no always folder grant when the target changes before the commit", async () => {
+    const writes: string[] = [];
+    const lifecycle = {
+      allowDirectory: async (root: string, _source: "permission-slash", authority?: { isCurrent(): boolean }) => {
+        entry(OUTSIDE, false, INSIDE);
+        await Promise.resolve();
+        if (authority && !authority.isCurrent()) throw new ApprovalPersistenceError();
+        writes.push(root);
+        return writes;
+      },
+      denyDirectory: async () => writes,
+    };
+    const { result, execute } = await runAnswered("allow-always", () => undefined, lifecycle);
+    expect(requests).toHaveLength(1);
+    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(t("be_executor.fileTargetChanged")) });
+    expect(writes).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
   });
 });

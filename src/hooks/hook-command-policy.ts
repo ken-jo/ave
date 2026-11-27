@@ -5,6 +5,7 @@ import { errorMessage } from "../shared/error-message.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
 import { getHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
 import { getHostShellExecutionPlanAuditProjection, type HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, mintHostShellExecutionPermit, consumeHostShellExecutionPermit } from "../permissions/host-shell-execution-permit.js";
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { buildPermissionEvaluationContext } from "../permissions/evaluation-context.js";
@@ -89,10 +90,13 @@ export function createHookCommandAuthorizer(deps: {
     }
     if (abortSignal?.aborted) return { decision: "deny", reason: "Hook command was cancelled" };
     if (result.decision === "deny") return { decision: "deny", reason: result.reason };
-    const binding = buildHostShellExecutionPermitBinding({
-      plan, toolName: "bash", toolUseId: id, rawInput: args, executionCwd: cwd, extraAllowedDirectories: [],
+    const binding = withLocalityDecision(() => {
+      const candidate = buildHostShellExecutionPermitBinding({
+        plan, toolName: "bash", toolUseId: id, rawInput: args, executionCwd: cwd, extraAllowedDirectories: [],
+      });
+      return candidate?.cwdIdentity && matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity) ? candidate : undefined;
     });
-    if (!binding?.cwdIdentity || !matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) {
+    if (binding === undefined) {
       return { decision: "deny", reason: "Hook working directory changed during approval" };
     }
     const directory = createShellApprovalDirectory(binding);
@@ -163,11 +167,15 @@ export function createHookCommandAuthorizer(deps: {
         return { decision: "deny", reason: "Hook host execution approval receipt is invalid" };
       }
     }
-    const assertAllowed = (): void => {
+    const checkCurrent = (): void => {
       const current = check();
       if (!controllerCurrent() || abortSignal?.aborted || current.decision === "deny" || effectIdentity(current) !== requestedEffect || deps.permissionManager.getPolicyEpoch() !== policyEpoch || !matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) {
         throw new Error(`Hook command permission changed: ${current.reason}`);
       }
+    };
+    const assertAllowed = (): void => {
+      if (process.platform === "win32") withLocalityDecision(checkCurrent);
+      else checkCurrent();
     };
     const refreshAllowed = async (): Promise<void> => {
       if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId)) throw new Error("remote-controller-revoked");
