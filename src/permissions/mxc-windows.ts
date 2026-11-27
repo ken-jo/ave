@@ -170,7 +170,9 @@ type MxcRawIpProbeVerdict = {
   readonly udpArrival: MxcRawIpUdpArrival;
 } & ({ readonly rawIp: "blocked"; readonly reason: "blocked"; readonly evidenceKind: "measured" | "structural" }
   | { readonly rawIp: "unknown"; readonly reason: MxcRawIpUnknownReason });
-type MxcStartSupport = Extract<MxcSupport, { state: "unavailable" }>
+type MxcStartDiagnostic = "STATUS_DLL_INIT_FAILED" | "nonzero-exit" | "launch-rejected" | "startup-deadline"
+  | "unsupported-arch" | "runtime-root-unproved";
+type MxcStartSupport = (Extract<MxcSupport, { state: "unavailable" }> & { readonly detail: MxcStartDiagnostic })
   | (Extract<MxcSupport, { state: "available" }> & { readonly rawIpProbe?: MxcRawIpProbeVerdict });
 type MxcLanProbeTarget = { readonly address: string; readonly port: number };
 
@@ -416,15 +418,14 @@ export function classifyMxcStartProbe(
   code: number | null,
   stdout: string,
   stderr: string,
-): { readonly ok: true } | { readonly ok: false; readonly reason: "powershell-start-failed" | "unverified-session"; readonly detail: string } {
+): { readonly ok: true } | { readonly ok: false; readonly reason: "powershell-start-failed" | "unverified-session"; readonly detail: MxcStartDiagnostic } {
   if (code === 0) return { ok: true };
   const text = `${stdout}\n${stderr}`;
-  const detail = (text.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) ?? `exit ${String(code)}`).slice(0, 500);
   // 0xC0000142 as the unsigned exit code, or the launcher's own diagnostic.
-  if (code === 0xc0000142 || /STATUS_DLL_INIT_FAILED|0xC0000142/i.test(text)) {
-    return { ok: false, reason: "unverified-session", detail };
+  if (code === 0xc0000142 || /\b(?:STATUS_DLL_INIT_FAILED|0xC0000142)\b/i.test(text)) {
+    return { ok: false, reason: "unverified-session", detail: "STATUS_DLL_INIT_FAILED" };
   }
-  return { ok: false, reason: "powershell-start-failed", detail };
+  return { ok: false, reason: "powershell-start-failed", detail: "nonzero-exit" };
 }
 
 // Decide, once at boot, whether agent shells can run in MXC on this host. The OS build number is not the gate: MXC no longer requires PSEC 1.1 for an identity-less loopback proxy (the launcher queries host support, and the directions depend on the Windows build), so a build floor would not establish that the host can carry the request. The gate is what the shipped binary reports: its sha256 must match the pin, `--probe` of the request shape Ave launches (proxy mode, DACL fallback refused) must serve it (the container tier, no DACL changes; an unserved request has no tier and an error), `--dry-run` of that request must validate, and System32 Windows PowerShell 5.1 must actually start (`exit 0`) in a real container of that shape with the loopback proxy; that launch carries the network-policy and PSEC checks the probe does not make. Any failure leaves the shells on the approved-host route.
@@ -502,14 +503,14 @@ export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promis
 export async function probeMxcPowerShellStart(
   deps: DetectMxcSupportDeps, openListener?: typeof openInvocationProxyListener,
 ): Promise<MxcStartSupport> {
-  const unavailable = (reason: MxcUnavailableReason, detail: string): MxcSupport => ({
+  const unavailable = (reason: MxcUnavailableReason, detail: MxcStartDiagnostic): MxcStartSupport => ({
     state: "unavailable",
     reason,
     windowsBuild: deps.windowsBuild,
     detail,
   });
   const wxcExec = wxcExecPathFor(deps.resourcePath, deps.arch);
-  if (wxcExec === undefined) return unavailable("unsupported-arch", `arch ${deps.arch}`);
+  if (wxcExec === undefined) return unavailable("unsupported-arch", "unsupported-arch");
   const launch = async (script: string, proxyUrl: string, timeoutMs: number) => {
     const request = buildMxcShellRequest({
       commandLine: powerShellMxcCommandLine(deps.systemRoot, script, deps.probeDirectory),
@@ -631,8 +632,8 @@ export async function probeMxcPowerShellStart(
     if (rawIpProbe.udpArrival === "arrived") log.warn("raw-ip-reachable (udp)");
     else if (rawIpProbe.reachableTargets.length > 0) log.warn("raw-ip-reachable");
     return { ...available, rawIpProbe };
-  } catch (error) {
-    return unavailable("powershell-start-failed", errorMessage(error));
+  } catch {
+    return unavailable("powershell-start-failed", "launch-rejected");
   }
 }
 
@@ -1642,7 +1643,7 @@ export async function probeHostMxcPowerShellStart(): Promise<MxcStartSupport> {
     requireMxcContainerStartRoot();
   } catch (error) {
     if (!(error instanceof MxcRuntimeRootError)) throw error;
-    return { state: "unavailable", reason: "runtime-root-unproved", windowsBuild: null, detail: `runtime root proof failed: ${error.message}` };
+    return { state: "unavailable", reason: "runtime-root-unproved", windowsBuild: null, detail: "runtime-root-unproved" };
   }
   const { openInvocationProxyListener } = await import("./egress-invocation-listener.js");
   return await withHostMxcDeps(deps => probeMxcPowerShellStart(deps, openInvocationProxyListener));

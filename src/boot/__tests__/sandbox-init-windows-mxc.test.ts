@@ -5,10 +5,12 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 /** Check each Windows substrate combination and the boot outcome reported to Settings. */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rmSync } from "node:fs";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readMxcRawIpProbeScript } from "../../__tests__/support/mxc-raw-ip-probe.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
   createSandboxBootHarness,
   type SandboxBootHarness,
@@ -51,6 +53,11 @@ vi.mock("electron", () => ({
 
 vi.mock("../../lib/logger.js", () => ({
   createLogger: vi.fn(() => h.logger),
+}));
+
+vi.mock("../dev-flags.js", async (original) => ({
+  ...await original<typeof import("../dev-flags.js")>(),
+  isPackagedElectronProcess: () => true,
 }));
 
 vi.mock("../../permissions/mxc-windows.js", () => ({
@@ -817,7 +824,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
     expect(detectSandboxCapability().reason).toContain("container start check pending");
 
-    finishProbe({ state: "unavailable", reason: "unverified-session", windowsBuild: "10.0.26300.9711", detail: "0xC0000142" });
+    finishProbe({ state: "unavailable", reason: "unverified-session", windowsBuild: "10.0.26300.9711", detail: "STATUS_DLL_INIT_FAILED" });
 
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({
       mxc: { state: "unavailable", reason: "unverified-session" },
@@ -841,8 +848,58 @@ describe("initSandboxGate — Windows MXC substrate", () => {
       "boot: MXC shell start probe failed in %d ms (build %s): %s",
       expect.any(Number),
       "10.0.26300.9711",
-      "0xC0000142",
+      "STATUS_DLL_INIT_FAILED",
     );
+  });
+
+  it.each([
+    { path: "measured start", listenerAvailable: true, rejects: false },
+    { path: "measured start", listenerAvailable: true, rejects: true },
+    { path: "plain start", listenerAvailable: false, rejects: false },
+    { path: "plain start", listenerAvailable: false, rejects: true },
+  ])("keeps launch diagnostics out of the file log for $path (rejects=$rejects)", async ({ listenerAvailable, rejects }) => {
+    const { probeMxcPowerShellStart } = await vi.importActual<typeof import("../../permissions/mxc-windows.js")>("../../permissions/mxc-windows.js");
+    const { closeFileLogSink, createLogger, initFileLogSink } = await vi.importActual<typeof import("../../lib/logger.js")>("../../lib/logger.js");
+    const dir = await mkdtemp(join(tmpdir(), "mxc-start-log-"));
+    try {
+      const sink = initFileLogSink({ dir });
+      if (!sink) throw new Error("Missing file log sink");
+      const fileLogger = createLogger("sandbox-init");
+      h.logger.warn.mockImplementation((...args) => Reflect.apply(fileLogger.warn, fileLogger, args));
+      h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+      h.detectMxc.mockResolvedValue(MXC_OK);
+      const address = "192.168.111.29";
+      const sid = "S-1-15-3-7";
+      h.startProbe.mockImplementation(() => probeMxcPowerShellStart({
+        platform: "win32", arch: "x64", resourcePath: "C:/example/resources", windowsBuild: MXC_OK.windowsBuild,
+        probeDirectory: "C:/example/scratch", systemRoot: "C:/Windows", exists: () => true, sha256: async () => "",
+        run: async (_file, args) => {
+          if (args[0] !== "--config-base64") return { code: 0, stdout: "", stderr: "" };
+          if (rejects) throw new Error(`Launch rejected at ${address} for ${sid}`);
+          return { code: 1, stdout: `Profile ${sid}`, stderr: `STATUS_DLL_INIT_FAILED at ${address}` };
+        },
+      }, async () => {
+        if (!listenerAvailable) throw new Error("Listener unavailable");
+        return { port: 49153, url: "http://127.0.0.1:49153", close: async () => {} };
+      }));
+
+      await initSandboxGate(harness.context(true, false));
+      await vi.waitFor(async () => {
+        const log = await readFile(sink.currentFile, "utf8");
+        expect(log).toContain("boot: MXC shell start probe failed");
+        expect(log).not.toContain(address);
+        expect(log).not.toContain(sid);
+        expect(log).toContain(rejects ? "launch-rejected" : "STATUS_DLL_INIT_FAILED");
+      });
+      expect(getWindowsSandboxSubstrate()).toMatchObject({
+        mxc: { state: "unavailable", reason: rejects ? "powershell-start-failed" : "unverified-session" },
+        shells: "approved-host",
+      });
+    } finally {
+      h.logger.warn.mockReset();
+      closeFileLogSink();
+      await cleanupTmpDir(dir);
+    }
   });
 
   it("drops a probe result that arrives after the record was replaced", async () => {

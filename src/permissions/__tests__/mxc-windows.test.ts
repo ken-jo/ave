@@ -243,7 +243,7 @@ describe("classifyMxcStartProbe", () => {
     expect(classifyMxcStartProbe(0, "", "")).toEqual({ ok: true });
     expect(classifyMxcStartProbe(3221225794, "", "")).toMatchObject({ ok: false, reason: "unverified-session" });
     expect(classifyMxcStartProbe(-1, START_DLL_INIT_FAILED, "")).toMatchObject({ ok: false, reason: "unverified-session" });
-    expect(classifyMxcStartProbe(1, "", "Access is denied.")).toEqual({ ok: false, reason: "powershell-start-failed", detail: "Access is denied." });
+    expect(classifyMxcStartProbe(1, "", "Access is denied.")).toEqual({ ok: false, reason: "powershell-start-failed", detail: "nonzero-exit" });
   });
 });
 

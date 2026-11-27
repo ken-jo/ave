@@ -723,9 +723,9 @@ async function detectWindowsBootInputs(
 
 /** Probe a real shell start after boot. */
 async function settleWindowsMxcStartProbe(): Promise<{ mxc: WindowsSandboxPlanInputs["mxc"]; coverage?: EgressProtocolCoverage }> {
-  const { probeHostMxcPowerShellStart } = await import("../../permissions/mxc-windows.js");
   const started = Date.now();
   try {
+    const { probeHostMxcPowerShellStart } = await import("../../permissions/mxc-windows.js");
     const mxc = await probeHostMxcPowerShellStart();
     if (mxc.state === "available") {
       log.info({ mxcShellState: mxc.state }, "boot: MXC shell start probe succeeded in %d ms", Date.now() - started);
@@ -735,9 +735,9 @@ async function settleWindowsMxcStartProbe(): Promise<{ mxc: WindowsSandboxPlanIn
     log.warn({ mxcShellState: mxc.state, mxcShellReason: mxc.reason },
       "boot: MXC shell start probe failed in %d ms (build %s): %s", Date.now() - started, mxc.windowsBuild ?? "unknown", mxc.detail);
     return { mxc: { state: "unavailable", reason: mxc.reason } };
-  } catch (error) {
+  } catch {
     log.warn({ mxcShellState: "unavailable", mxcShellReason: "powershell-start-failed" },
-      "boot: MXC shell start probe failed in %d ms: %s", Date.now() - started, errorMessage(error));
+      "boot: MXC shell start probe failed in %d ms: launch-rejected", Date.now() - started);
     return { mxc: { state: "unavailable", reason: "powershell-start-failed" } };
   }
 }
