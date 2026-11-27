@@ -551,6 +551,7 @@ function aceSidOffset(ace: Buffer, revision: number): number | undefined {
     case 0x05: case 0x06: case 0x07: case 0x08: case 0x0b: case 0x0c: case 0x0f: case 0x10: {
       if (revision !== 4 || ace.length < 12) return undefined;
       const flags = ace.readUInt32LE(8);
+      if ((flags & ~3) !== 0) return undefined;
       return 12 + (flags & 1 ? 16 : 0) + (flags & 2 ? 16 : 0);
     }
     default: return undefined;
@@ -585,7 +586,7 @@ function isCompleteFileAcl(aclHex: unknown, aceCount: number): boolean {
 }
 
 function isFileDacl(value: unknown): value is WindowsFileDacl {
-  if (value === null || typeof value !== "object") return false;
+  if (value === null || typeof value !== "object" || Object.keys(value).length !== 5) return false;
   const row = value as WindowsFileDacl;
   return typeof row.volumeSerialNumber === "string" && HEX_64_PATTERN.test(row.volumeSerialNumber)
     && BigInt(row.volumeSerialNumber) <= 0xffffffffn

@@ -347,6 +347,17 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     else expect(read).toThrow("Invalid Windows file DACL response");
   });
 
+  it.each([
+    ["unknown object flags", fileDacl(`04${ace(0x05, `${mask}05000000${"00".repeat(16)}${everyone}`)}`)],
+    ["an extra property", { ...fileDacl("02", 0), extra: true }],
+  ])("refuses a file DACL batch when its later row has %s", (_name, invalid) => {
+    const file = join(fixture, "directory", "file");
+    const paths = [file, join(fixture, "directory", "another")];
+    const valid = fileDacl("02", 0);
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([valid, invalid])));
+    expect(() => readWindowsFileDacls(paths)).toThrow("Invalid Windows file DACL response");
+  });
+
   it("accepts allow and audit ACEs in one file DACL", () => {
     const reply = fileDacl(`02${ace(0x00, mask + everyone)}${ace(0x02, mask + everyone)}`, 2);
     vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([reply])));
