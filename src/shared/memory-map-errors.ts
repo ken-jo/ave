@@ -2,6 +2,9 @@ import type { MemoryMapError } from './memory-map.js';
 import type { MessageCatalogKey } from '../i18n/messages/en.js';
 
 export type LocalInferenceRefusal = 'local-runtime-unavailable' | 'local-inference-disabled';
+export class MemoryMapHostError extends Error {
+  constructor(readonly code: MemoryMapError) { super(code); this.name = 'MemoryMapHostError'; }
+}
 export function isLocalInferenceRefusal(error: MemoryMapError): error is LocalInferenceRefusal {
   return error === 'local-runtime-unavailable' || error === 'local-inference-disabled';
 }

@@ -9,7 +9,7 @@ import { MemoryMapScopeSchema, MemoryRetrievalSchema, WindowsMemoryEmbeddingSett
 import type { NoteEntry, ProjectScopedMemoryOptions } from '../../memory/memory-manager.js';
 import type { MemoryMapRuntime } from './memory-map-runtime-win32.js';
 import { commitUnderAdmission } from '../../shared/admission-commit.js';
-import { MemoryMapHostError } from '../../main/memory-map/errors.js';
+import { MemoryMapHostError } from '../../shared/memory-map-errors.js';
 
 export type MemoryMapScopeResolver = (raw: unknown) => { ok: true; options: ProjectScopedMemoryOptions } | { ok: false; error: string };
 interface RequestAdmission { options?: ProjectScopedMemoryOptions; assert(): void }
