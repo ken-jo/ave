@@ -188,9 +188,9 @@ unavailable. The setup result shows the bound port. Established and saved
 ports stay fixed. A saved file without a port inherits 46173 and records that
 port when the observer is enabled or the owner saves Settings. An enabled
 environment-only deployment keeps 46173 when an existing Serve route targets
-it, unless the environment sets a port explicitly. A blocked bind reports its
-code and port in Settings so the owner can choose another port in the manual
-form.
+it or the route probe is unavailable, unless the environment sets a port
+explicitly. A blocked bind reports its code and port in Settings so the owner
+can choose another port in the manual form.
 
 **Gate.** The channel is `apply` plus `configureServe` in one press, so it
 carries exactly their gate — host-renderer sender plus a fresh local keyboard

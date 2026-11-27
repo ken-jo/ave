@@ -75,6 +75,7 @@ function tailscaleEnvironment(login: string | null) {
     tailnetName: null,
     serveConfigured: false,
     serveTargetPort: null,
+    serveStatusKnown: true,
     detail: null,
   };
 }
@@ -100,7 +101,7 @@ function options(
         // This matrix asks an environment question. Reading the real host-owned file would make the answer depend on whether the developer running it happens to
         // have an observer configured.
         readConfigFile: async (): Promise<TailnetObserverConfigFile | null> => null,
-        probeEnvironment: () => probeTailscaleEnvironment({ runCommand: async () => ({ kind: "not-found" }) }),
+        probeEnvironment: async () => tailscaleEnvironment(null),
       },
     },
   };
@@ -735,6 +736,77 @@ describe("Tailnet observer configuration surface", () => {
     if (notice !== null) expect(log).toHaveBeenCalledWith(expect.stringContaining(notice));
   });
 
+  it.each([
+    { name: "missing CLI", status: { kind: "not-found" } },
+    { name: "stopped daemon", status: { kind: "ran", code: 0, stdout: readyStatus({ BackendState: "Stopped" }), stderr: "" } },
+    { name: "failed Serve query", serve: { kind: "ran", code: 1, stdout: "", stderr: "Unavailable" } },
+    { name: "unparseable Serve status", serve: { kind: "ran", code: 0, stdout: "", stderr: "" } },
+    { name: "malformed Serve route", serve: { kind: "ran", code: 0, stdout: '{"Web":{"desk.example-tailnet.ts.net:443":{}}}', stderr: "" } },
+  ] satisfies { name: string; status?: TailscaleCommandResult; serve?: TailscaleCommandResult }[])(
+    "keeps the implicit legacy port during $name and after Serve recovers",
+    async ({ status, serve }) => {
+      const port = 46_173;
+      const { input, startServer } = options({
+        AVE_TAILNET_OBSERVER: "1", AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
+      });
+      const ready: TailscaleCommandResult = { kind: "ran", code: 0, stdout: readyStatus(), stderr: "" };
+      const recovered: TailscaleCommandResult = {
+        kind: "ran", code: 0, stderr: "",
+        stdout: JSON.stringify({
+          Web: { "desk.example-tailnet.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:46173" } } } },
+        }),
+      };
+      let available = false;
+      const probeEnvironment = () => probeTailscaleEnvironment({
+        platform: "linux",
+        runCommand: runner({
+          "status --json": available ? ready : status ?? ready,
+          "serve status --json": available ? recovered : serve ?? recovered,
+        }),
+      });
+
+      await expect.soft(maybeStartTailnetObserverServer({
+        ...input, dependencies: { ...input.dependencies, probeEnvironment },
+      })).resolves.toEqual({ port });
+      available = true;
+      await expect.soft(probeEnvironment()).resolves.toMatchObject({ serveTargetPort: port });
+      expect(startServer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port }));
+    },
+  );
+
+  it("identifies the observer Serve route among multiple handlers and listeners", async () => {
+    const port = 46_173;
+    const { input, startServer } = options({
+      AVE_TAILNET_OBSERVER: "1", AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
+    });
+    const probeEnvironment = () => probeTailscaleEnvironment({
+      platform: "linux",
+      runCommand: runner({
+        "status --json": { kind: "ran", code: 0, stdout: readyStatus(), stderr: "" },
+        "serve status --json": {
+          kind: "ran", code: 0, stderr: "",
+          stdout: JSON.stringify({
+            Web: {
+              "unrelated.example-tailnet.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:29001" } } },
+              "desk.example-tailnet.ts.net:443": {
+                Handlers: {
+                  "/other": { Proxy: "http://127.0.0.1:29002" },
+                  "/": { Proxy: "http://127.0.0.1:46173" },
+                },
+              },
+            },
+          }),
+        },
+      }),
+    });
+
+    await expect.soft(maybeStartTailnetObserverServer({
+      ...input, dependencies: { ...input.dependencies, probeEnvironment },
+    })).resolves.toEqual({ port });
+    await expect.soft(probeEnvironment()).resolves.toMatchObject({ serveConfigured: true, serveTargetPort: port });
+    expect(startServer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port }));
+  });
+
   it("boots a portless upgrade fixture on its existing Serve target and saves the legacy port", async () => {
     const port = 46_173;
     const dir = makeTempDir();
@@ -1031,6 +1103,7 @@ describe("Tailnet observer restart", () => {
     let saved: TailnetObserverConfigFile | null = {
       enabled: true,
       authorization: APP_CAPABILITY,
+      port: DEFAULT_TAILNET_OBSERVER_PORT,
     };
 
     await maybeStartTailnetObserverServer({

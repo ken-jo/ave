@@ -27,6 +27,7 @@ function readyEnvironment(overrides: Partial<TailscaleEnvironment> = {}): Tailsc
     tailnetName: "example-tailnet.ts.net",
     serveConfigured: false,
     serveTargetPort: null,
+    serveStatusKnown: true,
     detail: null,
     ...overrides,
   };
@@ -62,6 +63,7 @@ function service(options: {
     env: options.env ?? {},
     runtimeState: () => ({
       listeningPort: options.listeningPort ?? null,
+      establishedPort: options.listeningPort ?? null,
       activeConfig: options.activeConfig ?? null,
       lastStartError: options.lastStartError ?? null,
       portBlock: null,
@@ -419,7 +421,7 @@ describe("Tailnet observer configuration service", () => {
             env: {},
             readConfigFile: async () => saved,
             writeConfigFile,
-            runtimeState: () => ({ listeningPort, activeConfig: null, lastStartError: null, portBlock: null }),
+            runtimeState: () => ({ listeningPort, establishedPort: listeningPort, activeConfig: null, lastStartError: null, portBlock: null }),
             probeEnvironment: async () => readyEnvironment(),
             restartListener: async () => {
               const port = saved?.port;
