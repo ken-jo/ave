@@ -91,7 +91,7 @@ function makeApi(options: { observerUnavailable?: boolean; sharingDisabled?: boo
           ? { ok: false as const, error: "tailnet-observer-unavailable" as const }
           : { ok: true as const, snapshot: observerSnapshot() },
       ),
-      apply: vi.fn(async () => ({ ok: true as const, restartNeeded: false })),
+      apply: vi.fn(async () => ({ ok: true as const, outcome: "applied" as const, restartNeeded: false })),
       configureServe: vi.fn(async () => ({
         ok: true as const,
         url: "https://" + OBSERVER_DNS_NAME + "/",

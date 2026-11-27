@@ -6005,6 +6005,8 @@ export const en = {
   "tailnetObserver.webOriginLabel": "Web origin",
   "tailnetObserver.apply": "Save listener settings",
   "tailnetObserver.saved": "Listener settings saved and applied.",
+  "tailnetObserver.savedObserverOff": "Listener settings saved. The observer is off.",
+  "tailnetObserver.savedOnly": "Listener settings saved.",
   "tailnetObserver.savedRestartNeeded": "Listener settings saved. Restart the app to try starting the listener on the configured port.",
   "tailnetObserver.copy": "Copy",
   "tailnetObserver.copied": "Copied",

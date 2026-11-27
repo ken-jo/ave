@@ -211,7 +211,12 @@ export function TailnetObserverSection({ api, onHostStateChanged }: TailnetObser
       onHostStateChanged?.();
       setFeedback({
         tone: "success",
-        text: t(result.restartNeeded ? "tailnetObserver.savedRestartNeeded" : "tailnetObserver.saved"),
+        text: t(({
+          applied: "tailnetObserver.saved",
+          "observer-off": "tailnetObserver.savedObserverOff",
+          "restart-needed": "tailnetObserver.savedRestartNeeded",
+          saved: "tailnetObserver.savedOnly",
+        } as const)[result.outcome]),
       });
     } else if (result.error === TAILNET_OBSERVER_PORT_BLOCKED) {
       await refresh();

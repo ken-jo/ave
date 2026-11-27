@@ -82,7 +82,7 @@ function snapshotOf(overrides: Partial<TailnetObserverSnapshot> = {}): TailnetOb
 
 function makeApi(
   snapshot: TailnetObserverSnapshot,
-  applyResult: TailnetObserverApplyResult = { ok: true, restartNeeded: false },
+  applyResult: TailnetObserverApplyResult = { ok: true, outcome: "applied", restartNeeded: false },
   serveResult: TailnetServeResult = { ok: true, url: "https://" + DNS_NAME + "/" },
 ) {
   const apply = vi.fn(async () => applyResult);
@@ -184,7 +184,7 @@ describe("TailnetObserverSection", () => {
       lastStartError: "tailnet-observer-port-blocked",
       portBlock: { code: "EADDRINUSE", port: 46_173, hint: null },
     });
-    const deferredSave = { ok: true as const, restartNeeded: true };
+    const deferredSave = { ok: true, outcome: "restart-needed", restartNeeded: true } as const;
     const { api, apply } = makeApi(initial, deferredSave);
     vi.mocked(api.tailnetObserver.snapshot).mockResolvedValueOnce({ ok: true, snapshot: initial });
     vi.mocked(api.tailnetObserver.snapshot).mockResolvedValue({
@@ -207,6 +207,32 @@ describe("TailnetObserverSection", () => {
     expect(apply).toHaveBeenCalledWith(OFF);
     expect(screen.getByRole("alert").textContent).toContain("46173");
     expect(feedback.textContent).toContain(restartText);
+  });
+
+  it.each([
+    { locale: "en", outcome: "observer-off", text: "Listener settings saved. The observer is off." },
+    { locale: "ko", outcome: "observer-off", text: "리스너 설정을 저장했습니다. 옵저버가 꺼져 있습니다." },
+    { locale: "en", outcome: "saved", text: "Listener settings saved." },
+  ] as const)("shows $outcome feedback in $locale", async ({ locale, outcome, text }) => {
+    setLocale(locale);
+    const initial = snapshotOf({
+      effective: { ...OFF, enabled: outcome === "saved" },
+      listeningPort: outcome === "saved" ? OFF.port : null,
+      lastStartError: "tailnet-observer-port-blocked",
+      portBlock: { code: "EADDRINUSE", port: 46_173, hint: null },
+    });
+    const { api } = makeApi(initial, { ok: true, outcome, restartNeeded: false });
+    vi.mocked(api.tailnetObserver.snapshot).mockResolvedValueOnce({ ok: true, snapshot: initial });
+    vi.mocked(api.tailnetObserver.snapshot).mockResolvedValue({
+      ok: true,
+      snapshot: outcome === "observer-off" ? snapshotOf() : initial,
+    });
+    render(<TailnetObserverSection api={api} />);
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("tailnet-observer-apply"));
+
+    expect((await screen.findByTestId("tailnet-observer-feedback")).textContent).toBe(text);
+    expect(screen.queryByRole("alert") !== null).toBe(outcome === "saved");
   });
 
   it("renders the host's rejection code as guidance, not as a code", async () => {
@@ -418,7 +444,7 @@ describe("TailnetObserverSection", () => {
     });
 
     it("shows what Tailscale printed when the command fails", async () => {
-      const { api } = makeApi(listening(), { ok: true, restartNeeded: false }, {
+      const { api } = makeApi(listening(), { ok: true, outcome: "applied", restartNeeded: false }, {
         ok: false,
         error: "tailnet-serve-command-failed",
         output: "HTTPS is not enabled on this tailnet",

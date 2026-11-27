@@ -2441,7 +2441,7 @@ it("reports the port as applied when manual enable binds a fileless observer", a
     const { saved } = await service.snapshot();
     await expect.soft(service.apply({
       ...saved, enabled: true, authorization: APP_CAPABILITY, port,
-    })).resolves.toEqual({ restartNeeded: false });
+    })).resolves.toEqual({ outcome: "applied", restartNeeded: false });
     await expect(service.snapshot()).resolves.toMatchObject({ listeningPort: port, portBlock: null });
   } finally {
     await stopTailnetObserverServer();

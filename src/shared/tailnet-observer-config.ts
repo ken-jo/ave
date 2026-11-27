@@ -110,8 +110,12 @@ export type TailnetObserverMutationResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly error: TailnetObserverErrorCode };
 
+export type TailnetObserverApplyStatus =
+  | { readonly outcome: "restart-needed"; readonly restartNeeded: true }
+  | { readonly outcome: "applied" | "observer-off" | "saved"; readonly restartNeeded: false };
+
 export type TailnetObserverApplyResult =
-  | { readonly ok: true; readonly restartNeeded: boolean }
+  | ({ readonly ok: true } & TailnetObserverApplyStatus)
   | Extract<TailnetObserverMutationResult, { ok: false }>;
 
 /** Return the reachable URL on success and command output on failure. */
@@ -357,9 +361,14 @@ export function parseTailnetObserverMutationResult(
 export function parseTailnetObserverApplyResult(value: unknown): TailnetObserverApplyResult | null {
   if (!isRecord(value)) return null;
   if (value.ok === true) {
-    return typeof value.restartNeeded === "boolean"
-      ? Object.freeze({ ok: true as const, restartNeeded: value.restartNeeded })
-      : null;
+    const { outcome, restartNeeded } = value;
+    if (restartNeeded === true && outcome === "restart-needed") {
+      return Object.freeze({ ok: true, outcome, restartNeeded });
+    }
+    if (restartNeeded === false && (outcome === "applied" || outcome === "observer-off" || outcome === "saved")) {
+      return Object.freeze({ ok: true, outcome, restartNeeded });
+    }
+    return null;
   }
   const result = parseTailnetObserverMutationResult(value);
   return result?.ok === false ? result : null;

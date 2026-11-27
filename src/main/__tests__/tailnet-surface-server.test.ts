@@ -18,6 +18,7 @@ import * as portHints from "../tailnet-port-hint.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import type { TailnetPairedSharingRuntime } from "../tailnet-paired-sharing-runtime.js";
 import { writeJsonAtomic, type FeatureNamespaceHandle } from "../storage/feature-namespace.js";
+import { resolveTailnetObserverApply } from "../tailnet-observer-apply.js";
 import { createTailnetObserverConfigService } from "../tailnet-observer-config-service.js";
 import type { TailnetShareActorId } from "../tailnet-pairing-share-store.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
@@ -202,7 +203,7 @@ describe("Tailnet observer lifecycle", () => {
           status.mockClear();
         }
         const enabled = installed === "environment-disabled save";
-        await expect.soft(service.apply({ ...saved, enabled })).resolves.toEqual({ restartNeeded: false });
+        await expect.soft(service.apply({ ...saved, enabled })).resolves.toMatchObject({ restartNeeded: enabled });
         expect.soft(status).not.toHaveBeenCalled();
         expect.soft(await read()).toEqual({ ...(enabled ? { enabled } : {}), authorization: TAILNET_IDENTITY, port: customPort });
         await stopTailnetObserverServer();
@@ -984,7 +985,7 @@ describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer port stat
       await expect(maybeStartTailnetObserverServer(input)).rejects.toThrow(TAILNET_OBSERVER_PORT_BLOCKED);
       const { saved } = await settings.snapshot();
 
-      await expect.soft(settings.apply({ ...saved, port: 28_173 })).resolves.toEqual({ restartNeeded: true });
+      await expect.soft(settings.apply({ ...saved, port: 28_173 })).resolves.toEqual({ outcome: "restart-needed", restartNeeded: true });
       expect.soft(steps).toEqual(["write"]);
       expect.soft(startServer.mock.calls.map(([request]) => request.port)).toEqual([46_173]);
       await expect.soft(settings.snapshot()).resolves.toMatchObject({
@@ -1206,6 +1207,129 @@ describe("Tailscale Serve configuration", () => {
       reason: "command-failed",
       output: "HTTPS is not enabled on this tailnet",
     });
+  });
+});
+
+const APPLY_PORT = DEFAULT_TAILNET_OBSERVER_PORT;
+const OTHER_PORT = APPLY_PORT + 1;
+
+const applyRows = [
+  { row: "A01", savedEnabled: false, enableOverride: undefined, effectivePort: null, boundPort: null, outcome: "observer-off", restartNeeded: false, clearsBlock: true },
+  { row: "A02", savedEnabled: false, enableOverride: undefined, effectivePort: null, boundPort: OTHER_PORT, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
+  { row: "A03", savedEnabled: false, enableOverride: false, effectivePort: null, boundPort: null, outcome: "observer-off", restartNeeded: false, clearsBlock: true },
+  { row: "A04", savedEnabled: false, enableOverride: false, effectivePort: null, boundPort: OTHER_PORT, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
+  { row: "A05", savedEnabled: false, enableOverride: true, effectivePort: APPLY_PORT, boundPort: null, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
+  { row: "A06", savedEnabled: false, enableOverride: true, effectivePort: APPLY_PORT, boundPort: APPLY_PORT, outcome: "saved", restartNeeded: false, clearsBlock: false },
+  { row: "A07", savedEnabled: false, enableOverride: true, effectivePort: APPLY_PORT, boundPort: OTHER_PORT, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
+  { row: "A08", savedEnabled: true, enableOverride: undefined, effectivePort: APPLY_PORT, boundPort: null, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
+  { row: "A09", savedEnabled: true, enableOverride: undefined, effectivePort: APPLY_PORT, boundPort: APPLY_PORT, outcome: "applied", restartNeeded: false, clearsBlock: false },
+  { row: "A10", savedEnabled: true, enableOverride: undefined, effectivePort: APPLY_PORT, boundPort: OTHER_PORT, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
+  { row: "A11", savedEnabled: true, enableOverride: false, effectivePort: null, boundPort: null, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
+  { row: "A12", savedEnabled: true, enableOverride: false, effectivePort: null, boundPort: OTHER_PORT, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
+  { row: "A13", savedEnabled: true, enableOverride: true, effectivePort: APPLY_PORT, boundPort: null, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
+  { row: "A14", savedEnabled: true, enableOverride: true, effectivePort: APPLY_PORT, boundPort: APPLY_PORT, outcome: "applied", restartNeeded: false, clearsBlock: false },
+  { row: "A15", savedEnabled: true, enableOverride: true, effectivePort: APPLY_PORT, boundPort: OTHER_PORT, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
+] as const;
+
+describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer Apply on %s", platform => {
+  it.each(applyRows.flatMap(row => [false, true].map(hasPriorBlock => ({ ...row, hasPriorBlock }))))(
+    "resolves $row (prior block: $hasPriorBlock)",
+    async ({ savedEnabled, enableOverride, effectivePort, boundPort, outcome, restartNeeded, clearsBlock, hasPriorBlock }) => {
+      const host = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+      const policy = vi.spyOn(listenerPortPolicy, "assertTailnetListenerPortAllowed").mockResolvedValue(undefined);
+      const env = enableOverride === undefined ? {} : { AVE_TAILNET_OBSERVER: enableOverride ? "1" : "0" };
+      const priorBlock = hasPriorBlock ? { port: OTHER_PORT, code: "EADDRINUSE" as const, hint: null } : null;
+      const restartListener = vi.fn(async () => undefined);
+      const settings = createTailnetObserverConfigService({
+        env,
+        pairedSharingBootstrapFailed: () => false,
+        writeConfigFile: async () => undefined,
+        readOwnDeviceAdmission: async () => false,
+        probeEnvironment: async () => tailscaleEnvironment(null),
+        runtimeState: () => ({ listeningPort: boundPort, activeConfig: null, lastStartError: null, portBlock: priorBlock }),
+        restartListener,
+      });
+
+      try {
+        const proposal = {
+          enabled: savedEnabled, authorization: TAILNET_IDENTITY, port: APPLY_PORT,
+          controllerEnabled: false, pairedSharingEnabled: false, webEnabled: false, webOrigin: "",
+        };
+        const result = await settings.apply(proposal);
+        expect.soft(result.restartNeeded).toBe(restartNeeded);
+        expect.soft(result).toMatchObject({ outcome });
+        if (enableOverride === true) expect.soft(restartListener).not.toHaveBeenCalled();
+
+        expect(resolveTailnetObserverApply(savedEnabled, enableOverride, effectivePort, boundPort, priorBlock))
+          .toEqual({ status: { outcome, restartNeeded }, portBlock: clearsBlock ? null : priorBlock });
+      } finally {
+        policy.mockRestore();
+        host.mockRestore();
+      }
+    },
+  );
+
+  it("preserves a failed bind through save-only overrides and clears it when the observer is saved off", async () => {
+    const env: NodeJS.ProcessEnv = {};
+    let file: TailnetObserverConfigFile | null = null;
+    const readConfigFile = async () => file;
+    const { input, startServer } = options(env);
+    input.dependencies.readConfigFile = readConfigFile;
+    const host = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+    const policy = vi.spyOn(listenerPortPolicy, "assertTailnetListenerPortAllowed").mockResolvedValue(undefined);
+    const hint = vi.spyOn(portHints, "getWindowsTailnetPortHint").mockResolvedValue(null);
+    const settings = createTailnetObserverConfigService({
+      env,
+      pairedSharingBootstrapFailed: () => false,
+      readConfigFile,
+      writeConfigFile: async next => { file = next; },
+      readOwnDeviceAdmission: async () => false,
+      probeEnvironment: async () => tailscaleEnvironment(null),
+    });
+    startServer.mockRejectedValueOnce(Object.assign(new Error("Port in use"), { code: "EADDRINUSE" }));
+    const blocked = {
+      listeningPort: null,
+      portBlock: { port: OTHER_PORT, code: "EADDRINUSE", hint: null },
+      lastStartError: TAILNET_OBSERVER_PORT_BLOCKED,
+    };
+
+    try {
+      await expect(maybeStartTailnetObserverServer(input)).resolves.toBeNull();
+      const { saved } = await settings.snapshot();
+      const enabled = { ...saved, enabled: true, port: OTHER_PORT };
+      await expect.soft(settings.apply(enabled)).resolves.toMatchObject({ restartNeeded: true });
+      await expect.soft(settings.snapshot()).resolves.toMatchObject(blocked);
+
+      env.AVE_TAILNET_OBSERVER = "0";
+      await expect.soft(settings.apply({ ...enabled, port: APPLY_PORT })).resolves.toMatchObject({ restartNeeded: true });
+      await expect.soft(settings.snapshot()).resolves.toMatchObject(blocked);
+
+      env.AVE_TAILNET_OBSERVER = "1";
+      await expect.soft(settings.apply({ ...enabled, port: APPLY_PORT })).resolves.toMatchObject({ restartNeeded: true });
+      await expect.soft(settings.snapshot()).resolves.toMatchObject(blocked);
+
+      delete env.AVE_TAILNET_OBSERVER;
+      env.AVE_TAILNET_OBSERVER_PORT = String(APPLY_PORT);
+      await expect.soft(settings.apply(enabled)).resolves.toMatchObject({ restartNeeded: true });
+      await expect.soft(settings.snapshot()).resolves.toMatchObject(blocked);
+      expect.soft(startServer.mock.calls.map(([request]) => request.port)).toEqual([OTHER_PORT]);
+
+      delete env.AVE_TAILNET_OBSERVER_PORT;
+      startServer.mockRejectedValueOnce(Object.assign(new Error("Listen failed"), { syscall: "listen" }));
+      await expect(settings.apply({ ...enabled, port: APPLY_PORT })).resolves.toMatchObject({ restartNeeded: true });
+      await expect(settings.snapshot()).resolves.toMatchObject({
+        listeningPort: null, portBlock: blocked.portBlock, lastStartError: "tailnet-observer-start-failed",
+      });
+
+      await expect.soft(settings.apply({ ...enabled, enabled: false })).resolves.toEqual({
+        outcome: "observer-off", restartNeeded: false,
+      });
+      await expect(settings.snapshot()).resolves.toMatchObject({ listeningPort: null, portBlock: null, lastStartError: null });
+    } finally {
+      hint.mockRestore();
+      policy.mockRestore();
+      host.mockRestore();
+    }
   });
 });
 

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_TAILNET_OBSERVER_PORT, parseTailnetObserverApplyResult } from "../../../shared/tailnet-observer-config.js";
+import { DEFAULT_TAILNET_OBSERVER_PORT, parseTailnetObserverApplyResult, type TailnetObserverApplyStatus } from "../../../shared/tailnet-observer-config.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { invokeFileIpcHandler } from "./test-helpers.js";
 
@@ -60,7 +60,7 @@ function snapshotFixture() {
 
 async function setup(overrides: {
   snapshot?: () => Promise<unknown>;
-  apply?: (config: unknown) => Promise<{ readonly restartNeeded: boolean }>;
+  apply?: (config: unknown) => Promise<TailnetObserverApplyStatus>;
   configureServe?: () => Promise<unknown>;
   guidedSetup?: () => Promise<unknown>;
   setOwnDeviceAdmission?: (enabled: boolean) => Promise<void>;
@@ -69,7 +69,7 @@ async function setup(overrides: {
   vi.clearAllMocks();
   const service = {
     snapshot: vi.fn(overrides.snapshot ?? (async () => snapshotFixture())),
-    apply: vi.fn(overrides.apply ?? (async () => ({ restartNeeded: false }))),
+    apply: vi.fn(overrides.apply ?? (async () => ({ outcome: "applied", restartNeeded: false }))),
     configureServe: vi.fn(
       overrides.configureServe
         ?? (async () => ({ ok: true as const, url: "https://desk.example-tailnet.ts.net/" })),
@@ -153,16 +153,18 @@ describe("Tailnet observer configuration IPC boundary", () => {
   });
 
   it("preserves the restart result through the apply response validator", async () => {
-    await setup({ apply: async () => ({ restartNeeded: true }) });
+    await setup({ apply: async () => ({ outcome: "restart-needed", restartNeeded: true }) });
     const result = await invokeFileIpcHandler(handlers, CHANNELS.tailnetObserver.apply, { intent, config: CONFIG });
-    expect(parseTailnetObserverApplyResult(result)).toEqual({ ok: true, restartNeeded: true });
+    expect(parseTailnetObserverApplyResult(result)).toEqual({ ok: true, outcome: "restart-needed", restartNeeded: true });
     expect(parseTailnetObserverApplyResult({ ok: true })).toBeNull();
+    expect(parseTailnetObserverApplyResult({ ok: true, restartNeeded: false })).toBeNull();
+    expect(parseTailnetObserverApplyResult({ ok: true, outcome: "observer-off", restartNeeded: true })).toBeNull();
   });
 
   it("passes a valid proposal through and returns the host's own rejection code", async () => {
     const accepted = await setup();
     await expect(invokeFileIpcHandler(handlers, CHANNELS.tailnetObserver.apply, { intent, config: CONFIG }))
-      .resolves.toEqual({ ok: true, restartNeeded: false });
+      .resolves.toEqual({ ok: true, outcome: "applied", restartNeeded: false });
     expect(accepted.apply).toHaveBeenCalledWith(CONFIG);
 
     // Preserve the resolver's stable error code across IPC for localized status explanations.

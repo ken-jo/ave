@@ -1,4 +1,5 @@
 // Revalidate renderer proposals with the boot resolver and persist in the tailnet namespace; settings cannot grant this authority.
+import { resolveTailnetObserverApply } from "./tailnet-observer-apply.js";
 import { assertTailnetListenerPortAllowed } from "../permissions/tailnet-listener-policy.js";
 import {
   chooseObserverPort,
@@ -23,6 +24,7 @@ import {
 import {
   DEFAULT_TAILNET_OBSERVER_PORT,
   type TailnetGuidedSetupResult,
+  type TailnetObserverApplyStatus,
   type TailnetObserverConfigView,
   type TailnetObserverSnapshot,
   type TailnetServeResult,
@@ -31,7 +33,7 @@ import {
 
 export interface TailnetObserverConfigService {
   snapshot(): Promise<TailnetObserverSnapshot>;
-  apply(config: TailnetObserverConfigView): Promise<{ readonly restartNeeded: boolean }>;
+  apply(config: TailnetObserverConfigView): Promise<TailnetObserverApplyStatus>;
   // Run the Serve command the owner has just been shown and approved.
   configureServe(): Promise<TailnetServeResult>;
   // Derive the recommended port and web origin from host state rather than asking the owner.
@@ -54,7 +56,7 @@ export interface TailnetObserverConfigServiceOptions {
   // @internal deterministic injection for tests.
   readonly probeEnvironment?: () => Promise<TailscaleEnvironment>;
   // @internal deterministic injection for tests.
-  readonly restartListener?: () => Promise<unknown>;
+  readonly restartListener?: (mode?: "apply") => Promise<unknown>;
   // @internal deterministic injection for tests.
   readonly runServe?: typeof configureTailscaleServe;
   // @internal deterministic injection for tests.
@@ -183,17 +185,23 @@ export function createTailnetObserverConfigService(
   const writeOwnDeviceAdmission = options.writeOwnDeviceAdmission
     ?? ((enabled: boolean) => setTailnetOwnDeviceAdmission(enabled));
 
-  async function saveAndRestart(file: TailnetObserverConfigFile) {
+  async function saveAndRestart(
+    file: TailnetObserverConfigFile,
+    mode: "apply" | "guided",
+  ): Promise<TailnetObserverApplyStatus> {
     const enableOverride = tailnetObserverEnableOverride(env);
-    const forceOn = !file.enabled && enableOverride === true;
-    const { config } = (file.enabled && enableOverride !== false) || forceOn
-      ? await loadTailnetObserverConfig({ env, readConfigFile: async () => file })
-      : { config: null };
-    if (file.enabled && config) await assertTailnetListenerPortAllowed(config.port);
+    const { config, provenance } = await loadTailnetObserverConfig({ env, readConfigFile: async () => file });
+    const reduceOnly = mode === "apply" && config !== null
+      && (enableOverride === true || provenance.port === "env-override");
+    if (config && !reduceOnly) await assertTailnetListenerPortAllowed(config.port);
     await writeConfigFile(file);
-    if (forceOn && config) await reduceTailnetObserverCapabilities(config);
-    else await restartListener();
-    return { restartNeeded: config !== null && runtimeState().listeningPort !== config.port };
+    if (reduceOnly) await reduceTailnetObserverCapabilities(config);
+    else await restartListener(mode === "apply" ? "apply" : undefined);
+
+    const { listeningPort, portBlock } = runtimeState();
+    return resolveTailnetObserverApply(
+      file.enabled === true, enableOverride, config?.port ?? null, listeningPort, portBlock,
+    ).status;
   }
 
   const service: TailnetObserverConfigService = Object.freeze({
@@ -237,7 +245,7 @@ export function createTailnetObserverConfigService(
 
     async apply(config: TailnetObserverConfigView) {
       const environment = await probeEnvironment();
-      return saveAndRestart(proposalToFile(config, tailnetWebOriginFor(environment.dnsName)));
+      return saveAndRestart(proposalToFile(config, tailnetWebOriginFor(environment.dnsName)), "apply");
     },
 
     // No restart: the listener reads this policy per request, so a running remote session is not dropped to change who may skip an approval click.
@@ -290,6 +298,7 @@ export function createTailnetObserverConfigService(
         if (port === null) return guidedFailure("tailnet-guided-setup-port-unavailable");
         await saveAndRestart(
           proposalToFile(recommendedConfig(port), tailnetWebOriginFor(environment.dnsName)),
+          "guided",
         );
       } catch (err) {
         return guidedFailure(guidedErrorCode(err));

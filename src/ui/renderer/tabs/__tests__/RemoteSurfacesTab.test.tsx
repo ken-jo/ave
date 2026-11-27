@@ -104,7 +104,7 @@ function makeApi(options: {
     },
     tailnetObserver: {
       snapshot: vi.fn(async () => ({ ok: true as const, snapshot: observerSnapshot() })),
-      apply: vi.fn(async () => ({ ok: true as const, restartNeeded: false })),
+      apply: vi.fn(async () => ({ ok: true as const, outcome: "applied" as const, restartNeeded: false })),
       configureServe: vi.fn(async () => ({ ok: true as const, url: `https://${DNS_NAME}/` })),
       guidedSetup: vi.fn(async () => ({
         ok: true as const,
