@@ -90,9 +90,17 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
       writeFileSync(join(bundleDir, 'main.js'), bundle);
       const bundleSha256 = { 'main.js': createHash('sha256').update(bundle).digest('hex') };
       const receiptPath = join(context.appOutDir, 'bundle-receipt.json');
-      writeFileSync(receiptPath, JSON.stringify({ arch, imageSha256: build.imageSha256, bundleSha256 }));
+      const skillScriptsDir = join(context.appOutDir, 'staging', 'dist', 'skill-scripts');
+      const workbook = bundle;
+      const workbookSha256 = createHash('sha256').update(workbook).digest('hex');
+      for (const directory of [skillScriptsDir, join(context.appOutDir, 'resources', 'skill-scripts')]) {
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(join(directory, 'edit-xlsx.cjs'), workbook);
+        writeFileSync(join(directory, 'manifest.json'), JSON.stringify({ version: 1, scripts: { 'edit-xlsx.cjs': workbookSha256 } }));
+      }
+      writeFileSync(receiptPath, JSON.stringify({ arch, imageSha256: build.imageSha256, bundleSha256, workbookSha256 }));
       (await import(process.argv[5])).recordWindowsPathKindPackageBuild({
-        appOutDir: context.appOutDir, arch, bundleDir, build, receiptPath,
+        appOutDir: context.appOutDir, arch, bundleDir, build, receiptPath, skillScriptsDir,
       });
       const copy = JSON.parse(process.argv[7]);
       if (copy) {

@@ -29,7 +29,7 @@ export async function buildSkillScripts({ pathKindSha256 = null, directory = res
   }
   const manifest = `${JSON.stringify({ version: 1, scripts }, null, 2)}\n`;
   await writeFile(resolve(directory, "manifest.json"), manifest);
-  return directory;
+  return { directory, scripts };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

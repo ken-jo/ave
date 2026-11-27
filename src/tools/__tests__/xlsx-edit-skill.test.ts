@@ -76,7 +76,7 @@ describe("XLSX skill command", () => {
       }
       const pathKindSha256 = pin === "missing" ? null : pin === "mismatched" ? "0".repeat(64)
         : windowsPeImageDigest(readFileSync(windowsPathKindHelperIn(resources)));
-      const built = await buildSkillScripts({ pathKindSha256, directory: join(directory, "built-scripts") });
+      const { directory: built } = await buildSkillScripts({ pathKindSha256, directory: join(directory, "built-scripts") });
       const scriptPath = join(scripts, "edit-xlsx.cjs");
       mkdirSync(scripts);
       cpSync(join(built, "edit-xlsx.cjs"), scriptPath);

@@ -44,7 +44,7 @@ if (process.platform === "win32") {
   pathKindSha256 = buildWindowsPathKind({ root: repoRoot }).imageSha256;
   execFileSync(process.execPath, [resolve(repoRoot, "scripts/build-srt-win.mjs")], { stdio: "inherit" });
 }
-await buildSkillScripts({ pathKindSha256 });
+const { scripts: skillScriptDigests } = await buildSkillScripts({ pathKindSha256 });
 if (!mxcVerificationBuild()) rmSync(resolve(outdir, "mxc-packaged-probe.js"), { force: true });
 
 const buildOptions = {
@@ -175,7 +175,7 @@ if (watchMode) {
   writeFileSync(manifestPath, `${JSON.stringify(bundleManifest, null, 2)}\n`, "utf8");
   const receipt = process.env.AVE_WINDOWS_PATH_KIND_BUNDLE_RECEIPT;
   if (receipt && pathKindSha256 !== null) {
-    writeFileSync(receipt, JSON.stringify({ arch: process.arch, imageSha256: pathKindSha256, bundleSha256 }), { flag: "wx", mode: 0o600 });
+    writeFileSync(receipt, JSON.stringify({ arch: process.arch, imageSha256: pathKindSha256, bundleSha256, workbookSha256: skillScriptDigests["edit-xlsx.cjs"] }), { flag: "wx", mode: 0o600 });
   }
   process.stdout.write(`${formatMainBundleBudget(bundleMeasurement)}\n`);
 

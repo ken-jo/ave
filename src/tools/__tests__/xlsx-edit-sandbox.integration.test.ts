@@ -40,9 +40,21 @@ describe("native governed XLSX command", () => {
       supervisors.push(supervisor);
       return supervisor.resources;
     };
-    const developmentScripts = join(resolve("dist"), "skill-scripts");
-    const hostResources = mac ? await macResources() : { resourcePath: resolve("resources"), isPackaged: false };
+    const testScripts = process.env.AVE_TEST_SKILL_SCRIPTS_DIR;
+    const developmentScripts = testScripts ?? join(resolve("dist"), "skill-scripts");
+    const windows = process.platform === "win32";
+    const stageWindowsResources = (resourcePath: string) => {
+      for (const binary of [join("mxc", process.arch, "wxc-exec.exe"), join("windows-path-kind", process.arch, "ave-path-kind.exe")]) {
+        mkdirSync(dirname(join(resourcePath, binary)), { recursive: true });
+        copyFileSync(resolve("resources", binary), join(resourcePath, binary));
+      }
+    };
+    const hostResources = mac ? await macResources() : {
+      resourcePath: testScripts ? resolve(testScripts, "../../resources") : resolve("resources"),
+      isPackaged: false,
+    };
     if (mac) cpSync(developmentScripts, join(hostResources.resourcePath, "..", "dist", "skill-scripts"), { recursive: true });
+    if (windows && testScripts) stageWindowsResources(hostResources.resourcePath);
     configureHostResources(hostResources);
     const runtime = hostScriptRuntimePaths()!;
     const script = join(runtime.bundledScriptsDirectory, "edit-xlsx.cjs");
@@ -80,7 +92,6 @@ describe("native governed XLSX command", () => {
       let currentResources = hostResources;
       const hostResourcesNow = () => currentResources;
       if (mac) await proveMacContainer();
-      const windows = process.platform === "win32";
       const tool = windows ? new PowerShellTool() : new BashTool();
       const commandFor = (target: string) => windows
         ? `$env:ELECTRON_RUN_AS_NODE='1'; & ${[runtime.javascriptRuntime, script, target, request].map(quotePowerShell).join(" ")}`
@@ -156,13 +167,7 @@ describe("native governed XLSX command", () => {
       writeFileSync(probe, source);
       writeFileSync(join(protectedDirectory, "manifest.json"), JSON.stringify({ version: 1,
         scripts: { "write-probe.cjs": createHash("sha256").update(source).digest("hex") } }));
-      if (windows) {
-        // A packaged root also ships the container launcher and the policy pipe's helper.
-        for (const binary of [join("mxc", process.arch, "wxc-exec.exe"), join("windows-path-kind", process.arch, "ave-path-kind.exe")]) {
-          mkdirSync(dirname(join(fixtureResources, binary)), { recursive: true });
-          copyFileSync(resolve("resources", binary), join(fixtureResources, binary));
-        }
-      }
+      if (windows) stageWindowsResources(fixtureResources);
       currentResources = { resourcePath: fixtureResources, isPackaged: !mac };
       configureHostResources(currentResources);
       if (mac) await proveMacContainer();
