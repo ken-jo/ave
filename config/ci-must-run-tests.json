@@ -86,6 +86,7 @@
     ],
     "tree-invariants": [
       "src/__tests__/windows-memory-class-a.test.ts",
+      "src/__tests__/windows-memory-import-graph.test.ts",
       "src/work-board/workflow/__tests__/host-git.test.ts",
       "test/scripts/plan-windows-tests.test.ts",
       "test/scripts/pre-push-markdown-policy.test.ts",

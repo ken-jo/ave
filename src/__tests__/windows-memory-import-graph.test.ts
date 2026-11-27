@@ -1,72 +1,83 @@
-import { globSync, readFileSync } from 'node:fs';
-import { basename, dirname, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { expect, it } from 'vitest';
+import { globSync, readFileSync } from "node:fs";
+import { basename, dirname, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { ts } from "ts-morph";
+import { expect, it } from "vitest";
+import { WINDOWS_MEMORY_CLASS_A_FILES } from "./support/windows-memory-class-a.js";
 
-const root = fileURLToPath(new URL('../../', import.meta.url));
-const classA = [
-  'src/data/settings-defaults.ts',
-  'src/ipc/domains/memory-map.ts',
-  'src/ipc/domains/memory-map-runtime.ts',
-  'src/main/memory-map/host.ts',
-  'src/main/memory-map/inference-child-main.ts',
-  'src/main/memory-map/inference-child.ts',
-  'src/main/memory-map/local-runtime.ts',
-  'src/main/memory-map/model-manager.ts',
-  'src/main/memory-map/provider-embeddings.ts',
-  'src/main/memory-map/worker-client.ts',
-  'src/memory/session-turn-journal.ts',
-];
-const selectors = new Set([
-  'src/ipc/domains/chat.ts', 'src/ipc/domains/settings.ts', 'src/boot/services.ts',
-  'src/boot.ts', 'src/data/settings-store.ts', 'src/data/settings-normalization.ts',
+const ROOT = fileURLToPath(new URL("../../", import.meta.url));
+const SELECTORS = new Set([
+  "src/ipc/domains/chat.ts",
+  "src/ipc/domains/settings.ts",
+  "src/boot/services.ts",
+  "src/boot.ts",
+  "src/data/settings-store.ts",
+  "src/data/settings-normalization.ts",
 ]);
-const windowsModules = new Set([
-  'src/ipc/domains/memory-map-win32.ts', 'src/ipc/domains/memory-map-runtime-win32.ts',
-  'src/ipc/domains/sessions-search-win32.ts', 'src/memory/session-repository-win32.ts',
-  'src/main/memory-map/host-win32.ts', 'src/main/memory-map/inference-child-win32.ts',
-  'src/main/memory-map/local-runtime-win32.ts', 'src/main/memory-map/model-manager-win32.ts',
-  'src/main/memory-map/provider-embeddings-win32.ts', 'src/main/memory-map/worker-client-win32.ts',
-  'src/shared/admission-commit.ts', 'src/permissions/windows-background-features.ts',
-  'src/permissions/windows-confinement-evidence.ts',
+const ADMISSION_MODULES = new Set([
+  "src/shared/admission-commit",
+  "src/permissions/windows-background-features",
+  "src/permissions/windows-confinement-evidence",
 ]);
-// Carried Windows paths in shared files retain their existing admission edges.
-const existingEdges = new Set([
-  'src/boot/steps/sandbox-init.ts:windows-background-features.ts',
-  'src/boot/steps/sandbox-init.ts:windows-confinement-evidence.ts',
-  'src/permissions/confined-child.ts:windows-confinement-evidence.ts',
-  'src/permissions/egress-host-listener.ts:admission-commit.ts',
-  'src/permissions/mxc-extension-admission.ts:windows-confinement-evidence.ts',
-  'src/permissions/mxc-extension-channel.ts:admission-commit.ts',
-  'src/permissions/mxc-extension-process.ts:admission-commit.ts',
-  'src/permissions/mxc-extension-process.ts:windows-confinement-evidence.ts',
-  'src/permissions/mxc-policy-pipe.ts:admission-commit.ts',
-  'src/permissions/mxc-supervisor-service.ts:admission-commit.ts',
-  'src/plugins/isolation/child-loopback-link.ts:admission-commit.ts',
-  'src/tools/mxc-shell-launch.ts:windows-confinement-evidence.ts',
-  'src/tools/shell-tools.ts:windows-confinement-evidence.ts',
+// These shared paths already guard their Windows admission calls.
+const EXISTING_EDGES = new Set([
+  "src/boot/steps/sandbox-init.ts -> src/permissions/windows-background-features",
+  "src/boot/steps/sandbox-init.ts -> src/permissions/windows-confinement-evidence",
+  "src/permissions/confined-child.ts -> src/permissions/windows-confinement-evidence",
+  "src/permissions/egress-host-listener.ts -> src/shared/admission-commit",
+  "src/permissions/mxc-extension-admission.ts -> src/permissions/windows-confinement-evidence",
+  "src/permissions/mxc-extension-channel.ts -> src/shared/admission-commit",
+  "src/permissions/mxc-extension-process.ts -> src/shared/admission-commit",
+  "src/permissions/mxc-extension-process.ts -> src/permissions/windows-confinement-evidence",
+  "src/permissions/mxc-policy-pipe.ts -> src/shared/admission-commit",
+  "src/permissions/mxc-supervisor-service.ts -> src/shared/admission-commit",
+  "src/plugins/isolation/child-loopback-link.ts -> src/shared/admission-commit",
+  "src/tools/mxc-shell-launch.ts -> src/permissions/windows-confinement-evidence",
+  "src/tools/shell-tools.ts -> src/permissions/windows-confinement-evidence",
 ]);
-const importEdge = /(?:\bfrom\s+|\bimport\s*(?:\(\s*)?|\brequire\s*\(\s*)['"](\.{1,2}\/[^'"]+)['"]/g;
-const portable = (path: string) => path.replaceAll('\\', '/');
 
-function targets(file: string): string[] {
-  const source = readFileSync(resolve(root, file), 'utf8');
-  return [...source.matchAll(importEdge)].map(([, specifier]) =>
-    portable(relative(root, resolve(root, dirname(file), specifier))).replace(/\.(?:js|jsx)$/, '.ts'));
+const portable = (path: string) => path.replaceAll("\\", "/");
+const modulePath = (path: string) => path.replace(/\.[cm]?[jt]sx?$/, "");
+const isWindowsImplementation = (path: string) => basename(path).endsWith("-win32");
+const isWindowsModule = (path: string) => isWindowsImplementation(path) || ADMISSION_MODULES.has(path);
+
+function moduleSpecifier(node: ts.Node): ts.Node | undefined {
+  if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) return node.moduleSpecifier;
+  if (ts.isExternalModuleReference(node)) return node.expression;
+  if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) return node.argument.literal;
+  if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+    || (ts.isIdentifier(node.expression) && node.expression.text === "require"))) return node.arguments[0];
+  return undefined;
 }
 
-it('keeps Windows admission dependencies out of the POSIX implementations', () => {
-  const forbidden = /^(?:admission-commit|windows-background-features|windows-confinement-evidence|.*-win32)\.ts$/;
-  expect(classA.flatMap(file => targets(file).filter(target => forbidden.test(basename(target)))
-    .map(target => [file, target]))).toEqual([]);
+function targets(file: string): Set<string> {
+  const source = ts.createSourceFile(file, readFileSync(resolve(ROOT, file), "utf8"), ts.ScriptTarget.Latest);
+  const dependencies = new Set<string>();
+  function visit(node: ts.Node): void {
+    const specifier = moduleSpecifier(node);
+    if (specifier && ts.isStringLiteralLike(specifier) && /^\.{1,2}\//.test(specifier.text)) {
+      const target = resolve(ROOT, dirname(file), specifier.text);
+      dependencies.add(modulePath(portable(relative(ROOT, target))));
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  return dependencies;
+}
+
+it("keeps Windows admission dependencies out of the POSIX implementations", () => {
+  const illegal = WINDOWS_MEMORY_CLASS_A_FILES.flatMap(file =>
+    [...targets(file)].filter(isWindowsModule).map(target => `${file} -> ${target}`));
+  expect(illegal).toEqual([]);
 });
 
-it('restricts Windows implementation imports to Windows modules and their outer selectors', () => {
-  const illegal = globSync('src/**/*.{ts,tsx}', { cwd: root }).map(portable)
-    .filter(file => !file.split('/').includes('__tests__') && !/\.test\.[^/]+$/.test(file))
-    .filter(file => !windowsModules.has(file) && !selectors.has(file))
-    .flatMap(file => targets(file).filter(target => windowsModules.has(target))
-      .filter(target => !existingEdges.has(file + ':' + basename(target)))
-      .map(target => [file, target]));
-  expect(illegal).toEqual([]);
+it("restricts Windows implementation imports to Windows modules and their outer selectors", () => {
+  const illegal = globSync("src/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}", { cwd: ROOT })
+    .map(portable)
+    .filter(file => !file.split("/").includes("__tests__") && !/\.(?:test|spec)\.[^/]+$/.test(file))
+    .filter(file => !isWindowsModule(modulePath(file)) && !SELECTORS.has(file))
+    .flatMap(file => [...targets(file)].filter(isWindowsModule)
+      .map(target => `${file} -> ${target}`)
+      .filter(edge => !EXISTING_EDGES.has(edge)));
+  expect(illegal.sort()).toEqual([]);
 });
