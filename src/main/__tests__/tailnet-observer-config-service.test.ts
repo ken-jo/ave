@@ -396,9 +396,15 @@ describe("Tailnet observer configuration service", () => {
       }));
     });
 
-    it.each(["darwin", "linux", "win32"] as const)(
-      "selects and saves a free port before starting fresh setup on %s",
-      async hostPlatform => {
+    it.each((["darwin", "linux", "win32"] as const).flatMap(hostPlatform =>
+      [false, true].map(bootFailed => ({
+        hostPlatform,
+        bootFailed,
+        scenario: bootFailed ? "after an implicit boot bind failure" : "before boot",
+      })),
+    ))(
+      "selects and saves a free port on $hostPlatform $scenario",
+      async ({ hostPlatform, bootFailed }) => {
         const defaultPort = DEFAULT_TAILNET_OBSERVER_PORT;
         const blocker = createServer();
         await new Promise<void>((resolve, reject) => {
@@ -418,10 +424,17 @@ describe("Tailnet observer configuration service", () => {
           const runServe = vi.fn(async () => ({ ok: true as const }));
           const result = await createTailnetObserverConfigService({
             pairedSharingBootstrapFailed: () => false,
-            env: {},
+            env: bootFailed ? { AVE_TAILNET_OBSERVER: "1" } : {},
             readConfigFile: async () => saved,
             writeConfigFile,
-            runtimeState: () => ({ listeningPort, establishedPort: listeningPort, activeConfig: null, lastStartError: null, portBlock: null }),
+            runtimeState: () => {
+              const blocked = bootFailed && listeningPort === null;
+              return {
+                listeningPort, establishedPort: listeningPort, activeConfig: null,
+                lastStartError: blocked ? TAILNET_OBSERVER_PORT_BLOCKED : null,
+                portBlock: blocked ? { code: "EADDRINUSE", port: defaultPort, hint: null } : null,
+              };
+            },
             probeEnvironment: async () => readyEnvironment(),
             restartListener: async () => {
               const port = saved?.port;
@@ -462,6 +475,24 @@ describe("Tailnet observer configuration service", () => {
       expect(result).toEqual({ ok: false, error: TAILNET_OBSERVER_PORT_BLOCKED, output: null });
       expect(writeConfigFile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port }));
       expect(runServe).not.toHaveBeenCalled();
+    });
+
+    it("keeps the saved port under an explicit environment override", async () => {
+      const savedPort = 46_500;
+      const override = 28_999;
+      const writeConfigFile = vi.fn();
+      const runServe = vi.fn(async () => ({ ok: true as const }));
+      const result = await service({
+        file: { port: savedPort },
+        env: { AVE_TAILNET_OBSERVER_PORT: String(override) },
+        listeningPort: override,
+        writeConfigFile,
+        runServe,
+      }).guidedSetup();
+
+      expect(writeConfigFile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port: savedPort }));
+      expect(runServe).toHaveBeenCalledExactlyOnceWith({ cliPath: "tailscale", port: override });
+      expect(result).toMatchObject({ ok: true, port: override });
     });
 
     it("keeps a saved port this process is already listening on", async () => {

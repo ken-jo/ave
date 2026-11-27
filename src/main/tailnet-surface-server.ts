@@ -102,7 +102,7 @@ export interface TailnetObserverConfigFile {
 const TAILNET_FEATURE_NAMESPACE = "tailnet";
 const TAILNET_OBSERVER_CONFIG_FILE = "observer.json";
 const TAILNET_OWN_DEVICE_ADMISSION_FILE = "own-device-admission.json";
-export const LEGACY_TAILNET_OBSERVER_PORT = 46_173;
+const LEGACY_TAILNET_OBSERVER_PORT = 46_173;
 const log = createLogger("tailnet-observer");
 
 const CONFIG_KEYS: readonly TailnetObserverConfigKey[] = [
@@ -182,10 +182,6 @@ function envLayer(env: NodeJS.ProcessEnv): RawLayer {
 export function tailnetObserverEnableOverride(env: NodeJS.ProcessEnv = process.env): boolean | undefined {
   const enabled = env[ENV_KEY.enabled];
   return enabled === undefined ? undefined : enabled === "1";
-}
-
-export function hasTailnetObserverPortOverride(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env[ENV_KEY.port] !== undefined;
 }
 
 // Project the file onto the raw vocabulary. `false` becomes an ABSENT key rather than `"0"`: every boolean below accepts `"1"` or absence and rejects

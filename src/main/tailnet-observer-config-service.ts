@@ -4,9 +4,7 @@ import {
   chooseObserverPort,
   configureTailscaleServe,
   getTailnetObserverRuntimeState,
-  hasTailnetObserverPortOverride,
   isTailnetOwnDeviceAdmissionEnabled,
-  LEGACY_TAILNET_OBSERVER_PORT,
   loadTailnetObserverConfig,
   probeTailscaleEnvironment,
   readTailnetObserverConfigFile,
@@ -23,7 +21,6 @@ import {
   type TailscaleEnvironment,
 } from "./tailnet-surface-server.js";
 import {
-  DEFAULT_TAILNET_OBSERVER_PORT,
   type TailnetGuidedSetupResult,
   type TailnetObserverConfigView,
   type TailnetObserverSnapshot,
@@ -278,16 +275,14 @@ export function createTailnetObserverConfigService(
       }
 
       try {
-        let port: number | null = file?.port ?? DEFAULT_TAILNET_OBSERVER_PORT;
-        if (file === null && !hasTailnetObserverPortOverride(options.env)) {
-          const { listeningPort, portBlock } = runtimeState();
-          port = listeningPort ?? portBlock?.port ?? null;
-          if (port === null && enableOverride === true && environment.serveTargetPort === LEGACY_TAILNET_OBSERVER_PORT) {
-            port = LEGACY_TAILNET_OBSERVER_PORT;
-          }
-          port ??= await chooseObserverPort();
-          if (port === null) return guidedFailure("tailnet-guided-setup-port-unavailable");
+        const { establishedPort } = runtimeState();
+        const selection = resolveTailnetObserverPort(file, options.env, { environment, establishedPort });
+        let port: number | null = selection.port;
+        if (selection.source === "default") port = await chooseObserverPort();
+        else if (selection.source === "env-override" && file !== null) {
+          port = resolveTailnetObserverPort(file, {}).port;
         }
+        if (port === null) return guidedFailure("tailnet-guided-setup-port-unavailable");
         await saveAndRestart(
           proposalToFile(recommendedConfig(port), tailnetWebOriginFor(environment.dnsName)),
         );
