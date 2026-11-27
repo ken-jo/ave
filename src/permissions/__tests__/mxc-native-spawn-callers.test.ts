@@ -39,6 +39,9 @@ describe("native extension spawn callers", () => {
     const options = call.slice(0, call.indexOf("\n    });"));
     expect(options).toContain("beforeSpawn: () => {");
     expect(options).toContain("consumeMxcExtensionAdmission(admission,");
-    expect(options).toContain("assertNesting();");
+    // Nesting is asserted at the spawn boundary through the shared recheck, which both platform arms run.
+    expect(options).toContain('recheck("before native creation");');
+    const recheck = text.slice(text.indexOf("const recheck = (when: string): void => {"));
+    expect(recheck.slice(0, recheck.indexOf("\n    };"))).toContain("assertNesting();");
   });
 });
