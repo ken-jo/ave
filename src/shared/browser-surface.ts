@@ -10,6 +10,10 @@ export interface ActiveWorkspaceSurface {
   readonly tabId: string;
 }
 
+export interface PaneChatSurface extends ActiveWorkspaceSurface {
+  readonly browserSlotEmpty?: boolean;
+}
+
 /** Accept only live guests in the expected partition and sender window; requestId proves agent-created tab provenance. */
 export interface BrowserTabBindRequest {
   readonly tabId: string;
