@@ -237,13 +237,18 @@ export function setWindowsSandboxSubstrate(
     : previousPlan !== undefined && sameExtensionPlan(previousPlan, plan) ? previousPlan
       : Object.freeze(plan);
   const previous = _windowsSubstrate;
-  const coverageOnly = measured !== _measuredMxcShellEgress && previous?.shells === "mxc"
+  const { shellEgressProtocolCoverage, ...substrate } = info;
+  const coverage = measured ?? (process.platform === "win32" && info.shells === "mxc" && info.mxc.state === "available"
+    && shellEgressProtocolCoverage?.dns === "host-resolver" && shellEgressProtocolCoverage.rawIp === "unknown"
+    ? egressProtocolCoverageFor("mxc") : undefined);
+  const coverageOnly = coverage !== previous?.shellEgressProtocolCoverage && previous?.shells === "mxc"
     && info.shells === "mxc" && info.mxc.state === "available" && previous.mxc.state === "available"
     && previous.extensions === info.extensions && previousPlan === extensionPlan
     && previous.windowsBuild === info.windowsBuild && previous.srtWinReady === info.srtWinReady
     && _mxcShellCapability !== undefined && mxcShellCapability !== undefined
     && sameShellCapability(_mxcShellCapability, mxcShellCapability);
-  _windowsSubstrate = Object.freeze({ ...info, mxc: Object.freeze({ ...info.mxc }),
+  _windowsSubstrate = Object.freeze({ ...substrate, mxc: Object.freeze({ ...info.mxc }),
+    ...(coverage === undefined ? {} : { shellEgressProtocolCoverage: coverage }),
     ...(extensionPlan ? { extensionPlan } : {}),
   });
   _measuredMxcShellEgress = measured;

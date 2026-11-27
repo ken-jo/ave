@@ -738,6 +738,32 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(observed.every((entry) => entry.mxc === "available")).toBe(true);
   });
 
+  it.each([
+    { rawIp: "blocked", reason: "blocked", reachableTargets: [] },
+    { rawIp: "unknown", reason: "raw-ip-reachable", reachableTargets: ["t4"] },
+    { rawIp: "unknown", reason: "ipv6-unmeasured", reachableTargets: [] },
+  ])("publishes the start measurement with the available shell route ($reason)", async (rawIpProbe) => {
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    h.startProbe.mockResolvedValue({ ...MXC_OK, rawIpProbe });
+    const published = new Set<NonNullable<ReturnType<typeof getWindowsSandboxSubstrate>>>();
+    setSandboxStatusChangeListener(() => {
+      const snapshot = getWindowsSandboxSubstrate();
+      if (snapshot?.shells === "mxc") published.add(snapshot);
+    });
+
+    await initSandboxGate(harness.context(true, false));
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.shells).toBe("mxc"));
+    expect(h.startProbe).toHaveBeenCalledOnce();
+    expect(published.size).toBe(1);
+    const coverage = { dns: "host-resolver", rawIp: rawIpProbe.rawIp };
+    expect(getWindowsSandboxSubstrate()?.shellEgressProtocolCoverage).toEqual(coverage);
+    expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual(coverage);
+    if (rawIpProbe.reachableTargets.length > 0) {
+      expect(h.logger.warn).toHaveBeenCalledWith({ targets: ["t4"] }, "raw-ip-reachable");
+    }
+  });
+
   it("keeps the approved route and records the reason when PowerShell cannot start in a container", async () => {
     h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
     h.detectMxc.mockResolvedValue(MXC_OK);

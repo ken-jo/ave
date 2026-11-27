@@ -683,7 +683,8 @@ describe("sandbox-capability — Windows MXC substrate", () => {
 
   it("publishes measured egress without replacing the live MXC capability", () => {
     bootProxyOnly();
-    const substrate = getWindowsSandboxSubstrate()!;
+    const substrate = getWindowsSandboxSubstrate();
+    if (substrate === null) throw new Error("Windows substrate was not published");
     const capability = detectMxcShellCapability();
     const generation = getSandboxGeneration();
     const before = getHostShellExecutionPlan();
@@ -691,6 +692,7 @@ describe("sandbox-capability — Windows MXC substrate", () => {
     setWindowsSandboxSubstrate({ ...substrate }, mxcShellCapability(), measured);
     expect(detectMxcShellCapability()).toBe(capability);
     expect(getSandboxGeneration()).toBe(generation);
+    expect(getWindowsSandboxSubstrate()?.shellEgressProtocolCoverage).toEqual(measured);
     expect(getHostShellExecutionPlan()).toEqual({ ...before, egressProtocolCoverage: measured });
     expect(before.egressProtocolCoverage.rawIp).toBe("unknown");
 
