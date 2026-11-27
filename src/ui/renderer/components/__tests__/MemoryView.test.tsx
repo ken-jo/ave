@@ -42,14 +42,19 @@ async function ready() { await screen.findByText('메모리 3 · 연결 2'); }
 
 describe('memory map view', () => {
   it('links to the switch and keeps local rebuild disabled without duplicating the off notice', async () => {
-    const { map, props } = setup();
-    map.modelStatus.mockResolvedValue({ ok: false, error: 'local-inference-disabled' });
-    render(<MemoryView {...props} />);
-    expect(await screen.findByRole('button', { name: '메모리 임베딩 설정' })).toBeEnabled();
-    expect(screen.queryByText(ko['memoryMap.error.local-inference-disabled'])).toBeNull();
-    expect(screen.getByRole('button', { name: '지도 다시 만들기' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '메모리 임베딩 설정' })).toBeEnabled();
-    expect(map.build).not.toHaveBeenCalled();
+    const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows');
+    try {
+      const { map, props } = setup();
+      map.modelStatus.mockResolvedValue({ ok: false, error: 'local-inference-disabled' });
+      render(<MemoryView {...props} />);
+      expect(await screen.findByRole('button', { name: '메모리 임베딩 설정' })).toBeEnabled();
+      expect(screen.queryByText(ko['memoryMap.error.local-inference-disabled'])).toBeNull();
+      expect(screen.getByRole('button', { name: '지도 다시 만들기' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: '메모리 임베딩 설정' })).toBeEnabled();
+      expect(map.build).not.toHaveBeenCalled();
+    } finally {
+      userAgent.mockRestore();
+    }
   });
 
   it.each([null, SNAPSHOT])('disables local build on first open with an unsupported local runtime and snapshot %#', async snapshot => {
@@ -185,6 +190,45 @@ describe('memory map view', () => {
     await act(async () => build.resolve({ ok: false, error: 'request-stale' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('메모리 지도 작업 프로세스가 종료됐는지 확인할 수 없습니다.');
     expect(map.get).toHaveBeenCalledOnce();
+  });
+  it.each(['container', 'unconfined', 'account'] as const)('shows the Windows %s Cancel refusal after a memory-save refresh', async () => {
+    const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows');
+    try {
+      const { map, props, api } = setup();
+      const cancel = Promise.withResolvers<Awaited<ReturnType<typeof map.cancel>>>();
+      map.cancel.mockReturnValue(cancel.promise);
+      map.build.mockImplementation(() => new Promise(() => {}));
+      render(<MemoryView {...props} />); await ready();
+      fireEvent.click(screen.getByRole('button', { name: '지도 다시 만들기' }));
+      fireEvent.click(screen.getByRole('button', { name: '지도 생성 취소' }));
+      const save = vi.mocked(api.onMemorySaveResult).mock.calls[0][0];
+      act(() => save({} as Parameters<typeof save>[0]));
+      await waitFor(() => expect(map.get).toHaveBeenCalledTimes(2));
+      await act(async () => cancel.resolve({ ok: false, error: 'build-exit-unconfirmed' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent(ko['memoryMap.error.build-exit-unconfirmed']);
+    } finally {
+      userAgent.mockRestore();
+    }
+  });
+  it.each(['Macintosh', 'Linux'])('keeps resumed-build polling while Cancel is pending on %s', async platform => {
+    const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(platform);
+    vi.useFakeTimers();
+    try {
+      const { map, props } = setup();
+      const cancel = Promise.withResolvers<Awaited<ReturnType<typeof map.cancel>>>();
+      map.cancel.mockReturnValue(cancel.promise);
+      map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, status: 'building' } });
+      render(<MemoryView {...props} />);
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('button', { name: '지도 생성 취소' }));
+      await act(async () => vi.advanceTimersByTimeAsync(1_500));
+      expect(map.get).toHaveBeenCalledTimes(2);
+      await act(async () => cancel.resolve({ ok: true, value: null }));
+      expect(map.get).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+      userAgent.mockRestore();
+    }
   });
   it('asks within current filters, highlights matches, opens host-numbered citations and clears on filter change', async () => {
     const { map, props } = setup();

@@ -18,6 +18,7 @@ type MapState = 'loading' | 'unconfigured' | 'unavailable' | 'building' | 'faile
 export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSettings: () => void }) {
   const { api, project, onOpenSession, onOpenEmbeddingSettings } = props;
   const { t } = useTranslation();
+  const windows = /Windows/i.test(navigator.userAgent);
   const projectRoot = project?.projectRoot;
   const projectName = project?.projectName;
   const isDefault = project?.isDefault;
@@ -36,11 +37,19 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
   const [page, setPage] = useState(0);
   const [reload, setReload] = useState(0);
   const [resumedBuild, setResumedBuild] = useState(false);
+  const [cancelPending, setCancelPending] = useState(false);
+  const [cancelError, setCancelError] = useState<MemoryMapError | null>(null);
+  const windowsCancel = useRef<symbol | undefined>(undefined);
   const generation = useRef(0);
   const previousScope = useRef(scope);
   const hadSnapshot = useRef(false);
   const selectionReturn = useRef<HTMLElement | null>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!windows) return;
+    setCancelPending(false); setCancelError(null);
+    return () => { windowsCancel.current = undefined; };
+  }, [api, scope, windows]);
   useEffect(() => { if (props.initialQuery) setTab('manage'); }, [props.initialQuery]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: Memory saves invalidate the loaded graph through reload.
   useEffect(() => {
@@ -55,8 +64,10 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
     });
     void Promise.all([api.memoryMap.get(scope), api.memoryMap.facets(scope), api.memoryMap.modelStatus(), api.memoryMap.settingsGet()]).then(([graph, counts, model, settings]) => {
       if (!active || generation.current !== current) return;
-      if (settings.ok && settings.value.source === 'local' && !model.ok && isLocalInferenceRefusal(model.error)) {
-        setState('unavailable'); setError(model.error);
+      if (settings.ok && settings.value.source === 'local' && !model.ok
+        && (windows ? isLocalInferenceRefusal(model.error) : model.error === 'local-runtime-unavailable')) {
+        setState('unavailable');
+        if (windows) setError(model.error);
         return;
       }
       if (!graph.ok) { setState(graph.error === 'graph-stale' ? 'stale' : 'failed'); setError(graph.error); return; }
@@ -65,12 +76,12 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
       if (!model.ok && settings.value.source === 'local') { setState('failed'); setError(model.error); return; }
       setFacets(counts.value);
       setSnapshot(graph.value);
-      setResumedBuild(graph.value?.status === 'building');
+      setResumedBuild(graph.value?.status === 'building' && !windowsCancel.current);
       if (graph.value?.status === 'ready') hadSnapshot.current = true;
       setState(graph.value ? graph.value.status === 'ready' && graph.value.points.length === 0 ? 'empty' : graph.value.status : (settings.value.source === 'provider' ? settings.value.providerAvailable : model.ok && model.value.status === 'ready') ? hadSnapshot.current ? 'stale' : 'empty' : 'unconfigured');
     }).catch(() => { if (active && generation.current === current) { setState('failed'); setError('graph-unavailable'); } });
     return () => { active = false; generation.current++; stop(); };
-  }, [api, scope, reload]);
+  }, [api, scope, reload, windows]);
   useEffect(() => {
     if (state !== 'building' || !resumedBuild) return;
     let active = true;
@@ -126,19 +137,44 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
   }, [visible]);
   const handleClose = () => { setSelected(null); selectionReturn.current?.focus(); };
   const handleBuild = async () => {
+    if (windows) {
+      if (windowsCancel.current) return;
+      setCancelError(null);
+    }
     const current = ++generation.current;
     setResumedBuild(false); setState('building'); setError(null); setSelected(null); setProgress(null);
     try {
       const result = await api.memoryMap.build(scope);
       if (current !== generation.current) return;
       if (result.ok) { hadSnapshot.current = true; setSnapshot(result.value); setState(result.value.points.length ? 'ready' : 'empty'); }
-      else if (isLocalInferenceRefusal(result.error)) { setState('unavailable'); setError(result.error); }
+      else if (windows ? isLocalInferenceRefusal(result.error) : result.error === 'local-runtime-unavailable') {
+        setState('unavailable');
+        if (windows) setError(result.error);
+      }
       else { setState(result.error === 'graph-stale' ? 'stale' : 'failed'); setError(result.error); }
     } catch { if (current === generation.current) { setState('failed'); setError('graph-build-failed'); } }
   };
-  const handleCancel = async () => {
-    const current = ++generation.current;
+  const handleWindowsCancel = async () => {
+    if (windowsCancel.current) return;
+    const request = Symbol();
+    windowsCancel.current = request;
+    generation.current++;
     setResumedBuild(false);
+    setCancelPending(true); setCancelError(null);
+    try {
+      const result = await api.memoryMap.cancel();
+      if (windowsCancel.current !== request) return;
+      if (result.ok) setReload(value => value + 1);
+      else { setState('failed'); setCancelError(result.error); }
+    } catch {
+      if (windowsCancel.current === request) { setState('failed'); setCancelError('graph-build-failed'); }
+    } finally {
+      if (windowsCancel.current === request) { windowsCancel.current = undefined; setCancelPending(false); }
+    }
+  };
+  const handleCancel = async () => {
+    if (windows) return handleWindowsCancel();
+    const current = ++generation.current;
     try {
       const result = await api.memoryMap.cancel();
       if (current !== generation.current) return;
@@ -154,8 +190,9 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
         <TabsTrigger value="cards">{t('memoryMap.cards')}</TabsTrigger>
         <TabsTrigger value="manage">{t('memoryMap.manage')}</TabsTrigger>
       </TabsList>
-      {tab !== 'manage' && <Button size="sm" variant="outline" disabled={state === 'building' || state === 'loading' || state === 'unconfigured' || state === 'unavailable'} onClick={() => void handleBuild()}>{t('memoryMap.rebuild')}</Button>}
+      {tab !== 'manage' && <Button size="sm" variant="outline" disabled={cancelPending || state === 'building' || state === 'loading' || state === 'unconfigured' || state === 'unavailable'} onClick={() => void handleBuild()}>{t('memoryMap.rebuild')}</Button>}
     </div>
+    {tab !== 'manage' && cancelError && <p role="alert" className="text-xs text-destructive">{t(MEMORY_MAP_ERROR_KEYS[cancelError])}</p>}
     {tab !== 'manage' && <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border @[640px]:flex-row">
       <aside aria-label={t('memoryMap.filters')} className="w-full shrink-0 space-y-4 overflow-auto border-b p-3 @[640px]:w-48 @[640px]:border-b-0 @[640px]:border-r">
         <p role="status" className="text-xs font-medium">{t('memoryMap.totals', { memories: visiblePoints.length, links: linkCount })}</p>
@@ -181,12 +218,13 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
           </TabsContent>
           {!visiblePoints.length && <p role="status" className="pointer-events-none absolute inset-x-4 top-16 rounded bg-background p-3 text-sm">{t('memoryMap.noFiltered')}</p>}
         </> : <div className="space-y-3 p-6" role="status">
-          {error !== 'local-inference-disabled' && <p className="text-sm">{t(state === 'unavailable' && error ? MEMORY_MAP_ERROR_KEYS[error]
+          {(!windows || error !== 'local-inference-disabled') && <p className="text-sm">{t(state === 'unavailable'
+            ? windows && error ? MEMORY_MAP_ERROR_KEYS[error] : 'memoryMap.error.local-runtime-unavailable'
             : state === 'empty' && snapshot?.status === 'ready' ? 'memoryMap.noMemories' : `memoryMap.state.${state}`)}</p>}
-          {error && state !== 'unavailable' && <p role="alert" className="text-xs text-destructive">{t(`memoryMap.error.${error}`)}</p>}
+          {error && (!windows || state !== 'unavailable') && !cancelError && <p role="alert" className="text-xs text-destructive">{t(`memoryMap.error.${error}`)}</p>}
           {(state === 'unconfigured' || state === 'unavailable') && <Button size="sm" onClick={onOpenEmbeddingSettings}>{t('memoryMap.openSettings')}</Button>}
-          {state === 'building' && <><p className="text-xs">{progress ? t(`memoryMap.phase.${progress.phase}`, { completed: progress.completed, total: progress.total }) : snapshot?.status === 'building' ? t('memoryMap.phase.embedding', { completed: snapshot.coverage.embedded, total: snapshot.coverage.eligible }) : t('memoryMap.preparing')}</p>{progress && <progress aria-label={t('memoryMap.state.building')} value={progress.completed} max={Math.max(1, progress.total)} />}<Button size="sm" variant="outline" onClick={() => void handleCancel()}>{t('memoryMap.cancelBuild')}</Button></>}
-          {['failed', 'stale', 'empty'].includes(state) && <Button size="sm" onClick={() => void handleBuild()}>{t(state === 'failed' ? 'memoryMap.retry' : 'memoryMap.rebuild')}</Button>}
+          {state === 'building' && <><p className="text-xs">{progress ? t(`memoryMap.phase.${progress.phase}`, { completed: progress.completed, total: progress.total }) : snapshot?.status === 'building' ? t('memoryMap.phase.embedding', { completed: snapshot.coverage.embedded, total: snapshot.coverage.eligible }) : t('memoryMap.preparing')}</p>{progress && <progress aria-label={t('memoryMap.state.building')} value={progress.completed} max={Math.max(1, progress.total)} />}<Button size="sm" variant="outline" disabled={cancelPending} onClick={() => void handleCancel()}>{t('memoryMap.cancelBuild')}</Button></>}
+          {['failed', 'stale', 'empty'].includes(state) && <Button size="sm" disabled={cancelPending} onClick={() => void handleBuild()}>{t(state === 'failed' ? 'memoryMap.retry' : 'memoryMap.rebuild')}</Button>}
         </div>}
         {selectedPoint && state === 'ready' && <aside aria-label={t('memoryMap.detail')} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); handleClose(); } }} className="absolute inset-y-0 right-0 z-10 w-full max-w-sm space-y-4 overflow-auto border-l bg-background p-4 shadow-lg">
           <Button ref={closeButton} size="sm" variant="outline" onClick={handleClose}>{t('memoryMap.closeDetail')}</Button>
