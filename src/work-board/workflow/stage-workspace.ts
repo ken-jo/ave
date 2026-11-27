@@ -18,8 +18,9 @@ export interface RemovedRunProject { projectRoot: string; itemId: number }
 export interface StageWorkspaceProvider {
   /** Once, at start. */
   open(run: RunRef, projectRoot: string | undefined): Promise<{ ok: true; workspace: RunWorkspace } | { ok: false; code: WorkspaceRefusal }>;
-  /** Reopens the same workspace for a run/stage/attempt; repetition never creates another attempt. */
-  prepare(run: RunRef, stage: TemplateStage, attempt: number): Promise<{ ok: true; workspace: StageWorkspace } | { ok: false; code: WorkspaceRefusal }>;
+  /** Reopens the same workspace for a run/stage/attempt; repetition never creates another attempt.
+   * A queued launch can expire before or during preparation. */
+  prepare(run: RunRef, stage: TemplateStage, attempt: number, isCurrent?: () => boolean): Promise<{ ok: true; workspace: StageWorkspace } | { ok: false; code: WorkspaceRefusal }>;
   /** Freeze one immutable result for the passed attempt. Repetition returns the same seal, without another snapshot.
    * A non-idempotent implementation must commit its receipt atomically with the freeze. */
   seal(run: RunRef, stageId: string): Promise<{ ok: true; sealCommit?: string } | { ok: false; code: WorkspaceRefusal }>;
@@ -30,7 +31,7 @@ export interface StageWorkspaceProvider {
   openJoinFolder(run: RunRef, open: (path: string) => Promise<boolean>): Promise<boolean>;
   /** Stage folders only; the run branch and the output folder stay. Already absent folders are a no-op. A git run is released only
    * with its project open (`run.projectRoot`): without it nothing of the run is touched. */
-  release(run: RunRef, stageIds: readonly string[] | "all"): Promise<void>;
+  release(run: RunRef, stageIds: readonly string[] | "all", isCurrent?: () => boolean): Promise<void>;
   /** Everything left under the run root, the output folder included, of each run that has no record and whose item is gone. A run
    * whose item is still listed keeps its output folder whether or not its record stays. The run branch stays. `projects` gives,
    * by run id, what the host's run file named for a run when its record went; a git run is taken apart only against that root, as

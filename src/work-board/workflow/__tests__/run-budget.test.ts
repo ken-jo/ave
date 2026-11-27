@@ -1,5 +1,6 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { clearTimeout, setTimeout } from "node:timers";
 import { expect, it, vi } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
@@ -14,10 +15,14 @@ import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { createDynamicTool } from "../../../tools/base.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { checkStageBudget, MAX_LANE_DENIALS_PER_STAGE, type StageUsage } from "../run-budget.js";
-import type { StageEnvelope, TemplateStage } from "../../../shared/workflow-template-types.js";
+import type { StageEnvelope, TemplateScope, TemplateStage } from "../../../shared/workflow-template-types.js";
 import * as templateGraph from "../../template-graph.js";
 import type { StageRunEngineDeps } from "../stage-run-engine.js";
 import * as stageMachine from "../stage-machine.js";
+import { createHostGit } from "../host-git.js";
+import { createStageWorkspaceProvider } from "../stage-workspaces.js";
+import { stageDirName } from "../workspace-layout.js";
+import * as workspaceSeed from "../workspace-seed.js";
 import { autoStageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
@@ -63,14 +68,263 @@ const ENVELOPE: StageEnvelope = {
   mcpGenerationTools: [], pluginGenerationTools: [], outputs: [], budget: LIMITS,
 };
 
-async function startScheduled(h: Awaited<ReturnType<typeof stageRunHarness>>, stages: TemplateStage[] = [autoStageOf("report", { envelope: ENVELOPE })]) {
-  const version = await h.confirm(stages);
-  const { source } = await h.attach(version);
+async function startScheduled(h: Awaited<ReturnType<typeof stageRunHarness>>, stages: TemplateStage[] = [autoStageOf("report", { envelope: ENVELOPE })], scope: TemplateScope = { kind: "all" }) {
+  const version = await h.confirm(stages, { scope });
+  const { source } = await h.attach(version, scope);
   if (source.kind !== "schedule-attachment") throw new Error("Expected a schedule source");
   const started = await h.engine.startScheduledTemplate(source, "Report");
   if (!started.ok) throw new Error(started.code);
   return started;
 }
+
+const beforeUnblock = (expire: () => void) => {
+  const timer = setTimeout(expire, 2_000);
+  return () => clearTimeout(timer);
+};
+
+it.each([true, false])("expires parallel preparation on the real workspace queue (sibling seals: %s)", async siblingSeals => {
+  const checking = deferred<void>();
+  const release = deferred<void>();
+  const queued = deferred<void>();
+  const sealing = deferred<void>();
+  const preparations: Promise<unknown>[] = [];
+  const seals: Promise<unknown>[] = [];
+  const git = createHostGit();
+  const ignoreChecks: string[] = [];
+  const workspace = createStageWorkspaceProvider({
+    plainCeiling: tmpdir(),
+    git: {
+      ...git,
+      run: async (cwd, args, call) => {
+        if (args.includes("check-ignore")) {
+          ignoreChecks.push(cwd);
+          checking.resolve();
+          await release.promise;
+        }
+        return git.run(cwd, args, call);
+      },
+    },
+  });
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    wiring: () => ({ workspace: {
+      ...workspace,
+      prepare: (...args) => {
+        const pending = workspace.prepare(...args);
+        preparations.push(pending);
+        if (args[1].id === "second") queued.resolve();
+        return pending;
+      },
+      seal: (...args) => {
+        const pending = workspace.seal(...args);
+        seals.push(pending);
+        sealing.resolve();
+        return pending;
+      },
+    } }),
+  });
+  await h.runThenEnd(async () => {
+    const projectRoot = join(realpathSync(h.dir), "project");
+    const home = join(h.dir, "home");
+    mkdirSync(home);
+    mkdirSync(projectRoot);
+    writeFileSync(join(projectRoot, "input.txt"), "project input");
+    writeFileSync(join(projectRoot, ".gitignore"), "ignored.txt\n");
+    vi.stubEnv("AVE_HOME", home);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const seeded = autoStageOf("second", { envelope: ENVELOPE, inputFiles: [{ from: "project", paths: ["input.txt"] }] });
+    const first = siblingSeals ? autoStageOf("first", { envelope: ENVELOPE }) : { ...seeded, id: "first" };
+    try {
+      const started = await startScheduled(h, [first, seeded], { kind: "project", projectRoot });
+      await within(Promise.all([checking.promise, queued.promise]), "both preparations to reach the workspace queue", beforeUnblock);
+      if (siblingSeals) {
+        const [child] = await h.untilLive(1);
+        child.finish();
+        await within(sealing.promise, "the first stage to queue its seal", beforeUnblock);
+      }
+      const running = await h.item(started.itemId);
+      const root = running.record?.runWorkspace?.runRoot;
+      if (!root) throw new Error("Expected a run workspace");
+      expect(running.stageRuns.map(stage => stage.status)).toEqual([siblingSeals ? "passed" : "running", "running"]);
+      expect(ignoreChecks).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect(within(started.result, "the budget failure while the workspace queue is still held", beforeUnblock))
+        .resolves.toMatchObject({ status: "awaiting_approval", reasonCode: "stage-failed" });
+      const failed = await h.item(started.itemId);
+      expect(failed.stageRuns[1]).toMatchObject({ status: "failed", failure: "budget" });
+      expect(failed.stageRuns[1].workspace).toBeUndefined();
+      if (!siblingSeals) expect(failed.stageRuns[0]).toMatchObject({ status: "failed", failure: "budget" });
+      expect(h.children).toHaveLength(siblingSeals ? 1 : 0);
+      release.resolve();
+      await Promise.all([...preparations, ...seals]);
+      await h.drainRunWork();
+      expect(ignoreChecks).toHaveLength(1);
+      expect(existsSync(join(root, stageDirName("second")))).toBe(false);
+      expect(existsSync(join(root, stageDirName("first")))).toBe(siblingSeals);
+      expect((await h.item(started.itemId)).stageRuns).toEqual(failed.stageRuns);
+    } finally {
+      release.resolve();
+      await Promise.allSettled([...preparations, ...seals]);
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+it("interrupts and records the deadline while a sibling holds the real workspace queue sealing", async () => {
+  const sealing = deferred<void>();
+  const release = deferred<void>();
+  const listSeedFiles = workspaceSeed.listSeedFiles;
+  const list = vi.spyOn(workspaceSeed, "listSeedFiles").mockImplementation(async (root, globs, rules) => {
+    if (basename(root) === stageDirName("first")) {
+      sealing.resolve();
+      await release.promise;
+    }
+    return listSeedFiles(root, globs, rules);
+  });
+  const workspace = createStageWorkspaceProvider();
+  const h = await stageRunHarness({ observeRunWork: true, wiring: () => ({ workspace }) });
+  await h.runThenEnd(async () => {
+    const home = join(h.dir, "home");
+    mkdirSync(home);
+    vi.stubEnv("AVE_HOME", home);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const started = await startScheduled(h, ["first", "second"].map(id => autoStageOf(id, { envelope: ENVELOPE })));
+      const children = await h.untilLive(2);
+      const first = children.find(child => child.input.unattendedStage?.stageId === "first");
+      const second = children.find(child => child.input.unattendedStage?.stageId === "second");
+      if (!first || !second) throw new Error("Expected both children");
+      first.finish();
+      await within(sealing.promise, "the first stage to hold the workspace queue while sealing", beforeUnblock);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(h.interrupts).toEqual([second.sessionId]);
+      await expect(within(started.result, "the linked sibling's budget failure while sealing", beforeUnblock))
+        .resolves.toMatchObject({ status: "awaiting_approval", reasonCode: "stage-failed" });
+      expect(await h.stageRun(started.itemId, "second")).toMatchObject({ status: "failed", failure: "budget", childSessionId: second.sessionId });
+    } finally {
+      release.resolve();
+      try {
+        await within(h.drainRunWork({ includeLaunches: false }), "the seal to finish", beforeUnblock);
+      } finally {
+        vi.useRealTimers();
+        vi.unstubAllEnvs();
+        list.mockRestore();
+      }
+    }
+  });
+});
+
+it("arms the deadline when a sibling passes and frees a slot before its seal returns", async () => {
+  const sealing = deferred<void>();
+  const release = deferred<void>();
+  const h = await stageRunHarness({ observeRunWork: true, workspace: { seal: async () => {
+    sealing.resolve();
+    await release.promise;
+    return { ok: true };
+  } } });
+  await h.runThenEnd(async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const short = { ...ENVELOPE, budget: { ...LIMITS, minutes: 0.5 } };
+      const started = await startScheduled(h, ["first", "second", "third", "waiting"].map(id => autoStageOf(id, { envelope: id === "waiting" ? short : ENVELOPE })));
+      const children = await h.untilLive(3);
+      expect(await h.stageRun(started.itemId, "waiting")).toMatchObject({ status: "waiting" });
+      children.find(child => child.input.unattendedStage?.stageId === "first")?.finish();
+      await within(sealing.promise, "the first stage to start sealing", beforeUnblock);
+      expect(await h.stageRun(started.itemId, "waiting")).toMatchObject({ status: "running" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await within(h.untilStage(started.itemId, "waiting", "failed"), "the fourth stage to fail while the seal is held", beforeUnblock);
+      expect(await h.stageRun(started.itemId, "waiting")).toMatchObject({ failure: "budget" });
+    } finally {
+      release.resolve();
+      vi.useRealTimers();
+    }
+  });
+});
+
+it("persists a linked child's deadline before interruption finishes and keeps retry fenced", async () => {
+  const h = await stageRunHarness({ observeRunWork: true, interruptChild: vi.fn() });
+  await h.runThenEnd(async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const started = await startScheduled(h);
+      const [child] = await h.untilLive(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(h.interrupts).toEqual([child.sessionId]);
+      await within(h.untilStage(started.itemId, "report", "failed"), "the budget failure before the child's interruption finishes", beforeUnblock);
+      const current = await h.item(started.itemId);
+      const runId = current.runId;
+      if (!runId) throw new Error("Expected a run id");
+      expect(current.stageRuns[0]).toMatchObject({ status: "failed", failure: "budget", childSessionId: child.sessionId });
+      await expect(h.engine.retryStage(started.itemId, { runId, stageId: "report", attempt: 1 })).resolves.toEqual({ ok: false, reason: "not_pending" });
+      expect(h.engine.cancelRun(started.itemId)).toEqual({ ok: true });
+      await h.drainRunWork({ includeLaunches: false });
+      expect((await h.item(started.itemId)).record?.settled).toBeUndefined();
+      child.finish({ ok: false, stopReason: "interrupted" });
+      await h.drainRunWork();
+      expect((await h.item(started.itemId)).record?.settled?.status).toBe("cancelled");
+      expect(h.interrupts).toEqual([child.sessionId]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+it("keeps a timed-out child in its parallel slot until it exits", async () => {
+  const h = await stageRunHarness({ observeRunWork: true, interruptChild: vi.fn() });
+  await h.runThenEnd(async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const short = { ...ENVELOPE, budget: { ...LIMITS, minutes: 0.5 } };
+      const started = await startScheduled(h, ["first", "second", "third", "waiting"].map(id => autoStageOf(id, { envelope: id === "first" ? short : ENVELOPE })));
+      const children = await h.untilLive(3);
+      const child = children.find(candidate => candidate.input.unattendedStage?.stageId === "first");
+      if (!child) throw new Error("Expected the first stage's child");
+      expect(await h.stageRun(started.itemId, "waiting")).toMatchObject({ status: "waiting" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await within(h.untilStage(started.itemId, "first", "failed"), "the first stage's budget failure", beforeUnblock);
+      expect(h.interrupts).toEqual([child.sessionId]);
+      expect(await h.stageRun(started.itemId, "waiting")).toMatchObject({ status: "waiting" });
+      child.finish({ ok: false, stopReason: "interrupted" });
+      await within(h.untilStage(started.itemId, "waiting", "running"), "the fourth stage to claim the released slot", beforeUnblock);
+      expect((await h.untilLive(3)).map(candidate => candidate.input.unattendedStage?.stageId)).toContain("waiting");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+it("persists the deadline while the launch is re-reading its pinned version", async () => {
+  const resolving = deferred<void>();
+  const release = deferred<void>();
+  const h = await stageRunHarness({ observeRunWork: true });
+  const resolveVersion = h.templates.resolveVersion.bind(h.templates);
+  const lookup = vi.spyOn(h.templates, "resolveVersion").mockImplementation(async pin => {
+    const version = await resolveVersion(pin);
+    if (h.events.some(event => event.workflowRun?.stages.some(stage => stage.status === "running"))) {
+      resolving.resolve();
+      await release.promise;
+    }
+    return version;
+  });
+  await h.runThenEnd(async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const started = await startScheduled(h);
+      await within(resolving.promise, "the launch to reach the pin lookup", beforeUnblock);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect(within(started.result, "the budget failure while the pin lookup is held", beforeUnblock))
+        .resolves.toMatchObject({ status: "awaiting_approval", reasonCode: "stage-failed" });
+      expect(await h.stageRun(started.itemId, "report")).toMatchObject({ status: "failed", failure: "budget" });
+      expect(h.children).toEqual([]);
+    } finally {
+      release.resolve();
+      lookup.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});
 
 function observeDenials() {
   type Listener = Parameters<NonNullable<StageRunEngineDeps["lane"]>["onDenied"]>[0];

@@ -35,7 +35,7 @@ import { isAllReadOnlyVersion, WorkflowTemplateError } from "../template-graph.j
 import type { AuthoriseRunSource, RunAuthorityVerdict } from "./run-authority.js";
 import type { LaneBlockCode, OutputExecution, RunPin, StageFailure } from "./shipped-shapes.js";
 import type { PassConditionRegistry } from "./stage-gates.js";
-import { assertPinnedVersion, stepsOf } from "./stage-graph.js";
+import { assertPinnedVersion, readyStages, stepsOf } from "./stage-graph.js";
 import { MAX_STAGE_ATTEMPTS, reduceRun, type RunEffect, type RunEvent } from "./stage-machine.js";
 import { buildStagePrompt, stageInputsOf } from "./stage-prompt.js";
 import { maskWorkflowText, pendingWorkflowDecisions, projectWorkflowRun, savedWorkflowStageActivity, withoutWorkflowProjection, workflowStageActivity } from "./run-read-projection.js";
@@ -175,6 +175,7 @@ interface RunState {
   scheduledStart?: { refusal?: WorkItemRunResult };
   /** The first breaker outcome may arrive after the firing returned at a gate. */
   resolveScheduleOutcome?: (outcome: ScheduledRunOutcome | null) => void;
+  resolveDeadlineResult?: (result: WorkItemRunResult) => void;
   /** Manual retry can still complete a firing after its first outcome was recorded. */
   resolveScheduleCompletion?: (completed: boolean) => void;
   /** stageId → childSessionId, set when the child links. */
@@ -430,6 +431,19 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const eventAttempt = "attempt" in event ? event.attempt : attempt;
     const done = "stageId" in event && eventAttempt !== undefined ? trackStageWork(state, event.stageId, eventAttempt) : () => undefined;
     detach(() => enqueue(state, () => handle(state, event, undefined, undefined, eventAttempt)).finally(done).catch(() => undefined));
+  }
+
+  function postDeadline(state: RunState, event: Extract<RunEvent, { type: "stage_ended" }>, version: TemplateVersion): void {
+    const done = trackStageWork(state, event.stageId, event.attempt);
+    state.busy += 1;
+    // A workspace effect may be waiting for this same launch. The covered run-store write serializes the transition.
+    detach(() => handle(state, event, undefined, undefined, event.attempt, version).catch((error: unknown) => {
+      log.warn("stage deadline could not be recorded (id=%d, stage=%s): %s", state.itemId, event.stageId, errorMessage(error));
+    }).finally(() => {
+      state.busy -= 1;
+      done();
+      wake(state);
+    }));
   }
 
   /** The run's board row is gone: the run is cancelled as by Stop, and from here its record is written by run id alone and ends as `cause`. */
@@ -736,45 +750,51 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** One event: resolve the pin, then one atomic write that checks, reduces and stores the run as it is at that moment, then the effects.
    * `precheck` refuses a user decision before anything is written: on the run as read, before the pin is resolved, and again inside the
    * write. */
-  async function handle<R extends string = never>(state: RunState, event: RunEvent, precheck?: Precheck<R>, replay?: Held, knownAttempt?: number): Promise<R | PinRefusal | "run_mismatch" | "not_found" | null> {
+  async function handle<R extends string = never>(state: RunState, event: RunEvent, precheck?: Precheck<R>, replay?: Held, knownAttempt?: number, deadlineVersion?: TemplateVersion): Promise<R | PinRefusal | "run_mismatch" | "not_found" | null> {
     if (runs.get(state.itemId) !== state) {
       log.warn("dropped a stage event of another run (id=%d, event=%s)", state.itemId, event.type);
       return "run_mismatch";
     }
-    let read: RunRecord | null;
-    try {
-      read = await records.get(state.itemId, state.runId);
-    } catch (error) {
-      if (precheck || replay) throw error;
-      log.warn("a scheduler event is held while its run record cannot be read (id=%d, event=%s): %s", state.itemId, event.type, errorMessage(error));
-      await hold(state, event, undefined, knownAttempt);
-      return "run_mismatch";
+    let read: RunRecord | undefined;
+    if (!deadlineVersion) {
+      try {
+        read = await records.get(state.itemId, state.runId) ?? undefined;
+      } catch (error) {
+        if (precheck || replay) throw error;
+        log.warn("a scheduler event is held while its run record cannot be read (id=%d, event=%s): %s", state.itemId, event.type, errorMessage(error));
+        await hold(state, event, undefined, knownAttempt);
+        return "run_mismatch";
+      }
+      if (!read) {
+        if (precheck) return "not_found";
+        await unwind(state, event, "run-state-unavailable");
+        return "not_found";
+      }
+      if (read.settled !== undefined) return "run_mismatch";
+      // A stale decision is refused for its binding before any pin refusal.
+      const stale = precheck?.(read) ?? null;
+      if (stale !== null) return stale;
     }
-    if (!read) {
-      if (precheck) return "not_found";
-      await unwind(state, event, "run-state-unavailable");
-      return "not_found";
-    }
-    if (read.settled !== undefined) return "run_mismatch";
-    // A stale decision is refused for its binding (run, stage, attempt, pending, result, output) before any pin refusal.
-    const stale = precheck?.(read) ?? null;
-    if (stale !== null) return stale;
     // While the run holds events, a decision is refused and each later scheduler event is held behind them, until the class ends the run.
     if (state.held.length > 0 && !replay && !state.rowGone && !state.lost) {
       if (!precheck) await hold(state, event, read, knownAttempt);
       return "run_mismatch";
     }
-    let version: TemplateVersion;
-    try {
-      version = await resolvePinned(read.pin);
-      stepsOf(version);
-    } catch (error) {
-      const fault = pinFault(error);
-      // A user decision against an unreadable pin is refused and changes nothing; a scheduler event ends the run.
-      if (precheck && fault !== null) return fault === "version-missing" ? "version_missing" : "graph_mismatch";
-      await unwind(state, event, fault ?? errorMessage(error));
-      return null;
+    let version = deadlineVersion;
+    if (read) {
+      try {
+        version = await resolvePinned(read.pin);
+        stepsOf(version);
+      } catch (error) {
+        const fault = pinFault(error);
+        // A user decision against an unreadable pin is refused and changes nothing; a scheduler event ends the run.
+        if (precheck && fault !== null) return fault === "version-missing" ? "version_missing" : "graph_mismatch";
+        await unwind(state, event, fault ?? errorMessage(error));
+        return null;
+      }
     }
+    if (!version) throw new WorkflowInvariantError("version-missing");
+    const graph = version;
 
     const now = new Date().toISOString();
     const resumes = event.type === "continue_requested" || event.type === "retry_requested" || event.type === "gate_decided" || event.type === "join_decided";
@@ -788,16 +808,30 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         // Reduced from the run as stored now, inside the write: a field another write stored meanwhile is never lost.
         refusal = current.settled !== undefined ? "run_mismatch" : precheck?.(current) ?? null;
         if (refusal !== null) return null;
+        if (deadlineVersion && (state.stopping || state.faulted !== null || state.refused !== null)) {
+          // Normal winding waits for the child to exit before it records cancellation.
+          refusal = "run_mismatch";
+          return null;
+        }
+        if (deadlineVersion) assertPinnedVersion(graph, current.pin);
         const expectedAttempt = knownAttempt ?? replay?.attempt ?? ("attempt" in event ? event.attempt : undefined);
-        if ("stageId" in event && expectedAttempt !== undefined && current.stageRuns.find(run => run.stageId === event.stageId)?.attempt !== expectedAttempt) {
+        const stage = "stageId" in event ? current.stageRuns.find(run => run.stageId === event.stageId) : undefined;
+        if ("stageId" in event && expectedAttempt !== undefined && stage?.attempt !== expectedAttempt) {
           log.info("stage run event dropped (id=%d, event=%s): %s", state.itemId, event.type, "its stage moved on to another attempt");
+          refusal = "run_mismatch";
+          return null;
+        }
+        const winding = state.stopping || state.faulted !== null || state.refused !== null;
+        // The terminal result of an expired child frees its execution slot without changing the recorded failure.
+        const budgetChildEnded = event.type === "stage_ended" && !deadlineVersion && event.failure === "budget" && stage?.failure === "budget";
+        if ((event.type === "stage_linked" || (event.type === "stage_ended" && !winding && !budgetChildEnded)) && stage?.status !== "running") {
           refusal = "run_mismatch";
           return null;
         }
         before = current.stageRuns;
         const step = reduceRun({
-          graph: version, stageRuns: current.stageRuns, joins: current.stageJoins ?? [], stopping: state.stopping, refused: state.refused !== null,
-          faulted: state.faulted !== null, parked: state.endingOnDenials.size > 0 || (state.parked && !resumes), now,
+          graph, stageRuns: current.stageRuns, joins: current.stageJoins ?? [], stopping: state.stopping, refused: state.refused !== null,
+          faulted: state.faulted !== null, parked: state.endingOnDenials.size > 0 || (state.parked && !resumes), liveStageIds: [...state.live.keys()], now,
         }, event);
         effects = step.effects;
         // The write that ends the run says so: the final stage states and how it ended are one write.
@@ -870,12 +904,21 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       });
     }
     if ((shown || joinChanged || (record.stageJoins ?? []).some(join => join.status === "conflict")) && deps.itemChanged && claimReplay(replay?.notifications, "item-changed")) notifyItemChanged(state.itemId);
-    if (state.resolveScheduleOutcome && record.settled === undefined) {
+    if ((state.resolveScheduleOutcome || (deadlineVersion && state.resolveDeadlineResult)) && record.settled === undefined) {
       const outcome = parkedStageOutcome(record);
-      if (outcome) {
-        state.resolveScheduleOutcome(outcome);
+      const waitingForSlot = outcome && state.live.size > 0 && readyStages(version, record.stageRuns, record.stageJoins ?? []).length > 0;
+      if (outcome && !waitingForSlot) {
+        state.resolveScheduleOutcome?.(outcome);
         state.resolveScheduleOutcome = undefined;
+        if (deadlineVersion) state.resolveDeadlineResult?.({ status: "awaiting_approval", reasonCode: outcome === "failed" ? "stage-failed" : outcome });
       }
+    }
+    if (deadlineVersion) {
+      // Other effects belong to the ordinary event queue. Newly running attempts must arm their timers now.
+      startStages(state, record, graph, effects);
+      const followups = effects.filter(effect => effect.type !== "spawn");
+      if (followups.length > 0) detach(() => enqueue(state, () => runEffects(state, record, graph, followups)).catch(() => undefined));
+      return null;
     }
     const seals = pendingSeals(state, record).filter(seal => !effects.some(effect => effect.type === "seal" && effect.stageId === seal.stageId));
     await runEffects(state, record, version, [...effects, ...seals], replay);
@@ -891,7 +934,20 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     post(state, { type: "fault" });
   }
 
+  function startStages(state: RunState, record: RunRecord, version: TemplateVersion, effects: RunEffect[], replay?: Held): void {
+    for (const [index, effect] of effects.entries()) {
+      if (effect.type !== "spawn" || !claimReplay(replay?.effects, `effect:${index}`)) continue;
+      const budget = record.runStartedBy.kind === "schedule-attachment"
+        ? version.stages.find(stage => stage.id === effect.stageId)?.envelope?.budget : undefined;
+      const startedAt = record.stageRuns.find(run => run.stageId === effect.stageId)?.startedAt;
+      state.due.add(`${effect.stageId}#${effect.attempt}`);
+      state.busy += 1;
+      detach(() => launch(state, effect.stageId, effect.attempt, budget, startedAt, version), "launch");
+    }
+  }
+
   async function runEffects(state: RunState, record: RunRecord, version: TemplateVersion, effects: RunEffect[], replay?: Held): Promise<void> {
+    startStages(state, record, version, effects, replay);
     async function sealStage(stageId: string): Promise<boolean> {
       const run = record.stageRuns.find(candidate => candidate.stageId === stageId);
       if (run?.status !== "passed") return false;
@@ -917,18 +973,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }
     for (const [index, effect] of effects.entries()) {
       const key = `effect:${index}`;
-      if (replay?.effects.has(key)) continue;
+      if (effect.type === "spawn" || replay?.effects.has(key)) continue;
       if (effect.type !== "evaluate_gate" && !claimReplay(replay?.effects, key)) continue;
       switch (effect.type) {
-        case "spawn": {
-          const budget = record.runStartedBy.kind === "schedule-attachment"
-            ? version.stages.find(stage => stage.id === effect.stageId)?.envelope?.budget : undefined;
-          const startedAt = record.stageRuns.find(run => run.stageId === effect.stageId)?.startedAt;
-          state.due.add(`${effect.stageId}#${effect.attempt}`);
-          state.busy += 1;
-          detach(() => launch(state, effect.stageId, effect.attempt, budget, startedAt), "launch");
-          break;
-        }
         case "evaluate_gate": {
           const stage = version.stages.find(candidate => candidate.id === effect.stageId);
           const result = state.results.get(effect.stageId);
@@ -985,7 +1032,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     state.stopping || state.faulted !== null || state.refused !== null || state.interruptAsked.has(stageId) || state.revoked.has(stageId);
 
   /** The only `runner.spawn` call for a template run. Throws `WorkflowInvariantError` unless every check of the plan's table holds. */
-  async function spawnStageChild(state: RunState, stageId: string, attempt: number, budget: StageEnvelope["budget"] | undefined, startedAt: string | undefined): Promise<{
+  async function spawnStageChild(state: RunState, stageId: string, attempt: number, budget: StageEnvelope["budget"] | undefined, startedAt: string | undefined, pinned: TemplateVersion): Promise<{
     result: SubAgentSpawnResult;
     inputTaint: boolean;
     usage?: WorkItemStageRun["usage"];
@@ -1009,15 +1056,25 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const snapshotUsage = () => ({ ...usage, startedAt: new Date(usage.startedAt).toISOString() });
     let budgetFailure: Extract<BudgetVerdict, { ok: false }>["code"] | undefined;
     const deadline = budget ? new AbortController() : undefined;
+    const linkDeadline = budget ? new AbortController() : undefined;
     const deadlineAt = budget ? usage.startedAt + budget.minutes * 60_000 : Infinity;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let interruptChild: (() => void) | undefined;
+    let linked: string | undefined;
+    const deniedCalls: NonNullable<WorkItemStageRun["deniedCalls"]> = [];
     function expireDeadline(): void {
       if (!deadline || deadline.signal.aborted) return;
       budgetFailure ??= "minutes";
       deadline.abort(new Error("Stage deadline exceeded"));
+      if (linked === undefined) linkDeadline?.abort(deadline.signal.reason);
+      else if (interruptChild) state.interruptAsked.add(stageId);
       interruptChild?.();
+      postDeadline(state, {
+        type: "stage_ended", stageId, attempt, ok: false, failure: "budget", reason: budgetFailure, usage: snapshotUsage(),
+        ...(linked !== undefined ? { childSessionId: linked } : {}), ...(deniedCalls.length > 0 ? { deniedCalls: [...deniedCalls] } : {}),
+      }, pinned);
     }
+    const isCurrent = () => Date.now() < deadlineAt && state.starting.has(stageId) && !halted(state, stageId) && runs.get(state.itemId) === state;
     function armDeadline(): void {
       const remaining = deadlineAt - Date.now();
       if (remaining <= 0) expireDeadline();
@@ -1078,11 +1135,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const revising = run.gate?.type === "human" && run.gate.status === "changes_requested";
       if (attempt > 1 && !revising) {
         // A folder that is no longer the run's own is not removed, and the stage is not started in it.
-        await beforeDeadline(() => workspace.release(state.ref, [stageId]).catch((error: unknown) => {
+        await beforeDeadline(() => workspace.release(state.ref, [stageId], isCurrent).catch((error: unknown) => {
           throw new WorkflowInvariantError("workspace-missing", error instanceof OwnedFsError ? "workspace-identity-changed" : "workspace-unavailable");
         }));
       }
-      const prepared = await beforeDeadline(() => workspace.prepare(state.ref, stage, attempt));
+      const prepared = await beforeDeadline(() => workspace.prepare(state.ref, stage, attempt, isCurrent));
       const runRoot = record.runWorkspace?.runRoot;
       if (!prepared.ok) {
         if (state.scheduledStart) await authorise();
@@ -1117,11 +1174,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         item, stage, inputs: stageInputsOf(version, stage, record.stageRuns),
         ...(revision ? { revision } : {}), ...(version.setupCommands ? { setupCommands: version.setupCommands } : {}), ...(gateSuffix ? { gateSuffix } : {}),
       });
-      const stored = await beforeDeadline(() => writeRun(state, current => deadline?.signal.aborted ? null : ({
-        ...current,
-        stageRuns: current.stageRuns.map(candidate => candidate.stageId === stageId && candidate.attempt === attempt ? { ...candidate, workspace: { ...prepared.workspace } } : candidate),
-      })));
+      const stored = await beforeDeadline(() => writeRun(state, current => {
+        const active = current.stageRuns.find(candidate => candidate.stageId === stageId);
+        if (!isCurrent() || current.settled !== undefined || active?.attempt !== attempt || active.status !== "running") return null;
+        return { ...current, stageRuns: current.stageRuns.map(candidate => candidate === active ? { ...candidate, workspace: { ...prepared.workspace } } : candidate) };
+      }));
       if (stored.run === null) {
+        if (halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");
         if (holdsWrite(state, stored.reason)) throw new WorkflowInvariantError("run-write-held");
         throw stored.reason === "row-gone" ? new WorkflowInvariantError("run-stopped") : new WorkflowInvariantError("run-state-failed", writeFault(stored.reason));
       }
@@ -1131,10 +1190,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if ((await authorise()).lane !== lane) throw new WorkflowInvariantError("run-not-authorised", "source-not-authorised");
       if (halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");
 
-      let linked: string | undefined;
       let scoped = false;
       let activitySignature = "";
-      const deniedCalls: NonNullable<WorkItemStageRun["deniedCalls"]> = [];
       let attemptOpen = true;
       const origin = workBoardOriginSessionId(state.itemId);
       const interrupt = () => {
@@ -1174,7 +1231,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       });
       try {
         checkDeadline();
-        const result = await runner.spawn(
+        const result = await raceWithAbort(runner.spawn(
           {
             title: `${stage.name}: ${item.title}`,
             instructions: prompt.instructions,
@@ -1191,6 +1248,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           },
           {
             onLinked: ({ childSessionId }) => {
+              checkDeadline();
               if (source.kind === "schedule-attachment" && state.projectRoot !== undefined
                 && !deps.scopeAuthorised({ kind: "project", projectRoot: state.projectRoot })) {
                 throw new WorkflowInvariantError("run-not-authorised", "scope-not-authorised");
@@ -1213,7 +1271,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
               post(state, { type: "stage_linked", stageId, childSessionId, ...(budget ? { usage: snapshotUsage() } : {}) }, attempt);
             },
             onActivity: ({ entries }) => {
-              if (linked === undefined || !canShowRun(state)) return;
+              if (linked === undefined || deadline?.signal.aborted || !canShowRun(state)) return;
               const stageActivity: WorkflowStageActivityUpdate = {
                 runId: state.runId, stageId, attempt, childSessionId: linked,
                 activity: workflowStageActivity(entries), breaker: deps.readBreaker?.(linked),
@@ -1224,11 +1282,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
               emit({ itemId: state.itemId, phase: "executing", stageActivity });
             },
             onError: (message) => {
-              if (!state.stopping && !state.interruptAsked.has(stageId)) emit({ itemId: state.itemId, phase: "stage_failed", stageId, attempt, message });
+              if (attemptOpen && !deadline?.signal.aborted && !state.stopping && !state.interruptAsked.has(stageId)) emit({ itemId: state.itemId, phase: "stage_failed", stageId, attempt, message });
             },
           },
-        );
+        ), linkDeadline?.signal);
         if (budget) {
+          interruptChild = undefined;
+          if (Date.now() >= deadlineAt) expireDeadline();
           const verdict = checkStageBudget(usage, budget, Date.now());
           if (!verdict.ok) budgetFailure ??= verdict.code;
           if (result.stopReason === "round-cap") budgetFailure ??= "rounds";
@@ -1264,12 +1324,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return result.stopReason === "authorization-required" || result.authorizationRequired !== undefined ? "denied-tool" : "error";
   }
 
-  async function launch(state: RunState, stageId: string, attempt: number, budget: StageEnvelope["budget"] | undefined, startedAt: string | undefined): Promise<void> {
+  async function launch(state: RunState, stageId: string, attempt: number, budget: StageEnvelope["budget"] | undefined, startedAt: string | undefined, pinned: TemplateVersion): Promise<void> {
     const done = trackStageWork(state, stageId, attempt);
     let next: RunEvent | null = null;
     let faultCause: string | null = null;
     try {
-      const { result, inputTaint, usage, deniedCalls, budgetFailure } = await spawnStageChild(state, stageId, attempt, budget, startedAt);
+      const { result, inputTaint, usage, deniedCalls, budgetFailure } = await spawnStageChild(state, stageId, attempt, budget, startedAt, pinned);
       if (!result) {
         next = { type: "stage_ended", stageId, attempt, ok: false, reason: budgetFailure, failure: "budget", usage };
         return;
@@ -1463,7 +1523,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       handedOff = true;
       const breakerOutcome = new Promise<ScheduledRunOutcome | null>(resolve => { started.resolveScheduleOutcome = resolve; });
       const completion = new Promise<boolean>(resolve => { started.resolveScheduleCompletion = resolve; });
-      return { ok: true, itemId: created.itemId, result: firstResult(started), breakerOutcome, completion };
+      const deadlineResult = new Promise<WorkItemRunResult>(resolve => { started.resolveDeadlineResult = resolve; });
+      return { ok: true, itemId: created.itemId, result: firstResult(started, deadlineResult), breakerOutcome, completion };
     } catch (error) {
       const fault = pinFault(error);
       if (!fault) log.warn("scheduled template start failed: %s", errorMessage(error));
@@ -1552,10 +1613,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return state;
   }
 
-  async function firstResult(state: RunState): Promise<WorkItemRunResult> {
-    await idle(state);
-    const result = await resultOf(state);
+  async function firstResult(state: RunState, deadlineResult?: Promise<WorkItemRunResult>): Promise<WorkItemRunResult> {
+    const normal = idle(state).then(() => resultOf(state));
+    const result = await (deadlineResult === undefined ? normal : Promise.race([normal, deadlineResult]));
     state.scheduledStart = undefined;
+    state.resolveDeadlineResult = undefined;
     return result;
   }
 
@@ -1661,9 +1723,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   async function retryStage(itemId: number, i: StageRetryInput): Promise<StageRetryResult> {
     const reason = await decide(itemId, i.runId, { type: "retry_requested", stageId: i.stageId }, (record) => {
+      const state = runs.get(itemId);
       const run = record.stageRuns.find(candidate => candidate.stageId === i.stageId);
       if (!run) return "not_found";
       if (run.attempt !== i.attempt || run.status !== "failed" || !decidable(itemId)) return "not_pending";
+      if (state?.live.has(i.stageId) || state?.starting.has(i.stageId)) return "not_pending";
       return run.attempt >= MAX_STAGE_ATTEMPTS ? "attempts_exhausted" : null;
     });
     return reason === null ? { ok: true } : { ok: false, reason };
