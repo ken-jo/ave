@@ -202,7 +202,7 @@ async function assertIdentityDigest(paths: DocumentEnginePayloadPaths, expected:
 }
 
 /**
- * The one full verification, at install time: every payload byte is hashed and compared with the authenticated
+ * At install time, every payload byte is hashed and compared with the authenticated
  * archive's tree, the executable signer is assessed, and the metadata identity digest taken before the hash must
  * still hold afterwards, binding the recorded identity to the hashed bytes.
  */
@@ -286,6 +286,10 @@ function bindInstallation(receipt: InstallationReceipt, release: DocumentEngineR
         assertCurrent();
         signal.throwIfAborted();
         await assertIdentityDigest(paths, receipt.identityDigest, signal);
+        if (documentEngineTreeDigest(await readDocumentEngineTree(paths.root, signal)) !== receipt.treeDigest) {
+          throw new DocumentEngineInstallError("integrity-failed", "Document engine payload bytes changed after verification");
+        }
+        await verifyFile(extensionPath, DOCUMENT_ENGINE_IMPORT_EXTENSION.bytes, DOCUMENT_ENGINE_IMPORT_EXTENSION.sha256, signal);
         assertCurrent();
       } catch (error) {
         signal.throwIfAborted();

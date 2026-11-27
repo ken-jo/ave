@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { mkdtemp, readdir, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import { lstat, mkdtemp, readdir, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -138,6 +138,34 @@ describe("optional document engine installation", () => {
     const installation = await installer.getVerifiedDocumentEngineInstallation(new AbortController().signal);
     await writeFile(installation!.unopkg, "changed executable");
     await expect(installation!.verifyBeforeSpawn(new AbortController().signal)).rejects.toMatchObject({ code: "integrity-failed" });
+    await expect(installer.getDocumentEngineInstallationState()).rejects.toMatchObject({ code: "integrity-failed" });
+  });
+
+  it("refuses changed dependency bytes even when file metadata is unchanged", async () => {
+    const signal = new AbortController().signal;
+    await installer.installDocumentEngine(() => {}, signal);
+    const installation = (await installer.getVerifiedDocumentEngineInstallation(signal))!;
+    const dependency = join(installation.root, "program", "library");
+    const before = await lstat(dependency, { bigint: true });
+    await writeFile(dependency, "altered bytes!");
+    const readStat = fs.lstat;
+    vi.spyOn(fs, "lstat").mockImplementation(((path, options) =>
+      path === dependency && options?.bigint ? Promise.resolve(before) : readStat(path, options)) as typeof fs.lstat);
+    const openFile = fs.open;
+    vi.spyOn(fs, "open").mockImplementation(async (path, flags, mode) => {
+      const handle = await openFile(path, flags, mode);
+      if (path === dependency) {
+        const readHandleStat = handle.stat.bind(handle);
+        handle.stat = ((options) => options?.bigint ? Promise.resolve(before) : readHandleStat(options)) as typeof handle.stat;
+      }
+      return handle;
+    });
+    const after = await fs.lstat(dependency, { bigint: true });
+    expect([after.size, after.mtimeNs, after.ctimeNs]).toEqual([before.size, before.mtimeNs, before.ctimeNs]);
+    expect(await readFile(dependency, "utf8")).toBe("altered bytes!");
+    await expect(installation.verifyBeforeSpawn(signal)).rejects.toMatchObject({
+      code: "integrity-failed", message: "Document engine payload bytes changed after verification",
+    });
     await expect(installer.getDocumentEngineInstallationState()).rejects.toMatchObject({ code: "integrity-failed" });
   });
 
