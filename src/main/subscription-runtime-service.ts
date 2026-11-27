@@ -1083,6 +1083,11 @@ type SubscriptionRuntimeCatalog = {
 type CachedRead<T> = { readonly value: T; readonly expiresAt: number };
 type CliProvider = "codex" | "claude-code";
 
+type PendingLoginProjection = Pick<SubscriptionRuntimeStatus, "pendingLogin" | "pendingDeviceCode">;
+type AccountStatus = Omit<SubscriptionRuntimeStatus, keyof PendingLoginProjection>;
+
+const NO_PENDING_LOGIN: PendingLoginProjection = Object.freeze({ pendingLogin: null, pendingDeviceCode: null });
+
 type HostConnection = {
   intent: number;
   busy: number;
@@ -1093,7 +1098,8 @@ type HostConnection = {
   artifact: string | null;
   source?: object;
   accountKey?: string;
-  status: SubscriptionRuntimeStatus;
+  status: AccountStatus;
+  login: PendingLoginProjection;
   revision: number;
   scope: string;
   safetyEpoch: number;
@@ -1288,14 +1294,12 @@ export class SubscriptionRuntimeService {
     return this.cachedStatuses.get(runtimeId)?.value;
   }
 
-  private failedProbeStatus(runtimeId: SubscriptionRuntimeId, version?: string | null): SubscriptionRuntimeStatus {
+  private failedProbeStatus(runtimeId: SubscriptionRuntimeId, version?: string | null): AccountStatus {
     return {
       provider: runtimeId,
       runtime: "unavailable",
       connection: "unknown",
       planType: null,
-      pendingLogin: null,
-      pendingDeviceCode: null,
       canOpenVerificationUrl: false,
       version: version ?? null,
       capabilities: DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES,
@@ -1762,11 +1766,7 @@ export class SubscriptionRuntimeService {
       await this.stopSessionsFor(provider);
       const status = await mutation();
       if (state && isCliProvider(provider)) {
-        if (state.intent === intent) {
-          const uiChanged = state.status.pendingLogin !== status.pendingLogin || state.status.pendingDeviceCode !== status.pendingDeviceCode;
-          this.projectLogin(state, status);
-          if (uiChanged) this.publishConnection(provider);
-        }
+        if (state.intent === intent) this.projectLogin(provider, state, status);
         return this.currentProjection(provider);
       }
       if (this.authChangeRevisionByProvider.get(provider) !== intent) {
@@ -1821,7 +1821,8 @@ export class SubscriptionRuntimeService {
     if (!state) {
       state = {
         intent: 0, busy: 0, generation: 0, latch: 0, acceptedRead: 0, failedRead: 0, artifact: null,
-        status: this.failedProbeStatus(provider), confirming: false, revision: 0, scope: randomUUID(), safetyEpoch: 0, proven: false,
+        status: this.failedProbeStatus(provider), login: NO_PENDING_LOGIN,
+        confirming: false, revision: 0, scope: randomUUID(), safetyEpoch: 0, proven: false,
       };
       this.connections.set(provider, state);
     }
@@ -1829,23 +1830,24 @@ export class SubscriptionRuntimeService {
   }
 
   private currentProjection(provider: CliProvider): SubscriptionRuntimeStatus {
-    const { status, proven } = this.connection(provider);
+    const { status, login, proven } = this.connection(provider);
     return this.withPlanUsage({
       ...status,
-      connection: status.connection === "unknown" && status.pendingLogin !== null ? "pending" : status.connection,
+      ...login,
+      connection: status.connection === "unknown" && login.pendingLogin !== null ? "pending" : status.connection,
       revision: subscriptionHostRevision(),
       runtime: provider === "claude-code" && status.connection === "connected" && proven ? "ready" : status.runtime,
       capabilities: verifiedRuntimeCapabilities(provider, proven && status.connection === "connected"),
     });
   }
 
-  private projectLogin(state: HostConnection, ui: SubscriptionRuntimeStatus): void {
-    state.status = {
-      ...state.status,
-      pendingLogin: ui.pendingLogin,
-      pendingDeviceCode: ui.pendingDeviceCode,
-      version: state.status.version ?? ui.version,
-    };
+  private projectLogin(
+    provider: CliProvider, state: HostConnection, ui: PendingLoginProjection & { version?: string | null },
+  ): void {
+    state.status.version ??= ui.version ?? null;
+    if (state.login.pendingLogin === ui.pendingLogin && state.login.pendingDeviceCode === ui.pendingDeviceCode) return;
+    state.login = { pendingLogin: ui.pendingLogin, pendingDeviceCode: ui.pendingDeviceCode };
+    this.publishConnection(provider);
   }
 
   private async readCliStatus(provider: CliProvider, options: SubscriptionReadOptions): Promise<SubscriptionRuntimeStatus> {
@@ -1859,10 +1861,15 @@ export class SubscriptionRuntimeService {
         ? this.projectCodexStatus(await this.codexClient.getStatus(!options.allowCached || !this.planUsage.get(provider)))
         : this.projectClaudeCodeStatus(await this.claudeCodeClient.getStatus()));
       this.assertRunning();
-      if (state.intent === intent && state.latch <= start) this.projectLogin(state, ui);
+      if (state.intent === intent) this.projectLogin(provider, state, ui);
     } catch (error) {
       this.assertRunning();
-      if (state.intent === intent && state.acceptedRead <= start && (state.latch <= start || state.failedRead > start)) throw error;
+      if (state.intent === intent) {
+        if (subscriptionRuntimeErrorCode(error) === "subscription-login-failed") {
+          this.projectLogin(provider, state, NO_PENDING_LOGIN);
+        }
+        if (state.acceptedRead <= start && (state.latch <= start || state.failedRead > start)) throw error;
+      }
     }
     const status = this.currentProjection(provider);
     if (!state.busy && isSettledStatus(status)) this.cachedStatuses.set(provider, this.cachedRead(status));

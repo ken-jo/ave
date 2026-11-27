@@ -233,7 +233,7 @@ export function SubscriptionAuthControls({
   const runtime = status?.runtime ?? "checking";
   const connection = status?.connection ?? "unknown";
   const chatReady = connection === "connected" && status?.capabilities?.chat === true;
-  const pending = connection === "pending";
+  const pending = connection === "pending" || status?.pendingLoginMethod != null;
   const connected = connection === "connected";
   // Login admits the executable before spawning; chat still needs verification.
   const signedOutUnverified = runtime === "unverified" && connection === "signed-out";

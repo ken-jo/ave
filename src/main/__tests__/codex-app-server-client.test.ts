@@ -749,6 +749,39 @@ describe("CodexAppServerClient", () => {
     expect(projected).not.toContain("main-process-only");
     expect(projected).not.toContain("chatgpt.com/device");
   });
+  it("keeps the pending device code through repeated signed-out account polls", async () => {
+    const harness = await createHarness((request) => {
+      if (request.method === "account/read") return { account: null };
+      if (request.method === "account/login/start") return {
+        type: "chatgptDeviceCode", loginId: "device-login", verificationUrl: "https://chatgpt.com/device", userCode: "ABCD-EFGH",
+      };
+      if (request.method === "account/login/cancel") return {};
+      return standardInitialize(request);
+    });
+    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: createSubscriptionRuntimeNamespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
+      claudeCodeReleaseFetch: async () => { throw new Error("Unexpected release request"); },
+      acpRegistry: { stopAll: async () => {} } as unknown as AcpSubscriptionRuntimeRegistry,
+      codexClient: harness.client,
+    });
+    try {
+      const pending = { pendingLogin: "device-code", pendingDeviceCode: "ABCD-EFGH", capabilities: { chat: false } };
+      await expect(service.startLogin("codex", "device-code")).resolves.toMatchObject(pending);
+      await vi.waitFor(() => expect(harness.server.requests.some(({ method }) => method === "account/read")).toBe(true));
+      const readCount = harness.server.requests.filter(({ method }) => method === "account/read").length;
+      for (let poll = 0; poll < 2; poll++) {
+        await expect(service.getStatus("codex")).resolves.toMatchObject({ ...pending, connection: "signed-out" });
+        await expect(service.getCachedStatus("codex")).resolves.toMatchObject(pending);
+      }
+      expect(harness.server.requests.filter(({ method }) => method === "account/read")).toHaveLength(readCount + 2);
+      await expect(service.cancelLogin("codex")).resolves.toMatchObject({
+        pendingLogin: null, pendingDeviceCode: null, capabilities: { chat: false },
+      });
+    } finally {
+      await service.stop();
+    }
+  });
+
   it("clears the volatile device code when sign-in is cancelled", async () => {
     const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);

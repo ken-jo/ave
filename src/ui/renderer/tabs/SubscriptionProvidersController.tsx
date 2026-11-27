@@ -377,7 +377,7 @@ export function useSubscriptionProviders(api: AveApi) {
 
   useEffect(() => {
     const pendingProviders = PROVIDER_IDS.filter((provider) =>
-      states[provider].status?.connection === "pending",
+      states[provider].status?.connection === "pending" || states[provider].status?.pendingLogin != null,
     );
     if (pendingProviders.length === 0) return undefined;
     const timer = window.setInterval(() => {

@@ -163,6 +163,31 @@ afterEach(() => {
 });
 
 describe("SubscriptionProvidersController", () => {
+  it("keeps polling and showing Cancel while a device login is pending on a signed-out account", async () => {
+    const { api, subscriptionRuntimeStatus } = controllerApi();
+    subscriptionRuntimeStatus.mockImplementation(async (provider) => ({
+      ok: true,
+      status: provider === "codex" ? {
+        ...signedOutStatus(provider), pendingLogin: "device-code", pendingDeviceCode: "Q7KD-9P2M",
+      } : connectedStatus(provider),
+    }));
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      await act(async () => { render(<SubscriptionProvidersController api={api} />); });
+      const accountReads = () => subscriptionRuntimeStatus.mock.calls.filter(([provider]) => provider === "codex");
+      expect(accountReads()).toHaveLength(1);
+      for (let poll = 0; poll < 2; poll++) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+        expect(accountReads()).toHaveLength(poll + 2);
+        expect(screen.getByTestId("subscription-provider:codex:device-code")).toHaveTextContent("Q7KD-9P2M");
+        expect(screen.getByTestId("subscription-provider:codex:cancel-login")).toBeVisible();
+        expect(screen.getByTestId("subscription-state:codex")).toHaveTextContent("signed-out");
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("projects quota reports through status invalidations and clears them on sign-out", async () => {
     const { api } = controllerApi();
     let connected = true;
