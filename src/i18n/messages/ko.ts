@@ -1172,7 +1172,6 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_permissionModeApply.approvalGateUnavailable": "영구 권한 모드 변경은 사용자의 명시적 승인 요청이 필요합니다.",
   "be_permissionModeApply.approvalReason": "권한 모드를 '{mode}'로 영구 저장합니다.",
   "be_permissionModeApply.durableModeDenied": "영구 권한 모드 변경을 거부했습니다.",
-  "be_permissionModeApply.auditWriteFailed": "권한 감사 기록에 실패했습니다: {message}",
   "be_permissionModeApply.externalModeForbidden": "'{mode}' 권한 모드는 앱 외부에서 설정할 수 없습니다. 앱의 권한 설정에서 변경하세요.",
   "be_permissionModeApply.externalDurableForbidden": "앱 외부에서 요청한 권한 모드 변경은 현재 세션에만 적용되며 영구 저장할 수 없습니다.",
 
@@ -7494,7 +7493,6 @@ export const ko: Record<MessageCatalogKey, string> = {
   "settingsEditor.endpoint": "제공업체 엔드포인트",
   "settingsEditor.thinkingBudget": "생각 토큰 예산",
   "chatTab.subAgentRoundsInvalid": "{min}~{max} 사이의 정수를 입력하세요.",
-  "permissionsTab.securityRollbackFailed": "보안 변경 기록과 이전 설정 복원에 실패했습니다. 설정을 다시 불러와 현재 보호 상태를 확인하세요.",
   "mcpTab.configRecoveryRequired": "서버 설정 복원에 실패해 추가 변경과 연결을 차단했습니다. 다시 시작하기 전에 서버 설정과 비밀 저장소를 복구하세요.",
   "webTab.saveKey": "API 키 저장",
   "webTab.loadFailed": "브라우징 설정을 불러오지 못했습니다.",

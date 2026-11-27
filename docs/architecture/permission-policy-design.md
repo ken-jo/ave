@@ -80,7 +80,7 @@ Command-text upload and exfiltration signals, including credential-carrying URLs
 
 Plugin-provided MCP tools follow the same MCP row as every other MCP tool: `readOnlyHint` allows; other tools use first-use approval with per-tool memory, or the reviewer in auto. There is no server-specific mode override.
 
-Argument rewriting finishes before authorization. User script `PreToolUse` runs before any target approval and can only block; an allow result means no objection. Exact effect identity, cancellation, audit integrity, manifest capabilities, SSRF and execution-time path checks remain enforced after a permission result.
+Argument rewriting finishes before authorization. User script `PreToolUse` runs before any target approval and can only block; an allow result means no objection. Exact effect identity, cancellation, manifest capabilities, SSRF and execution-time path checks remain enforced after a permission result. Permission events are emitted as best-effort structured application logs.
 
 Shell analysis below supplies evidence. Historical L2/L6, exact-only host-shell and human-only unproven dispositions are superseded by the decision tree; static proof does not itself grant authority.
 
@@ -2936,8 +2936,7 @@ the in-memory capability and all leases; attested-process termination changes
 the observed process identity and makes the next acquire fail. These lifecycle
 events and the signed expiry are the v1 revocation boundaries.
 The grant-minting acquire runs after asynchronous PreToolUse hooks, plugin
-admission, rate checks, and audit-readiness checks. The handler receives the
-grant at the final effect boundary, with no intervening await that could make
+admission, and rate checks. The handler receives the grant at the final effect boundary, with no intervening await that could make
 the observed confinement stale before dispatch.
 
 The execution router consumes this capability only for builtin shell work in
@@ -3053,7 +3052,7 @@ Only a registered application window's exact main frame can answer its currently
 
 The host verifies native human consent once for the exact request. Rules and remembered approvals are not fresh human consent. Losing an owner never approves a card; owner-away waiting follows the setting above. A forced other-principal request requires that request’s human approval.
 
-Immediately before handler entry, a synchronous gate rechecks cancellation, required audit integrity, active-turn breaker state and plugin/remote authority. Returning from a card or renewed route admission re-enters that gate. Permission-request hooks remain cancellable and cannot grant authority. Reviewed or managed input replacements restart complete preparation and permission classification; sealed paths that cannot safely restart deny the replacement. The [hook runtime design](hook-runtime-expansion-design.md#65-input-mutation-and-permission-re-entry) owns the bounded re-entry contract. Execution retains its existing ceilings and current effect identity.
+Immediately before handler entry, a synchronous gate rechecks cancellation, active-turn breaker state and plugin/remote authority for the exact effect. Returning from a card or renewed route admission re-enters that gate. Permission-request hooks remain cancellable and cannot grant authority. Reviewed or managed input replacements restart complete preparation and permission classification; sealed paths that cannot safely restart deny the replacement. The [hook runtime design](hook-runtime-expansion-design.md#65-input-mutation-and-permission-re-entry) owns the bounded re-entry contract. Execution retains its existing ceilings and current effect identity.
 
 ## Reviewer Failure
 
@@ -3139,17 +3138,12 @@ final explicitness requirements and denial behavior.
 
 ## Audit Requirements
 
-Audit records should include:
-
-- tool name and source;
-- category and permission mode;
-- trust origin;
-- project identity when available;
-- decision and decision reason;
-- reviewer verdict or reviewer failure state;
-- recently denied summaries and manual rerun availability.
-
-Audit records must not contain raw secrets or unnecessary private payload data.
+Permission events use the structured application logger. Tool decisions
+record allowlisted fields such as tool, source, category, trust origin,
+decision, reviewer risk, and denial source where applicable. Correlation IDs
+link events from the same invocation. Keep secrets and private payloads out
+of these records. Delivery is best effort. Boot and permission decisions
+proceed independently of log delivery.
 
 ## Test Coverage
 

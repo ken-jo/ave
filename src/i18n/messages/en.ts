@@ -1170,7 +1170,6 @@ export const en = {
   "be_permissionModeApply.approvalGateUnavailable": "Permanent permission mode change requires an explicit user approval prompt.",
   "be_permissionModeApply.approvalReason": "Permanently save permission mode as '{mode}'.",
   "be_permissionModeApply.durableModeDenied": "You declined the permanent permission mode change.",
-  "be_permissionModeApply.auditWriteFailed": "Failed to write permission audit entry: {message}",
   "be_permissionModeApply.externalModeForbidden": "Permission mode '{mode}' cannot be set from outside the app. Change it in the app's permission settings.",
   "be_permissionModeApply.externalDurableForbidden": "A permission mode change requested from outside the app applies to the current session only and cannot be saved permanently.",
 
@@ -7492,7 +7491,6 @@ export const en = {
   "settingsEditor.endpoint": "Provider endpoint",
   "settingsEditor.thinkingBudget": "Thinking token budget",
   "chatTab.subAgentRoundsInvalid": "Enter a whole number from {min} to {max}.",
-  "permissionsTab.securityRollbackFailed": "The security change could not be recorded or restored. Reload settings and review the current protection state.",
   "mcpTab.configRecoveryRequired": "Server configuration recovery failed. Further server changes and connections are blocked. Repair the configuration and secret storage before restarting.",
   "webTab.saveKey": "Save API key",
   "webTab.loadFailed": "Browsing settings could not be loaded.",

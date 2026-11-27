@@ -47,7 +47,6 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // ── Trust / intent gate ──
   "invalid-telemetry-level": "diagnosticsTab.telemetryInvalidLevel",
   "invalid-telemetry-endpoint": "diagnosticsTab.telemetryInvalidEndpoint",
-  "security-settings-rollback-failed": "permissionsTab.securityRollbackFailed",
   "invalid-security-settings": "formatIpcError.invalidInput",
   "security-settings-main-owned": "formatIpcError.userKeyboardRequired",
   "user-keyboard-required": "formatIpcError.userKeyboardRequired",
