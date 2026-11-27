@@ -86,7 +86,7 @@ import { Button } from "../../components/ui/button.js";
 import { MessageSquareText, PanelLeftOpen } from "lucide-react";
 import { SIDEBAR_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { useActiveView } from "./hooks/use-active-view.js";
-import { useSettingsTab } from "./hooks/use-settings-tab.js";
+import { type SettingsNavigationOrigin, useSettingsTab } from "./hooks/use-settings-tab.js";
 import { useProjectPreferences } from "./hooks/use-project-preferences.js";
 import { useRoutineOverlay } from "./hooks/use-routine-overlay.js";
 import { isSuggestionsSession, sessionDisplayTitle } from "../../shared/suggestions-session.js";
@@ -1582,9 +1582,9 @@ export function App() {
   }, [api]);
 
   // Settings remains inline at every width; reselecting it changes the tab without remounting.
-  const onOpenSettings = useCallback((tab = "llm") => {
-    setSettingsTab(normalizeSettingsTab(tab));
-    setActiveView("settings");
+  const onOpenSettings = useCallback((tab = "llm", origin?: SettingsNavigationOrigin) => {
+    setSettingsTab(normalizeSettingsTab(tab), origin);
+    setActiveView("settings", origin);
   }, []);
   // Updates install only through marketplace review.
   const reviewMarketplaceUpdates = useCallback((updates: PackageUpdateView[]) => {

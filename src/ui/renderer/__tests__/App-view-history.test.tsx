@@ -1,6 +1,6 @@
 import "../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, renderHook, screen, waitFor } from "@testing-library/react";
 import { renderApp } from "../../../../test/renderer/render-app.js";
 import {
   clickSidebarNavRow,
@@ -14,6 +14,9 @@ import {
 import { MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 import { t } from "../../../i18n/runtime.js";
+import { useActiveView } from "../hooks/use-active-view.js";
+import { useSettingsTab } from "../hooks/use-settings-tab.js";
+import type { AveApi } from "../types.js";
 
 /** Assert real localized path labels through sidebar and toolbar actions; stack-only tests cannot verify routing. */
 /** Which pane the window is ON — the one the frame marks focused. */
@@ -282,8 +285,8 @@ describe("App view history after a restored launch location", () => {
     expect(back.disabled).toBe(true);
   });
 
-  it("opens chat when the saved model's provider is disconnected", async () => {
-    const stored = settingsWithActiveView("settings", "llm");
+  it("shows provider setup when Home is saved and the provider is disconnected", async () => {
+    const stored = settingsWithActiveView("home");
     const { container } = await renderApp({
       hasApiKey: false,
       settings: {
@@ -299,6 +302,56 @@ describe("App view history after a restored launch location", () => {
     expect(screen.queryByTestId("iab-status-model")).toBeNull();
     fireEvent.click(screen.getByTestId("iab-status-model-setup"));
     await waitFor(() => expect(settingsRow).toHaveAttribute("aria-current", "page"));
+  });
+
+  it("restores a deliberately saved Settings page with a disconnected provider", async () => {
+    const { api, container } = await renderApp({
+      hasApiKey: false,
+      settings: {
+        ...settingsWithActiveView("settings", "permissions"),
+        activeChatModel: { kind: "none", reason: "no-connected-provider" },
+      },
+    });
+    await waitFor(() => expect(path(container)).toContain("권한"));
+    await clickSidebarNavRow("features", "sidebar-routines");
+    const writesBeforeStatus = api.updateSettings.mock.calls.length;
+    await act(async () => {
+      await api.updateSettings({ activeChatModel: { kind: "api", vendor: "openai", model: "example-model" } });
+    });
+    expect(path(container)).toContain("스케줄");
+    expect(api.updateSettings.mock.calls.slice(writesBeforeStatus)).toHaveLength(1);
+  });
+
+  it("keeps provider setup temporary and persists a later deliberate Settings choice", async () => {
+    const stored = deferred<unknown>();
+    const navigate = vi.fn();
+    const updateSettings = vi.fn();
+    const api = { getSettings: () => stored.promise, updateSettings } as unknown as AveApi;
+    const { result, rerender } = renderHook(({ view }: { view: "home" | "settings" }) => ({
+      ...useActiveView(api, [], { view, navigate }),
+      ...useSettingsTab(api),
+    }), { initialProps: { view: "home" as const } });
+
+    act(() => {
+      result.current.setSettingsTab("llm", "provider-setup");
+      result.current.setActiveView("settings", "provider-setup");
+    });
+    expect(navigate).toHaveBeenCalledExactlyOnceWith("settings");
+    expect(updateSettings).not.toHaveBeenCalled();
+    rerender({ view: "settings" });
+
+    await act(async () => stored.resolve(settingsWithActiveView("home", "permissions")));
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(result.current.settingsTab).toBe("llm");
+
+    act(() => {
+      result.current.setSettingsTab("permissions");
+      result.current.setActiveView("settings");
+    });
+    expect(updateSettings.mock.calls).toEqual([
+      [{ system: { settingsTab: "permissions" } }],
+      [{ system: { activeView: "settings" } }],
+    ]);
   });
 
   it("records normally once the user navigates from the restored location", async () => {

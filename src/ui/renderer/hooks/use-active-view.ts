@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { SettingsNavigationOrigin } from "./use-settings-tab.js";
 import type { AveApi } from "../types.js";
 import { isInstanceViewKey, parseInlineViewKey, type InlineViewKey } from "../../../shared/view-key.js";
 
@@ -13,9 +14,8 @@ export interface ActiveViewPane {
 export interface UseActiveViewResult {
   /** Where the main window is — the focused pane's view. */
   activeView: InlineViewKey;
-  /** Navigation before the initial read wins and persists immediately; suppressing that write would restore the discarded
-   * location on next launch. */
-  setActiveView: (next: InlineViewKey | ((current: InlineViewKey) => InlineViewKey)) => void;
+  /** Navigation wins over a pending restore. Provider setup is temporary. */
+  setActiveView: (next: InlineViewKey | ((current: InlineViewKey) => InlineViewKey), origin?: SettingsNavigationOrigin) => void;
   /** Monotonic restore counts distinguish launch arrivals from user navigation; history may replace only its untouched root
    * seed. */
   restoresApplied: number;
@@ -42,6 +42,7 @@ export function useActiveView(
   // Keep the navigation-discard flag in a ref so the setter stays stable and late settings continuations see current user
   // intent.
   const userNavigatedRef = useRef(false);
+  const setupRedirectRef = useRef(false);
   // STATE: a consumer has to re-render to observe the restore's move, and it has to land in the SAME commit as the move
   // itself or the two would be observed as separate changes.
   const [restoresApplied, setRestoresApplied] = useState(0);
@@ -81,8 +82,6 @@ export function useActiveView(
         const parsed = parseInlineViewKey(stored);
         // Unparseable, or a key with no inline form: stay home, silently.
         if (!parsed) return;
-        if (parsed.key === "settings" && settings.activeChatModel?.kind === "none"
-          && settings.activeChatModel.reason === "no-connected-provider") return;
         // Terminals and web pages are put back by the saved main layout (`use-main-layout.ts`), which knows which surface each
         // pane held; the bare view key does not, so it is not acted on here.
         if (isInstanceViewKey(parsed.key)) return;
@@ -110,10 +109,9 @@ export function useActiveView(
   }, [restoreView, loadedPluginViewKeys, pendingPluginView]);
 
   const setActiveView = useCallback(
-    (next: InlineViewKey | ((current: InlineViewKey) => InlineViewKey)) => {
-      // Read first-navigation status before setting its discard flag; every call represents a user destination or its deferred
-      // replay.
-      const firstNavigation = !userNavigatedRef.current;
+    (next: InlineViewKey | ((current: InlineViewKey) => InlineViewKey), origin?: SettingsNavigationOrigin) => {
+      const persistEvenIfCurrent = !userNavigatedRef.current || setupRedirectRef.current;
+      setupRedirectRef.current = origin === "provider-setup";
       userNavigatedRef.current = true;
       // Retires a restore that already arrived and is waiting on its plugin list; the flag above is what stops one that has not
       // been read yet.
@@ -121,9 +119,8 @@ export function useActiveView(
       const current = activeViewRef.current;
       const resolved = typeof next === "function" ? next(current) : next;
       applyView(resolved);
-      // Persist the first navigation even when it equals the current view, because cancelling restore does not prove that view
-      // is already stored.
-      if (resolved !== current || firstNavigation) {
+      // The first navigation or a deliberate choice after setup may equal the visible view before it is stored.
+      if (!setupRedirectRef.current && (resolved !== current || persistEvenIfCurrent)) {
         void api.updateSettings({ system: { activeView: resolved } });
       }
     },

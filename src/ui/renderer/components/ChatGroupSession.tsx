@@ -1,3 +1,4 @@
+import type { SettingsNavigationOrigin } from "../hooks/use-settings-tab.js";
 import type { ChatMessageRevealRequest } from "../hooks/use-chat-scroll.js";
 import type { SideChatOpenRequest } from "./SideChatView.js";
 import type { RewindMode } from "../../../shared/code-rewind.js";
@@ -106,7 +107,7 @@ export interface ChatGroupEnvironment {
   /** Main's active chat model; `kind: "none"` blocks the send (see `useSendMessage`). */
   activeChatModel: ActiveChatModel | null;
   checkApiKey: () => Promise<boolean>;
-  onOpenSettings: (tab?: string) => void;
+  onOpenSettings: (tab?: string, origin?: SettingsNavigationOrigin) => void;
   /** Open the memory panel searching for this text. */
   onOpenMemory: (query: string) => void;
   /** Open the schedule panel on this item (the header chip's 스케줄에서 보기 and 시각·프롬프트 편집). */

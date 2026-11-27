@@ -444,7 +444,7 @@ describe("handleAsk — a turn carrying an attached resource", () => {
     });
 
     expect(chatSend).not.toHaveBeenCalled();
-    expect(onOpenSettings).toHaveBeenCalledWith("llm");
+    expect(onOpenSettings).toHaveBeenCalledWith("llm", "provider-setup");
     expect(setQuestion).not.toHaveBeenCalledWith("");
   });
 
