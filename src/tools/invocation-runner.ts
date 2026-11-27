@@ -2571,9 +2571,9 @@ async function runToolInvocationAttempt(
     if (!brokeredFileRouteSelected && editSubject?.kind === "edit" && services.permissionManager) {
       await services.permissionManager.ensureProjectRulesLoaded(executionCwd);
       const editDecision = services.permissionManager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
-        ...invocationPermissionContext, sessionId, ruleSubject: editSubject, projectRulesCwd: executionCwd,
+        ...invocationPermissionContext, ruleSubject: editSubject, projectRulesCwd: executionCwd,
         ...(registeredUnattendedStageOf(sessionId) !== undefined ? {
-          fileWritePolicy, unattendedInvokedEffect: tool.unattendedEffect ?? "unknown", reportUnattendedDenials: false,
+          sessionId, fileWritePolicy, unattendedInvokedEffect: tool.unattendedEffect ?? "unknown", reportUnattendedDenials: false,
         } : {}),
       });
       if (editDecision.decision === "allow" && services.permissionManager.checkScopedRules(editSubject, executionCwd).decision === "allow") {
