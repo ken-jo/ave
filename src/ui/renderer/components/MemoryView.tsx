@@ -38,7 +38,7 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
   const [reload, setReload] = useState(0);
   const [resumedBuild, setResumedBuild] = useState(false);
   const [cancelPending, setCancelPending] = useState(false);
-  const [cancelError, setCancelError] = useState<{ buildId: string; error: MemoryMapError } | null>(null);
+  const [cancelErrors, setCancelErrors] = useState(() => new Map<string, MemoryMapError>());
   const windowsCancel = useRef<{ buildId: string } | undefined>(undefined);
   const windowsBuildId = useRef<string | undefined>(undefined);
   const generation = useRef(0);
@@ -49,7 +49,7 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
   // biome-ignore lint/correctness/useExhaustiveDependencies: The API and project scope own the Windows build and Cancel reply.
   useEffect(() => {
     if (!windows) return;
-    setCancelPending(false); setCancelError(null);
+    setCancelPending(false); setCancelErrors(new Map());
     return () => { windowsCancel.current = undefined; windowsBuildId.current = undefined; };
   }, [api, scope, windows]);
   useEffect(() => { if (props.initialQuery) setTab('manage'); }, [props.initialQuery]);
@@ -144,10 +144,7 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
   const handleBuild = async () => {
     if (windows && windowsCancel.current) return;
     const buildId = windows ? crypto.randomUUID() : undefined;
-    if (windows) {
-      windowsBuildId.current = buildId;
-      setCancelError(null);
-    }
+    if (windows) windowsBuildId.current = buildId;
     const current = ++generation.current;
     setResumedBuild(false); setState('building'); setError(null); setSelected(null); setProgress(null);
     try {
@@ -169,20 +166,25 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
       generation.current++;
       setResumedBuild(false);
     }
-    setCancelPending(true); setCancelError(null);
+    setCancelPending(true);
+    const refuse = (error: MemoryMapError) => {
+      if (windowsBuildId.current === buildId) setState('failed');
+      setCancelErrors(previous => new Map(previous).set(buildId, error));
+    };
     try {
       const result = await api.memoryMap.cancel(buildId);
       if (windowsCancel.current !== request) return;
-      if (result.ok) setReload(value => value + 1);
-      else {
-        if (windowsBuildId.current === buildId) setState('failed');
-        setCancelError({ buildId, error: result.error });
-      }
+      if (result.ok) {
+        setCancelErrors(previous => {
+          if (!previous.has(buildId)) return previous;
+          const remaining = new Map(previous);
+          remaining.delete(buildId);
+          return remaining;
+        });
+        if (windowsBuildId.current === buildId) setReload(value => value + 1);
+      } else refuse(result.error);
     } catch {
-      if (windowsCancel.current === request) {
-        if (windowsBuildId.current === buildId) setState('failed');
-        setCancelError({ buildId, error: 'graph-build-failed' });
-      }
+      if (windowsCancel.current === request) refuse('graph-build-failed');
     } finally {
       if (windowsCancel.current === request) { windowsCancel.current = undefined; setCancelPending(false); }
     }
@@ -198,6 +200,7 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
   };
   const toggleSource = (source: MemoryMapSource) => setFilters(previous => ({ ...previous, sources: previous.sources?.includes(source) ? previous.sources.filter(value => value !== source) : [...previous.sources ?? [], source] }));
   const toggleProject = (id: string) => setFilters(previous => ({ ...previous, projectIds: previous.projectIds?.includes(id) ? previous.projectIds.filter(value => value !== id) : [...previous.projectIds ?? [], id] }));
+  const hasCurrentCancelError = windowsBuildId.current !== undefined && cancelErrors.has(windowsBuildId.current);
   return <Tabs data-testid="memory-view" value={tab} onValueChange={setTab} className="@container flex min-h-0 min-w-0 flex-1 flex-col gap-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <TabsList aria-label={t('memoryMap.views')}>
@@ -207,10 +210,10 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
       </TabsList>
       {tab !== 'manage' && <Button size="sm" variant="outline" disabled={cancelPending || state === 'building' || state === 'loading' || state === 'unconfigured' || state === 'unavailable'} onClick={() => void handleBuild()}>{t('memoryMap.rebuild')}</Button>}
     </div>
-    {tab !== 'manage' && cancelError && <div className="flex flex-wrap items-center gap-2">
-      <p role="alert" className="text-xs text-destructive">{t(MEMORY_MAP_ERROR_KEYS[cancelError.error])}</p>
-      <Button size="sm" variant="outline" onClick={() => void handleWindowsCancel(cancelError.buildId)}>{t('memoryMap.retryCancel')}</Button>
-    </div>}
+    {tab !== 'manage' && Array.from(cancelErrors, ([buildId, cancelError]) => <div key={buildId} className="flex flex-wrap items-center gap-2">
+      <p role="alert" className="text-xs text-destructive">{t(MEMORY_MAP_ERROR_KEYS[cancelError])}{cancelErrors.size > 1 && <> <code>{buildId}</code></>}</p>
+      <Button size="sm" variant="outline" disabled={cancelPending} onClick={() => void handleWindowsCancel(buildId)}>{t('memoryMap.retryCancel')}</Button>
+    </div>)}
     {tab !== 'manage' && <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border @[640px]:flex-row">
       <aside aria-label={t('memoryMap.filters')} className="w-full shrink-0 space-y-4 overflow-auto border-b p-3 @[640px]:w-48 @[640px]:border-b-0 @[640px]:border-r">
         <p role="status" className="text-xs font-medium">{t('memoryMap.totals', { memories: visiblePoints.length, links: linkCount })}</p>
@@ -239,10 +242,10 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
           {(!windows || error !== 'local-inference-disabled') && <p className="text-sm">{t(state === 'unavailable'
             ? windows && error ? MEMORY_MAP_ERROR_KEYS[error] : 'memoryMap.error.local-runtime-unavailable'
             : state === 'empty' && snapshot?.status === 'ready' ? 'memoryMap.noMemories' : `memoryMap.state.${state}`)}</p>}
-          {error && (!windows || state !== 'unavailable') && !cancelError && <p role="alert" className="text-xs text-destructive">{t(`memoryMap.error.${error}`)}</p>}
+          {error && (!windows || state !== 'unavailable') && !hasCurrentCancelError && <p role="alert" className="text-xs text-destructive">{t(`memoryMap.error.${error}`)}</p>}
           {(state === 'unconfigured' || state === 'unavailable') && <Button size="sm" onClick={onOpenEmbeddingSettings}>{t('memoryMap.openSettings')}</Button>}
           {state === 'building' && <><p className="text-xs">{progress ? t(`memoryMap.phase.${progress.phase}`, { completed: progress.completed, total: progress.total }) : snapshot?.status === 'building' ? t('memoryMap.phase.embedding', { completed: snapshot.coverage.embedded, total: snapshot.coverage.eligible }) : t('memoryMap.preparing')}</p>{progress && <progress aria-label={t('memoryMap.state.building')} value={progress.completed} max={Math.max(1, progress.total)} />}<Button size="sm" variant="outline" disabled={cancelPending} onClick={() => void handleCancel()}>{t('memoryMap.cancelBuild')}</Button></>}
-          {!cancelError && ['failed', 'stale', 'empty'].includes(state) && <Button size="sm" disabled={cancelPending} onClick={() => void handleBuild()}>{t(state === 'failed' ? 'memoryMap.retry' : 'memoryMap.rebuild')}</Button>}
+          {!hasCurrentCancelError && ['failed', 'stale', 'empty'].includes(state) && <Button size="sm" disabled={cancelPending} onClick={() => void handleBuild()}>{t(state === 'failed' ? 'memoryMap.retry' : 'memoryMap.rebuild')}</Button>}
         </div>}
         {selectedPoint && state === 'ready' && <aside aria-label={t('memoryMap.detail')} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); handleClose(); } }} className="absolute inset-y-0 right-0 z-10 w-full max-w-sm space-y-4 overflow-auto border-l bg-background p-4 shadow-lg">
           <Button ref={closeButton} size="sm" variant="outline" onClick={handleClose}>{t('memoryMap.closeDetail')}</Button>

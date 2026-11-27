@@ -2,6 +2,7 @@ import '../../../../../test/renderer/setup.js';
 import assert from 'node:assert/strict';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { deferred } from '../../../../__tests__/support/deferred.js';
 import { createMemoryMapApi } from '../../../../__tests__/support/memory-map-api.js';
 import { ko } from '../../../../i18n/messages/ko.js';
 import { makeMockAveApi } from '../../../../../test/renderer/mock-ave-api.js';
@@ -181,7 +182,7 @@ describe('memory map view', () => {
   });
   it('shows the cancellation refusal after ignoring the superseded build reply', async () => {
     const { map, props } = setup();
-    const build = Promise.withResolvers<Awaited<ReturnType<typeof map.build>>>();
+    const build = deferred<Awaited<ReturnType<typeof map.build>>>();
     map.build.mockReturnValue(build.promise);
     map.cancel.mockResolvedValue({ ok: false, error: 'build-exit-unconfirmed' });
     render(<MemoryView {...props} />); await ready();
@@ -195,7 +196,7 @@ describe('memory map view', () => {
     const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows');
     try {
       const { map, props, api } = setup();
-      const cancel = Promise.withResolvers<Awaited<ReturnType<typeof map.cancel>>>();
+      const cancel = deferred<Awaited<ReturnType<typeof map.cancel>>>();
       map.cancel.mockReturnValue(cancel.promise);
       map.build.mockImplementation(() => new Promise(() => {}));
       render(<MemoryView {...props} />); await ready();
@@ -216,7 +217,7 @@ describe('memory map view', () => {
       const { map, props, api } = setup();
       const firstId = '11111111-1111-4111-8111-111111111111';
       const secondId = '22222222-2222-4222-8222-222222222222';
-      const firstCancel = Promise.withResolvers<Awaited<ReturnType<typeof map.cancel>>>();
+      const firstCancel = deferred<Awaited<ReturnType<typeof map.cancel>>>();
       const refusal = { ok: false, error: 'build-exit-unconfirmed' } as const;
       map.cancel.mockReturnValueOnce(firstCancel.promise).mockResolvedValueOnce(refusal).mockResolvedValueOnce({ ok: true, value: null });
       map.build.mockImplementation(() => new Promise(() => {}));
@@ -251,7 +252,55 @@ describe('memory map view', () => {
       map.get.mockResolvedValue({ ok: true, value: SNAPSHOT });
       fireEvent.click(screen.getByRole('button', { name: '지도 생성 취소' }));
       await waitFor(() => expect(map.cancel).toHaveBeenLastCalledWith(secondId));
+      await ready();
+      expect(screen.getByRole('alert')).toHaveTextContent(ko['memoryMap.error.build-exit-unconfirmed']);
+
+      const replacement = deferred<Awaited<ReturnType<typeof map.build>>>();
+      map.build.mockReturnValueOnce(replacement.promise);
+      fireEvent.click(screen.getByRole('button', { name: '지도 다시 만들기' }));
+      await act(async () => replacement.resolve({ ok: false, error: 'graph-build-failed' }));
+      act(() => save({} as Parameters<typeof save>[0]));
+      await ready();
+      expect(screen.getByRole('alert')).toHaveTextContent(ko['memoryMap.error.build-exit-unconfirmed']);
+
+      map.cancel.mockClear().mockResolvedValueOnce({ ok: true, value: null });
+      map.build.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: ko['memoryMap.retryCancel'] }));
       await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+      expect(map.cancel.mock.calls).toEqual([[displayedId]]);
+      expect(map.build).not.toHaveBeenCalled();
+    } finally {
+      userAgent.mockRestore();
+    }
+  });
+  it('keeps both Windows refusals bound to their own Retry controls', async () => {
+    const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows');
+    try {
+      const { map, props, api } = setup();
+      const firstId = '11111111-1111-4111-8111-111111111111';
+      const secondId = '22222222-2222-4222-8222-222222222222';
+      const refusal = { ok: false, error: 'build-exit-unconfirmed' } as const;
+      const firstCancel = deferred<Awaited<ReturnType<typeof map.cancel>>>();
+      map.cancel.mockReturnValueOnce(firstCancel.promise).mockResolvedValueOnce(refusal).mockResolvedValue({ ok: true, value: null });
+      map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, snapshotId: firstId, status: 'building' } });
+      render(<MemoryView {...props} />);
+      fireEvent.click(await screen.findByRole('button', { name: '지도 생성 취소' }));
+
+      map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, snapshotId: secondId, status: 'building' } });
+      const save = vi.mocked(api.onMemorySaveResult).mock.calls[0][0];
+      act(() => save({} as Parameters<typeof save>[0]));
+      await act(async () => firstCancel.resolve(refusal));
+      fireEvent.click(screen.getByRole('button', { name: '지도 생성 취소' }));
+      const retries = () => screen.getAllByRole('button', { name: ko['memoryMap.retryCancel'] });
+      await waitFor(() => expect(retries()).toHaveLength(2));
+      fireEvent.click(retries()[0]);
+      await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(1));
+      expect(map.get).toHaveBeenCalledTimes(2);
+      map.get.mockResolvedValue({ ok: true, value: SNAPSHOT });
+      fireEvent.click(screen.getByRole('button', { name: ko['memoryMap.retryCancel'] }));
+      await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+      expect(map.cancel.mock.calls).toEqual([[firstId], [secondId], [firstId], [secondId]]);
+      expect(map.build).not.toHaveBeenCalled();
     } finally {
       userAgent.mockRestore();
     }
@@ -261,7 +310,7 @@ describe('memory map view', () => {
     vi.useFakeTimers();
     try {
       const { map, props } = setup();
-      const cancel = Promise.withResolvers<Awaited<ReturnType<typeof map.cancel>>>();
+      const cancel = deferred<Awaited<ReturnType<typeof map.cancel>>>();
       map.cancel.mockReturnValue(cancel.promise);
       map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, status: 'building' } });
       render(<MemoryView {...props} />);
