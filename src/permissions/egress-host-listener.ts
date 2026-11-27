@@ -1,7 +1,9 @@
 import { maskSensitiveData } from "../audit/dlp-filter.js";
 import { egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased } from "./egress-invocations.js";
 import { commitUnderAdmission } from "../shared/admission-commit.js";
-import { openInvocationProxyListener, type InvocationProxyAdmission, type InvocationProxyListener } from "./egress-invocation-listener.js";
+import {
+  openInvocationProxyListener, openInvocationProxySocketListener, type InvocationProxyAdmission, type InvocationProxyListener, type InvocationProxySocketListener,
+} from "./egress-invocation-listener.js";
 import { openEgressRelay } from "./egress-relay/relay.js";
 
 /**
@@ -10,8 +12,22 @@ import { openEgressRelay } from "./egress-relay/relay.js";
  * owner closes it: a macOS holder whose stop was not verified may have a process left whose profile allows this port,
  * so the number must not go to another listener while Ave runs.
  */
-export async function openMxcEgressLease(token: string, assertStillValid?: () => void,
+export function openMxcEgressLease(token: string, assertStillValid?: () => void,
   options: { readonly holdPortAfterRelease?: boolean } = {}): Promise<InvocationProxyListener> {
+  return openLease(token, assertStillValid, options) as Promise<InvocationProxyListener>;
+}
+
+/**
+ * The socket form, for a Linux holder: the listener binds `socketPath`, and a held lease keeps the socket bound and
+ * refusing after its invocation ends, until the owner closes it, which removes the file.
+ */
+export function openMxcEgressSocketLease(token: string, assertStillValid: (() => void) | undefined,
+  options: { readonly holdPortAfterRelease?: boolean; readonly socketPath: string }): Promise<InvocationProxySocketListener> {
+  return openLease(token, assertStillValid, options) as Promise<InvocationProxySocketListener>;
+}
+
+async function openLease(token: string, assertStillValid: (() => void) | undefined,
+  options: { readonly holdPortAfterRelease?: boolean; readonly socketPath?: string }): Promise<InvocationProxyListener | InvocationProxySocketListener> {
   const owner = egressInvocationOwner(token);
   const signal = egressInvocationAbortSignal(token);
   if (!owner || !signal) throw new Error("Container egress requires a live invocation");
@@ -40,22 +56,34 @@ export async function openMxcEgressLease(token: string, assertStillValid?: () =>
   try {
     assertCanBind();
     const relay = await openHostEgressListener(token, admission);
-    const listener = await openInvocationProxyListener({
+    const listenerOptions = {
       admission,
       upstream: () => admission.acceptsConnections()
         ? { host: "127.0.0.1", port: relay.port, proxyAuthorization: relay.proxyAuthorization }
         : undefined,
       onRefused: relay.recordRefusal,
-    });
-    return commitUnderAdmission(assertCanBind, () => {
-      relay.registerPort(listener.port);
-      // Held: the invocation's abort revokes the relay and the listener, which refuse every request while the port stays bound.
+    };
+    const subscribe = () => {
+      // Held: the invocation's abort revokes the relay and the listener, which refuse every request while bound.
       if (!options.holdPortAfterRelease) {
         unsubscribe = onEgressInvocationReleased((released) => {
           if (released === token) void close().catch(() => {});
         });
       }
       ready = true;
+    };
+    if (options.socketPath !== undefined) {
+      const listener = await openInvocationProxySocketListener({ ...listenerOptions, socketPath: options.socketPath });
+      // A socket file is never a TCP destination, so there is no port to register with the relay.
+      return commitUnderAdmission(assertCanBind, () => {
+        subscribe();
+        return { socketPath: listener.socketPath, close };
+      });
+    }
+    const listener = await openInvocationProxyListener(listenerOptions);
+    return commitUnderAdmission(assertCanBind, () => {
+      relay.registerPort(listener.port);
+      subscribe();
       return { port: listener.port, url: listener.url, close };
     });
   } catch (error) {

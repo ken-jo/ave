@@ -1,9 +1,12 @@
+import { existsSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { egressInvocationAbortSignal, openEgressInvocation } from "../egress-invocations.js";
-import { openMxcEgressLease } from "../egress-host-listener.js";
-import type { InvocationProxyAdmission } from "../egress-invocation-listener.js";
+import { openMxcEgressLease, openMxcEgressSocketLease } from "../egress-host-listener.js";
+import { type InvocationProxyAdmission, UNIX_SOCKET_PATH_MAX } from "../egress-invocation-listener.js";
 import { egressIdentityStrength } from "../egress-identity.js";
 
 const runtime = vi.hoisted(() => ({ open: vi.fn() }));
@@ -88,5 +91,66 @@ describe("container egress lease", () => {
         expect(egressIdentityStrength(kind, { identity: "username" })).toBe("shared");
       }
     } finally { Object.defineProperty(process, "platform", descriptor); }
+  });
+});
+
+describe("container egress lease on a socket file", () => {
+  function socketRequest(socketPath: string): Promise<number | undefined> {
+    return new Promise((resolve, reject) => {
+      const request = http.get({ socketPath, path: "http://allowed.example/", headers: { "Proxy-Authorization": "Basic Zm9yZ2Vk" } },
+        (response) => { response.resume(); response.once("end", () => resolve(response.statusCode)); });
+      request.once("error", reject);
+    });
+  }
+  function folder(): string {
+    const path = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-proxy-socket-")));
+    cleanups.push(() => rmSync(path, { recursive: true, force: true }));
+    return path;
+  }
+  // A path of exactly `length` bytes inside the folder.
+  function pathOf(base: string, length: number): string {
+    const prefix = `${base}/`;
+    return `${prefix}${"s".repeat(length - Buffer.byteLength(prefix))}`;
+  }
+
+  // 107 bytes on Linux, where holders run; 103 on macOS.
+  it(`refuses a socket path one byte over ${UNIX_SOCKET_PATH_MAX} by name before anything binds, and binds one of ${UNIX_SOCKET_PATH_MAX} owner-only`, async () => {
+    const { invocation, relay, observed } = await fixture();
+    const base = folder();
+    if (Buffer.byteLength(base) > 90) throw new Error(`temporary folder ${base} is too long for this case`);
+    await expect(openMxcEgressSocketLease(invocation.token, undefined, { socketPath: pathOf(base, UNIX_SOCKET_PATH_MAX + 1) }))
+      .rejects.toMatchObject({ code: "proxy-socket-path-too-long" });
+    expect(existsSync(pathOf(base, UNIX_SOCKET_PATH_MAX + 1))).toBe(false);
+    const lease = await openMxcEgressSocketLease(invocation.token, undefined, { socketPath: pathOf(base, UNIX_SOCKET_PATH_MAX) });
+    cleanups.push(lease.close);
+    expect(Object.keys(lease).sort()).toEqual(["close", "socketPath"]);
+    expect(statSync(lease.socketPath).mode & 0o777).toBe(0o600);
+    // A socket file is never a TCP destination: nothing is registered with the relay.
+    expect(relay.registerPort).not.toHaveBeenCalled();
+    expect(await socketRequest(lease.socketPath)).toBe(200);
+    expect(observed).toEqual([relay.proxyAuthorization]);
+  });
+
+  it("refuses once the invocation ended, and removes the socket file", async () => {
+    const { invocation } = await fixture();
+    const lease = await openMxcEgressSocketLease(invocation.token, undefined, { socketPath: join(folder(), "proxy.sock") });
+    expect(await socketRequest(lease.socketPath)).toBe(200);
+    invocation.release();
+    await vi.waitFor(() => expect(existsSync(lease.socketPath)).toBe(false));
+    await expect(socketRequest(lease.socketPath)).rejects.toThrow();
+  });
+
+  it("stays bound and refusing after an unverified release, and is removed once the owner closes it", async () => {
+    const { invocation } = await fixture();
+    const lease = await openMxcEgressSocketLease(invocation.token, undefined, { socketPath: join(folder(), "proxy.sock"), holdPortAfterRelease: true });
+    expect(await socketRequest(lease.socketPath)).toBe(200);
+    invocation.release();
+    expect(egressInvocationAbortSignal(invocation.token)).toBeUndefined();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(existsSync(lease.socketPath)).toBe(true);
+    // Bound, and every connection is dropped: nothing reaches the relay.
+    await expect(socketRequest(lease.socketPath)).rejects.toThrow();
+    await lease.close();
+    expect(existsSync(lease.socketPath)).toBe(false);
   });
 });

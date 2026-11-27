@@ -1,5 +1,6 @@
 // The kernel-bound listener supplies invocation identity; drop client authorization and re-stamp every parsed HTTP request, including pipelined requests and CONNECT. Refuse loopback/unspecified destinations before forwarding so one listener cannot impersonate another through proxy chaining.
 // SOCKS fails HTTP parsing; exclude shared extension proxy ports from binds. Destination policy remains the runtime's decision under the host-stamped identity.
+import { chmodSync, rmSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
@@ -21,6 +22,25 @@ export interface InvocationProxyListener {
   readonly url: string;
   // Stop accepting, drop every open connection and unbind. Idempotent.
   close(): Promise<void>;
+}
+
+/** The same listener on a Unix socket file, for a holder whose bridge forwards its own loopback port to it. */
+export interface InvocationProxySocketListener {
+  readonly socketPath: string;
+  // Stop accepting, drop every open connection, unbind and remove the socket file. Idempotent.
+  close(): Promise<void>;
+}
+
+/** The longest Unix socket path `sockaddr_un` holds, without its terminating NUL: 107 bytes on Linux, 103 on macOS. */
+export const UNIX_SOCKET_PATH_MAX = process.platform === "linux" ? 107 : 103;
+
+export class ProxySocketPathTooLong extends Error {
+  readonly code = "proxy-socket-path-too-long";
+
+  constructor(readonly path: string) {
+    super(`Invocation proxy socket path ${JSON.stringify(path)} is ${Buffer.byteLength(path)} bytes, over ${UNIX_SOCKET_PATH_MAX}`);
+    this.name = "ProxySocketPathTooLong";
+  }
 }
 
 export interface InvocationProxyAdmission {
@@ -132,9 +152,23 @@ export function __resetIpv6HoldNoticeForTest(): void {
   ipv6HoldNoticeLogged = false;
 }
 
-export async function openInvocationProxyListener(
-  options: OpenInvocationProxyListenerOptions,
-): Promise<InvocationProxyListener> {
+export function openInvocationProxyListener(options: OpenInvocationProxyListenerOptions): Promise<InvocationProxyListener> {
+  return openListener(options) as Promise<InvocationProxyListener>;
+}
+
+export function openInvocationProxySocketListener(
+  options: OpenInvocationProxyListenerOptions & { readonly socketPath: string },
+): Promise<InvocationProxySocketListener> {
+  return openListener(options) as Promise<InvocationProxySocketListener>;
+}
+
+async function openListener(
+  options: OpenInvocationProxyListenerOptions & { readonly socketPath?: string },
+): Promise<InvocationProxyListener | InvocationProxySocketListener> {
+  // Measured before anything binds: never shortened through a link, never moved elsewhere.
+  if (options.socketPath !== undefined && Buffer.byteLength(options.socketPath) > UNIX_SOCKET_PATH_MAX) {
+    throw new ProxySocketPathTooLong(options.socketPath);
+  }
   const [excludedStart, excludedEnd] = getWindowsProxyPortRange();
   if (!Number.isInteger(excludedStart) || !Number.isInteger(excludedEnd) ||
       excludedStart < 1 || excludedEnd > 65535 || excludedStart > excludedEnd) {
@@ -302,6 +336,7 @@ export async function openInvocationProxyListener(
       await binding?.catch(() => {});
       try {
         if (server.listening) await unbind();
+        if (options.socketPath !== undefined) rmSync(options.socketPath, { force: true });
       } finally {
         if (hold.listening) await unbind(hold);
       }
@@ -316,6 +351,25 @@ export async function openInvocationProxyListener(
   options.admission?.signal.addEventListener("abort", revoke, { once: true });
   let port: number | undefined;
   try {
+    if (options.socketPath !== undefined) {
+      const socketPath = options.socketPath;
+      options.admission?.assertCanBind();
+      if (closeRequested) throw new Error("invocation proxy listener closed while binding");
+      binding = new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        // The folder is private to Ave; the socket is narrowed to its owner before anything is accepted.
+        server.listen(socketPath, () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+      await binding;
+      chmodSync(socketPath, 0o600);
+      options.admission?.assertCanBind();
+      if (closeRequested) throw new Error("invocation proxy listener closed while binding");
+      accepting = true;
+      return { socketPath, close };
+    }
     // Each pass binds a fresh port pair. Where the IPv6 bind fails for a reason that is neither a taken port nor an absent
     // address, both ports are released and another pair is tried.
     for (let retry = 0; port === undefined; retry++) {
