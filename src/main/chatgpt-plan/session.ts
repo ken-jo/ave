@@ -288,8 +288,7 @@ export class ChatGptPlanSession {
         const identity = await this.options.verifier.verify(tokens.idToken!, {
           clientId: result.clientId,
           nonce: attempt.nonce,
-        }, owner);
-        this.assertSignInOwner(owner);
+        });
         if (record?.subject && identity.subject !== record.subject) {
           throw new ChatGptPlanSessionError("account-mismatch");
         }
@@ -303,7 +302,8 @@ export class ChatGptPlanSession {
           email: identity.email,
           tokens: this.storedTokens(tokens, tokens.idToken!),
           welcomed: welcomed || planEnabled,
-        });
+        }, owner);
+        this.assertSignInOwner(owner);
         this.notice = planEnabled && !welcomed ? "welcome" : null;
         this.emit({ event: "sign-in-succeeded" });
       } catch (error) {
@@ -371,6 +371,7 @@ export class ChatGptPlanSession {
     if (!expired && !(nearExpiry && refreshAllowed)) return tokens.accessToken;
     const refreshed = await this.refresh();
     if (this.signingOut || this.grantWithdrawn) throw new ChatGptPlanSessionError("signed-out");
+    if (!refreshed.scopes.includes(CHATGPT_PLAN_USAGE_SCOPE)) throw new ChatGptPlanSessionError("plan-usage-disabled");
     return refreshed.accessToken;
   }
 

@@ -24,6 +24,7 @@ import {
 import { isRecord } from "../shared/is-record.js";
 import { JsonLineReader } from "../lib/json-line-reader.js";
 import { JsonRpcPendingRequests } from "../lib/json-rpc-pending-request.js";
+import { isDefinitiveSubscriptionAuthError } from "./subscription-transport-error-diagnostics.js";
 
 const PROBE_TIMEOUT_MS = 10_000;
 const ACP_REQUEST_TIMEOUT_MS = 15_000;
@@ -115,6 +116,11 @@ export interface AcpSubscriptionRuntimeClientOptions {
 }
 
 interface PendingLogin {
+  readonly owner: symbol;
+  readonly assertCurrent?: () => void;
+  readonly onCompleted?: () => void;
+  readonly onConnectionLost?: () => void;
+  lossReported: boolean;
   window: OAuthLoginAttempt;
   child: ChildProcess;
   timer: NodeJS.Timeout;
@@ -143,7 +149,7 @@ export type AcpConnectionLoss = "signed-out" | "unknown";
 
 export function isAcpAuthenticationError(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  if (value.code === -32_000) return true;
+  if (value.code === -32_000 || isDefinitiveSubscriptionAuthError(value)) return true;
   const message = typeof value.message === "string" ? value.message.toLocaleLowerCase() : "";
   return /\b(?:unauthenticated|unauthorized|not authenticated|not logged in|invalid_client)\b/.test(message)
     || /\b(?:authentication|login|sign[ -]in) (?:is )?required\b/.test(message)
@@ -482,12 +488,16 @@ class AcpAuthProbe {
         const authLost = isAcpAuthenticationError(message.error);
         if (authLost) this.reportLoss("signed-out");
         request.reject(new AcpRpcError(authLost));
-      } else {
+      } else if (Object.hasOwn(message, "result")) {
         const method = this.manifest.requiresAuthenticationMethod;
         if (request.method === "initialize" && method && !supportsAcpAuthenticationMethod(message.result, method)) {
           this.reportLoss("signed-out");
         }
         request.resolve(message.result);
+      } else {
+        const error = new AcpSubscriptionRuntimeError("acp-operation-failed");
+        this.close(error);
+        request.reject(error);
       }
       return;
     }
@@ -518,6 +528,7 @@ export class AcpSubscriptionRuntimeClient {
   private observedExecutable: string | null;
   private status: AcpSubscriptionStatus;
   private pendingLogin: PendingLogin | null = null;
+  private loginOwner: symbol | null = null;
   private completedLoginError: AcpSubscriptionErrorCode | null = null;
   private operationLock: Promise<void> = Promise.resolve();
 
@@ -654,16 +665,36 @@ export class AcpSubscriptionRuntimeClient {
 
   // Starts only the documented device-code command. The official runtime may open the user's native system browser, but Ave does not automate that
   // browser. All output is parsed in-memory under strict allowlists only.
-  async startDeviceCodeLogin(): Promise<AcpSubscriptionStatus> {
+  async startDeviceCodeLogin(
+    assertCurrent?: () => void,
+    onCompleted?: () => void,
+    onConnectionLost?: () => void,
+  ): Promise<AcpSubscriptionStatus> {
+    if (this.loginOwner || this.pendingLogin) throw new AcpSubscriptionRuntimeError("acp-login-in-progress");
+    const owner = Symbol();
+    this.loginOwner = owner;
+    const assertOwner = () => {
+      assertCurrent?.();
+      if (this.loginOwner !== owner) throw new AcpSubscriptionRuntimeError("acp-login-failed");
+    };
     return this.withOperationLock(async () => {
-      if (this.pendingLogin) throw new AcpSubscriptionRuntimeError("acp-login-in-progress");
+      assertOwner();
       const executable = await this.requireExecutable();
-      const child = this.launch(executable, this.manifest.loginArgs);
+      assertOwner();
+      let child: ChildProcess;
+      try {
+        child = this.launch(executable, this.manifest.loginArgs);
+      } catch (error) {
+        onConnectionLost?.();
+        throw error;
+      }
       if (!child.stdout || !child.stderr) {
+        onConnectionLost?.();
         await forceKillManagedChildProcess(child, "acp subscription login missing output streams");
         throw new AcpSubscriptionRuntimeError("acp-operation-failed");
       }
       const pending = {
+        owner, assertCurrent, onCompleted, onConnectionLost, lossReported: false,
         window: new OAuthLoginAttempt(),
         child,
         timer: undefined as unknown as NodeJS.Timeout,
@@ -693,11 +724,17 @@ export class AcpSubscriptionRuntimeClient {
       );
       child.stdout.on("data", (chunk: Buffer | string) => this.consumeLoginOutput(pending, "stdout", chunk));
       child.stderr.on("data", (chunk: Buffer | string) => this.consumeLoginOutput(pending, "stderr", chunk));
-      child.once("error", () => this.queueFinishPendingLogin(pending, "failed"));
+      const transportLost = () => this.queueFinishPendingLogin(pending, "failed", true);
+      child.stdout.once("error", transportLost);
+      child.stderr.once("error", transportLost);
+      child.once("error", transportLost);
       child.once("close", (code: number | null) => {
-        this.queueFinishPendingLogin(pending, code === 0 ? "succeeded" : "failed");
+        this.queueFinishPendingLogin(pending, code === 0 ? "succeeded" : "failed", code !== 0);
       });
       return this.currentStatus();
+    }).catch((error: unknown) => {
+      if (this.loginOwner === owner) this.loginOwner = null;
+      throw error;
     });
   }
 
@@ -705,9 +742,10 @@ export class AcpSubscriptionRuntimeClient {
   async openPendingVerificationUrl(openLogin: OpenOAuthLogin): Promise<AcpSubscriptionStatus> {
     return this.withOperationLock(async () => {
       const pending = this.pendingLogin;
-      if (!pending?.verificationUrl) {
+      if (!pending?.verificationUrl || this.loginOwner !== pending.owner) {
         throw new AcpSubscriptionRuntimeError("acp-verification-url-unavailable");
       }
+      pending.assertCurrent?.();
       pending.window.open(pending.verificationUrl, openLogin, LOGIN_TIMEOUT_MS,
         () => this.queueFinishPendingLogin(pending, "failed"));
       return this.currentStatus();
@@ -715,6 +753,7 @@ export class AcpSubscriptionRuntimeClient {
   }
 
   async cancelLogin(): Promise<AcpSubscriptionStatus> {
+    this.loginOwner = null;
     return this.withOperationLock(async () => {
       const pending = this.pendingLogin;
       if (!pending) return this.getStatusUnsafe();
@@ -724,14 +763,14 @@ export class AcpSubscriptionRuntimeClient {
   }
 
   async logout(): Promise<AcpSubscriptionStatus> {
+    const logoutArgs = this.manifest.logoutArgs;
+    if (!logoutArgs) throw new AcpSubscriptionRuntimeError("acp-logout-not-supported");
+    this.loginOwner = null;
     return this.withOperationLock(async () => {
-      if (!this.manifest.logoutArgs) {
-        throw new AcpSubscriptionRuntimeError("acp-logout-not-supported");
-      }
-      if (this.pendingLogin) throw new AcpSubscriptionRuntimeError("acp-login-in-progress");
+      await this.stopUnsafe();
       const executable = await this.requireExecutable();
       try {
-        await this.runCommand(executable, this.manifest.logoutArgs, false);
+        await this.runCommand(executable, logoutArgs, false);
       } catch (error) {
         if (error instanceof AcpSubscriptionRuntimeError) throw error;
         throw new AcpSubscriptionRuntimeError("acp-operation-failed");
@@ -742,6 +781,7 @@ export class AcpSubscriptionRuntimeClient {
   }
 
   async stop(): Promise<void> {
+    this.loginOwner = null;
     await this.withOperationLock(async () => {
       await this.stopUnsafe();
     });
@@ -1000,7 +1040,13 @@ export class AcpSubscriptionRuntimeClient {
   private queueFinishPendingLogin(
     pending: PendingLogin,
     outcome: "succeeded" | "failed" | "cancelled",
+    transportLost = false,
   ): void {
+    if (this.pendingLogin !== pending || this.loginOwner !== pending.owner) return;
+    if (transportLost && !pending.lossReported) {
+      pending.lossReported = true;
+      pending.onConnectionLost?.();
+    }
     void this.withOperationLock(async () => {
       await this.finishPendingLogin(pending, outcome);
     }).catch(() => undefined);
@@ -1019,15 +1065,19 @@ export class AcpSubscriptionRuntimeClient {
     pending.verificationUrl = null;
     pending.deviceCode = null;
     await forceKillManagedChildProcess(pending.child, `acp subscription login ${outcome}`);
+    if (this.loginOwner !== pending.owner && outcome !== "cancelled") return;
+    this.loginOwner = null;
     this.status = acpSubscriptionStatus(
       this.options.provider,
       "unverified",
       outcome === "succeeded" ? "unknown" : "signed-out",
     );
     if (outcome === "failed") this.completedLoginError = "acp-login-failed";
+    if (outcome === "succeeded") pending.onCompleted?.();
   }
 
   private async stopUnsafe(): Promise<void> {
+    this.loginOwner = null;
     if (this.pendingLogin) await this.finishPendingLogin(this.pendingLogin, "cancelled");
   }
 

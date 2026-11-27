@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { deferred } from "../../../__tests__/test-helpers.js";
 import {
@@ -11,6 +11,13 @@ import {
 } from "../endpoints.js";
 import { ChatGptPlanIdTokenError } from "../id-token.js";
 import { startChatGptPlanCallbackListener, type ChatGptPlanCallbackListener } from "../loopback.js";
+import { ChatGptPlanRuntime } from "../runtime.js";
+import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace } from "../../../__tests__/support/subscription-runtime-namespace.js";
+import {
+  onSubscriptionRuntimeStatusChanged,
+  SubscriptionRuntimeService,
+  subscriptionConnectionProjection,
+} from "../../subscription-runtime-service.js";
 import {
   CHATGPT_PLAN_ACCOUNT_SECRET_KEY,
   ChatGptPlanSession,
@@ -144,6 +151,45 @@ function tokensFor(h: { authorizeParams: () => URLSearchParams }, n: number, sco
 }
 
 describe("plan-usage sign-in state machine", () => {
+  it("publishes the completed browser grant without a status poll", async () => {
+    const tokenRoutes: Route[] = [];
+    const h = harness({ token: tokenRoutes });
+    const exchanging = deferred<void>();
+    const release = deferred<void>();
+    tokenRoutes.push(async (...args) => {
+      exchanging.resolve();
+      await release.promise;
+      return tokensFor(h, 1)(...args);
+    });
+    const readStatus = vi.spyOn(h.session, "status");
+    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+      claudeCodeReleaseFetch: vi.fn(), namespace: createSubscriptionRuntimeNamespace(),
+      claimRuntimeDirectories: claimFakeRuntimeDirectories,
+      codexClient: { stop: vi.fn() } as never,
+      acpRegistry: { stopAll: vi.fn() } as never,
+      chatGptPlanRuntime: new ChatGptPlanRuntime(h.session, vi.fn()),
+    });
+    const connections: boolean[] = [];
+    const unsubscribe = onSubscriptionRuntimeStatusChanged((provider, connected) => {
+      if (provider === "chatgpt-plan" && connected !== undefined) connections.push(connected);
+    });
+    try {
+      await expect(service.startLogin("chatgpt-plan", "browser")).resolves.toMatchObject({ connection: "pending" });
+      h.deliver(`code=c1&state=${h.authorizeParams().get("state")}&client_id=oaiapp_1`);
+      await exchanging.promise;
+      await expect(service.getStatus("chatgpt-plan")).resolves.toMatchObject({ connection: "pending" });
+      const readsBeforeCompletion = readStatus.mock.calls.length;
+      release.resolve();
+      await vi.waitFor(() => expect(subscriptionConnectionProjection("chatgpt-plan")).toMatchObject({ connected: true }));
+      expect(connections).toEqual([false, true]);
+      expect(readStatus).toHaveBeenCalledTimes(readsBeforeCompletion + 1);
+    } finally {
+      release.resolve();
+      unsubscribe();
+      await service.stop();
+    }
+  });
+
   it("completes its login with a real ephemeral callback listener and verifies the proof key", async () => {
     const tokenRoutes: Route[] = [];
     const h = harness({ token: tokenRoutes, startListener: startChatGptPlanCallbackListener });
@@ -425,6 +471,28 @@ describe("plan-usage sign-out", () => {
     await expect(result).resolves.toMatchObject({ failure: "sign-in-failed" });
     expect(closed).toBe(true);
     expect(h.loginWindows).toHaveLength(0);
+    expect(h.secrets.writes).toBe(0);
+    expect((await h.session.status()).connection).toBe("signed-out");
+  });
+
+  it("rechecks login ownership immediately before writing credentials", async () => {
+    const tokenRoutes: Route[] = [];
+    const h = harness({ token: tokenRoutes });
+    tokenRoutes.push(tokensFor(h, 1));
+    const writing = deferred<void>();
+    const release = deferred<boolean>();
+    const { completion } = await h.session.startSignIn();
+    const result = completion.catch((error: unknown) => error);
+    vi.spyOn(h.secrets, "isSecretStorageEncrypted").mockImplementationOnce(() => {
+      writing.resolve();
+      return release.promise;
+    });
+    h.deliver(`code=c1&state=${h.authorizeParams().get("state")}&client_id=oaiapp_1`);
+    await writing.promise;
+    const logout = h.session.signOut();
+    release.resolve(true);
+    await logout;
+    await expect(result).resolves.toMatchObject({ failure: "sign-in-failed" });
     expect(h.secrets.writes).toBe(0);
     expect((await h.session.status()).connection).toBe("signed-out");
   });

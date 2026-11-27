@@ -33,6 +33,7 @@ import { JsonRpcPendingRequests } from "../lib/json-rpc-pending-request.js";
 import { CodexUserRuntimeError, type CodexResolvedRuntime } from "./codex-user-runtime.js";
 import { verifyCodexExecutableArtifact } from "./codex-executable-artifact.js";
 import { parseCodexPlanUsage } from "./subscription-plan-usage-parsers.js";
+import { isDefinitiveSubscriptionAuthError } from "./subscription-transport-error-diagnostics.js";
 import type { SubscriptionPlanUsageUpdate } from "../shared/subscription-plan-usage.js";
 
 const MAX_MODEL_COUNT = 100;
@@ -163,6 +164,7 @@ export class CodexAppServerClient {
   private completedLoginError: CodexAppServerErrorCode | null = null;
 
   private loginLock: Promise<void> = Promise.resolve();
+  private loginEpoch = 0;
   constructor(options: CodexAppServerClientOptions) {
     this.onPlanUsage = options.onPlanUsage;
     this.openAuthorizationUrl = options.openAuthorizationUrl;
@@ -230,9 +232,12 @@ export class CodexAppServerClient {
     this.planUsageGeneration += 1;
   }
 
-  async startBrowserLogin(): Promise<CodexSubscriptionStatus> {
+  async startBrowserLogin(assertCurrent?: () => void): Promise<CodexSubscriptionStatus> {
+    const epoch = this.loginEpoch;
     return this.withLoginLock(async () => {
+      this.assertLoginPreparation(epoch, assertCurrent);
       await this.ensureStarted();
+      this.assertLoginPreparation(epoch, assertCurrent);
       this.assertNoPendingLogin();
       this.invalidatePlanUsage();
       this.completedLoginError = null;
@@ -247,14 +252,18 @@ export class CodexAppServerClient {
       if (response?.type !== "chatgpt" || !loginId || !authUrl) {
         throw new CodexAppServerError("codex-login-failed");
       }
+      this.assertLoginPreparation(epoch, assertCurrent);
       this.beginLogin(authUrl, { loginId, method: "browser", deviceCode: null, window: new OAuthLoginAttempt() });
       return this.currentStatus();
     });
   }
 
-  async startDeviceCodeLogin(): Promise<{ status: CodexSubscriptionStatus; userCode: string }> {
+  async startDeviceCodeLogin(assertCurrent?: () => void): Promise<{ status: CodexSubscriptionStatus; userCode: string }> {
+    const epoch = this.loginEpoch;
     return this.withLoginLock(async () => {
+      this.assertLoginPreparation(epoch, assertCurrent);
       await this.ensureStarted();
+      this.assertLoginPreparation(epoch, assertCurrent);
       this.assertNoPendingLogin();
       this.invalidatePlanUsage();
       this.completedLoginError = null;
@@ -268,6 +277,7 @@ export class CodexAppServerClient {
       if (response?.type !== "chatgptDeviceCode" || !loginId || !verificationUrl || !userCode) {
         throw new CodexAppServerError("codex-login-failed");
       }
+      this.assertLoginPreparation(epoch, assertCurrent);
       this.beginLogin(verificationUrl, { loginId, method: "device-code", deviceCode: userCode, window: new OAuthLoginAttempt() });
       return { status: this.currentStatus(), userCode };
     });
@@ -288,12 +298,11 @@ export class CodexAppServerClient {
   }
 
   async logout(): Promise<CodexSubscriptionStatus> {
+    this.loginEpoch += 1;
+    this.retireLogin(this.pendingLogin);
     return this.withLoginLock(async () => {
       await this.ensureStarted();
       this.invalidatePlanUsage();
-      // Do not leave an abandoned login attempt blocking future sign-ins when the server rejects logout. The account projection remains unchanged until the
-      // parameterless logout request succeeds.
-      this.retireLogin(this.pendingLogin);
       this.completedLoginError = null;
       await this.request("account/logout");
       return this.currentStatus();
@@ -336,6 +345,7 @@ export class CodexAppServerClient {
   }
 
   stop(): void {
+    this.loginEpoch += 1;
     this.startGeneration += 1;
     this.abortTransport(new CodexAppServerError("codex-operation-failed"), undefined, false);
   }
@@ -522,6 +532,11 @@ export class CodexAppServerClient {
     }
   }
 
+  private assertLoginPreparation(epoch: number, assertCurrent?: () => void): void {
+    assertCurrent?.();
+    if (epoch !== this.loginEpoch) throw new CodexAppServerError("codex-login-failed");
+  }
+
   private retireLogin(pending: PendingLogin | null, completed = false): void {
     if (!pending || this.pendingLogin !== pending) return;
     this.pendingLogin = null;
@@ -602,9 +617,15 @@ export class CodexAppServerClient {
       if (!pending) return;
       const receipt = this.accountReceipts.get(message.id);
       this.accountReceipts.delete(message.id);
+      const authLost = isDefinitiveSubscriptionAuthError(message.error);
       if (receipt) {
-        const verdict = message.error === undefined ? codexAccountVerdict(message.result) : { kind: "unavailable" } as const;
+        const verdict = message.error === undefined ? codexAccountVerdict(message.result)
+          : { kind: authLost ? "signed-out" : "unavailable" } as const;
         if (receipt(verdict) && isCodexJsonRecord(message.result)) this.acceptedAccountReplies.add(message.result);
+      } else if (authLost) {
+        this.accountStatus = blankStatus("ready");
+        this.connectionEvidence?.({ kind: "sign-out", source: child });
+        this.publishAccountChange();
       }
       if (pending.method === "account/logout" && message.error === undefined) {
         if (!Object.hasOwn(message, "result")) {

@@ -136,10 +136,11 @@ export class ChatGptPlanRuntime {
     return this.getStatus();
   }
 
-  async startLogin(): Promise<SubscriptionRuntimeStatus> {
+  async startLogin(onCompleted?: () => void): Promise<SubscriptionRuntimeStatus> {
     this.forgetCatalog();
     return stable(async () => {
-      await this.session.startSignIn();
+      const { completion } = await this.session.startSignIn();
+      void completion.then(() => onCompleted?.()).catch(() => undefined);
       return this.getStatus();
     });
   }

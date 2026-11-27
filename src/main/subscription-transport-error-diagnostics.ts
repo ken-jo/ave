@@ -61,6 +61,10 @@ const INVALID_SCHEMA_PREVIEW = new RegExp(`^Invalid schema for function '${REMOT
 const CONTEXT_SIGNAL = /context[_ -]?(?:length|window)|maximum context length|prompt is too long|too many tokens/iu;
 const TPM_SIGNAL = /tokens?[_ -]?(?:per[_ -]?minute|per min)|\btpm\b/iu;
 const RATE_LIMIT_SIGNAL = /rate[_ -]?limit|too many requests|\b429\b/iu;
+const DEFINITIVE_AUTH_ERRORS = new Set([
+  "authentication_required", "authentication_failed", "authentication_error",
+  "invalid_client", "invalid_token", "token_expired", "token_revoked",
+]);
 
 // An error may carry this private, pre-sanitized diagnostic between main-process layers.
 export interface SubscriptionTransportDiagnosticError extends Error {
@@ -129,6 +133,17 @@ function diagnosticStatus(records: readonly Record<string, unknown>[]): number |
     }
   }
   return undefined;
+}
+
+export function isDefinitiveSubscriptionAuthError(value: unknown): boolean {
+  if (typeof value === "string") return DEFINITIVE_AUTH_ERRORS.has(value);
+  if (!isRecord(value)) return false;
+  const records = directRecords(value);
+  return diagnosticStatus(records) === 401 || records.some((record) =>
+    ["code", "type", "error"].some((key) => {
+      const code = ownValue(record, key);
+      return typeof code === "string" && DEFINITIVE_AUTH_ERRORS.has(code);
+    }));
 }
 
 function namedSchemaTool(texts: readonly string[]): string | undefined {

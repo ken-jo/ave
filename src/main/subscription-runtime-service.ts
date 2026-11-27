@@ -309,9 +309,15 @@ export class AcpSubscriptionRuntimeRegistry {
     return this.clients[provider].verify(onConnectionLost, assertCurrent);
   }
 
-  async startDeviceCodeLogin(provider: AcpSubscriptionProviderId): Promise<AcpSubscriptionStatus> {
+  async startDeviceCodeLogin(
+    provider: AcpSubscriptionProviderId,
+    assertCurrent: () => void,
+    onCompleted: () => void,
+    onConnectionLost: () => void,
+  ): Promise<AcpSubscriptionStatus> {
     await this.prepareRuntime(provider);
-    return this.clients[provider].startDeviceCodeLogin();
+    assertCurrent();
+    return this.clients[provider].startDeviceCodeLogin(assertCurrent, onCompleted, onConnectionLost);
   }
 
   async openPendingVerificationUrl(
@@ -1431,29 +1437,49 @@ export class SubscriptionRuntimeService {
     method: SubscriptionLoginMethod,
   ): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
-    return this.mutating(runtimeId, () => this.withStableErrors(async () => {
+    if (runtimeId === "chatgpt-plan") {
+      if (method !== "browser") throw new SubscriptionRuntimeServiceError("subscription-provider-not-supported");
+      const action = this.mutating(runtimeId, () => this.withStableErrors(() => {
+        const intent = this.authChangeRevisionByProvider.get(runtimeId);
+        return this.requireChatGptPlan().startLogin(() => {
+          void action.then((status) => {
+            if (status.connection === "connected" || this.stopped || this.authChangeRevisionByProvider.get(runtimeId) !== intent) return;
+            return this.getStatus(runtimeId);
+          }).catch(() => undefined);
+        });
+      }));
+      return action;
+    }
+    const action = this.mutating(runtimeId, (isCurrent) => this.withStableErrors(async () => {
+      const assertCurrent = () => {
+        if (!isCurrent()) throw new SubscriptionRuntimeServiceError("subscription-status-superseded");
+      };
+      assertCurrent();
       if (runtimeId === "codex") {
-        if (method === "browser") return this.projectCodexStatus(await this.codexClient.startBrowserLogin());
-        const result = await this.codexClient.startDeviceCodeLogin();
+        if (method === "browser") return this.projectCodexStatus(await this.codexClient.startBrowserLogin(assertCurrent));
+        const result = await this.codexClient.startDeviceCodeLogin(assertCurrent);
         return this.projectCodexStatus(result.status);
-      }
-      if (runtimeId === "chatgpt-plan") {
-        if (method !== "browser") {
-          throw new SubscriptionRuntimeServiceError("subscription-provider-not-supported");
-        }
-        return this.requireChatGptPlan().startLogin();
       }
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
         if (method !== "browser") {
           throw new SubscriptionRuntimeServiceError("subscription-provider-not-supported");
         }
-        return this.projectClaudeCodeStatus(await this.claudeCodeClient.startBrowserLogin());
+        return this.projectClaudeCodeStatus(await this.claudeCodeClient.startBrowserLogin(assertCurrent));
       }
       if (method !== "device-code") {
         throw new SubscriptionRuntimeServiceError("subscription-provider-not-supported");
       }
-      return this.projectAcpStatus(await this.acpRegistry.startDeviceCodeLogin(runtimeId));
+      return this.projectAcpStatus(await this.acpRegistry.startDeviceCodeLogin(runtimeId, assertCurrent, () => {
+        void action.then(async () => {
+          if (!isCurrent()) return;
+          await this.getStatus(runtimeId);
+          if (isCurrent()) notifyStatusChanged(runtimeId);
+        }).catch(() => undefined);
+      }, () => {
+        if (isCurrent()) this.disconnect(runtimeId);
+      }));
     }));
+    return action;
   }
 
   async openPendingVerificationUrl(
@@ -1613,7 +1639,7 @@ export class SubscriptionRuntimeService {
         if (effectiveSelection.provider === "codex") {
           const runtime = this.createCodexConversationRuntime({
             ...this.codexTextRuntimePaths,
-            connectionEvidence: this.evidenceSink("codex", true),
+            connectionEvidence: this.evidenceSink("codex", true, safetyEpoch),
             onPlanUsage: (windows) => {
               if (this.safetyEpochIsCurrent("codex", safetyEpoch)) {
                 this.codexClient.invalidatePlanUsageReads();
@@ -1637,7 +1663,7 @@ export class SubscriptionRuntimeService {
             workspaceDir: paths.workspaceDir,
             runtimeTempDir: paths.runtimeTempDir,
             bridge,
-            connectionEvidence: this.evidenceSink("claude-code", true),
+            connectionEvidence: this.evidenceSink("claude-code", true, safetyEpoch),
             onPlanUsage: (windows) => {
               if (this.safetyEpochIsCurrent("claude-code", safetyEpoch)) this.recordPlanUsage("claude-code", windows);
             },
@@ -1769,7 +1795,7 @@ export class SubscriptionRuntimeService {
 
   private async mutating(
     provider: SubscriptionRuntimeId,
-    mutation: () => Promise<SubscriptionRuntimeStatus>,
+    mutation: (isCurrent: () => boolean) => Promise<SubscriptionRuntimeStatus>,
   ): Promise<SubscriptionRuntimeStatus> {
     const intent = ++this.sequence;
     const state = isCliProvider(provider) ? this.connection(provider) : undefined;
@@ -1786,7 +1812,8 @@ export class SubscriptionRuntimeService {
     }
     try {
       if (provider !== "chatgpt-plan") await this.stopSessionsFor(provider);
-      const status = await mutation();
+      const status = await mutation(() => !this.stopped
+        && (state ? state.intent === intent : this.authChangeRevisionByProvider.get(provider) === intent));
       if (state && isCliProvider(provider)) {
         if (state.intent === intent && state.loginAttempt === undefined) this.projectLogin(provider, state, status);
         return this.currentProjection(provider);
@@ -1931,8 +1958,11 @@ export class SubscriptionRuntimeService {
     return status;
   }
 
-  private evidenceSink(provider: CliProvider, auxiliary = false): SubscriptionEvidenceSink {
-    return (evidence) => this.reduceConnection(provider, evidence, auxiliary);
+  private evidenceSink(provider: CliProvider, auxiliary = false, safetyEpoch?: number): SubscriptionEvidenceSink {
+    return (evidence) => {
+      if (safetyEpoch !== undefined && !this.safetyEpochIsCurrent(provider, safetyEpoch)) return undefined;
+      return this.reduceConnection(provider, evidence, auxiliary);
+    };
   }
 
   private reduceConnection(

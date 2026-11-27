@@ -24,6 +24,7 @@ import {
   ClaudeCodeStream,
 } from "./claude-code-stream.js";
 import { forceKillManagedChildProcess, spawnManaged } from "./managed-child-processes.js";
+import { isDefinitiveSubscriptionAuthError } from "./subscription-transport-error-diagnostics.js";
 import { writeFileAtomicAtPath } from "./storage/feature-namespace.js";
 import { SubscriptionAttachmentTransportError } from "./subscription-attachment-input.js";
 import { CodexExecutableLocationError } from "./codex-executable-location.js";
@@ -167,7 +168,12 @@ export class ClaudeCodeConversationRuntime {
         detached: (this.options.platform ?? process.platform) !== "win32",
       });
       child = spawned;
-      timer = setTimeout(() => fail(operationFailed()), TOOL_TIMEOUT_POLICY.subAgentCeilingFloorMs);
+      const transportFailed = (error: Error) => {
+        if (child !== spawned || ended || failure) return;
+        this.options.connectionEvidence?.({ kind: "transport-lost", source: spawned });
+        fail(error);
+      };
+      timer = setTimeout(() => transportFailed(operationFailed()), TOOL_TIMEOUT_POLICY.subAgentCeilingFloorMs);
       timer.unref();
       let outputBytes = 0;
       const argumentErrorOffsets = ARGUMENT_ERROR_MARKERS.map(() => 0);
@@ -177,6 +183,12 @@ export class ClaudeCodeConversationRuntime {
         maxLineBytes: CLAUDE_CODE_MAX_OUTPUT_BYTES,
         onMessage: (message) => {
           if (failure || ended) return;
+          if (isRecord(message) && ((message.type === "assistant" && isDefinitiveSubscriptionAuthError(message.error))
+            || (message.type === "result" && message.is_error === true && isDefinitiveSubscriptionAuthError(message)))) {
+            this.options.connectionEvidence?.({ kind: "sign-out", source: spawned });
+            fail(operationFailed());
+            return;
+          }
           try {
             for (const value of stream.accept(message)) {
               if (!toolBoundary && value) push({ type: "text_delta", text: value });
@@ -186,7 +198,7 @@ export class ClaudeCodeConversationRuntime {
               ? new ClaudeCodeSubscriptionError("claude-code-runtime-incompatible") : operationFailed());
           }
         },
-        onError: () => fail(operationFailed()),
+        onError: () => transportFailed(operationFailed()),
       });
       const consume = (chunk: Buffer | string) => {
         if (failure || ended) return;
@@ -195,12 +207,7 @@ export class ClaudeCodeConversationRuntime {
           if (outputBytes > CLAUDE_CODE_MAX_OUTPUT_BYTES) throw operationFailed();
           decoder.decode(typeof chunk === "string" ? Buffer.from(chunk) : chunk, { stream: true });
           reader.write(chunk);
-        } catch { fail(operationFailed()); }
-      };
-      const transportFailed = (error: Error) => {
-        if (child !== spawned || ended || failure) return;
-        this.options.connectionEvidence?.({ kind: "transport-lost", source: spawned });
-        fail(error);
+        } catch { transportFailed(operationFailed()); }
       };
       const processFailed = () => transportFailed(new ClaudeCodeSubscriptionError("claude-code-runtime-unavailable"));
       const pipeFailed = () => transportFailed(operationFailed());
@@ -212,7 +219,7 @@ export class ClaudeCodeConversationRuntime {
       spawned.stderr?.on("data", (chunk: Buffer | string) => {
         if (failure || ended) return;
         outputBytes += Buffer.byteLength(chunk);
-        if (outputBytes > CLAUDE_CODE_MAX_OUTPUT_BYTES) { fail(operationFailed()); return; }
+        if (outputBytes > CLAUDE_CODE_MAX_OUTPUT_BYTES) { transportFailed(operationFailed()); return; }
         // Match fixed parser diagnostics across chunks without retaining stderr.
         if (!rejectedArguments) {
           for (const value of typeof chunk === "string" ? Buffer.from(chunk) : chunk) {
@@ -238,15 +245,16 @@ export class ClaudeCodeConversationRuntime {
           if (failure) return;
           if (exitSignal) { processFailed(); return; }
           if (code !== 0) {
-            throw !stream.initialized && code !== null && rejectedArguments
-              ? new ClaudeCodeSubscriptionError("claude-code-runtime-incompatible") : operationFailed();
+            transportFailed(!stream.initialized && code !== null && rejectedArguments
+              ? new ClaudeCodeSubscriptionError("claude-code-runtime-incompatible") : operationFailed());
+            return;
           }
           if (toolBoundary) return;
           stream.assertComplete();
           push({ type: "message_complete", stopReason: stream.stopReason });
           ended = true;
           notify();
-        } catch (error) { fail(error instanceof ClaudeCodeSubscriptionError ? error : operationFailed()); }
+        } catch (error) { transportFailed(error instanceof ClaudeCodeSubscriptionError ? error : operationFailed()); }
       });
       if (!spawned.stdin || !spawned.stdout || !spawned.stderr) pipeFailed();
       assertActive();
