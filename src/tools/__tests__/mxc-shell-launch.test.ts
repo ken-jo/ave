@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { t } from "../../i18n/index.js";
 import { closed, echoParentProxy, openTunnel, probePort, within } from "../../__tests__/support/proxy-tunnel-probe.js";
 import { deferWatchedReceipt, isWatchedWorkspaceConsumable, listWatchedQuarantine, pruneWatchedRows, WATCHED_ROW_VIOLATION, watchedProtectedRows } from "../../permissions/windows-watched-rows.js";
@@ -190,6 +191,7 @@ vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => {
 import { prepareMxcShellLaunch, type PrepareMxcShellLaunchInput } from "../mxc-shell-launch.js";
 import { createContainedShellLifecycle } from "../contained-shell-lifecycle.js";
 import { MXC_REQUEST_CHARACTER_LIMIT } from "../../permissions/mxc-windows.js";
+import { ObligationRefusedError } from "../../permissions/admitted-obligation.js";
 import { mxcConfinementStatePaths } from "../../permissions/mxc-runtime-root.js";
 import { srtWinConfinementStatePaths } from "../../permissions/srt-win-integrity.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "../../permissions/egress-invocations.js";
@@ -197,6 +199,8 @@ import * as policyPipe from "../../permissions/mxc-policy-pipe.js";
 import * as sandboxCapability from "../../permissions/sandbox-capability.js";
 import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../../permissions/sandbox-home-registry.js";
 import { decisionMemo } from "../../shared/local-path-io.js";
+import * as windowsDriveLocality from "../../shared/windows-drive-locality.js";
+import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 
 // The container route goes away: no capability, announced as a status change.
 function endRoute(): () => void {
@@ -306,6 +310,56 @@ describe("prepareMxcShellLaunch", () => {
     const final = seen.slice(-2);
     expect(final.map(([check]) => check)).toEqual(["home", "declared"]);
     expect(final[0]?.[1]).toBe(final[1]?.[1]);
+  });
+
+  it.runIf(process.platform === "win32")("batches pins and queries the drive once at each seal observation", async () => {
+    relay();
+    const denied = winPath.join(WS, "control");
+    const pin = vi.spyOn(windowsPathFacts, "pinWindowsPaths");
+    const query = vi.spyOn(windowsDriveLocality, "queryDriveIdentity").mockReturnValue({ local: true });
+    const starts: Array<{ pins: number; queries: number }> = [];
+    h.observe = (check) => {
+      if (check === "home") starts.push({ pins: pin.mock.calls.length, queries: query.mock.calls.length });
+    };
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const launch = await prepareMxcShellLaunch({ ...INPUT, filesystem: { ...INPUT.filesystem, denyWrite: [denied] } }, lifecycle);
+      launch.activate();
+      expect(starts).toHaveLength(3);
+      const ends = [...starts.slice(1), { pins: pin.mock.calls.length, queries: query.mock.calls.length }];
+      expect(starts.map(({ pins }, index) => ends[index]!.pins - pins)).toEqual([1, 1, 1]);
+      expect(starts.map(({ queries }, index) => query.mock.calls.slice(queries, ends[index]!.queries)
+        .filter(([drive]) => drive === "C:").length)).toEqual([1, 1, 1]);
+    } finally {
+      h.observe = undefined;
+      await lifecycle.dispose();
+    }
+  });
+
+  it.runIf(process.platform === "win32").each([2, 3])("refuses admission when the helper fails at seal observation %i", async (observation) => {
+    relay();
+    const pin = vi.spyOn(windowsPathFacts, "pinWindowsPaths");
+    let checks = 0;
+    h.observe = (check) => {
+      if (check === "home" && ++checks === observation) {
+        pin.mockImplementationOnce(() => { throw windowsPathKindHelperUnavailable("Path facts unavailable", "EIO"); });
+      }
+    };
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const filesystem = { ...INPUT.filesystem, denyWrite: [winPath.join(WS, "control")] };
+      const preparing = prepareMxcShellLaunch({ ...INPUT, filesystem }, lifecycle);
+      if (observation === 2) await expect(preparing).rejects.toThrow(ObligationRefusedError);
+      else {
+        const launch = await preparing;
+        expect(() => launch.activate()).toThrow(ObligationRefusedError);
+      }
+      expect(checks).toBe(observation);
+      expect(h.openRelay.mock.calls[0]?.[1].acceptsConnections()).toBe(false);
+    } finally {
+      h.observe = undefined;
+      await lifecycle.dispose();
+    }
   });
 
   it("marks parser preparation through the final seal verification", async () => {

@@ -98,6 +98,7 @@ import type { WindowsHoldVerdict } from "../../shared/windows-path-facts.js";
 import { isWatchedWorkspaceConsumable, listWatchedQuarantine, pruneWatchedRows, WATCHED_ROW_VIOLATION } from "../../permissions/windows-watched-rows.js";
 import * as asrtSandbox from "../../permissions/asrt-sandbox.js";
 import * as sandboxWritePolicy from "../../permissions/sandbox-write-policy.js";
+import * as sandboxWriteJail from "../../permissions/sandbox-write-jail.js";
 import { getConfiguredSessionReadRoot } from "../../permissions/sensitive-paths.js";
 import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
 import * as chatOrigin from "../../shared/chat-origin.js";
@@ -348,6 +349,52 @@ describe("builtin shell — Windows MXC containers", () => {
       expect(launch?.filesystem.denyWrite.map(path => path.toLowerCase())).toContain(join(root, ".envrc").toLowerCase());
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(ORIGINAL_PLATFORM === "win32")("queries the workspace drive once for the parser write roots", async () => {
+    bootMxcShells();
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-parser-roots-")));
+    const drive = win32.parse(root).root.slice(0, 2).toUpperCase();
+    const queries = vi.spyOn(windowsDriveLocality, "queryDriveIdentity");
+    const filter = sandboxWriteJail.containerShellAllowedDirectories;
+    const derive = sandboxWriteJail.deriveSandboxWritePaths;
+    let firstQuery = 0;
+    const counts: number[] = [];
+    vi.spyOn(sandboxWriteJail, "containerShellAllowedDirectories").mockImplementation((...args) => {
+      firstQuery = queries.mock.calls.length;
+      return filter(...args);
+    });
+    vi.spyOn(sandboxWriteJail, "deriveSandboxWritePaths").mockImplementation((...args) => {
+      const result = derive(...args);
+      counts.push(queries.mock.calls.slice(firstQuery).filter(([queried]) => queried === drive).length);
+      return result;
+    });
+    try {
+      expect((await executePowerShell({ ...context("parser-write-roots"), cwd: root, extraAllowedDirectories: [root] })).isError).toBe(false);
+      expect(counts[0]).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(ORIGINAL_PLATFORM === "win32")("queries each drive once while composing the sensitive write floor", async () => {
+    bootMxcShells();
+    const compose = asrtSandbox.getDefaultSensitiveWriteDenyPaths;
+    const queriesByPass: string[][] = [];
+    vi.spyOn(asrtSandbox, "getDefaultSensitiveWriteDenyPaths").mockImplementation((...args) => {
+      const query = vi.spyOn(windowsDriveLocality, "queryDriveIdentity");
+      try { return compose(...args); }
+      finally {
+        queriesByPass.push(query.mock.calls.map(([drive]) => drive));
+        query.mockRestore();
+      }
+    });
+    expect((await executePowerShell(context("sensitive-write-floor"))).isError).toBe(false);
+    expect(queriesByPass).toHaveLength(2);
+    for (const queries of queriesByPass) {
+      expect(queries.length).toBeGreaterThan(0);
+      expect(queries).toEqual([...new Set(queries)]);
     }
   });
 

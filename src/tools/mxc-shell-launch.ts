@@ -265,8 +265,8 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
       };
       if (claim === undefined) withLocalityDecision(assertStillValid);
       else claim.start(assertStillValid);
-      input.markParserTiming?.("seal-verified-at-activation");
       active = true;
+      input.markParserTiming?.("seal-verified-at-activation");
     },
     bindChild: transport.bindChild,
     ...(transport.bindHeldPolicy !== undefined && { bindHeldPolicy: transport.bindHeldPolicy }),

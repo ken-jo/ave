@@ -4248,10 +4248,10 @@ async function parsePowerShellAstInMxc(command: string, cwd: string, ctx: ToolEx
   // Only AST input is embedded; decoding never executes the supplied source.
   const input = Buffer.from(command, "utf8").toString("base64");
   const parserScript = POWER_SHELL_AST_PARSER.replace("[Console]::In.ReadToEnd()", `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${input}'))`);
-  const writePaths = deriveSandboxWritePaths({
+  const writePaths = withLocalityDecision(() => deriveSandboxWritePaths({
     ...(ctx.ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot: ctx.ownerPluginSandboxRoot } : {}),
     allowedDirectories: containerShellAllowedDirectories(cwd, ctx.extraAllowedDirectories),
-  });
+  }));
   markTiming?.("parser-write-roots-ready");
   const response = createPowerShellParserResponse();
   const result = await spawnPowerShellInMxc(parserScript, cwd, writePaths, timeoutSeconds, ctx.abortSignal, undefined, undefined,
@@ -4701,7 +4701,7 @@ async function spawnPowerShellInMxc(
     // controls, .vscode, .husky, .envrc, …) and Ave's permission,
     // approval and egress grant stores. Ranking keeps a deny inside a granted
     // directory as read-only (existing) or denied (absent).
-    const sensitiveDenyWrite = await runWithSandboxWritePreflight(signal, () => getDefaultSensitiveWriteDenyPaths());
+    const sensitiveDenyWrite = await runWithSandboxWritePreflight(signal, () => withLocalityDecision(getDefaultSensitiveWriteDenyPaths));
     markParserTiming?.("sensitive-write-floor-ready");
     const mandatory = withLocalityDecision(() => buildMandatorySandboxWritePolicy(sandboxWritePaths, undefined, sensitiveDenyWrite));
     if (parserResponse === undefined) markTiming?.("write-policy-ready");
