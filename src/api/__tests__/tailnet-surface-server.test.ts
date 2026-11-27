@@ -2824,12 +2824,248 @@ describe("phone work reviews", () => {
     });
   });
 
-  function phoneAction(browser: PhoneReviewBrowser, kind: TailnetWorkReview["kind"], action: string): HTMLButtonElement {
-    const card = browser.window.document.querySelector(`[data-work-kind="${kind}"]`);
+  function phoneAction(browser: PhoneReviewBrowser, kind: TailnetWorkReview["kind"], action: string, index = 0): HTMLButtonElement {
+    const card = browser.window.document.querySelectorAll(`[data-work-kind="${kind}"]`)[index];
     const button = card?.querySelector<HTMLButtonElement>(`button[data-work-action="${action}"]`);
     if (!button) throw new Error("Phone action is missing");
     return button;
   }
+
+  function reviewStatus(browser: PhoneReviewBrowser, kind: TailnetWorkReview["kind"], index = 0) {
+    return browser.window.document.querySelectorAll(`[data-work-kind="${kind}"] [role="status"]`)[index]?.textContent;
+  }
+
+  function refreshPhoneReviews(browser: PhoneReviewBrowser) {
+    browser.window.document.getElementById("work-review-refresh")?.click();
+  }
+
+  const refreshedStageBinding = { ...stageBinding, attempt: stageBinding.attempt + 1, resultHash: "1".repeat(64), outputHash: undefined };
+  const refreshedJoinBinding = { ...joinBinding, generation: joinBinding.generation + 1, conflictHash: "2".repeat(64) };
+  const refreshedPlanHash = "3".repeat(64);
+  const refreshedGraphHash = "4".repeat(64);
+  const refreshedOutputHash = "5".repeat(64);
+  const refreshCases = [
+    [views[0], { ...views[0], binding: { ...views[0].binding, input: { runId, planHash: refreshedPlanHash } },
+      review: { ...views[0].review, planHash: refreshedPlanHash } }, refreshedPlanHash, "plan_mismatch", "Decision refused (plan_mismatch)."],
+    [views[1], { ...views[1], binding: { ...views[1].binding, input: refreshedStageBinding },
+      review: { ...views[1].review, binding: refreshedStageBinding, outputs: [] } }, refreshedStageBinding.resultHash, "result_mismatch", "The result changed."],
+    [views[2], { ...views[2], binding: { ...views[2].binding, input: refreshedJoinBinding },
+      review: { ...views[2].review, binding: refreshedJoinBinding } }, refreshedJoinBinding.conflictHash, "conflict_mismatch", "The conflict changed."],
+    [views[3], { ...views[3], binding: { ...views[3].binding, input: { expectedDraftRevision: "next-draft", expectedGraphHash: refreshedGraphHash } } },
+      refreshedGraphHash, "graph-mismatch", "The stored template no longer matches"],
+    [views[4], { ...views[4], binding: { input: { ...views[4].binding.input, version: pin.version + 1, graphHash: refreshedGraphHash } } },
+      refreshedGraphHash, "pin-mismatch", "The template version differs"],
+    [views[5], { ...views[5], binding: { input: { ...views[5].binding.input, version: pin.version + 1, graphHash: refreshedGraphHash } } },
+      refreshedGraphHash, "pin-mismatch", "The template version differs"],
+    [views[6], { ...views[6], binding: { input: { ...views[6].binding.input, attempt: stageBinding.attempt + 1, outputHash: refreshedOutputHash } } },
+      refreshedOutputHash, "output_mismatch", "The requested outputs changed."],
+  ] satisfies Array<[TailnetWorkReview, TailnetWorkReview, string, string, string]>;
+
+  describe.each(refreshCases.map(([original, ...rest]) => [original.kind, original, ...rest] as const))("%s refresh orderings", (kind, original, revised, marker, error, refusal) => {
+    it.each(["submit then refresh", "refresh then response", "two cards in flight"])("%s", async ordering => {
+      const result = deferred<TailnetWorkDecisionResponse>();
+      const otherResult = deferred<TailnetWorkDecisionResponse>();
+      const secondPlan = { ...views[0], binding: { ...views[0].binding, itemId: 42 },
+        review: { ...views[0].review, key: "plan:42", itemId: 42, title: "Second plan" } };
+      const other = kind === "plan" ? secondPlan : kind === "join" ? views[0] : views[2];
+      const otherIndex = kind === "plan" ? 1 : 0;
+      const reviews: TailnetWorkReview[] = [original];
+      if (ordering === "two cards in flight") reviews.push(other);
+      if (kind === "stage") reviews.push(views[6]);
+      function isOriginal(decision: TailnetWorkDecisionRequest) {
+        return decision.kind === kind && (decision.kind !== "plan" || decision.itemId !== secondPlan.binding.itemId);
+      }
+      const { browser, received } = await openPhoneReviews(reviews, decision => isOriginal(decision) ? result.promise : otherResult.promise);
+      const otherSuccess: TailnetWorkDecisionResponse = other.kind === "join"
+        ? { ok: true, kind: "join" } : { ok: true, kind: "plan", status: "approved" };
+      function expectActions(approve: boolean, alternative: boolean) {
+        expect(phoneAction(browser, kind, "approve").disabled).toBe(!approve);
+        if (original.deny === "reject") expect(phoneAction(browser, kind, "reject").disabled).toBe(!alternative);
+        if (kind === "stage" || kind === "plan") expect(phoneAction(browser, kind, "request_changes").disabled).toBe(!alternative);
+      }
+      async function refresh() {
+        reviews[0] = revised;
+        if (kind === "stage") reviews.pop();
+        refreshPhoneReviews(browser);
+        await vi.waitFor(() => expect(browser.window.document.querySelector(`[data-work-kind="${kind}"] .work-review-body`)?.textContent).toContain(marker));
+      }
+      try {
+        expect(reviewStatus(browser, kind)).toBe("");
+        expectActions(true, true);
+        phoneAction(browser, kind, "approve").click();
+        if (ordering === "two cards in flight") {
+          phoneAction(browser, other.kind, "approve", otherIndex).click();
+          expect(phoneAction(browser, other.kind, "approve", otherIndex).disabled).toBe(true);
+          expect(reviewStatus(browser, other.kind, otherIndex)).toBe("Submitting decision…");
+        }
+        await vi.waitFor(() => expect(received).toHaveLength(ordering === "two cards in flight" ? 2 : 1));
+        expect(received.find(isOriginal)).toMatchObject({ kind, ...original.binding });
+        expect(reviewStatus(browser, kind)).toBe("Submitting decision…");
+        expectActions(false, false);
+
+        if (ordering === "submit then refresh") {
+          result.resolve({ ok: false, error });
+          await vi.waitFor(() => expect(reviewStatus(browser, kind)).toContain(refusal));
+          expectActions(false, true);
+        }
+        if (ordering === "two cards in flight") {
+          otherResult.resolve(otherSuccess);
+          await vi.waitFor(() => expect(reviewStatus(browser, other.kind, otherIndex)).toBe("Decision submitted."));
+          expect(phoneAction(browser, other.kind, "approve", otherIndex).disabled).toBe(true);
+          expect(reviewStatus(browser, kind)).toBe("Submitting decision…");
+          expectActions(false, false);
+        }
+        await refresh();
+        if (ordering !== "submit then refresh") {
+          expect(reviewStatus(browser, kind)).toBe("Submitting decision…");
+          expectActions(false, false);
+          result.resolve({ ok: false, error });
+        }
+        await vi.waitFor(() => expect(reviewStatus(browser, kind)).toContain(refusal));
+        expectActions(true, true);
+        if (ordering === "two cards in flight") {
+          expect(reviewStatus(browser, other.kind, otherIndex)).toBe("Decision submitted.");
+          expect(phoneAction(browser, other.kind, "reject", otherIndex).disabled).toBe(true);
+        }
+        phoneAction(browser, kind, "dismiss-result").click();
+        expect(reviewStatus(browser, kind)).toBe("");
+        expectActions(true, true);
+        expect(received).toHaveLength(ordering === "two cards in flight" ? 2 : 1);
+      } finally {
+        result.resolve({ ok: false, error });
+        otherResult.resolve(otherSuccess);
+        browser.window.close();
+      }
+    });
+  });
+
+  it.each(["reject", "request_changes"] as const)("keeps %s available after a same-binding stale plan refusal", async action => {
+    const reviews: TailnetWorkReview[] = [views[0]];
+    const { browser, received } = await openPhoneReviews(reviews, decision => {
+      if (decision.kind !== "plan") throw new Error("Expected plan decision");
+      if (decision.input.decision === "approve") return { ok: false, error: "plan_stale" };
+      reviews.length = 0;
+      return { ok: true, kind: "plan", status: action === "reject" ? "rejected" : "changes_requested" };
+    });
+    try {
+      const doc = browser.window.document;
+      phoneAction(browser, "plan", "approve").click();
+      await vi.waitFor(() => expect(reviewStatus(browser, "plan")).toContain("The work item changed after this plan was made."));
+      expect(phoneAction(browser, "plan", "approve").disabled).toBe(true);
+      expect(phoneAction(browser, "plan", "reject").disabled).toBe(false);
+      expect(phoneAction(browser, "plan", "request_changes").disabled).toBe(false);
+      reviews[0] = { ...views[0], review: { ...views[0].review, stale: true, title: "Stale plan" } };
+      refreshPhoneReviews(browser);
+      await vi.waitFor(() => expect(doc.querySelector('[data-work-kind="plan"] summary')?.textContent).toContain("Stale plan"));
+      expect(reviewStatus(browser, "plan")).toContain("The work item changed");
+      expect(phoneAction(browser, "plan", "approve").disabled).toBe(true);
+      expect(phoneAction(browser, "plan", "reject").disabled).toBe(false);
+      expect(phoneAction(browser, "plan", "request_changes").disabled).toBe(false);
+      const button = phoneAction(browser, "plan", action);
+      if (action === "request_changes") {
+        button.click();
+        const note = doc.querySelector<HTMLTextAreaElement>('[data-work-kind="plan"] textarea');
+        if (!note) throw new Error("Missing change note");
+        note.value = "Update the plan";
+        note.dispatchEvent(new browser.window.Event("input", { bubbles: true }));
+      }
+      button.click();
+      expect(reviewStatus(browser, "plan")).toBe("Submitting decision…");
+      await vi.waitFor(() => expect(reviewStatus(browser, "plan")).toBe("Decision submitted."));
+      expect(phoneAction(browser, "plan", "reject").disabled).toBe(true);
+      expect(received[1]).toMatchObject({ kind: "plan", input: { ...views[0].binding.input, decision: action } });
+      refreshPhoneReviews(browser);
+      await vi.waitFor(() => expect(reviewStatus(browser, "plan")).toBeUndefined());
+      expect(received).toHaveLength(2);
+    } finally {
+      browser.window.close();
+    }
+  });
+
+  it("opens a new existing-routine review after reattaching from one template to another", async () => {
+    const first = views[5];
+    const secondPin = { ...pin, templateId: "other-template" };
+    const second = { ...first, binding: { input: { ...first.binding.input, ...secondPin } }, review: { ...first.review, name: "Other template" } };
+    const reviews: TailnetWorkReview[] = [first, second];
+    const { browser, received } = await openPhoneReviews(reviews, decision => {
+      if (decision.kind !== "schedule-attachment") throw new Error("Expected schedule decision");
+      const { templateId, version, graphHash } = decision.input;
+      reviews[0] = { ...first, review: { ...first.review, existingPin: { templateId, version, graphHash } } };
+      reviews[1] = { ...second, review: { ...second.review, existingPin: { templateId, version, graphHash } } };
+      return { ok: true, kind: decision.kind, attachmentId: "attachment", scheduleId: first.binding.input.scheduleId };
+    });
+    function card(index: number) {
+      return browser.window.document.querySelectorAll('[data-work-kind="schedule-attachment"]')[index];
+    }
+    function action(index: number, name: string) {
+      return phoneAction(browser, "schedule-attachment", name, index);
+    }
+    function activePin() {
+      return Array.from(card(0)?.querySelectorAll("h4 + dl dd") ?? [], node => node.textContent);
+    }
+    try {
+      for (const [index, target] of [[0, pin.templateId], [1, secondPin.templateId]] as const) {
+        expect(action(index, "approve").disabled).toBe(false);
+        action(index, "approve").click();
+        await vi.waitFor(() => expect(activePin()).toEqual([target, String(pin.version), pin.graphHash]), { timeout: 2500 });
+        expect(reviewStatus(browser, "schedule-attachment", index)).toBe("Decision submitted.");
+        expect(action(index, "approve").disabled).toBe(true);
+      }
+      expect(action(0, "approve").disabled).toBe(true);
+      expect(action(0, "reopen").hidden).toBe(false);
+      action(0, "reopen").click();
+      expect(card(0)?.querySelector('[role="status"]')?.textContent).toBe("");
+      expect(action(0, "approve").disabled).toBe(false);
+      action(0, "approve").click();
+      await vi.waitFor(() => expect(activePin()).toEqual([pin.templateId, String(pin.version), pin.graphHash]), { timeout: 2500 });
+      expect(received.map(decision => decision.kind === "schedule-attachment" && decision.input.templateId))
+        .toEqual([pin.templateId, secondPin.templateId, pin.templateId]);
+      expect(received[2]?.id).not.toBe(received[0]?.id);
+    } finally {
+      browser.window.close();
+    }
+  });
+
+  it("keeps unsent Create and run edits and resets only a project removed by a snapshot", async () => {
+    const defaultProject = { projectRoot: "/projects/default", projectName: "Default project", isDefault: true };
+    const selected = { projectRoot: "/projects/selected", projectName: "Selected project", isDefault: false };
+    const extra = { projectRoot: "/projects/new", projectName: "New project", isDefault: false };
+    const original = { ...views[4], binding: { input: { ...views[4].binding.input, projectRoot: defaultProject.projectRoot } } };
+    const reviews: TailnetWorkReview[] = [{ ...original, review: { ...original.review, projects: [defaultProject, selected] } }];
+    const { browser, received } = await openPhoneReviews(reviews, () => ({ ok: true, kind: "create-and-run", itemId: 5, runId }));
+    const doc = browser.window.document;
+    function field(tag: string) {
+      const control = doc.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[data-work-kind="create-and-run"] ${tag}`);
+      if (!control) throw new Error("Missing Create and run field");
+      return control;
+    }
+    async function refresh(projects: typeof defaultProject[], name: string, version: number) {
+      reviews[0] = { ...original, binding: { input: { ...original.binding.input, version } }, review: { ...original.review, projects, name } };
+      refreshPhoneReviews(browser);
+      await vi.waitFor(() => expect(doc.querySelector('[data-work-kind="create-and-run"] summary')?.textContent).toContain(name));
+    }
+    try {
+      for (const [tag, value] of [["input", "Custom title"], ["textarea", "Custom details"], ["select", selected.projectRoot]]) {
+        const control = field(tag);
+        control.value = value;
+        control.dispatchEvent(new browser.window.Event("input", { bubbles: true }));
+      }
+      await refresh([defaultProject, selected, extra], "Expanded projects", pin.version);
+      expect([field("input").value, field("textarea").value, field("select").value]).toEqual(["Custom title", "Custom details", selected.projectRoot]);
+      expect(phoneAction(browser, "create-and-run", "approve").disabled).toBe(false);
+      await refresh([defaultProject, extra], "Reduced projects", pin.version + 1);
+      expect([field("input").value, field("textarea").value, field("select").value]).toEqual(["Custom title", "Custom details", defaultProject.projectRoot]);
+      expect(field("select").closest(".work-review-card")?.textContent).toContain("The selected project is no longer available.");
+      expect(phoneAction(browser, "create-and-run", "approve").disabled).toBe(false);
+      phoneAction(browser, "create-and-run", "approve").click();
+      await vi.waitFor(() => expect(received).toHaveLength(1));
+      expect(received[0]).toMatchObject({ kind: "create-and-run", input: {
+        version: pin.version + 1, title: "Custom title", detail: "Custom details", projectRoot: defaultProject.projectRoot,
+      } });
+    } finally {
+      browser.window.close();
+    }
+  });
 
   it.each([
     [0, "approve", { decision: "approve" }], [0, "reject", { decision: "reject" }],

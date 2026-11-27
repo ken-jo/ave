@@ -133,8 +133,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
     const feedback = document.getElementById("work-review-feedback");
     const empty = document.getElementById("work-review-empty");
     const reload = document.getElementById("work-review-refresh");
-    const cards = new Map();
-    const submissions = new Map();
+    const states = new Map();
     let scope;
     let revoked = false;
     let latestSnapshot;
@@ -368,20 +367,36 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       }
     }
 
-    function actionInput(item, body, formSchedule) {
+    function actionInput(item, body, formSchedule, draft) {
       const bound = item.binding.input;
       if (item.kind === "create-and-run") {
-        const title = field(body, message("workflowTemplates.workTitle"), input("text", bound.title));
+        const title = field(body, message("workflowTemplates.workTitle"), input("text", draft.title ?? bound.title));
         title.maxLength = 256;
+        title.addEventListener("input", () => { draft.title = title.value; });
         const root = field(body, workText("project"), element("select"));
         if (!item.review.projects.length) root.add(new Option(message("workflowTemplates.noProject"), ""));
         for (const option of item.review.projects) {
           root.add(new Option(reveal(option.projectName + " · " + option.projectRoot), option.projectRoot));
         }
-        root.value = bound.projectRoot ?? "";
+        root.value = draft.projectRoot ?? bound.projectRoot ?? "";
+        if (draft.projectRoot !== undefined && root.selectedIndex < 0) {
+          root.value = bound.projectRoot ?? "";
+          draft.projectRoot = root.value;
+          draft.projectReset = true;
+        }
+        const notice = element("p", workText("projectReset"));
+        notice.hidden = !draft.projectReset;
+        notice.setAttribute("aria-live", "polite");
+        body.append(notice);
+        root.addEventListener("input", () => {
+          draft.projectRoot = root.value;
+          draft.projectReset = false;
+          notice.hidden = true;
+        });
         const notes = field(body, message("workBoard.detailFieldLabel"), element("textarea"));
-        notes.value = bound.detail ?? "";
+        notes.value = draft.detail ?? bound.detail ?? "";
         notes.maxLength = 16384;
+        notes.addEventListener("input", () => { draft.detail = notes.value; });
         if (item.review.scope.kind === "project" && !root.value) body.append(element("p", message("workflowTemplates.projectMismatch")));
         return {
           valid: () => Boolean(title.value.trim()) && (item.review.scope.kind === "all" || Boolean(root.value)),
@@ -389,9 +404,12 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
         };
       }
       if (formSchedule) {
-        const at = field(body, message("workflowSchedule.firstFire"), input("datetime-local"));
+        const at = field(body, message("workflowSchedule.firstFire"), input("datetime-local", draft.at));
         const repeat = field(body, message("routinePanel.repeatLabel"), element("select"));
         for (const kind of ["none", "daily", "weekly", "monthly"]) repeat.add(new Option(message(repeatLabels[kind]), kind));
+        repeat.value = draft.repeat ?? "none";
+        at.addEventListener("input", () => { draft.at = at.value; });
+        repeat.addEventListener("input", () => { draft.repeat = repeat.value; });
         return {
           valid: () => Number.isFinite(new Date(at.value).getTime()),
           read: () => ({ ...bound, schedule: { at: new Date(at.value).toISOString(), repeat: { kind: repeat.value } } }),
@@ -399,20 +417,54 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       }
       return { valid: () => true, read: () => bound };
     }
-    function reviewKey(item) {
-      return JSON.stringify([scope, item.kind, item.binding]);
-    }
-    function outputKey(item) {
-      const { input: binding } = item.binding;
-      if (item.kind !== "requested-output" && (item.kind !== "stage" || !binding.outputHash)) return undefined;
-      return JSON.stringify([scope, "output-gate", item.binding.itemId ?? binding.itemId,
-        binding.runId, binding.stageId, binding.attempt, binding.outputHash]);
-    }
-    function setSubmission(actionKey, submission) {
-      submissions.set(actionKey, submission);
-      for (const card of cards.values()) {
-        if (card.actionKey === actionKey) card.showSubmission(submission);
+    function reviewIdentity(item, kind = item.kind) {
+      const { input, itemId, templateId } = item.binding;
+      switch (kind) {
+        case "plan": return JSON.stringify([kind, itemId, input.runId]);
+        case "stage":
+        case "requested-output": return JSON.stringify([kind, itemId ?? input.itemId, input.runId, input.stageId]);
+        case "join": return JSON.stringify([kind, itemId, input.runId, input.joinId]);
+        case "template-confirmation": return JSON.stringify([kind, templateId]);
+        case "create-and-run": return JSON.stringify([kind, input.templateId]);
+        case "schedule-attachment": return JSON.stringify([kind, input.scheduleId ?? null, input.templateId]);
+        default: throw new Error("Unknown work review identity");
       }
+    }
+    function sameOutput(left, right) {
+      return left.outputHash !== undefined && left.outputHash === right.outputHash && left.attempt === right.attempt;
+    }
+    function isSubmittedBinding(item, submission) {
+      const { submittedBinding, identity } = submission;
+      if (identity !== reviewIdentity(item)) {
+        // A stage and its requested outputs can decide the same gate.
+        return sameOutput(item.binding.input, submittedBinding.input);
+      }
+      if (item.kind === "create-and-run" || item.kind === "schedule-attachment") {
+        const { version, graphHash, expectedScope } = item.binding.input;
+        return version === submittedBinding.input.version && graphHash === submittedBinding.input.graphHash
+          && JSON.stringify(expectedScope) === JSON.stringify(submittedBinding.input.expectedScope);
+      }
+      return JSON.stringify(item.binding) === JSON.stringify(submittedBinding);
+    }
+    function reviewActions(item, submission, linked, linkedPending, valid) {
+      const result = submission?.result;
+      const pending = linkedPending || result?.status === "pending";
+      const refused = result?.status === "refused";
+      const repeatable = item.kind === "create-and-run" || item.kind === "schedule-attachment";
+      const sameBinding = submission && isSubmittedBinding(item, submission);
+      const locked = pending || sameBinding || (repeatable && Boolean(result) && !refused);
+      const mismatch = refused && /[-_]mismatch$/.test(result.code);
+      const alternative = !pending && (!locked || mismatch || result?.code === "plan_stale");
+      const missingOutput = item.kind === "stage" && item.review.outputs?.length && item.binding.input.outputHash && !linked;
+      return {
+        approve: !locked && valid && !missingOutput && !(item.kind === "plan" && item.review.stale),
+        alternative,
+        edit: !locked,
+        reopen: !pending && (refused || result?.status === "success" || (!result && item.kind === "schedule-attachment")),
+      };
+    }
+    function syncCards() {
+      for (const state of states.values()) state.card?.sync();
     }
     function refusal(code) {
       if (code === "plan_stale") return message("workBoard.planDecisionStale");
@@ -425,8 +477,10 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       return Object.hasOwn(boot.messages, key) ? message(key) : workText("refused", { code });
     }
     function clear(text) {
-      for (const card of cards.values()) card.node.remove();
-      cards.clear();
+      for (const state of states.values()) {
+        state.card?.node.remove();
+        state.card = undefined;
+      }
       latestSnapshot = undefined;
       if (!text) section.hidden = true;
       reload.disabled = revoked;
@@ -438,20 +492,26 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       revoked = true;
       scope = undefined;
       clear(section.hidden ? undefined : text);
+      states.clear();
     }
-    async function submit(card, item, reviewedScope, decision, read, note) {
-      const { actionKey } = card;
-      if (!card.node.isConnected || scope !== reviewedScope || revoked || submissions.has(actionKey)) return;
-      const pending = { text: workText("submitting") };
-      setSubmission(actionKey, pending);
-      const isCurrent = () => scope === reviewedScope && !revoked && submissions.get(actionKey) === pending;
+    async function submit(state, linkedState, item, reviewedScope, decision, read, note) {
+      const submittedBinding = { ...item.binding, input: read() };
+      const submission = { identity: state.identity, submittedBinding, result: { status: "pending" } };
+      state.submission = submission;
+      state.dismissedResult = undefined;
+      if (linkedState) {
+        linkedState.submission = submission;
+        linkedState.dismissedResult = undefined;
+      }
+      syncCards();
+      const isCurrent = () => scope === reviewedScope && !revoked && state.submission === submission && states.get(state.identity) === state;
       try {
         const response = await request(boot.workDecisionPath, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            id: crypto.randomUUID(), scope: reviewedScope, kind: item.kind, ...item.binding,
-            input: { ...read(), ...(decision === undefined ? {} : { decision }), ...(note ? { note } : {}) },
+            id: crypto.randomUUID(), scope: reviewedScope, kind: item.kind, ...submittedBinding,
+            input: { ...submittedBinding.input, ...(decision === undefined ? {} : { decision }), ...(note ? { note } : {}) },
           }),
         });
         const body = await response.json();
@@ -460,14 +520,20 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
           const code = typeof body.error === "string" ? body.error : "work-decision-unavailable";
           const text = refusal(code);
           if (["remote-controller-authority-revoked", "web-session-revoked", "web-session-required", "pairing-share-required"].includes(code)) revoke(text);
-          else if (code === "work-decision-scope-mismatch") clear(text);
-          else setSubmission(actionKey, { text, error: true, canReopen: true });
+          else if (code === "work-decision-scope-mismatch") {
+            clear(text);
+            states.clear();
+          } else {
+            submission.result = { status: "refused", code };
+          }
           return;
         }
-        setSubmission(actionKey, { text: workText("submitted"), canReopen: true });
+        submission.result = { status: "success" };
         scheduleRefresh(false);
       } catch {
-        if (isCurrent()) setSubmission(actionKey, { text: workText("submissionUnknown"), error: true });
+        if (isCurrent()) submission.result = { status: "unknown" };
+      } finally {
+        syncCards();
       }
     }
     const headings = {
@@ -492,8 +558,9 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       plan: "tailnetWorkReviews.reject", stage: "workflowTemplates.rejectStage", join: "workflowTemplates.rejectJoin",
       "requested-output": "tailnetWorkReviews.reject",
     };
-    function renderCard(item, key, linkedOutput, formSchedule) {
+    function renderCard(item, state, linked, linkedState, formSchedule) {
       const { review: view } = item;
+      const linkedOutput = item.kind === "stage" ? linked : undefined;
       const node = element("details");
       node.className = "work-review-card";
       node.dataset.workKind = item.kind;
@@ -505,7 +572,9 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       body.className = "work-review-body";
       facts(body, bindingRows(item));
       renderPayload(body, item, linkedOutput);
-      const fields = actionInput(item, body, formSchedule);
+      const draft = state.draft;
+      const fields = actionInput(item, body, formSchedule, draft);
+      const inputs = body.querySelectorAll("input, select, textarea");
       const actions = element("div");
       actions.className = "work-review-actions";
       const status = element("p");
@@ -513,128 +582,154 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       status.setAttribute("role", "status");
       status.setAttribute("aria-atomic", "true");
       const reviewedScope = scope;
-      const actionKey = outputKey(item) ?? key;
-      let reopen;
-      const card = {
-        node, actionKey,
-        showSubmission(submission) {
-          body.querySelectorAll("button, input, select, textarea").forEach(control => { control.disabled = control !== reopen; });
-          if (reopen) reopen.hidden = !submission.canReopen;
-          status.toggleAttribute("data-error", Boolean(submission.error));
-          status.textContent = submission.text;
-        },
-      };
+      const isCurrent = () => state.card?.node === node && node.isConnected && scope === reviewedScope && !revoked;
+      const available = () => reviewActions(item, state.submission, linkedOutput,
+        linkedState?.submission?.result.status === "pending", fields.valid());
       function resetCard(open) {
-        if (cards.get(key)?.node !== node) return;
-        submissions.delete(actionKey);
-        cards.delete(key);
-        node.remove();
+        state.submission = undefined;
+        state.dismissedResult = undefined;
+        state.draft = {};
+        state.card.content = undefined;
         update(latestSnapshot);
-        const replacement = cards.get(key)?.node;
-        if (replacement) {
-          replacement.open = open;
-          (open ? replacement.querySelector("input") : replacement.querySelector("summary"))?.focus();
-        }
+        const replacement = state.card.node;
+        replacement.open = open;
+        const firstControl = open ? replacement.querySelector("input, button:enabled") : undefined;
+        (firstControl ?? replacement.querySelector("summary"))?.focus();
       }
       function button(action, label, onClick) {
         const control = element("button", message(label));
         control.type = "button";
         control.dataset.workAction = action;
-        control.addEventListener("click", onClick);
+        control.addEventListener("click", () => {
+          if (isCurrent() && !control.disabled && !control.hidden) onClick();
+        });
         actions.append(control);
         return control;
       }
-      const canApprove = () => fields.valid()
-        && !(item.kind === "plan" && view.stale)
-        && !(item.kind === "stage" && view.outputs?.length && item.binding.input.outputHash && !linkedOutput);
+      const decide = (decision, note) => void submit(state, linkedState, item, reviewedScope, decision, fields.read, note);
       const approve = button("approve", approveLabels[item.kind], () => {
-        if (canApprove()) void submit(card, item, reviewedScope,
-          item.kind === "join" ? "retry_merge" : item.deny === "reject" ? "approve" : undefined, fields.read);
+        if (available().approve) decide(item.kind === "join" ? "retry_merge" : item.deny === "reject" ? "approve" : undefined);
       });
-      approve.disabled = !canApprove();
-      body.addEventListener("input", () => { approve.disabled = submissions.has(actionKey) || !canApprove(); });
+      let note;
+      let requestChanges;
       if (item.kind === "plan" || item.kind === "stage") {
-        const note = field(body, message("workflowTemplates.changeNote"), element("textarea"));
+        note = field(body, message("workflowTemplates.changeNote"), element("textarea"));
+        note.value = draft.changeNote ?? "";
         note.maxLength = boot.maxNoteLength;
-        note.parentElement.hidden = true;
-        button("request_changes", "workflowTemplates.requestChanges", () => {
+        note.parentElement.hidden = !draft.changeNoteOpen;
+        note.addEventListener("input", () => { draft.changeNote = note.value; });
+        requestChanges = button("request_changes", "workflowTemplates.requestChanges", () => {
           if (note.parentElement.hidden) {
+            draft.changeNoteOpen = true;
             note.parentElement.hidden = false;
             note.focus();
           } else if (note.value.trim()) {
-            void submit(card, item, reviewedScope, "request_changes", fields.read, note.value.trim());
+            decide("request_changes", note.value.trim());
           }
         });
       }
-      if (item.deny === "reject") button("reject", rejectLabels[item.kind], () => {
-        void submit(card, item, reviewedScope, "reject", fields.read);
+      const negative = item.deny === "reject" ? button("reject", rejectLabels[item.kind], () => decide("reject"))
+        : button("dismiss", "common.cancel", () => resetCard(false));
+      const reopen = item.kind === "create-and-run" || item.kind === "schedule-attachment"
+        ? button("reopen", "tailnetWorkReviews.newDecision", () => resetCard(true)) : undefined;
+      const dismissResult = button("dismiss-result", "tailnetWorkReviews.dismissResult", () => {
+        state.dismissedResult = state.submission;
+        sync();
       });
-      else button("dismiss", "common.cancel", () => { if (!submissions.has(actionKey)) resetCard(false); });
-      if (item.kind === "create-and-run" || formSchedule) {
-        reopen = button("reopen", "tailnetWorkReviews.newDecision", () => {
-          if (submissions.get(actionKey)?.canReopen) resetCard(true);
-        });
-        reopen.hidden = true;
+      function sync() {
+        const { approve: canApprove, alternative, edit, reopen: canReopen } = available();
+        approve.disabled = !canApprove;
+        negative.disabled = item.deny === "reject" ? !alternative : !edit;
+        if (note) note.disabled = !alternative;
+        if (requestChanges) requestChanges.disabled = !alternative;
+        for (const input of inputs) input.disabled = !edit;
+        if (reopen) {
+          reopen.disabled = !canReopen;
+          reopen.hidden = item.kind !== "schedule-attachment" && !canReopen;
+        }
+        const submission = state.submission;
+        const result = submission?.result;
+        const shown = result && submission !== state.dismissedResult;
+        dismissResult.hidden = !shown || result.status !== "refused";
+        const text = !shown ? "" : result.status === "refused" ? refusal(result.code)
+          : workText({ pending: "submitting", success: "submitted", unknown: "submissionUnknown" }[result.status]);
+        status.toggleAttribute("data-error", Boolean(shown && (result.status === "refused" || result.status === "unknown")));
+        if (status.textContent !== text) status.textContent = text;
       }
+      body.addEventListener("input", sync);
       body.append(actions, status);
       node.append(summary, body);
-      const submission = submissions.get(actionKey);
-      if (submission) card.showSubmission(submission);
-      return card;
+      sync();
+      return { node, sync };
     }
     function update(snapshot) {
       if (revoked) return;
       if (!snapshot?.workReviews) {
         clear();
+        states.clear();
         return;
       }
       if (scope !== snapshot.scope) {
         clear();
-        submissions.clear();
+        states.clear();
         scope = snapshot.scope;
       }
       latestSnapshot = snapshot;
-      const reviews = snapshot.workReviews;
-      const outputs = new Map(reviews.filter(item => item.kind === "requested-output").map(item => [outputKey(item), item]));
-      const next = new Set();
+      const reviews = new Map();
+      for (const item of snapshot.workReviews) {
+        reviews.set(reviewIdentity(item), item);
+        if (item.kind === "create-and-run") {
+          const { templateId, version, graphHash } = item.binding.input;
+          const schedule = {
+            kind: "schedule-attachment", deny: "dismiss",
+            binding: { input: { templateId, version, graphHash, expectedScope: item.review.scope } },
+            review: { name: item.review.name },
+          };
+          reviews.set(reviewIdentity(schedule), schedule);
+        }
+      }
+      for (const identity of reviews.keys()) {
+        if (!states.has(identity)) states.set(identity, { identity, draft: {} });
+      }
       let position = list.firstElementChild;
-      function show(item, formSchedule = false) {
-        const key = reviewKey(item);
-        next.add(key);
-        const linkedOutput = item.kind === "stage" ? outputs.get(outputKey(item)) : undefined;
-        const content = JSON.stringify([item.review, linkedOutput?.review]);
-        let card = cards.get(key);
-        if (!card || card.content !== content) {
-          const prior = card;
-          card = { ...renderCard(item, key, linkedOutput, formSchedule), content };
+      for (const [identity, item] of reviews) {
+        const state = states.get(identity);
+        let linked;
+        let linkedState;
+        if (item.kind === "stage" || item.kind === "requested-output") {
+          const other = reviewIdentity(item, item.kind === "stage" ? "requested-output" : "stage");
+          const candidate = reviews.get(other);
+          if (candidate && sameOutput(item.binding.input, candidate.binding.input)) {
+            linked = candidate;
+            linkedState = states.get(other);
+          }
+        }
+        const formSchedule = item.kind === "schedule-attachment" && item.binding.input.scheduleId === undefined;
+        const content = JSON.stringify([item, linked]);
+        const prior = state.card;
+        if (!prior || prior.content !== content) {
+          const card = { ...renderCard(item, state, linked, linkedState, formSchedule), content };
           if (prior) {
             card.node.open = prior.node.open;
             if (position === prior.node) position = card.node;
             prior.node.replaceWith(card.node);
           }
-          cards.set(key, card);
+          state.card = card;
         }
+        const { card } = state;
         if (card.node !== position) list.insertBefore(card.node, position);
         position = card.node.nextElementSibling;
       }
-      for (const item of reviews) {
-        show(item);
-        if (item.kind === "create-and-run") {
-          const { templateId, version, graphHash } = item.binding.input;
-          show({
-            kind: "schedule-attachment", deny: "dismiss",
-            binding: { input: { templateId, version, graphHash, expectedScope: item.review.scope } },
-            review: { name: item.review.name },
-          }, true);
+      for (const [identity, state] of states) {
+        if (!reviews.has(identity)) {
+          state.card?.node.remove();
+          state.card = undefined;
+          const status = state.submission?.result.status;
+          const keepRefusal = status === "refused" && state.submission !== state.dismissedResult;
+          if (status !== "pending" && !keepRefusal) states.delete(identity);
         }
       }
-      for (const [key, card] of cards) {
-        if (!next.has(key)) {
-          card.node.remove();
-          cards.delete(key);
-        }
-      }
-      empty.hidden = cards.size !== 0;
+      empty.hidden = reviews.size !== 0;
       section.hidden = false;
     }
     return { update, clear, revoke };

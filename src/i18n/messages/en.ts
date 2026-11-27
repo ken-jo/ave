@@ -165,6 +165,8 @@ export const en = {
   "tailnetWorkReviews.submitted": "Decision submitted.",
   "tailnetWorkReviews.submissionUnknown": "The decision outcome is unknown. Check the current work before submitting again.",
   "tailnetWorkReviews.refused": "Decision refused ({code}).",
+  "tailnetWorkReviews.dismissResult": "Dismiss message",
+  "tailnetWorkReviews.projectReset": "The selected project is no longer available. Review the current project selection before starting.",
   "tailnetWorkReviews.logout": "Disconnect",
   "tailnetWorkReviews.connecting": "Connecting…",
   "tailnetWorkReviews.assistant": "Assistant",
