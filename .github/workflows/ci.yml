@@ -737,7 +737,7 @@ jobs:
     # .required_status_checks.contexts). gate-core and mxc-pins report under
     # names that list does not contain, so only this job's explicit result
     # check below lets them block a merge; skipped or cancelled fails too.
-    needs: [build, background-ui, vitest, vitest-tiers, windows-native-preparation, windows-payload-packaging, windows-script-tests, windows-dev-boot, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins]
+    needs: [build, background-ui, vitest, vitest-tiers, windows-native-preparation, windows-payload-packaging, windows-script-tests, windows-dev-boot, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, linux-confinement-x64, gate-core, mxc-pins]
     if: always()
     # Every job in every workflow runs on a GitHub-hosted runner
     # (src/__tests__/support/workflow-runner-policy.ts fails on anything
@@ -778,6 +778,7 @@ jobs:
           WINDOWS_ARM64_PATH_KIND_RESULT: ${{ needs.windows-arm64-path-kind.result }}
           MACOS_RESULT: ${{ needs.macos-permission-tests.result }}
           LINUX_RESULT: ${{ needs.linux-confinement-tests.result }}
+          LINUX_X64_RESULT: ${{ needs.linux-confinement-x64.result }}
         run: |
           if [ "$GATE_CORE_RESULT" != "success" ]; then
             echo "::error::the core gates ended $GATE_CORE_RESULT"
@@ -867,7 +868,7 @@ jobs:
               exit 1
             fi
           done
-          for result in "$WINDOWS_RESULT" "$MACOS_RESULT" "$LINUX_RESULT"; do
+          for result in "$WINDOWS_RESULT" "$MACOS_RESULT" "$LINUX_RESULT" "$LINUX_X64_RESULT"; do
             if [ "$result" != "$expected" ]; then
               echo "::error::native platform check ended $result, expected $expected"
               exit 1
@@ -1740,6 +1741,9 @@ jobs:
           src/permissions/__tests__/host-shell-execution-plan.test.ts
           src/permissions/__tests__/mxc-launcher.test.ts
           src/permissions/__tests__/mxc-posix-ranking.test.ts
+          src/permissions/__tests__/mxc-linux.test.ts
+          src/permissions/__tests__/mxc-linux-raw-ip.test.ts
+          src/tools/__tests__/mxc-shell-source.test.ts
           src/permissions/__tests__/mxc-runtime-root.test.ts
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
           src/plugins/isolation/__tests__/plugin-stderr.test.ts
@@ -1828,8 +1832,8 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         uses: ./ave/.github/actions/linux-packages
         with:
-          packages: bubblewrap socat ripgrep xvfb bash zsh
-          commands: bwrap socat rg xvfb-run bash zsh
+          packages: bubblewrap slirp4netns iptables iproute2 openssl python3 curl git socat ripgrep xvfb bash zsh
+          commands: bwrap slirp4netns iptables ip socat rg xvfb-run bash zsh
       # Ubuntu 24.04 restricts unprivileged user namespaces by default, which
       # strips what bubblewrap needs (ASRT README, "Platform-Specific
       # Dependencies"). A runner setting, not a product change: the app never
@@ -1889,6 +1893,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+      - &linux-container-prove
+        name: Build and prove the Linux shell container
+        if: needs.build.outputs.docs_only != 'true'
+        uses: ./ave/.github/actions/linux-shell-container
       # The Python smoke's harness runs `uv pip install` with the app's uv, and
       # a restored node_modules cache skips the postinstall that fetches it.
       - name: Ensure uv toolchain
@@ -1945,6 +1953,11 @@ jobs:
         run: >
           bun run test --
           src/permissions/__tests__/linux-sandbox-wrap.test.ts
+          src/permissions/__tests__/mxc-posix-ranking.test.ts
+          src/permissions/__tests__/mxc-linux.test.ts
+          src/permissions/__tests__/mxc-linux-raw-ip.test.ts
+          src/permissions/__tests__/mxc-linux-placeholders.test.ts
+          src/tools/__tests__/mxc-shell-source.test.ts
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
           src/plugins/isolation/__tests__/plugin-stderr.test.ts
           src/permissions/__tests__/launcher-environment.test.ts
@@ -1964,3 +1977,58 @@ jobs:
           src/permissions/__tests__/sandbox-git-controls.integration.test.ts
           src/permissions/__tests__/egress-terminal-background.integration.test.ts
           src/main/__tests__/claude-code-authenticity-native.test.ts
+      - &linux-shell-boundary
+        name: Run the Linux shell container boundary suite
+        if: needs.build.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          AVE_RUN_MXC_LINUX_BOUNDARY: "1"
+          AVE_VITEST_MAX_WORKERS: "2"
+        # A suite whose cases all skipped would pass, so the JSON report must show every case passed.
+        run: |
+          bun run test:vitest -- run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/linux-shell-boundary.json" \
+            src/permissions/__tests__/mxc-linux-boundary.native.test.ts \
+            src/permissions/__tests__/mxc-linux-placeholders.test.ts
+          jq -e '.numPassedTests > 0 and .numPendingTests == 0 and .numTodoTests == 0 and .numFailedTests == 0' \
+            "$RUNNER_TEMP/linux-shell-boundary.json"
+
+  linux-confinement-x64:
+    name: Linux shell container boundary (x64)
+    concurrency:
+      group: ci-platform-${{ github.workflow }}-linux-x64-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: build
+    if: needs.build.outputs.platform_checks == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ave
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Install the Linux shell container tools
+        if: needs.build.outputs.docs_only != 'true'
+        uses: ./ave/.github/actions/linux-packages
+        with:
+          packages: bubblewrap slirp4netns iptables iproute2 openssl python3 curl git
+          commands: bwrap slirp4netns iptables ip
+      - name: Allow unprivileged user namespaces
+        if: needs.build.outputs.docs_only != 'true'
+        run: |
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -r "$knob" ] && [ "$(cat "$knob")" != "0" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - uses: ./ave/.github/actions/setup-bun
+        if: needs.build.outputs.docs_only != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          bun-version-file: ave/.bun-version
+      - run: bun install --frozen-lockfile
+        if: needs.build.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - *linux-container-prove
+      - *linux-shell-boundary
