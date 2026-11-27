@@ -692,7 +692,7 @@ describe("CodexAppServerClient", () => {
     await expect(login.completion).resolves.toBeUndefined();
   });
 
-  it("keeps a successor login when an older window cancellation finishes", async () => {
+  it("admits a successor after an older window cancellation finishes", async () => {
     const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);
       if (request.method === "account/login/start") {
@@ -707,11 +707,15 @@ describe("CodexAppServerClient", () => {
     const first = harness.openAuthorizationUrl.mock.calls[0][1] as import("../oauth-login.js").OAuthLoginOptions;
     first.onCancel();
     expect(harness.client.getCachedStatus().pendingLogin).toBeNull();
+    await vi.waitFor(() => expect(harness.server.requests).toContainEqual(expect.objectContaining({ method: "account/login/cancel" })));
     const cancel = requiredFixture(harness.server.requests.find(({ method }) => method === "account/login/cancel"));
 
-    await harness.client.startBrowserLogin();
-    harness.server.stdout.write(`${JSON.stringify({ id: cancel.id, result: {} })}\n`);
+    const successor = harness.client.startBrowserLogin();
     await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(harness.server.requests.filter(({ method }) => method === "account/login/start")).toHaveLength(1);
+    harness.server.stdout.write(`${JSON.stringify({ id: cancel.id, result: {} })}\n`);
+    await successor;
+    expect(harness.spawnCalls).toHaveLength(1);
     expect(harness.client.getCachedStatus().pendingLogin).toBe("browser");
     const attempts = records.mock.calls.map(([evidence]) => evidence).filter(
       (evidence) => evidence.kind === "login-started" || evidence.kind === "login-retired",

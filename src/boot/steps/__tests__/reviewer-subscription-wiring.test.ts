@@ -24,6 +24,8 @@ import { RuntimeProcessFixture } from "../../../main/__tests__/support/runtime-p
 import { codexExecutableArtifactFixture, normalizeFixtureAncestorPermissions } from "../../../__tests__/support/native-executable.js";
 import { createPrivateDirectory } from "../../../main/codex-executable-location.js";
 import { CodexConversationRuntime } from "../../../main/codex-conversation-runtime.js";
+import { CODEX_RPC_REQUEST_TIMEOUT_MS } from "../../../main/codex-conversation-runtime.js";
+import type { OAuthLoginOptions } from "../../../main/oauth-login.js";
 import { CodexAppServerClient } from "../../../main/codex-app-server-client.js";
 import { ClaudeCodeConversationRuntime } from "../../../main/claude-code-conversation-runtime.js";
 import { ClaudeCodeSubscriptionClient } from "../../../main/claude-code-subscription-client.js";
@@ -201,6 +203,7 @@ it.each([
   "account notification retries after supersession", "account notification retry withdrawn by sign-out",
   "account notification retry withdrawn by shutdown", "matching login completion", "account read during cancel",
   "device login completion while account probes fail", "device login cancel failure while account probes fail",
+  "window cancel with deferred login completion", "window cancel timeout with a successor login",
 ] as const)("invalidates a cached windowless reviewer verdict on %s and restores the saved route", async (scenario) => {
   const tempDir = mkdtempSync(join(tmpdir(), "windowless-reviewer-"));
   vi.resetModules();
@@ -253,7 +256,12 @@ it.each([
   let proofChild: RuntimeProcessFixture | undefined;
   const threadStarted = deferred<{ child: RuntimeProcessFixture; id: number }>();
   const holdsCatalog = scenario === "sign-out during catalog" || scenario === "process exit during catalog";
-  const retiresDeviceLogin = scenario.startsWith("device login");
+  const windowCancel = scenario.startsWith("window cancel");
+  const windowCancelTimeout = scenario === "window cancel timeout with a successor login";
+  const retiresDeviceLogin = scenario.startsWith("device login") || windowCancel;
+  const openAuthorizationUrl = vi.fn<(_url: string, options: OAuthLoginOptions) => void>();
+  const windowCancelStarted = deferred<number>();
+  let deviceStarts = 0;
   const usesAccountNotification = scenario.startsWith("account notification") || scenario === "matching login completion" || scenario === "account read during cancel" || retiresDeviceLogin;
   const realCancelRace = scenario === "cancel detects sign-out during failed login";
   const accountReads: number[] = [];
@@ -315,7 +323,7 @@ it.each([
   });
 
   const printChild = new RuntimeProcessFixture();
-  const runtime = await SubscriptionRuntimeService.create(async () => {}, {
+  const runtime = await SubscriptionRuntimeService.create(openAuthorizationUrl, {
     ...(promptPipeLoss ? { createClaudeCodeConversationRuntime: (options) => new ClaudeCodeConversationRuntime({
       ...options,
       spawn: () => {
@@ -359,8 +367,11 @@ it.each([
                 server.stdout.write(`${JSON.stringify({ id, result: { type: "chatgpt", loginId: "fixture-login", authUrl: "https://auth.openai.com/authorize" } })}\n`);
               } else if (method === "account/login/start" && retiresDeviceLogin) {
                 server.stdout.write(`${JSON.stringify({ id, result: {
-                  type: "chatgptDeviceCode", loginId: "fixture-login", verificationUrl: "https://auth.openai.com/device", userCode: "Q7KD-9P2M",
+                  type: "chatgptDeviceCode", loginId: ++deviceStarts === 1 ? "fixture-login" : "successor-login",
+                  verificationUrl: "https://auth.openai.com/device", userCode: "Q7KD-9P2M",
                 } })}\n`);
+              } else if (method === "account/login/cancel" && windowCancel) {
+                windowCancelStarted.resolve(id);
               } else if (method === "account/login/cancel" && retiresDeviceLogin) {
                 server.stdout.write(`${JSON.stringify({ id, error: { code: -32603, message: "Cancel failed" } })}\n`);
               } else if (id !== undefined) server.stdout.write(`${JSON.stringify({
@@ -544,6 +555,69 @@ it.each([
       } finally {
         vi.useRealTimers();
       }
+      await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
+      expect(subscriptionProviderFactory.mock.lastCall).toEqual([selection]);
+      expect(await dispatch(true)).toMatchObject({ review: { outcome: "fresh" }, result: { decision: "allow" } });
+      return;
+    } else if (windowCancel) {
+      const server = requiredFixture(child);
+      const send = (server: RuntimeProcessFixture, message: object) => server.stdout.write(JSON.stringify(message) + "\n");
+      const replyAccount = (server: RuntimeProcessFixture, index: number, connected: boolean) => send(server, {
+        id: requiredFixture(accountReads[index]), result: { account: connected ? { type: "chatgpt", planType: "plus" } : null },
+      });
+      const complete = (server: RuntimeProcessFixture, loginId: string) => send(server, {
+        method: "account/login/completed", params: { loginId, success: true },
+      });
+      const pending = { pendingLogin: "device-code", pendingDeviceCode: "Q7KD-9P2M" };
+      holdAccountReads = true;
+      await expect(runtime.startLogin(provider, "device-code")).resolves.toMatchObject(pending);
+      await vi.waitFor(() => expect(accountReads).toHaveLength(1));
+      replyAccount(server, 0, false);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const window = requiredFixture(openAuthorizationUrl.mock.calls[0])[1];
+      const deny = { result: { decision: "deny", reasonCode: "no-approver" } };
+      let confirmingChild = server;
+      let confirmationIndex = 1;
+
+      if (windowCancelTimeout) vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        window.onCancel("window-closed");
+        const cancelId = await windowCancelStarted.promise;
+        expect(await runtime.getCachedStatus(provider)).toMatchObject({
+          pendingLogin: null, pendingDeviceCode: null, capabilities: { chat: false },
+        });
+        expect((await dispatch(true)).result.decision).toBe("deny");
+        if (windowCancelTimeout) {
+          const successor = runtime.startLogin(provider, "device-code");
+          const successorResult = expect(successor).resolves.toMatchObject(pending);
+          await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS);
+          await successorResult;
+          expect(server.killed).toBe(true);
+          expect(await runtime.getCachedStatus(provider)).toMatchObject(pending);
+          confirmingChild = requiredFixture(child);
+          expect(confirmingChild).not.toBe(server);
+          await vi.advanceTimersByTimeAsync(1);
+        } else {
+          complete(server, "unrelated-login");
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(accountReads).toHaveLength(1);
+          complete(server, "fixture-login");
+          await vi.waitFor(() => expect(accountReads).toHaveLength(2));
+          send(server, { id: cancelId, result: {} });
+        }
+      } finally {
+        if (windowCancelTimeout) vi.useRealTimers();
+      }
+      if (windowCancelTimeout) {
+        await vi.waitFor(() => expect(accountReads).toHaveLength(2));
+        replyAccount(confirmingChild, 1, false);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        complete(confirmingChild, "successor-login");
+        confirmationIndex = 2;
+        await vi.waitFor(() => expect(accountReads).toHaveLength(3));
+      }
+      await vi.waitFor(async () => expect(await dispatch(true)).toMatchObject(deny));
+      replyAccount(confirmingChild, confirmationIndex, true);
       await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
       expect(subscriptionProviderFactory.mock.lastCall).toEqual([selection]);
       expect(await dispatch(true)).toMatchObject({ review: { outcome: "fresh" }, result: { decision: "allow" } });
