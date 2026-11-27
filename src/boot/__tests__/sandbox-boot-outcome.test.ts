@@ -41,6 +41,7 @@ vi.mock("../../lib/logger.js", () => ({
 
 // Use a Windows host with neither supported confinement substrate available.
 vi.mock("../../permissions/mxc-windows.js", () => ({
+  getHostWxcExecIdentity: () => "verified-launcher",
   detectHostMxcPrerequisites: async () => ({ state: "unavailable", reason: "container-unavailable", windowsBuild: null, detail: "test host" }),
 }));
 
