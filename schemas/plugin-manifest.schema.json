@@ -1616,9 +1616,6 @@
           "properties": {
             "readOnlyHint": {
               "type": "boolean"
-            },
-            "openWorldHint": {
-              "type": "boolean"
             }
           }
         }

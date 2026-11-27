@@ -7415,9 +7415,6 @@
           "annotations": {
             "additionalProperties": false,
             "properties": {
-              "openWorldHint": {
-                "type": "boolean"
-              },
               "readOnlyHint": {
                 "type": "boolean"
               }

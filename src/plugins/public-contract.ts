@@ -395,8 +395,9 @@ export interface PluginAuthStatus {
 /**
  * A tool a plugin exposes — the pure MCP `Tool` object (manifest == wire, §2.1/§2.2).
  * `inputSchema`/`outputSchema` use JSON Schema dialect 2020-12 (the RC default when
- * `$schema` is omitted). The supported annotations classify reads and
- * interactions with external entities. They grant no nested host authority.
+ * `$schema` is omitted). Ave authoring subset of the pinned MCP `Tool`: the
+ * only authorable annotation is `readOnlyHint`. It classifies the tool, never
+ * grants authority for nested host effects. Other annotations are rejected.
  */
 export interface Tool {
   /** LLM/UI tool name. Must match `^[a-zA-Z_][a-zA-Z0-9_]*$` (≤64). */
@@ -421,11 +422,11 @@ export interface Tool {
     required?: string[];
     additionalProperties?: boolean;
   };
-  /** Declare read-only behavior and interaction with external entities.
+  /** Declare only tools that perform reads without mutations.
    * @optional
    * @additionalProperties false
    */
-  annotations?: { readOnlyHint?: boolean; openWorldHint?: boolean };
+  annotations?: { readOnlyHint?: boolean };
   /** MCP icons (2025-11-25). @optional */
   icons?: Array<{ src: string; mimeType?: string; sizes?: string }>;
   /**

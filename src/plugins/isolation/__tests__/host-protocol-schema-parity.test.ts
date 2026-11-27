@@ -449,7 +449,7 @@ it.each([
   [{ readOnlyHint: "true" }, false],
   [{ readOnlyHint: true, destructiveHint: true }, false],
   [{ idempotentHint: true }, false],
-  [{ openWorldHint: false }, true],
+  [{ openWorldHint: false }, false],
   [{ openWorldHint: "false" }, false],
   [{ title: "Status" }, false],
 ])("validates the supported protocol tool annotations %j (%s)", (annotations, accepted) => {
