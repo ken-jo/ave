@@ -816,20 +816,23 @@ describe("side-chat parentage", () => {
 describe("side-chat turns bound to a pane", () => {
   beforeEach(() => browserTabRegistry.__reset());
 
-  it("binds the pane chat's session to the pane tab its turn names", async () => {
+  it.each([undefined, false, true])("binds the pane tab and records its reported empty state %s", async (browserSlotEmpty) => {
     const panes = makePanePool();
     register(makeSideLoop(), makeMainLoop(), false, makeSideChatStore(), panes);
     const send = handlers.get(CHANNELS.sidechat.send)!;
     await expect(send(ev("file:///index.html"), {
-      input: "fill the form", surface: { kind: "browser", tabId: "browser:pane" },
+      input: "fill the form", surface: { kind: "browser", tabId: "browser:pane", browserSlotEmpty },
     })).resolves.toMatchObject({ ok: true });
     const paneSession = panes.get(7, "browser:pane")!.getSessionId();
     expect(browserTabRegistry.conversationSurface(7, paneSession)).toEqual({ kind: "browser", tabId: "browser:pane" });
+    expect(browserTabRegistry.emptyBrowserPaneTab(7, paneSession)).toBe(browserSlotEmpty === true ? "browser:pane" : undefined);
   });
 
   it.each([
     [{ kind: "window", tabId: "x" }],
     [{ kind: "browser", tabId: "" }],
+    [{ kind: "browser", tabId: "browser:pane", browserSlotEmpty: "true" }],
+    [{ kind: "terminal", tabId: "terminal:1", browserSlotEmpty: true }],
     ["browser:pane"],
   ])("refuses a malformed surface %j and runs no turn", async (surface) => {
     const side = makeSideLoop();

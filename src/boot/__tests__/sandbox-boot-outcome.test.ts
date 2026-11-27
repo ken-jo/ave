@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import {
   createSandboxBootHarness,
   type SandboxBootHarness,
@@ -22,6 +23,8 @@ const h = vi.hoisted(() => ({
   checkDeps: vi.fn(),
   isProbeError: vi.fn(),
   isMacProbeError: vi.fn(),
+  // The Linux container route is proved by its own suites; these cases are about the ASRT outcome around it.
+  detectLinuxShell: vi.fn(async () => ({ state: "available" }) as const),
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   homeTrustPending: false,
 }));
@@ -43,6 +46,10 @@ vi.mock("../../lib/logger.js", () => ({
 vi.mock("../../permissions/mxc-windows.js", () => ({
   getHostWxcExecIdentity: () => "verified-launcher",
   detectHostMxcPrerequisites: async () => ({ state: "unavailable", reason: "container-unavailable", windowsBuild: null, detail: "test host" }),
+}));
+
+vi.mock("../../permissions/mxc-linux.js", () => ({
+  detectHostMxcLinuxShellSupport: h.detectLinuxShell,
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
@@ -86,6 +93,7 @@ const ORIGINAL_PLATFORM = process.platform;
 let harness: SandboxBootHarness;
 
 beforeEach(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   harness = createSandboxBootHarness();
   setProcessPlatform("linux");
   __resetActiveSandboxCapabilityForTest();

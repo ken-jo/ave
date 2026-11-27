@@ -75,7 +75,7 @@ export interface UseAttachmentPickerResult {
    * composer (a terminal block). Returns false when the attachment cap is already reached. */
   attachPastedText: (text: string) => boolean;
   /** Save an image supplied by another host surface through the ordinary attachment path. */
-  attachImage: (base64: string) => Promise<boolean>;
+  attachImage: (base64: string, canCommit?: () => boolean) => Promise<boolean>;
 }
 
 /** The entries of `all` left after one occurrence of each entry of `accounted` is taken out. Names and paths repeat, so this
@@ -131,7 +131,7 @@ export function useAttachmentPicker({
 
   // Native attach uses window.ave, not aveApi; picker and drop share authorization, capability checks, commit-time caps and
   // atomic marker insertion.
-  const commitFiles = useCallback(async (files: readonly PickedFile[], refusedEarlier: readonly AttachmentRejection[] = []) => {
+  const commitFiles = useCallback(async (files: readonly PickedFile[], refusedEarlier: readonly AttachmentRejection[] = [], canCommit?: () => boolean) => {
     // Every file this attach loses, whoever refused it; reported once, on every way out.
     const rejections: AttachmentRejection[] = [...refusedEarlier];
     const reportRejections = () => {
@@ -146,6 +146,10 @@ export function useAttachmentPicker({
       );
       if (unattached.length > 0) void window.ave.attach.release(unattached);
     };
+    if (canCommit && !canCommit()) {
+      releaseUnattached([]);
+      return false;
+    }
     const candidateNames = new Map<string, string>();
     let unavailableAttachmentSkipped = false;
     let imageAttachmentLimitExceeded = false;
@@ -164,7 +168,10 @@ export function useAttachmentPicker({
       }
       const n = ++attachmentNCounter.current;
       if (f.isImage) {
-        const img = await window.ave.attach.readImage(f.path);
+        const img = await window.ave.attach.readImage(f.path).catch((error: unknown) => {
+          releaseUnattached([]);
+          throw error;
+        });
         if (
           !img.ok ||
           !img.dataUrl ||
@@ -224,6 +231,12 @@ export function useAttachmentPicker({
         });
       }
     }
+    // Flush pending renders before checking that the original capture target still exists and is visible.
+    const prev = candidates.length > 0 ? readCommittedAttachments(setAttachments) : [];
+    if (canCommit && !canCommit()) {
+      releaseUnattached([]);
+      return false;
+    }
     if (candidates.length === 0) {
       composerRef.current?.focus();
       if (imageAttachmentLimitExceeded) {
@@ -237,7 +250,6 @@ export function useAttachmentPicker({
     }
     // The cap and the image budget are checked against the latest committed list, read just before the commit (see
     // readCommittedAttachments).
-    const prev = readCommittedAttachments(setAttachments);
     const currentCandidates = candidates.filter((attachment) =>
       attachment.kind === "image"
         ? capabilityRef.current.imagesEnabled
@@ -298,7 +310,7 @@ export function useAttachmentPicker({
     return accepted.length > 0;
   }, [attachmentNCounter, composerRef, onAttachmentRejected, onAttachmentUnavailable, onImageAttachmentLimitExceeded, setAttachments, setQuestion]);
 
-  const attachImage = useCallback(async (base64: string): Promise<boolean> => {
+  const attachImage = useCallback(async (base64: string, canCommit?: () => boolean): Promise<boolean> => {
     if (!capabilityRef.current.imagesEnabled) {
       onAttachmentUnavailable?.();
       return false;
@@ -306,7 +318,7 @@ export function useAttachmentPicker({
     const saved = await window.ave.attach.saveClipboardImage(base64);
     if (!saved.ok || !saved.path) return false;
     // A capture that is not attached is released, and so deleted, by commitFiles like any other unattached file.
-    return commitFiles([{ path: saved.path, name: "capture.png", ext: ".png", bytes: saved.bytes ?? 0, isImage: true }]);
+    return commitFiles([{ path: saved.path, name: "capture.png", ext: ".png", bytes: saved.bytes ?? 0, isImage: true }], [], canCommit);
   }, [commitFiles, onAttachmentUnavailable]);
 
   const handleAttach = useCallback(async () => {

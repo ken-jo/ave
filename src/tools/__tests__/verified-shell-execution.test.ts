@@ -7,7 +7,11 @@ import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import { t } from "../../i18n/index.js";
+import {
+  __resetActiveSandboxCapabilityForTest, __resetContainerShellSubstrateForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan,
+  setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot,
+} from "../../permissions/sandbox-capability.js";
 import { prepareVerifiedShellCommand, verifiedShellExecution, type VerifiedShellCommand } from "../../permissions/verified-shell-command.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
@@ -35,6 +39,8 @@ import {
 vi.mock("../../permissions/rules/git-repository-inspection-client.js", () => import("../../__tests__/support/in-process-repository-inspection.js").then((support) => support.inProcessRepositoryInspectionModule()));
 vi.mock("node:fs", { spy: true });
 vi.mock("node:child_process", { spy: true });
+// A sandboxed Linux shell runs in its container; the bridge starts the supervisor through the spawn double.
+vi.mock("../mxc-posix-shell-launch.js", async () => (await import("../../__tests__/support/posix-container-launch-bridge.js")).bridgedPosixContainerLaunch());
 vi.mock("../../permissions/rules/git-repository-inputs.js", { spy: true });
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: () => ({ executable: "/protected-fixture/pwsh", kind: "pwsh" }) }));
 vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn(), resolveVerifiedExecutableAsync: vi.fn() }));
@@ -52,6 +58,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   __resetSandboxRequestedAtBootForTest();
   __resetActiveSandboxCapabilityForTest();
+  __resetContainerShellSubstrateForTest();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.clearAllMocks();
@@ -104,6 +111,8 @@ async function fixture(sandboxed = false, command = "bash --noprofile --norc -p 
   __resetActiveSandboxCapabilityForTest();
   if (sandboxed) setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
     reason: "Controlled sandbox fixture", confines: { filesystem: true, process: true, network: true } });
+  // The Linux shell's sandbox is its container: boot published a live one.
+  if (sandboxed) setContainerShellSubstrate("linux", { state: "available" });
   const plan = getHostShellExecutionPlan();
   const identity = { command, executionCwd: cwd, resolvedCwd: cwd, plan, toolUseId: "verified-native-call", verifiedShellCommand };
   const handle = prepareShellInvocation(identity);
@@ -463,7 +472,9 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
   if (changed) {
     expect(result).toEqual({ output: "Read-only Git output discarded: repository metadata changed during execution.", isError: true, metadata: {} });
   } else {
-    expect(result).toMatchObject({ output: `${dialect === "powershell" ? "PowerShell " : ""}spawn failed: spawn ENOTDIR`, isError: true });
+    // The sandboxed Linux shell is its container, whose supervisor reports a failed start as the container's refusal.
+    expect(result).toMatchObject({ output: sandboxed ? t("sandboxPolicy.linuxContainerShellRefused", { reason: "spawn ENOTDIR" })
+      : `${dialect === "powershell" ? "PowerShell " : ""}spawn failed: spawn ENOTDIR`, isError: true });
   }
   expect(progress.write).not.toHaveBeenCalled();
   expect(capture).not.toHaveBeenCalled();

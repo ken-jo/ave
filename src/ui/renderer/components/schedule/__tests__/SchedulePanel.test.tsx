@@ -10,6 +10,7 @@ import type { AveApi } from "../../../types.js";
 import type { RoutineOccurrence, RoutineRecord, RoutineRun } from "../../../../../shared/routines-types.js";
 import { applyInstalledContent, resetInstalledContentForTests } from "../../../installed-content.js";
 import type { AgentPluginRoutineTemplate } from "../../../../../shared/agent-plugin-routine-template.js";
+import { deferred } from "../../../../../__tests__/support/deferred.js";
 
 const NOW = new Date(2026, 10, 4, 11, 20);
 const at = (day: number, h: number, m = 0) => new Date(2026, 10, day, h, m).toISOString();
@@ -41,6 +42,7 @@ function makeApi(state: { routines: RoutineRecord[]; occurrences?: RoutineOccurr
     listPluginCards: vi.fn(async () => []),
     addRoutine: vi.fn(async () => ({ ok: true, routine: routine() })),
     onRoutineFired: vi.fn(() => () => {}),
+    onRoutinesChanged: vi.fn((_handler: () => void) => () => {}),
     onRoutineRunningStarted: vi.fn(() => () => {}),
     onRoutineRunningFinished: vi.fn(() => () => {}),
     onRoutineFailed: vi.fn(() => () => {}),
@@ -556,4 +558,27 @@ it.each(["en", "ko"] as const)("shows the breaker reason and resumes a template 
     view.unmount();
     setLocale("ko");
   }
+});
+
+it("updates a failed schedule row when the host writes the breaker pause", async () => {
+  const attached = routine({ execution: "template-run", attachmentId: "attached", lastFailure: { kind: "error", firedAt: at(4, 9), at: at(4, 9), reason: "stage-failed" } });
+  const state = { routines: [attached] };
+  const api = makeApi(state);
+  const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+  await view.findByText(t("workflowSchedule.failed"));
+  expect(view.getByRole("button", { name: t("workflowSchedule.runNow") })).toBeEnabled();
+  expect(api.onRoutinesChanged).toHaveBeenCalledOnce();
+  const changed = api.onRoutinesChanged.mock.calls[0]?.[0];
+  if (!changed) throw new Error("Missing routine change subscription");
+  const stale = deferred<Awaited<ReturnType<typeof api.listRoutines>>>();
+  api.listRoutines.mockReturnValueOnce(stale.promise);
+  act(changed);
+  const pausedAt = at(4, 10);
+  state.routines = [{ ...attached, pausedAt, pausedBy: "schedule-breaker" }];
+  await act(async () => { changed(); });
+  await act(async () => { stale.resolve({ routines: [attached], invalid: [] }); });
+  expect(view.getByText(t("schedulePanel.pausedByScheduleBreaker", { when: formatMediumDateTime(pausedAt) }))).toBeVisible();
+  expect(view.getByRole("button", { name: t("schedulePanel.resume") })).toBeEnabled();
+  expect(view.queryByRole("button", { name: t("workflowSchedule.runNow") })).toBeNull();
+  view.unmount();
 });

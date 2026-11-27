@@ -6,7 +6,8 @@ import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { t } from "../../../../i18n/index.js";
-import { SurfacePane, webPanelTitle } from "../MainSurfacePanels.js";
+import { SurfacePane, surfacePaneChatGroup, webPanelTitle } from "../MainSurfacePanels.js";
+import { registerComposerTarget } from "../../preview/composer-targets.js";
 import { directoryName } from "../TerminalPaneHeader.js";
 import { chatColumnsLayout } from "../../preview/chat-columns-layout.js";
 import { DOCK_ENTER_WIDTH } from "../../../../shared/shell-geometry.js";
@@ -125,6 +126,55 @@ describe("useMainSurfaces", () => {
 
 describe("SurfacePane", () => {
   const surface = (kind: MainSurface["kind"], url: string | null = null): MainSurface => ({ tabId: `${kind}:90${kind.length}`, kind, ordinal: 2, url, projectRoot: "/ws" });
+
+  it.each(["visible", "missing", "hidden", "unsupported"] as const)("routes a workspace capture with a %s pane composer", async (target) => {
+    const { api } = makeMockAveApi();
+    const page = surface("browser", "https://example.com/");
+    const paneId = "group-2";
+    const browserWorkspace = {
+      getState: vi.fn(async () => ({ ok: true, value: { tabs: [{ tabId: page.tabId, documentGeneration: 2 }] } })),
+      capture: vi.fn(async () => ({ ok: true, value: { dataUrl: "data:image/png;base64,aW1hZ2U=" } })),
+      setPageShortcuts: vi.fn(async () => {}),
+      onPageShortcut: () => () => {},
+    };
+    render(<TooltipProvider>
+      <button type="button">Other composer</button>
+      <SurfacePane chatOpen={false} onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME}
+        api={{ ...api, browserWorkspace } as never} surface={page} paneId={paneId} frame={{}} onNavigate={() => {}} />
+    </TooltipProvider>);
+    const other = screen.getByRole("button", { name: "Other composer" });
+    const dock = screen.getByTestId("web-panel");
+    vi.spyOn(dock, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 200, 100));
+    const attachOther = vi.fn(async () => true);
+    const attachPane = vi.fn(async () => true);
+    const paneSession = Symbol();
+    const viewport = vi.spyOn(document.body, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, window.innerWidth, window.innerHeight));
+    const unregisterOther = registerComposerTarget({
+      groupId: "other", kind: "conversation", attach: () => true, attachImage: attachOther,
+      available: () => true, element: () => other,
+    });
+    const unregisterPane = target === "missing" ? undefined : registerComposerTarget({
+      groupId: surfacePaneChatGroup(paneId), kind: "side-chat", attach: () => true, getSessionIdentity: () => paneSession,
+      ...(target === "unsupported" ? {} : { attachImage: attachPane }),
+      available: () => target !== "hidden", element: () => dock,
+    });
+    try {
+      other.focus();
+      fireEvent.pointerDown(screen.getByTestId("browser-capture-menu"), { button: 0, ctrlKey: false });
+      fireEvent.click(await screen.findByTestId("browser-capture-viewport"));
+      if (target === "visible") {
+        await waitFor(() => expect(attachPane).toHaveBeenCalledWith("aW1hZ2U=", expect.any(Function)));
+      } else {
+        expect(await screen.findByRole("alert")).toHaveTextContent(t("browserCapture.attachmentFailed"));
+        expect(attachPane).not.toHaveBeenCalled();
+      }
+      expect(attachOther).not.toHaveBeenCalled();
+    } finally {
+      unregisterPane?.();
+      unregisterOther();
+      viewport.mockRestore();
+    }
+  });
 
   it.each(["address", "back", "forward", "reload"])("revokes restored agent ownership before user %s navigation without a control report", async (action) => {
     __resetBrowserTabBridgeForTest();

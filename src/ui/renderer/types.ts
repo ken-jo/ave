@@ -24,6 +24,7 @@ import type { ChatStreamEvent, ChatEntry } from "../../lib/chat-stream-state.js"
 import type { AgentSpawnEvent } from "../../shared/subagent-events.js";
 import type {
   ActiveWorkspaceSurface,
+  PaneChatSurface,
 } from "../../shared/browser-surface.js";
 import type { AppBootstrapStatus } from "../../shared/bootstrap-status.js";
 import type { SessionListQuery, SessionListResult } from "../../shared/session-lookup.js";
@@ -553,7 +554,7 @@ export type AvePreloadApi = {
       /** Opaque correlation echoed in the user prelude and used for scoped cancellation. */
       sendRequestId?: string,
       /** The pane tab a pane's own chat is bound to; its tools default to that tab. */
-      surface?: ActiveWorkspaceSurface,
+      surface?: PaneChatSurface,
       /** The side chat the sending view shows; a turn never lands in a pane's chat by accident. */
       sessionId?: string,
       /** The turn's true origin. A user send carries its gesture's one-shot intent; absent, main treats the send as a queue drain. */
@@ -954,6 +955,7 @@ export type AvePreloadApi = {
   pauseRoutine: (id: string) => Promise<{ ok: true; routine: import("../../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }>;
   resumeRoutine: (id: string) => Promise<{ ok: true; routine: import("../../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }>;
   listRoutineOccurrences: (query: { projectRoot?: string; from: string; to: string }) => Promise<import("../../shared/routines-types.js").RoutineOccurrencesResult>;
+  onRoutinesChanged: (handler: () => void) => () => void;
   onRoutineFired: (
     handler: (event: import("../../shared/routines-types.js").RoutineFiredPayload) => void,
   ) => () => void;
