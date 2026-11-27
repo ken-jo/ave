@@ -2065,6 +2065,25 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(row).not.toHaveTextContent("slirp4netns");
   });
 
+  it.each([
+    [{ rawIp: "unknown", reason: "udp-unmeasured", reachableTargets: [], udpArrival: "unmeasured" }, "permissionsTab.osSandboxMacContainerRawIpReasonUdpUnmeasured"],
+    [{ rawIp: "unknown", reason: "arrival-unprovable", reachableTargets: [], udpArrival: "absent" }, "permissionsTab.osSandboxLinuxContainerRawIpReasonArrivalUnprovable"],
+    [{ rawIp: "blocked", reason: "blocked", evidenceKind: "arrival", reachableTargets: [], udpArrival: "absent" }, undefined],
+  ] as const)("shows the Linux container's measured raw-IP verdict and its reason (%#)", async (rawIpProbe, reasonKey) => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValue({
+      platform: "linux", enabled: true, available: true, kind: "full", reason: "",
+      runtime: { available: true, kind: "full", reason: "" },
+      containerShell: { state: "available", rawIpProbe, egressProtocolCoverage: { dns: "unknown", rawIp: rawIpProbe.rawIp } },
+      confines: { filesystem: true, process: true, network: true },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    const row = screen.getByTestId("os-sandbox-linux-container");
+    expect(row).toHaveTextContent(t("permissionsTab.osSandboxLinuxContainerAvailable"));
+    expect(row).toHaveTextContent(reasonKey === undefined ? t("permissionsTab.osSandboxMacContainerRawIpBlocked")
+      : t("permissionsTab.osSandboxMacContainerRawIpUnknown", { reason: t(reasonKey) }));
+  });
+
   it("keeps opt-in enabled and shows a localized error, not main's raw detail, on an ok:false shape", async () => {
     const { updateSettings } = installApiWithWindows({
       sandboxWindowsInstall: vi.fn(async () => ({

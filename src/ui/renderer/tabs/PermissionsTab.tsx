@@ -242,7 +242,7 @@ function LinuxContainerStatus({ status }: { status: NonNullable<SandboxCapabilit
   return (
     <div data-testid="os-sandbox-linux-container" data-state={status.state}
       className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-dense text-muted-foreground">
-      <p>{status.state === "available" ? t("permissionsTab.osSandboxLinuxContainerAvailable")
+      <p>{status.state === "available" ? `${t("permissionsTab.osSandboxLinuxContainerAvailable")} ${macRawIpSentence(status.rawIpProbe)}`
         : t("permissionsTab.osSandboxLinuxContainerUnavailable", { reason: t(LINUX_CONTAINER_REASON_KEY[status.reason]) })}</p>
       {commands.length > 0 ? (
         <dl className="space-y-1">
@@ -270,7 +270,7 @@ const MAC_RAW_IP_REASON_KEY = {
   "arrival-unprovable": "permissionsTab.osSandboxLinuxContainerRawIpReasonArrivalUnprovable",
 } as const satisfies Record<MacRawIpUnknownReason | LinuxRawIpUnknownReason, string>;
 
-/** The measured raw-IP sentence for an available macOS container; an unmeasured one reads as not confirmed. */
+/** The measured raw-IP sentence for an available macOS or Linux container; an unmeasured one reads as not confirmed. */
 function macRawIpSentence(rawIp: ContainerRawIpProbeVerdict | undefined): string {
   const verdict = rawIp ?? { rawIp: "unknown", reason: "no-evidence" } as const;
   return verdict.rawIp === "blocked" ? t("permissionsTab.osSandboxMacContainerRawIpBlocked")
