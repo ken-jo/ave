@@ -111,6 +111,7 @@ function makeDeps(): never {
       generateText: vi.fn(async () => ""),
       getActiveStreamTurn: () => null,
     },
+    memoryManager: { sessions: {} },
     sideChatConversationLoop: undefined,
     approvalGate: undefined,
     settingsService: {
