@@ -7,7 +7,7 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
-import { readdir, stat, unlink } from "node:fs/promises";
+import fsPromises, { readdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { LOG_RETENTION_DAYS } from "../shared/log-retention.js";
@@ -171,7 +171,7 @@ async function capLogTreeAfterRoll(dir: string, currentFile: () => string): Prom
     const dateStr = parseLogFileDate(name);
     if (!dateStr) continue;
     try {
-      const file = { name, dateStr, seq: parseLogSeq(name), size: (await stat(join(dir, name))).size };
+      const file = { name, dateStr, seq: parseLogSeq(name), size: (await fsPromises.stat(join(dir, name))).size };
       const day = byDay.get(dateStr) ?? [];
       day.push(file);
       byDay.set(dateStr, day);
@@ -306,7 +306,7 @@ export function createLogFileSink(options: LogFileSinkOptions = {}, onProgress?:
     })().catch(() => {});
   };
 
-  const tryRoll = (): void => {
+  const tryRoll = async (): Promise<void> => {
     if (closed || nextFile || activeBytes < maxBytes) return;
     if (retryRollAt !== undefined) {
       const now = performance.now();
@@ -314,14 +314,20 @@ export function createLogFileSink(options: LogFileSinkOptions = {}, onProgress?:
       retryRollAt = now + ROLLOVER_RETRY_INTERVAL_MS;
     }
     const path = join(dir, seqFileName(dateStr, seq + 1));
-    // Reopen waits for the in-flight write before sending buffered lines to the new file.
+    nextFile = path;
     try {
       // On Windows, append-open can succeed on a directory and fail on the first write.
-      if (process.platform === "win32" && statSync(path, { throwIfNoEntry: false })?.isDirectory()) {
-        retryRollAt ??= 0;
-        return;
+      if (process.platform === "win32") {
+        const info = await fsPromises.stat(path).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+        if (closed || info?.isDirectory()) {
+          nextFile = undefined;
+          retryRollAt ??= 0;
+          return;
+        }
       }
-      nextFile = path;
+      // Reopen waits for the in-flight write before sending buffered lines to the new file.
       boom.reopen(path);
     } catch {
       nextFile = undefined;
@@ -330,7 +336,7 @@ export function createLogFileSink(options: LogFileSinkOptions = {}, onProgress?:
   };
   boom.on("write", (bytes: number) => {
     activeBytes += bytes;
-    tryRoll();
+    void tryRoll();
   });
   boom.on("ready", () => {
     if (!nextFile) return;
@@ -351,7 +357,7 @@ export function createLogFileSink(options: LogFileSinkOptions = {}, onProgress?:
     },
     write(chunk: string, countDrops?: boolean): void {
       if (closed) return;
-      if (retryRollAt !== undefined) tryRoll();
+      if (retryRollAt !== undefined) void tryRoll();
       destination.write(chunk, countDrops, hardMaxBytes - activeBytes);
     },
     destroy(): void {
