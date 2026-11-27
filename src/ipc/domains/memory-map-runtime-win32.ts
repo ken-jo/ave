@@ -13,6 +13,7 @@ import type { WindowsMemoryEmbeddingSettingsSchema, MemoryRetrievalSchema } from
 import { assertLocalEmbeddingRuntime, bindLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from '../../main/memory-map/local-runtime-win32.js';
 import type { WindowsBackgroundAdmission } from '../../permissions/windows-background-features.js';
 import { runMemoryWorker } from '../../main/memory-map/worker-client-win32.js';
+import { MemoryBuildTeardown } from '../../main/memory-map/build-teardown-win32.js';
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager-win32.js';
 import { downloadModelFile } from '../../main/memory-map/model-download-win32.js';
 import { ManagedExitUnconfirmedError } from '../../main/managed-child-processes.js';
@@ -79,7 +80,8 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     return bindLocalEmbeddingRuntime(() => localRuntime(admission)).assertStillValid;
   };
   let buildGeneration = 0;
-  const activeBuilds = new Set<ReturnType<MemoryMapHost['build']>>();
+  const buildTeardowns = new Set<MemoryBuildTeardown>();
+  let latestBuild: MemoryBuildTeardown | undefined;
   let modelGeneration = 0;
   let settingsGeneration = 0;
   let settingsWrite: Promise<unknown> = Promise.resolve();
@@ -119,7 +121,8 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     provider,
     watchAuthority,
     refreshLocalAdmission,
-    runWorker: (folder, task, signal, onProgress, onAdmission) => runMemoryWorker(folder, task, signal, onProgress, onAdmission, localInferencePreference),
+    runWorker: (folder, task, signal, onProgress, onAdmission, exit) =>
+      runMemoryWorker(folder, task, signal, onProgress, onAdmission, exit, localInferencePreference),
     validatedModelPath: async (signal, onAdmission) => {
       const admission = await refreshLocalInferenceAdmission();
       signal.throwIfAborted();
@@ -188,26 +191,31 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     get: scope => host.get(catalog(scope)),
     build: async (scope, event, onAdmission) => {
       const generation = ++buildGeneration;
-      if (deps.settingsService.get('memoryEmbedding')?.source !== 'provider') {
-        const admission = await refreshLocalInferenceAdmission();
-        if (generation !== buildGeneration) throw new MemoryMapHostError('request-stale');
-        localRuntime(admission);
+      const teardown = new MemoryBuildTeardown();
+      latestBuild = teardown;
+      buildTeardowns.add(teardown);
+      try {
+        if (deps.settingsService.get('memoryEmbedding')?.source !== 'provider') {
+          const admission = await refreshLocalInferenceAdmission();
+          if (generation !== buildGeneration) throw new MemoryMapHostError('request-stale');
+          localRuntime(admission);
+        }
+        buildEvent = event;
+        return await host.build(catalog(scope), assertLive => onAdmission(() => {
+          if (generation !== buildGeneration) throw new MemoryMapHostError('request-stale');
+          assertLive();
+        }), teardown);
+      } finally {
+        if (teardown.confirmed) buildTeardowns.delete(teardown);
       }
-      buildEvent = event;
-      const build = host.build(catalog(scope), assertLive => onAdmission(() => {
-        if (generation !== buildGeneration) throw new MemoryMapHostError('request-stale');
-        assertLive();
-      }));
-      activeBuilds.add(build);
-      try { return await build; }
-      finally { activeBuilds.delete(build); }
     },
     cancel: async () => {
-      const builds = [...activeBuilds];
+      const builds = new Set(buildTeardowns);
+      if (latestBuild) builds.add(latestBuild);
       cancelBuild();
-      const outcomes = await Promise.allSettled(builds);
-      if (outcomes.some(outcome => outcome.status === 'rejected'
-        && (outcome.reason instanceof ManagedExitUnconfirmedError || outcome.reason instanceof MxcProcessCleanupError))) {
+      const outcomes = await Promise.all([...builds].map(build => build.waitForExit()));
+      for (const build of builds) if (build.confirmed) buildTeardowns.delete(build);
+      if (outcomes.length === 0 || outcomes.includes(false)) {
         throw new MemoryMapHostError('build-exit-unconfirmed');
       }
       return null;

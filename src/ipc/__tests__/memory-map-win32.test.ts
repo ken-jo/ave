@@ -416,9 +416,9 @@ describe('memory map host boundary', () => {
     const shared = deferred<{ areSwitchesAvailable: () => boolean }>();
     state.refreshAdmission.mockReturnValue(shared.promise);
     const startHost = vi.fn();
-    state.runWorker.mockImplementationOnce(async (_folder, _task, _signal, _progress, _onAdmission, preference: boolean | (() => boolean)) => {
+    state.runWorker.mockImplementationOnce(async (_folder, _task, _signal, _progress, _onAdmission, _exit, preference: () => boolean) => {
       const admission = await shared.promise;
-      if (admission.areSwitchesAvailable() && (typeof preference === 'function' ? preference() : preference)) startHost();
+      if (admission.areSwitchesAvailable() && preference()) startHost();
     });
     const inference = state.startWorker('/example/model', { kind: 'embed', text: 'fixture' }, new AbortController().signal);
     const disable = invoke('settingsSet', { localInferenceWithoutSandbox: false });

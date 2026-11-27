@@ -178,7 +178,10 @@ export function prepareManagedWindowsProcessHome(label: string, treeReceiptLine?
       });
     },
     async stop() {
-      if (child === undefined) return abandonManagedLaunch(resources);
+      if (child === undefined) {
+        onExitConfirmed?.();
+        return abandonManagedLaunch(resources);
+      }
       if (treeExit === undefined) {
         terminateChildBestEffort(child);
         if (directExit === undefined) throw new ManagedExitUnconfirmedError();
@@ -186,10 +189,13 @@ export function prepareManagedWindowsProcessHome(label: string, treeReceiptLine?
           () => new ManagedExitUnconfirmedError());
       }
       try {
-        const receipt = await raceWithTimeout(treeExit, TOOL_TIMEOUT_POLICY.windowsInferenceRelayStopMs,
+        const cleanup = treeExit.then(async receipt => {
+          if (receipt === undefined) throw new ManagedExitUnconfirmedError();
+          onExitConfirmed?.();
+          await releaseManagedResources(resources, receipt);
+        });
+        await raceWithTimeout(cleanup, TOOL_TIMEOUT_POLICY.windowsInferenceRelayStopMs,
           () => new ManagedExitUnconfirmedError());
-        if (receipt === undefined) throw new ManagedExitUnconfirmedError();
-        await releaseManagedResources(resources, receipt);
       } catch (error) {
         terminateChildBestEffort(child);
         log.warn(`[${label}] sandbox teardown refused: ${errorMessage(error)}`);

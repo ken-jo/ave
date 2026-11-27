@@ -13,6 +13,7 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, spawn: (...args: Parameters<typeof actual.spawn>) => { state.spawns++; return actual.spawn(...args); } };
 });
 import { runMemoryWorker } from '../worker-client.js';
+import { runMemoryWorker as runWindowsMemoryWorker } from '../worker-client-win32.js';
 import { LOCAL_NAMESPACE } from '../graph.js';
 describe('memory worker lifecycle', () => {
   it.each(['embed', 'embed-batch'] as const)('refuses %s without the OS sandbox and starts neither a thread nor a process', async kind => {
@@ -40,6 +41,15 @@ describe('memory worker lifecycle', () => {
       expect(callback).toHaveBeenCalledOnce();
       const controller = new AbortController(); const pending = runMemoryWorker(root, { kind: 'project', input: { ...input, jobId: 'wait' } }, controller.signal); controller.abort();
       await expect(pending).rejects.toThrow('cancelled');
+      const windowsController = new AbortController();
+      const exit = { starting: vi.fn(), confirmed: vi.fn() };
+      const windowsPending = runWindowsMemoryWorker(root, { kind: 'project', input: { ...input, jobId: 'wait' } },
+        windowsController.signal, undefined, undefined, exit);
+      expect(exit.starting).toHaveBeenCalledOnce();
+      expect(exit.confirmed).not.toHaveBeenCalled();
+      windowsController.abort();
+      await expect(windowsPending).rejects.toThrow('cancelled');
+      expect(exit.confirmed).toHaveBeenCalledOnce();
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

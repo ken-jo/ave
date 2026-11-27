@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import type { GraphSnapshot, MemoryMapProgress, MemoryMapFilters, RetrievalAnswer, EmbeddingNamespace, MemoryMapRecord } from '../../shared/memory-map.js';
 import { openFeatureNamespace, writeFileAtomicAtPathAdmitted, type FeatureNamespaceHandle } from '../storage/feature-namespace.js';
 import { catalogRevision, LOCAL_NAMESPACE, vectorKey, type VectorCache } from './graph.js';
-import { runMemoryWorker, type MemoryWorkerRunner } from './worker-client-win32.js';
+import { runMemoryWorker, type MemoryWorkerRunner, type OnInferenceAdmission } from './worker-client-win32.js';
+import type { MemoryWorkerTask } from './worker-client.js';
 import type { MemoryMapCatalog, ReadMemoryMapCatalog } from './catalog.js';
 import { commitUnderAdmission } from '../../shared/admission-commit.js';
 import { MemoryMapHostError } from './errors.js';
@@ -14,6 +15,7 @@ import { MAX_INFERENCE_TASK_BYTES } from './inference-request.js';
 import { registerModelBuild } from './model-manager-win32.js';
 import { ManagedExitUnconfirmedError } from '../managed-child-processes.js';
 import { MxcProcessCleanupError } from '../../permissions/mxc-extension-errors.js';
+import { MemoryBuildTeardown } from './build-teardown-win32.js';
 export { MemoryMapHostError } from './errors.js';
 import type { ProviderEmbeddings } from './provider-embeddings-win32.js';
 const sameNamespace = (a: EmbeddingNamespace, b: EmbeddingNamespace) => a.source === b.source && a.providerId === b.providerId && a.modelId === b.modelId && a.modelRevision === b.modelRevision && a.preprocessingRevision === b.preprocessingRevision && (!b.dimensions || a.dimensions === b.dimensions);
@@ -122,7 +124,7 @@ export class MemoryMapHost {
     if (this.snapshot) this.validateSnapshot(this.snapshot, catalog);
     return this.pending ?? this.snapshot;
   }
-  private async embedLocal(catalog: MemoryMapCatalog, folder: string, savedCache: VectorCache, signal: AbortSignal, jobId: string, report: (progress: MemoryMapProgress) => void, assertCurrent: () => void, assertModelAdmission: () => void): Promise<VectorCache> {
+  private async embedLocal(catalog: MemoryMapCatalog, folder: string, savedCache: VectorCache, signal: AbortSignal, jobId: string, report: (progress: MemoryMapProgress) => void, assertCurrent: () => void, assertModelAdmission: () => void, runWorker: MemoryWorkerRunner): Promise<VectorCache> {
     const total = catalog.records.length;
     const cache: VectorCache = {};
     const missing: { record: MemoryMapRecord; key: string }[] = [];
@@ -155,7 +157,7 @@ export class MemoryMapHost {
       if (!texts.length) throw new MemoryMapHostError('catalog-too-large');
 
       assertCurrent();
-      const vectors = await this.runWorker<number[][]>(folder, task, signal, progress => {
+      const vectors = await runWorker<number[][]>(folder, task, signal, progress => {
         const completed = progress.completed;
         const overall = cached + start + completed;
         if (progress.phase === 'embedding' && texts[completed - 1] !== undefined
@@ -171,7 +173,10 @@ export class MemoryMapHost {
     }
     return cache;
   }
-  async build(readCatalog: ReadMemoryMapCatalog, onAdmission?: (assertLive: () => void) => void): Promise<GraphSnapshot> {
+  async build(readCatalog: ReadMemoryMapCatalog, onAdmission?: (assertLive: () => void) => void, teardown = new MemoryBuildTeardown()): Promise<GraphSnapshot> {
+    const runWorker: MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal,
+      onProgress?: (progress: MemoryMapProgress) => void, onAdmission?: OnInferenceAdmission) =>
+      teardown.track(exit => this.runWorker<T>(folder, task, signal, onProgress, onAdmission, exit));
     const catalog = readCatalog(); this.activate(catalog); this.cancel(); this.hydrated = true;
     const selected = this.selectedNamespace();
     const generation = this.generation; const controller = new AbortController(); this.controller = controller;
@@ -229,17 +234,17 @@ export class MemoryMapHost {
         stopWatching = this.options.watchAuthority?.(() => { if (active()) this.cancel(); });
         const provider = this.options.provider as ProviderEmbeddings;
         assertBuildAdmission = provider.bindConsent(selected, controller.signal);
-        result = await provider.build(catalog, selected, saved, controller.signal, report, assertAuthority, assertCurrent);
+        result = await provider.build(catalog, selected, saved, controller.signal, report, assertAuthority, assertCurrent, teardown);
       } else {
         if (assertModelAdmission === undefined) throw new MemoryMapHostError('local-runtime-unavailable');
         const jobId = randomUUID();
-        const vectors = await this.embedLocal(catalog, folder, cache, controller.signal, jobId, report, assertCurrent, assertModelAdmission);
+        const vectors = await this.embedLocal(catalog, folder, cache, controller.signal, jobId, report, assertCurrent, assertModelAdmission, runWorker);
         assertCurrent();
         assertBuildAdmission = await this.options.refreshLocalAdmission();
         assertCurrent();
         const assertProjection = assertBuildAdmission;
         let projecting!: Promise<GraphBuildResult>;
-        commitUnderAdmission(assertProjection, () => { projecting = this.runWorker<GraphBuildResult>('', {
+        commitUnderAdmission(assertProjection, () => { projecting = runWorker<GraphBuildResult>('', {
           kind: 'project', input: { ...catalog, cache: vectors, namespace: LOCAL_NAMESPACE, jobId },
         }, controller.signal, progress => {
           if (progress.phase === 'embedding') return;

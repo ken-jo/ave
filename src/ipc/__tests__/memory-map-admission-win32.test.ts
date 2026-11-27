@@ -8,13 +8,17 @@ import { setProcessPlatform } from '../../__tests__/support/process-platform.js'
 import { createTmpDirTracker } from '../../__tests__/support/tmp-dir-teardown.js';
 import { CHANNELS } from '../../contract/app-contract.js';
 import { ManagedExitUnconfirmedError } from '../../main/managed-child-processes.js';
+import { MxcProcessCleanupError } from '../../permissions/mxc-extension-errors.js';
 import { buildGraph } from '../../main/memory-map/graph.js';
+import type { MemoryWorkerExit } from '../../main/memory-map/build-teardown-win32.js';
+import { MemoryMapHostError } from '../../main/memory-map/errors.js';
 import * as localRuntime from '../../main/memory-map/local-runtime-win32.js';
 import type { MemoryWorkerTask } from '../../main/memory-map/worker-client.js';
 import { registerMxcReleaseGateEvidence } from '../../permissions/mxc-extension-admission.js';
 import { __resetSandboxHomesUnavailableForTest, markSandboxHomesUnavailable } from '../../permissions/sandbox-capability.js';
 import { invalidateWindowsBackendEvidence } from '../../permissions/windows-confinement-evidence.js';
 import type { SandboxWindowsExtensionPlan, SandboxWindowsSubstrateInfo } from '../../shared/sandbox-capability-info.js';
+import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import { registerWindowsMemoryMapHandlers } from '../domains/memory-map-win32.js';
 import type { IpcDeps } from '../types.js';
 
@@ -26,7 +30,7 @@ const state = vi.hoisted(() => ({
   substrate: null as Partial<SandboxWindowsSubstrateInfo> | null,
   handle: undefined as ((event: IpcMainInvokeEvent) => Promise<unknown>) | undefined,
   cancel: undefined as ((event: IpcMainInvokeEvent) => Promise<unknown>) | undefined,
-  runWorker: vi.fn<(folder: string, task: MemoryWorkerTask, signal: AbortSignal) => Promise<unknown>>(),
+  runWorker: vi.fn<(folder: string, task: MemoryWorkerTask, signal: AbortSignal, progress?: unknown, admission?: unknown, exit?: MemoryWorkerExit) => Promise<unknown>>(),
   beforeCommit: undefined as (() => Promise<unknown>) | undefined,
   afterRead: undefined as (() => void) | undefined,
 }));
@@ -39,7 +43,15 @@ vi.mock('../../permissions/asrt-sandbox.js', async importOriginal => ({
   getWindowsConfinementRoute: () => [state.account],
   getWindowsAccountConfinementHelperIdentity: () => 'account-helper',
   isOfflineProcessConfinementActive: () => state.account,
+  isWindowsBackgroundConfinementRuntimeActive: () => state.account || state.substrate?.shells === 'mxc',
   isWindowsAccountConfinementOperational: async () => state.operational,
+  checkAsrtDependencies: async () => ({ errors: [], warnings: [], accountBackendAbsent: !state.account }),
+}));
+vi.mock('../../permissions/mxc-windows.js', async importOriginal => ({
+  ...await importOriginal<typeof import('../../permissions/mxc-windows.js')>(),
+  detectHostMxcPrerequisites: async () => ({
+    state: 'unavailable', reason: 'container-unavailable', containerBackendAbsent: true, baseContainerApiPresent: false,
+  }),
 }));
 vi.mock('../../permissions/sandbox-capability.js', async importOriginal => ({
   ...await importOriginal<typeof import('../../permissions/sandbox-capability.js')>(),
@@ -92,53 +104,95 @@ afterEach(async () => {
   await roots.cleanup();
 });
 
-it.each([true, false])('waits for account worker teardown before replying to Cancel (confirmed: %s)', async confirmed => {
-  state.root = roots.track(await mkdtemp(join(tmpdir(), 'memory-map-admission-')));
-  setProcessPlatform('win32');
-  state.account = state.operational = true;
-  state.beforeCommit = state.afterRead = undefined;
-  state.plan = { selectedBackend: 'none', readiness: 'off' };
-  state.substrate = { srtWinReady: true, shells: 'approved-host', mxc: { state: 'unavailable', reason: 'container-unavailable' } };
+describe.each(['container', 'unconfined', 'account'] as const)('%s Cancel', route => {
+  it.each(['confirmed', 'refused', 'deadline'] as const)('first, concurrent, and retry replies require this build exit (%s)', async outcome => {
+    state.root = roots.track(await mkdtemp(join(tmpdir(), 'memory-map-admission-')));
+    setProcessPlatform('win32');
+    state.account = route === 'account';
+    state.operational = true;
+    state.beforeCommit = state.afterRead = undefined;
+    state.plan = route === 'container' ? { selectedBackend: 'mxc', readiness: 'ready' } : { selectedBackend: 'none', readiness: 'off' };
+    state.substrate = route === 'container' ? { srtWinReady: false, shells: 'mxc', mxc: { state: 'available' } } : {
+      srtWinReady: state.account, shells: state.account ? 'approved-host' : 'none',
+      accountBackendAbsent: route === 'unconfined',
+      mxc: { state: 'unavailable', reason: 'container-unavailable', containerBackendAbsent: true },
+    };
+    if (route !== 'account') unregister = registerMxcReleaseGateEvidence({
+      ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
+      forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
+    });
 
-  const started = deferred<AbortSignal>();
-  const stopping = deferred<void>();
-  const finishTeardown = deferred<void>();
-  state.runWorker.mockReset().mockImplementation(async (_folder, _task, signal) => {
-    signal.addEventListener('abort', () => stopping.resolve(), { once: true });
-    started.resolve(signal);
-    await finishTeardown.promise;
-    if (!confirmed) throw new ManagedExitUnconfirmedError();
-    signal.throwIfAborted();
+    const started = deferred<AbortSignal>();
+    const stopping = deferred<void>();
+    const finishTeardown = deferred<void>();
+    let confirmExit: (() => void) | undefined;
+    state.runWorker.mockReset().mockImplementation(async (_folder, _task, signal, _progress, _admission, exit) => {
+      exit?.starting?.();
+      confirmExit = exit?.confirmed;
+      signal.addEventListener('abort', () => stopping.resolve(), { once: true });
+      started.resolve(signal);
+      await finishTeardown.promise;
+      if (outcome === 'refused') throw route === 'container' ? new MxcProcessCleanupError('Tree exit unconfirmed') : new ManagedExitUnconfirmedError();
+      confirmExit?.();
+      signal.throwIfAborted();
+    });
+    const note = { id: '11111111-1111-4111-8111-111111111111', filename: 'example.md', title: 'Example', content: 'Memory' };
+    registerWindowsMemoryMapHandlers({
+      auditLogger: { log: vi.fn() },
+      settingsService: { get: (key: string) => key === 'memoryEmbedding'
+        ? { localModelPath: state.root, localInferenceWithoutSandbox: true } : undefined },
+      memoryManager: { readMemoryPanelCatalog: () => ({ notes: [note] }) },
+    } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+    const event = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
+    if (!state.handle || !state.cancel) throw new Error('Memory-map IPC is not registered');
+
+    const build = state.handle(event);
+    try {
+      const signal = await Promise.race([started.promise, build.then(() => { throw new Error('Worker did not start'); })]);
+      if (outcome === 'deadline') vi.useFakeTimers();
+      const replied = vi.fn();
+      const firstCancel = state.cancel(event).then(replied);
+      const secondCancel = state.cancel(event).then(replied);
+      await stopping.promise;
+      if (outcome === 'deadline') await vi.advanceTimersByTimeAsync(0);
+      else await new Promise<void>(resolve => setImmediate(resolve));
+      expect.soft(signal.aborted).toBe(true);
+      expect.soft(replied).not.toHaveBeenCalled();
+
+      if (outcome === 'deadline') {
+        await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsMemoryBuildCancelMs);
+        expect.soft(replied).toHaveBeenCalledTimes(2);
+        if (replied.mock.calls.length !== 2) return;
+      } else {
+        finishTeardown.resolve();
+        expect(await build).toMatchObject({ ok: false });
+      }
+      await Promise.all([firstCancel, secondCancel]);
+      const reply = outcome === 'confirmed' ? { ok: true, value: null } : { ok: false, error: 'build-exit-unconfirmed' };
+      expect.soft(replied.mock.calls).toEqual([[reply], [reply]]);
+      expect.soft(await state.cancel(event)).toEqual(reply);
+      if (outcome === 'deadline') {
+        finishTeardown.resolve();
+        expect(await build).toMatchObject({ ok: false });
+        expect(await state.cancel(event)).toEqual({ ok: true, value: null });
+      } else if (outcome === 'refused' && route === 'unconfined') {
+        confirmExit?.();
+        expect(await state.cancel(event)).toEqual({ ok: true, value: null });
+      } else if (outcome === 'refused' && route === 'account') {
+        state.runWorker.mockImplementationOnce(async (_folder, _task, _signal, _progress, _admission, exit) => {
+          exit?.starting();
+          exit?.confirmed();
+          throw new MemoryMapHostError('catalog-too-large');
+        });
+        expect(await state.handle(event)).toEqual({ ok: false, error: 'catalog-too-large' });
+        expect(await state.cancel(event)).toEqual(reply);
+      }
+    } finally {
+      finishTeardown.resolve();
+      await build;
+      vi.useRealTimers();
+    }
   });
-  const note = { id: '11111111-1111-4111-8111-111111111111', filename: 'example.md', title: 'Example', content: 'Memory' };
-  registerWindowsMemoryMapHandlers({
-    auditLogger: { log: vi.fn() },
-    settingsService: { get: (key: string) => key === 'memoryEmbedding' ? { localModelPath: state.root } : undefined },
-    memoryManager: { readMemoryPanelCatalog: () => ({ notes: [note] }) },
-  } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
-  const event = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
-  if (!state.handle || !state.cancel) throw new Error('Memory-map IPC is not registered');
-
-  const build = state.handle(event);
-  try {
-    const signal = await Promise.race([started.promise, build.then(() => { throw new Error('Worker did not start'); })]);
-    const replied = vi.fn();
-    const firstCancel = state.cancel(event).then(replied);
-    const secondCancel = state.cancel(event).then(replied);
-    await stopping.promise;
-    await new Promise<void>(resolve => setImmediate(resolve));
-    expect.soft(signal.aborted).toBe(true);
-    expect.soft(replied).not.toHaveBeenCalled();
-
-    finishTeardown.resolve();
-    await Promise.all([firstCancel, secondCancel]);
-    const reply = confirmed ? { ok: true, value: null } : { ok: false, error: 'build-exit-unconfirmed' };
-    expect.soft(replied.mock.calls).toEqual([[reply], [reply]]);
-    expect(await build).toMatchObject({ ok: false });
-  } finally {
-    finishTeardown.resolve();
-    await build;
-  }
 });
 
 describe.each(['account', 'container'] as const)('%s admission', backend => {

@@ -23,6 +23,7 @@ import { assertLocalEmbeddingRuntime, bindLocalEmbeddingRuntime, refreshLocalInf
 import type { ModelFile } from './model-manifest.js';
 import type { MemoryInferenceTask } from './worker-client.js';
 import type { OnInferenceAdmission } from './worker-client-win32.js';
+import type { MemoryWorkerExit } from './build-teardown-win32.js';
 
 // Set in the process environment at creation, where the native runtime reads it; the network block is the boundary, this is defense in depth.
 const TELEMETRY_OPT_OUT = { ORT_DISABLE_TELEMETRY: '1' } as const;
@@ -93,7 +94,7 @@ function sandboxHomeOrRefusal(requireTreeExit: boolean, onExitConfirmed?: () => 
   }
 }
 
-async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal: AbortSignal, onExitConfirmed?: () => void): Promise<{
+async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal: AbortSignal, exit?: MemoryWorkerExit): Promise<{
   input: Readable; output: Writable; stop: () => void | Promise<void>; assertStillValid: () => void;
 }> {
   signal.throwIfAborted();
@@ -108,6 +109,7 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
     const cwd = win32SystemBinary('');
     const runtimeReadRoots = [dirname(process.execPath), cwd];
     assertStillValid();
+    exit?.starting();
     const holder = await spawnMxcBundledHolder({
       label: INFERENCE_CHILD_LABEL,
       command: process.execPath,
@@ -122,19 +124,29 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
       workerTransport: 'stdio-control-v1',
       signal,
       assertStillValid,
+    }).catch(error => {
+      if (!(error instanceof MxcProcessCleanupError)) exit?.confirmed();
+      throw error;
     });
-    // The supervisor splits a write into frames across yields; each frame takes the same check.
-    holder.process.fenceInput(assertStillValid);
-    holder.process.stderr.resume();
-    return { input: holder.process.stdout, output: holder.process.stdin, stop: holder.release, assertStillValid };
+    const stop = async () => { await holder.release(); exit?.confirmed(); };
+    try {
+      // The supervisor splits a write into frames across yields; each frame takes the same check.
+      holder.process.fenceInput(assertStillValid);
+      holder.process.stderr.resume();
+      return { input: holder.process.stdout, output: holder.process.stdin, stop, assertStillValid };
+    } catch (error) {
+      await stop();
+      throw error;
+    }
   }
 
-  const home = sandboxHomeOrRefusal(route === 'offline-sandbox', onExitConfirmed);
+  const home = sandboxHomeOrRefusal(route === 'offline-sandbox', exit?.confirmed);
   try {
     let running: ChildProcess;
     const cwd = win32SystemBinary('');
     const extraEnv = { ...home.env, ...TELEMETRY_OPT_OUT };
     assertStillValid();
+    exit?.starting();
     if (route === 'unconfined') {
       if (!isAbsolute(entry)) throw new Error('Inference child entry must be absolute');
       running = spawnManaged(process.execPath, [entry], {
@@ -177,7 +189,7 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
 
 export async function runInferenceChild<T>(folder: string, task: MemoryInferenceTask, signal: AbortSignal,
   onProgress?: (progress: MemoryMapProgress) => void, readLocalInferencePreference?: () => boolean,
-  onAdmission?: OnInferenceAdmission, onExitConfirmed?: () => void): Promise<T> {
+  onAdmission?: OnInferenceAdmission, exit?: MemoryWorkerExit): Promise<T> {
   signal.throwIfAborted();
   const admission = await refreshLocalInferenceAdmission();
   const readRoute = () => assertLocalEmbeddingRuntime(readLocalInferencePreference?.(), admission);
@@ -185,7 +197,7 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
   const taskJson = JSON.stringify(task);
   const lengths = [Buffer.byteLength(taskJson, 'utf8'), ...INFERENCE_FILES.map(file => file.bytes)];
   checkedInferenceFrameBytes(lengths);
-  const { input, output, stop, assertStillValid } = await spawnInferenceChild(readRoute, signal, onExitConfirmed);
+  const { input, output, stop, assertStillValid } = await spawnInferenceChild(readRoute, signal, exit);
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const lines = createInterface({ input });

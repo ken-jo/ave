@@ -491,7 +491,8 @@ it.each([true, false])('waits for direct child exit after Cancel (confirmed: %s)
   spawnHost.mockReturnValue(Object.assign(child, { pid: 123 }));
   const controller = new AbortController();
   const reply = vi.fn();
-  const result = runInferenceChild(folder, TASK, controller.signal, undefined, undefined, undefined, onExitConfirmed).catch(reply);
+  const result = runInferenceChild(folder, TASK, controller.signal, undefined, undefined, undefined,
+    { starting: vi.fn(), confirmed: onExitConfirmed }).catch(reply);
   await vi.waitFor(() => expect(spawnHost).toHaveBeenCalledOnce());
   vi.useFakeTimers();
   try {
