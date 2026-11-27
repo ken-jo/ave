@@ -27,6 +27,7 @@ import { AveHomeConfigurationNotOwnerError, setAveHomeConfigurationOwner } from 
 import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
 import {
   _resetAveHomeTrustForTest,
+  AVE_HOME_INPUT_MAX_BYTES,
   approveAveHomeTrustItems,
   batchAveHomeInputWritesSync,
   aveHomeTreeDigest,
@@ -966,20 +967,24 @@ describe("workflow run file", () => {
     const { path } = await runStore(dir);
     const { WorkBoardStore } = await import("../../main/work-board-store.js");
     const board = new WorkBoardStore(join(dir, "work-board", "board.json"));
-    const stageRuns = Array.from({ length: 12 }, (_, index) => ({ stageId: `stage-${index}`, attempt: 1, status: "passed" as const, output: "x".repeat(48_000) }));
-    const cycle = async (runId: string): Promise<number> => {
+    const stagesFor = (output: string) => Array.from({ length: 12 }, (_, index) => ({ stageId: `stage-${index}`, attempt: 1, status: "passed" as const, output }));
+    const output = "界".repeat(48_000);
+    const stageRuns = stagesFor(output);
+    const cycle = async (runId: string, stages: typeof stageRuns): Promise<number> => {
       const made = await board.create({ title: "Work", templateId: pin.templateId });
       if (made.status !== "created") throw new Error("Missing item");
       expect(await board.beginRun(made.itemId, runId, run.startedAt, { ...pin, source: run.runStartedBy, stageRuns: [] })).toMatchObject({ status: "updated" });
-      expect(await board.updateRun(made.itemId, runId, value => ({ run: { ...value, stageRuns }, ends: "completed", at: run.startedAt }))).toMatchObject({ status: "stored" });
+      expect(await board.updateRun(made.itemId, runId, value => ({ run: { ...value, stageRuns: stages }, ends: "completed", at: run.startedAt }))).toMatchObject({ status: "stored" });
       expect(await board.setRunResult(made.itemId, { runStatus: "completed" })).toMatchObject({ status: "updated" });
       return made.itemId;
     };
-    const standing = await cycle("standing");
+    const standing = await cycle("standing", stagesFor("x".repeat(48_000)));
+    const rounds = 11;
+    // Without cleanup, the preceding runs alone would exceed the file cap before the last start.
+    expect((rounds - 1) * stageRuns.length * Buffer.byteLength(output)).toBeGreaterThan(AVE_HOME_INPUT_MAX_BYTES);
     let largest = 0;
-    // Without cleanup the file passes 16 MiB after about 30 runs of this size and every later start is refused.
-    for (let round = 0; round < 34; round++) {
-      expect(await board.remove(await cycle(`run-${round}`))).toMatchObject({ status: "deleted" });
+    for (let round = 0; round < rounds; round++) {
+      expect(await board.remove(await cycle(`run-${round}`, stageRuns))).toMatchObject({ status: "deleted" });
       largest = Math.max(largest, readFileSync(path).length);
     }
     expect(largest).toBeLessThan(2 * 1024 * 1024);
