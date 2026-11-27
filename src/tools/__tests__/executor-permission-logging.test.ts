@@ -90,7 +90,7 @@ it("does not change execution or repeat an effect when the logger throws", async
   expect(failing).toHaveBeenCalledWith(expect.objectContaining({ event: "permission_decision", decision: "allow" }));
 });
 
-it.each(["normal", "slow", "blocked"])("logs safely to production console, file and support bundle with %s storage", async (storage) => {
+it.each(["normal", "slow", "blocked", "sync-race"])("logs safely to production console, file and support bundle with %s storage", async (storage) => {
   const root = mkdtempSync(join(tmpdir(), "ave-permission-log-sink-"));
   roots.push(root);
   const logsDir = join(root, "logs");
@@ -158,10 +158,30 @@ it.each(["normal", "slow", "blocked"])("logs safely to production console, file 
     "    return write(...args);",
     "  };",
     "}",
+    "let syncStarted, finishSync;",
+    "const syncing = new Promise((resolve) => { syncStarted = resolve; });",
+    "if (storage === \"sync-race\") {",
+    "  await flushLogDestinations();",
+    "  const sync = fs.fsync, write = fs.write;",
+    "  fs.fsync = (fd, callback) => {",
+    "    if (fd > 2 && !finishSync) { finishSync = callback; syncStarted(); return; }",
+    "    return sync(fd, callback);",
+    "  };",
+    "  fs.write = (...args) => {",
+    "    if (args[0] > 2 && String(args[1]).includes('\"event\":\"late_probe\"')) return;",
+    "    return write(...args);",
+    "  };",
+    "}",
     "logPermissionEvent(\"shutdown_probe\", {});",
     "const started = performance.now();",
-    "await flushLogDestinations();",
-    "if (storage === \"blocked\" && (performance.now() - started < 350 || performance.now() - started > 1500)) throw new Error(\"Flush missed the shutdown deadline\");",
+    "const shutdownFlush = flushLogDestinations();",
+    "if (storage === \"sync-race\") {",
+    "  await syncing;",
+    "  logPermissionEvent(\"late_probe\", {});",
+    "  finishSync(null);",
+    "}",
+    "await shutdownFlush;",
+    "if ((storage === \"blocked\" || storage === \"sync-race\") && (performance.now() - started < 350 || performance.now() - started > 1500)) throw new Error(\"Flush missed the shutdown deadline\");",
     "closeFileLogSink();",
     "release();",
   ].join("\n");
@@ -190,10 +210,13 @@ it.each(["normal", "slow", "blocked"])("logs safely to production console, file 
     expect(losses).toHaveLength(1);
     expect(JSON.parse(losses[0] ?? "{}")).toMatchObject({ consoleDropped: 1, fileDropped: 1 });
   }
-  if (storage === "blocked") {
+  if (storage === "blocked" || storage === "sync-race") {
     const loss = stdout.split("\n").find((line) => line.includes('"event":"app_log_loss"'));
-    expect(JSON.parse(loss ?? "{}")).toMatchObject({ consoleUnconfirmed: 0, fileUnconfirmed: 1 });
-    expect(file).not.toContain('"event":"shutdown_probe"');
+    expect(JSON.parse(loss ?? "{}")).toMatchObject({
+      fileUnconfirmed: 1,
+      ...(storage === "blocked" ? { consoleUnconfirmed: 0 } : {}),
+    });
+    expect(file).not.toContain(storage === "blocked" ? '"event":"shutdown_probe"' : '"event":"late_probe"');
   }
   expect(stderr).not.toContain(CANARY);
   expect(stderr).not.toContain(OPAQUE_PROVIDER_ID);

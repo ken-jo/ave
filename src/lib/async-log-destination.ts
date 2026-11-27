@@ -38,10 +38,7 @@ export function createAsyncLogDestination(options: SonicBoomOpts, onDrain?: () =
           return;
         }
         try {
-          stream.flush((error) => {
-            if (!error) pending = 0;
-            resolve();
-          });
+          stream.flush(() => resolve());
         } catch { resolve(); }
       });
     },
