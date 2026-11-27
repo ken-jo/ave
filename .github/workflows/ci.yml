@@ -1898,7 +1898,7 @@ jobs:
         working-directory: ave
       - &linux-container-prove
         name: Build and prove the Linux shell container
-        if: needs.build.outputs.docs_only != 'true'
+        if: steps.docs-impact.outputs.docs_only != 'true' && needs.build.outputs.docs_only != 'true'
         uses: ./ave/.github/actions/linux-shell-container
       # The Python smoke's harness runs `uv pip install` with the app's uv, and
       # a restored node_modules cache skips the postinstall that fetches it.
@@ -1982,7 +1982,7 @@ jobs:
           src/main/__tests__/claude-code-authenticity-native.test.ts
       - &linux-shell-boundary
         name: Run the Linux shell container boundary suite
-        if: needs.build.outputs.docs_only != 'true'
+        if: steps.docs-impact.outputs.docs_only != 'true' && needs.build.outputs.docs_only != 'true'
         working-directory: ave
         env:
           AVE_RUN_MXC_LINUX_BOUNDARY: "1"
