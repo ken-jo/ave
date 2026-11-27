@@ -97,6 +97,11 @@ export async function attachImageToComposer(base64: string, groupId?: string): P
   return target?.attachImage ? target.attachImage(base64) : "no-composer";
 }
 
+export async function attachImageToPaneChat(base64: string, paneChatGroupId: string): Promise<AttachTextResult> {
+  const target = sideChatOf(paneChatGroupId);
+  return target?.attachImage ? target.attachImage(base64) : "no-composer";
+}
+
 /** Test-only. */
 export function resetComposerTargetsForTest(): void {
   if (targets.size > 0) document.removeEventListener("focusin", onFocusIn, true);

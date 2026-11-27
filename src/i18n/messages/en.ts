@@ -337,7 +337,8 @@ export const en = {
   "browserCapture.fullPage": "Full page",
   "browserCapture.area": "Select area",
   "browserCapture.areaHint": "Drag to capture an area · Esc to cancel",
-  "browserCapture.failed": "Could not attach the capture. Check that a conversation can accept images.",
+  "browserCapture.failed": "Could not capture the browser page.",
+  "browserCapture.attachmentFailed": "Could not attach the capture. Check that the chat is open and can accept images.",
 
   // agentStatus
   "agentStatus.working": "Working",

@@ -5,7 +5,7 @@ import { Button } from "../../../components/ui/button.js";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../../../components/ui/dropdown-menu.js";
 import { useTranslation } from "../../../i18n/react.js";
 import type { BrowserCaptureRequest, BrowserWorkspaceApi, BrowserWorkspaceTab } from "../../../shared/browser-workspace.js";
-import { attachImageToComposer } from "../preview/composer-targets.js";
+import { attachImageToComposer, attachImageToPaneChat } from "../preview/composer-targets.js";
 import { getWebSurfaceViewportElement } from "../preview/web-surfaces.js";
 
 interface AreaSelection {
@@ -96,56 +96,64 @@ function CaptureAreaOverlay({ selection, overlayRef, onCancel, onSelect }: {
 }
 
 /** Captures are explicit user gestures and attach through the conversation's ordinary image slots. */
-export function BrowserCaptureControls({ api, tabId, composerGroupId }: {
+export function BrowserCaptureControls({ api, tabId, composerGroupId, paneChatGroupId }: {
   api: BrowserWorkspaceApi;
   tabId: string;
   composerGroupId?: string | undefined;
+  paneChatGroupId?: string | undefined;
 }) {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState<"browserCapture.failed" | "browserCapture.attachmentFailed" | null>(null);
   const [selection, setSelection] = useState<AreaSelection | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const cancelSelection = useCallback(() => setSelection(null), []);
 
   const capture = async (tab: BrowserWorkspaceTab, options: Pick<BrowserCaptureRequest, "fullPage" | "clip">) => {
-    setSelection(null); setBusy(true); setFailed(false);
+    setSelection(null); setBusy(true); setFailure(null);
+    let failureKey: NonNullable<typeof failure> = "browserCapture.failed";
     try {
       if (options.clip) {
         const state = await api.getState();
         const current = state.ok ? state.value.tabs.find((entry) => entry.tabId === tab.tabId) : undefined;
         if (!current || current.documentGeneration !== tab.documentGeneration || current.zoomFactor !== tab.zoomFactor) {
-          setFailed(true); return;
+          setFailure(failureKey); return;
         }
       }
       const result = await api.capture({ tabId: tab.tabId, documentGeneration: tab.documentGeneration, ...options });
-      if (!result.ok) { setFailed(true); return; }
+      if (!result.ok) { setFailure(failureKey); return; }
       const base64 = result.value.dataUrl.split(",")[1];
-      if (!base64) { setFailed(true); return; }
-      const attached = await attachImageToComposer(base64, composerGroupId);
-      if (attached !== true) setFailed(true);
-    } catch { setFailed(true); }
+      if (!base64) { setFailure(failureKey); return; }
+      // A replacement toolbar can reuse the old pane's composer group while capture is pending.
+      if (paneChatGroupId !== undefined && triggerRef.current === null) return;
+      failureKey = "browserCapture.attachmentFailed";
+      const attached = await (paneChatGroupId === undefined
+        ? attachImageToComposer(base64, composerGroupId)
+        : attachImageToPaneChat(base64, paneChatGroupId));
+      if (attached !== true) setFailure(failureKey);
+    } catch { setFailure(failureKey); }
     finally { setBusy(false); }
   };
   const startCapture = async (mode: "viewport" | "full-page" | "area") => {
     const focusOwner = document.activeElement;
-    setFailed(false); setBusy(true);
+    setFailure(null); setBusy(true);
     try {
       const state = await api.getState();
       const tab = state.ok ? state.value.tabs.find((entry) => entry.tabId === tabId) : undefined;
-      if (!tab) { setFailed(true); return; }
+      if (!tab) { setFailure("browserCapture.failed"); return; }
       if (mode !== "area") { await capture(tab, mode === "full-page" ? { fullPage: true } : {}); return; }
       const guest = getWebSurfaceViewportElement(tabId);
       const rect = guest?.getBoundingClientRect();
-      if (!rect || rect.width < 1 || rect.height < 1) { setFailed(true); return; }
+      if (!rect || rect.width < 1 || rect.height < 1) { setFailure("browserCapture.failed"); return; }
       // The request may outlive the menu; only its own or unclaimed focus can enter selection.
       const activeElement = document.activeElement;
       if (activeElement && activeElement !== document.body && activeElement !== triggerRef.current && activeElement !== focusOwner) return;
       setSelection({ tab, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, focusOwner: activeElement });
-    } catch { setFailed(true); }
+    } catch { setFailure("browserCapture.failed"); }
     finally { setBusy(false); }
   };
+  const failureMessage = failure === null ? null : t(failure);
   return <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -164,7 +172,7 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId }: {
         <DropdownMenuItem data-testid="browser-capture-area" onSelect={() => void startCapture("area")}>{t("browserCapture.area")}</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
-    {failed ? <span role="alert" className="min-w-0 truncate text-dense text-destructive" title={t("browserCapture.failed")}>{t("browserCapture.failed")}</span> : null}
+    {failureMessage ? <span role="alert" className="min-w-0 truncate text-dense text-destructive" title={failureMessage}>{failureMessage}</span> : null}
     {selection ? <CaptureAreaOverlay selection={selection} overlayRef={overlayRef} onCancel={cancelSelection} onSelect={(clip) => void capture(selection.tab, { clip })} /> : null}
   </>;
 }

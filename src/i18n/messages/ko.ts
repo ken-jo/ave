@@ -339,7 +339,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "browserCapture.fullPage": "전체 페이지",
   "browserCapture.area": "영역 선택",
   "browserCapture.areaHint": "드래그하여 캡처할 영역을 선택하세요 · Esc로 취소",
-  "browserCapture.failed": "캡처를 첨부하지 못했습니다. 대화에서 이미지를 첨부할 수 있는지 확인하세요.",
+  "browserCapture.failed": "브라우저 페이지를 캡처하지 못했습니다.",
+  "browserCapture.attachmentFailed": "캡처를 첨부하지 못했습니다. 채팅이 열려 있고 이미지를 첨부할 수 있는지 확인하세요.",
 
   // agentStatus
   "agentStatus.working": "작업 중",

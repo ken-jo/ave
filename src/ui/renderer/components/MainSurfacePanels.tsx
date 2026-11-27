@@ -68,7 +68,8 @@ function WebPanelBody({
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="web-panel" data-tab-id={surface.tabId}>
       <BrowserAddressRow api={api} tabId={surface.tabId} chrome="card" testIds={WEB_PANEL_ADDRESS_ROW_TEST_IDS}
         fallbackUrl={surface.url ?? null} onNavigate={onNavigate} />
-      <BrowserSurfaceTools api={api} tabId={surface.tabId} onOpenUrl={(url) => navigateAsUser(() => onNavigate(url))} />
+      <BrowserSurfaceTools api={api} tabId={surface.tabId} paneChatGroupId={surfacePaneChatGroup(paneId)}
+        onOpenUrl={(url) => navigateAsUser(() => onNavigate(url))} />
       <BrowserObservationLiveStrip tabId={surface.tabId} reserve={agentTab} actionInFlight={actionInFlight} />
       {surface.url ? (
         <WebSurfaceSlot tabId={surface.tabId} url={surface.url} location={`pane:${paneId}`}
