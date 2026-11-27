@@ -27,8 +27,8 @@ vi.mock("electron", () => ({
 }));
 
 vi.mock("../../engine/usage-stats.js", () => ({
-  getUsageSummary: vi.fn(async (days: number) => ({ days, total: 0 })),
-  getUsageRange: vi.fn(async (opts: unknown) => ({ range: opts, rows: [] })),
+  getUsageSummary: vi.fn(async (_sessions: unknown, days: number) => ({ days, total: 0 })),
+  getUsageRange: vi.fn(async (_sessions: unknown, opts: unknown) => ({ range: opts, rows: [] })),
 }));
 
 function invoke(channel: string, event: unknown, ...args: unknown[]): unknown {
@@ -36,6 +36,7 @@ function invoke(channel: string, event: unknown, ...args: unknown[]): unknown {
 }
 
 const mockAuditLogger = { log: vi.fn(), search: vi.fn(), getStats: vi.fn(), flush: vi.fn(async (): Promise<void> => {}) };
+const mockSessions = { listSessions: vi.fn(), loadSession: vi.fn() };
 const mockGenerateText = vi.fn(async () => "AI daily summary");
 const noCorrections = (key: string) => (key === "llm" ? {} : undefined);
 const mockSettingsGet = vi.fn(noCorrections);
@@ -43,6 +44,7 @@ const mockSettingsGet = vi.fn(noCorrections);
 function makeMinimalDeps() {
   return {
     auditLogger: mockAuditLogger,
+    memoryManager: { sessions: mockSessions },
     conversationLoop: { generateText: mockGenerateText },
     getMainWindow: () => null,
     settingsService: { get: mockSettingsGet },
@@ -66,31 +68,14 @@ describe("ave:usage:summary", () => {
   it("calls getUsageSummary with provided days", async () => {
     const { getUsageSummary } = await import("../../engine/usage-stats.js");
     const result = await invoke("ave:usage:summary", hostFrameEvent(), 30) as { days: number };
-    expect(getUsageSummary).toHaveBeenCalledWith(30);
+    expect(getUsageSummary).toHaveBeenCalledWith(mockSessions, 30);
     expect(result.days).toBe(30);
-  });
-
-  it("waits for pending audit writes before reading usage", async () => {
-    const { getUsageSummary } = await import("../../engine/usage-stats.js");
-    let releaseFlush: (() => void) | undefined;
-    mockAuditLogger.flush.mockImplementationOnce(() => new Promise<void>((resolve) => {
-      releaseFlush = resolve;
-    }));
-
-    const pending = invoke("ave:usage:summary", hostFrameEvent(), 30) as Promise<unknown>;
-    await Promise.resolve();
-    expect(getUsageSummary).not.toHaveBeenCalled();
-    releaseFlush?.();
-    await pending;
-
-    expect(mockAuditLogger.flush).toHaveBeenCalledTimes(1);
-    expect(getUsageSummary).toHaveBeenCalledWith(30);
   });
 
   it("defaults to 60 days when no argument", async () => {
     const { getUsageSummary } = await import("../../engine/usage-stats.js");
     await invoke("ave:usage:summary", hostFrameEvent());
-    expect(getUsageSummary).toHaveBeenCalledWith(60);
+    expect(getUsageSummary).toHaveBeenCalledWith(mockSessions, 60);
   });
 
 });
@@ -103,15 +88,13 @@ describe("ave:usage:range", () => {
   it("rejects unauthorized sender", async () => {
     const result = await invoke("ave:usage:range", untrustedEvent(), { dateFrom: "2026-01-01", dateTo: "2026-01-31" });
     expect(result).toEqual({ ok: false, error: "unauthorized-frame" });
-    expect(mockAuditLogger.flush).not.toHaveBeenCalled();
   });
 
   it("calls getUsageRange with opts on authorized sender", async () => {
     const { getUsageRange } = await import("../../engine/usage-stats.js");
     const opts = { dateFrom: "2026-01-01", dateTo: "2026-01-31" };
     await invoke("ave:usage:range", hostFrameEvent(), opts);
-    expect(mockAuditLogger.flush).toHaveBeenCalledTimes(1);
-    expect(getUsageRange).toHaveBeenCalledWith(opts);
+    expect(getUsageRange).toHaveBeenCalledWith(mockSessions, opts);
   });
 });
 
@@ -123,7 +106,6 @@ describe("ave:usage:daily-summary", () => {
   it("rejects unauthorized sender", async () => {
     const result = await invoke("ave:usage:daily-summary", untrustedEvent(), { date: "2026-07-04" });
     expect(result).toEqual({ ok: false, error: "unauthorized-frame" });
-    expect(mockAuditLogger.flush).not.toHaveBeenCalled();
   });
 
   it("rejects plugin shell frames even though they are local file URLs", async () => {
@@ -229,7 +211,6 @@ describe("ave:usage:export-csv", () => {
   it("rejects unauthorized sender", async () => {
     const result = await invoke("ave:usage:export-csv", untrustedEvent(), []);
     expect(result).toEqual({ ok: false, error: "unauthorized-frame" });
-    expect(mockAuditLogger.flush).not.toHaveBeenCalled();
   });
 
   it("returns { ok: false, canceled: true } when dialog is canceled", async () => {

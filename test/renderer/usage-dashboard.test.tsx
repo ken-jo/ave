@@ -184,7 +184,7 @@ describe("UsageDashboard", () => {
     expect(summary.today.unknownCostTurns).toBe(6);
   });
 
-  it.each([false, true])("shows unknown costs for an incomplete audit with readable pricing %s", async (readable) => {
+  it.each([false, true])("shows the saved subtotal and an unknown projection with readable pricing %s", async (readable) => {
     const now = new Date();
     const summary = computeUsageSummary(readable ? [{
       timestamp: now.toISOString(), sessionId: "readable", type: "turn", route: "openai/gpt-5.4",
@@ -193,12 +193,13 @@ describe("UsageDashboard", () => {
     }] : [], now);
     const api = usageDashboardApi({ ...summary, auditIncomplete: true });
     await renderDashboard(api);
-    for (const title of [t("usageDashboard.today"), t("usageDashboard.monthlyProjection")]) {
-      const heading = await screen.findByText(title);
-      const card = heading.parentElement?.parentElement;
-      expect(card).toHaveTextContent(t("be_costEstimator.costUnknown"));
-      expect(card).not.toHaveTextContent("$");
-    }
+    expect(await screen.findByText(t("usageDashboard.savedSessionsCoverage"))).toBeVisible();
+    const today = await screen.findByText(t("usageDashboard.today"));
+    expect(today.parentElement?.parentElement).toHaveTextContent(readable ? "$0.0030" : "$0");
+    const projection = await screen.findByText(t("usageDashboard.monthlyProjection"));
+    const card = projection.parentElement?.parentElement;
+    expect(card).toHaveTextContent(t("be_costEstimator.costUnknown"));
+    expect(card).not.toHaveTextContent("$");
     if (readable) {
       fireEvent.click(screen.getByRole("button", { name: t("usageDashboard.exportCsv") }));
       await waitFor(() => expect(api.exportUsageCsv).toHaveBeenCalledWith([

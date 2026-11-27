@@ -85,12 +85,6 @@ test("alert choices control declared delivery and stay inside Notifications sett
     const accepted = await raise("fixture-one") as { status: string; alertId: string };
     expect(accepted.status).toBe("raised");
     expect(accepted).toMatchObject({ delivered: { card: true, osNotification: false, toast: false } });
-    const audit = await mainWindow.evaluate((alertId) => (window as unknown as { aveApi: AveApi }).aveApi.audit.search({ textSearch: alertId }), accepted.alertId) as { entries: Array<{ input: string }> };
-    const raisedAudit = audit.entries.find((entry) => entry.input.includes("alert.raised"));
-    expect(raisedAudit?.input).toContain(accepted.alertId);
-    expect(raisedAudit?.input).not.toContain("Quarterly review");
-    expect(raisedAudit?.input).not.toContain("fixture-message-42");
-    expect(raisedAudit?.input).not.toContain("fixture-one");
     await openSuggestions(mainWindow);
     const card = mainWindow.getByTestId("overlay-card-region");
     await expect(card).toBeVisible();

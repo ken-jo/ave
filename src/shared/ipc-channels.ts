@@ -141,8 +141,6 @@ export const PERMISSIONS = {
   recentlyDeniedList: "ave:permissions:recently-denied-list",
   recentlyDeniedRerun: "ave:permissions:recently-denied-rerun",
   recentlyDeniedChanged: "ave:permissions:recently-denied-changed",
-  auditShow: "ave:permissions:audit-show",
-  auditVerify: "ave:permissions:audit-verify",
   hookTrustList: "ave:permissions:hook-trust-list",
   hookTrustReview: "ave:permissions:hook-trust-review",
   manifestViolation: "ave:permissions:manifest-violation",
@@ -155,9 +153,6 @@ export const PERMISSIONS = {
   // Read-only: Windows srt-win install readiness (group + WFP state) + the verbatim ASRT install
   // instructions. Drives the win32 consent panel in PermissionsTab. Non-win32 returns a clean "not-applicable" shape.
   sandboxWindowsStatus: "ave:permissions:sandbox-windows-status",
-  // Read-only (sender-frame-guarded: audit data): the ASRT proxy denies of the last 24 h, read
-  // back from the sandbox audit channel. Drives Settings → Permissions → Network "Recent denials".
-  egressDenialsRecent: "ave:permissions:egress-denials-recent",
   // Read-only (sender-frame-guarded): the shell egress grants that outlive a conversation ("This workspace" and "Always"). Drives Settings → Permissions → Network "Allowed hosts".
   egressGrantsList: "ave:permissions:egress-grants-list",
   // MUTATING (sender-frame-guarded + user-keyboard intent): revoke one of those grants.

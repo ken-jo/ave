@@ -57,7 +57,7 @@ export const SECTION_SETTING_CONTROLS: Readonly<Record<string, readonly SettingC
   "permissions-work-board-approvals": [{ path: "workBoard.toolApprovalSurface", label: "workBoard.approvalSurfaceTitle" }],
   "remote-local-api": [{ path: "system.localApiServer", label: "localApiSurfaces.localApiLabel" }, { path: "features.a2aLoopbackServer", label: "localApiSurfaces.a2aLoopbackLabel" }, { path: "features.a2aRemoteRouting", label: "localApiSurfaces.a2aRemoteRoutingLabel" }, { path: "features.a2aRemoteReceiver", label: "localApiSurfaces.a2aRemoteReceiverLabel" }],
   "roles-agents": [{ path: "homeDocs.keepLatest", label: "rolesTab.keepLatestLabel" }],
-  "audit-telemetry": [{ path: "telemetry.level", label: "auditTab.telemetryLevelLabel" }],
+  "diagnostics-telemetry": [{ path: "telemetry.level", label: "diagnosticsTab.telemetryLevelLabel" }],
   "marketplace-maintenance": [{ path: "marketplace.updateCheckEnabled", label: "gitMarketplace.maintenance.updateCheck" }, { path: "marketplace.offlineCacheEnabled", label: "gitMarketplace.maintenance.offlineCache" }],
   "about-updates": [{ path: "updates.autoCheckEnabled", label: "aboutUpdates.autoCheck" }],
 };

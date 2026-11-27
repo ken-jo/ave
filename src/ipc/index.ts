@@ -21,7 +21,6 @@ import type { MainWindow } from "../main/main-window-host.js";
  *   home-docs     ave:home-docs:* — ~/.ave reference docs + upgrade markers
  *   usage         ave:usage:*
  *   git-runtime   ave:git:runtime:* — which git the git marketplace runs
- *   audit         ave:audit:*, ave:dlp:*
  *   diagnostics   ave:diagnostics:*, ave:logs:tail
  *   permissions   ave:permission:*, ave:permissions:*, ave:approval:respond,
  *                 ave:policy:*
@@ -55,7 +54,6 @@ import { registerGitRuntimeHandlers } from "./domains/git-runtime.js";
 import { registerMarketplaceContentHandlers } from "./domains/marketplace-content.js";
 import { registerGitMarketplaceHandlers, type GitMarketplaceRegistration } from "./domains/git-marketplace.js";
 import { registerPluginStudioHandlers } from "./domains/plugin-studio.js";
-import { registerAuditHandlers } from "./domains/audit.js";
 import { registerDiagnosticsHandlers } from "./domains/diagnostics.js";
 import { registerPermissionsHandlers } from "./domains/permissions.js";
 import { registerPermissionJudgeHandlers } from "./domains/permission-judge.js";
@@ -146,7 +144,6 @@ export function registerIpcHandlers(
   registerPluginStudioHandlers(deps, installedContent);
   const gitMarketplace = registerGitMarketplaceHandlers(deps, installedContent);
   gitMarketplaceRegistration = gitMarketplace;
-  registerAuditHandlers(deps);
   registerDiagnosticsHandlers(deps);
   registerPermissionsHandlers(deps);
   registerPermissionJudgeHandlers(deps);

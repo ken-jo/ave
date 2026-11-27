@@ -10,11 +10,11 @@ export function registerUsageHandlers(deps: IpcDeps): void {
   const { auditLogger } = deps;
   const pricingOverrides = () => deps.settingsService.get("llm")?.pricingOverrides;
 
-  ipcMain.handle(CHANNELS.usage.summary, async (_e, days?: number) => handleUsageSummary(days, auditLogger));
+  ipcMain.handle(CHANNELS.usage.summary, async (_e, days?: number) => handleUsageSummary(deps.memoryManager.sessions, days));
 
   ipcMain.handle(CHANNELS.usage.range, async (e, opts: { dateFrom: string; dateTo: string }) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.usage.range, e); return UNAUTHORIZED_FRAME; }
-    return handleUsageRange(opts, auditLogger);
+    return handleUsageRange(deps.memoryManager.sessions, opts);
   });
 
   // Resolve shared pricing corrections in main, where environment overrides are authoritative.

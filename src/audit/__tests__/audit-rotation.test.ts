@@ -7,8 +7,6 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { vi } from "vitest";
 
 import { AuditLogger } from "../audit-logger.js";
-import { withAuditSnapshotLock } from "../jsonl-reader.js";
-import { readAuditEntries } from "../../engine/usage-stats.js";
 
 
 let testHome: string;
@@ -69,37 +67,6 @@ describe("rotateAndPrune — size-triggered rotation", () => {
     expect(archives).toHaveLength(2);
     expect(archives.map((file) => gunzipSync(readFileSync(join(auditDir, file))).toString("utf-8")).sort())
       .toEqual(["first rotation\n", "second rotation\n"]);
-  });
-
-  it("serializes rotation and aggregate reads through one audit snapshot", async () => {
-    const now = new Date("2026-07-04T12:00:00.000Z");
-    const source = "2026-07-03.jsonl";
-    writeJsonlFile(source, '{"timestamp":"2026-07-03T15:30:00Z","sessionId":"s1","type":"turn"}\n');
-    const logger = new AuditLogger(auditDir, { now: () => now });
-    let releaseSnapshot: (() => void) | undefined;
-    let snapshotHeld: (() => void) | undefined;
-    const hold = withAuditSnapshotLock(auditDir, async () => {
-      snapshotHeld?.();
-      await new Promise<void>((resolve) => { releaseSnapshot = resolve; });
-    });
-    await new Promise<void>((resolve) => { snapshotHeld = resolve; });
-
-    const rotating = logger.rotateAndPrune({ maxBytes: 1, retentionDays: 30, rotationAgeDays: 365 });
-    let readSettled = false;
-    const reading = readAuditEntries(auditDir, 2, now).then((rows) => {
-      readSettled = true;
-      return rows;
-    });
-    await new Promise((resolve) => setTimeout(resolve, 25));
-
-    expect(existsSync(join(auditDir, source))).toBe(true);
-    expect(readSettled).toBe(false);
-
-    releaseSnapshot?.();
-    await hold;
-    const [, rows] = await Promise.all([rotating, reading]);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].sessionId).toBe("s1");
   });
 
   it("does NOT rotate a file below the size threshold", async () => {

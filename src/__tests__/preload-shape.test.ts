@@ -270,10 +270,7 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "permission": [
             "addRule",
-            "auditShow",
-            "auditVerify",
             "dirDispatch",
-            "egressDenialsRecent",
             "egressGrantRevoke",
             "egressGrantsList",
             "getMode",
@@ -375,10 +372,6 @@ describe("preload contextBridge world shape lock", () => {
           "approvePluginBackgroundEffects": "function",
           "archiveWorkflowTemplate": "function",
           "attachWorkflowTemplateSchedule": "function",
-          "audit": [
-            "getStats",
-            "search",
-          ],
           "browserTabs": [
             "bindTab",
             "completeFocus",
@@ -480,9 +473,6 @@ describe("preload contextBridge world shape lock", () => {
             "export",
           ],
           "dismissWorkProposal": "function",
-          "dlp": [
-            "getStats",
-          ],
           "documentEngine": [
             "cancel",
             "install",

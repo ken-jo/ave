@@ -199,13 +199,14 @@ export function UsageDashboard({
   const unpricedRequests = summary.trend.reduce((total, point) => total + (point.unknownCostTurns ?? 0), 0);
   const dailyCost = summary.auditIncomplete ? undefined : averageDailyCost(summary.trend);
   const displayCost = (usage: Parameters<typeof formatUsageCost>[0]) =>
-    summary.auditIncomplete ? t("be_costEstimator.costUnknown") : formatUsageCost(usage, t);
+    formatUsageCost(usage, t);
 
   return (
     <div className="space-y-5" data-testid="usage-dashboard">
       {header}
       {workspaceStats}
       {periodPicker}
+      {summary.auditIncomplete && <p className="text-xs text-muted-foreground">{t("usageDashboard.savedSessionsCoverage")}</p>}
       {exportError && <p role="alert" className="text-sm text-destructive">{exportError}</p>}
 
       <div className="grid grid-cols-3 gap-2">

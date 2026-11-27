@@ -31,9 +31,6 @@ import { AveHomeConfigurationNotOwnerError } from "../../shared/ave-home-configu
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import { getWindowsProfileReadDenyWarnings } from "../../permissions/asrt-sandbox.js";
 import {
-  RECENT_EGRESS_DENIALS_LIMIT,
-  RECENT_EGRESS_DENIALS_WINDOW_HOURS,
-  type EgressDenialRow,
 } from "../../shared/egress-denials.js";
 import { envForcedValueForSettingsPath, resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 import {
@@ -405,18 +402,6 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // is moving quickly upstream. Non-win32 → a clean "not-applicable" shape. Non-mutating: no UAC/install; a `cannot-read` WFP enum may run ASRT's local behavioral egress verifier.
   ipcMain.handle(PERMISSIONS.sandboxWindowsStatus, async (): Promise<SandboxWindowsStatusInfo> => {
     return readAsrtWindowsStatus();
-  });
-
-  // read-only, sender-frame-guarded (it is audit data, like auditShow); the proxy denies of the last 24
-  // h, newest first, from the sandbox audit channel the deny monitor writes (egress-deny-monitor.ts).
-  ipcMain.handle(PERMISSIONS.egressDenialsRecent, async (e): Promise<EgressDenialRow[] | typeof UNAUTHORIZED_FRAME> => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressDenialsRecent, e); return UNAUTHORIZED_FRAME; }
-    const { readRecentSandboxEgressDenials } = await import("../../audit/sandbox-audit-sink.js");
-    const rows = await readRecentSandboxEgressDenials({
-      windowMs: RECENT_EGRESS_DENIALS_WINDOW_HOURS * 3_600_000,
-      limit: RECENT_EGRESS_DENIALS_LIMIT,
-    });
-    return rows.map((row) => ({ timestamp: row.timestamp, source: row.invocation, deny: row.deny }));
   });
 
   // read-only, sender-frame-guarded; the shell egress grants that outlive a call (conversation, terminal tab, workspace, always), for Settings → Permissions → Network.
@@ -1115,60 +1100,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     }
   });
 
-  // Audit entries can contain DLP-redacted tool inputs and decision metadata; gated so foreign frames cannot harvest them.
-  ipcMain.handle(
-    PERMISSIONS.auditShow,
-    async (e, args: { last?: number }) => {
-      if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, PERMISSIONS.auditShow, e);
-        return UNAUTHORIZED_FRAME;
-      }
-      const last = Math.max(1, Math.min(1000, Math.floor(args?.last ?? 50)));
-      const { readRecentAuditEntries, summarizeAuditDir } = await import(
-        "../../permissions/permission-audit-runner.js"
-      );
-      const dir = auditLogger.getAuditDir();
-      const { entries, ...integrity } = readRecentAuditEntries(dir, last);
-      const summary = summarizeAuditDir(dir);
-      return { ok: true, entries, total: entries.length, summary, ...integrity };
-    },
-  );
 
-  ipcMain.handle(PERMISSIONS.auditVerify, async (e) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, PERMISSIONS.auditVerify, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const { verifyAllAuditFiles } = await import(
-      "../../permissions/permission-audit-runner.js"
-    );
-    const secret = auditLogger.getPermissionAuditSecret();
-    if (!secret) {
-      return {
-        ok: false,
-        error: "audit-chain-not-initialized",
-      };
-    }
-    const sealStore = auditLogger.getPermissionAuditSealStore() ?? undefined;
-    const dir = auditLogger.getAuditDir();
-    const result = verifyAllAuditFiles(dir, secret, sealStore);
-    return {
-      ok: true,
-      intact: result.intact,
-      totalFiles: result.totalFiles,
-      totalEntries: result.totalEntries,
-      ...(result.invalidTerminalKinds === undefined ? {} : { invalidTerminalKinds: result.invalidTerminalKinds }),
-      firstBrokenFile: result.firstBrokenFile,
-      perDay: result.perDay.map((d) => ({
-        file: d.file,
-        totalLines: d.totalLines,
-        chainOk: d.result.ok,
-        firstBrokenLineIndex: d.result.ok ? undefined : d.result.firstBrokenLineIndex,
-        reason: d.result.ok ? undefined : d.result.reason,
-        sealMatch: d.sealMatch,
-      })),
-    };
-  });
 
   ipcMain.handle(PERMISSIONS.policySet, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.policySet, e); return UNAUTHORIZED_FRAME; }

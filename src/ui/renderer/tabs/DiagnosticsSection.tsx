@@ -46,7 +46,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
   const { t } = useTranslation();
 
   const crashDumpConsentControl = useSettingsControl({
-    id: "diagnostics.includeCrashDumps", section: "audit-bundle", label: t("auditTab.bundleIncludeCrashDumps"),
+    id: "diagnostics.includeCrashDumps", section: "diagnostics-bundle", label: t("diagnosticsTab.bundleIncludeCrashDumps"),
   });
   const notifySaved = useNotifySaved();
   const { error: saveError, saving, persist } = useSettingsPersistence(notifySaved);
@@ -73,7 +73,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
 
   const applyConsent = useCallback((settings: AppSettings, expectedRevision?: number) => {
     const consent = settings?.diagnostics?.includeCrashDumps;
-    if (typeof consent !== "boolean") throw new Error(t("auditTab.bundleConsentLoadFailed"));
+    if (typeof consent !== "boolean") throw new Error(t("diagnosticsTab.bundleConsentLoadFailed"));
     if (expectedRevision !== undefined && expectedRevision !== consentRequestId.current) return;
     storedConsent.current = consent;
     setIncludeCrashDumps(consent);
@@ -83,7 +83,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
   const showConsentLoadError = useCallback(() => {
     storedConsent.current = null;
     setIncludeCrashDumps(null);
-    setConsentLoadError(t("auditTab.bundleConsentLoadFailed"));
+    setConsentLoadError(t("diagnosticsTab.bundleConsentLoadFailed"));
   }, [t]);
 
   const readSettings = useSettingsDocumentRead(() => api().getSettings());
@@ -134,7 +134,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
   const handleExport = useCallback(async () => {
     if (includeCrashDumps === null || consentLoading || saving) return;
     if (defaultDateFrom && defaultDateTo && defaultDateFrom > defaultDateTo) {
-      setExportErr(t("auditTab.invalidDateRange"));
+      setExportErr(t("diagnosticsTab.invalidDateRange"));
       return;
     }
     setExporting(true);
@@ -149,15 +149,15 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
       if (isIpcErrorResult(res)) {
         setExportErr(mapError(res.error));
       } else if (isRecord(res) && res.ok === false && res.canceled === true) {
-        setExportMsg(t("auditTab.bundleExportCanceled"));
+        setExportMsg(t("diagnosticsTab.bundleExportCanceled"));
       } else if (isRecord(res) && res.ok === true && typeof res.path === "string" && res.path.length > 0
         && typeof res.bytes === "number" && Number.isSafeInteger(res.bytes) && res.bytes >= 0) {
-        setExportMsg(t("auditTab.bundleExportSuccess", { bytes: formatBytes(res.bytes) }));
+        setExportMsg(t("diagnosticsTab.bundleExportSuccess", { bytes: formatBytes(res.bytes) }));
       } else {
-        setExportErr(t("auditTab.errExportFailed"));
+        setExportErr(t("diagnosticsTab.errExportFailed"));
       }
     } catch {
-      setExportErr(t("auditTab.errExportFailed"));
+      setExportErr(t("diagnosticsTab.errExportFailed"));
     } finally {
       setExporting(false);
     }
@@ -172,9 +172,9 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
       if (id !== logRequestId.current) return;
       if (isIpcErrorResult(res)) setLogErr(mapError(res.error));
       else if (isRecord(res) && res.ok === true && isStringArray(res.lines)) setLogLines(res.lines);
-      else setLogErr(t("auditTab.errLogsTailFailed"));
+      else setLogErr(t("diagnosticsTab.errLogsTailFailed"));
     } catch {
-      if (id === logRequestId.current) setLogErr(t("auditTab.errLogsTailFailed"));
+      if (id === logRequestId.current) setLogErr(t("diagnosticsTab.errLogsTailFailed"));
     }
   }, [logLevel, mapError, t]);
 
@@ -190,9 +190,9 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
       const res = await api().diagnostics.crashList();
       if (isIpcErrorResult(res)) setCrashErr(mapError(res.error));
       else if (isRecord(res) && res.ok === true && isCrashDumpList(res.dumps)) setCrashes(res.dumps);
-      else setCrashErr(t("auditTab.errCrashListFailed"));
+      else setCrashErr(t("diagnosticsTab.errCrashListFailed"));
     } catch {
-      setCrashErr(t("auditTab.errCrashListFailed"));
+      setCrashErr(t("diagnosticsTab.errCrashListFailed"));
     }
   }, [mapError, t]);
 
@@ -203,9 +203,9 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
   return (
     <>
       {/* ── Bundle export ── */}
-      <SettingsSection data-settings-section="audit-bundle" title={t("auditTab.bundleSectionTitle")}>
-        <p className="text-dense text-muted-foreground">{t("auditTab.bundleSectionDesc")}</p>
-        <p data-testid="diagnostics-export-range" className="text-dense text-muted-foreground">{t("auditTab.bundleDateRange", { from: defaultDateFrom || t("auditTab.bundleAllDates"), to: defaultDateTo || t("auditTab.bundleAllDates") })}</p>
+      <SettingsSection data-settings-section="diagnostics-bundle" title={t("diagnosticsTab.bundleSectionTitle")}>
+        <p className="text-dense text-muted-foreground">{t("diagnosticsTab.bundleSectionDesc")}</p>
+        <p data-testid="diagnostics-export-range" className="text-dense text-muted-foreground">{t("diagnosticsTab.bundleDateRange", { from: defaultDateFrom || t("diagnosticsTab.bundleAllDates"), to: defaultDateTo || t("diagnosticsTab.bundleAllDates") })}</p>
         <label className="flex items-center gap-2 text-xs">
           <input
             {...crashDumpConsentControl}
@@ -215,9 +215,9 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
             aria-busy={consentLoading || saving}
             onChange={(e) => void handleToggleCrashDumps(e.target.checked)}
           />
-          {t("auditTab.bundleIncludeCrashDumps")}
+          {t("diagnosticsTab.bundleIncludeCrashDumps")}
         </label>
-        {consentLoading && <p role="status" className="text-dense text-muted-foreground">{t("auditTab.bundleConsentLoading")}</p>}
+        {consentLoading && <p role="status" className="text-dense text-muted-foreground">{t("diagnosticsTab.bundleConsentLoading")}</p>}
         {consentLoadError && (
           <div className="space-y-2">
             <p role="alert" className="text-dense text-destructive">{consentLoadError}</p>
@@ -226,11 +226,11 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
         )}
         {saveError && <p role="alert" className="text-dense text-destructive">{saveError}</p>}
         {includeCrashDumps === true && (
-          <p className="text-dense text-warning">{t("auditTab.bundleCrashDumpWarning")}</p>
+          <p className="text-dense text-warning">{t("diagnosticsTab.bundleCrashDumpWarning")}</p>
         )}
         <div className="flex items-center gap-2">
           <Button data-settings-transient="true" size="sm" className="h-8" onClick={() => void handleExport()} disabled={exporting || saving || consentLoading || includeCrashDumps === null}>
-            {exporting ? t("auditTab.bundleExporting") : t("auditTab.bundleExportButton")}
+            {exporting ? t("diagnosticsTab.bundleExporting") : t("diagnosticsTab.bundleExportButton")}
           </Button>
           {exportMsg && <span className="text-dense text-muted-foreground">{exportMsg}</span>}
         </div>
@@ -243,19 +243,19 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
 
       {/* ── Log tail viewer ── */}
       <SettingsSection
-        data-settings-section="audit-log-file"
-        title={t("auditTab.logSectionTitle")}
+        data-settings-section="diagnostics-log-file"
+        title={t("diagnosticsTab.logSectionTitle")}
         actions={
           <div className="flex items-center gap-2">
             <NativeSelect
               size="sm"
               className="w-28"
               data-settings-transient="true"
-              aria-label={t("auditTab.logLevel")}
+              aria-label={t("diagnosticsTab.logLevel")}
               value={logLevel}
               onChange={(e) => setLogLevel(e.target.value)}
             >
-              <NativeSelectOption value="all">{t("auditTab.logLevelAll")}</NativeSelectOption>
+              <NativeSelectOption value="all">{t("diagnosticsTab.logLevelAll")}</NativeSelectOption>
               {LOG_LEVELS.filter((l) => l !== "all").map((l) => (
                 <NativeSelectOption key={l} value={l}>
                   {l}
@@ -263,7 +263,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
               ))}
             </NativeSelect>
             <Button data-settings-transient="true" size="sm" className="h-8" variant="outline" onClick={() => void refreshLogs()}>
-              {t("auditTab.logRefresh")}
+              {t("diagnosticsTab.logRefresh")}
             </Button>
           </div>
         }
@@ -274,7 +274,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
           </div>
         )}
         {logLines.length === 0 && !logErr ? (
-          <EmptyState align="center" className="px-0 py-3" title={t("auditTab.logEmpty")} />
+          <EmptyState align="center" className="px-0 py-3" title={t("diagnosticsTab.logEmpty")} />
         ) : (
           <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/(--opacity-medium) p-2 text-tiny font-mono">
             {logLines.join("\n")}
@@ -284,11 +284,11 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
 
       {/* ── Crash list ── */}
       <SettingsSection
-        data-settings-section="audit-crash"
-        title={t("auditTab.crashSectionTitle")}
+        data-settings-section="diagnostics-crash"
+        title={t("diagnosticsTab.crashSectionTitle")}
         actions={
           <Button data-settings-transient="true" size="sm" className="h-8" variant="outline" onClick={() => void refreshCrashes()}>
-            {t("auditTab.logRefresh")}
+            {t("diagnosticsTab.logRefresh")}
           </Button>
         }
       >
@@ -298,15 +298,15 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
           </div>
         )}
         {crashes.length === 0 && !crashErr ? (
-          <EmptyState align="center" className="px-0 py-3" title={t("auditTab.crashEmpty")} />
+          <EmptyState align="center" className="px-0 py-3" title={t("diagnosticsTab.crashEmpty")} />
         ) : (
           <div className="rounded-md border text-xs">
             <table className="w-full">
               <thead>
                 <tr className="border-b bg-muted/(--opacity-medium)">
-                  <th className="px-3 py-2 text-left font-medium">{t("auditTab.crashColName")}</th>
-                  <th className="px-3 py-2 text-left font-medium">{t("auditTab.crashColTime")}</th>
-                  <th className="px-3 py-2 text-right font-medium">{t("auditTab.crashColSize")}</th>
+                  <th className="px-3 py-2 text-left font-medium">{t("diagnosticsTab.crashColName")}</th>
+                  <th className="px-3 py-2 text-left font-medium">{t("diagnosticsTab.crashColTime")}</th>
+                  <th className="px-3 py-2 text-right font-medium">{t("diagnosticsTab.crashColSize")}</th>
                 </tr>
               </thead>
               <tbody>

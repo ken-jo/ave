@@ -1,5 +1,4 @@
 import { exactRecord, parseDecidePlanInput, parseDecideStageInput, parseJoinBinding, parseTemplateRunTuple, PLAN_HASH_PATTERN, RUN_ID_PATTERN } from "../../work-board/work-decision-input.js";
-import { readWorkflowDecisionHistory } from "../workflow-decision-history.js";
 import { maskWorkflowText, withoutWorkflowProjection } from "../../work-board/workflow/run-read-projection.js";
 import { isStageId, isTemplateId, WorkflowTemplateError } from "../../work-board/template-graph.js";
 import type { RunAuthoritySource } from "../../shared/workflow-template-types.js";
@@ -262,9 +261,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     if (!canReadItem(e, result.item)) return { status: "not_found", itemId: id };
     const [item] = await withTemplateRuns([result.item], { runId });
     if (runId !== undefined && item.workflowRun?.runId !== runId) return { status: "not_found", itemId: id };
-    if (item.workflowRun && typeof auditLogger.search === "function") {
-      item.workflowRun = { ...item.workflowRun, decisions: await readWorkflowDecisionHistory(auditLogger, id, item.workflowRun) };
-    }
     const parentSessionId = item.templateId === undefined ? item.runSessionId : undefined;
     const runner = parentSessionId ? deps.getSubAgentRunner?.() : undefined;
     // A persisted child is an association only under the exact board run session that hosted it.

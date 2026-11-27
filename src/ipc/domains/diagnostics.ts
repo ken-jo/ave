@@ -13,7 +13,7 @@ import {
   type CrashDumpMeta,
 } from "../../audit/diagnostics-bundle.js";
 import { redactForLLM, redactFsPath, scrubSecretsForLLM } from "../../audit/dlp-filter.js";
-import { parseIsoDate } from "./audit.js";
+import { utcDateKey } from "../../shared/local-date.js";
 import { parseLogFileDate } from "../../lib/log-file-sink.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import { aveHome } from "../../shared/ave-home.js";
@@ -37,6 +37,18 @@ const PINO_LEVEL_NAME: Record<number, LogLevelFilter | "trace" | "fatal"> = {
   50: "error",
   60: "fatal",
 };
+
+function parseIsoDate(value: unknown, field: "dateFrom" | "dateTo"): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new TypeError(`${field} must be an ISO date (YYYY-MM-DD)`);
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed.getTime()) || utcDateKey(parsed) !== value) {
+    throw new TypeError(`${field} must be a real calendar date`);
+  }
+  return value;
+}
 
 async function crashDumpsDir(): Promise<string> {
   const { app } = await import("electron");
@@ -93,7 +105,7 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
         auditUnauthorized(auditLogger, CHANNELS.diagnostics.export, e);
         return UNAUTHORIZED_FRAME;
       }
-      // Validate day keys before bundle construction; audit-section error isolation would otherwise hide an incomplete export.
+      // Validate day keys before bundle construction.
       const dateFrom = parseIsoDate(opts?.dateFrom, "dateFrom");
       const dateTo = parseIsoDate(opts?.dateTo, "dateTo");
       try {
@@ -104,7 +116,6 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
         const buffer = await buildDiagnosticsBundle({
           windowsSandbox: getWindowsSandboxSubstrate(),
           settings,
-          auditLogger,
           appVersion: getAveAppVersion(),
           crashDumpsDir: await crashDumpsDir(),
           includeCrashDumps,

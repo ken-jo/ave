@@ -2951,33 +2951,6 @@ separately specified profile/version and cannot weaken v1 by convention.
 The benchmark Docker `main` process therefore uses the separate broker contract
 below rather than presenting itself as this attested process.
 
-### Terminal permission-audit proof
-
-The native runtime exposes one internal pre-boot command,
-`--verify-permission-audit=<challenge>`, for a stopped host. The 64-lowercase-
-hex challenge binds a public `ave-permission-audit-proof/v1` receipt to its
-collector. The verifier requires explicit absolute `AVE_HOME` and protected
-`AVE_SECRET_KEY_FILE` inputs, opens the existing encrypted audit HMAC secret
-read-only, and never creates, repairs, or replaces audit authority.
-
-Every permission-audit-looking directory entry must have the canonical
-`YYYY-MM-DD.permission-audit.jsonl` name. The verifier stable-opens each
-owner-only 0600 regular single-link file, verifies its complete HMAC chain and
-the separately stored daily seal for every nonempty file, and rejects directory
-or file changes during the read. Success writes exactly one public JSON receipt
-with basename/date/SHA-256/byte/entry metadata. Secret material, stored seals,
-paths, rows, and entry fields never cross this boundary. `AuditLogger.close()`
-stops new permission appends and drains the accepted append tail before this
-proof may freeze the files.
-
-The packaged launcher removes the inherited Node preload/module-search and
-Node/Electron process-role variables named by
-`ave-headless-launch-environment/v1` before starting the runtime. The native
-dispatcher reserves bare, malformed, and duplicate proof forms, so none can
-fall through into normal host boot. Failure output is one stable public error
-code (`invalid-arguments` before verification or `verification-failed` after
-it starts); raw filesystem and decryption errors remain inside the process.
-
 ### Host-native workload broker
 
 The brokered Linux route keeps the Ave controller, controller profile,

@@ -31,7 +31,7 @@ describe("DiagnosticsSection filters", () => {
     tail.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
     const view = renderDiagnostics();
     await waitFor(() => expect(tail).toHaveBeenCalledTimes(1));
-    fireEvent.change(view.getByRole("combobox", { name: t("auditTab.logLevel") }), { target: { value: "error" } });
+    fireEvent.change(view.getByRole("combobox", { name: t("diagnosticsTab.logLevel") }), { target: { value: "error" } });
     await view.findByText("latest log");
     expect(tail).toHaveBeenLastCalledWith({ lines: 200, level: "error" });
     await act(async () => finishOld({ ok: true, lines: ["stale log"] }));
@@ -43,9 +43,9 @@ describe("DiagnosticsSection filters", () => {
     const view = renderDiagnostics("2026-02-01", "2026-01-01");
     expect(view.getByTestId("diagnostics-export-range")).toHaveTextContent("2026-02-01");
     expect(view.getByTestId("diagnostics-export-range")).toHaveTextContent("2026-01-01");
-    await waitFor(() => expect(view.getByRole("button", { name: t("auditTab.bundleExportButton") })).toBeEnabled());
-    fireEvent.click(view.getByRole("button", { name: t("auditTab.bundleExportButton") }));
-    await view.findByText(t("auditTab.invalidDateRange"));
+    await waitFor(() => expect(view.getByRole("button", { name: t("diagnosticsTab.bundleExportButton") })).toBeEnabled());
+    fireEvent.click(view.getByRole("button", { name: t("diagnosticsTab.bundleExportButton") }));
+    await view.findByText(t("diagnosticsTab.invalidDateRange"));
     expect(exportBundle).not.toHaveBeenCalled();
   });
 });
@@ -56,7 +56,7 @@ describe("DiagnosticsSection crash-dump consent persistence", () => {
     if (failure === "rejected") api.updateSettings.mockRejectedValueOnce(new Error("Storage unavailable"));
     else api.updateSettings.mockResolvedValueOnce({ ok: false, error: "invalid-args" });
     const view = renderDiagnostics();
-    const checkbox = view.getByRole("checkbox", { name: t("auditTab.bundleIncludeCrashDumps") });
+    const checkbox = view.getByRole("checkbox", { name: t("diagnosticsTab.bundleIncludeCrashDumps") });
     await waitFor(() => expect(checkbox).toBeEnabled());
     expect(checkbox).not.toBeChecked();
     fireEvent.click(checkbox);
@@ -79,8 +79,8 @@ describe("DiagnosticsSection crash-dump consent persistence", () => {
     const pending = deferred<SettingsUpdateResult>();
     api.updateSettings.mockReturnValueOnce(pending.promise);
     const view = renderDiagnostics();
-    const checkbox = view.getByRole("checkbox", { name: t("auditTab.bundleIncludeCrashDumps") });
-    const exportButton = view.getByRole("button", { name: t("auditTab.bundleExportButton") });
+    const checkbox = view.getByRole("checkbox", { name: t("diagnosticsTab.bundleIncludeCrashDumps") });
+    const exportButton = view.getByRole("button", { name: t("diagnosticsTab.bundleExportButton") });
     await waitFor(() => expect(checkbox).toBeEnabled());
     fireEvent.click(checkbox);
     expect(checkbox).toBeChecked();
@@ -104,11 +104,11 @@ describe("DiagnosticsSection crash-dump consent persistence", () => {
     api.getSettings.mockRejectedValueOnce(new Error("Storage unavailable"));
     api.getSettings.mockResolvedValueOnce({ ...stored, diagnostics: { ...stored.diagnostics, includeCrashDumps: true } });
     const view = renderDiagnostics();
-    const checkbox = view.getByRole("checkbox", { name: t("auditTab.bundleIncludeCrashDumps") });
-    const exportButton = view.getByRole("button", { name: t("auditTab.bundleExportButton") });
+    const checkbox = view.getByRole("checkbox", { name: t("diagnosticsTab.bundleIncludeCrashDumps") });
+    const exportButton = view.getByRole("button", { name: t("diagnosticsTab.bundleExportButton") });
     expect(checkbox).toBeDisabled();
     expect(exportButton).toBeDisabled();
-    expect(await view.findByRole("alert")).toHaveTextContent(t("auditTab.bundleConsentLoadFailed"));
+    expect(await view.findByRole("alert")).toHaveTextContent(t("diagnosticsTab.bundleConsentLoadFailed"));
     expect(checkbox).toBeDisabled();
     fireEvent.click(view.getByRole("button", { name: t("common.retry") }));
     await waitFor(() => expect(checkbox).toBeEnabled());
@@ -123,8 +123,8 @@ describe("DiagnosticsSection crash-dump consent persistence", () => {
     const { api } = installDiagnosticsApi();
     api.getSettings.mockResolvedValueOnce({ ...MOCK_DEFAULT_SETTINGS });
     const view = renderDiagnostics();
-    expect(await view.findByRole("alert")).toHaveTextContent(t("auditTab.bundleConsentLoadFailed"));
-    expect(view.getByRole("checkbox", { name: t("auditTab.bundleIncludeCrashDumps") })).toBeDisabled();
+    expect(await view.findByRole("alert")).toHaveTextContent(t("diagnosticsTab.bundleConsentLoadFailed"));
+    expect(view.getByRole("checkbox", { name: t("diagnosticsTab.bundleIncludeCrashDumps") })).toBeDisabled();
     expect(view.saved).not.toHaveBeenCalled();
   });
 });
@@ -137,7 +137,7 @@ it("keeps a newer stored broadcast when an earlier successful save response arri
   const snapshot = await api.getSettings();
   api.updateSettings.mockReturnValueOnce(pending.promise);
   const view = renderDiagnostics();
-  const checkbox = view.getByRole("checkbox", { name: t("auditTab.bundleIncludeCrashDumps") });
+  const checkbox = view.getByRole("checkbox", { name: t("diagnosticsTab.bundleIncludeCrashDumps") });
   await waitFor(() => expect(checkbox).toBeEnabled());
   fireEvent.click(checkbox);
   await act(async () => { await normalUpdate({ diagnostics: { includeCrashDumps: false } }); });
@@ -152,10 +152,10 @@ it("does not report saved when a write response lacks its persisted consent", as
   const { api } = installDiagnosticsApi();
   api.updateSettings.mockResolvedValueOnce({});
   const view = renderDiagnostics();
-  const checkbox = view.getByRole("checkbox", { name: t("auditTab.bundleIncludeCrashDumps") });
+  const checkbox = view.getByRole("checkbox", { name: t("diagnosticsTab.bundleIncludeCrashDumps") });
   await waitFor(() => expect(checkbox).toBeEnabled());
   fireEvent.click(checkbox);
-  expect(await view.findByRole("alert")).toHaveTextContent(t("auditTab.bundleConsentLoadFailed"));
+  expect(await view.findByRole("alert")).toHaveTextContent(t("diagnosticsTab.bundleConsentLoadFailed"));
   expect(checkbox).not.toBeChecked();
   expect(view.saved).not.toHaveBeenCalled();
 });
@@ -165,7 +165,7 @@ describe("DiagnosticsSection response contracts", () => {
     const { tail } = installDiagnosticsApi();
     tail.mockResolvedValueOnce({ ok: true, lines: [42] });
     const view = renderDiagnostics();
-    await view.findByText(t("auditTab.errLogsTailFailed"));
+    await view.findByText(t("diagnosticsTab.errLogsTailFailed"));
     expect(view.queryByText("latest log")).toBeNull();
   });
 
@@ -173,7 +173,7 @@ describe("DiagnosticsSection response contracts", () => {
     const { crashList } = installDiagnosticsApi();
     crashList.mockResolvedValueOnce({ ok: true, dumps: [{ name: "invalid.dmp", mtime: new Date().toISOString(), size: "wrong" }] });
     const view = renderDiagnostics();
-    await view.findByText(t("auditTab.errCrashListFailed"));
+    await view.findByText(t("diagnosticsTab.errCrashListFailed"));
     expect(view.queryByText("invalid.dmp")).toBeNull();
   });
 
@@ -181,11 +181,11 @@ describe("DiagnosticsSection response contracts", () => {
     const { exportBundle } = installDiagnosticsApi();
     exportBundle.mockResolvedValueOnce(result);
     const view = renderDiagnostics();
-    const exportButton = view.getByRole("button", { name: t("auditTab.bundleExportButton") });
+    const exportButton = view.getByRole("button", { name: t("diagnosticsTab.bundleExportButton") });
     await waitFor(() => expect(exportButton).toBeEnabled());
     fireEvent.click(exportButton);
-    await view.findByText(t("auditTab.errExportFailed"));
-    expect(view.queryByText(t("auditTab.bundleExportCanceled"))).toBeNull();
+    await view.findByText(t("diagnosticsTab.errExportFailed"));
+    expect(view.queryByText(t("diagnosticsTab.bundleExportCanceled"))).toBeNull();
   });
 
   it("renders valid metadata and reports an actual successful export", async () => {
@@ -194,10 +194,10 @@ describe("DiagnosticsSection response contracts", () => {
     exportBundle.mockResolvedValueOnce({ ok: true, path: "/tmp/diagnostics.zip", bytes: 1024 });
     const view = renderDiagnostics();
     await view.findByText("fixture.dmp");
-    const exportButton = view.getByRole("button", { name: t("auditTab.bundleExportButton") });
+    const exportButton = view.getByRole("button", { name: t("diagnosticsTab.bundleExportButton") });
     await waitFor(() => expect(exportButton).toBeEnabled());
     fireEvent.click(exportButton);
-    await view.findByText(t("auditTab.bundleExportSuccess", { bytes: "1.0 KB" }));
-    expect(view.queryByText(t("auditTab.errExportFailed"))).toBeNull();
+    await view.findByText(t("diagnosticsTab.bundleExportSuccess", { bytes: "1.0 KB" }));
+    expect(view.queryByText(t("diagnosticsTab.errExportFailed"))).toBeNull();
   });
 });

@@ -118,9 +118,9 @@ export function createLocalApi(deps: LocalApiDeps): LocalApi {
       case PERMISSIONS.getMode:
         return handleGetMode(ipc);
       case CHANNELS.usage.summary:
-        return handleUsageSummary(args as Parameters<typeof handleUsageSummary>[0], ipc.auditLogger);
+        return handleUsageSummary(ipc.memoryManager.sessions, args as Parameters<typeof handleUsageSummary>[1]);
       case CHANNELS.usage.range:
-        return handleUsageRange(args as Parameters<typeof handleUsageRange>[0], ipc.auditLogger);
+        return handleUsageRange(ipc.memoryManager.sessions, args as Parameters<typeof handleUsageRange>[1]);
       default: {
         const _exhaustive: never = channel;
         return _exhaustive;

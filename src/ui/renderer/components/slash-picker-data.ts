@@ -56,7 +56,6 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { cmd: "/permission mode auto", labelKey: "slashPickerPanel.cmdPermissionModeAuto" },
   { cmd: "/permission mode allow", labelKey: "slashPickerPanel.cmdPermissionModeAllow" },
   { cmd: "/permission hooks list", labelKey: "slashPickerPanel.cmdPermissionHooksList" },
-  { cmd: "/permission audit verify", labelKey: "slashPickerPanel.cmdPermissionAuditVerify" },
   { cmd: "/help", labelKey: "slashPickerPanel.cmdHelp" },
 ];
 
