@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { chmodSync, closeSync, linkSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
+import { constants as osConstants, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { afterQueuedCallbacks } from "../../../__tests__/support/deferred.js";
@@ -2219,37 +2220,148 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
 });
 
 const runCommand = promisify(execFile);
+const DETACH_OPTIONS = { timeout: 15_000, killSignal: "SIGKILL" } as const;
+const VOLUME_PROBE_OPTIONS = { timeout: 3_000, killSignal: "SIGKILL" } as const;
 
-async function readVolumeHolders(mountPoint: string): Promise<string> {
+type VolumeCommand = (file: string, args: string[], options: { timeout: number; killSignal?: NodeJS.Signals }) =>
+  Promise<{ stdout: string; stderr: string }>;
+type VolumeCommandError = Error & {
+  code?: number | string | null;
+  signal?: NodeJS.Signals | null;
+  killed?: boolean;
+  stdout?: string;
+  stderr?: string;
+};
+
+function parseDiskImagePlist<T>(plist: string): T {
+  return JSON.parse(execFileSync("/usr/bin/plutil", ["-convert", "json", "-o", "-", "-"], {
+    ...VOLUME_PROBE_OPTIONS, input: plist, encoding: "utf8",
+  })) as T;
+}
+
+async function readVolumeHolders(mountPoint: string, run: VolumeCommand): Promise<string> {
   // Query the mounted filesystem as a whole, including process working directories.
   try {
-    const { stdout, stderr } = await runCommand("/usr/sbin/lsof", ["-nP", "+f", "--", mountPoint], { timeout: 5_000 });
-    return [stdout, stderr].filter(Boolean).join("\n");
+    const { stdout, stderr } = await run("/usr/sbin/lsof", ["-nP", "+f", "--", mountPoint], VOLUME_PROBE_OPTIONS);
+    return [stdout, stderr].filter(Boolean).join("\n").trim() || "No visible holders";
   } catch (failure) {
-    const error = failure as Error & { code?: number; stdout?: string; stderr?: string };
-    return [error.stdout, error.stderr].filter(Boolean).join("\n") || (error.code === 1 ? "No visible holders" : error.message);
+    const error = failure as VolumeCommandError;
+    return [error.stdout, error.stderr].filter(Boolean).join("\n").trim() || (error.code === 1 ? "No visible holders" : error.message);
   }
 }
 
-async function detachTestVolume(mountPoint: string): Promise<void> {
-  const attempts = 2;
-  let previousHolders = "";
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    try {
-      await runCommand("hdiutil", ["detach", mountPoint], { timeout: 5_000 });
-      return;
-    } catch (error) {
-      const stderr = (error as { stderr?: string }).stderr;
-      if (!/^hdiutil: (?:couldn't eject "[^"]+"|detach failed) - Resource busy\s*$/m.test(stderr ?? "")) throw error;
-      const holders = await readVolumeHolders(mountPoint);
-      if (attempt === attempts) {
-        throw new Error(`Test volume is busy after ${attempts} detach attempts.\nHolders before retry:\n${previousHolders}\nHolders after retry:\n${holders}`, { cause: error });
+async function detachTestVolume(imageDirectory: string, mountPoint: string | null, run: VolumeCommand = runCommand): Promise<void> {
+  try {
+    if (mountPoint === null) return;
+    const diagnostics: string[] = [];
+    let timedOut = false;
+    for (const retryDelay of [250, 500, null]) {
+      // Force only this fixture's private mount, after two normal attempts and holder diagnostics.
+      const force = retryDelay === null;
+      if (force) console.warn(`Forcing detach of test volume ${mountPoint}.\n${diagnostics.join("\n")}`);
+      try {
+        await run("hdiutil", ["detach", mountPoint, ...(force ? ["-force"] : [])], DETACH_OPTIONS);
+        return;
+      } catch (failure) {
+        const { code, signal, killed, stderr } = failure as VolumeCommandError;
+        const timeout = code === null && killed === true && signal === DETACH_OPTIONS.killSignal;
+        const busy = code === osConstants.errno.EBUSY ||
+          /^hdiutil: (?:couldn't (?:eject|unmount) "[^"]+"|detach failed) - Resource busy\s*$/m.test(stderr ?? "");
+        const holders = await readVolumeHolders(mountPoint, run);
+        diagnostics.push(`${force ? "Forced" : "Normal"} detach: code=${code} signal=${signal} killed=${killed}\nstderr: ${stderr?.trim() || "(empty)"}\nHolders:\n${holders}`);
+        timedOut ||= timeout;
+        if (timedOut && !existsSync(mountPoint)) {
+          // The system may finish ejecting after the command is killed. A missing mount alone only proves unmount.
+          try {
+            const { stdout } = await run("hdiutil", ["info", "-plist"], VOLUME_PROBE_OPTIONS);
+            const { images } = parseDiskImagePlist<{ images: Array<{ "image-path": string }> }>(stdout);
+            if (!images.some((image) => image["image-path"] === join(imageDirectory, "volume.dmg"))) return;
+          } catch (error) {
+            diagnostics.push(`Could not verify that the image was ejected: ${String(error)}`);
+          }
+        }
+        if (force || (!timeout && !busy)) {
+          throw new Error(`Could not detach test volume ${mountPoint}.\n${diagnostics.join("\n")}`, { cause: failure });
+        }
+        await delay(retryDelay);
       }
-      previousHolders = holders;
-      // If holders remain, the fixture has no release event to wait on. Allow one immediate retry.
     }
+  } finally {
+    if (imageDirectory) rmSync(imageDirectory, { recursive: true, force: true });
   }
 }
+
+describe("detaching the exFAT test volume", () => {
+  const success = { stdout: "", stderr: "" };
+  const busy = { code: osConstants.errno.EBUSY, signal: null, killed: false, stderr: "localized busy message" };
+  const timeout = { code: null, signal: "SIGKILL", killed: true, stderr: "" };
+  const holders = { stdout: "worker 123 cwd", stderr: "" };
+  const setup = () => {
+    const imageDirectory = join(home, "image");
+    mkdirSync(imageDirectory);
+    writeFileSync(join(imageDirectory, "volume.dmg"), "image data");
+    return { imageDirectory, mountPoint: home };
+  };
+
+  it.each([["a timeout kill", timeout], ["a busy exit", busy]] as const)("retries %s without forcing detach", async (_label, failure) => {
+    const { imageDirectory, mountPoint } = setup();
+    const run = vi.fn<VolumeCommand>().mockRejectedValueOnce(failure).mockResolvedValueOnce(holders).mockResolvedValueOnce(success);
+
+    await detachTestVolume(imageDirectory, mountPoint, run);
+
+    expect(run.mock.calls.map(([file, args]) => [file, args])).toEqual([
+      ["hdiutil", ["detach", mountPoint]],
+      ["/usr/sbin/lsof", ["-nP", "+f", "--", mountPoint]],
+      ["hdiutil", ["detach", mountPoint]],
+    ]);
+    expect(existsSync(imageDirectory)).toBe(false);
+  });
+
+  it.each([
+    ["an empty-stderr exit", { code: 1, signal: null, killed: false, stderr: "" }, "code=1 signal=null killed=false"],
+    ["an external signal", { ...timeout, killed: false }, "code=null signal=SIGKILL killed=false"],
+  ] as const)("reports %s without retrying or leaking the image directory", async (_label, failure, status) => {
+    const { imageDirectory, mountPoint } = setup();
+    const run = vi.fn<VolumeCommand>().mockRejectedValueOnce(failure).mockResolvedValueOnce(holders);
+
+    await expect(detachTestVolume(imageDirectory, mountPoint, run)).rejects.toThrow(`${status}\nstderr: (empty)\nHolders:\n${holders.stdout}`);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(existsSync(imageDirectory)).toBe(false);
+  });
+
+  it.runIf(process.platform === "darwin")("accepts a timed-out detach when the system has finished ejecting the image", async () => {
+    const { imageDirectory } = setup();
+    const mountPoint = join(home, "removed-mount");
+    const imageList = `<?xml version="1.0"?><plist version="1.0"><dict><key>images</key><array/></dict></plist>`;
+    const run = vi.fn<VolumeCommand>().mockRejectedValueOnce(timeout).mockResolvedValueOnce(holders)
+      .mockResolvedValueOnce({ stdout: imageList, stderr: "" });
+
+    await detachTestVolume(imageDirectory, mountPoint, run);
+
+    expect(run.mock.calls[2]?.slice(0, 2)).toEqual(["hdiutil", ["info", "-plist"]]);
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(existsSync(imageDirectory)).toBe(false);
+  });
+
+  it("logs holders before the final force attempt and reports its failure after removing the image directory", async () => {
+    const { imageDirectory, mountPoint } = setup();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const run = vi.fn<VolumeCommand>().mockRejectedValueOnce(busy).mockResolvedValueOnce(holders)
+        .mockRejectedValueOnce(timeout).mockResolvedValueOnce(holders).mockImplementationOnce(async () => {
+          expect(warning).toHaveBeenCalledWith(expect.stringContaining(holders.stdout));
+          throw { code: 1, signal: null, killed: false, stderr: "detach failed" };
+        }).mockResolvedValueOnce(holders);
+
+      await expect(detachTestVolume(imageDirectory, mountPoint, run)).rejects.toThrow(`stderr: detach failed\nHolders:\n${holders.stdout}`);
+      expect(run.mock.calls[4]?.[1]).toEqual(["detach", mountPoint, "-force"]);
+      expect(run).toHaveBeenCalledTimes(6);
+      expect(existsSync(imageDirectory)).toBe(false);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+});
 
 // A volume without exclusive rename or persistent file ids (exFAT, FAT) cannot commit a copy, so the macOS helper refuses it by name
 // before it opens anything there or writes a byte. The fixtures create and attach a disk image for these cases.
@@ -2261,15 +2373,19 @@ describe.runIf(process.platform === "darwin")("a chosen folder on an exFAT volum
   let restoreSpawn: (() => void) | undefined;
   beforeAll(() => {
     image = realpathSync(mkdtempSync(join(tmpdir(), "ave-download-exfat-")));
-    const mountPoint = join(image, "volume");
-    mkdirSync(mountPoint);
+    const imagePath = join(image, "volume.dmg");
+    let attachment: string;
     try {
-      execFileSync("hdiutil", ["create", "-size", "64m", "-fs", "ExFAT", "-volname", "AVETEST", "-o", join(image, "volume.dmg")], { stdio: "pipe" });
-      execFileSync("hdiutil", ["attach", "-nobrowse", "-mountpoint", mountPoint, join(image, "volume.dmg")], { stdio: "pipe" });
-      mounted = mountPoint;
+      execFileSync("hdiutil", ["create", "-size", "64m", "-fs", "ExFAT", "-volname", "AVETEST", "-o", imagePath], { stdio: "pipe" });
+      // Let the system own the mount directory so removing the image cannot traverse a still-mounted volume.
+      attachment = execFileSync("hdiutil", ["attach", "-nobrowse", "-mountrandom", "/Volumes", "-plist", imagePath], { encoding: "utf8" });
     } catch (error) {
       unavailable = `hdiutil cannot create or attach an exFAT image here: ${(error as Error).message.split("\n")[0]}`;
+      return;
     }
+    const entities = parseDiskImagePlist<{ "system-entities": Array<{ "mount-point"?: string }> }>(attachment)["system-entities"];
+    mounted = entities.find((entity) => entity["mount-point"])?.["mount-point"] ?? null;
+    if (mounted === null) throw new Error("The attached exFAT test image has no mount point.");
     const spawnHelper = managedChildren.spawnManaged;
     const spawn = vi.spyOn(managedChildren, "spawnManaged").mockImplementation((...args) => {
       const child = spawnHelper(...args);
@@ -2289,10 +2405,9 @@ describe.runIf(process.platform === "darwin")("a chosen folder on an exFAT volum
       while (pendingHelpers.size > 0) await Promise.all(pendingHelpers);
     } finally {
       restoreSpawn?.();
+      await detachTestVolume(image, mounted);
     }
-    if (mounted !== null) await detachTestVolume(mounted);
-    rmSync(image, { recursive: true, force: true });
-  }, 60_000);
+  }, 90_000);
   let cases = 0;
   const onVolume = (skip: (note?: string) => never): string => {
     if (mounted === null) skip(unavailable);
