@@ -111,6 +111,31 @@ describe('memory graph publication', () => {
     expect(await host.get(() => f.catalog)).toEqual(ready);
   });
 
+  it('returns the current replacement when a refresh sees an older saved graph', async () => {
+    const f = await fixture();
+    const resume = deferred<void>();
+    const host = new MemoryMapHost({
+      namespace: f.namespace, refreshLocalAdmission: allowLocal, runWorker: f.runWorker,
+      validatedModelPath,
+    });
+    await host.build(() => f.catalog);
+    const catalog = { ...f.catalog, records: [] };
+    const readSaved = f.namespace.readJson;
+    vi.spyOn(f.namespace, 'readJson').mockImplementationOnce(async (name, fallback) => {
+      await resume.promise;
+      return readSaved(name, fallback);
+    });
+    const replacement = host.build(() => catalog).then(value => ({ value }), error => ({ error }));
+    let current: Awaited<ReturnType<typeof host.get>>;
+    try {
+      current = await host.get(() => catalog);
+    } finally {
+      resume.resolve();
+    }
+    expect.soft(current).toMatchObject({ status: 'building' });
+    expect(await replacement).toMatchObject({ value: { status: 'ready' } });
+  });
+
   it('refuses a held old clear while another scope is building', async () => {
     const f = await fixture();
     const preparingClear = deferred<void>();

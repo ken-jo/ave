@@ -159,11 +159,11 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     });
   };
   let sourceIndex: { scopeId: string; filenames: Map<string, string> } | undefined;
-  const catalog = (scope?: MemoryMapScope): ReadMemoryMapCatalog => {
+  const catalog = (scope?: MemoryMapScope, onDenied?: () => void): ReadMemoryMapCatalog => {
     const filenames = new Map<string, string>();
     const read: ReadMemoryMapCatalog = () => {
       const result = resolveScope(scope);
-      if (!result.ok) { host.cancel(); throw new MemoryMapHostError('project-not-allowed'); }
+      if (!result.ok) { onDenied?.(); throw new MemoryMapHostError('project-not-allowed'); }
       filenames.clear();
       const current = readGraphCatalog(deps.memoryManager, result.options, defaultWorkspaceProject().projectRoot, filenames);
       sourceIndex = { scopeId: current.authorizationScopeId, filenames };
@@ -203,11 +203,12 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
           if (generation !== buildGeneration) throw new MemoryMapHostError('request-stale');
           localRuntime(admission);
         }
-        hostBuild = { id: buildId, event };
-        return await host.build(catalog(scope), assertLive => onAdmission(() => {
-          if (generation !== buildGeneration) throw new MemoryMapHostError('request-stale');
-          assertLive();
-        }), teardown, buildId);
+        const readCatalog = catalog(scope, () => {
+          if (hostBuild?.id === buildId) host.cancel();
+        });
+        return await host.build(readCatalog, onAdmission, teardown, buildId, () => {
+          hostBuild = { id: buildId, event };
+        });
       } finally {
         if (latestBuildId === buildId) latestBuildId = undefined;
         if (hostBuild?.id === buildId) hostBuild = undefined;

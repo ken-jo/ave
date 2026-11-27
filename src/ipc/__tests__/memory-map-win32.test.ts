@@ -22,7 +22,8 @@ const state = vi.hoisted(() => ({
   artifactRequest: vi.fn<(url: URL, options: RequestOptions, respond: (incoming: IncomingMessage) => void) => ClientRequest>(),
   handles: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>>(),
   get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null),
-  build: vi.fn(async (_readCatalog: ReadMemoryMapCatalog, _onAdmission: (assertLive: () => void) => void, _teardown: MemoryBuildTeardown) => ({ snapshotId: 'snapshot' })),
+  build: vi.fn(async (_readCatalog: ReadMemoryMapCatalog, _onAdmission: (assertLive: () => void) => void,
+    _teardown: MemoryBuildTeardown, _buildId: string, _onTakeover: () => void) => ({ snapshotId: 'snapshot' })),
   cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
   status: vi.fn(async () => ({ status: 'unconfigured' })), download: vi.fn(async () => ({ status: 'ready' })), modelCancel: vi.fn(), adoptExistingFolder: vi.fn(async () => ({ status: 'ready' })),
   downloadFile: undefined as ConstructorParameters<typeof import('../../main/memory-map/model-manager-win32.js').LocalModelManager>[0]['downloadFile'],
@@ -82,12 +83,14 @@ describe('memory map host boundary', () => {
     const secondStarted = deferred<MemoryWorkerExit>();
     const firstSettled = deferred<void>();
     const secondSettled = deferred<void>();
-    state.build.mockImplementationOnce((_catalog, _onAdmission, teardown) => teardown.track(async exit => {
+    state.build.mockImplementationOnce((_catalog, _onAdmission, teardown, _buildId, onTakeover) => teardown.track(async exit => {
+      onTakeover();
       exit.starting();
       firstStarted.resolve();
       await firstSettled.promise;
       throw new MemoryMapHostError('local-runtime-unavailable');
-    })).mockImplementationOnce((_catalog, _onAdmission, teardown) => teardown.track(async exit => {
+    })).mockImplementationOnce((_catalog, _onAdmission, teardown, _buildId, onTakeover) => teardown.track(async exit => {
+      onTakeover();
       exit.starting();
       secondStarted.resolve(exit);
       await secondSettled.promise;

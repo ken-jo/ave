@@ -115,6 +115,7 @@ export class MemoryMapHost {
         if (saved.snapshot) { this.snapshot = saved.snapshot; this.cache = saved.cache; }
       });
     }
+    if (this.pending?.status === 'building' && matchesCatalog(this.pending)) return this.pending;
     if ((this.snapshot && !matchesCatalog(this.snapshot)) || (this.pending && !matchesCatalog(this.pending))) {
       this.cancel(); this.snapshot = null; this.cache = {};
       const clearGeneration = this.generation;
@@ -174,14 +175,16 @@ export class MemoryMapHost {
     return cache;
   }
   async build(readCatalog: ReadMemoryMapCatalog, onAdmission?: (assertLive: () => void) => void,
-    teardown = new MemoryBuildTeardown(), buildId: string = randomUUID()): Promise<GraphSnapshot> {
+    teardown = new MemoryBuildTeardown(), buildId: string = randomUUID(), onTakeover?: () => void): Promise<GraphSnapshot> {
     const runWorker: MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal,
       onProgress?: (progress: MemoryMapProgress) => void, onAdmission?: OnInferenceAdmission) =>
       teardown.track(exit => this.runWorker<T>(folder, task, signal, onProgress, onAdmission, exit));
-    const catalog = readCatalog(); this.activate(catalog); this.cancel(); this.hydrated = true;
+    const catalog = readCatalog();
     const selected = this.selectedNamespace();
-    const generation = this.generation; const controller = new AbortController(); this.controller = controller;
     const revision = catalogRevision(catalog.records);
+    this.activate(catalog); this.cancel(); this.hydrated = true;
+    const generation = this.generation; const controller = new AbortController(); this.controller = controller;
+    onTakeover?.();
     const active = () => sameNamespace(selected, this.selectedNamespace()) && !controller.signal.aborted && generation === this.generation;
     const current = () => {
       if (!active()) return false;

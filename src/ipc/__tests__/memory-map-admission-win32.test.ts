@@ -37,7 +37,7 @@ const state = vi.hoisted(() => ({
 }));
 vi.mock('electron', () => ({ dialog: {}, ipcMain: { handle: (channel: string, handler: typeof state.handle) => {
   if (channel === CHANNELS.memoryMap.build) state.handle = handler;
-  if (channel === CHANNELS.memoryMap.get) state.get = handler;
+  if (channel === CHANNELS.memoryMap.get) state.get = handler && (event => handler(event, undefined));
   if (channel === CHANNELS.memoryMap.cancel) state.cancel = handler;
 } } }));
 vi.mock('../../permissions/asrt-sandbox.js', async importOriginal => ({
@@ -118,7 +118,7 @@ describe.each(['container', 'unconfined', 'account', 'projection'] as const)('%s
     state.plan = container ? { selectedBackend: 'mxc', readiness: 'ready' } : { selectedBackend: 'none', readiness: 'off' };
     state.substrate = container ? { srtWinReady: false, shells: 'mxc', mxc: { state: 'available' } } : {
       srtWinReady: state.account, shells: state.account ? 'approved-host' : 'none',
-      accountBackendAbsent: route === 'unconfined',
+      ...(route === 'unconfined' ? { accountBackendAbsent: true } : {}),
       mxc: { state: 'unavailable', reason: 'container-unavailable', containerBackendAbsent: true },
     };
     if (route !== 'account') unregister = registerMxcReleaseGateEvidence({
@@ -223,6 +223,73 @@ describe.each(['container', 'unconfined', 'account', 'projection'] as const)('%s
       vi.useRealTimers();
     }
   });
+});
+
+it('keeps the live projection cancellable when a replacement catalog scan fails', async () => {
+  state.root = roots.track(await mkdtemp(join(tmpdir(), 'memory-map-admission-')));
+  setProcessPlatform('win32');
+  state.account = false;
+  state.plan = { selectedBackend: 'mxc', readiness: 'ready' };
+  state.substrate = { srtWinReady: false, shells: 'mxc', mxc: { state: 'available' } };
+  state.beforeCommit = state.afterRead = undefined;
+
+  unregister = registerMxcReleaseGateEvidence({
+    ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
+    forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
+  });
+
+  const projecting = deferred<AbortSignal>();
+  const finishTeardown = deferred<void>();
+  state.runWorker.mockReset().mockImplementation(async (_folder, task, signal, _progress, _admission, exit) => {
+    exit?.starting();
+    if (task.kind === 'embed-batch') {
+      exit?.confirmed();
+      return task.texts.map(() => [1, ...Array<number>(383).fill(0)]);
+    }
+    if (task.kind !== 'project') throw new Error('Expected projection');
+    projecting.resolve(signal);
+    await finishTeardown.promise;
+    exit?.confirmed();
+    signal.throwIfAborted();
+    return buildGraph(task.input, {
+      embed: async () => { throw new Error('Projection requires cached vectors'); },
+      dispose: async () => {},
+    }, () => {});
+  });
+  const note = { id: randomUUID(), filename: 'example.md', title: 'Example', content: 'Memory' };
+  const readCatalog = vi.fn(() => ({ notes: [note] }));
+  registerWindowsMemoryMapHandlers({
+    auditLogger: { log: vi.fn() },
+    settingsService: { get: (key: string) => key === 'memoryEmbedding' ? { localModelPath: state.root } : undefined },
+    memoryManager: { readMemoryPanelCatalog: readCatalog },
+  } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+  const event = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
+  if (!state.handle || !state.cancel || !state.get) throw new Error('Memory-map IPC is not registered');
+
+  const firstId = randomUUID();
+  const secondId = randomUUID();
+  const build = state.handle(event, { buildId: firstId });
+  try {
+    const signal = await Promise.race([projecting.promise, build.then(() => { throw new Error('Projection did not start'); })]);
+    readCatalog.mockImplementationOnce(() => { throw Object.assign(new Error('Cannot read catalog'), { code: 'EACCES' }); });
+    expect(await state.handle(event, { buildId: secondId })).toEqual({ ok: false, error: 'graph-build-failed' });
+    expect(await state.get(event)).toMatchObject({ ok: true, value: { status: 'building', snapshotId: firstId } });
+    expect(await state.cancel(event, secondId)).toEqual({ ok: true, value: null });
+    expect(signal.aborted).toBe(false);
+
+    const replied = vi.fn((reply: unknown) => reply);
+    const canceled = state.cancel(event, firstId).then(replied);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect.soft(signal.aborted).toBe(true);
+    expect(replied).not.toHaveBeenCalled();
+    finishTeardown.resolve();
+    expect(await canceled).toEqual({ ok: true, value: null });
+    expect(await build).toEqual({ ok: false, error: 'request-stale' });
+    expect(await state.get(event)).toEqual({ ok: true, value: null });
+  } finally {
+    finishTeardown.resolve();
+    await build;
+  }
 });
 
 describe.each(['account', 'container'] as const)('%s admission', backend => {
