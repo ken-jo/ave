@@ -823,22 +823,20 @@ export class ClaudeCodeSubscriptionClient {
       }
       const timer = setTimeout(() => loseTransport(), timeoutMs);
       timer.unref();
-      const finish = (callback: () => void): void => {
+      const finish = <T>(callback: () => T): T | undefined => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         this.commands.delete(cancel);
-        callback();
+        return callback();
       };
-      const cancel = (code: ClaudeCodeSubscriptionErrorCode = "claude-code-operation-failed"): void | Promise<void> => {
-        let termination: void | Promise<void> = undefined;
+      const cancel = (code: ClaudeCodeSubscriptionErrorCode = "claude-code-operation-failed"): void | Promise<void> =>
         finish(() => {
-          termination = forceKillManagedChildProcess(child, "claude-code-command-cancel");
+          const termination = forceKillManagedChildProcess(child, "claude-code-command-cancel");
           if (termination) void termination.then(() => rejectPromise(new ClaudeCodeSubscriptionError(code)));
           else rejectPromise(new ClaudeCodeSubscriptionError(code));
+          return termination;
         });
-        return termination;
-      };
       const loseTransport = (code?: ClaudeCodeSubscriptionErrorCode): void => {
         if (settled) return;
         options.onTransportLost?.();
