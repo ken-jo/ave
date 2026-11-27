@@ -119,14 +119,15 @@ export function checkWindowsWorkbookAccess(path: string): { identity: string } |
   try {
     const route = withLocalityDecision(() => admitLocalRoute(path));
     if (route.followedLink) return { reason: WORKBOOK_ACL_DIFFERS };
-    const [facts] = readWindowsDacls([path], { parent: true });
-    if (!facts?.exists || !facts.dacl || !facts.parent || !facts.volumeSerialNumber || !facts.fileIndex || !facts.changeTime
+    const [facts] = readWindowsDacls([path], { parent: true, access: true });
+    if (!facts?.exists || !facts.dacl || !facts.parent?.sacl || !facts.volumeSerialNumber || !facts.fileIndex || !facts.changeTime
       || facts.fileSystemName !== "NTFS" || [facts.volumeSerialNumber, facts.fileIndex, facts.changeTime].some(value => BigInt(value) === 0n)) {
       return { reason: WORKBOOK_ACL_UNREADABLE };
     }
     const { dacl, parent } = facts;
     if (facts.directory || admitWindowsReparse(facts) !== true || (facts.attributes & ENCRYPTED_FILE) !== 0
-      || facts.elevated || dacl.owner !== facts.currentUserSid || dacl.protected || dacl.nullDacl || parent.nullDacl) {
+      || facts.elevated || dacl.owner !== facts.currentUserSid || dacl.protected || dacl.nullDacl || parent.nullDacl
+      || ((parent.sacl?.integrityLabel?.flags ?? 0) & OBJECT_INHERIT_ACE) !== 0) {
       return { reason: WORKBOOK_ACL_DIFFERS };
     }
     const inherited = parent.aces.filter(ace => (ace.flags & OBJECT_INHERIT_ACE) !== 0);

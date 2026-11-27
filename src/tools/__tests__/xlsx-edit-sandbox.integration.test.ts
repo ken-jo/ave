@@ -1,6 +1,7 @@
 import { copyFileSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { buildSkillScripts } from "../../../scripts/build-skill-scripts.mjs";
 import { windowsPeImageDigest } from "../../../scripts/lib/windows-path-kind-image-digest.mjs";
 import { tmpdir } from "node:os";
@@ -255,6 +256,43 @@ describe("native governed XLSX command", () => {
         expect.soft(readFileSync(movedPath).equals(originalWorkbook)).toBe(true);
         for (const file of [movedPath, `${movedPath}.ave-bak`]) rmSync(file, { force: true });
         rmSync(oldParent, { recursive: true });
+
+        const labelledParent = join(directory, "labelled-parent");
+        const ffi = createRequire(import.meta.url)("koffi") as typeof import("koffi");
+        const advapi = ffi.load("advapi32.dll");
+        const kernel = ffi.load("kernel32.dll");
+        const convert = advapi.func("int __stdcall ConvertStringSecurityDescriptorToSecurityDescriptorW(str16, uint32_t, _Out_ void **, void *)");
+        const attributes = ffi.struct("DirectorySecurityAttributes", { length: "uint32_t", descriptor: "void *", inherit: "int" });
+        const create = kernel.func("int __stdcall CreateDirectoryW(str16, DirectorySecurityAttributes *)");
+        const free = kernel.func("void * __stdcall LocalFree(void *)");
+        const descriptor = [null];
+        expect(convert("S:(ML;OI;NW;;;LW)", 1, descriptor, null)).toBe(1);
+        try {
+          expect(create(labelledParent, { length: ffi.sizeof(attributes), descriptor: descriptor[0], inherit: 0 })).toBe(1);
+        } finally {
+          free(descriptor[0]);
+        }
+        const unlabelled = join(labelledParent, "unlabelled.xlsx");
+        renameSync(target, unlabelled);
+        const labelledSibling = join(labelledParent, "new-file");
+        writeFileSync(labelledSibling, "");
+        expect(readFileDacls([labelledSibling])[0]?.integrityLabel?.sid).toBe("S-1-16-4096");
+        rmSync(labelledSibling);
+        const [labelFacts] = readDacls([unlabelled], { parent: true, access: true });
+        expect(labelFacts?.dacl?.sacl?.integrityLabel).toBeNull();
+        expect(labelFacts?.parent?.sacl?.integrityLabel).toMatchObject({ sid: "S-1-16-4096", flags: 1 });
+        const labelledNames = readdirSync(labelledParent);
+        prepare.mockClear();
+        const labelled = await tool.execute({ command: commandFor(unlabelled), timeoutSeconds }, context);
+        expect.soft(labelled.output).toContain("[workbook-acl-differs]");
+        expect.soft(labelled.isError).toBe(true);
+        expect.soft(prepare).toHaveBeenCalledTimes(1);
+        expect.soft(readdirSync(labelledParent)).toEqual(labelledNames);
+        expect.soft(readFileSync(unlabelled).equals(originalWorkbook)).toBe(true);
+        rmSync(unlabelled);
+        rmSync(`${unlabelled}.ave-bak`, { force: true });
+        rmSync(labelledParent, { recursive: true });
+        writeFileSync(target, originalWorkbook);
 
         prepare.mockClear();
         const computedCommand = commandFor(target).replace(quotePowerShell(target), "$env:WORKBOOK");

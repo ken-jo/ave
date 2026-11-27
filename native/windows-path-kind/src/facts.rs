@@ -110,8 +110,28 @@ fn facts_json(facts: &Facts) -> String {
     )
 }
 
-fn descriptor_json(handle: Raw, facts: &Facts) -> Option<String> {
-    let security = Descriptor::read(handle)?;
+fn label_json(label: Option<security::IntegrityLabel>) -> String {
+    match label {
+        Some(label) => format!(
+            r#"{{"sid":{},"policy":{},"flags":{}}}"#,
+            json(&label.sid),
+            label.policy,
+            label.flags
+        ),
+        None => "null".into(),
+    }
+}
+
+fn descriptor_json(handle: Raw, facts: &Facts, access: bool) -> Option<String> {
+    let (security, sacl) = if access {
+        let (descriptor, label, dynamic_access_control) = Descriptor::read_file_access(handle)?;
+        let label = label_json(label);
+        (descriptor, Some(format!(
+            r#","sacl":{{"integrityLabel":{label},"dynamicAccessControl":{dynamic_access_control}}}"#
+        )))
+    } else {
+        (Descriptor::read(handle)?, None)
+    };
     let owner = json(&security::sid_text(security.owner).ok()?);
     let mut output = format!(r#"{{"identity":{{{}}},"owner":{owner}"#, identity(facts.id));
     if !security.group.is_null() {
@@ -161,7 +181,14 @@ fn descriptor_json(handle: Raw, facts: &Facts) -> Option<String> {
         }
         output.push('}');
     }
-    output.push_str("]}");
+    output.push(']');
+    if let Some(sacl) = sacl {
+        if basic(handle).ok()?.change != facts.change {
+            return None;
+        }
+        output.push_str(&sacl);
+    }
+    output.push('}');
     Some(output)
 }
 
@@ -220,15 +247,7 @@ fn file_access_row(path: &[u16]) -> Option<String> {
         return None;
     }
     let owner = json(&security::sid_text(descriptor.owner).ok()?);
-    let label = match label {
-        Some(label) => format!(
-            r#"{{"sid":{},"policy":{},"flags":{}}}"#,
-            json(&label.sid),
-            label.policy,
-            label.flags
-        ),
-        None => "null".into(),
-    };
+    let label = label_json(label);
     let mut count = 0;
     let acl = if let Some(revision) = descriptor.dacl_revision() {
         let mut bytes = vec![revision];
@@ -298,7 +317,7 @@ pub(crate) fn held_reply(facts: &[Facts], limit: usize) -> Option<String> {
 }
 
 fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
-    let (mut parent, mut content, mut framed) = (false, false, false);
+    let (mut parent, mut content, mut framed, mut access) = (false, false, false, false);
     let mut operands = args;
     while let Some((flag, rest)) = operands.split_first() {
         if !flag.starts_with(&[45, 45]) {
@@ -308,6 +327,8 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
             parent = true;
         } else if dacl && eq(flag, "--content") {
             content = true;
+        } else if dacl && eq(flag, "--access") {
+            access = true;
         } else if dacl && !framed && eq(flag, "--stdin") {
             framed = true;
         } else {
@@ -350,7 +371,7 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
             let mut bytes = "null".into();
             if facts.exists == Some(true) {
                 let file = pinned.handles.last().ok_or(4_u8)?.raw();
-                let descriptor = descriptor_json(file, facts).ok_or(4_u8)?;
+                let descriptor = descriptor_json(file, facts, access).ok_or(4_u8)?;
                 if content && facts.tag.attributes & REPARSE == 0 {
                     if facts.tag.attributes & DIRECTORY != 0 {
                         return Err(4);
@@ -367,8 +388,11 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
                 let last = pinned.facts.len() - 1;
                 if last > 0 && pinned.facts[last - 1].exists == Some(true) {
                     row.push_str(
-                        &descriptor_json(pinned.handles[last - 1].raw(), &pinned.facts[last - 1])
-                            .ok_or(4_u8)?,
+                        &descriptor_json(
+                            pinned.handles[last - 1].raw(),
+                            &pinned.facts[last - 1],
+                            access,
+                        ).ok_or(4_u8)?,
                     );
                 } else {
                     row.push_str("null");

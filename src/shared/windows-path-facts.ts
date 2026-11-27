@@ -60,6 +60,10 @@ export interface WindowsDacl {
   readonly protected: boolean;
   readonly nullDacl: boolean;
   readonly aces: readonly WindowsAce[];
+  readonly sacl?: {
+    readonly integrityLabel: WindowsIntegrityLabel | null;
+    readonly dynamicAccessControl: boolean;
+  };
 }
 
 export interface WindowsDaclFacts extends WindowsPathFacts {
@@ -215,9 +219,12 @@ export function decodeWindowsPathFacts(output: string, expectedRows: number, mod
   // snapshot from a present descriptor whose ACL is unrestricted.
   const rows = response.map((row: unknown, index) => {
     if (mode !== "--dacl" || row === null || typeof row !== "object") return row;
-    const { requestPath, identity, owner, group, protected: protectedDacl, nullDacl, aces, ...facts } = row as Record<string, unknown>;
+    const { requestPath, identity, owner, group, protected: protectedDacl, nullDacl, aces, sacl, ...facts } = row as Record<string, unknown>;
     if (expectedPaths !== undefined && requestPath !== expectedPaths[index]) throw new Error("Windows DACL request path mismatch");
-    return { ...facts, dacl: identity === null ? null : { identity, owner, ...(group === undefined ? {} : { group }), protected: protectedDacl, nullDacl, aces } };
+    return { ...facts, dacl: identity === null ? null : {
+      identity, owner, ...(group === undefined ? {} : { group }), protected: protectedDacl,
+      nullDacl, aces, ...(sacl === undefined ? {} : { sacl }),
+    } };
   });
   for (const row of rows as WindowsDaclFacts[]) {
     if (!isComponent(row) || !Array.isArray(row.ancestors) || !row.ancestors.every(isComponent)) throw new Error("Invalid Windows path pin");
@@ -233,6 +240,9 @@ export function decodeWindowsPathFacts(output: string, expectedRows: number, mod
       const parent = row.ancestors.at(-1);
       if (parent?.exists === true ? !isDescriptor(row.parent) : row.parent !== null) throw new Error("Invalid Windows parent DACL");
       if (row.parent && (row.parent.identity.volumeSerial !== parent?.volumeSerial || row.parent.identity.fileId !== parent.fileId)) throw new Error("Windows parent DACL identity mismatch");
+    }
+    if (flags.includes("--access") && [row.dacl, row.parent].some(descriptor => descriptor && !isAccessSacl(descriptor.sacl))) {
+      throw new Error("Invalid Windows access SACL");
     }
     if (flags.includes("--content") && row.contentHex !== null
       && (typeof row.contentHex !== "string" || row.contentHex.length > 2097152 || !/^(?:[0-9a-f]{2})*$/.test(row.contentHex))) throw new Error("Invalid Windows file content");
@@ -522,9 +532,11 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
 }
 
 /** Content is read on the descriptor's pinned handle, bounded to one MiB. */
-export function readWindowsDacls(paths: readonly string[], options: { parent?: boolean; content?: boolean } = {}): readonly WindowsDaclFacts[] {
+export function readWindowsDacls(paths: readonly string[], options: { parent?: boolean; content?: boolean; access?: boolean } = {}): readonly WindowsDaclFacts[] {
   // The native walk holds non-write/non-delete-shared component handles through DACL capture; separate pins add no snapshot binding.
-  return request(paths, "--dacl", [...(options.parent ? ["--parent"] : []), ...(options.content ? ["--content"] : [])]) as WindowsDaclFacts[];
+  return request(paths, "--dacl", [
+    ...(options.parent ? ["--parent"] : []), ...(options.content ? ["--content"] : []), ...(options.access ? ["--access"] : []),
+  ]) as WindowsDaclFacts[];
 }
 
 interface WindowsIntegrityLabel {
@@ -609,6 +621,12 @@ function isIntegrityLabel(value: unknown): value is WindowsIntegrityLabel | null
   return typeof sid === "string" && /^S-1-16-(?:0|[1-9][0-9]{0,9})$/u.test(sid)
     && Number(sid.slice("S-1-16-".length)) <= 0xffffffff
     && isUint(policy, 0x07) && isUint(flags, 0x1f);
+}
+
+function isAccessSacl(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Object.keys(value).length !== 2) return false;
+  const { integrityLabel, dynamicAccessControl } = value as NonNullable<WindowsDacl["sacl"]>;
+  return isIntegrityLabel(integrityLabel) && typeof dynamicAccessControl === "boolean";
 }
 
 function isFileDacl(value: unknown): value is WindowsFileDacl {

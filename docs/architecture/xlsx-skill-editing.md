@@ -190,8 +190,9 @@ the edit. Files at or below the threshold have no automatic backup.
 Before launching a Windows workbook edit, the host confirms that the token is
 not elevated, the source is a regular unencrypted file owned by the current
 user, and its unprotected DACL contains exactly the ACEs inherited from
-its parent in order. A reparse point, mandatory label, dynamic access control
-entry, or unreadable descriptor refuses the edit. The editor compares the
+its parent in order. A reparse point, a mandatory label on the workbook or
+inheritable by files from its parent, a dynamic access control entry on the
+workbook, or an unreadable descriptor refuses the edit. The editor compares the
 host-observed volume serial, file index, and change time with its first
 snapshot before opening its journal or creating any recovery or staging file.
 
