@@ -38,7 +38,7 @@ export function boundedStageInputs(inputs: readonly StageInput[]): WorkflowStage
 /** One stage child's instructions. Host text, the stage goal and the item go in as instructions; every earlier output goes in only as
  * fenced data, bounded per input and in total. Setup commands are host text for an all-tools stage and never reach a read-scope one. */
 export function buildStagePrompt(a: {
-  item: WorkItem; stage: TemplateStage; inputs: StageInput[];
+  item: WorkItem; stage: TemplateStage; inputs: StageInput[]; workspaceRoot: string;
   /** `taint`: what the attempt that produced `priorOutput` ended with. */
   revision?: { priorOutput: string; note: string; taint?: "file-content" | "agent-message" };
   setupCommands?: readonly string[];
@@ -59,6 +59,7 @@ export function buildStagePrompt(a: {
     readOnly
       ? `This stage is read-only: investigate with read-only tools and make NO changes.`
       : `Work only inside your working folder; it is this stage's own copy of the project.`,
+    `Working folder: ${JSON.stringify(a.workspaceRoot)}`,
     ``,
     `Work item #${item.id}: ${item.title}`,
     ...(detail ? [``, `Details:`, detail] : []),

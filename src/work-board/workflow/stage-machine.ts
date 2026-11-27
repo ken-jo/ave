@@ -21,7 +21,7 @@ export const MAX_STAGE_ATTEMPTS = 3;
 
 export type StageEnded = {
   type: "stage_ended"; stageId: string; attempt: number; ok: boolean; output?: string; requestedOutputs?: WorkItemStageRun["requestedOutputs"]; taint?: WorkItemStageRun["taint"]; reason?: string;
-  interrupted?: boolean; failure?: StageFailure; usage?: WorkItemStageRun["usage"]; deniedCalls?: WorkItemStageRun["deniedCalls"];
+  interrupted?: boolean; failure?: StageFailure; failureReason?: WorkItemStageRun["failureReason"]; usage?: WorkItemStageRun["usage"]; deniedCalls?: WorkItemStageRun["deniedCalls"];
   childSessionId?: string; blocked?: WorkItemStageRun["blocked"];
 };
 
@@ -125,6 +125,7 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
       else if (!event.ok) {
         run.status = "failed";
         run.failure = event.failure ?? (event.interrupted ? "interrupted" : "error");
+        if (event.failureReason !== undefined) run.failureReason = event.failureReason;
       } else if (graph.stages.find(stage => stage.id === run.stageId)?.gate.type === "human") {
         run.output ??= "";
         run.status = "awaiting_gate";

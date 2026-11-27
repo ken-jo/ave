@@ -3,6 +3,7 @@ import type { AveApi, ApprovalRequest } from "../../types.js";
 import type { WorkBoardToolApprovalSurface, WorkItemResolved } from "../../../../shared/work-board-types.js";
 import { isWorkBoardToolApprovalSurface } from "../../../../shared/work-board-types.js";
 import { useApprovalSurface } from "../../hooks/use-approval.js";
+import { workflowOutputSessionPrefix } from "../../../../shared/workflow-run-view.js";
 import { projectRootEquals } from "../../../../shared/project-identity.js";
 import type { RunStateMap } from "../../hooks/use-work-board-run.js";
 
@@ -89,7 +90,7 @@ export function workBoardApprovalMatchesProject(
  * the decision stay the window's.
  */
 export function useBoardApprovals(
-  items: readonly WorkItemResolved[], runState: RunStateMap, scopeRoot: string | undefined, isDefault: boolean,
+  items: readonly WorkItemResolved[], runState: RunStateMap, scopeRoot: string | undefined, isDefault: boolean, openRun?: WorkItemResolved,
 ): BoardApprovals {
   const surface = useApprovalSurface();
   const { claims, queue } = surface;
@@ -103,7 +104,12 @@ export function useBoardApprovals(
       if (item.runSessionId) map.set(item.runSessionId, item.id);
       for (const id of runState[item.id]?.sessionIds ?? []) map.set(id, item.id);
     }
+    const outputPrefix = openRun?.runId ? workflowOutputSessionPrefix(openRun.id, openRun.runId) : undefined;
     for (const request of queue) {
+      if (openRun && outputPrefix && request.sessionId?.startsWith(outputPrefix)) {
+        map.set(request.sessionId, openRun.id);
+        continue;
+      }
       const route = request.workBoardProjectApproval;
       if (!route || route.parked || request.sessionId === undefined) continue;
       const inScope = workBoardApprovalMatchesProject(route, scopeRoot, isDefault);
@@ -111,7 +117,7 @@ export function useBoardApprovals(
       else map.delete(request.sessionId);
     }
     return map;
-  }, [items, runState, queue, scopeRoot, isDefault]);
+  }, [items, runState, queue, scopeRoot, isDefault, openRun]);
   const signature = [...sessionToItem.keys()].sort().join("\n");
 
   // Re-claim whenever the set changes: the claim's version bump re-renders the window's routing, so a request that arrived before its

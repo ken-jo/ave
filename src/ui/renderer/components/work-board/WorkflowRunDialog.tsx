@@ -235,6 +235,7 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
           </div>
           <DialogDescription>{[item.projectName, item.runId].flatMap(value => value ? [stageDisplayName(value)] : []).join(" · ") || t("workflowTemplates.openRun")}</DialogDescription>
         </DialogHeader>
+        {approvals && <section aria-label={t("workBoard.liveRowToolApproval")} className="grid min-w-0 gap-3 sm:grid-cols-2">{approvals}</section>}
         {showParkedApprovals && (
           <section ref={parkedApprovalSection} tabIndex={-1} aria-label={t("workApprovals.stageToolApprovals")} className="space-y-2 rounded-lg focus-visible:ring-2 focus-visible:ring-ring">
             <h2 className="text-sm font-semibold">{t("workApprovals.stageToolApprovals")}</h2>
@@ -329,7 +330,6 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
           </section>
         )}
         {snapshot && <WorkflowRunEvidence run={snapshot} stageName={stageName} />}
-        {!showingHistory && approvals && <section aria-label={t("workBoard.liveRowToolApproval")} className="grid min-w-0 gap-3 sm:grid-cols-2">{approvals}</section>}
         {!showingHistory && item.runStatus === "completed" && (
           <section className="space-y-2 rounded-lg border bg-background p-3 text-sm">
             <h2 className="font-semibold">{t("workBoard.reviewInspector")}</h2>

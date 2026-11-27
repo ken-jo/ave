@@ -360,6 +360,8 @@ it.each(cases)("shows and executes identical args for %s after the ordinary appr
     const card = await Promise.race([shown, pending.then(() => undefined)]);
     expect(card).toBeDefined();
     if (!card) throw new Error("The tool did not ask for approval");
+    expect(card.sessionId).toEqual(expect.stringMatching(`^workflow-output:${run.itemId}:${run.runId}:`));
+    expect(approvalSurfaceRegistry.resolve(card.sessionId)).toBe(fixture.surface);
     expect(canonicalWorkflowJson(card.args)).toBe(request.output.args);
     expect(events).toEqual(["card shown"]);
     expect(handler).not.toHaveBeenCalled();
