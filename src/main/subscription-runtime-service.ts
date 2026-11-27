@@ -1106,8 +1106,8 @@ type HostConnection = {
   scope: string;
   safetyEpoch: number;
   proven: boolean;
-  // The target object is the confirmation generation. An omitted source ties it to the host auth home.
-  target?: { source?: object; attempts: number; retry: boolean; timer?: ReturnType<typeof setTimeout> };
+  // The host auth home owns the pending confirmation and its timer.
+  target?: { attempts: number; timer?: ReturnType<typeof setTimeout> };
   confirming: boolean;
 };
 
@@ -1659,7 +1659,7 @@ export class SubscriptionRuntimeService {
     // Set synchronously before snapshotting so an already-held reference cannot add a late session while the active set is being drained.
     this.stopped = true;
     for (const [provider, state] of this.connections) {
-      this.replaceConfirmation(state);
+      this.clearConfirmation(state);
       if (state.status.connection === "connected") this.latchConnection(provider, state, "unknown");
       if (connectionProjections.get(provider)?.revision === state.revision) connectionProjections.delete(provider);
     }
@@ -1757,6 +1757,8 @@ export class SubscriptionRuntimeService {
     if (state && isCliProvider(provider)) {
       state.intent = intent;
       state.busy += 1;
+      // Register the settlement read before a sign-out or logout can withdraw it.
+      state.target ??= { attempts: 0 };
       this.latchConnection(provider, state, state.status.connection === "signed-out" ? "signed-out" : "unknown");
     } else {
       this.authChangeRevisionByProvider.set(provider, intent);
@@ -1780,7 +1782,6 @@ export class SubscriptionRuntimeService {
         state.busy -= 1;
         if (state.busy === 0) {
           state.intent = ++this.sequence;
-          state.target ??= { source: state.source ?? state, attempts: 0, retry: false };
           this.confirmAccount(provider, state, 0);
         }
       } else {
@@ -1888,16 +1889,17 @@ export class SubscriptionRuntimeService {
     const state = this.connection(provider);
     if (evidence.kind === "read") {
       const start = ++this.sequence;
-      const { intent, generation, target } = state;
+      const { intent, generation } = state;
       let delivered = false;
       return (verdict) => {
         if (delivered || this.stopped) return false;
         delivered = true;
         if (verdict.kind === "signed-out") {
+          this.clearConfirmation(state);
           this.latchConnection(provider, state, "signed-out", evidence.version);
           return true;
         }
-        if (generation !== state.generation || intent !== state.intent || (target && target !== state.target) || start <= state.latch || start <= state.acceptedRead) {
+        if (generation !== state.generation || intent !== state.intent || start <= state.latch || start <= state.acceptedRead) {
           return false;
         }
         if (verdict.kind === "unavailable") {
@@ -1912,7 +1914,7 @@ export class SubscriptionRuntimeService {
         }
         if (verdict.accountKey && state.accountKey && verdict.accountKey !== state.accountKey) {
           state.accountKey = verdict.accountKey;
-          this.replaceConfirmation(state, { attempts: 0, retry: true });
+          this.requireConfirmation(state);
           this.latchConnection(provider, state, "unknown", evidence.version);
           return false;
         }
@@ -1920,6 +1922,7 @@ export class SubscriptionRuntimeService {
         if (auxiliary) return state.status.connection === "connected";
         const connected = state.status.connection === "connected";
         state.acceptedRead = start;
+        this.clearConfirmation(state);
         state.status = {
           ...this.failedProbeStatus(provider, evidence.version),
           connection: "connected",
@@ -1932,10 +1935,7 @@ export class SubscriptionRuntimeService {
     }
     if (evidence.kind === "artifact") {
       const changed = state.source !== undefined && (state.artifact !== evidence.artifact || state.source !== evidence.source);
-      if (changed) {
-        if (state.target?.source === state.source) this.replaceConfirmation(state);
-        state.accountKey = undefined;
-      }
+      if (changed) state.accountKey = undefined;
       state.source = evidence.source;
       state.artifact = evidence.artifact;
       if (changed || evidence.artifact === null) {
@@ -1953,7 +1953,7 @@ export class SubscriptionRuntimeService {
     if (evidence.kind === "login-retired") {
       if (state.loginAttempt !== evidence.attempt) return undefined;
       state.loginAttempt = null;
-      if (!evidence.completionSource) {
+      if (!evidence.completed) {
         this.projectLogin(provider, state, NO_PENDING_LOGIN);
         return undefined;
       }
@@ -1961,21 +1961,19 @@ export class SubscriptionRuntimeService {
     }
     if (evidence.kind === "advertisement" || evidence.kind === "login-completed" || evidence.kind === "login-retired") {
       const revision = state.revision;
-      const source = evidence.kind === "advertisement" ? evidence.source
-        : evidence.kind === "login-retired" ? evidence.completionSource : undefined;
-      this.replaceConfirmation(state, { source, attempts: 0, retry: true });
+      this.requireConfirmation(state);
       state.accountKey = undefined;
       this.latchConnection(provider, state, "unknown");
       if (evidence.kind === "login-retired" && state.revision === revision) this.publishConnection(provider);
-      this.confirmAccount(provider, state);
       return undefined;
     }
     if (evidence.kind === "retired") {
-      if (state.target?.source === evidence.source) this.replaceConfirmation(state);
+      // Disposing an idle auxiliary proof leaves established primary authority intact.
+      if (!auxiliary || state.target) this.latchConnection(provider, state, "unknown");
       return undefined;
     }
     const signedOut = evidence.kind !== "transport-lost";
-    if (signedOut || state.target?.source === evidence.source) this.replaceConfirmation(state);
+    if (signedOut) this.clearConfirmation(state);
     state.accountKey = undefined;
     this.latchConnection(provider, state, signedOut ? "signed-out" : "unknown");
     return undefined;
@@ -2009,9 +2007,17 @@ export class SubscriptionRuntimeService {
     notifyStatusChanged(provider, connected, state.revision);
   }
 
-  private replaceConfirmation(state: HostConnection, target?: HostConnection["target"]): void {
+  private requireConfirmation(state: HostConnection): void {
+    state.target ??= { attempts: 0 };
+    const target = state.target;
+    clearTimeout(target.timer);
+    target.timer = undefined;
+    target.attempts = 0;
+  }
+
+  private clearConfirmation(state: HostConnection): void {
     clearTimeout(state.target?.timer);
-    state.target = target;
+    state.target = undefined;
   }
 
   private confirmAccount(provider: CliProvider, state: HostConnection, delay?: number): void {
@@ -2021,7 +2027,6 @@ export class SubscriptionRuntimeService {
       target.timer = undefined;
       if (this.stopped || state.target !== target || state.busy || state.status.connection === "connected") return;
       state.confirming = true;
-      if (!target.retry && state.target === target) state.target = undefined;
       void this.readCliStatus(provider, {}).catch(() => undefined).finally(() => {
         state.confirming = false;
         target.attempts += 1;

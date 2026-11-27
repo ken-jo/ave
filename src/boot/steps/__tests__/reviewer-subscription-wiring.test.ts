@@ -195,7 +195,21 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
   });
 });
 
+const confirmationHints = ["advertisement", "matching login success", "replacement account", "settlement"] as const;
+const confirmationRetirements = ["cancel timeout", "transport loss", "proof disposal", "EPIPE"] as const;
+const confirmationWithdrawals = ["sign-out", "logout", "stop"] as const;
+const confirmationCases = new Map<string, {
+  hint: typeof confirmationHints[number];
+  cause: typeof confirmationRetirements[number] | typeof confirmationWithdrawals[number];
+}>([
+  ...confirmationHints.flatMap((hint) => confirmationRetirements.map((cause) =>
+    [`${hint} followed by ${cause}`, { hint, cause }] as const)),
+  ...confirmationWithdrawals.map((cause) =>
+    [`advertisement withdrawn by ${cause}`, { hint: "advertisement", cause }] as const),
+]);
+
 it.each([
+  ...confirmationCases.keys(),
   "sign-out batched with initialization", "prompt pipe loss", "account replacement during isolation proof", "live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog",
   "logout during failed login", "cancel detects sign-out during failed login",
   "account notification confirmation", "account notification overtaken by logout", "account notification retries after rejection",
@@ -204,7 +218,8 @@ it.each([
   "account notification retry withdrawn by shutdown", "matching login completion", "account read during cancel",
   "device login completion while account probes fail", "device login cancel failure while account probes fail",
   "window cancel with deferred login completion", "window cancel timeout with a successor login",
-  "window cancel timeout after matching success", "window cancel timeout after matching success and sign-out",
+  "window cancel timeout after matching success", "window cancel timeout after matching success and connected update",
+  "window cancel timeout after matching success and sign-out",
 ] as const)("invalidates a cached windowless reviewer verdict on %s and restores the saved route", async (scenario) => {
   const tempDir = mkdtempSync(join(tmpdir(), "windowless-reviewer-"));
   vi.resetModules();
@@ -245,6 +260,7 @@ it.each([
   const accountStatus = { ...connected, planType: null, pendingDeviceCode: null };
   const getAccountStatus = vi.fn(async () => accountStatus);
   const request = vi.fn(async () => ({ data: [] }));
+  const confirmationCase = confirmationCases.get(scenario);
   const accountClient = {
     getStatus: getAccountStatus, listModels: CodexAppServerClient.prototype.listModels,
     request, stop: vi.fn(),
@@ -257,16 +273,17 @@ it.each([
   let proofChild: RuntimeProcessFixture | undefined;
   const threadStarted = deferred<{ child: RuntimeProcessFixture; id: number }>();
   const holdsCatalog = scenario === "sign-out during catalog" || scenario === "process exit during catalog";
-  const windowCancel = scenario.startsWith("window cancel");
+  const windowCancel = scenario.startsWith("window cancel") || confirmationCase?.cause === "cancel timeout";
   const windowCancelTimeout = scenario.startsWith("window cancel timeout");
   const successorAfterTimeout = scenario === "window cancel timeout with a successor login";
-  const retiresDeviceLogin = scenario.startsWith("device login") || windowCancel;
+  const retiresDeviceLogin = scenario.startsWith("device login") || windowCancel || confirmationCase !== undefined;
   const openAuthorizationUrl = vi.fn<(_url: string, options: OAuthLoginOptions) => void>();
   const windowCancelStarted = deferred<number>();
   let deviceStarts = 0;
   const usesAccountNotification = scenario.startsWith("account notification") || scenario === "matching login completion" || scenario === "account read during cancel" || retiresDeviceLogin;
   const realCancelRace = scenario === "cancel detects sign-out during failed login";
   const accountReads: number[] = [];
+  const proofReadStarted = deferred<number>();
   let holdAccountReads = false;
   const catalogStarted = deferred<number>();
   let child: RuntimeProcessFixture | undefined;
@@ -379,7 +396,7 @@ it.each([
                 server.stdout.write(`${JSON.stringify({ id, error: { code: -32603, message: "Cancel failed" } })}\n`);
               } else if (id !== undefined) server.stdout.write(`${JSON.stringify({
                 id, result: method === "account/read"
-                  ? { account: accountConnected ? { type: "chatgpt", planType: "plus" } : null } : {},
+                  ? { account: accountConnected ? { type: "chatgpt", planType: "plus", ...(confirmationCase ? { email: accountEmail } : {}) } : null } : {},
               })}\n`);
             }
           });
@@ -402,6 +419,8 @@ it.each([
             } else if (method === "account/read" && replacementDuringProof) {
               accountEmail = "bob@example.test";
               server.stdout.write(`${JSON.stringify({ id, result: { account: { type: "chatgpt", email: accountEmail } } })}\n`);
+            } else if (method === "account/read" && confirmationCase?.cause === "proof disposal") {
+              proofReadStarted.resolve(id);
             } else if (method === "thread/start") {
               threadStarted.resolve({ child: server, id });
             } else if (id !== undefined) {
@@ -471,7 +490,116 @@ it.each([
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     const wiringsBeforeDisconnect = subscriptionProviderFactory.mock.calls.length;
-    if (startupSignOut) {
+    if (confirmationCase) {
+      const { hint, cause } = confirmationCase;
+      const server = requiredFixture(child);
+      const send = (target: RuntimeProcessFixture, message: object) => target.stdout.write(`${JSON.stringify(message)}\n`);
+      const reply = (target: RuntimeProcessFixture, id: number, email: string | null) => send(target, {
+        id, result: { account: email ? { type: "chatgpt", email } : null },
+      });
+      const deny = { result: { decision: "deny", reasonCode: "no-approver" } };
+      const fromProof = cause === "proof disposal";
+      const timesOut = cause === "cancel timeout";
+      let proof: { child: RuntimeProcessFixture; id: number; outcome: Promise<unknown> } | undefined;
+      if (fromProof) {
+        useConversation = true;
+        const outcome = runtime.verify(provider).catch((error: unknown) => error);
+        const id = await proofReadStarted.promise;
+        proof = { child: requiredFixture(proofChild), id, outcome };
+      }
+
+      holdAccountReads = true;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        if (timesOut || hint === "matching login success" || hint === "settlement") {
+          await runtime.startLogin(provider, "device-code");
+          if (hint !== "settlement") {
+            await vi.advanceTimersByTimeAsync(0);
+            reply(server, requiredFixture(accountReads[0]), null);
+            await vi.advanceTimersByTimeAsync(0);
+          }
+          if (timesOut) {
+            requiredFixture(openAuthorizationUrl.mock.calls[0])[1].onCancel("window-closed");
+            await windowCancelStarted.promise;
+            // The cancel deadline must precede the held confirmation deadline.
+            if (hint !== "settlement") await vi.advanceTimersByTimeAsync(1);
+          }
+        }
+
+        if (hint === "advertisement") {
+          send(proof?.child ?? server, { method: "account/updated", params: { authMode: "chatgpt" } });
+        } else if (hint === "matching login success") {
+          send(server, { method: "account/login/completed", params: { loginId: "fixture-login", success: true } });
+        } else if (hint === "replacement account") {
+          accountEmail = "bob@example.test";
+          if (proof) {
+            reply(proof.child, proof.id, accountEmail);
+            await proof.outcome;
+            expect(proof.child.killed).toBe(true);
+          } else {
+            const index = accountReads.length;
+            const read = runtime.getStatus(provider);
+            await vi.advanceTimersByTimeAsync(0);
+            reply(server, requiredFixture(accountReads[index]), accountEmail);
+            await expect(read).resolves.toMatchObject({ connection: "unknown" });
+          }
+        }
+        expect((await dispatch(true)).result.decision).toBe("deny");
+
+        const withdrew = cause === "sign-out" || cause === "logout" || cause === "stop";
+        const proofDetectedReplacement = fromProof && hint === "replacement account";
+        let confirmationIndex = accountReads.length;
+        await vi.advanceTimersByTimeAsync(1);
+        expect(accountReads).toHaveLength(confirmationIndex + 1);
+        const held = requiredFixture(accountReads[confirmationIndex]);
+        if (!proofDetectedReplacement) {
+          if (timesOut) {
+            await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS - (hint === "settlement" ? 2 : 3));
+            expect(server.killed).toBe(false);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(server.killed).toBe(true);
+          } else if (proof) {
+            reply(proof.child, proof.id, accountEmail);
+            await proof.outcome;
+            expect(proof.child.killed).toBe(true);
+          } else if (cause === "transport loss") {
+            server.emit("exit", 1, null);
+            expect(server.killed).toBe(true);
+          } else if (cause === "EPIPE") {
+            server.stdin.emit("error", Object.assign(new Error("Broken pipe"), { code: "EPIPE" }));
+            expect(server.killed).toBe(true);
+          } else if (cause === "logout") {
+            await runtime.logout(provider);
+          } else if (cause === "stop") {
+            await runtime.stop();
+          } else {
+            send(server, { method: "account/updated", params: { authMode: null } });
+          }
+          reply(server, held, accountEmail);
+          expect((await dispatch(true)).result.decision).toBe("deny");
+          confirmationIndex += 1;
+          await vi.advanceTimersByTimeAsync(withdrew ? 8001 : 251);
+        }
+
+        if (withdrew) {
+          expect(accountReads).toHaveLength(confirmationIndex);
+          expect(await dispatch(true)).toMatchObject(deny);
+          return;
+        }
+        await vi.waitFor(() => expect(accountReads).toHaveLength(confirmationIndex + 1));
+        const replacement = requiredFixture(child);
+        expect(replacement).not.toBe(proof?.child ?? server);
+        expect(await dispatch(true)).toMatchObject(deny);
+        reply(replacement, requiredFixture(accountReads[confirmationIndex]), accountEmail);
+        await vi.advanceTimersByTimeAsync(0);
+      } finally {
+        vi.useRealTimers();
+      }
+      await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
+      expect(subscriptionProviderFactory.mock.lastCall).toEqual([selection]);
+      expect(await dispatch(true)).toMatchObject({ review: { outcome: "fresh" }, result: { decision: "allow" } });
+      return;
+    } else if (startupSignOut) {
       useConversation = true;
       const session = await runtime.openTextSession({ kind: "subscription", provider: "codex" });
       const settled = session.streamTurn("fixture prompt")[Symbol.asyncIterator]().next().catch(() => undefined);
@@ -605,6 +733,9 @@ it.each([
           complete(server, "fixture-login");
           await vi.advanceTimersByTimeAsync(0);
           expect(accountReads).toHaveLength(2);
+          if (scenario.endsWith("connected update")) {
+            send(server, { method: "account/updated", params: { authMode: "chatgpt" } });
+          }
           if (scenario.endsWith("sign-out")) {
             send(server, { method: "account/updated", params: { authMode: null } });
             expect(await runtime.getCachedStatus(provider)).toMatchObject({ connection: "signed-out" });

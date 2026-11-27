@@ -14,7 +14,7 @@ export type SubscriptionConnectionEvidence =
   | { kind: "read"; source: object; artifact: string | null; version: string | null }
   | { kind: "artifact"; source: object; artifact: string | null; version: string | null; runtime?: "not-configured" | "unavailable" }
   | { kind: "login-started"; attempt: object; method: CodexSubscriptionLoginMethod; deviceCode: string | null; version: string | null }
-  | { kind: "login-retired"; attempt: object; completionSource?: object }
+  | { kind: "login-retired"; attempt: object; completed?: boolean }
   | { kind: "advertisement" | "login-completed" | "logout" | "sign-out" | "transport-lost" | "retired"; source: object };
 
 export type SubscriptionEvidenceSink = (

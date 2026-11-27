@@ -522,12 +522,12 @@ export class CodexAppServerClient {
     }
   }
 
-  private retireLogin(pending: PendingLogin | null, completionSource?: object): void {
+  private retireLogin(pending: PendingLogin | null, completed = false): void {
     if (!pending || this.pendingLogin !== pending) return;
     this.pendingLogin = null;
     pending.window.finish();
     if (!pending.windowCancellation) {
-      this.connectionEvidence?.({ kind: "login-retired", attempt: pending.window, completionSource });
+      this.connectionEvidence?.({ kind: "login-retired", attempt: pending.window, completed });
     }
   }
 
@@ -667,7 +667,7 @@ export class CodexAppServerClient {
         return;
       }
       if (payload.success !== true) this.completedLoginError = "codex-login-failed";
-      this.retireLogin(pending, payload.success === true ? child : undefined);
+      this.retireLogin(pending, payload.success === true);
     }
   }
 
