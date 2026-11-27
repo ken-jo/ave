@@ -258,8 +258,10 @@ import type { SkillMemoryGroup, SkillMemoryLesson } from "../../../../shared/ski
 
 describe("skill memory control room", () => {
   it.each([
-    { locale: "en", tab: "Skills", needsReview: "Needs review", apply: "Apply", reject: "Reject", history: "History", undo: "Undo" },
-    { locale: "ko", tab: "스킬", needsReview: "검토 대기", apply: "적용", reject: "거절", history: "이력", undo: "되돌리기" },
+    { locale: "en", tab: "Skills", needsReview: "Needs review", apply: "Apply", reject: "Reject", history: "History", undo: "Undo",
+      review: "unavailable", banner: "Automatic review is unavailable. You can still manage saved lessons." },
+    { locale: "ko", tab: "스킬", needsReview: "검토 대기", apply: "적용", reject: "거절", history: "이력", undo: "되돌리기",
+      review: "off", banner: "자동 검토가 꺼져 있습니다. 적용 중인 교훈은 계속 사용합니다." },
   ] as const)("reviews full lesson text and sends exact decisions in $locale", async labels => {
     const previous = getLocale();
     setLocale(labels.locale);
@@ -274,12 +276,14 @@ describe("skill memory control room", () => {
         scope: { id: "scope", skill: "review", projectRoot: "/project" },
         staged: [lesson], active: [active], retired: [],
         history: [{ id: "change", action: "activate", actor: "host", prevDigest: null, digest: "change-digest", before: null, after: active, at: "2026-11-27T00:00:00Z" }],
+        undo: { [active.digest]: "change" },
       }];
       const decide = vi.fn(async () => ({ ok: true }));
-      props.api.skillMemory = { list: async () => ({ ok: true, groups }), decide };
+      props.api.skillMemory = { list: async () => ({ ok: true, groups, review: labels.review }), decide };
       render(<MemoryView {...props} />);
       selectTab(labels.tab);
       expect(await screen.findByRole("heading", { name: labels.needsReview })).toBeTruthy();
+      expect(screen.getByRole("status").textContent).toBe(labels.banner);
       expect(screen.getByText("First validate the project. Then record the build output.")).toBeTruthy();
       const click = async (name: string) => {
         await act(async () => { fireEvent.click(screen.getByRole("button", { name })); });
@@ -296,5 +300,24 @@ describe("skill memory control room", () => {
     } finally {
       setLocale(previous);
     }
+  });
+
+  it("shows that recall is paused when the store becomes unavailable", async () => {
+    const { props } = setup();
+    let readable = true;
+    props.api.skillMemory = {
+      list: async () => readable ? { ok: true, groups: [], review: "unavailable" } : { ok: false },
+      decide: async () => ({ ok: false }),
+    };
+    render(<MemoryView {...props} />);
+    selectTab("스킬");
+    expect(await screen.findByText("저장된 스킬 교훈이 없습니다.")).toBeTruthy();
+    readable = false;
+    fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "스킬 교훈 저장소를 사용할 수 없습니다. 저장소가 복구될 때까지 저장된 교훈을 사용하지 않습니다.",
+    );
+    expect(screen.queryByText("저장된 스킬 교훈이 없습니다.")).toBeNull();
+    expect(screen.queryByText("자동 검토를 사용할 수 없습니다. 저장된 교훈은 계속 관리할 수 있습니다.")).toBeNull();
   });
 });

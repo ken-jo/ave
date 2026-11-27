@@ -1,4 +1,5 @@
 export type SkillMemoryRunKind = "attended" | "headless" | "scheduled";
+export type SkillMemoryReviewState = "ready" | "off" | "unavailable";
 
 export interface SkillMemoryScope {
   id: string;
@@ -37,6 +38,7 @@ export interface SkillMemoryGroup {
   staged: SkillMemoryLesson[];
   history: SkillMemoryChange[];
   retired: SkillMemoryLesson[];
+  undo: Record<string, string>;
 }
 
 export type SkillMemoryDecision =
@@ -44,6 +46,6 @@ export type SkillMemoryDecision =
   | { scopeId: string; action: "undo"; changeId: string; digest: string };
 
 export interface SkillMemoryApi {
-  list(): Promise<{ ok: true; groups: SkillMemoryGroup[] } | { ok: false }>;
+  list(): Promise<{ ok: true; groups: SkillMemoryGroup[]; review: SkillMemoryReviewState } | { ok: false }>;
   decide(input: SkillMemoryDecision): Promise<{ ok: boolean }>;
 }

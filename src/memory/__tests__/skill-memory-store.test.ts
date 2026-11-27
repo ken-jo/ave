@@ -35,6 +35,7 @@ function record(scope = binding(), runKind: SkillMemoryRunKind = "attended", com
 }
 
 const allow = () => true;
+const recall = (scope: SkillMemoryBinding) => store.recall([scope]).map(row => row.lesson);
 
 describe("managed skill memory", () => {
   it("commits only to the private managed file and records before and after hashes", async () => {
@@ -66,9 +67,9 @@ describe("managed skill memory", () => {
     expect(await decideUndo(requiredFixture(original))).toBe(false);
     expect(await decideUndo(requiredFixture(update))).toBe(true);
     expect(await decideUndo(requiredFixture(update))).toBe(false);
-    expect(store.recall(scope)).toEqual([requiredFixture(original).after]);
+    expect(recall(scope)).toEqual([requiredFixture(original).after]);
     expect(await decideUndo(requiredFixture(original))).toBe(true);
-    expect(store.recall(scope)).toEqual([]);
+    expect(recall(scope)).toEqual([]);
     expect(store.list()[0]?.history.map(row => row.action)).toEqual(["activate", "activate", "undo", "undo"]);
   });
 
@@ -77,7 +78,7 @@ describe("managed skill memory", () => {
     expect(await store.record([record(scope, runKind)], allow, "stage")).toBe(true);
     const group = requiredFixture(store.list()[0]);
     const lesson = requiredFixture(group.staged[0]);
-    expect(store.recall(scope)).toEqual([]);
+    expect(recall(scope)).toEqual([]);
     const select = { scopeId: scope.id, lessonId: lesson.id, digest: lesson.digest };
     expect(await store.decide({ ...select, action: "apply", digest: sha256Hex("altered") }, allow)).toBe(false);
     expect(await store.decide({ ...select, action: "apply" }, () => false)).toBe(false);
@@ -86,27 +87,65 @@ describe("managed skill memory", () => {
     expect(await store.record([record(scope, runKind, "next")], allow, "stage")).toBe(true);
     const staged = requiredFixture(requiredFixture(store.list()[0]).staged[0]);
     expect(await store.decide({ scopeId: scope.id, lessonId: staged.id, digest: staged.digest, action: "apply" }, allow)).toBe(true);
-    expect(store.recall(scope).map(row => row.body)).toEqual([staged.body]);
+    expect(recall(scope).map(row => row.body)).toEqual([staged.body]);
   });
 
   it("keeps recall isolated by skill, project and source revision", async () => {
     const scope = binding();
     await store.record([record(scope)], allow, "activate");
-    expect(store.recall(scope)).toHaveLength(1);
-    expect(store.recall(binding("another"))).toEqual([]);
-    expect(store.recall(binding("review", "another"))).toEqual([]);
-    expect(store.recall({ ...scope, fingerprint: sha256Hex("replacement") })).toEqual([]);
+    expect(recall(scope)).toHaveLength(1);
+    expect(recall(binding("another"))).toEqual([]);
+    expect(recall(binding("review", "another"))).toEqual([]);
+    expect(recall({ ...scope, fingerprint: sha256Hex("replacement") })).toEqual([]);
   });
 
-  it("refuses a linked store and isolates tampered persisted text and ledger actions", async () => {
+  it.each(["text", "ledger", "undo record"] as const)("refuses recall and owner access when persisted %s is corrupt", async damage => {
     const scope = binding();
     await store.record([record(scope)], allow, "activate");
     await store.record([record(scope, "attended", "later", "Valid lesson", "Valid lesson stays available.")], allow, "activate");
     const path = join(home, "skill-memory", "lessons.json");
     const snapshot = readFileSync(path, "utf8");
-    writeFileSync(path, snapshot.replaceAll("Check the type report before packaging.", "<ave-skill>").replace('"action":"activate"', '"action":"undo"'));
-    expect(store.recall(scope).map(row => row.description)).toEqual(["Valid lesson"]);
-    expect(store.list()[0]?.history.map(row => row.action)).toEqual(["activate"]);
+    const change = requiredFixture(store.list()[0]?.history.at(-1));
+    const document = JSON.parse(snapshot);
+    if (damage === "undo record") document.groups[0].history.pop();
+    const corrupt = damage === "text" ? snapshot.replaceAll("Check the type report before packaging.", "<ave-skill>")
+      : damage === "ledger" ? snapshot.replace('"action":"activate"', '"action":"undo"') : JSON.stringify(document);
+    writeFileSync(path, corrupt);
+    expect(() => store.list()).toThrow();
+    await expect(store.listCurrent(async () => true)).rejects.toThrow();
+    expect(() => recall(scope)).toThrow();
+    await expect(store.decide({ scopeId: scope.id, action: "undo", changeId: change.id, digest: requiredFixture(change.after).digest }, allow)).rejects.toThrow();
+    expect(readFileSync(path, "utf8")).toBe(corrupt);
+    writeFileSync(path, snapshot);
+    expect(recall(scope)).toHaveLength(2);
+  });
+
+  it("keeps an undo target when undo restores a version whose original change was compacted", async () => {
+    const scope = binding();
+    await store.record([record(scope)], allow, "activate");
+    await store.record([record(scope, "attended", "later", "Check the type report", "Use the revised type report.")], allow, "activate");
+    const path = join(home, "skill-memory", "lessons.json");
+    const document = JSON.parse(readFileSync(path, "utf8"));
+    document.groups[0].history.shift();
+    writeFileSync(path, JSON.stringify(document));
+
+    const undoVisible = async () => {
+      const group = requiredFixture((await store.listCurrent(async () => {
+        throw new Error("Skill source unavailable");
+      }))[0]);
+      expect(group.active).toEqual([]);
+      const lesson = requiredFixture(group.retired[0]);
+      expect(recall(scope)).toEqual([lesson]);
+      const changeId = requiredFixture(group.undo[lesson.digest]);
+      expect(await store.decide({ action: "undo", scopeId: scope.id, changeId, digest: lesson.digest }, allow)).toBe(true);
+      return lesson.body;
+    };
+    expect(await undoVisible()).toBe("Use the revised type report.");
+    expect(await undoVisible()).toBe("Check the type report before packaging.");
+  });
+
+  it("refuses a linked store", async () => {
+    const scope = binding();
     const outside = join(home, "other-directory");
     mkdirSync(outside);
     const alternate = join(home, "alternate");

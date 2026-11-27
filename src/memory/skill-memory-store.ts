@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { lstatSync } from "node:fs";
+import { accessSync, constants, lstatSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { createLogger } from "../lib/logger.js";
 import { SHA256_HEX, sha256Hex, timingSafeEqualHexDigest } from "../lib/hex-digest-equal.js";
 import { openFeatureNamespace, writeFileAtomicAtPathIf } from "../main/storage/feature-namespace.js";
-import { assertAveHomeInputWritable, AVE_HOME_INPUT_MAX_BYTES, isCachedAveHomeFileTrusted, readAveHomeInputSync } from "../shared/ave-home-trust.js";
+import { assertAveHomeInputWritable, AVE_HOME_INPUT_MAX_BYTES, readAveHomeInputSync } from "../shared/ave-home-trust.js";
 import { projectRootKey } from "../shared/project-identity.js";
 import type { SkillMemoryChange, SkillMemoryDecision, SkillMemoryGroup, SkillMemoryLesson, SkillMemoryScope } from "../shared/skill-memory-types.js";
 import { sanitizeSkillMemoryText, SKILL_MEMORY_COMPLETION_LIMIT, SKILL_MEMORY_SCOPE_LIMIT } from "./skill-memory-policy.js";
@@ -47,14 +47,14 @@ const ChangePayload = z.object({
 const Change = ChangePayload.extend({ prevDigest: Hash.nullable(), digest: Hash });
 const Group = z.object({
   scope: Scope.extend({ filePath: z.string().refine(isAbsolute) }),
-  active: z.array(z.unknown()),
-  staged: z.array(z.unknown()),
-  retired: z.array(z.unknown()).optional(),
+  active: z.array(Lesson).max(SKILL_MEMORY_SCOPE_LIMIT),
+  staged: z.array(Lesson).max(SKILL_MEMORY_SCOPE_LIMIT),
+  retired: z.array(Lesson).max(SKILL_MEMORY_SCOPE_LIMIT).optional(),
   history: z.array(z.unknown()),
 }).strict();
 const Envelope = z.object({ version: z.union([z.literal(1), z.literal(2)]), groups: z.array(z.unknown()) }).strict();
 
-type StoredGroup = Omit<SkillMemoryGroup, "scope"> & { scope: z.infer<typeof Group>["scope"] };
+type StoredGroup = Omit<SkillMemoryGroup, "scope" | "undo"> & { scope: z.infer<typeof Group>["scope"] };
 type Document = { version: 2; groups: StoredGroup[] };
 type NewLesson = { binding: SkillMemoryBinding; lesson: Omit<SkillMemoryLesson, "id" | "digest" | "fingerprint"> };
 
@@ -87,14 +87,25 @@ function repairChain(scopeId: string, history: SkillMemoryChange[]): SkillMemory
   });
 }
 
+function undoChange(history: SkillMemoryChange[], lesson: SkillMemoryLesson): SkillMemoryChange | undefined {
+  const matches = (row: SkillMemoryChange) => row.after?.digest === lesson.digest;
+  // An undo may restore a version whose original change was compacted.
+  return history.findLast(row => (row.action === "activate" || row.action === "apply") && matches(row))
+    ?? history.findLast(row => row.action === "undo" && matches(row));
+}
+
+function undoByDigest({ active, history }: StoredGroup): SkillMemoryGroup["undo"] {
+  return Object.fromEntries(active.map(lesson => {
+    const change = undoChange(history, lesson);
+    if (!change) throw new Error("Active skill memory has no undo record");
+    return [lesson.digest, change.id];
+  }));
+}
+
 function compactHistory(group: StoredGroup): void {
   let excess = group.history.length - HISTORY_LIMIT;
   if (excess <= 0) return;
-  const undoIds = new Set(group.active.flatMap(lesson => {
-    const change = group.history.findLast(row => (row.action === "activate" || row.action === "apply")
-      && row.after?.digest === lesson.digest);
-    return change ? [change.id] : [];
-  }));
+  const undoIds = new Set(Object.values(undoByDigest(group)));
   group.history = repairChain(group.scope.id, group.history.filter(row => {
     if (excess <= 0 || undoIds.has(row.id)) return true;
     excess--;
@@ -110,48 +121,33 @@ function addChange(group: StoredGroup, action: SkillMemoryChange["action"], befo
   compactHistory(group);
 }
 
-function readLessons(input: unknown[]): SkillMemoryLesson[] {
-  return input.flatMap(row => {
-    const lesson = Lesson.safeParse(row);
-    return lesson.success && validLesson(lesson.data) ? [lesson.data] : [];
-  }).slice(-SKILL_MEMORY_SCOPE_LIMIT);
-}
-
 function readDocument(bytes: Buffer): Document {
   const envelope = Envelope.parse(JSON.parse(bytes.toString("utf8")));
-  let isolated = 0;
-  const groups = envelope.groups.flatMap(row => {
-    const parsed = Group.safeParse(row);
-    if (!parsed.success) { isolated++; return []; }
-    const { scope, active, staged, retired = [], history } = parsed.data;
-    const group: StoredGroup = {
-      scope, active: readLessons(active), staged: readLessons(staged), retired: readLessons(retired), history: [],
-    };
-    isolated += active.length + staged.length + retired.length - group.active.length - group.staged.length - group.retired.length;
+  const scopeIds = new Set<string>();
+  const groups = envelope.groups.map(row => {
+    const { scope, active, staged, retired = [], history } = Group.parse(row);
+    if (scopeIds.has(scope.id) || ![...active, ...staged, ...retired].every(validLesson)) {
+      throw new Error("Invalid skill memory records");
+    }
+    scopeIds.add(scope.id);
+    const group: StoredGroup = { scope, active, staged, retired, history: [] };
     let previous: string | undefined;
     for (const item of history) {
       const legacy = envelope.version === 1 ? ChangePayload.safeParse(item) : undefined;
       const migrated = legacy?.success ? { ...legacy.data, prevDigest: previous ?? null } : undefined;
-      const result = Change.safeParse(migrated ? { ...migrated, digest: digestChange(scope.id, migrated) } : item);
-      if (!result.success) { isolated++; previous = undefined; continue; }
-      const change = result.data;
+      const change = Change.parse(migrated ? { ...migrated, digest: digestChange(scope.id, migrated) } : item);
       const linked = previous === undefined || change.prevDigest === previous;
       previous = change.digest;
       if (!linked || change.digest !== digestChange(scope.id, change)
         || (change.before && !validLesson(change.before)) || (change.after && !validLesson(change.after))) {
-        isolated++;
-        continue;
+        throw new Error("Invalid skill memory ledger");
       }
       group.history.push(change);
     }
-    if (group.history.length !== history.length) {
-      // Close gaps after isolating invalid records. The next mutation writes the repaired chain.
-      group.history = repairChain(scope.id, group.history);
-    }
+    undoByDigest(group);
     compactHistory(group);
-    return [group];
+    return group;
   });
-  if (isolated) log.warn("Isolated %d invalid or excess skill memory rows", isolated);
   return { version: 2, groups };
 }
 
@@ -171,33 +167,42 @@ function plainDirectory(path: string): boolean {
 
 export class SkillMemoryStore {
   private readonly namespace = openFeatureNamespace("skill-memory");
-  private cached: { stamp: string; digest: string; document: Document } | undefined;
+  private cached: { digest: string; document: Document } | undefined;
 
   async listCurrent(isCurrent: (scope: StoredGroup["scope"], fingerprint: string) => Promise<boolean>): Promise<SkillMemoryGroup[]> {
-    return Promise.all(this.read(true).groups.map(async ({ scope, ...group }) => {
+    return Promise.all(this.read().groups.map(async ({ scope, ...group }) => {
       const fingerprints = new Set([...group.active, ...group.staged].map(row => row.fingerprint));
-      const verified = await Promise.all([...fingerprints].map(async fingerprint => [fingerprint, await isCurrent(scope, fingerprint)] as const));
+      const verified = await Promise.all([...fingerprints].map(async fingerprint => {
+        try {
+          return [fingerprint, await isCurrent(scope, fingerprint)] as const;
+        } catch {
+          log.warn("Skill memory source could not be verified for display");
+          return [fingerprint, false] as const;
+        }
+      }));
       const current = new Map(verified);
       const isLive = (row: SkillMemoryLesson) => current.get(row.fingerprint) === true;
       const retired = [...group.retired, ...group.active.filter(row => !isLive(row)), ...group.staged.filter(row => !isLive(row))];
       const { id, skill, projectRoot } = scope;
       return structuredClone({
         scope: { id, skill, projectRoot }, active: group.active.filter(isLive), staged: group.staged.filter(isLive),
-        retired: retired.slice(-SKILL_MEMORY_SCOPE_LIMIT), history: group.history,
+        retired, history: group.history, undo: undoByDigest({ scope, ...group }),
       });
     }));
   }
 
   list(): SkillMemoryGroup[] {
-    return this.read(true).groups.map(({ scope, ...group }) => {
+    return this.read().groups.map(({ scope, ...group }) => {
       const { id, skill, projectRoot } = scope;
-      return structuredClone({ ...group, scope: { id, skill, projectRoot } });
+      return structuredClone({ ...group, scope: { id, skill, projectRoot }, undo: undoByDigest({ scope, ...group }) });
     });
   }
 
-  recall(binding: SkillMemoryBinding): SkillMemoryLesson[] {
-    const group = this.read().groups.find(candidate => candidate.scope.id === binding.id);
-    return group?.active.filter(lesson => lesson.fingerprint === binding.fingerprint) ?? [];
+  recall(bindings: readonly SkillMemoryBinding[]): { skill: string; lesson: SkillMemoryLesson }[] {
+    if (bindings.length === 0) return [];
+    const { groups } = this.read();
+    return bindings.flatMap(({ id, skill, fingerprint }) => groups.find(group => group.scope.id === id)?.active
+      .filter(lesson => lesson.fingerprint === fingerprint).map(lesson => ({ skill, lesson })) ?? []);
   }
 
   hasCompletion(completionId: string): boolean {
@@ -245,10 +250,9 @@ export class SkillMemoryStore {
       const group = document.groups.find(item => item.scope.id === decision.scopeId);
       if (!group) return false;
       if (decision.action === "undo") {
-        const change = group.history.find(item => item.id === decision.changeId);
-        if (!change?.after || (change.action !== "activate" && change.action !== "apply")) return false;
-        const current = group.active.find(lesson => lesson.id === change.after?.id);
-        if (!current || !timingSafeEqualHexDigest(current.digest, decision.digest) || current.digest !== change.after.digest) return false;
+        const current = group.active.find(lesson => timingSafeEqualHexDigest(lesson.digest, decision.digest));
+        const change = current && undoChange(group.history, current);
+        if (!current || !change || change.id !== decision.changeId) return false;
         group.active.splice(group.active.indexOf(current), 1, ...(change.before ? [change.before] : []));
         addChange(group, "undo", current, change.before);
         target = { scope: group.scope, lesson: current };
@@ -273,23 +277,23 @@ export class SkillMemoryStore {
     }, () => target !== undefined && canCommit(target.scope, target.lesson));
   }
 
-  private read(refreshTrust = false): Document {
+  private read(): Document {
     if (!plainDirectory(this.namespace.dir)) throw new Error("Invalid skill memory directory");
     const target = join(this.namespace.dir, FILENAME);
-    const file = lstatSync(target, { throwIfNoEntry: false, bigint: true });
+    const file = lstatSync(target, { throwIfNoEntry: false });
     if (file && !file.isFile()) throw new Error("Invalid skill memory file");
-    const stamp = file && [target, file.dev, file.ino, file.size, file.mtimeNs, file.ctimeNs].join(":");
-    if (!refreshTrust && file && this.cached && this.cached.stamp === stamp
-      && isCachedAveHomeFileTrusted(target, this.cached.digest, Number(file.uid))) return this.cached.document;
-    const input = readAveHomeInputSync(target);
+    // List and recall both require the same write admission as undo.
+    assertAveHomeInputWritable(target, "update managed skill memory");
+    const input = readAveHomeInputSync(target, { requireRegularFile: true });
     if (input.status === "absent") {
       this.cached = undefined;
       return { version: 2, groups: [] };
     }
-    if (input.status !== "trusted" || !stamp) throw new Error("Skill memory is unreadable");
+    if (input.status !== "trusted") throw new Error("Skill memory is unreadable");
+    accessSync(this.namespace.dir, constants.W_OK | constants.X_OK);
     const digest = sha256Hex(input.bytes);
     const document = this.cached?.digest === digest ? this.cached.document : readDocument(input.bytes);
-    this.cached = { stamp, digest, document };
+    this.cached = { digest, document };
     return document;
   }
 
@@ -297,8 +301,7 @@ export class SkillMemoryStore {
     const file = join(this.namespace.dir, FILENAME);
     return withInProcessFileQueue(file, async () => {
       if (!plainDirectory(this.namespace.dir)) return false;
-      assertAveHomeInputWritable(file, "update managed skill memory");
-      const document = structuredClone(this.read(true));
+      const document = structuredClone(this.read());
       if (!change(document)) return false;
       const contents = JSON.stringify(document);
       if (Buffer.byteLength(contents) > AVE_HOME_INPUT_MAX_BYTES) return false;

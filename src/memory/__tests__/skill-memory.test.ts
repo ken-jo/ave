@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { requiredFixture } from "../../__tests__/support/required-fixture.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { SettingsService } from "../../data/settings-store.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
@@ -77,6 +79,7 @@ describe("host completion and invocation recall", () => {
     canReviewAttended: () => desktop,
     authorizedProject: isCurrent,
     loadSkill: async () => ({ name: "review", filePath: skill, body: source, description: "", triggers: [], resources: [], sourceDigest: sha256Hex(source) }),
+    isScheduledCurrent: (id, digest, projectRoot) => id === "routine" && digest === sha256Hex(body) && projectRoot === root,
   });
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "ave-skill-review-"));
@@ -109,8 +112,14 @@ describe("host completion and invocation recall", () => {
   }
 
   const complete = async (runKind: SkillMemoryRunKind, completionId = "end") => {
-    if (runKind !== "attended") return service.complete({ sessionId: "session", projectRoot: root, completionId, runKind, isCurrent });
-    await service.queueArchive("session", root, completionId, isCurrent);
+    if (runKind === "attended") {
+      await service.queueArchive("session", root, completionId, isCurrent);
+    } else {
+      await service.queueUnattended({
+        sessionId: "session", projectRoot: root, completionId, runKind, flushBeforeExit: true,
+        routineId: "routine", routineDigest: sha256Hex(body),
+      });
+    }
     await service.waitForPending();
     return store.hasCompletion(completionId);
   };
@@ -121,6 +130,110 @@ describe("host completion and invocation recall", () => {
     expect(await complete("attended")).toBe(false);
     expect(review).not.toHaveBeenCalled();
     expect(store.list()).toEqual([]);
+  });
+
+  it.each([
+    { state: "off", reviewStatus: "off" },
+    { state: "corrupt journal", reviewStatus: "unavailable" },
+    { state: "discard unconfirmed", reviewStatus: "unavailable" },
+    { state: "different generation", reviewStatus: "unavailable" },
+  ] as const)("keeps store controls and recall available during $state while gating the pipeline", async ({ state, reviewStatus }) => {
+    const generation = randomUUID();
+    await service.onSettingChanged(true, generation);
+    await invoke("attended", true, root, "active", true);
+    await service.waitForPending();
+    const respond = requiredFixture(review.getMockImplementation());
+    for (const staged of ["before packaging", "type checks"]) {
+      review.mockImplementationOnce(async (task, prompt) => (await respond(task, prompt)).replace(description, staged));
+      await invoke("headless");
+      expect(await complete("headless", staged)).toBe(true);
+    }
+    if (state === "different generation") await invoke("attended", true, root, "prior");
+    review.mockClear();
+    const journalPath = join(home, "skill-memory", "pending.json");
+    const discardFinished = deferred<void>();
+    const enableFinished = deferred<void>();
+    const discard = vi.spyOn(SkillMemoryPending.prototype, "discard");
+    const enable = vi.spyOn(SkillMemoryPending.prototype, "enable");
+    try {
+      if (state === "off") {
+        enabled = false;
+        await service.onSettingChanged(false, randomUUID());
+      } else if (state === "corrupt journal") {
+        writeFileSync(journalPath, "{");
+      } else if (state === "different generation") {
+        const journal = new SkillMemoryPending().read();
+        const row = requiredFixture(journal.rows[0]);
+        const mismatched = JSON.stringify({ ...journal, generation: randomUUID(), rows: [{ ...row, completionId: "old:queued" }] });
+        writeFileSync(journalPath, mismatched);
+        enable.mockImplementationOnce(async () => enableFinished.promise);
+        // These checks run before the owner requests the banner or starts a retry.
+        await invoke("attended", true, root, "mismatched", true);
+        await invoke("headless");
+        expect(await complete("headless", "mismatched:exec")).toBe(false);
+        service.resumePending();
+        await service.waitForPending();
+        expect(review).not.toHaveBeenCalled();
+        expect(readFileSync(journalPath, "utf8")).toBe(mismatched);
+      } else {
+        discard.mockImplementationOnce(async () => {
+          await discardFinished.promise;
+          throw new Error("Discard failed");
+        });
+        enable.mockImplementationOnce(async () => enableFinished.promise);
+        const nextGeneration = randomUUID();
+        const discarded = service.onSettingChanged(false, nextGeneration);
+        discardFinished.resolve();
+        await discarded;
+        void service.onSettingChanged(true, nextGeneration);
+      }
+      expect(service.ensureReviewAvailable()).toBe(reviewStatus);
+      const before = readFileSync(journalPath, "utf8");
+      expect(await invoke("attended", true, root, "blocked", true)).toContain(body);
+      await invoke("headless");
+      expect(await complete("headless", "blocked:exec")).toBe(false);
+      await service.queueArchive("blocked", root, "blocked:archive", isCurrent);
+      service.resumePending();
+      await service.waitForPending();
+      expect(review).not.toHaveBeenCalled();
+      expect(readFileSync(journalPath, "utf8")).toBe(before);
+
+      const group = requiredFixture((await store.listCurrent(async () => true))[0]);
+      const [apply, reject] = group.staged;
+      const active = requiredFixture(group.active[0]);
+      expect(active.body).toBe(body);
+      expect(requiredFixture(apply).body).toBe(body);
+      expect(requiredFixture(reject).body).toBe(body);
+      const select = (lesson: typeof active) => ({ scopeId: group.scope.id, lessonId: lesson.id, digest: lesson.digest });
+      expect(await store.decide({ ...select(requiredFixture(reject)), action: "reject" }, isCurrent)).toBe(true);
+      expect(await store.decide({ ...select(requiredFixture(apply)), action: "apply" }, isCurrent)).toBe(true);
+      const updated = requiredFixture(store.list()[0]);
+      expect(updated.staged).toEqual([]);
+      expect(updated.active).toHaveLength(2);
+      for (const lesson of updated.active) {
+        expect(await store.decide({
+          scopeId: group.scope.id, action: "undo", changeId: requiredFixture(updated.undo[lesson.digest]), digest: lesson.digest,
+        }, isCurrent)).toBe(true);
+      }
+      expect(await invoke("attended", false, root, "after-undo")).toBe("");
+      if (state === "discard unconfirmed") expect(enable).toHaveBeenCalledWith(expect.any(String), true);
+    } finally {
+      discardFinished.resolve();
+      enableFinished.resolve();
+      discard.mockRestore();
+      enable.mockRestore();
+      await service.onSettingChanged(true, generation);
+    }
+  });
+
+  it("stops recall when the store becomes corrupt even while review remains ready", async () => {
+    await invoke("attended", true, root, "active", true);
+    await service.waitForPending();
+    expect(await invoke("attended", false)).toContain(body);
+    writeFileSync(join(home, "skill-memory", "lessons.json"), "{");
+    expect(service.ensureReviewAvailable()).toBe("ready");
+    expect(await invoke("attended", false)).toBe("");
+    await expect(store.listCurrent(async () => true)).rejects.toThrow();
   });
 
   it("waits for a host completion, validates model output and recalls only after a matching invocation", async () => {
@@ -357,7 +470,8 @@ describe("host completion and invocation recall", () => {
       await settings.patch({ features: { automaticSkillMemory: true } });
       expect(readSettings().features.automaticSkillMemory).toBe(true);
       await sync(settings, memory);
-      expect(await memory.ensureReviewAvailable()).toBe(false);
+      expect(memory.ensureReviewAvailable()).toBe("unavailable");
+      await sync(settings, memory);
       await invoke("attended", true, root, "blocked", true);
       await memory.waitForPending();
       expect(review).not.toHaveBeenCalled();
@@ -369,7 +483,7 @@ describe("host completion and invocation recall", () => {
       service.setReviewer({ review });
       await sync(restartedSettings, service);
       await service.waitForPending();
-      expect(await service.ensureReviewAvailable()).toBe(true);
+      expect(service.ensureReviewAvailable()).toBe("ready");
       expect(review).not.toHaveBeenCalled();
       expect(JSON.parse(readFileSync(journal, "utf8"))).toMatchObject({ generation, rows: [], board: [] });
     } finally {

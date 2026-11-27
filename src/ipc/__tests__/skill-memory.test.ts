@@ -5,6 +5,7 @@ import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { registerSkillMemoryHandlers } from "../domains/skill-memory.js";
 import { requiredFixture } from "../../__tests__/support/required-fixture.js";
+import type { SkillMemoryReviewState } from "../../shared/skill-memory-types.js";
 
 const state = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -30,7 +31,7 @@ function fixture() {
   const list = vi.fn(() => []);
   const listCurrent = vi.fn(async () => []);
   const decide = vi.fn(async (_input: unknown, grant: (scope: object, lesson: object) => boolean) => grant({}, {}));
-  const ensureReviewAvailable = vi.fn(async () => true);
+  const ensureReviewAvailable = vi.fn<() => SkillMemoryReviewState>(() => "ready");
   registerSkillMemoryHandlers({
     conversationLoop: { deps: { skillMemory: { ensureReviewAvailable, store: { list, listCurrent, decide } } } }, auditLogger: { log: vi.fn() },
   } as never);
@@ -52,7 +53,7 @@ describe("skill memory IPC", () => {
     expect(await f.invokeList({ ...f.event, senderFrame: { ...f.event.senderFrame } })).toMatchObject({ error: "unauthorized-frame" });
     expect(f.listCurrent).not.toHaveBeenCalled();
     state.focused = false;
-    expect(await f.invokeList(f.event)).toEqual({ ok: true, groups: [] });
+    expect(await f.invokeList(f.event)).toEqual({ ok: true, groups: [], review: "ready" });
     expect(await f.invokeDecision(f.event, f.change)).toMatchObject({ error: "unauthorized-frame" });
   });
 
@@ -65,12 +66,25 @@ describe("skill memory IPC", () => {
     expect(await f.invokeDecision(f.event, f.change)).toEqual({ ok: false });
   });
 
-  it("reports unavailable review through the existing list response and can recover on retry", async () => {
+  it("keeps listing and owner decisions available while automatic review is unavailable", async () => {
     const f = fixture();
-    f.ensureReviewAvailable.mockResolvedValueOnce(false);
+    f.ensureReviewAvailable.mockReturnValueOnce("unavailable");
+    expect(await f.invokeList(f.event)).toEqual({ ok: true, review: "unavailable", groups: [] });
+    expect(f.listCurrent).toHaveBeenCalledOnce();
+    const { lessonId, ...change } = f.change;
+    for (const decision of [f.change, { ...f.change, action: "reject" }, { ...change, action: "undo", changeId: lessonId }]) {
+      f.contents.emit("before-mouse-event", {}, { type: "mouseUp" });
+      expect(await f.invokeDecision(f.event, decision)).toEqual({ ok: true });
+    }
+    expect(f.ensureReviewAvailable).toHaveBeenCalledOnce();
+    expect(await f.invokeList(f.event)).toEqual({ ok: true, review: "ready", groups: [] });
+  });
+
+  it("refuses to list an unavailable store regardless of review state", async () => {
+    const f = fixture();
+    f.ensureReviewAvailable.mockReturnValue("ready");
+    f.listCurrent.mockRejectedValue(new Error("Unreadable store"));
     expect(await f.invokeList(f.event)).toEqual({ ok: false });
-    expect(f.listCurrent).not.toHaveBeenCalled();
-    expect(await f.invokeList(f.event)).toEqual({ ok: true, groups: [] });
   });
 
   it("refuses stale sources and unknown decision fields", async () => {

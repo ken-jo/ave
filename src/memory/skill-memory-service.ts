@@ -4,7 +4,7 @@ import { isAbsolute } from "node:path";
 import { realpathSync, statSync } from "node:fs";
 import { createLogger } from "../lib/logger.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
-import type { SkillMemoryRunKind } from "../shared/skill-memory-types.js";
+import type { SkillMemoryReviewState, SkillMemoryRunKind } from "../shared/skill-memory-types.js";
 import type { WorkItem } from "../shared/work-board-types.js";
 import { projectRootEquals } from "../shared/project-identity.js";
 import { readAveHomeInputSync } from "../shared/ave-home-trust.js";
@@ -36,12 +36,6 @@ interface SkillMemoryTurn {
   isCurrent: () => boolean;
   activeSkills?: () => readonly { name: string; filePath: string }[];
   scheduled?: ScheduledEvidence;
-}
-
-interface ReviewedTurn {
-  binding: SkillMemoryBinding[];
-  anchor: SkillMemoryEvidence;
-  runKind: SkillMemoryRunKind;
 }
 
 interface Completion {
@@ -153,7 +147,7 @@ export function bindSkillMemoryInvocation(sessionId: string, skill: string, file
 
 export class SkillMemoryService {
   private reviewer: Pick<MemoryReviewerService, "review"> | undefined;
-  private readonly sessions = new Map<string, { rows: ReviewedTurn[]; generation: string | undefined }>();
+  private readonly sessions = new Map<string, { rows: Pick<PendingSkillEvidence, "bindings" | "anchor">[]; generation: string | undefined }>();
   private readonly admittedSkills = new Map<string, SkillMemoryBinding[]>();
   private readonly reviewing = new Set<string>();
   private readonly reviewed = new Set<string>();
@@ -189,11 +183,21 @@ export class SkillMemoryService {
     return this.syncSetting(this.setting);
   }
 
-  async ensureReviewAvailable(): Promise<boolean> {
-    if (!this.setting?.enabled) return true;
-    if (this.reviewState === "unavailable") await this.syncSetting(this.setting);
-    else await this.settingChange;
-    return !this.setting.enabled || this.reviewState === "ready";
+  // Status and retry belong to the review pipeline. Owner store access never waits on it.
+  ensureReviewAvailable(): SkillMemoryReviewState {
+    if (this.setting?.enabled === false || !this.deps.enabled()) return "off";
+    if (this.reviewState === "ready") {
+      try {
+        if (this.isReviewJournalCurrent(this.pending.read())) return "ready";
+      } catch {
+        log.warn("Pending skill memory evidence could not be read");
+      }
+    }
+    if (this.reviewState !== "synchronizing") {
+      this.setting ??= { enabled: true, generation: undefined };
+      void this.syncSetting(this.setting);
+    }
+    return "unavailable";
   }
 
   private syncSetting(setting: ReviewSetting, retryDelayMs = DISCARD_RETRY_INITIAL_MS): Promise<void> {
@@ -231,6 +235,11 @@ export class SkillMemoryService {
 
   private canReview(): boolean {
     return this.setting?.enabled !== false && this.reviewState === "ready" && this.deps.enabled();
+  }
+
+  private isReviewJournalCurrent(journal: ReturnType<SkillMemoryPending["read"]>): boolean {
+    const generation = this.setting?.generation;
+    return !journal.disabled && (generation === undefined || journal.generation === generation);
   }
 
   trackTurn(scope: Omit<SkillMemoryTurn, "bindings"> | null) {
@@ -272,6 +281,8 @@ export class SkillMemoryService {
             return true;
           }, usedTool, completionId ? { completionId, isCurrent: turn.isCurrent } : undefined);
         } else if (unattended) {
+          const current = this.readUnattendedGeneration();
+          if (!current || current.generation !== unattended.generation) return;
           const key = this.sessionKey(sessionId, runKind, turn.scheduled?.completionId);
           this.remember(key, turn, anchor, unattended.generation);
           if (turn.scheduled) turn.scheduled.finished = true;
@@ -286,15 +297,12 @@ export class SkillMemoryService {
     try {
       let bytes = 0;
       const rows: string[] = [];
-      for (const binding of turn.bindings.values()) {
-        if (!this.isCurrent(binding)) continue;
-        for (const { description, body } of this.store.recall(binding)) {
-          const row = escapeHtml(JSON.stringify({ skill: binding.skill, description, body }));
-          bytes += Buffer.byteLength(row) + 1;
-          if (bytes > RECALL_BYTES) break;
-          rows.push(row);
-        }
+      const bindings = [...turn.bindings.values()].filter(binding => this.isCurrent(binding));
+      for (const { skill, lesson: { description, body } } of this.store.recall(bindings)) {
+        const row = escapeHtml(JSON.stringify({ skill, description, body }));
+        bytes += Buffer.byteLength(row) + 1;
         if (bytes > RECALL_BYTES) break;
+        rows.push(row);
       }
       return rows.length === 0 ? "" : [
         "<ave-skill-memory>",
@@ -302,23 +310,20 @@ export class SkillMemoryService {
         ...rows, "</ave-skill-memory>",
       ].join("\n");
     } catch {
-      log.warn("Skill memory recall refused because its evidence is unavailable");
+      log.warn("Skill memory recall refused because the lesson store is unavailable");
       return "";
     }
   }
 
-  async complete(input: Completion, persisted?: { rows: readonly PendingSkillEvidence[]; generation: string | undefined; revision: number }): Promise<boolean> {
+  private async complete(input: Completion, persisted: { rows: readonly PendingSkillEvidence[]; generation: string | undefined; revision: number }): Promise<boolean> {
     const { sessionId, projectRoot, completionId, runKind, isCurrent, signal } = input;
     if (this.reviewing.has(completionId) || this.reviewed.has(completionId)) return false;
-    const key = this.sessionKey(sessionId, runKind, runKind === "scheduled" ? completionId : undefined);
-    const held = persisted?.rows.map(row => ({ binding: row.bindings, anchor: row.anchor, runKind: row.runKind })) ?? this.sessions.get(key)?.rows;
-    if (!persisted) this.sessions.delete(key);
+    const held = persisted.rows;
     const reviewer = this.reviewer;
-    const evidenceRevision = persisted?.revision ?? this.evidenceRevision;
-    const canCommit = () => this.canReview() && evidenceRevision === this.evidenceRevision && this.deps.authorizedProject(projectRoot)
+    const canCommit = () => this.canReview() && persisted.revision === this.evidenceRevision && this.deps.authorizedProject(projectRoot)
       && (runKind !== "attended" || this.deps.canReviewAttended())
       && signal?.aborted !== true && isCurrent();
-    if (!held || !reviewer || !canCommit()) return false;
+    if (!held.length || !reviewer || !canCommit()) return false;
     this.reviewing.add(completionId);
     try {
       if (this.store.hasCompletion(completionId)) return false;
@@ -329,7 +334,7 @@ export class SkillMemoryService {
         if (entry.runKind !== runKind) continue;
         const bytes = evidence.has(entry.anchor.id) ? 0 : Buffer.byteLength(JSON.stringify(entry.anchor));
         if (evidenceBytes + bytes > REVIEW_INPUT_BYTES) continue;
-        for (const binding of entry.binding) {
+        for (const binding of entry.bindings) {
           if (!projectRootEquals(binding.projectRoot, projectRoot) || !await this.verifySource(binding)) continue;
           if (!evidence.has(entry.anchor.id)) evidenceBytes += bytes;
           evidence.set(entry.anchor.id, entry.anchor);
@@ -349,7 +354,7 @@ export class SkillMemoryService {
       const review = await runWithAbortableDeadline(
         signal => reviewer.review("skill-improvement", prompt, {
           signal,
-          canStart: () => canCommit() && (!persisted || this.pending.isEnabledGeneration(persisted.generation))
+          canStart: () => canCommit() && this.pending.isEnabledGeneration(persisted.generation)
             && [...candidates.values()].every(({ binding }) => this.isCurrent(binding)),
         }),
         { deadlineMs: TOOL_TIMEOUT_POLICY.skillMemoryReviewMs, callerAbortSignal: signal },
@@ -378,7 +383,7 @@ export class SkillMemoryService {
         }
         return this.store.record(records, eligible, "stage");
       };
-      return await (persisted ? this.pending.withGeneration(persisted.generation, record) : record());
+      return await this.pending.withGeneration(persisted.generation, record);
     } catch {
       log.warn("Skill memory review did not commit");
       return false;
@@ -398,7 +403,7 @@ export class SkillMemoryService {
     const saved = await this.savePending(journal => {
       if (journal.generation !== held.generation) return false;
       journal.rows.push(...held.rows.map(row => ({
-        sessionId, projectRoot, runKind, completionId, routineId, routineDigest, anchor: row.anchor, bindings: row.binding,
+        ...row, sessionId, projectRoot, runKind, completionId, routineId, routineDigest,
       })));
       return true;
     }, !input.flushBeforeExit);
@@ -483,7 +488,9 @@ export class SkillMemoryService {
     const active = new Promise<void>(resolve => setImmediate(resolve)).then(async () => {
       this.drainRequested = false;
       for (let count = 0; count < RETAINED_SESSIONS && this.canReview(); count++) {
-        const completionId = this.pending.read().rows.find(row => row.completionId !== undefined
+        const journal = this.pending.read();
+        if (!this.isReviewJournalCurrent(journal)) return;
+        const completionId = journal.rows.find(row => row.completionId !== undefined
           && (row.runKind !== "attended" || this.deps.canReviewAttended()))?.completionId;
         if (!completionId) return;
         await this.reviewPending(completionId);
@@ -502,11 +509,12 @@ export class SkillMemoryService {
   }
 
   private async reviewPending(completionId: string): Promise<void> {
+    if (!this.canReview()) return;
     let claimed: PendingSkillEvidence[] = [];
     let generation: string | undefined;
     const revision = this.evidenceRevision;
     await this.pending.update(journal => {
-      if (journal.disabled || !this.canReview() || revision !== this.evidenceRevision) return false;
+      if (!this.isReviewJournalCurrent(journal) || !this.canReview() || revision !== this.evidenceRevision) return false;
       const rows = journal.rows.filter(row => row.completionId === completionId);
       if (rows.length === 0) return false;
       if (rows.some(row => row.started)) {
@@ -551,7 +559,7 @@ export class SkillMemoryService {
     } : undefined;
     try {
       const saved = await this.pending.update(journal =>
-        !journal.disabled && this.canReview() && this.evidenceRevision === revision && change(journal), admit);
+        this.isReviewJournalCurrent(journal) && this.canReview() && this.evidenceRevision === revision && change(journal), admit);
       if (saved && review) this.resumePending();
       return saved;
     } catch {
@@ -567,7 +575,7 @@ export class SkillMemoryService {
   private readUnattendedGeneration(): { generation: string | undefined } | undefined {
     try {
       const journal = this.pending.read();
-      return journal.disabled ? undefined : { generation: journal.generation };
+      return this.isReviewJournalCurrent(journal) ? { generation: journal.generation } : undefined;
     } catch {
       log.warn("Pending skill memory evidence could not be read");
       return undefined;
@@ -578,7 +586,7 @@ export class SkillMemoryService {
     const held = this.sessions.get(key);
     const rows = held?.generation === generation ? held?.rows ?? [] : [];
     this.sessions.delete(key);
-    this.sessions.set(key, { generation, rows: [...rows, { anchor, runKind: turn.runKind, binding: [...turn.bindings.values()] }].slice(-SESSION_EVIDENCE_LIMIT) });
+    this.sessions.set(key, { generation, rows: [...rows, { anchor, bindings: [...turn.bindings.values()] }].slice(-SESSION_EVIDENCE_LIMIT) });
     const oldestSession = this.sessions.keys().next().value;
     if (this.sessions.size > RETAINED_SESSIONS && oldestSession !== undefined) this.sessions.delete(oldestSession);
   }

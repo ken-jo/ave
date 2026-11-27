@@ -7,6 +7,7 @@ import { isAuthorizedWorkspaceProjectRoot } from "../../main/project-root-author
 import { isSkillMemoryProposalCurrent } from "../../memory/skill-memory-service.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
+import type { SkillMemoryApi } from "../../shared/skill-memory-types.js";
 import type { IpcDeps } from "../types.js";
 
 const Hash = z.string().regex(SHA256_HEX);
@@ -28,7 +29,7 @@ export function isAttendedSkillMemoryOwner(event: IpcMainInvokeEvent): boolean {
 export function registerSkillMemoryHandlers(deps: IpcDeps): void {
   const { list, decide } = CHANNELS.skillMemory;
   const skillMemory = () => deps.conversationLoop.deps?.skillMemory;
-  ipcMain.handle(list, async (event, ...args: unknown[]) => {
+  ipcMain.handle(list, async (event, ...args: unknown[]): Promise<Awaited<ReturnType<SkillMemoryApi["list"]>> | typeof UNAUTHORIZED_FRAME> => {
     if (!isSkillMemoryOwnerFrame(event)) {
       auditUnauthorized(deps.auditLogger, list, event);
       return UNAUTHORIZED_FRAME;
@@ -36,11 +37,12 @@ export function registerSkillMemoryHandlers(deps: IpcDeps): void {
     if (args.length > 0) return { ok: false };
     try {
       const service = skillMemory();
-      if (!service || !await service.ensureReviewAvailable()) return { ok: false };
+      if (!service) return { ok: false };
+      const review = service.ensureReviewAvailable();
       const groups = await service.store.listCurrent(async (scope, fingerprint) =>
         isAuthorizedWorkspaceProjectRoot(scope.projectRoot)
         && isSkillMemoryProposalCurrent(scope, fingerprint, await deps.skillStore?.load(scope.skill)));
-      return groups ? { ok: true, groups } : { ok: false };
+      return { ok: true, groups, review };
     } catch { return { ok: false }; }
   });
   ipcMain.handle(decide, async (event, raw: unknown, ...extra: unknown[]) => {
