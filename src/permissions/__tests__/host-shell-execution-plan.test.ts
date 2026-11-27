@@ -36,6 +36,45 @@ const NONE = {
 };
 
 describe("host shell execution plan", () => {
+  it("applies measured coverage only to a sandboxed Windows container plan", () => {
+    const input = { platform: "win32", shellSubstrate: "mxc", requestedSandbox: true,
+      activeCapability: { ...FULL_ASRT, platform: "win32" } } as const;
+    const measuredContainerEgress = { dns: "host-resolver", rawIp: "blocked" } as const;
+    expect(buildHostShellExecutionPlan({ ...input, measuredContainerEgress })).toEqual({
+      ...buildHostShellExecutionPlan(input), egressProtocolCoverage: measuredContainerEgress,
+    });
+    for (const overrides of [{ executionMode: "host" }, { requestedSandbox: false },
+      { activeCapability: NONE }, { shellSubstrate: "asrt" }, { shellSubstrate: "none" }] as const) {
+      expect(buildHostShellExecutionPlan({ ...input, ...overrides, measuredContainerEgress }))
+        .toEqual(buildHostShellExecutionPlan({ ...input, ...overrides }));
+    }
+    for (const invalid of [{ dns: "unknown", rawIp: "blocked" }, { dns: "host-resolver", rawIp: "unknown" },
+      { ...measuredContainerEgress, extra: true }] as const) {
+      expect(buildHostShellExecutionPlan({ ...input, measuredContainerEgress: invalid }))
+        .toEqual(buildHostShellExecutionPlan(input));
+    }
+  });
+
+  it.each([
+    ["darwin", "mxc", { dns: "blocked", rawIp: "blocked" }],
+    ["darwin", "asrt", { dns: "unknown", rawIp: "unknown" }],
+    ["linux", "asrt", { dns: "unknown", rawIp: "unknown" }],
+    ["linux", "mxc", { dns: "unknown", rawIp: "unknown" }],
+  ] as const)("preserves the complete %s %s plan from before measured coverage", (platform, shellSubstrate, egressProtocolCoverage) => {
+    const activeCapability = { ...FULL_ASRT, platform };
+    const input = { platform, shellSubstrate, requestedSandbox: true, activeCapability } as const;
+    const expected = {
+      version: "host-shell-execution-plan/v4", platform, requestedSandbox: true, executionRequest: "default",
+      mode: "asrt", sandboxed: true, substrate: shellSubstrate, egressProtocolCoverage,
+      capability: activeCapability, fallbackReason: "none", requiresExplicitUserApproval: false,
+      identity: `host-shell-execution-plan/v4:${platform}:${shellSubstrate}`,
+    };
+    expect(buildHostShellExecutionPlan(input)).toStrictEqual(expected);
+    expect(JSON.stringify(buildHostShellExecutionPlan(input))).toBe(JSON.stringify(expected));
+    expect(buildHostShellExecutionPlan({ ...input, measuredContainerEgress: { dns: "host-resolver", rawIp: "blocked" } }))
+      .toStrictEqual(expected);
+  });
+
   it("reports the protocol limits of the selected MXC route", () => {
     const plan = buildHostShellExecutionPlan({
       platform: "win32",
