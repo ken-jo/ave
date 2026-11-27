@@ -96,6 +96,7 @@ export const en = {
   "memoryMap.error.graph-unavailable": "Build the memory map first.",
   "memoryMap.error.graph-stale": "Memories changed. Rebuild the map.",
   "memoryMap.error.graph-build-failed": "The memory map could not be built.",
+  "memoryMap.error.build-exit-unconfirmed": "Could not confirm that the memory map worker stopped.",
   "memoryMap.error.request-stale": "This request was replaced.",
   "memoryMap.error.provider-route-ineligible": "This destination is unavailable under the host’s memory embedding policy.",
   "memoryMap.error.provider-unavailable": "This provider is unavailable. Check its saved configuration.",

@@ -18,6 +18,7 @@ export const MEMORY_MAP_ERROR_KEYS = {
   'graph-unavailable': 'memoryMap.error.graph-unavailable',
   'graph-stale': 'memoryMap.error.graph-stale',
   'graph-build-failed': 'memoryMap.error.graph-build-failed',
+  'build-exit-unconfirmed': 'memoryMap.error.build-exit-unconfirmed',
   'request-stale': 'memoryMap.error.request-stale',
   'provider-consent-required': 'memoryMap.error.provider-consent-required',
   'provider-dimension-mismatch': 'memoryMap.error.provider-dimension-mismatch',

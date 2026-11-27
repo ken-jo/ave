@@ -138,6 +138,7 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
   };
   const handleCancel = async () => {
     const current = ++generation.current;
+    setResumedBuild(false);
     try {
       const result = await api.memoryMap.cancel();
       if (current !== generation.current) return;

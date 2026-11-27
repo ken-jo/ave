@@ -174,6 +174,18 @@ describe('memory map view', () => {
     expect(screen.getByText('메모리 지도 불러오는 중…')).toBeTruthy();
     expect(await screen.findByText('메모리가 변경되었습니다. 지도를 다시 만드세요.')).toBeTruthy();
   });
+  it('shows the cancellation refusal after ignoring the superseded build reply', async () => {
+    const { map, props } = setup();
+    const build = Promise.withResolvers<Awaited<ReturnType<typeof map.build>>>();
+    map.build.mockReturnValue(build.promise);
+    map.cancel.mockResolvedValue({ ok: false, error: 'build-exit-unconfirmed' });
+    render(<MemoryView {...props} />); await ready();
+    fireEvent.click(screen.getByRole('button', { name: '지도 다시 만들기' }));
+    fireEvent.click(screen.getByRole('button', { name: '지도 생성 취소' }));
+    await act(async () => build.resolve({ ok: false, error: 'request-stale' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('메모리 지도 작업 프로세스가 종료됐는지 확인할 수 없습니다.');
+    expect(map.get).toHaveBeenCalledOnce();
+  });
   it('asks within current filters, highlights matches, opens host-numbered citations and clears on filter change', async () => {
     const { map, props } = setup();
     map.retrieve.mockImplementation(async request => ({ ok: true, value: {

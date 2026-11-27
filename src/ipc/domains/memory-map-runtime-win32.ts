@@ -45,7 +45,7 @@ type OnReplyAdmission = (assertLive: () => void) => void;
 export interface MemoryMapRuntime {
   get(scope: MemoryMapScope | undefined): unknown;
   build(scope: MemoryMapScope | undefined, event: IpcMainInvokeEvent, onAdmission: OnReplyAdmission): unknown;
-  cancel(): null;
+  cancel(): Promise<null>;
   facets(scope: MemoryMapScope | undefined): unknown;
   retrieve(request: MemoryRetrievalRequest, onAdmission: OnReplyAdmission): unknown;
   modelStatus(onAdmission: OnReplyAdmission): unknown;
@@ -78,6 +78,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     return bindLocalEmbeddingRuntime(() => localRuntime(admission)).assertStillValid;
   };
   let buildGeneration = 0;
+  const activeBuilds = new Set<ReturnType<MemoryMapHost['build']>>();
   let modelGeneration = 0;
   let settingsGeneration = 0;
   let settingsWrite: Promise<unknown> = Promise.resolve();
@@ -192,12 +193,23 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
         localRuntime(admission);
       }
       buildEvent = event;
-      return host.build(catalog(scope), assertLive => onAdmission(() => {
+      const build = host.build(catalog(scope), assertLive => onAdmission(() => {
         if (generation !== buildGeneration) throw new MemoryMapHostError('request-stale');
         assertLive();
       }));
+      activeBuilds.add(build);
+      try { return await build; }
+      finally { activeBuilds.delete(build); }
     },
-    cancel: () => { cancelBuild(); return null; },
+    cancel: async () => {
+      const builds = [...activeBuilds];
+      cancelBuild();
+      const outcomes = await Promise.allSettled(builds);
+      if (outcomes.some(outcome => outcome.status === 'rejected' && outcome.reason instanceof ManagedExitUnconfirmedError)) {
+        throw new MemoryMapHostError('build-exit-unconfirmed');
+      }
+      return null;
+    },
     facets: async scope => { await host.get(catalog(scope)); return memoryFacets(catalog(scope)().records); },
     retrieve: (request, onAdmission) => host.retrieve(catalog(request.scope), request, onAdmission),
     modelStatus: async onAdmission => {

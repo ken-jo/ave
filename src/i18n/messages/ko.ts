@@ -98,6 +98,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "memoryMap.error.graph-unavailable": "먼저 메모리 지도를 만드세요.",
   "memoryMap.error.graph-stale": "메모리가 변경되었습니다. 지도를 다시 만드세요.",
   "memoryMap.error.graph-build-failed": "메모리 지도를 만들 수 없습니다.",
+  "memoryMap.error.build-exit-unconfirmed": "메모리 지도 작업 프로세스가 종료됐는지 확인할 수 없습니다.",
   "memoryMap.error.request-stale": "새 요청으로 대체되었습니다.",
   "memoryMap.error.provider-route-ineligible": "호스트의 메모리 임베딩 정책에 따라 이 전송 대상을 사용할 수 없습니다.",
   "memoryMap.error.provider-unavailable": "이 제공자를 사용할 수 없습니다. 저장된 설정을 확인하세요.",

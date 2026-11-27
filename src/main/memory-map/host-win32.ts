@@ -12,6 +12,7 @@ import { commitUnderAdmission } from '../../shared/admission-commit.js';
 import { MemoryMapHostError } from './errors.js';
 import { MAX_INFERENCE_TASK_BYTES } from './inference-request.js';
 import { registerModelBuild } from './model-manager-win32.js';
+import { ManagedExitUnconfirmedError } from '../managed-child-processes.js';
 export { MemoryMapHostError } from './errors.js';
 import type { ProviderEmbeddings } from './provider-embeddings-win32.js';
 const sameNamespace = (a: EmbeddingNamespace, b: EmbeddingNamespace) => a.source === b.source && a.providerId === b.providerId && a.modelId === b.modelId && a.modelRevision === b.modelRevision && a.preprocessingRevision === b.preprocessingRevision && (!b.dimensions || a.dimensions === b.dimensions);
@@ -266,7 +267,10 @@ export class MemoryMapHost {
         return result.snapshot;
       });
     } catch (error) {
-      if (generation !== this.generation || controller.signal.aborted) throw new MemoryMapHostError('request-stale');
+      if (generation !== this.generation || controller.signal.aborted) {
+        if (error instanceof ManagedExitUnconfirmedError) throw error;
+        throw new MemoryMapHostError('request-stale');
+      }
       if (this.pending) this.pending = { ...this.pending, status: error instanceof MemoryMapHostError && error.code === 'model-unconfigured' ? 'unconfigured' : 'failed' };
       throw error;
     } finally {
