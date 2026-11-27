@@ -1192,6 +1192,9 @@ export function normalizeFeatureFlags(input: unknown): FeatureFlags {
   if (typeof obj.idlePreferenceRefresh === "boolean") {
     result.idlePreferenceRefresh = obj.idlePreferenceRefresh;
   }
+  if (process.platform === "win32" && typeof obj.sessionIndexingWithoutContainment === "boolean") {
+    result.sessionIndexingWithoutContainment = obj.sessionIndexingWithoutContainment;
+  }
   if (typeof obj.idleMemoryConsolidation === "boolean") {
     result.idleMemoryConsolidation = obj.idleMemoryConsolidation;
   }

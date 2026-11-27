@@ -3,6 +3,7 @@
 import { isRecord } from "./is-record.js";
 import { hasControlChars } from "./display-safe-text.js";
 
+export const TAILNET_OBSERVER_PORT_BLOCKED = "tailnet-observer-port-blocked";
 export const TAILNET_CONFINED_RANGE_UNVERIFIED = "tailnet-observer-confined-range-unverified";
 export const TAILNET_PORT_CONFINED_WORKER_RANGE = "tailnet-observer-port-confined-worker-range";
 
@@ -60,6 +61,14 @@ export interface TailscaleEnvironmentView {
   readonly detail: string | null;
 }
 
+export type TailnetObserverPortHint = "excluded-range" | "mirrored-range";
+
+export interface TailnetObserverPortBlock {
+  readonly code: "EADDRINUSE" | "EACCES";
+  readonly port: number;
+  readonly hint: TailnetObserverPortHint | null;
+}
+
 export interface TailnetObserverSnapshot {
   readonly saved: TailnetObserverConfigView;
   /** File plus environment overrides — what the next boot would resolve. */
@@ -71,6 +80,7 @@ export interface TailnetObserverSnapshot {
   readonly listeningPort: number | null;
   /** Kebab-case code of the last failed start, or null. */
   readonly lastStartError: string | null;
+  readonly portBlock: TailnetObserverPortBlock | null;
   /** Whether paired-sharing setup failed at boot, leaving owner controls off. */
   readonly pairedSharingBootstrapFailed: boolean;
   /** Same-account auto-approval defaults off; other accounts still need invitation and approval, and every device still needs an explicit conversation share. */
@@ -100,6 +110,14 @@ export type TailnetObserverMutationResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly error: TailnetObserverErrorCode };
 
+export type TailnetObserverApplyStatus =
+  | { readonly outcome: "restart-needed"; readonly restartNeeded: true }
+  | { readonly outcome: "applied" | "observer-off" | "saved"; readonly restartNeeded: false };
+
+export type TailnetObserverApplyResult =
+  | ({ readonly ok: true } & TailnetObserverApplyStatus)
+  | Extract<TailnetObserverMutationResult, { ok: false }>;
+
 /** Return the reachable URL on success and command output on failure. */
 export type TailnetServeResult =
   | { readonly ok: true; readonly url: string }
@@ -128,7 +146,7 @@ export type TailnetGuidedSetupResult =
 
 export interface TailnetObserverConfigApi {
   snapshot(): Promise<TailnetObserverSnapshotResult>;
-  apply(config: TailnetObserverConfigView): Promise<TailnetObserverMutationResult>;
+  apply(config: TailnetObserverConfigView): Promise<TailnetObserverApplyResult>;
   /** Put the running listener behind Tailscale Serve, after the owner approved the command. */
   configureServe(): Promise<TailnetServeResult>;
   guidedSetup(): Promise<TailnetGuidedSetupResult>;
@@ -136,7 +154,7 @@ export interface TailnetObserverConfigApi {
   setOwnDeviceAdmission(enabled: boolean): Promise<TailnetObserverMutationResult>;
 }
 
-export const DEFAULT_TAILNET_OBSERVER_VIEW_PORT = 46_173;
+export const DEFAULT_TAILNET_OBSERVER_PORT = 28_173;
 
 /** Reject spaces that split grant tokens and prototype-sensitive keys that index parsed headers. */
 export function isTailnetAppCapabilityKey(value: unknown): value is string {
@@ -254,6 +272,17 @@ function parseTailscaleEnvironmentView(
   });
 }
 
+function parseTailnetObserverPortBlock(value: unknown): TailnetObserverPortBlock | null {
+  if (!isRecord(value)) return null;
+  const { code, port, hint } = value;
+  if (
+    (code !== "EADDRINUSE" && code !== "EACCES")
+    || typeof port !== "number" || !Number.isSafeInteger(port) || port < 1 || port > 65_535
+    || (hint !== null && hint !== "excluded-range" && hint !== "mirrored-range")
+  ) return null;
+  return Object.freeze({ code, port, hint });
+}
+
 export function parseTailnetObserverSnapshot(
   value: unknown,
 ): TailnetObserverSnapshot | null {
@@ -262,6 +291,7 @@ export function parseTailnetObserverSnapshot(
   const effective = parseTailnetObserverConfigView(value.effective);
   const provenance = parseProvenance(value.provenance);
   const environment = parseTailscaleEnvironmentView(value.environment);
+  const portBlock = parseTailnetObserverPortBlock(value.portBlock);
   const {
     listeningPort,
     lastStartError,
@@ -278,6 +308,7 @@ export function parseTailnetObserverSnapshot(
     || environment === null
     || !(listeningPort === null || (typeof listeningPort === "number" && Number.isSafeInteger(listeningPort)))
     || !isOptionalText(lastStartError)
+    || (portBlock === null && value.portBlock !== null)
     || typeof pairedSharingBootstrapFailed !== "boolean"
     || typeof ownDeviceAdmission !== "boolean"
     || !isOptionalText(derivedWebOrigin)
@@ -292,6 +323,7 @@ export function parseTailnetObserverSnapshot(
     provenance,
     listeningPort,
     lastStartError,
+    portBlock,
     pairedSharingBootstrapFailed,
     ownDeviceAdmission,
     environment,
@@ -324,6 +356,22 @@ export function parseTailnetObserverMutationResult(
     return Object.freeze({ ok: false as const, error: value.error });
   }
   return null;
+}
+
+export function parseTailnetObserverApplyResult(value: unknown): TailnetObserverApplyResult | null {
+  if (!isRecord(value)) return null;
+  if (value.ok === true) {
+    const { outcome, restartNeeded } = value;
+    if (restartNeeded === true && outcome === "restart-needed") {
+      return Object.freeze({ ok: true, outcome, restartNeeded });
+    }
+    if (restartNeeded === false && (outcome === "applied" || outcome === "observer-off" || outcome === "saved")) {
+      return Object.freeze({ ok: true, outcome, restartNeeded });
+    }
+    return null;
+  }
+  const result = parseTailnetObserverMutationResult(value);
+  return result?.ok === false ? result : null;
 }
 
 export function parseTailnetGuidedSetupResult(

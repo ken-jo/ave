@@ -7,6 +7,7 @@ import { isAbsolute, relative } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { hasUnsafeDirectiveControlChars } from "../../engine/parent-directive.js";
 import { exactToolScope, MAX_STAGE_SUB_AGENTS, PARENT_ALL_TOOL_SCOPE, type SubAgentRunner, type SubAgentSpawnResult } from "../../engine/subagent-runner.js";
+import { STAGE_TOOL_CALLS_REFUSED } from "../../shared/workflow-template-types.js";
 import { createLogger } from "../../lib/logger.js";
 import type { LoadedAgentProfile } from "../../main/agent-profile-store.js";
 import type { RunClass } from "../../main/run-classification.js";
@@ -1411,7 +1412,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         : undefined;
       const gateSuffix = stage.gate.type === "auto" ? deps.passConditions.promptSuffix(stage.gate.pass.kind) : undefined;
       const prompt = buildStagePrompt({
-        item, stage, inputs: stageInputsOf(version, stage, record.stageRuns),
+        item, stage, workspaceRoot: stageRoot, inputs: stageInputsOf(version, stage, record.stageRuns),
         ...(revision ? { revision } : {}), ...(version.setupCommands ? { setupCommands: version.setupCommands } : {}), ...(gateSuffix ? { gateSuffix } : {}),
       });
       const stored = await beforeDeadline(() => serializeWrite(state, () => writeRun(state, current => {
@@ -1650,14 +1651,16 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         return;
       }
       state.results.set(stageId, result);
+      const toolsRefused = result.ok && result.stopReason === "end_turn" && result.allToolCallsRefused === true;
       // A child that reports no end origin is treated as having read files: an unknown origin never passes as clean.
       const end = result.endTrustOrigin;
       const taint: WorkItemStageRun["taint"] = end === "agent-message" ? "agent-message"
         : inputTaint || end === undefined || end === "file-content" ? "file-content" : undefined;
       next = {
-        type: "stage_ended", stageId, attempt, ok: result.ok && budgetFailure === undefined, ...(taint ? { taint } : {}),
+        type: "stage_ended", stageId, attempt, ok: result.ok && !toolsRefused && budgetFailure === undefined, ...(taint ? { taint } : {}),
         ...(usage ? { usage } : {}), ...(deniedCalls ? { deniedCalls } : {}),
         ...(budgetFailure !== undefined ? { reason: budgetFailure, failure: "budget" }
+          : toolsRefused ? { failure: "error", failureReason: STAGE_TOOL_CALLS_REFUSED }
           : result.ok ? { output: result.summary.slice(0, STAGE_OUTPUT_MAX_CHARS), ...(requestedOutputs?.length && { requestedOutputs }) } : { reason: result.error ?? result.summary, failure: failureOf(state, stageId, result) }),
         ...(result.stopReason === "interrupted" ? { interrupted: true } : {}),
       };

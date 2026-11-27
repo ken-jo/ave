@@ -2,7 +2,7 @@ import { readShellOptionValue as readOptionValue } from "../shared/shell-option-
 import { classifySedArgumentSlots } from "../shared/shell-sed-arguments.js";
 import { literalShellBodies, type LiteralBodyBudget } from "../shared/shell-literal-bodies.js";
 import { isAbsolute, join, posix, win32 } from "node:path";
-import { hostScriptInvocationReadPaths, isHostScriptReadPath } from "../main/host-script-runtime.js";
+import { hostScriptInvocationReadPaths, isHostScriptReadPath, isWindowsWorkbookScript, WINDOWS_WORKBOOK_LITERAL_REQUIRED } from "../main/host-script-runtime.js";
 import { t } from "../i18n/index.js";
 import { analyzeShell, displayShellWord, shellWordHasSingleField, staticShellWord, type PreparedShellAnalysis, type ShellWord } from "../shared/shell-analysis.js";
 import { commandLeaf, effectiveShellWords, namesCommandPath, stripCommandPath } from "../shared/shell-effective-command.js";
@@ -1956,6 +1956,9 @@ function findShellPathPolicyViolationInDecision(
         }
       }
       // Executable paths inherit the command's proven effect; readable bytes alone cannot prove read-only execution.
+      if (!facts.guestPosixPaths && argv[0] === process.execPath && isWindowsWorkbookScript(argv[1])) {
+        throw new PathPolicyError({ kind: "dynamic-path", reason: WINDOWS_WORKBOOK_LITERAL_REQUIRED });
+      }
       const hostScriptReads = facts.guestPosixPaths ? [] : hostScriptInvocationReadPaths(argv, projectedEnvironment);
       for (const executable of executableHeads) {
         checkPath(executable.value, executable.word.source.raw, executable.cwd,

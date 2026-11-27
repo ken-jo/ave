@@ -318,11 +318,24 @@ export function __resetContainerShellSubstrateForTest(): void {
   _containerShellSubstrate = undefined;
 }
 
+// The macOS container's measured coverage, in the shape `acceptMeasuredContainerEgress` takes: rawIp `blocked` only
+// from an available container's own canary measurement. DNS is not measured there.
+function macContainerMeasuredEgress(support: SandboxMacContainerShellSupport | undefined): EgressProtocolCoverage | undefined {
+  return support?.state === "available" && support.rawIpProbe?.rawIp === "blocked"
+    ? acceptMeasuredContainerEgress("darwin", "seatbelt", { dns: "unknown", rawIp: "blocked" }) : undefined;
+}
+
+// The macOS container's coverage: measured, or the seatbelt backend's unmeasured coverage; unavailable is unknown.
+function macContainerEgressCoverage(support: SandboxMacContainerShellSupport | undefined): EgressProtocolCoverage {
+  if (support?.state !== "available") return egressProtocolCoverageFor("none");
+  return macContainerMeasuredEgress(support) ?? containerEgressProtocolCoverage("seatbelt");
+}
+
 export function getMacContainerShellInfo(): SandboxMacContainerShellInfo | undefined {
   if (process.platform !== "darwin" || !isShellSandboxRequestedAtBoot() || _containerShellSubstrate === undefined) return undefined;
   const support = _containerShellSubstrate.state === "available" && detectMxcShellCapability() === undefined
     ? { state: "unavailable", reason: "shell-start-failed" } as const : _containerShellSubstrate;
-  return { ...support, egressProtocolCoverage: containerEgressProtocolCoverage("seatbelt") };
+  return { ...support, egressProtocolCoverage: macContainerEgressCoverage(support) };
 }
 
 // Windows: no sandbox HOME can be made this run (the container runtime root is unproved, or its HOME parent was replaced).
@@ -425,13 +438,15 @@ export function getHostShellExecutionPlan(
   const selectsMacContainer = darwin && consumer === "shell" && isContainerShellRouteEnabled("darwin");
   const mxc = darwin && consumer === "hook" ? undefined : detectMxcShellCapability();
   const privacyFailure = getAveHomePrivacyFailure();
+  // Only a live macOS container route carries its own measurement; every other route is unmeasured.
+  const macMeasuredContainerEgress = darwin && mxc !== undefined ? macContainerMeasuredEgress(_containerShellSubstrate) : undefined;
   const plan = buildHostShellExecutionPlan({
     platform: process.platform,
     requestedSandbox: isShellSandboxRequestedAtBoot(),
     activeCapability: mxc ?? detectShellSandboxCapability(),
     shellSubstrate: mxc !== undefined ? "mxc" : selectsMacContainer ? "none" : "asrt",
     measuredContainerEgress: process.platform === "win32" && _windowsSubstrate?.shells === "mxc"
-      ? getWindowsMxcShellEgressMeasurement()?.coverage : undefined,
+      ? getWindowsMxcShellEgressMeasurement()?.coverage : macMeasuredContainerEgress,
     executionMode,
     unavailableCauses: _bootOutcome?.causes,
     unavailableSandboxRequiresAsk: privacyFailure !== undefined || windowsDenyUnenforceableAtBoot() !== undefined,

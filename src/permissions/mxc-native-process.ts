@@ -8,6 +8,18 @@ import { MxcProcessContractError, MxcProcessCleanupError, MxcSupervisorLostError
 type NativeProcess = Pick<MxcProcess, "id" | "standardInput" | "standardOutput" | "standardError" | "wait" | "kill" | "dispose" | "warnings">;
 type ProcessResult = Awaited<ReturnType<MxcProcess["wait"]>>;
 
+/** The post-run cleanup warnings the pinned macOS library can raise. Each one means its processes were not confirmed gone. */
+export const SEATBELT_CLEANUP_WARNINGS = [
+  "Seatbelt: the process exited, but processes it started could not be terminated",
+  "Seatbelt: the run kept starting processes after cleanup began",
+  "Seatbelt: the process list kept growing while it was being read",
+] as const;
+
+/** Any post-run warning from the Seatbelt backend leaves cleanup unverified, including a phrase this list does not name. */
+export function seatbeltCleanupUnverified(warnings: readonly string[]): boolean {
+  return warnings.some((warning) => warning.startsWith("Seatbelt:"));
+}
+
 /** Lives only inside the dedicated native supervisor, never in the host process. */
 export class MxcNativeProcess {
   readonly id: number;

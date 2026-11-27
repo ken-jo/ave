@@ -11,6 +11,7 @@ import type { SkillApprovalsStore } from "../main/skill-approvals-store.js";
 import { admitApprovalAnswer, hostApprovalDenialReason, type AnsweredRecord, type ApprovalGate } from "../permissions/approval-gate.js";
 import { ApprovalPersistenceError } from "../permissions/approval-persistence-guard.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
+import { markHostRefusal } from "./host-refusal.js";
 import { turnExtensionPolicyContext, unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { mcpSkillSelector, parseMcpSkillSelector } from "../shared/mcp-skill-selector.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -97,12 +98,12 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       const skillName = typeof a.serverId === "string" && typeof a.uri === "string" ? mcpSkillSelector(a.serverId, a.uri)
         : typeof a.skillName === "string" ? a.skillName.trim() : "";
       const unattended = unattendedApprovalDenial();
-      if (unattended) return { output: JSON.stringify({ reasonCode: unattended, error: t("reasonCodes.unattended-approval-denied") }), isError: true };
+      if (unattended) return markHostRefusal({ output: JSON.stringify({ reasonCode: unattended, error: t("reasonCodes.unattended-approval-denied") }), isError: true });
       if (parseMcpSkillSelector(skillName) && (ctx.headless === true || turnExtensionPolicyContext.getStore()?.headless === true)) {
-        return { output: JSON.stringify({ error: "MCP skills require an interactive conversation" }), isError: true };
+        return markHostRefusal({ output: JSON.stringify({ error: "MCP skills require an interactive conversation" }), isError: true });
       }
       const skillDenial = deps.overlay.mcpAdmissionDenial?.(deps.store, sessionId, "skill_load", { ...a, skillName });
-      if (skillDenial) return { output: JSON.stringify({ error: skillDenial }), isError: true };
+      if (skillDenial) return markHostRefusal({ output: JSON.stringify({ error: skillDenial }), isError: true });
       if (!skillName) {
         return {
           output: JSON.stringify({ error: "skillName is required" }),
@@ -186,7 +187,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
         if (admitted?.decision !== "allow" || (skill.mcpOwner && admitted.choice !== "allow-once")) {
           const reason = hostApprovalDenialReason(decision)
             ?? (admitted?.decision === "deny" ? "user denied skill load" : "approval rejected by host");
-          return { output: JSON.stringify({ error: `${reason}: ${skill.name}` }), isError: true };
+          return markHostRefusal({ output: JSON.stringify({ error: `${reason}: ${skill.name}` }), isError: true });
         }
         if (!invocationCurrent()) return interrupted();
       }

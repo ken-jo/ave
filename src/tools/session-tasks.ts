@@ -48,6 +48,7 @@ export function createSessionTasksTool(store: SessionTasksStore): Tool {
     source: "builtin",
     // Read-category bookkeeping affects only this session's sidecar; category prevents approval for each checklist update.
     category: "read",
+    requiresAttendedStage: true,
     isReadOnly: () => true,
     jsonSchema: {
       type: "object",

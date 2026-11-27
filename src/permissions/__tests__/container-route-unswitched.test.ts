@@ -34,19 +34,28 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
     publishWrap();
     expect(isContainerShellRouteEnabled(platform)).toBe(true);
     expect(isContainerHolderRouteEnabled(platform)).toBe(false);
+    // Unmeasured raw IP is unknown; only this boot's measured verdict publishes blocked, on the plan and in Settings.
     setContainerShellSubstrate({ state: "available" });
     expect(getHostShellExecutionPlan()).toMatchObject({
       identity: "host-shell-execution-plan/v4:darwin:mxc", sandboxed: true,
-      egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" },
+      egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" },
     });
+    const measured = { state: "available", rawIpProbe: { rawIp: "blocked", reason: "blocked", evidenceKind: "measured", reachableTargets: [], udpArrival: "absent" } } as const;
+    setContainerShellSubstrate(measured);
+    expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "blocked" });
     expect(getHostShellExecutionPlan("default", "hook").identity).toBe("host-shell-execution-plan/v4:darwin:asrt");
-    expect(getMacContainerShellInfo()).toEqual({ state: "available", egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } });
+    expect(getHostShellExecutionPlan("default", "hook").egressProtocolCoverage.rawIp).toBe("unknown");
+    expect(getMacContainerShellInfo()).toEqual({ ...measured, egressProtocolCoverage: { dns: "unknown", rawIp: "blocked" } });
+    setContainerShellSubstrate({ state: "available", rawIpProbe: { rawIp: "unknown", reason: "ipv6-unmeasured", reachableTargets: [], udpArrival: "absent" } });
+    expect(getHostShellExecutionPlan().egressProtocolCoverage.rawIp).toBe("unknown");
     // An explicit host request on a host whose backend is ready keeps ordinary rules and modes (tree: host-shell row).
     expect(getHostShellExecutionPlan("host")).toMatchObject({
       mode: "plain", executionRequest: "host", identity: "host-shell-execution-plan/v4:darwin:explicit-host",
     });
     setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
-    expect(getMacContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "shell-start-failed" });
+    expect(getMacContainerShellInfo()).toEqual({
+      state: "unavailable", reason: "shell-start-failed", egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" },
+    });
     expect(getHostShellExecutionPlan()).toMatchObject({
       mode: "plain", substrate: "none", requiresExplicitUserApproval: true, fallbackReason: "active-sandbox-not-shell-contained",
     });

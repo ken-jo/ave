@@ -15,10 +15,13 @@ describe("authenticated document engine payloads", () => {
   it("includes every dependency and refuses mutation after the content hash is captured", async () => {
     const path = await root(); await mkdir(join(path, "program"));
     const file = join(path, "program", "dependency"); await writeFile(file, "expected");
+    const initialMtime = 1_700_000_000;
+    await utimes(file, initialMtime, initialMtime);
     const identities: ReturnType<typeof captureDocumentEnginePathIdentity>[] = [];
     const before = await readDocumentEngineTree(path, new AbortController().signal, (identity) => identities.push(identity));
     expect(() => assertDocumentEnginePathIdentities(identities)).not.toThrow();
     await writeFile(file, "modified");
+    await utimes(file, initialMtime + 10, initialMtime + 10);
     expect(() => assertDocumentEnginePathIdentities(identities)).toThrow("identity changed");
     expect(documentEngineTreeDigest(await readDocumentEngineTree(path, new AbortController().signal))).not.toBe(documentEngineTreeDigest(before));
   });

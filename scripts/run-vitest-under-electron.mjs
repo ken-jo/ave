@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -261,8 +262,17 @@ function isMainModule() {
 if (isMainModule()) {
   try {
     ensureGeneratedAssets();
-    await (await import("./build-skill-scripts.mjs")).buildSkillScripts();
-    const result = await runVitestUnderElectron(process.argv.slice(2));
+    const scratch = mkdtempSync(join(tmpdir(), "ave-vitest-skill-scripts-"));
+    const directory = join(scratch, "dist", "skill-scripts");
+    let result;
+    try {
+      await (await import("./build-skill-scripts.mjs")).buildSkillScripts({ directory });
+      result = await runVitestUnderElectron(process.argv.slice(2), {
+        env: { ...process.env, AVE_TEST_SKILL_SCRIPTS_DIR: directory },
+      });
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
     applyElectronVitestResult(result);
   } catch (error) {
     console.error(errorText(error));

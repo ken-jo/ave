@@ -4,8 +4,11 @@ import { win32 as winPath } from "node:path";
 import { t } from "../i18n/index.js";
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { lstatSync } from "node:fs";
 import { isIPv4 } from "node:net";
 import { gzipSync } from "node:zlib";
+import type { ProbeOutput } from "@microsoft/mxc-sdk/v1";
+import { z } from "zod";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 import { WIN32_POWERSHELL_STARTUP_ARGS } from "../shared/powershell-startup-policy.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../shared/windows-command-line.js";
@@ -13,6 +16,7 @@ import { sessionStorePath } from "../shared/session-store-path.js";
 import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { expandWindowsEnvRefs, stripExtendedPathPrefix } from "./sandbox-path-spelling.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
+import { parseStrictJson } from "../shared/strict-json.js";
 import { openMxcPolicyPipe } from "./mxc-policy-pipe.js";
 import { isPolicyFloorRow, userDenyCoversPierce, type PolicyModel, type PolicyRow } from "./policy-model.js";
 import {
@@ -21,6 +25,7 @@ import {
 } from "./admitted-obligation.js";
 
 import { errorMessage } from "../shared/error-message.js";
+import { getHostResources } from "../main/host-resources.js";
 import { raceWithAbort } from "../shared/abortable-deadline.js";
 import { compileGlobMatcher, globToRegExp } from "../lib/glob-matcher.js";
 import { isPlainWindowsPathComponent } from "../shared/windows-path-spelling.js";
@@ -48,6 +53,7 @@ export type MxcSupport =
       readonly detail: string;
       // The probe's host fact, set only with "container-unavailable".
       readonly baseContainerApiPresent?: boolean;
+      readonly containerBackendAbsent?: true;
     };
 
 // The pinned sha256 of the launcher for `arch` (`mxc-launcher-pins.json`, the same file scripts/fetch-mxc.mjs stages against), or undefined for an arch MXC does not ship.
@@ -61,36 +67,55 @@ export function wxcExecPathFor(resourcePath: string, arch: string): string | und
   return launcherPathFor(resourcePath, "win32", arch);
 }
 
-// The fields of `wxc-exec --probe` Ave reads.
-export interface MxcProbeReport {
-  readonly tier: string | undefined;
-  readonly needsDaclAugmentation: boolean | undefined;
-  // Given instead of a tier when the backend cannot serve the request, beside the host facts.
-  readonly error: string | undefined;
-  readonly baseContainerApiPresent: boolean | undefined;
-}
+const MxcProbeFactsSchema = z.strictObject({
+  baseContainerApiPresent: z.boolean(),
+  nativeCaptureAvailable: z.boolean(),
+  guardedCaptureAvailable: z.boolean(),
+  bfscfgPresent: z.boolean(),
+  bfsCompiledIn: z.boolean(),
+  baseContainerSupportsDenyPaths: z.boolean(),
+  baseContainerSupportsEnumeratePaths: z.boolean(),
+  baseContainerSupportsIngressHostLoopbackAllow: z.boolean(),
+  baseContainerSupportsIdentitylessLoopbackProxy: z.boolean(),
+  isolationSessionAvailable: z.boolean(),
+  hyperlightAvailable: z.boolean(),
+  uiCapabilities: z.strictObject({
+    canBlockClipboardRead: z.boolean(),
+    canBlockClipboardWrite: z.boolean(),
+    canBlockInputInjection: z.boolean(),
+    canBlockInputMethodChanges: z.boolean(),
+    canBlockExternalUiObjects: z.boolean(),
+    canBlockGlobalUiNamespace: z.boolean(),
+    canBlockDesktopSwitching: z.boolean(),
+    canBlockLogoffOrShutdown: z.boolean(),
+    canBlockSystemParameterChanges: z.boolean(),
+    canBlockDisplaySettingsChanges: z.boolean(),
+  }),
+});
+
+const MxcProbeSchema = z.strictObject({
+  tier: z.enum(["base-container", "appcontainer-bfs", "appcontainer-dacl"]).optional(),
+  needsDaclAugmentation: z.boolean().optional(),
+  warnings: z.array(z.string()),
+  probes: MxcProbeFactsSchema,
+  error: z.string().optional(),
+}).refine(({ tier, needsDaclAugmentation, error }) => tier === undefined
+  ? error !== undefined && needsDaclAugmentation === undefined
+  : needsDaclAugmentation !== undefined && error === undefined);
+
+const MXC_MAX_LAUNCHER_OUTPUT_BYTES = 1024 * 1024;
+const MXC_HOST_ABSENCE_DIAGNOSTIC = "Windows ProcessContainer is unavailable: PSEC is not enabled";
 
 // Parse `wxc-exec --probe` stdout (one JSON object), or undefined when it is not one.
-export function parseMxcProbeOutput(stdout: string): MxcProbeReport | undefined {
-  const start = stdout.indexOf("{");
-  const end = stdout.lastIndexOf("}");
-  if (start < 0 || end <= start) return undefined;
+export function parseMxcProbeOutput(stdout: string): ProbeOutput | undefined {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stdout.slice(start, end + 1));
+    parsed = parseStrictJson(Buffer.from(stdout), { maxBytes: MXC_MAX_LAUNCHER_OUTPUT_BYTES });
   } catch {
     return undefined;
   }
-  if (typeof parsed !== "object" || parsed === null) return undefined;
-  const record = parsed as { tier?: unknown; needsDaclAugmentation?: unknown; error?: unknown; probes?: unknown };
-  const apiPresent = typeof record.probes === "object" && record.probes !== null
-    ? (record.probes as { baseContainerApiPresent?: unknown }).baseContainerApiPresent : undefined;
-  return {
-    tier: typeof record.tier === "string" ? record.tier : undefined,
-    needsDaclAugmentation: typeof record.needsDaclAugmentation === "boolean" ? record.needsDaclAugmentation : undefined,
-    error: typeof record.error === "string" ? record.error : undefined,
-    baseContainerApiPresent: typeof apiPresent === "boolean" ? apiPresent : undefined,
-  };
+  const report = MxcProbeSchema.safeParse(parsed);
+  return report.success ? report.data : undefined;
 }
 
 export type MxcDryRunResult = { readonly ok: true } | { readonly ok: false; readonly detail: string };
@@ -119,6 +144,16 @@ export function parseMxcDryRunOutput(exitCode: number | null, stdout: string, st
     lines.find((line) => /error/i.test(line) && !/^warning:/i.test(line)) ??
     `exit ${String(exitCode)}`;
   return { ok: false, detail: diagnostic.slice(0, 500) };
+}
+
+/** A shell exit can look like a startup failure even when the command ran. */
+export function mayIndicateMxcShellStartupFailure(code: number | null, diagnostics: string): boolean {
+  if (code === null || code === 0) return false;
+  return (code >>> 0) === 0xc0000142 || outputLines("", diagnostics).some(isBaseContainerStartDiagnostic);
+}
+
+function isBaseContainerStartDiagnostic(line: string): boolean {
+  return /^(?:Error: )?(?:BaseContainer job-object setup failed|failed to (?:create|attach) the process security environment)\b/i.test(line);
 }
 
 export interface MxcRunResult {
@@ -172,7 +207,7 @@ type MxcRawIpProbeVerdict = {
 } & ({ readonly rawIp: "blocked"; readonly reason: "blocked"; readonly evidenceKind: "measured" | "structural" }
   | { readonly rawIp: "unknown"; readonly reason: MxcRawIpUnknownReason });
 type MxcStartDiagnostic = "STATUS_DLL_INIT_FAILED" | "nonzero-exit" | "launch-rejected" | "startup-deadline"
-  | "unsupported-arch" | "runtime-root-unproved";
+  | "unsupported-arch" | "runtime-root-unproved" | "base-container-start-failed";
 type MxcStartSupport = Extract<MxcSupport, { state: "unavailable" }>
   | (Extract<MxcSupport, { state: "available" }> & { readonly rawIpProbe?: MxcRawIpProbeVerdict });
 type MxcLanProbeTarget = { readonly address: string; readonly port: number };
@@ -423,10 +458,11 @@ export function classifyMxcStartProbe(
   if (code === 0) return { ok: true };
   const text = `${stdout}\n${stderr}`;
   // 0xC0000142 as the unsigned exit code, or the launcher's own diagnostic.
-  if (code === 0xc0000142 || /\b(?:STATUS_DLL_INIT_FAILED|0xC0000142)\b/i.test(text)) {
+  if ((code !== null && (code >>> 0) === 0xc0000142) || /\b(?:STATUS_DLL_INIT_FAILED|0xC0000142)\b/i.test(text)) {
     return { ok: false, reason: "unverified-session", detail: "STATUS_DLL_INIT_FAILED" };
   }
-  return { ok: false, reason: "powershell-start-failed", detail: "nonzero-exit" };
+  const detail = outputLines(stdout, stderr).some(isBaseContainerStartDiagnostic) ? "base-container-start-failed" : "nonzero-exit";
+  return { ok: false, reason: "powershell-start-failed", detail };
 }
 
 // Decide, once at boot, whether agent shells can run in MXC on this host. The OS build number is not the gate: MXC no longer requires PSEC 1.1 for an identity-less loopback proxy (the launcher queries host support, and the directions depend on the Windows build), so a build floor would not establish that the host can carry the request. The gate is what the shipped binary reports: its sha256 must match the pin, `--probe` of the request shape Ave launches (proxy mode, DACL fallback refused) must serve it (the container tier, no DACL changes; an unserved request has no tier and an error), `--dry-run` of that request must validate, and System32 Windows PowerShell 5.1 must actually start (`exit 0`) in a real container of that shape with the loopback proxy; that launch carries the network-policy and PSEC checks the probe does not make. Any failure leaves the shells on the approved-host route.
@@ -438,7 +474,7 @@ export async function detectMxcSupport(deps: DetectMxcSupportDeps): Promise<MxcS
 
 // The fast half of detectMxcSupport, run on the boot path: platform, arch, launcher present and pinned, `--probe` serves the request, `--dry-run` of the shipped request shape. "available" here means only that the start probe is worth running; MXC is not claimed until probeMxcPowerShellStart passes.
 export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promise<MxcSupport> {
-  const unavailable = (reason: MxcUnavailableReason, detail: string): MxcSupport => ({
+  const unavailable = (reason: MxcUnavailableReason, detail: string): Extract<MxcSupport, { state: "unavailable" }> => ({
     state: "unavailable",
     reason,
     windowsBuild: deps.windowsBuild,
@@ -479,12 +515,18 @@ export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promis
   }
   // The probe either serves the request (the container tier, no DACL changes) or omits the tier and gives an error with the host facts. Anything else is not an answer.
   if (report.tier === undefined && report.error !== undefined) {
+    const { uiCapabilities, ...facts } = report.probes;
+    const containerBackendAbsent = (probe.code === 0 || probe.code === 1) && probe.stderr.trim() === ""
+      && report.error === MXC_HOST_ABSENCE_DIAGNOSTIC && report.warnings.length === 0
+      && Object.values(facts).every((present) => !present)
+      && Object.values(uiCapabilities).every((supported) => !supported);
     return {
-      ...unavailable("container-unavailable", `${report.error.slice(0, 400)} (container API ${String(report.baseContainerApiPresent)})`),
-      ...(report.baseContainerApiPresent === undefined ? {} : { baseContainerApiPresent: report.baseContainerApiPresent }),
+      ...unavailable("container-unavailable", `${report.error.slice(0, 400)} (container API ${String(facts.baseContainerApiPresent)})`),
+      baseContainerApiPresent: facts.baseContainerApiPresent,
+      ...(containerBackendAbsent ? { containerBackendAbsent: true } : {}),
     };
   }
-  if (report.tier !== MXC_CONTAINER_TIER || report.needsDaclAugmentation !== false) {
+  if (report.tier !== MXC_CONTAINER_TIER || report.needsDaclAugmentation !== false || !report.probes.baseContainerApiPresent) {
     return unavailable("probe-failed", `unexpected probe answer: tier ${String(report.tier).slice(0, 100)}, needsDaclAugmentation ${String(report.needsDaclAugmentation)}`);
   }
   if (probe.code !== 0) return unavailable("probe-failed", `--probe exit ${String(probe.code)}`);
@@ -646,8 +688,9 @@ export async function probeMxcPowerShellStart(
     const { request, started } = result;
     if (!isWindows && started.code !== 0) {
       const { code, stdout, stderr } = started;
-      const detail = (outputLines(stdout, stderr)[0] ?? `exit ${String(code)}`).slice(0, 500);
-      const isSessionFailure = code === 0xc0000142 || /STATUS_DLL_INIT_FAILED|0xC0000142/i.test(`${stdout}\n${stderr}`);
+      const lines = outputLines(stdout, stderr);
+      const detail = (lines.find(isBaseContainerStartDiagnostic) ?? lines[0] ?? `exit ${String(code)}`).slice(0, 500);
+      const isSessionFailure = (code !== null && (code >>> 0) === 0xc0000142) || /STATUS_DLL_INIT_FAILED|0xC0000142/i.test(`${stdout}\n${stderr}`);
       return unavailable(isSessionFailure ? "unverified-session" : "powershell-start-failed", detail);
     }
     const start = classifyMxcStartProbe(started.code, started.stdout, started.stderr);
@@ -1293,10 +1336,15 @@ export function assertMxcDenyOutcomes(input: MxcDenyOutcomeInput): void {
 
 // The Windows container adapter: policy rows in, the three container lists out. Every row is admitted to the object it names
 // first, and the ranking compares those objects, never spellings.
-export function rankMxcFilesystem(model: PolicyModel): MxcFilesystemGrants {
+export interface MxcRankedPath {
+  readonly path: string;
+  readonly obligation: AdmittedObligation;
+}
+
+export function rankMxcFilesystem(model: PolicyModel, retainPaths?: (paths: readonly MxcRankedPath[]) => void): MxcFilesystemGrants {
   return withLocalityDecision(() => {
     const { patterns, userPatterns, required } = obligationRowsOf(model);
-    return rankAdmittedMxcFilesystem(admitMxcFilesystem(model), patterns, userPatterns, required);
+    return rankAdmittedMxcFilesystem(admitMxcFilesystem(model), patterns, userPatterns, required, retainPaths);
   });
 }
 
@@ -1307,6 +1355,7 @@ export function admitMxcFilesystem(model: PolicyModel): ObligationSet {
 
 function rankAdmittedMxcFilesystem(
   set: ObligationSet, requestedPatterns: readonly string[], userPatterns: readonly string[], required: ReadonlySet<string>,
+  retainPaths?: (paths: readonly MxcRankedPath[]) => void,
 ): MxcFilesystemGrants {
   requireEnforceable(set);
   if (set.scope.principal !== "mxc") throw new TypeError("Filesystem obligations were issued for another principal");
@@ -1382,8 +1431,8 @@ function rankAdmittedMxcFilesystem(
   const missingCarriers = new Set(denied.filter(deny => deny.polarity.access === "write" && required.has(deny.origin.row) && inexact(deny))
     .map(deny => foldPath(firstMissingOf(deny))));
   const watched: AdmittedObligation[] = [];
-  const raised = denied.flatMap(deny => {
-    if (!inexact(deny)) return deny.target;
+  const deniedPaths = denied.flatMap(deny => {
+    if (!inexact(deny)) return { path: deny.target, obligation: deny };
     const firstMissing = firstMissingOf(deny);
     // A missing parent cannot carry an exact deny, and a deny on the parent would take its other children: a protected name is
     // watched, and any other deny there refuses the launch.
@@ -1403,8 +1452,9 @@ function rankAdmittedMxcFilesystem(
       || !writes.some(grant => strictlyUnder(firstMissing, grant.target))) {
       throw new Error("Windows sandbox policy cannot raise missing deny within a writable grant");
     }
-    return firstMissing;
+    return { path: firstMissing, obligation: deny };
   });
+  const raised = deniedPaths.map(({ path }) => path);
   const readwrite = dedupe(writes.map(entry => entry.target)).map(withoutTrailingSeparator);
   const result: MxcFilesystemGrants = {
     readwrite,
@@ -1424,6 +1474,12 @@ function rankAdmittedMxcFilesystem(
   ];
   assertMxcDenyOutcomes({ denies: [...allReadDenies, ...writeDenies, ...patternDenies], exceptions, patterns,
     outcomes: patternOutcomes, reachable: baseAllows, reach: allows, result });
+  if (retainPaths !== undefined) {
+    const emitted = new Set([...result.readwrite, ...result.readonly, ...result.denied].map(foldPath));
+    retainPaths([...writes.map(obligation => ({ path: obligation.target, obligation })),
+      ...reads.map(obligation => ({ path: obligation.target, obligation })), ...deniedPaths]
+      .filter(({ path }) => emitted.has(foldPath(path))));
+  }
   if (process.platform === "win32") rankedGrantIdentities.set(result, JSON.stringify(allows.map(entry => [entry.target, entry.identity])));
   return result;
 }
@@ -1543,7 +1599,8 @@ export interface MxcRequestTransport {
   release(): Promise<void>;
 }
 
-export async function openMxcRequestTransport(request: MxcContainerRequest, launcher: string, held = false): Promise<MxcRequestTransport> {
+export async function openMxcRequestTransport(request: MxcContainerRequest, launcher: string,
+  options?: Parameters<typeof openMxcPolicyPipe>[2]): Promise<MxcRequestTransport> {
   const json = serializeMxcRequest(request);
   const inline = base64RequestArgs(json);
   const length = windowsCommandLineLength(launcher, inline);
@@ -1558,7 +1615,7 @@ export async function openMxcRequestTransport(request: MxcContainerRequest, laun
   }
   try {
     const bytes = Buffer.from(json, "utf8");
-    const delivery = held ? await openMxcPolicyPipe(bytes, pipe, true) : await openMxcPolicyPipe(bytes, pipe);
+    const delivery = options ? await openMxcPolicyPipe(bytes, pipe, options) : await openMxcPolicyPipe(bytes, pipe);
     return { args, ...delivery };
   } catch (error) {
     // The cause is read only by whoever reports the failure, after its resources are released.
@@ -1607,40 +1664,67 @@ async function sha256OfFile(path: string): Promise<string> {
   return createHash("sha256").update(await readFile(path)).digest("hex");
 }
 
-// One verification per launcher path per process: boot, then every launch reuses it.
-const verifiedLaunchers = new Map<string, Promise<string>>();
+const verifiedLaunchers = new Map<string, { identity: string; verified: Promise<void> }>();
 
-// `<resources>/mxc/<arch>/wxc-exec.exe` for this host, after its sha256 has matched the pin (once per process). Throws, so the command fails closed, when MXC does not ship for this arch or the file is not the pinned build. Assumption: the installer is per-machine (`nsis.perMachine`), so the file lives in a directory only administrators can write and cannot be swapped between this check and a later launch by the signed-in user. A source checkout's `resources/` is user-writable; that is a developer setup.
-export async function resolveHostWxcExecPath(): Promise<string> {
-  const { getHostResources } = await import("../main/host-resources.js");
+export class MxcLauncherIntegrityError extends Error {}
+
+function getHostWxcExecFile(): { path: string; identity: string } {
   const path = wxcExecPathFor(getHostResources().resourcePath, process.arch);
-  if (path === undefined) throw new Error(`Microsoft Execution Containers do not ship for ${process.arch}`);
-  let verified = verifiedLaunchers.get(path);
-  if (verified === undefined) {
+  if (path === undefined) throw new MxcLauncherIntegrityError("Contained shell launcher is missing from this installation");
+  const stats = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+  if (stats?.isFile() !== true) throw new MxcLauncherIntegrityError("Contained shell launcher is missing from this installation");
+  return { path, identity: `${path}:${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}` };
+}
+
+export function getHostWxcExecIdentity(): string {
+  return getHostWxcExecFile().identity;
+}
+
+// The protected installation permits reusing the digest for the same file identity.
+export async function resolveHostWxcExecPath(expectedIdentity?: string): Promise<string> {
+  const { path, identity } = getHostWxcExecFile();
+  if (expectedIdentity !== undefined && expectedIdentity !== identity) throw new MxcLauncherIntegrityError("Contained shell launcher changed before verification");
+  let entry = verifiedLaunchers.get(path);
+  if (entry?.identity !== identity) {
     const pinned = pinnedWxcExecSha256(process.arch);
-    verified = sha256OfFile(path).then((digest) => {
-      if (digest !== pinned) throw new Error(`Microsoft Execution Containers launcher ${path} is not the pinned build`);
-      return path;
+    const verified = sha256OfFile(path).then((digest) => {
+      if (digest !== pinned) throw new MxcLauncherIntegrityError(`Contained shell launcher ${path} is not the pinned build`);
+    }, (error: unknown) => {
+      if (verifiedLaunchers.get(path)?.verified === verified) verifiedLaunchers.delete(path);
+      throw error;
     });
-    verifiedLaunchers.set(path, verified);
+    entry = { identity, verified };
+    verifiedLaunchers.set(path, entry);
   }
-  return await verified;
+  await entry.verified;
+  if (getHostWxcExecIdentity() !== identity) throw new MxcLauncherIntegrityError("Contained shell launcher changed during verification");
+  return path;
 }
 
 // Run one detection step against this host's shipped binary, in a fresh probe directory.
-async function withHostMxcDeps<T extends MxcSupport>(step: (deps: DetectMxcSupportDeps) => Promise<T>): Promise<T> {
-  const [{ execFile }, { existsSync }, { mkdtemp, rm }, os, path, { getHostResources }] = await Promise.all([
+async function withHostMxcDeps<T extends MxcSupport>(
+  step: (deps: DetectMxcSupportDeps) => Promise<T>,
+  expectedLauncherIdentity: string | undefined,
+  assertRoot?: () => void,
+): Promise<T> {
+  const [{ execFile }, { existsSync }, { mkdtemp, rm }, os, path] = await Promise.all([
     import("node:child_process"),
     import("node:fs"),
     import("node:fs/promises"),
     import("node:os"),
     import("node:path"),
-    import("../main/host-resources.js"),
   ]);
   // The probe containers write only into a fresh directory of their own.
   const probeDirectory = process.platform === "win32" ? await mkdtemp(path.join(os.tmpdir(), "ave-mxc-probe-")) : os.tmpdir();
+  const assertLaunch = () => {
+    assertRoot?.();
+    if (expectedLauncherIdentity === undefined || getHostWxcExecIdentity() !== expectedLauncherIdentity) {
+      throw new Error("Contained shell launcher changed before spawn");
+    }
+  };
+  let result: T;
   try {
-    return await step({
+    result = await step({
       platform: process.platform,
       arch: process.arch,
       resourcePath: getHostResources().resourcePath,
@@ -1651,7 +1735,8 @@ async function withHostMxcDeps<T extends MxcSupport>(step: (deps: DetectMxcSuppo
       systemRoot: process.platform === "win32" ? windowsSystemRoot() : "",
       run: (file, args, timeoutMs) =>
         new Promise((resolve, reject) => {
-          execFile(file, [...args], { cwd: path.dirname(file), timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+          assertLaunch();
+          execFile(file, [...args], { cwd: path.dirname(file), timeout: timeoutMs, windowsHide: true, maxBuffer: MXC_MAX_LAUNCHER_OUTPUT_BYTES }, (error, stdout, stderr) => {
             const code = error === null ? 0 : typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : null;
             if (error !== null && code === null) {
               reject(error);
@@ -1664,25 +1749,35 @@ async function withHostMxcDeps<T extends MxcSupport>(step: (deps: DetectMxcSuppo
   } finally {
     if (probeDirectory !== os.tmpdir()) await rm(probeDirectory, { recursive: true, force: true });
   }
+  if (expectedLauncherIdentity !== undefined) assertLaunch();
+  return result;
 }
 
 // detectMxcPrerequisites against this host's shipped binary (boot path).
-export async function detectHostMxcPrerequisites(): Promise<MxcSupport> {
-  return await withHostMxcDeps(detectMxcPrerequisites);
+export async function detectHostMxcPrerequisites(expectedLauncherIdentity?: string): Promise<MxcSupport> {
+  let identity = expectedLauncherIdentity;
+  if (identity === undefined && process.platform === "win32") {
+    try { identity = getHostWxcExecIdentity(); } catch { /* Without a pin the launcher cannot run. */ }
+  }
+  return await withHostMxcDeps(detectMxcPrerequisites, identity);
 }
 
 // probeMxcPowerShellStart against this host's shipped binary (after boot).
-export async function probeHostMxcPowerShellStart(): Promise<MxcStartSupport> {
+export async function probeHostMxcPowerShellStart(expectedLauncherIdentity?: string): Promise<MxcStartSupport> {
   // The probe starts a container too: a runtime root that was not proved private refuses it, under its own reason.
   const { MxcRuntimeRootError, requireMxcContainerStartRoot } = await import("./mxc-runtime-root.js");
   try {
-    requireMxcContainerStartRoot();
+    const root = requireMxcContainerStartRoot();
+    const launcherIdentity = expectedLauncherIdentity ?? getHostWxcExecIdentity();
+    await resolveHostWxcExecPath(launcherIdentity);
+    const openListener = process.platform === "win32"
+      ? (await import("./egress-invocation-listener.js")).openInvocationProxyListener : undefined;
+    return await withHostMxcDeps(deps => probeMxcPowerShellStart(deps, openListener), launcherIdentity, () => {
+      if (requireMxcContainerStartRoot() !== root) throw new MxcRuntimeRootError("Container runtime root changed before the start probe");
+    });
   } catch (error) {
     if (!(error instanceof MxcRuntimeRootError)) throw error;
     const detail = process.platform === "win32" ? "runtime-root-unproved" : `runtime root proof failed: ${error.message}`;
     return { state: "unavailable", reason: "runtime-root-unproved", windowsBuild: null, detail };
   }
-  if (process.platform !== "win32") return await withHostMxcDeps(probeMxcPowerShellStart);
-  const { openInvocationProxyListener } = await import("./egress-invocation-listener.js");
-  return await withHostMxcDeps(deps => probeMxcPowerShellStart(deps, openInvocationProxyListener));
 }

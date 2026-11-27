@@ -120,9 +120,8 @@ export async function readDocumentEngineTree(root: string, signal: AbortSignal,
 
 /**
  * Metadata-only digest of an installed payload: every entry's path, kind, inode, size, mode, link count, mtime,
- * ctime and link target. Any write, replacement, chmod or xattr change moves ctime, so equality with the digest
- * recorded when the bytes were hashed binds the tree to that hash without rereading it. Off the main thread: only
- * asynchronous lstat/readdir calls are issued.
+ * ctime and link target. This detects observable identity changes. Execution also checks the content digest because
+ * byte changes can preserve the observed metadata.
  */
 export async function readDocumentEngineIdentityDigest(root: string, signal: AbortSignal): Promise<string> {
   const entries: string[] = [];

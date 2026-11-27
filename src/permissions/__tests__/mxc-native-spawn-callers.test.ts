@@ -34,11 +34,8 @@ describe("native extension spawn callers", () => {
 
   it("the sanctioned production caller passes its admission at the spawn boundary", () => {
     const text = readFileSync("src/permissions/confined-child.ts", "utf8");
-    const call = text.slice(text.indexOf("await spawnMxcExtensionProcess(request, {"));
-    expect(call.length).toBeGreaterThan(0);
-    const options = call.slice(0, call.indexOf("\n    });"));
-    expect(options).toContain("beforeSpawn: () => {");
-    expect(options).toContain("consumeMxcExtensionAdmission(admission,");
-    expect(options).toContain("assertNesting();");
+    const call = text.split("await spawnMxcExtensionProcess(request, {")[1];
+    const boundary = call?.split("beforeSpawn: () => {")[1]?.split("watchRelease:")[0];
+    expect(boundary).toMatch(/assertNesting\(\);[\s\S]*consumeMxcExtensionAdmission\(admission,/u);
   });
 });

@@ -517,7 +517,7 @@ it("keeps a navigation-only replanning row in the replanning section and out of 
     const waiting = within(await screen.findByTestId("work-approvals-replanning"));
     expect(waiting.getByText(title)).toBeVisible();
     expect(screen.queryByTestId("work-approvals-empty")).toBeNull();
-    expect(onCountChange).toHaveBeenLastCalledWith(0);
+    await waitFor(() => expect(onCountChange).toHaveBeenLastCalledWith(0));
     fireEvent.click(waiting.getByRole("button", { name: t("workApprovals.openApproval") }));
     expect(onOpenApproval).toHaveBeenCalledExactlyOnceWith(key, CHECKOUT.projectRoot);
   } finally {
@@ -548,6 +548,6 @@ it("focuses the replanning row in the destination project alongside a pending ap
   const row = within(screen.getByTestId("work-approvals-replanning")).getByRole("listitem");
   expect(row).toHaveTextContent(title);
   expect(row).toHaveTextContent(t("workApprovals.replanningFooter"));
-  expect(onCountChange).toHaveBeenLastCalledWith(1);
+  await waitFor(() => expect(onCountChange).toHaveBeenLastCalledWith(1));
   await waitFor(() => expect(row).toHaveFocus());
 });

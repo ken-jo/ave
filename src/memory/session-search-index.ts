@@ -1,11 +1,11 @@
 // Namespace-local FTS search with fail-closed queries; JSONL rebuild is the only corruption recovery path.
-import { promises as fsPromises, mkdirSync, chmodSync } from "node:fs";
+import { promises as fsPromises, mkdirSync, chmodSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { createLogger } from "../lib/logger.js";
 import type { SessionKind } from "../shared/session-lookup.js";
 import type BetterSqlite3 from "better-sqlite3";
-import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from "../lib/atomic-file.js";
+import { isMissingPathError, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from "../lib/atomic-file.js";
 
 const log = createLogger("session-search-index");
 
@@ -99,6 +99,23 @@ function ensureDirSync(dir: string): void {
   }
 }
 
+export type SessionSearchIndexPolicy = "enabled" | "enabled-with-recovery" | "inactive" | "paused";
+
+/** Database work uses the refreshed policy when the source supplies one. */
+export interface SessionSearchIndexPolicySource {
+  readonly getSearchIndexPolicy?: () => SessionSearchIndexPolicy;
+  readonly refreshSearchIndexPolicy?: () => Promise<() => SessionSearchIndexPolicy>;
+}
+
+const INSERT_SESSION_ROW = `INSERT INTO sessions_fts
+  (sessionId, content, timestamp, sessionKind, routineId, projectRoot, title)
+  VALUES (?, ?, ?, ?, ?, ?, ?)`;
+
+function insertSessionRow(insert: BetterSqlite3.Statement, input: IndexedSessionInput): void {
+  insert.run(input.sessionId, input.content, input.timestamp, input.sessionKind,
+    input.routineId ?? "", input.projectRoot ?? "", input.title ?? "");
+}
+
 // Keep each database instance bound to its owning manager's namespace.
 export class SessionSearchIndex {
   private readonly dbPath: string;
@@ -115,7 +132,7 @@ export class SessionSearchIndex {
   }
 
   // Open synchronously on demand; return false on recoverable failure and keep stored search data private.
-  open(): boolean {
+  open(options?: { recoverCorruption?: boolean }): boolean {
     if (this.db) return true;
     // Close handles even if setup fails after opening; leaked handles block Windows corruption recovery.
     let db: BetterSqlite3.Database | null = null;
@@ -166,6 +183,13 @@ export class SessionSearchIndex {
             `In CI this usually means the shipped N-API prebuild is missing or corrupt for this platform+arch. ` +
             `Original: ${(err as Error).message}`,
         );
+      }
+      if (options?.recoverCorruption) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === "SQLITE_NOTADB" || code?.startsWith("SQLITE_CORRUPT")) {
+          this.discard();
+          return this.open();
+        }
       }
       return false;
     }
@@ -303,6 +327,61 @@ export class SessionSearchIndex {
       try {
         await fsPromises.unlink(`${dbPath}${suffix}`);
       } catch {
+      }
+    }
+  }
+
+  writeRebuiltSessions(inputs: Iterable<IndexedSessionInput>): void {
+    const db = this.db;
+    if (!db) throw new Error("search index must be open for rebuild");
+    db.transaction(() => {
+      db.exec("DELETE FROM sessions_fts");
+      const insert = db.prepare(INSERT_SESSION_ROW);
+      let expectedRows = 0;
+      for (const input of inputs) {
+        insertSessionRow(insert, input);
+        expectedRows += 1;
+      }
+      const actualRows = this.rowCount();
+      if (actualRows !== expectedRows) {
+        throw new Error(`search index row count mismatch (expected ${expectedRows}, got ${actualRows})`);
+      }
+    })();
+  }
+
+  upsertSessionAdmitted(input: IndexedSessionInput): boolean {
+    const db = this.db;
+    if (!db) return false;
+    try {
+      db.transaction(() => {
+        db.prepare("DELETE FROM sessions_fts WHERE sessionId = ?").run(input.sessionId);
+        insertSessionRow(db.prepare(INSERT_SESSION_ROW), input);
+      })();
+      return true;
+    } catch (err) {
+      log.warn("upsertSession failed for %s: %s", input.sessionId, (err as Error).message);
+      return false;
+    }
+  }
+
+  deleteSessionAdmitted(sessionId: string): boolean {
+    if (!this.db) return false;
+    try {
+      this.db.prepare("DELETE FROM sessions_fts WHERE sessionId = ?").run(sessionId);
+      return true;
+    } catch (err) {
+      log.warn("deleteSession failed for %s: %s", sessionId, (err as Error).message);
+      return false;
+    }
+  }
+
+  discard(): void {
+    this.close();
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        unlinkSync(`${this.dbPath}${suffix}`);
+      } catch (error) {
+        if (!isMissingPathError(error)) throw error;
       }
     }
   }

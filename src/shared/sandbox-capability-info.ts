@@ -246,21 +246,59 @@ export function egressProtocolCoverageFor(substrate: "mxc" | "asrt" | "srt-win" 
   return substrate === "mxc" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
 }
 
-const SEATBELT_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "blocked" });
+// No constant `blocked`: a seatbelt container's DNS is not measured, so it stays `unknown`, and its raw IP is
+// `blocked` only when this boot's canary measured it (`acceptMeasuredContainerEgress`).
+const MEASURED_SEATBELT_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "unknown", rawIp: "blocked" });
 
+/**
+ * A container start's own measured coverage, accepted only in the exact shape its platform's probe publishes:
+ * Windows MXC (`dns` from the host resolver) or the macOS seatbelt container (`dns` unmeasured). Anything else is
+ * not a measurement and the backend's unmeasured coverage applies.
+ */
 export function acceptMeasuredContainerEgress(
   platform: NodeJS.Platform, backend: ContainerBackend, coverage: EgressProtocolCoverage | undefined,
 ): EgressProtocolCoverage | undefined {
-  if (platform !== "win32" || backend !== "process-container" || typeof coverage !== "object" || coverage === null
-      || Reflect.ownKeys(coverage).length !== 2 || !Object.hasOwn(coverage, "dns") || !Object.hasOwn(coverage, "rawIp")
-      || coverage.dns !== "host-resolver" || coverage.rawIp !== "blocked") return undefined;
-  return MEASURED_MXC_EGRESS_PROTOCOL_COVERAGE;
+  if (typeof coverage !== "object" || coverage === null || Reflect.ownKeys(coverage).length !== 2
+      || !Object.hasOwn(coverage, "dns") || !Object.hasOwn(coverage, "rawIp") || coverage.rawIp !== "blocked") return undefined;
+  if (platform === "win32" && backend === "process-container" && coverage.dns === "host-resolver") {
+    return MEASURED_MXC_EGRESS_PROTOCOL_COVERAGE;
+  }
+  if (platform === "darwin" && backend === "seatbelt" && coverage.dns === "unknown") return MEASURED_SEATBELT_EGRESS_PROTOCOL_COVERAGE;
+  return undefined;
 }
 
+/** A container backend's coverage before any measurement: nothing about it is `blocked` until a start measured it. */
 export function containerEgressProtocolCoverage(backend: ContainerBackend): EgressProtocolCoverage {
-  if (backend === "process-container") return MXC_EGRESS_PROTOCOL_COVERAGE;
-  return backend === "seatbelt" ? SEATBELT_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
+  return backend === "process-container" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
 }
+
+/** The raw-IP probe's targets: an IPv4 and an IPv6 documentation address, and a closed port on the host's own IPv4. */
+export type MxcRawIpTarget = "t4" | "t6" | "tl";
+/** Whether the probe's UDP datagram reached the host-side listener (`mxc-raw-ip-udp.ts`). */
+export type MxcRawIpUdpArrival = "arrived" | "absent" | "unmeasured";
+/** Why a raw-IP verdict is not `blocked`, by the verdict rules the container platforms share. */
+export type MxcRawIpUnknownReason = "listener-unavailable" | "no-evidence" | "control-failed" | "raw-ip-reachable"
+  | "ipv6-unmeasured" | "udp-unmeasured" | "no-route" | "timeout" | "unclassified" | "cleanup-failed";
+/**
+ * A container start's raw-IP verdict, in the shape the Windows MXC start probe gives (`mxc-windows.ts`):
+ * `reachableTargets` names what reached a peer (a TCP target, or `udp` when the datagram arrived), and `blocked`
+ * carries whether IPv6 was refused in the container (`measured`) or stood in for by the profile (`structural`).
+ * Memory only, never persisted, re-measured every boot.
+ */
+export type MxcRawIpProbeVerdict<Reason extends MxcRawIpUnknownReason = MxcRawIpUnknownReason> = {
+  readonly reachableTargets: readonly (MxcRawIpTarget | "udp")[];
+  readonly udpArrival: MxcRawIpUdpArrival;
+} & ({ readonly rawIp: "blocked"; readonly reason: "blocked"; readonly evidenceKind: "measured" | "structural" }
+  | { readonly rawIp: "unknown"; readonly reason: Reason });
+
+/**
+ * The reasons the macOS shell container's canary gives. It has no `listener-unavailable` or `cleanup-failed`:
+ * a host-side bind failure drops the targets that needed it (`no-evidence`), and staging cleanup failing fails
+ * the canary itself.
+ */
+export type MacRawIpUnknownReason = Exclude<MxcRawIpUnknownReason, "listener-unavailable" | "cleanup-failed">;
+/** Whether a process in the macOS shell container can reach an IP address directly, as this boot's canary measured it. */
+export type MacRawIpVerdict = MxcRawIpProbeVerdict<MacRawIpUnknownReason>;
 
 /** The scopes an egress grant can be given. A shell tool call's card offers Deny plus once, session, project, always (owner 2026-10-25, five-choice network card); a workspace terminal
  * tab's ladder is once, tab, always (`tab` takes the place of `session`: a terminal belongs to no conversation, design F). */
@@ -291,7 +329,8 @@ export type SandboxMacContainerShellUnavailableReason = Extract<SandboxMxcUnavai
 > | "shell-start-failed";
 
 export type SandboxMacContainerShellSupport =
-  | { readonly state: "available" }
+  // An available shell container without a measurement has an unknown raw-IP verdict. The unavailable arm has no field.
+  | { readonly state: "available"; readonly rawIpProbe?: MacRawIpVerdict }
   | { readonly state: "unavailable"; readonly reason: SandboxMacContainerShellUnavailableReason };
 
 export type SandboxMacContainerShellInfo = SandboxMacContainerShellSupport & {
@@ -368,11 +407,12 @@ export interface SandboxWindowsSubstrateInfo {
   readonly mxc:
     | { readonly state: "available" }
     | { readonly state: "checking" }
-    | { readonly state: "unavailable"; readonly reason: SandboxMxcUnavailableReason };
+    | { readonly state: "unavailable"; readonly reason: SandboxMxcUnavailableReason; readonly containerBackendAbsent?: true };
   /** `major.minor.build.ubr` of the host, for the reason text; null if unread. */
   readonly windowsBuild: string | null;
   /** Whether srt-win (the one-time administrator install) was ready at boot. */
   readonly srtWinReady: boolean;
+  readonly accountBackendAbsent?: true;
   /** Bash/PowerShell tool commands: each in its own MXC container (`mxc`), or; with srt-win active and no MXC; as
    * an ordinary process after a per-command approval (`approved-host`), or without the sandbox at all (`none`). */
   readonly shells: "mxc" | "approved-host" | "none";

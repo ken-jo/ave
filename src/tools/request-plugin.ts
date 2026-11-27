@@ -8,6 +8,7 @@ export function createRequestPluginTool(): Tool {
     description: t("be_tools.requestPluginDescription"),
     source: "builtin",
     category: "read",
+    requiresAttendedStage: true,
     isReadOnly: () => true,
     jsonSchema: {
       type: "object",

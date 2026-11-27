@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
+import { workflowOutputSessionPrefix } from "../../shared/workflow-run-view.js";
 import { canonicalWorkflowJson } from "../../shared/workflow-template-output.js";
 import type { RequestedOutputDecl } from "../../shared/workflow-template-types.js";
 import type { Tool } from "../../tools/base.js";
@@ -15,11 +16,11 @@ export function governedWorkflowOutput(registry: ToolRegistry, executor: ToolExe
   };
 
   return {
-    async invoke({ output, surface, signal, cwd, canExecute }) {
+    async invoke({ run, output, surface, signal, cwd, canExecute }) {
       const { decl } = output;
       const tool = resolveTool(decl);
       if (!tool) return "failed";
-      const sessionId = `workflow-output:${randomUUID()}`;
+      const sessionId = workflowOutputSessionPrefix(run.itemId, run.runId) + randomUUID();
       updateApprovalSurface({ kind: "attach", sessionId, surface });
       try {
         let dispatched = false;

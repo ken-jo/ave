@@ -118,8 +118,8 @@ function writeOwnerMarker(homePath: string, marker: string): boolean {
 }
 
 // With the host start time known, the marker is written before the HOME exists, so no crash leaves an unmarked HOME; otherwise mkdtemp, and the marker follows the first probe. An unmarked HOME is kept by the sweep.
-function createHomeDirectory(parentRoot: string, platform: NodeJS.Platform, probe: ProcessRunStateProbe): string {
-  const marker = platform === "win32" ? resolvedOwnerMarkers.get(probe) : undefined;
+function createHomeDirectory(parentRoot: string, ownerProbe: ProcessRunStateProbe | undefined): string {
+  const marker = ownerProbe === undefined ? undefined : resolvedOwnerMarkers.get(ownerProbe);
   if (marker !== undefined) {
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const path = join(parentRoot, `${SANDBOX_HOME_PREFIX}${randomBytes(6).toString("hex")}`);
@@ -134,8 +134,8 @@ function createHomeDirectory(parentRoot: string, platform: NodeJS.Platform, prob
     }
   }
   const path = mkdtempSync(join(parentRoot, SANDBOX_HOME_PREFIX));
-  if (platform === "win32") {
-    void resolveHostOwnerMarker(probe).then((resolved) => {
+  if (ownerProbe !== undefined) {
+    void resolveHostOwnerMarker(ownerProbe).then((resolved) => {
       if (resolved !== null && liveHomes.has(path)) writeOwnerMarker(path, resolved);
     });
   }
@@ -244,10 +244,11 @@ function createProfileDirectories(env: Readonly<Record<string, string>>): void {
 export function createSandboxProcessHome(
   platform: NodeJS.Platform = process.platform,
   removeHome: typeof rmSync = rmSync,
-  probeOwner: ProcessRunStateProbe = readWindowsProcessRunStates,
+  // Null means a separate tree receipt owns release. Host death alone cannot make this HOME sweepable.
+  probeOwner: ProcessRunStateProbe | null = readWindowsProcessRunStates,
 ): SandboxProcessHome {
   const parentRoot = sandboxHomeParent(platform);
-  const createdPath = createHomeDirectory(parentRoot, platform, probeOwner);
+  const createdPath = createHomeDirectory(parentRoot, platform === "win32" ? probeOwner ?? undefined : undefined);
   let homePath = createdPath;
   let env: Readonly<Record<string, string>>;
   try {

@@ -10,7 +10,7 @@ import { unavailableSecretEncryption } from "../../__tests__/support/host-runtim
 import { directHostFetchTransport } from "../../__tests__/support/host-fetch-transport.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { deferred } from "../../__tests__/support/deferred.js";
-import { SettingsService, settingsFilePath } from "../settings-store.js";
+import { SettingsService, SettingsWriteRefusedError, settingsFilePath } from "../settings-store.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { evaluateHostFetch, runHostFetchHops } from "../../main/host-fetch-guard.js";
 
@@ -268,6 +268,123 @@ describe("settings persistence", () => {
     const saved = JSON.parse(readFileSync(settingsFilePath(root), "utf8"));
     expect(saved.system.hardwareAcceleration).toBe(true);
     expect(saved.pluginConfigs).toMatchObject({ sample: { mode: "fast" }, other: { mode: "slow" } });
+  });
+
+  const firstEmbeddingWrites = [
+    { label: "local source selection", value: { source: "local" }, names: ["source", "providerId", "modelId", "consent"] },
+    { label: "provider source selection", value: { source: "provider", providerId: "example", modelId: "example-model" }, names: ["source", "providerId", "modelId", "consent"] },
+    { label: "model path", value: { localModelPath: "example-model" }, names: ["localModelPath"] },
+    { label: "released on choice", value: { localInferenceWithoutSandbox: true }, names: ["localInferenceWithoutSandbox"] },
+    { label: "released off choice", value: { localInferenceWithoutSandbox: false }, names: ["localInferenceWithoutSandbox"] },
+  ] as const;
+
+  it.runIf(process.platform === "win32").each(firstEmbeddingWrites)("persists the first admitted Memory Map write ($label)", async ({ value, names }) => {
+    expect(service.get("memoryEmbedding")).toBeUndefined();
+    await service.set("memoryEmbedding", value, {
+      field: ["memoryEmbedding", ...names],
+      canCommit: () => true,
+    });
+    expect(service.get("memoryEmbedding")).toEqual(value);
+    expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8")).memoryEmbedding).toEqual(value);
+    const reloaded = new SettingsService({ userDataPath: root, encryption: unavailableSecretEncryption });
+    expect(reloaded.get("memoryEmbedding")).toMatchObject(value);
+  });
+
+  it.runIf(process.platform === "win32")("keeps Memory Map settings absent when admission is revoked before the first save", async () => {
+    const save = vi.spyOn(service as unknown as { saveSettings(settings: unknown): Promise<void> }, "saveSettings");
+    const realSave = (settings: unknown) => (SettingsService.prototype as unknown as { saveSettings(settings: unknown): Promise<void> }).saveSettings.call(service, settings);
+    let release!: () => void;
+    save.mockImplementationOnce(settings => new Promise<void>(resolve => { release = resolve; }).then(() => realSave(settings)));
+
+    const first = service.setPluginConfig("sample", { mode: "fast" });
+    let admitted = true;
+    const refused = expect(service.set("memoryEmbedding", { source: "local" }, {
+      field: ["memoryEmbedding", "source", "providerId", "modelId", "consent"],
+      canCommit: () => admitted,
+    })).rejects.toBeInstanceOf(SettingsWriteRefusedError);
+    admitted = false;
+    release();
+    await first;
+    await refused;
+
+    expect(service.get("memoryEmbedding")).toBeUndefined();
+    expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8"))).not.toHaveProperty("memoryEmbedding");
+  });
+
+  it.runIf(process.platform === "win32")("keeps Memory Map settings absent when an admitted write only removes fields", async () => {
+    await service.set("memoryEmbedding", {}, {
+      field: ["memoryEmbedding", "localModelPath"],
+      canCommit: () => true,
+    });
+    expect(service.get("memoryEmbedding")).toBeUndefined();
+    expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8"))).not.toHaveProperty("memoryEmbedding");
+  });
+
+  it.runIf(process.platform === "win32")("keeps a switch that lost its admission while its save waited out of the file, and saves the changes around it", async () => {
+    await service.patch({ features: { sessionIndexingWithoutContainment: true } });
+    await service.set("memoryEmbedding", { source: "local", localInferenceWithoutSandbox: true });
+    const save = vi.spyOn(service as unknown as { saveSettings(settings: unknown): Promise<void> }, "saveSettings");
+    const real = (settings: unknown) => (SettingsService.prototype as unknown as { saveSettings(settings: unknown): Promise<void> }).saveSettings.call(service, settings);
+    save.mockImplementationOnce((settings) => new Promise((resolve, reject) => setTimeout(() => real(settings).then(resolve, reject), 20)));
+    let admitted = true;
+    const canCommit = () => admitted;
+
+    const first = service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } });
+    const indexing = service.patch({ features: { sessionIndexingWithoutContainment: false } }, {
+      admission: { field: ["features", "sessionIndexingWithoutContainment"], canCommit },
+    })
+      .catch((error: unknown) => error);
+    const inference = service.set("memoryEmbedding", { source: "local", localInferenceWithoutSandbox: false }, { field: ["memoryEmbedding", "localInferenceWithoutSandbox"], canCommit })
+      .catch((error: unknown) => error);
+    const path = service.set("memoryEmbedding", { source: "local", localModelPath: "example-model" }, { field: ["memoryEmbedding", "localModelPath"], canCommit })
+      .catch((error: unknown) => error);
+    const changed = vi.fn();
+    service.onChanged("memoryEmbedding", changed);
+    const around = service.setPluginConfig("sample", { mode: "fast" });
+    admitted = false;
+    expect.soft(service.get("features")?.sessionIndexingWithoutContainment).toBe(true);
+    expect.soft(service.getAll().memoryEmbedding).toEqual({ source: "local", localInferenceWithoutSandbox: true });
+
+    await Promise.all([first, around]);
+    const saved = JSON.parse(readFileSync(settingsFilePath(root), "utf8"));
+    expect(saved.features.sessionIndexingWithoutContainment).toBe(true);
+    expect(saved.memoryEmbedding).toEqual({ source: "local", localInferenceWithoutSandbox: true });
+    expect(saved.system.hardwareAcceleration).toBe(true);
+    expect(saved.pluginConfigs.sample).toEqual({ mode: "fast" });
+    expect(await indexing).toBeInstanceOf(SettingsWriteRefusedError);
+    expect(await inference).toBeInstanceOf(SettingsWriteRefusedError);
+    expect(await path).toBeInstanceOf(SettingsWriteRefusedError);
+    expect(changed).not.toHaveBeenCalled();
+    expect(service.get("features")?.sessionIndexingWithoutContainment).toBe(true);
+    expect(service.get("memoryEmbedding")).toEqual({ source: "local", localInferenceWithoutSandbox: true });
+  });
+
+  it("keeps a superseded provider selection and its consent out of readers and disk", async () => {
+    await service.set("memoryEmbedding", { source: "local", localInferenceWithoutSandbox: true });
+    const save = vi.spyOn(service as unknown as { saveSettings(settings: unknown): Promise<void> }, "saveSettings");
+    const real = (settings: unknown) => (SettingsService.prototype as unknown as { saveSettings(settings: unknown): Promise<void> }).saveSettings.call(service, settings);
+    let release!: () => void;
+    save.mockImplementationOnce(settings => new Promise<void>(resolve => { release = resolve; }).then(() => real(settings)));
+    const first = service.setPluginConfig("sample", { mode: "fast" });
+    let current = true;
+    const field = ["memoryEmbedding", "source", "providerId", "modelId", "consent"] as const;
+    const next = service.set("memoryEmbedding", {
+      source: "provider", providerId: "example", modelId: "example-model",
+      consent: { version: 2, providerId: "example", modelId: "example-model", endpointId: "example", timestamp: "2026-01-01T00:00:00.000Z" },
+    }, { ...{ field }, canCommit: () => current }).catch((error: unknown) => error);
+    current = false;
+    expect.soft(service.get("memoryEmbedding")?.source).toBe("local");
+    release();
+    await first;
+    expect(await next).toBeInstanceOf(SettingsWriteRefusedError);
+    expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8")).memoryEmbedding).toEqual({ source: "local", localInferenceWithoutSandbox: true });
+  });
+
+  it.runIf(process.platform === "win32")("saves a switch whose admission still holds in the step that writes it", async () => {
+    await service.patch({ features: { sessionIndexingWithoutContainment: false } }, {
+      admission: { field: ["features", "sessionIndexingWithoutContainment"], canCommit: () => true },
+    });
+    expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8")).features.sessionIndexingWithoutContainment).toBe(false);
   });
 });
 

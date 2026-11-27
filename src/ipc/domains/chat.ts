@@ -1,9 +1,10 @@
 import { showNativeMessage, pickNativeFiles, pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
-import { randomUUID } from "node:crypto";
 import { isAttendedSkillMemoryOwner, registerSkillMemoryHandlers } from "./skill-memory.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { runWithSkillMemoryOwnerInput } from "../../memory/skill-memory-service.js";
 import { registerMemoryMapHandlers } from './memory-map.js';
+import { registerWindowsMemoryMapHandlers } from './memory-map-win32.js';
+import { createWindowsSessionsSearchHandler } from './sessions-search-win32.js';
 import { readMemoryDetail, readMemorySummaries } from "../../memory/memory-detail.js";
 import { decideTurnChange, getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { parseTurnReviewDecision, type TurnReviewError, type TurnReviewResult } from "../../shared/turn-change-review.js";
@@ -1672,7 +1673,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (archiveAuthority && projectRoot && fields.archivedAt
       && memoryManager.sessions.loadSessionMetadata(sessionId)?.archivedAt === fields.archivedAt) {
       const { sender, senderFrame } = e;
-      await skillMemory?.queueArchive(sessionId, projectRoot, `archive:${randomUUID()}`,
+      await skillMemory?.queueArchive(sessionId, projectRoot, `archive:${createDlpSafeUuid()}`,
         () => !sender.isDestroyed() && senderFrame === sender.mainFrame);
     }
     return { ok: true };
@@ -1836,7 +1837,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     branchContinuations.set(group, continuation);
     return { ...branched, branchContinuation: continuation.id };
   });
-  const readGraphSource = registerMemoryMapHandlers(deps, parseMemoryProjectOptions);
+  const readGraphSource = (process.platform === "win32" ? registerWindowsMemoryMapHandlers : registerMemoryMapHandlers)(deps, parseMemoryProjectOptions);
   const memoryConversationStores = () => {
     const runner = deps.getSubAgentRunner?.();
     const subagent = runner ? {
@@ -1944,12 +1945,20 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!project.ok) return [];
     return memoryManager.sessions.listSessionEntries(50, project.options);
   });
-  ipcMain.handle(CHANNELS.memory.sessionsSearch, (e, query: string, opts?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.sessionsSearch, e); return UNAUTHORIZED_FRAME; }
-    const project = parseMemoryProjectOptions(opts);
-    if (!project.ok) return [];
-    return memoryManager.sessions.searchSessions(query, project.options);
-  });
+  if (process.platform === "win32") {
+    const search = createWindowsSessionsSearchHandler(memoryManager.sessions, auditLogger, parseMemoryProjectOptions);
+    ipcMain.handle(CHANNELS.memory.sessionsSearch, (e, query: string, opts?: unknown) => {
+      if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.sessionsSearch, e); return UNAUTHORIZED_FRAME; }
+      return search(e, query, opts);
+    });
+  } else {
+    ipcMain.handle(CHANNELS.memory.sessionsSearch, (e, query: string, opts?: unknown) => {
+      if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.sessionsSearch, e); return UNAUTHORIZED_FRAME; }
+      const project = parseMemoryProjectOptions(opts);
+      if (!project.ok) return [];
+      return memoryManager.sessions.searchSessions(query, project.options);
+    });
+  }
   ipcMain.handle(CHANNELS.memory.agentsMdGet, (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.agentsMdGet, e); return UNAUTHORIZED_FRAME; }
     return memoryManager.getAgentsMd();

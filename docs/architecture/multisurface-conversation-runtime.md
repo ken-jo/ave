@@ -49,7 +49,7 @@ AVE_TAILNET_OBSERVER=1
 AVE_TAILNET_OBSERVER_AUTHORIZATION=tailnet-identity
 # ...or the advanced boundary:
 # AVE_TAILNET_OBSERVER_AUTHORIZATION=app-capability:<owned-domain>/cap/ave-conversation
-AVE_TAILNET_OBSERVER_PORT=46173   # optional; fixed nonzero port
+# AVE_TAILNET_OBSERVER_PORT=<listener-port>  # optional; fixed nonzero port
 AVE_TAILNET_CONTROLLER=1          # optional; default OFF; requires paired sharing
 AVE_TAILNET_PAIRED_SHARING=1      # required for owner pairing/share and Web
 AVE_TAILNET_WEB=1                 # optional same-origin browser adapter
@@ -287,8 +287,20 @@ A Tailnet deployment owner may configure a matching, non-Funnel Serve target,
 for example:
 
 ~~~text
-tailscale serve --accept-app-caps=<owned-domain>/cap/ave-conversation http://127.0.0.1:46173
+tailscale serve --accept-app-caps=<owned-domain>/cap/ave-conversation http://127.0.0.1:<listener-port>
 ~~~
+
+When the observer is enabled, the listener uses `AVE_TAILNET_OBSERVER_PORT`
+when set, then the saved port, then 46173. Boot reads the observer
+configuration and binds the resolved port. Settings and guided setup save
+an explicit port. With no saved port, the draft is 46173 if the saved file
+has `enabled: true` or `AVE_TAILNET_OBSERVER=1` is set. Otherwise, the draft
+is 28173. A portless file with `enabled: true` still drafts 46173 when
+`AVE_TAILNET_OBSERVER=0` keeps the listener off.
+
+For a supervised deployment, pin `AVE_TAILNET_OBSERVER_PORT` to the same port
+as the supervisor's route. On Windows, if 46173 is excluded, set
+`AVE_TAILNET_OBSERVER_PORT` to an available port and point Serve at that port.
 
 This command is intentionally not executed by Ave. Do not leave a persistent
 Serve target pointing at the fixed port after the app exits: another local

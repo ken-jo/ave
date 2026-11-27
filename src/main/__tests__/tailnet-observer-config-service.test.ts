@@ -1,7 +1,8 @@
-import { occupyLoopbackPort as occupy } from "../../__tests__/test-helpers.js";
+import { DEFAULT_TAILNET_OBSERVER_PORT, TAILNET_OBSERVER_PORT_BLOCKED } from "../../shared/tailnet-observer-config.js";
 import { describe, expect, it, vi } from "vitest";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
 import { createTailnetObserverConfigService } from "../tailnet-observer-config-service.js";
+import { loadTailnetObserverConfig } from "../tailnet-surface-server.js";
 import type {
   TailnetObserverConfigFile,
   TailscaleEnvironment,
@@ -50,8 +51,8 @@ function service(options: {
   writeConfigFile?: (file: TailnetObserverConfigFile) => Promise<void>;
   environment?: TailscaleEnvironment;
   restartListener?: () => Promise<unknown>;
+  choosePort?: (preferred: number) => Promise<number | null>;
   runServe?: (input: { cliPath: string; port: number }) => Promise<TailscaleServeOutcome>;
-  choosePort?: (preferred: number | null) => Promise<number | null>;
   ownDeviceAdmission?: boolean;
   writeOwnDeviceAdmission?: (enabled: boolean) => Promise<void>;
 } = {}) {
@@ -64,6 +65,7 @@ function service(options: {
       listeningPort: options.listeningPort ?? null,
       activeConfig: options.activeConfig ?? null,
       lastStartError: options.lastStartError ?? null,
+      portBlock: null,
     }),
     // The probe and the listener lifecycle are injected so this matrix stays a question about the configuration surface, not about whether the machine
     // running it happens to have Tailscale installed and a listener bound.
@@ -72,15 +74,15 @@ function service(options: {
     // Injected for the same reason: the admission record is real host state, and reading it would make this matrix depend on the developer's own.
     readOwnDeviceAdmission: async () => options.ownDeviceAdmission === true,
     writeOwnDeviceAdmission: options.writeOwnDeviceAdmission ?? (async () => undefined),
+    choosePort: options.choosePort,
     ...(options.runServe === undefined ? {} : { runServe: options.runServe as never }),
-    ...(options.choosePort === undefined ? {} : { choosePort: options.choosePort }),
   });
 }
 
 const OFF_VIEW: TailnetObserverConfigView = Object.freeze({
   enabled: false,
   authorization: TAILNET_IDENTITY,
-  port: 46_173,
+  port: DEFAULT_TAILNET_OBSERVER_PORT,
   controllerEnabled: false,
   pairedSharingEnabled: false,
   webEnabled: false,
@@ -92,6 +94,38 @@ function enabledView(overrides: Partial<TailnetObserverConfigView> = {}): Tailne
 }
 
 describe("Tailnet observer configuration service", () => {
+  it.each(["apply", "guidedSetup"] as const)("round-trips the explicit default port through %s", async action => {
+    const port = DEFAULT_TAILNET_OBSERVER_PORT;
+    let file: TailnetObserverConfigFile = { enabled: true, authorization: TAILNET_IDENTITY, port };
+    const settings = service({
+      readConfigFile: async () => file,
+      writeConfigFile: async next => { file = next; },
+      listeningPort: port,
+      environment: readyEnvironment({ serveConfigured: true, serveTargetPort: port }),
+    });
+
+    if (action === "apply") await settings.apply((await settings.snapshot()).saved);
+    else await expect(settings.guidedSetup()).resolves.toMatchObject({ ok: true, port });
+
+    expect(file.port).toBe(port);
+    await expect(settings.snapshot()).resolves.toMatchObject({ saved: { port }, provenance: { port: "file" } });
+  });
+
+  it("preserves the previously saved listener port", async () => {
+    const savedPort = 46_173;
+    const writeConfigFile = vi.fn();
+    const settings = service({
+      file: { enabled: true, authorization: TAILNET_IDENTITY, port: savedPort },
+      writeConfigFile,
+    });
+
+    const snapshot = await settings.snapshot();
+    expect(snapshot.saved.port).toBe(savedPort);
+    expect(snapshot.effective.port).toBe(savedPort);
+    await settings.apply(snapshot.saved);
+    expect(writeConfigFile).toHaveBeenCalledWith(expect.objectContaining({ port: savedPort }));
+  });
+
   it("exposes the named port refusal in guided setup and keeps the saved settings editable", async () => {
     const port = OFF_VIEW.port;
     const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
@@ -147,6 +181,7 @@ describe("Tailnet observer configuration service", () => {
     expect(writeConfigFile).toHaveBeenCalledWith({
       enabled: true,
       authorization: APP_CAPABILITY,
+      port: DEFAULT_TAILNET_OBSERVER_PORT,
       pairedSharingEnabled: true,
     });
   });
@@ -222,7 +257,7 @@ describe("Tailnet observer configuration service", () => {
 
       // Not `{}` any more: the boundary has no implicit default, so a file that named none would be invalid the moment the listener is enabled. Starting over
       // therefore writes the default boundary out explicitly.
-      expect(writeConfigFile).toHaveBeenCalledWith({ authorization: TAILNET_IDENTITY });
+      expect(writeConfigFile).toHaveBeenCalledWith({ authorization: TAILNET_IDENTITY, port: DEFAULT_TAILNET_OBSERVER_PORT });
     });
   });
 
@@ -277,7 +312,7 @@ describe("Tailnet observer configuration service", () => {
     it("refuses when Tailscale is not signed in, and says which state it is in", async () => {
       const runServe = vi.fn(async () => ({ ok: true as const }));
       const result = await service({
-        listeningPort: 46_173,
+        listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
         environment: readyEnvironment({ state: "logged-out" }),
         runServe,
       }).configureServe();
@@ -292,7 +327,7 @@ describe("Tailnet observer configuration service", () => {
 
     it("refuses when there is no MagicDNS name to serve", async () => {
       const result = await service({
-        listeningPort: 46_173,
+        listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
         environment: readyEnvironment({ dnsName: null }),
         runServe: async () => ({ ok: true as const }),
       }).configureServe();
@@ -306,7 +341,7 @@ describe("Tailnet observer configuration service", () => {
 
     it("carries what Tailscale printed when the command fails", async () => {
       const result = await service({
-        listeningPort: 46_173,
+        listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
         runServe: async () => ({
           ok: false as const,
           reason: "command-failed" as const,
@@ -341,94 +376,59 @@ describe("Tailnet observer configuration service", () => {
         writeConfigFile,
         restartListener: async () => { order.push("restart"); },
         runServe,
-        listeningPort: 46_173,
-        choosePort: async () => 46_173,
+        listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
       }).guidedSetup();
 
       expect(order).toEqual(["write", "restart", "serve"]);
       expect(writeConfigFile).toHaveBeenCalledWith({
         enabled: true,
         authorization: TAILNET_IDENTITY,
+        port: DEFAULT_TAILNET_OBSERVER_PORT,
         pairedSharingEnabled: true,
         webEnabled: true,
         webOrigin: WEB_ORIGIN,
       });
       expect(result).toEqual(expect.objectContaining({
         ok: true,
-        port: 46_173,
+        port: DEFAULT_TAILNET_OBSERVER_PORT,
         serve: "configured",
         webOrigin: WEB_ORIGIN,
       }));
     });
 
-    it("keeps a saved port this process is already listening on without probing", async () => {
-      const choosePort = vi.fn(async () => 47_100);
-      const writeConfigFile = vi.fn(async () => undefined);
-      const result = await service({
-        file: { port: 46_500 },
-        listeningPort: 46_500,
-        writeConfigFile,
-        runServe: async () => ({ ok: true as const }),
-        choosePort,
-      }).guidedSetup();
+    it("keeps a blocked environment override out of the saved configuration", async () => {
+      const env = { AVE_TAILNET_OBSERVER_PORT: "29999" };
+      let file: TailnetObserverConfigFile | null = null;
+      const readConfigFile = async () => file;
+      const runServe = vi.fn();
+      const settings = service({
+        env,
+        readConfigFile,
+        writeConfigFile: async next => { file = next; },
+        choosePort: async preferred => preferred,
+        restartListener: async () => {
+          const { config } = await loadTailnetObserverConfig({ env, readConfigFile });
+          expect(config?.port).toBe(29_999);
+          throw new Error(TAILNET_OBSERVER_PORT_BLOCKED);
+        },
+        runServe,
+      });
 
-      expect(choosePort).not.toHaveBeenCalled();
-      expect(writeConfigFile).toHaveBeenCalledWith(expect.objectContaining({ port: 46_500 }));
-      expect(result).toEqual(expect.objectContaining({ ok: true, port: 46_500 }));
-    });
-
-    it("prefers the saved port over the default when nothing holds it", async () => {
-      const choosePort = vi.fn(async (preferred: number | null) => preferred);
-      const writeConfigFile = vi.fn(async () => undefined);
-      await service({
-        file: { port: 46_500 },
-        listeningPort: 46_500,
-        writeConfigFile,
-        runServe: async () => ({ ok: true as const }),
-        readConfigFile: async () => ({ port: 46_500 }),
-        choosePort,
-      }).guidedSetup();
-
-      expect(writeConfigFile).toHaveBeenCalledWith(expect.objectContaining({ port: 46_500 }));
-    });
-
-    // The real chooser against a real socket: the default port is what a first run asks for, and a machine already using it must still end up with a
-    // listener rather than with a start failure nobody can act on.
-    it("persists an OS-assigned port when the default one is taken", async () => {
-      const release = await occupy(46_173);
-      try {
-        const writes: TailnetObserverConfigFile[] = [];
-        const result = await service({
-          writeConfigFile: async (file) => { writes.push(file); },
-          listeningPort: 46_800,
-          runServe: async () => ({ ok: true as const }),
-        }).guidedSetup();
-
-        expect(result.ok).toBe(true);
-        expect(writes[0]?.port).toBeTypeOf("number");
-        expect(writes[0]?.port).not.toBe(46_173);
-      } finally {
-        await release();
-      }
-    });
-
-    it("reports that no port could be opened rather than writing a dead configuration", async () => {
-      const writeConfigFile = vi.fn(async () => undefined);
-      const result = await service({
-        writeConfigFile,
-        choosePort: async () => null,
-      }).guidedSetup();
-
-      expect(result).toEqual({ ok: false, error: "tailnet-guided-setup-port-unavailable", output: null });
-      expect(writeConfigFile).not.toHaveBeenCalled();
+      await expect(settings.guidedSetup()).resolves.toMatchObject({
+        ok: false,
+        error: TAILNET_OBSERVER_PORT_BLOCKED,
+      });
+      expect(runServe).not.toHaveBeenCalled();
+      await expect(loadTailnetObserverConfig({ env: {}, readConfigFile })).resolves.toMatchObject({
+        config: { port: DEFAULT_TAILNET_OBSERVER_PORT },
+      });
     });
 
     it("leaves Serve alone when it already forwards to this exact port", async () => {
       const runServe = vi.fn(async () => ({ ok: true as const }));
       const result = await service({
-        listeningPort: 46_173,
-        choosePort: async () => 46_173,
-        environment: readyEnvironment({ serveConfigured: true, serveTargetPort: 46_173 }),
+        listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
+        environment: readyEnvironment({ serveConfigured: true, serveTargetPort: DEFAULT_TAILNET_OBSERVER_PORT }),
         runServe,
       }).guidedSetup();
 
@@ -439,19 +439,17 @@ describe("Tailnet observer configuration service", () => {
     it("re-runs Serve when it forwards somewhere else", async () => {
       const runServe = vi.fn(async () => ({ ok: true as const }));
       const result = await service({
-        listeningPort: 46_173,
-        choosePort: async () => 46_173,
+        listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
         environment: readyEnvironment({ serveConfigured: true, serveTargetPort: 45_000 }),
         runServe,
       }).guidedSetup();
 
-      expect(runServe).toHaveBeenCalledWith({ cliPath: "tailscale", port: 46_173 });
+      expect(runServe).toHaveBeenCalledWith({ cliPath: "tailscale", port: DEFAULT_TAILNET_OBSERVER_PORT });
       expect(result).toEqual(expect.objectContaining({ ok: true, serve: "configured" }));
     });
 
     it("hands back the resolver's own code when the restart refuses", async () => {
       const result = await service({
-        choosePort: async () => 46_173,
         restartListener: async () => {
           throw new Error("tailnet-paired-sharing-runtime-unavailable");
         },
@@ -466,7 +464,6 @@ describe("Tailnet observer configuration service", () => {
 
     it("does not echo a failure that is not one of its own codes", async () => {
       const result = await service({
-        choosePort: async () => 46_173,
         writeConfigFile: async () => {
           throw new Error("EACCES: permission denied, open '/home/example/tailnet/observer.json'");
         },
@@ -477,8 +474,7 @@ describe("Tailnet observer configuration service", () => {
 
     it("reports a Serve failure instead of claiming the setup finished", async () => {
       const result = await service({
-        listeningPort: 46_173,
-        choosePort: async () => 46_173,
+        listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
         runServe: async () => ({
           ok: false as const,
           reason: "command-failed" as const,
@@ -501,8 +497,7 @@ describe("Tailnet observer configuration service", () => {
           throw new Error("tailnet-observer-config-file-invalid");
         },
         writeConfigFile,
-        listeningPort: 46_173,
-        choosePort: async () => 46_173,
+        listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
         runServe: async () => ({ ok: true as const }),
       }).guidedSetup();
 

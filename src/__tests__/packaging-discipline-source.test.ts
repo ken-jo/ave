@@ -1737,6 +1737,26 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
+  it("runs every native suite gated on macOS in the macOS permission job", () => {
+    const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
+    const tests = jobRunCommands(jobs.get("macos-permission-tests") as string).find((command) => command.includes("bun run test --"));
+    const gated = spawnSync("git", ["ls-files", "*.native.test.ts"], { encoding: "utf8" }).stdout.split("\n").filter(Boolean)
+      .filter((file) => /process\.platform === "darwin"/u.test(readRepoFile(file)));
+    expect(gated.length).toBeGreaterThan(0);
+    for (const file of gated) expect(tests, `macos-permission-tests omits ${file}`).toContain(file);
+    // A listed suite must run, not skip: the job is on an arm64 image and requires the sandbox cases, so a native
+    // suite that cannot run there fails the job.
+    const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
+      jobs: Record<string, { "runs-on": string; steps: { run?: string; env?: Record<string, string> }[] }>;
+    };
+    const job = workflow.jobs["macos-permission-tests"];
+    // GitHub's macos-14 and later images are Apple silicon; macos-13 and the -intel images are not.
+    expect(job?.["runs-on"]).toMatch(/^macos-(?:1[4-9]|[2-9]\d)$/u);
+    const step = job?.steps.find((candidate) => candidate.run?.includes("bun run test --") === true);
+    expect(step?.env?.AVE_REQUIRE_SANDBOX_CASES).toBe("1");
+    for (const file of gated) expect(readRepoFile(file)).toMatch(/process\.env\.AVE_REQUIRE_SANDBOX_CASES === "1"/u);
+  });
+
   it("requires both Windows and Linux packaging targets in the cached CI check", () => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
       jobs: Record<string, { "runs-on": string; env: Record<string, string>; steps: Record<string, unknown>[]; "continue-on-error"?: boolean }>;

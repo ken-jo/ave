@@ -31,6 +31,8 @@ export interface VerifiedDocumentEngineInstallation {
   readonly extensionPath: string;
   readonly extensionSha256: string;
   assertCurrent(): void;
+  /** Verifies the payload and extension bytes read during the recheck. Same-user in-place writes
+   * between the recheck and process creation are outside this guarantee on every platform. */
   verifyBeforeSpawn(signal: AbortSignal): Promise<void>;
 }
 
@@ -202,7 +204,7 @@ async function assertIdentityDigest(paths: DocumentEnginePayloadPaths, expected:
 }
 
 /**
- * The one full verification, at install time: every payload byte is hashed and compared with the authenticated
+ * At install time, every payload byte is hashed and compared with the authenticated
  * archive's tree, the executable signer is assessed, and the metadata identity digest taken before the hash must
  * still hold afterwards, binding the recorded identity to the hashed bytes.
  */
@@ -269,7 +271,7 @@ function bindInstallation(receipt: InstallationReceipt, release: DocumentEngineR
     installations.set(slot, { promise: rejected, settled: true });
     return failure;
   };
-  // Synchronous and constant-size: the whole tree is compared asynchronously in verifyBeforeSpawn.
+  // The synchronous check covers only the recorded anchors. The tree and extension bytes are checked separately.
   const assertCurrent = (): void => {
     if (!current()) throw new DocumentEngineInstallError("integrity-failed", "Document engine installation is no longer current");
     if (failure) throw failure;
@@ -286,6 +288,10 @@ function bindInstallation(receipt: InstallationReceipt, release: DocumentEngineR
         assertCurrent();
         signal.throwIfAborted();
         await assertIdentityDigest(paths, receipt.identityDigest, signal);
+        if (documentEngineTreeDigest(await readDocumentEngineTree(paths.root, signal)) !== receipt.treeDigest) {
+          throw new DocumentEngineInstallError("integrity-failed", "Document engine payload bytes changed after verification");
+        }
+        await verifyFile(extensionPath, DOCUMENT_ENGINE_IMPORT_EXTENSION.bytes, DOCUMENT_ENGINE_IMPORT_EXTENSION.sha256, signal);
         assertCurrent();
       } catch (error) {
         signal.throwIfAborted();

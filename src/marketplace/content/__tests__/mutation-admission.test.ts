@@ -26,18 +26,18 @@ function members(type: { prototype: object }, instance: object): string[] {
 
 const STORE_INTERNALS = ["queue", "options", "ledger", "serialize", "mutate", "removeWhenRetired", "assertClaimFree", "loadOne"];
 const LEDGER_INTERNALS = ["path", "entries", "write", "pendingReview", "reloadIfPending"];
-const SETTINGS_OBSERVERS = ["getAll", "get", "getProviderConfigRevision", "getSecretGeneration", "isSecretIdentityUsable",
+const SETTINGS_OBSERVERS = ["getAll", "get", "getSaved", "getSavedSkillMemoryGeneration", "getProviderConfigRevision", "getSecretGeneration", "isSecretIdentityUsable",
   "onLeaseStateChanged", "onChanged", "getPluginConfig", "getSecret", "getEncryptedSecret", "hasStoredSecret", "isSecretStorageEncrypted",
   "loadedMainLayout", "getSettingsFilePath"];
 const SETTINGS_OTHER_WRITES = ["migrateSecrets", "deleteRetiredLlmVendorApiKeys",
   "replaceLlm", "setPluginConfig", "deletePluginConfig", "setSecret", "deleteSecret", "deletePluginSecrets"];
-const SETTINGS_INTERNALS = ["changeListeners", "providerConfigRevision", "secretGenerations", "observedSecretFingerprint",
+const SETTINGS_INTERNALS = ["changeListeners", "savedSkillMemoryGeneration", "notifyFeaturesSaved", "providerConfigRevision", "secretGenerations", "observedSecretFingerprint",
   "observedSecretMutation", "secretMutationRegressed", "leaseStateListeners", "readSecretFingerprint", "identityFingerprint",
   "notifyLeaseState", "providerConfigChanged", "secretStateChanged", "secretStatesChanged", "settingsPath", "secretsPath",
   "secretStore", "settings", "saved", "unsaved", "saving", "withheldSecretKeys", "restoringSecretKeys", "invalidatingSecretKeys",
   "reenteredSecretKeys", "writtenReentries", "patchSettings", "replaceMarketplaceProviderPresets", "commitPresetKeyInvalidation",
   "deleteMarketplaceProviderPresetSecretsAtomically", "enteredForApplied", "deleteMarketplaceProviderPresetSecrets",
-  "isRetiredLlmCredential", "secretReadable", "deleteWithheldSecrets", "loadSettings", "commit", "drain", "saveSettings", "mainLayoutAsLoaded"];
+  "isRetiredLlmCredential", "secretReadable", "deleteWithheldSecrets", "loadSettings", "commit", "drain", "applyAdmittedWrites", "saveSettings", "mainLayoutAsLoaded"];
 
 const PROVIDER_PRESET = {
   providerId: "fixture-router", label: "Fixture Router", baseUrl: "https://router.example.test/v1",

@@ -24,6 +24,7 @@ import { AddRoutineModal, InvalidRoutineRow } from "../RoutinePanel.js";
 import { ScheduleItemPopover, routineTitle, type ScheduleItemDraft } from "./ScheduleItemPopover.js";
 import { AttachWorkflowScheduleDialog } from "./AttachWorkflowScheduleDialog.js";
 import { useScheduleData } from "./use-schedule-data.js";
+import { formatMediumDateTime } from "../../../../shared/format-time.js";
 import { formatIpcError } from "../../format-ipc-error.js";
 import { CONNECTED_BAR, chatTitle, useProjectChats } from "./chat-link.js";
 import { layoutDayChips, sameDay, scheduleRange, shiftAnchor, type ScheduleViewMode } from "./schedule-layout.js";
@@ -295,7 +296,9 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
 
   const templateScheduleRow = (routine: RoutineRecord) => {
     const { attachmentId } = routine;
-    const status = routine.templateAttention === "attachment-missing" ? t("workflowSchedule.needsReattachOrDelete")
+    const breakerPaused = routine.pausedBy === "schedule-breaker" ? routine.pausedAt : undefined;
+    const status = breakerPaused ? t("schedulePanel.pausedByScheduleBreaker", { when: formatMediumDateTime(breakerPaused) })
+      : routine.templateAttention === "attachment-missing" ? t("workflowSchedule.needsReattachOrDelete")
       : routine.templateAttention === "attachment-unavailable" ? t("workflowSchedule.attachmentUnavailable")
       : routine.templateAttention === "scope-changed" ? t("workflowSchedule.needsReattach")
       : routine.lastTemplateSkip?.code === "run-unsettled" ? t("workflowSchedule.skippedUnsettled")
@@ -306,6 +309,9 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
       <div key={routine.id} className="flex flex-wrap items-center gap-2 px-2 py-1 text-xs" data-routine-id={routine.id} tabIndex={-1}>
         <span className="min-w-0 flex-1 truncate font-semibold">{routineTitle(routine)}</span>
         {status && <span role="status" className="text-warning">{status}</span>}
+        {breakerPaused && (
+          <Button variant="ghost" size="sm" onClick={() => void runAction(() => api.resumeRoutine(routine.id))}>{t("schedulePanel.resume")}</Button>
+        )}
         {attachmentId && !routine.templateAttention && !routine.pausedAt && (
           <Button variant="ghost" size="sm" onClick={() => void runAction(() => api.triggerRoutineNow(routine.id))}>{t("workflowSchedule.runNow")}</Button>
         )}

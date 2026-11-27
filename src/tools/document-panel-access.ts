@@ -1,3 +1,4 @@
+import { markHostRefusal } from "./host-refusal.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 
 type DocumentPanelOpener = (path: string, context: ToolExecutionContext) => Promise<ToolExecutionResult>;
@@ -10,8 +11,9 @@ export function setDocumentPanelOpener(opener: DocumentPanelOpener): void {
 
 export async function requestDocumentPanel(path: string, context: ToolExecutionContext): Promise<ToolExecutionResult> {
   if (context.headless || !documentPanelOpener) {
-    return { isError: true, output: JSON.stringify({ ok: false, error: "ui-unavailable", opened: false,
+    const unavailable = { isError: true, output: JSON.stringify({ ok: false, error: "ui-unavailable", opened: false,
       message: "The originating document panel is unavailable.", retryable: false }) };
+    return context.headless ? markHostRefusal(unavailable) : unavailable;
   }
   return documentPanelOpener(path, context);
 }

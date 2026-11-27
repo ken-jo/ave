@@ -4,4 +4,6 @@ export const XLSX_EDIT_LIMITS = Object.freeze({
   maxValueChars: 32767,
 });
 
+export const WINDOWS_WORKBOOK_IDENTITY_ENV = "AVE_WINDOWS_WORKBOOK_IDENTITY";
+
 export type XlsxCellValue = string | number | boolean | null;

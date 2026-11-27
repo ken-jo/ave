@@ -25,7 +25,7 @@ import {
   buildHostShellExecutionPlan, exactRulePassesUnsandboxedShellAsk, HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL, requiresUnsandboxedShellAsk,
   type HostShellExecutionPlan,
 } from "../host-shell-execution-plan.js";
-import { assertLocalEmbeddingRuntime } from "../../main/memory-map/local-runtime.js";
+import { assertLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from "../../main/memory-map/local-runtime-win32.js";
 import type { MxcExtensionStartEvidence } from "../mxc-extension-protocol.js";
 import { classifyMxcExtensionReadiness, classifyMxcReleaseGate, planWindowsExtensionHolder, type MxcExtensionReleaseGateEvidence } from "../mxc-extension-readiness.js";
 import { synthesizeMxcAncestorQueries } from "../mxc-filesystem-policy.js";
@@ -414,7 +414,7 @@ const ROWS: readonly Row[] = [
   { id: "L20", point: "local inference child with no confinement backend", tree: "T:204", unknown: "-",
     today: { outcome: "deny", reason: "local-runtime-unavailable" },
     core: { outcome: "unasked", waiver: "setting" },
-    observe: () => {
+    observe: async (): Promise<Observation> => {
       setProcessPlatform("win32");
       setPluginWorkerConfinementRequestedAtBoot(true);
       setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: FIXTURE_HOME, sid: "S-1-5-21-1" });
@@ -422,7 +422,8 @@ const ROWS: readonly Row[] = [
       expect(publishExtensionPlan({ state: "unavailable", reason: "native-validation-required" })).toBe("unavailable:native-validation-required");
       expect(extensionStart().outcome).toBe("ask-human");
       expect(extensionStart({ hostOwned: true })).toEqual({ outcome: "unasked", reason: "none" });
-      return { outcome: "deny", reason: refusal(assertLocalEmbeddingRuntime) };
+      const admission = await refreshLocalInferenceAdmission("switches");
+      return { outcome: "deny", reason: refusal(() => assertLocalEmbeddingRuntime(undefined, admission)) };
     } },
   // The Windows shell "Boot plan" in the architecture describes this route.
   { id: "L18", point: "a container route is published under the runtime-wrap name", tree: "A:3467", unknown: "-",
