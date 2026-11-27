@@ -168,7 +168,7 @@ it.each(["normal", "slow"])("logs safely to production console, file and support
     expect(output).not.toContain(CANARY);
   }
   if (storage === "slow") {
-    const overflow = stdout.split("\n").find((line) => line.includes('\"event\":\"permission_log_overflow\"'));
+    const overflow = stdout.split("\n").find((line) => line.includes('"event":"permission_log_overflow"'));
     expect(JSON.parse(overflow ?? "{}")).toMatchObject({ dropped: 44 });
   }
   expect(stderr).not.toContain(CANARY);

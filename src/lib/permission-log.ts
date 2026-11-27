@@ -50,7 +50,8 @@ export function logPermissionEvent(
 
 function deliver(event: string, fields: PermissionLogFields, level: PermissionLogLevel): void {
   try {
-    (log ??= createLogger("permissions", true))[level]({ ...fields, event }, event);
+    log ??= createLogger("permissions", true);
+    log[level]({ ...fields, event }, event);
   } catch {
     // Log delivery cannot affect permission or execution state.
   }

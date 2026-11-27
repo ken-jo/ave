@@ -253,9 +253,9 @@ describe("user server configuration transactions", () => {
   it("keeps exact trust binding and connects when app logging throws", async () => {
     const owner = manager();
     await owner.addConfig(config);
-    const trusted = vi.fn(() => { throw new Error("Log sink unavailable"); });
+    const trusted = vi.fn((_entry: Record<string, unknown>) => { throw new Error("Log sink unavailable"); });
     const capture = watchPermissionEvents((entry) => {
-      if (entry.event === "mcp_server_trust_requested") trusted();
+      if (entry.event === "mcp_server_trust_requested") trusted(entry);
     });
     try {
       await expect(owner.startServer(config.id, "stale-fingerprint")).rejects.toThrow("mcp-trust-stale");
