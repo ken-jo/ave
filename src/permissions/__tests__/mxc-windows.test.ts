@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -409,6 +409,8 @@ describe("buildMxcShellRequest", () => {
 
   it("pins every security-relevant field", () => {
     const request = buildMxcShellRequest(base);
+    expect(`${JSON.stringify(request, null, 2)}\n`)
+      .toBe(readFileSync(new URL("./fixtures/windows-shell-request.json", import.meta.url), "utf8"));
     expect(request).toEqual({
       version: "1.0.0",
       containment: "processcontainer",

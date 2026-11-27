@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -130,6 +131,8 @@ describe("macOS container shell request", () => {
 
   it("serializes one profile override and admits the carved cwd with an explicit environment", () => {
     const { request } = buildSeatbeltShellRequest(input);
+    expect(`${JSON.stringify(request, null, 2)}\n`)
+      .toBe(readFileSync(new URL("./fixtures/seatbelt-shell-request.json", import.meta.url), "utf8"));
     const { profileOverride, ...seatbelt } = request.seatbelt;
     expect(profileOverride).toContain('(allow network-outbound (remote ip "localhost:8444"))');
     expect({ ...request, seatbelt }).toEqual({

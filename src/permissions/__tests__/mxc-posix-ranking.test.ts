@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { ContainerBackend } from "../../shared/container-platform.js";
 import { describe, expect, it } from "vitest";
 import {
@@ -23,8 +24,8 @@ const model = (floors: PolicyFloorRow[], ...launchGrants: PolicyGrantRow[]) =>
   buildPolicyModel({ floors, launchGrants, userGrants: [], extensionManifests: [] });
 
 describe("POSIX container filesystem ranking", () => {
-  it.each(["bubblewrap", "process-container"] as const)("refuses an unmeasured backend rule for %s", (backend) => {
-    const rank = () => rankPosixContainerRows(model([]), backend, lookups);
+  it("refuses an unmeasured backend rule", () => {
+    const rank = () => rankPosixContainerRows(model([]), "unknown-backend" as ContainerBackend, lookups);
     expect(rank).toThrow(PosixContainerPolicyError);
     expect(rank).toThrow(expect.objectContaining({ code: "backend-unmeasured" }));
   });
@@ -226,8 +227,22 @@ describe("POSIX container filesystem ranking", () => {
     const inner = "/work/private/reopened/secret";
     const policy = model([deny(inner), deny(outer), deny(`${inner}/nested`)],
       read("/work"), read("/work/private/reopened"));
-    const ranked = _rankPosixContainerRowsForTest(policy, "most-specific", lookups);
-    expect(ranked.denied).toEqual([inner, outer]);
+    const ranked = rankPosixContainerRows(policy, "bubblewrap", lookups);
+    expect(ranked).toMatchObject({ readonly: ["/work", "/work/private/reopened"], denied: [inner, outer] });
+  });
+
+  it("gives an equal-path deny precedence for bubblewrap", () => {
+    const ranked = rankPosixContainerRows(model([deny("/work/private")], read("/work"), write("/work/private")), "bubblewrap", lookups);
+    expect(ranked).toMatchObject({ readwrite: [], readonly: ["/work"], denied: ["/work/private"] });
+  });
+
+  it("preserves the Seatbelt lists for a carved read", () => {
+    const policy = model([deny("/work/private", "ave-home")], read("/work"), write("/work/private/allowed"));
+    const { readwrite, readonly, denied } = rankPosixContainerRows(policy, "seatbelt", {
+      ...lookups, children: (path) => path === "/work" ? ["private", "public"] : [],
+    });
+    expect(`${JSON.stringify({ readwrite, readonly, denied }, null, 2)}\n`)
+      .toBe(readFileSync(new URL("./fixtures/seatbelt-ranked-filesystem.json", import.meta.url), "utf8"));
   });
 
   it("refuses an effective deny lost beneath a nearer grant", () => {

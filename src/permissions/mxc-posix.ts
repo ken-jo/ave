@@ -9,6 +9,7 @@ type NestedGrantRule = "deny-wins" | "most-specific";
 
 const NESTED_GRANT_RULE: Readonly<Partial<Record<ContainerBackend, NestedGrantRule>>> = Object.freeze({
   seatbelt: "deny-wins",
+  bubblewrap: "most-specific",
 });
 
 export interface PosixPolicyLookups {

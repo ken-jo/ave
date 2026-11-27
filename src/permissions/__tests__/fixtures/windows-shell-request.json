@@ -1,0 +1,44 @@
+{
+  "version": "1.0.0",
+  "containment": "processcontainer",
+  "process": {
+    "commandLine": "cmd.exe /d /c echo hi",
+    "cwd": "C:\\work\\repo",
+    "env": [
+      "SYSTEMROOT=C:\\Windows",
+      "LOCALAPPDATA=C:\\Users\\u\\AppData\\Local",
+      "PATH=C:\\Windows\\System32"
+    ],
+    "inheritDefaultEnv": false,
+    "timeout": 120000
+  },
+  "filesystem": {
+    "readwritePaths": [
+      "C:\\work\\repo"
+    ],
+    "readonlyPaths": [],
+    "deniedPaths": [
+      "C:\\work\\repo\\.env"
+    ]
+  },
+  "fallback": {
+    "allowDaclMutation": false
+  },
+  "network": {
+    "egress": {
+      "default": "deny"
+    },
+    "ingress": {
+      "default": "allow",
+      "hostLoopback": "allow"
+    }
+  },
+  "runtimeConfig": {
+    "networkProxy": "http://127.0.0.1:5882"
+  },
+  "ui": {
+    "disable": false,
+    "clipboard": "none",
+    "injection": false
+  }
+}
