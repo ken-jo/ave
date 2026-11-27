@@ -1961,7 +1961,8 @@ export class SubscriptionRuntimeService {
     }
     if (evidence.kind === "advertisement" || evidence.kind === "login-completed" || evidence.kind === "login-retired") {
       const revision = state.revision;
-      const source = evidence.kind === "login-retired" ? evidence.completionSource : evidence.source;
+      const source = evidence.kind === "advertisement" ? evidence.source
+        : evidence.kind === "login-retired" ? evidence.completionSource : undefined;
       this.replaceConfirmation(state, { source, attempts: 0, retry: true });
       state.accountKey = undefined;
       this.latchConnection(provider, state, "unknown");

@@ -204,6 +204,7 @@ it.each([
   "account notification retry withdrawn by shutdown", "matching login completion", "account read during cancel",
   "device login completion while account probes fail", "device login cancel failure while account probes fail",
   "window cancel with deferred login completion", "window cancel timeout with a successor login",
+  "window cancel timeout after matching success", "window cancel timeout after matching success and sign-out",
 ] as const)("invalidates a cached windowless reviewer verdict on %s and restores the saved route", async (scenario) => {
   const tempDir = mkdtempSync(join(tmpdir(), "windowless-reviewer-"));
   vi.resetModules();
@@ -257,7 +258,8 @@ it.each([
   const threadStarted = deferred<{ child: RuntimeProcessFixture; id: number }>();
   const holdsCatalog = scenario === "sign-out during catalog" || scenario === "process exit during catalog";
   const windowCancel = scenario.startsWith("window cancel");
-  const windowCancelTimeout = scenario === "window cancel timeout with a successor login";
+  const windowCancelTimeout = scenario.startsWith("window cancel timeout");
+  const successorAfterTimeout = scenario === "window cancel timeout with a successor login";
   const retiresDeviceLogin = scenario.startsWith("device login") || windowCancel;
   const openAuthorizationUrl = vi.fn<(_url: string, options: OAuthLoginOptions) => void>();
   const windowCancelStarted = deferred<number>();
@@ -276,6 +278,7 @@ it.each([
     await createPrivateDirectory(runtimeHome);
   }
   const artifact = startupSignOut || replacementDuringProof || holdsCatalog || usesAccountNotification ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
+  const resolveRuntime = artifact && vi.fn(async () => ({ ...artifact, version: "0.153.4" }));
   const cliArtifact = realCancelRace || promptPipeLoss ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
   const realCli = cliArtifact && new ClaudeCodeSubscriptionClient({
     runtimeHome, workspaceDir: runtimeHome, runtimeTempDir: runtimeHome,
@@ -348,10 +351,10 @@ it.each([
       },
       stop: vi.fn(),
     }) as never,
-    ...(artifact ? {
+    ...(resolveRuntime ? {
       createCodexAppServerClient: (options) => new CodexAppServerClient({
         ...options, runtimeHome, sqliteHome: runtimeHome, workspaceDir: runtimeHome, runtimeTempDir: runtimeHome,
-        resolveRuntime: async () => ({ ...artifact, version: "0.153.4" }),
+        resolveRuntime,
         spawn: () => {
           const server = new RuntimeProcessFixture();
           child = server;
@@ -587,7 +590,7 @@ it.each([
           pendingLogin: null, pendingDeviceCode: null, capabilities: { chat: false },
         });
         expect((await dispatch(true)).result.decision).toBe("deny");
-        if (windowCancelTimeout) {
+        if (successorAfterTimeout) {
           const successor = runtime.startLogin(provider, "device-code");
           const successorResult = expect(successor).resolves.toMatchObject(pending);
           await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS);
@@ -597,6 +600,28 @@ it.each([
           confirmingChild = requiredFixture(child);
           expect(confirmingChild).not.toBe(server);
           await vi.advanceTimersByTimeAsync(1);
+        } else if (windowCancelTimeout) {
+          await vi.advanceTimersByTimeAsync(1);
+          complete(server, "fixture-login");
+          await vi.advanceTimersByTimeAsync(0);
+          expect(accountReads).toHaveLength(2);
+          if (scenario.endsWith("sign-out")) {
+            send(server, { method: "account/updated", params: { authMode: null } });
+            expect(await runtime.getCachedStatus(provider)).toMatchObject({ connection: "signed-out" });
+          }
+          await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS - 1);
+          expect(server.killed).toBe(true);
+          expect(child).toBe(server);
+          expect(await dispatch(true)).toMatchObject(deny);
+          const resolutionsAfterTimeout = requiredFixture(resolveRuntime).mock.calls.length;
+          await vi.advanceTimersByTimeAsync(250);
+          if (scenario.endsWith("sign-out")) {
+            expect(resolveRuntime).toHaveBeenCalledTimes(resolutionsAfterTimeout);
+            expect(accountReads).toHaveLength(2);
+            expect(child).toBe(server);
+            expect(await dispatch(true)).toMatchObject(deny);
+            return;
+          }
         } else {
           complete(server, "unrelated-login");
           await new Promise<void>((resolve) => setImmediate(resolve));
@@ -608,13 +633,18 @@ it.each([
       } finally {
         if (windowCancelTimeout) vi.useRealTimers();
       }
-      if (windowCancelTimeout) {
+      if (successorAfterTimeout) {
         await vi.waitFor(() => expect(accountReads).toHaveLength(2));
         replyAccount(confirmingChild, 1, false);
         await new Promise<void>((resolve) => setImmediate(resolve));
         complete(confirmingChild, "successor-login");
         confirmationIndex = 2;
         await vi.waitFor(() => expect(accountReads).toHaveLength(3));
+      } else if (windowCancelTimeout) {
+        await vi.waitFor(() => expect(accountReads).toHaveLength(3));
+        confirmingChild = requiredFixture(child);
+        expect(confirmingChild).not.toBe(server);
+        confirmationIndex = 2;
       }
       await vi.waitFor(async () => expect(await dispatch(true)).toMatchObject(deny));
       replyAccount(confirmingChild, confirmationIndex, true);
