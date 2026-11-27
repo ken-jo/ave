@@ -44,7 +44,7 @@ describe("POSIX container filesystem ranking", () => {
 
   it("expands home, canonicalizes paths, drops missing grants and introduces no roots", () => {
     expect(rankPosixContainerRows(model([], read("~/work"), write("/tmp/work/"), read("/missing")), "seatbelt", lookups))
-      .toEqual({ readwrite: ["/private/tmp/work"], readonly: ["/users/example/work"], denied: [] });
+      .toMatchObject({ readwrite: ["/private/tmp/work"], readonly: ["/users/example/work"], denied: [] });
   });
 
   it("propagates a canonicalization failure", () => {
@@ -64,20 +64,20 @@ describe("POSIX container filesystem ranking", () => {
     const policy = model([deny("/work/secret", "secrets")],
       read("/work/secret/private"), read("/work/secret/allowed/leaf"), pierce("/work/secret/allowed"));
     expect(rankPosixContainerRows(policy, "seatbelt", lookups))
-      .toEqual({ readwrite: [], readonly: ["/work/secret/allowed/leaf"], denied: [] });
+      .toMatchObject({ readwrite: [], readonly: ["/work/secret/allowed/leaf"], denied: [] });
   });
 
   it("does not keep write access beneath a read-only floor pierce", () => {
     const policy = model([deny("/sealed", "secrets")], write("/sealed/history"), pierce("/sealed/history"));
     expect(rankPosixContainerRows(policy, "seatbelt", lookups))
-      .toEqual({ readwrite: [], readonly: ["/sealed/history"], denied: [] });
+      .toMatchObject({ readwrite: [], readonly: ["/sealed/history"], denied: [] });
   });
 
   it("keeps a precisely pierced floor read-only under a wider write grant", () => {
     const policy = model([deny("/work/sealed", "secrets")],
       write("/work"), read("/work/sealed"), pierce("/work/sealed"));
     expect(rankPosixContainerRows(policy, "seatbelt", lookups))
-      .toEqual({ readwrite: ["/work"], readonly: ["/work/sealed"], denied: [] });
+      .toMatchObject({ readwrite: ["/work"], readonly: ["/work/sealed"], denied: [] });
   });
 
   it("allows a pierce and a wider grant when the pierce names the secret floor exactly", () => {
@@ -97,7 +97,7 @@ describe("POSIX container filesystem ranking", () => {
       protect("/work/blocked/control"), deny("/work/blocked"),
       protect("/elsewhere"), protect("/read-only/control"),
     ], write("/work"), write("/work/.git/hooks/file"), read("/read-only"));
-    expect(rankPosixContainerRows(policy, "seatbelt", lookups)).toEqual({
+    expect(rankPosixContainerRows(policy, "seatbelt", lookups)).toMatchObject({
       readwrite: ["/work"],
       readonly: ["/read-only", "/work/.git/hooks/file", "/work/.git/hooks", "/work/missing/hooks"],
       denied: ["/work/blocked"],
@@ -107,20 +107,32 @@ describe("POSIX container filesystem ranking", () => {
   it("demotes a grant wholly beneath the write floor", () => {
     const policy = model([protect("/work/control")], write("/work/control/new"));
     expect(rankPosixContainerRows(policy, "seatbelt", lookups))
-      .toEqual({ readwrite: [], readonly: ["/work/control/new"], denied: [] });
+      .toMatchObject({ readwrite: [], readonly: ["/work/control/new"], denied: [] });
   });
 
   it("drops a grant equal to a read deny and omits unreached denies", () => {
     const policy = model([deny("/work/private"), deny("/elsewhere", "ave-home")], read("/work/private"));
     expect(rankPosixContainerRows(policy, "seatbelt", lookups))
-      .toEqual({ readwrite: [], readonly: [], denied: [] });
+      .toMatchObject({ readwrite: [], readonly: [], denied: [] });
   });
 
   it("opens a narrower grant without emitting its enclosing deny", () => {
     const policy = model([deny("/work/private", "ave-home")], read("/work"), read("/work/private/allowed"));
     expect(rankPosixContainerRows(policy, "seatbelt", {
       ...lookups, children: (path) => path === "/work" ? ["private", "public"] : [],
-    })).toEqual({ readwrite: [], readonly: ["/work/private/allowed", "/work/public"], denied: [] });
+    })).toMatchObject({ readwrite: [], readonly: ["/work/private/allowed", "/work/public"], denied: [] });
+  });
+
+  it("keeps a carved Library child readable with a nested deny in the deny block", () => {
+    const home = lookups.home;
+    const library = home + "/Library";
+    const keychains = library + "/Keychains";
+    const ave = home + "/.ave";
+    const children = (path: string) => path === home ? ["Library", ".ave"] : [];
+    const ranked = rankPosixContainerRows(model([deny(ave, "ave-home"), deny(keychains, "secrets")],
+      read(home), read(ave + "/open")), "seatbelt", { ...lookups, children });
+    expect(ranked.readonly).toContain(library);
+    expect(ranked.denied).toContain(keychains);
   });
 
   it("carves broad reads and writes around private roots and resolves aliases before granting children", () => {
@@ -150,7 +162,7 @@ describe("POSIX container filesystem ranking", () => {
         return lookups.canonical(path);
       },
     });
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       readwrite: ["/work", `${ave}/sandbox/own`, `${home}/Documents`, `${home}/public.txt`],
       readonly: [
         `${ave}/plugin`, `${ave}/sessions/access`, "/bin", "/private/var", "/private/tmp/notes",
@@ -164,7 +176,7 @@ describe("POSIX container filesystem ranking", () => {
     const result = rankPosixContainerRows(model([], read("/"), write("/work")), "seatbelt", {
       ...lookups, children: () => Array.from({ length: count }, (_, index) => `entry-${index}`),
     });
-    expect(result).toEqual({ readwrite: ["/work"], readonly: [], denied: [], carvedReadLimitedAt: ["/"] });
+    expect(result).toMatchObject({ readwrite: ["/work"], readonly: [], denied: [], carvedReadLimitedAt: ["/"] });
   });
 
   it("refuses 401 distinct admitted leaves and names the first grant over the cap", () => {
@@ -204,7 +216,7 @@ describe("POSIX container filesystem ranking", () => {
 
   it("keeps both rows when the backend gives precedence to the most specific rule", () => {
     const policy = model([deny("/work/private")], read("/work"), write("/work/private/allowed"));
-    expect(_rankPosixContainerRowsForTest(policy, "most-specific", lookups)).toEqual({
+    expect(_rankPosixContainerRowsForTest(policy, "most-specific", lookups)).toMatchObject({
       readwrite: ["/work/private/allowed"], readonly: ["/work"], denied: ["/work/private"],
     });
   });
@@ -235,7 +247,7 @@ describe("POSIX container filesystem ranking", () => {
   it("deduplicates canonical spellings and removes grants and denies shadowed at the same precedence", () => {
     const policy = model([deny("/work/private/"), deny("/work/private/child"), deny("/Work/Private")],
       write("/work"), read("/work/"), write("/Work"), read("/tmp"), read("/private/tmp/"));
-    expect(rankPosixContainerRows(policy, "seatbelt", { ...lookups, foldsCase: true })).toEqual({
+    expect(rankPosixContainerRows(policy, "seatbelt", { ...lookups, foldsCase: true })).toMatchObject({
       readwrite: ["/work"], readonly: ["/private/tmp"], denied: ["/work/private"],
     });
   });

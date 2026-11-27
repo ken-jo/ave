@@ -13,7 +13,7 @@ import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
 import { posixPolicyLookups, rankPosixContainerRows } from "./mxc-posix.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow } from "./policy-model.js";
-import { buildSeatbeltDenySuffix } from "./seatbelt-deny-suffix.js";
+import { buildSeatbeltDenySuffix } from "./seatbelt-profile.js";
 
 const PROFILE_BEGIN = "Seatbelt: --- begin generated profile ---";
 const PROFILE_END = "Seatbelt: --- end generated profile ---";

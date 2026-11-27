@@ -19,7 +19,7 @@ const GIT_MARKER_FILTER = '(regex #"/\\.[gG][iI][tT]$")';
 // below because the runtime re-allows those two operations for every write root by name, and a rule that names an operation
 // outranks a wildcard rule whatever their order.
 const EGRESS_SOCKET_DIRECTORY_FILTER = '(regex #"/srt-sock-[^/]*(/|$)")';
-const GIT_METADATA_RULES = [
+export const GIT_METADATA_RULES = [
   // Match the entry itself: an existing directory's children remain writable.
   `(deny file-write-create file-write-unlink ${GIT_MARKER_FILTER})`,
   `(deny file-write* (require-all ${GIT_MARKER_FILTER} (vnode-type REGULAR-FILE)))`,
@@ -28,7 +28,7 @@ const GIT_METADATA_RULES = [
 
 // Measured: a profile is read with strings of up to 1022 bytes and refused ("Error reading string") from 1023. The limit is in
 // bytes, so a name outside ASCII counts for each byte it takes.
-const MAX_SEATBELT_STRING_BYTES = 1000;
+export const MAX_SEATBELT_STRING_BYTES = 1000;
 function nameExpression(name: string): string {
   return name.replace(/[.]/gu, "\\.").replace(/[a-z]/giu, letter => `[${letter.toLowerCase()}${letter.toUpperCase()}]`);
 }
@@ -146,6 +146,26 @@ export function macLinkedNameTargetRules(targets: readonly string[], visited: re
     ...targets.map(target => `(deny file-write* file-write-create file-write-unlink (regex #"^${foldedPathPattern(target, writeRoots)}(/|$)"))`),
     ...visited.filter(path => path !== "/").map(path => `(deny file-write-create file-write-unlink (regex #"^${foldedPathPattern(path, writeRoots)}$"))`),
   ])].join("\n");
+}
+
+// Where a named entry is reached through a link, the resolved path and every name on the way are held too. A target that is a
+// work folder, or holds one, cannot be denied without taking the work folder with it, so that wrap is refused by name.
+export function macWriteRootLinkedNameRules(physicalRoots: readonly string[]): string {
+  const fold = (path: string): string => path.normalize("NFC").toLowerCase();
+  const targets = new Set<string>();
+  const visited = new Set<string>();
+  for (const root of physicalRoots) for (const entry of SANDBOX_NAMED_ENTRIES) {
+    const followed = followNamedEntry(root, entry);
+    if (!followed.linked) continue;
+    if (physicalRoots.some(held => fold(held) === fold(followed.physical) || fold(held).startsWith(`${fold(followed.physical).replace(/\/$/u, "")}/`))) {
+      throw new Error(t("sandboxPolicy.namedEntryLinksToWriteRoot", { entry }));
+    }
+    targets.add(followed.physical);
+    for (const path of followed.visited) visited.add(path);
+    // The walk starts at the root; where another write root holds this one, the names down to it are part of the walk as well.
+    for (let above = dirname(root); physicalRoots.some(held => above.startsWith(`${held.replace(/\/$/u, "")}/`)); above = dirname(above)) visited.add(above);
+  }
+  return macLinkedNameTargetRules([...targets], [...visited], physicalRoots);
 }
 
 // The default macOS volume folds case and normalization, so two spellings that differ only there name one directory. On a volume that

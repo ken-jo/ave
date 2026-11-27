@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-model.js";
-import { _seatbeltDenyGlobForTest, buildSeatbeltDenySuffix, splitSeatbeltPolicyRows } from "../seatbelt-deny-suffix.js";
+import { _seatbeltDenyGlobForTest, buildSeatbeltDenySuffix, splitSeatbeltPolicyRows } from "../seatbelt-profile.js";
 import { parseSeatbeltProfile } from "../mxc-macos.js";
 
 const lookups = { home: "/users/example", canonical: (path: string) => path, foldsCase: true };

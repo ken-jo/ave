@@ -8,7 +8,7 @@ import { launcherPathFor } from "../mxc-launcher.js";
 import { _runSeatbeltCanaryForTest, parseSeatbeltProfile } from "../mxc-macos.js";
 import { posixPolicyLookups, rankPosixContainerRows } from "../mxc-posix.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-model.js";
-import { buildSeatbeltDenySuffix } from "../seatbelt-deny-suffix.js";
+import { buildSeatbeltDenySuffix } from "../seatbelt-profile.js";
 
 describe.runIf(process.platform === "darwin" && process.arch === "arm64")("native Seatbelt deny suffix", () => {
   let root: string;

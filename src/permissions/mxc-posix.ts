@@ -26,7 +26,9 @@ export type PosixPolicyRefusal =
   | "backend-unmeasured" | "pattern-row" | "relative-row" | "nested-grant-under-deny" | "deny-without-outcome"
   | "chain-unreadable" | "grant-limit-exceeded";
 
-interface PosixFilesystemGrants extends MxcFilesystemGrants {
+export interface PosixFilesystemGrants extends MxcFilesystemGrants {
+  readonly chainFolders: readonly string[];
+  readonly ungrantedDenies: readonly string[];
   readonly carvedReadLimitedAt?: readonly string[];
 }
 
@@ -84,13 +86,13 @@ function pathKey(path: string, foldsCase: boolean): string {
   return foldsCase ? path.normalize("NFC").toLowerCase() : path;
 }
 
-function atOrUnder(path: string, root: string, foldsCase: boolean): boolean {
+export function atOrUnder(path: string, root: string, foldsCase: boolean): boolean {
   const key = pathKey(path, foldsCase);
   const parent = pathKey(root, foldsCase);
   return key === parent || key.startsWith(parent === "/" ? parent : `${parent}/`);
 }
 
-function canonicalPath(path: string, literal: boolean, lookups: PosixPolicyLookups): string {
+export function canonicalPath(path: string, literal: boolean, lookups: PosixPolicyLookups): string {
   const expanded = path === "~" ? lookups.home : path.startsWith("~/") ? lookups.home + path.slice(1) : path;
   if (!posix.isAbsolute(expanded)) throw new PosixContainerPolicyError("relative-row", `Container row is relative: ${path}`);
   if (!literal && /[*?[\]{}]/u.test(expanded)) throw new PosixContainerPolicyError("pattern-row", `Container row is a pattern: ${path}`);
@@ -136,7 +138,7 @@ function carveGrants(
   readwrite: readonly string[], readonly: readonly string[], readDenies: readonly string[],
   writeFloor: readonly string[], lookups: PosixPolicyLookups,
   finalize: (grants: MxcFilesystemGrants) => MxcFilesystemGrants,
-): PosixFilesystemGrants {
+): Omit<PosixFilesystemGrants, "ungrantedDenies"> {
   const key = (path: string) => pathKey(path, lookups.foldsCase);
   const covers = (root: string, path: string) => atOrUnder(path, root, lookups.foldsCase);
   const grants = [...readwrite, ...readonly];
@@ -195,7 +197,7 @@ function carveGrants(
         const resolvedKey = key(resolved);
         if (!covers(enclosing, resolved) || !lookups.exists(resolved) || resolved === "/dev" || chain.has(resolvedKey)
           || grantKeys.has(resolvedKey) || emitted.has(resolvedKey)) continue;
-        if (activeDenies.some(deny => covers(resolved, deny) || covers(deny, resolved))) continue;
+        if (activeDenies.some(deny => covers(deny, resolved))) continue;
         if (resolvedKey !== key(child)
           && (chainFolders.some(path => covers(resolved, path))
             || grants.some(path => covers(resolved, path) || covers(path, resolved)))) continue;
@@ -229,6 +231,7 @@ function carveGrants(
   }
   return {
     ...final,
+    chainFolders,
     ...(limited.length > 0 ? { carvedReadLimitedAt: limited } : {}),
   };
 }
@@ -305,12 +308,13 @@ function rankRows(model: PolicyModel, nestedRule: NestedGrantRule, lookups: Posi
   };
   const result = nestedRule === "deny-wins"
     ? carveGrants(writableGrants, readonlyGrants, readDenies, writeFloorRows, lookups, finalize)
-    : finalize({ readwrite: writableGrants, readonly: readonlyGrants, denied: readDenies });
+    : { ...finalize({ readwrite: writableGrants, readonly: readonlyGrants, denied: readDenies }), chainFolders: [] };
   assertDenyOutcomes(readDenies, writeFloorRows, result, lookups.foldsCase, nestedRule);
-  return result;
+  const deniedKeys = new Set(result.denied.map(key));
+  return { ...result, ungrantedDenies: readDenies.filter(deny => !deniedKeys.has(key(deny))) };
 }
 
-/** Policy rows in, the three container lists out. No launch calls it yet. */
+/** Rank the literal rows and retain the carve information needed to render the profile. */
 export function rankPosixContainerRows(
   model: PolicyModel, backend: ContainerBackend, lookups: PosixPolicyLookups,
 ): PosixFilesystemGrants {
