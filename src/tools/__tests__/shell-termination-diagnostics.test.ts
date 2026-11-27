@@ -27,6 +27,32 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   cleanupAsrtSandboxAfterCommand: vi.fn(async () => {}),
   getDefaultSensitiveReadDenyPaths: () => [], getDefaultSensitiveWriteDenyEntries: () => [],
 }));
+// The macOS container launch is native-tested; here it is a controlled supervisor whose completion the test settles.
+const containerLaunch = vi.hoisted(() => ({
+  settle: undefined as undefined | ((outcome: {
+    code: number | null; timedOut: boolean; cancelled: boolean; rejected: boolean; cleanupUnverified: boolean;
+    failure?: { type: "error"; code: string; message: string };
+  }) => void),
+  child: undefined as undefined | import("node:child_process").ChildProcess & { stdout: import("node:stream").PassThrough; stderr: import("node:stream").PassThrough },
+}));
+vi.mock("../mxc-posix-shell-launch.js", async () => {
+  const { ChildProcess } = await import("node:child_process");
+  const { PassThrough } = await import("node:stream");
+  return {
+    prepareMxcPosixShellLaunch: vi.fn(async (_input: unknown, lifecycle: import("../contained-shell-lifecycle.js").ContainedShellLifecycle) => ({
+      carvedReadLimitedAt: undefined, proxyPort: 1, narrowedWriteRoots: [],
+      start() {
+        const child = Object.assign(new ChildProcess(), { stdout: new PassThrough(), stderr: new PassThrough(), stdin: null });
+        const completion = new Promise<Parameters<NonNullable<typeof containerLaunch.settle>>[0]>((resolve) => {
+          containerLaunch.settle = (outcome) => { child.stdout.end(); child.stderr.end(); resolve(outcome); };
+        });
+        containerLaunch.child = child;
+        lifecycle.jobStarted(completion);
+        return { child, completion };
+      },
+    })),
+  };
+});
 // Real helper image verification has native tests.
 vi.mock("../../permissions/srt-win-integrity.js", async (original) => ({
   ...await original<typeof import("../../permissions/srt-win-integrity.js")>(),
@@ -35,7 +61,10 @@ vi.mock("../../permissions/srt-win-integrity.js", async (original) => ({
 
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
-import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import { getLocale, setLocale } from "../../i18n/index.js";
+import { en } from "../../i18n/messages/en.js";
+import { ko } from "../../i18n/messages/ko.js";
 import { POWER_SHELL_AST_PARSER } from "../powershell-ast.js";
 import { BashTool, PowerShellTool, backgroundShellManager as manager, createBashOutputTool, createBashKillTool, endShellSession } from "../shell-tools.js";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -75,9 +104,17 @@ it("waits for the conversation terminal teardown before reporting session cleanu
   expect(settled).toBe(true);
 });
 
+// The plain route and the ASRT wrap route ("sandbox"). macOS shells are never ASRT-wrapped: a requested macOS shell
+// sandbox runs in the container, whose completion has its own block below. The wrap route therefore runs as Linux on a
+// macOS host, and PowerShell, which has no wrap route on its POSIX stand-in platform otherwise, runs as Linux too.
+function routePlatform(route: "plain" | "sandbox", dialect: "bash" | "powershell"): NodeJS.Platform {
+  if (route === "plain") return dialect === "powershell" ? "darwin" : HOST_PLATFORM;
+  return dialect === "bash" && HOST_PLATFORM !== "darwin" ? HOST_PLATFORM : "linux";
+}
+
 describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {
   describe.each(["bash", "powershell"] as const)("%s", (dialect) => {
-    beforeEach(() => { setProcessPlatform(dialect === "powershell" ? "darwin" : HOST_PLATFORM); });
+    beforeEach(() => { setProcessPlatform(routePlatform(route, dialect)); });
     const temporaryRoots = new Set<string>();
     async function start(captureFactory?: () => ToolOutputCapture, failure?: "abort" | "empty" | "sync-throw") {
       setShellSandboxRequestedAtBoot(route === "sandbox");
@@ -274,6 +311,80 @@ describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {
       expect(result.output).not.toContain("SIGKILL");
       expect(vi.getTimerCount()).toBe(0);
     });
+  });
+});
+
+// macOS sandboxed shells run in the container; their completion comes from the supervisor's outcome, not a child exit.
+describe("macOS container shell completion", () => {
+  const exited: Parameters<NonNullable<typeof containerLaunch.settle>>[0] = { code: 0, timedOut: false, cancelled: false, rejected: false, cleanupUnverified: false };
+  beforeEach(() => {
+    setProcessPlatform("darwin");
+    setShellSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability({
+      kind: "asrt", confidence: "verified", platform: "darwin",
+      reason: "Controlled wrapper", confines: { filesystem: true, process: true, network: true },
+    });
+    setContainerShellSubstrate({ state: "available" });
+    containerLaunch.settle = undefined;
+    containerLaunch.child = undefined;
+  });
+  afterEach(() => { setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" }); });
+
+  async function run(outcome: Partial<typeof exited>, stdout = "") {
+    const pending = new BashTool().execute({ command: "echo ready", timeoutSeconds: 1 }, {
+      cwd: process.cwd(), extraAllowedDirectories: [], metadata: {},
+    });
+    await vi.waitFor(() => expect(containerLaunch.settle).toBeTypeOf("function"));
+    if (stdout) containerLaunch.child?.stdout.write(stdout);
+    containerLaunch.settle?.({ ...exited, ...outcome });
+    return pending;
+  }
+
+  it.each([
+    [0, "ready\n", "ready", false],
+    [7, "", "Shell command exited with code 7 without output.", true],
+    // The SDK reports a literal status 255 as 255, unlike the launcher it replaced.
+    [255, "partial\n", "Shell command exited with code 255.\npartial", true],
+  ] as const)("reports a literal exit %s with its output", async (code, stdout, expected, isError) => {
+    expect(await run({ code }, stdout)).toMatchObject({ output: expected, isError, metadata: { returncode: code, sandboxed: true } });
+  });
+
+  it("reports the SDK's -1 as a shell that left no exit code, never as exit code -1", async () => {
+    const locale = getLocale();
+    try {
+      setLocale("en");
+      const result = await run({ code: -1 }, "partial\n");
+      expect(result).toMatchObject({ isError: true, metadata: { returncode: -1, sandboxed: true } });
+      expect(result.output).toContain("partial");
+      expect(result.output).toContain(en["sandboxPolicy.containerShellNoExitCode"]);
+      expect(result.output).not.toMatch(/exited with code|terminated by|-1/);
+    } finally {
+      setLocale(locale);
+    }
+  });
+
+  it("words the missing exit code in every locale", async () => {
+    expect(en["sandboxPolicy.containerShellNoExitCode"]).toBe("The shell ended by a signal or before it started, so it reported no exit code.");
+    expect(ko["sandboxPolicy.containerShellNoExitCode"]).toBe("셸이 신호를 받았거나 시작 전에 끝나 종료 코드를 보고하지 않았습니다.");
+    const locale = getLocale();
+    try {
+      setLocale("ko");
+      expect((await run({ code: -1 })).output).toContain(ko["sandboxPolicy.containerShellNoExitCode"]);
+    } finally {
+      setLocale(locale);
+    }
+  });
+
+  it.each([
+    ["cancelled", { code: null, cancelled: true }, "sandboxPolicy.containerShellCancelled"],
+    ["timed out", { code: null, timedOut: true }, "sandboxPolicy.containerShellTimedOut"],
+    ["cleanup unverified", { code: null, cleanupUnverified: true }, "sandboxPolicy.containerShellCleanupUnverified"],
+  ] as const)("reports a %s stop as an error with its own ending", async (_name, outcome, key) => {
+    const result = await run(outcome, "partial\n");
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("partial");
+    expect(result.output).toContain(t(key, { seconds: 1 }));
+    expect(result.output).not.toMatch(/exited with code|terminated by/);
   });
 });
 
