@@ -302,7 +302,6 @@ export function ApprovalDock({
   if (!request) return null;
 
   const title = approvalAction(request, t).title;
-  const liveRequestLabel = `${title}. ${request.toolName}`;
   const remaining = Math.max(0, queue.length - 1);
 
   const decide = (
@@ -387,14 +386,26 @@ export function ApprovalDock({
         reviewerSuggestion={reviewerSuggestion}
       />
 
-      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+      <ApprovalRequestStatus queue={queue} />
+    </section>
+  );
+}
+
+export function ApprovalRequestStatus({ queue }: Pick<ApprovalDockProps, "queue">) {
+  const { t } = useTranslation();
+  const request = queue[0];
+  const remaining = queue.length - 1;
+
+  return (
+    <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+      {request && (
         <span key={request.id}>
-          {liveRequestLabel}. {remaining > 0
+          {approvalAction(request, t).title}. {request.toolName}. {remaining > 0
             ? t("toolApprovalDialog.pendingCount", { count: remaining })
             : ""}
         </span>
-      </p>
-    </section>
+      )}
+    </p>
   );
 }
 

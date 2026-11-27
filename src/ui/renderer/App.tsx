@@ -64,7 +64,7 @@ import { RecentlyDeniedDialog } from "./dialogs/RecentlyDeniedDialog.js";
 import { PluginBackgroundEffectsPrompt } from "./dialogs/PluginBackgroundEffectsPrompt.js";
 import { SpotlightTour } from "./components/SpotlightTour.js";
 import { DevConsoleToggle } from "./components/DevConsoleToggle.js";
-import { ApprovalLaneCard, unattributedRequestLabel } from "./components/permissions/ApprovalDock.js";
+import { ApprovalLaneCard, ApprovalRequestStatus, unattributedRequestLabel } from "./components/permissions/ApprovalDock.js";
 import { OverlayCardRegion } from "./components/OverlayCardRegion.js";
 import type { ApprovalRequest } from "./types.js";
 import type { UserApprovalHitPayload, UserApprovalVerdict } from "../../shared/permissions-events.js";
@@ -2865,6 +2865,8 @@ export function App() {
                 </main>
               </div>
             </div>
+
+            <ApprovalRequestStatus queue={pendingAnswers.unattributed} />
 
             {/* App-level dialogs that remain available after removing setup flows. */}
             {openSubAgentSession && <SubAgentConversationDialog api={api} session={sessions.find((row) => row.id === openSubAgentSession.id) ?? openSubAgentSession} onClose={() => setOpenSubAgentSession(null)} />}
