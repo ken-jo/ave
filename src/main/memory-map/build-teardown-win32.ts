@@ -31,10 +31,11 @@ export class MemoryBuildTeardown {
 
   waitForExit(): Promise<boolean> {
     if (this.confirmed) return Promise.resolve(true);
-    return this.cancelResult ??= raceWithTimeout(
+    this.cancelResult ??= raceWithTimeout(
       Promise.all(this.unconfirmed).then(outcomes => outcomes.every(Boolean)),
       TOOL_TIMEOUT_POLICY.windowsMemoryBuildCancelMs,
       () => new ManagedExitUnconfirmedError(),
     ).catch(() => false);
+    return this.cancelResult;
   }
 }

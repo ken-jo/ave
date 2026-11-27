@@ -100,7 +100,7 @@ afterEach(async () => {
 });
 
 function publishAccountReceipt(child: { stderr: PassThrough; emit: EventEmitter['emit'] }) {
-  child.stderr.write(INFERENCE_ACCOUNT_EXIT_RECEIPT + '\n');
+  child.stderr.write(`${INFERENCE_ACCOUNT_EXIT_RECEIPT}\n`);
   child.emit('close', 0, null);
 }
 

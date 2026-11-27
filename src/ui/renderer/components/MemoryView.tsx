@@ -46,6 +46,7 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
   const hadSnapshot = useRef(false);
   const selectionReturn = useRef<HTMLElement | null>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: The API and project scope own the Windows build and Cancel reply.
   useEffect(() => {
     if (!windows) return;
     setCancelPending(false); setCancelError(null);

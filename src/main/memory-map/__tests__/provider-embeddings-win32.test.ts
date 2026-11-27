@@ -13,10 +13,12 @@ import { buildGraph } from '../graph.js';
 import { createMemoryProviderEgress } from '../provider-egress.js';
 import type { MemoryWorkerRunner } from '../worker-client-win32.js';
 import { MemoryMapHost } from '../host-win32.js';
+import { MemoryBuildTeardown, type MemoryWorkerExit } from '../build-teardown-win32.js';
+import { deferred } from '../../../__tests__/support/deferred.js';
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); for (const close of cleanup.splice(0).reverse()) await close(); });
-async function fixture(allowedDomains = ['127.0.0.1']) {
+async function fixture(allowedDomains = ['127.0.0.1'], holdProjection?: (signal: AbortSignal, exit?: MemoryWorkerExit) => Promise<void>) {
   const requests: { endpoint?: string; model: string; input: string[] }[] = [];
   let dimensions = 3; let inconsistent = false; let fail = false; let responseWait: Promise<void> | undefined;
   const key = 'fixture-private-credential';
@@ -47,9 +49,10 @@ async function fixture(allowedDomains = ['127.0.0.1']) {
   const chokepoint = vi.fn<typeof fetch>((input, init) => nativeFetch(input, init));
   vi.stubGlobal('fetch', vi.fn(() => { throw new Error('Ambient fetch is forbidden'); }));
   const project = vi.fn(buildGraph);
-  const worker: MemoryWorkerRunner = async <T>(folder: string, task: Parameters<MemoryWorkerRunner>[1], signal: AbortSignal, report: Parameters<MemoryWorkerRunner>[3]) => {
+  const worker: MemoryWorkerRunner = async <T>(folder: string, task: Parameters<MemoryWorkerRunner>[1], signal: AbortSignal, report: Parameters<MemoryWorkerRunner>[3], _admission: Parameters<MemoryWorkerRunner>[4], exit: Parameters<MemoryWorkerRunner>[5]) => {
     expect(folder).toBe(''); expect(task.kind).toBe('project'); signal.throwIfAborted();
     if (task.kind !== 'project') throw new Error('Unexpected worker task');
+    await holdProjection?.(signal, exit);
     return await project(task.input, { embed: async () => { throw new Error('Unexpected local embedding'); }, dispose: async () => {} }, report ?? (() => {})) as T;
   };
   const audit = vi.fn();
@@ -67,6 +70,38 @@ async function fixture(allowedDomains = ['127.0.0.1']) {
   }, pauseResponse: () => { let release!: () => void; responseWait = new Promise<void>(resolve => { release = resolve; }); return release; }, provider, host, settings, audit, namespace, catalog, requests, chokepoint, progress, project, key, consent, get config() { return config; }, set config(value) { config = value; }, set dimensions(value: number) { dimensions = value; }, set inconsistent(value: boolean) { inconsistent = value; }, set fail(value: boolean) { fail = value; } };
 }
 describe('provider memory embeddings', () => {
+  it('keeps provider projection attached to the build owner until thread exit', async () => {
+    const projected = deferred<MemoryWorkerExit>();
+    const exited = deferred<void>();
+    const f = await fixture(undefined, async (signal, exit) => {
+      assert.ok(exit);
+      exit.starting();
+      projected.resolve(exit);
+      await exited.promise;
+      signal.throwIfAborted();
+    });
+    f.consent();
+    const teardown = new MemoryBuildTeardown();
+    const build = f.host.build(() => f.catalog, undefined, teardown).catch((error: unknown) => error);
+    try {
+      const thread = await Promise.race([projected.promise, build.then(() => { throw new Error('Projection did not start'); })]);
+      f.host.cancel();
+      const replied = vi.fn();
+      const cancel = teardown.waitForExit().then(replied);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(replied).not.toHaveBeenCalled();
+      thread.confirmed();
+      exited.resolve();
+      await cancel;
+      expect(replied).toHaveBeenCalledExactlyOnceWith(true);
+      expect(await build).toMatchObject({ code: 'request-stale' });
+      expect(await f.host.get(() => f.catalog)).toBeNull();
+    } finally {
+      exited.resolve();
+      await build;
+    }
+  });
+
   it('withholds provider batch progress when consent is withdrawn after embedding', async () => {
     const f = await fixture();
     f.consent();

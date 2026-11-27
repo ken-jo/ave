@@ -47,7 +47,7 @@ function job(limits: number, initialPids: number[]) {
     else if (type === 3) {
       output.writeUInt32LE(pids.length, 0);
       output.writeUInt32LE(pids.length, 4);
-      pids.forEach((pid, index) => output.writeBigUInt64LE(BigInt(pid), 8 + 8 * index));
+      pids.forEach((pid, index) => { output.writeBigUInt64LE(BigInt(pid), 8 + 8 * index); });
     } else throw new Error('Unexpected information class');
     return true;
   });

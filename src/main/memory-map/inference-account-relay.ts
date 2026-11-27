@@ -132,7 +132,7 @@ export async function serveInferenceAccountRelay(env: Readonly<Record<string, st
     });
     await runInferenceAccountTarget(socket, env, job.targetTreeGone);
     await new Promise<void>((resolve, reject) => {
-      process.stderr.write(INFERENCE_ACCOUNT_EXIT_RECEIPT + '\n', error => error ? reject(error) : resolve());
+      process.stderr.write(`${INFERENCE_ACCOUNT_EXIT_RECEIPT}\n`, error => error ? reject(error) : resolve());
     });
   } finally {
     job.release();

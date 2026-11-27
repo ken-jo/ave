@@ -191,7 +191,7 @@ describe('memory map view', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('메모리 지도 작업 프로세스가 종료됐는지 확인할 수 없습니다.');
     expect(map.get).toHaveBeenCalledOnce();
   });
-  it.each(['container', 'unconfined', 'account'] as const)('shows the Windows %s Cancel refusal after a memory-save refresh', async () => {
+  it.each(['container', 'unconfined', 'account', 'projection'] as const)('shows the Windows %s Cancel refusal after a memory-save refresh', async () => {
     const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows');
     try {
       const { map, props, api } = setup();

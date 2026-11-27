@@ -106,15 +106,17 @@ afterEach(async () => {
   await roots.cleanup();
 });
 
-describe.each(['container', 'unconfined', 'account'] as const)('%s Cancel', route => {
-  it.each(['confirmed', 'refused', 'deadline'] as const)('first, concurrent, and retry replies require this build exit (%s)', async outcome => {
+describe.each(['container', 'unconfined', 'account', 'projection'] as const)('%s Cancel', route => {
+  const outcomes = route === 'projection' ? ['confirmed', 'deadline'] as const : ['confirmed', 'refused', 'deadline'] as const;
+  it.each(outcomes)('first, concurrent, and retry replies require this build exit (%s)', async outcome => {
     state.root = roots.track(await mkdtemp(join(tmpdir(), 'memory-map-admission-')));
     setProcessPlatform('win32');
     state.account = route === 'account';
     state.operational = true;
     state.beforeCommit = state.afterRead = undefined;
-    state.plan = route === 'container' ? { selectedBackend: 'mxc', readiness: 'ready' } : { selectedBackend: 'none', readiness: 'off' };
-    state.substrate = route === 'container' ? { srtWinReady: false, shells: 'mxc', mxc: { state: 'available' } } : {
+    const container = route === 'container' || route === 'projection';
+    state.plan = container ? { selectedBackend: 'mxc', readiness: 'ready' } : { selectedBackend: 'none', readiness: 'off' };
+    state.substrate = container ? { srtWinReady: false, shells: 'mxc', mxc: { state: 'available' } } : {
       srtWinReady: state.account, shells: state.account ? 'approved-host' : 'none',
       accountBackendAbsent: route === 'unconfined',
       mxc: { state: 'unavailable', reason: 'container-unavailable', containerBackendAbsent: true },
@@ -128,8 +130,13 @@ describe.each(['container', 'unconfined', 'account'] as const)('%s Cancel', rout
     const stopping = deferred<void>();
     const finishTeardown = deferred<void>();
     let confirmExit: (() => void) | undefined;
-    state.runWorker.mockReset().mockImplementation(async (_folder, _task, signal, _progress, _admission, exit) => {
+    state.runWorker.mockReset().mockImplementation(async (_folder, task, signal, _progress, _admission, exit) => {
       exit?.starting?.();
+      if (route === 'projection' && task.kind === 'embed-batch') {
+        exit?.confirmed();
+        return task.texts.map(() => [1, ...Array<number>(383).fill(0)]);
+      }
+      if (route === 'projection') expect(task.kind).toBe('project');
       confirmExit = exit?.confirmed;
       signal.addEventListener('abort', () => stopping.resolve(), { once: true });
       started.resolve(signal);

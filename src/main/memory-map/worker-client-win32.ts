@@ -15,27 +15,28 @@ function runProjectionWorker<T>(task: Extract<MemoryWorkerTask, { kind: 'project
   const worker = new Worker(join(mainDir, 'memory-map-worker.js'), { workerData: { task } });
   exit?.starting();
   return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const finish = (...[error, result]: [error: Error] | [error: undefined, result: T]) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', abort);
-      void worker.terminate().then(() => {
-        if (error === undefined) resolve(result);
-        else reject(error);
-      }, reject);
+    let outcome: { error: Error } | { value: T } | undefined;
+    const finish = (result: NonNullable<typeof outcome>) => {
+      if (outcome) return;
+      outcome = result;
+      void worker.terminate().catch((error: unknown) => {
+        outcome = { error: error instanceof Error ? error : new Error('Memory worker termination failed') };
+      });
     };
-    const abort = () => finish(new Error('Memory worker cancelled'));
+    const abort = () => finish({ error: new Error('Memory worker cancelled') });
     worker.on('message', message => {
-      if (settled) return;
+      if (outcome) return;
       if (message.kind === 'progress') onProgress?.(message.progress);
-      else if (message.kind === 'result') finish(undefined, message.value as T);
-      else finish(new Error('Memory worker failed'));
+      else if (message.kind === 'result') finish({ value: message.value as T });
+      else finish({ error: new Error('Memory worker failed') });
     });
-    worker.on('error', error => finish(error instanceof Error ? error : new Error('Memory worker failed')));
+    worker.on('error', error => finish({ error: error instanceof Error ? error : new Error('Memory worker failed') }));
     worker.once('exit', () => {
       exit?.confirmed();
-      finish(new Error('Memory worker exited before completion'));
+      signal.removeEventListener('abort', abort);
+      outcome ??= { error: new Error('Memory worker exited before completion') };
+      if ('error' in outcome) reject(outcome.error);
+      else resolve(outcome.value);
     });
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
