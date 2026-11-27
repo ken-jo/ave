@@ -31,8 +31,9 @@ export function launcherOutcomeFromLog(log: string): LauncherOutcome {
   const lines = log.replace(/\[\d+\] /gu, "").split("\n");
   const exit = lines.findLast(line => line.startsWith("Exit code: "));
   if (exit === undefined) return lines.some(line => line.trim() !== "") ? "refused" : "unrecorded";
-  if (/^Exit code: \d+ /u.test(exit)) return "exited";
-  if (!exit.startsWith("Exit code: -1 ")) return "unrecorded";
+  // The status may stand alone or be followed by the launcher's hexadecimal echo of it.
+  if (/^Exit code: \d+(?: |$)/u.test(exit)) return "exited";
+  if (!/^Exit code: -1(?: |$)/u.test(exit)) return "unrecorded";
   const error = lines.findLast(line => line.startsWith("Error: "));
   return error?.includes("script timed out") === true ? "timed-out" : "refused";
 }

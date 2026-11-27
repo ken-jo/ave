@@ -22,6 +22,14 @@ describe("Linux launcher verdict from its own log", () => {
     expect(launcherOutcomeFromLog(PARSE_FAILED)).toBe("refused");
     expect(launcherOutcomeFromLog("")).toBe("unrecorded");
   });
+
+  it("reads a bare exit line, with no text after the number", () => {
+    expect(launcherOutcomeFromLog(stamp("Exit code: 0\n"))).toBe("exited");
+    expect(launcherOutcomeFromLog(stamp("Exit code: 7"))).toBe("exited");
+    expect(launcherOutcomeFromLog(stamp("Exit code: -1\nError: Bubblewrap: slirp4netns exited during startup\n"))).toBe("refused");
+    expect(launcherOutcomeFromLog(stamp("Exit code: -1\nError: script timed out after 1000ms\n"))).toBe("timed-out");
+    expect(launcherOutcomeFromLog(stamp("Exit code: 0x0\n"))).toBe("unrecorded");
+  });
 });
 
 describe.runIf(process.platform !== "win32")("Linux container shell exit classification", () => {
