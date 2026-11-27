@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readMxcRawIpProbeScript } from "../../__tests__/support/mxc-raw-ip-probe.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
   createSandboxBootHarness,
@@ -739,9 +740,9 @@ describe("initSandboxGate — Windows MXC substrate", () => {
   });
 
   it.each([
-    { rawIp: "blocked", reason: "blocked", reachableTargets: [] },
-    { rawIp: "unknown", reason: "raw-ip-reachable", reachableTargets: ["t4"] },
-    { rawIp: "unknown", reason: "ipv6-unmeasured", reachableTargets: [] },
+    { rawIp: "blocked", reason: "blocked", evidenceKind: "structural", reachableTargets: [], udpArrival: "absent" },
+    { rawIp: "unknown", reason: "raw-ip-reachable", reachableTargets: ["udp"], udpArrival: "arrived" },
+    { rawIp: "unknown", reason: "ipv6-unmeasured", reachableTargets: [], udpArrival: "absent" },
   ])("publishes the start measurement with the available shell route ($reason)", async (rawIpProbe) => {
     h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
     h.detectMxc.mockResolvedValue(MXC_OK);
@@ -780,10 +781,12 @@ describe("initSandboxGate — Windows MXC substrate", () => {
           }
           const request: import("../../permissions/mxc-windows.js").MxcContainerRequest =
             JSON.parse(Buffer.from(args[1] ?? "", "base64").toString("utf8"));
-          const script = Buffer.from(request.process.commandLine.split(" ").at(-1) ?? "", "base64").toString("utf16le");
+          const wrapper = Buffer.from(request.process.commandLine.split(" ").at(-1) ?? "", "base64").toString("utf16le");
+          if (wrapper.endsWith("exit 0")) return { code: 0, stdout: "", stderr: "" };
+          const script = readMxcRawIpProbeScript(request.process.commandLine);
           const deadline = Number(/(\d{13}) - \[DateTimeOffset\]::UtcNow/.exec(script)?.[1]);
           const ready = epoch + 5_000 + request.process.timeout - 100;
-          const exits = script.endsWith("exit 0") || (script.includes("if ($probeBudget -le 0) { exit 0 }") && ready >= deadline);
+          const exits = script.includes("if ($probeBudget -le 0) { exit 0 }") && ready >= deadline;
           return { code: exits ? 0 : 1, stdout: "", stderr: exits ? "" : "launcher timeout" };
         });
         return await probeMxcPowerShellStart({
