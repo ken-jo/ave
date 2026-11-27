@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resultHashOf } from "../../../shared/workflow-template-output.js";
 import { STAGE_TOOL_CALLS_REFUSED, type StageJoin, type TemplateGraph, type WorkItemStageRun } from "../../../shared/workflow-template-types.js";
 import { MAX_PARALLEL_STAGES, reduceRun, type RunEffect, type RunEvent } from "../stage-machine.js";
 import { graphOf, stageOf, waitingRuns } from "./stage-fixtures.js";
@@ -56,7 +57,6 @@ describe("stage machine", () => {
   it.each<{ event: RunEvent; status: "running" | "failed"; stopping?: true }>([
     { event: { type: "retry_requested", stageId: "a" }, status: "running" },
     { event: { type: "continue_requested" }, status: "failed" },
-    { event: { type: "gate_decided", stageId: "a", attempt: 1, decision: "request_changes", note: "Revise" }, status: "failed" },
     { event: { type: "stop_requested" }, stopping: true, status: "failed" },
   ])("$event.type handles failure-only fields of a failed stage", ({ event, status, stopping }) => {
     const failures: Pick<WorkItemStageRun, "failure" | "failureReason" | "blocked">[] = [
@@ -80,6 +80,43 @@ describe("stage machine", () => {
       }
       expect(d.runStatus()).toBe(stopping ? "cancelled" : "executing");
     }
+  });
+
+  it("request changes on a pending human gate clears failure fields from an earlier attempt", () => {
+    const graph = graphOf([stageOf("a")]);
+    const stage: WorkItemStageRun = {
+      ...waitingRuns(graph)[0],
+      attempt: 2,
+      status: "awaiting_gate",
+      output: "Review this output",
+      resultHash: resultHashOf("Review this output"),
+      gate: { type: "human", status: "pending", revision: 1 },
+      // Seed stale fields at the reducer boundary so this test exercises the gate path's own reset.
+      failure: "error",
+      failureReason: STAGE_TOOL_CALLS_REFUSED,
+      blocked: { code: "isolation-unproven", at: "2026-11-16T00:00:00.000Z" },
+    };
+    const step = reduceRun({
+      graph, stageRuns: [stage], joins: [], stopping: false, refused: false, now: "2026-11-16T00:00:00.000Z",
+    }, {
+      type: "gate_decided", stageId: "a", attempt: 2, decision: "request_changes", note: "Revise",
+    });
+    expect(step.effects).toEqual([{ type: "spawn", stageId: "a", attempt: 3 }]);
+    expect(step.stageRuns[0]).toMatchObject({
+      status: "running", attempt: 3, output: stage.output,
+      gate: { type: "human", status: "changes_requested", revision: 1, note: "Revise" },
+    });
+    for (const field of ["failure", "failureReason", "blocked"]) expect(step.stageRuns[0]).not.toHaveProperty(field);
+  });
+
+  it("request changes on a failed stage leaves the attempt and failure record intact", () => {
+    const d = driver(graphOf([stageOf("a")]));
+    d.send({ type: "started" });
+    d.send({ type: "stage_ended", stageId: "a", attempt: 1, ok: false, failureReason: STAGE_TOOL_CALLS_REFUSED });
+    const failed = d.run("a");
+    expect(failed).toMatchObject({ status: "failed", attempt: 1, failure: "error", failureReason: STAGE_TOOL_CALLS_REFUSED });
+    expect(d.send({ type: "gate_decided", stageId: "a", attempt: 1, decision: "request_changes", note: "Revise" })).toEqual([]);
+    expect(d.run("a")).toEqual(failed);
   });
 
   it("request changes reruns the same stage with attempt + 1 and refuses a fourth", () => {

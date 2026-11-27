@@ -13,6 +13,8 @@ import type { RunAuthorityVerdict } from "../../work-board/workflow/run-authorit
 import { makeSubagentLoopDeps, patchLoopProvider } from "../../engine/__tests__/support/subagent-loop-fixtures.js";
 import type { StreamEvent } from "../../engine/llm/types.js";
 import { SubAgentRunner } from "../../engine/subagent-runner.js";
+import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
+import { DEFAULT_HOOK_TIMEOUT_MS } from "../../hooks/script-hook-types.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -44,7 +46,7 @@ it("spawns only the pinned version's stages with the stage's tool scope", () => 
   const [a] = await h.untilLive(1);
   expect(a.input.title).toContain("Stage a");
   expect(a.input.toolScope).toEqual({ kind: "exactly", names: ["read_file", "grep_files", "sample_lookup"] });
-  expect(a.input.profileMode).toBeUndefined();
+  expect(a.input.profileMode).toBe("plan");
   expect(a.input.instructions).toContain("do NOT ask the user any questions");
   expect(a.input.instructions).toContain(`Working folder: ${JSON.stringify(a.input.projectRoot)}`);
   a.finish();
@@ -57,7 +59,7 @@ it("spawns only the pinned version's stages with the stage's tool scope", () => 
   const [b] = await h.untilLive(1);
   expect(b.input.title).toContain("Stage b");
   expect(b.input.toolScope.kind).toBe("parent-all");
-  expect(b.input.profileMode).toBeUndefined();
+  expect(b.input.profileMode).toBe("execute");
   expect(b.input.instructions).toContain("do NOT ask the user any questions");
   expect(b.input.instructions).toContain("output of child-1");
   b.finish();
@@ -72,6 +74,79 @@ it("spawns only the pinned version's stages with the stage's tool scope", () => 
   ]);
   expect(h.children).toHaveLength(2);
 }));
+
+it.each([
+  { toolScope: "read", agentType: "plan" },
+  { toolScope: "all", agentType: "execute" },
+] as const)("keeps $agentType hooks for the $toolScope stage without prepending posture text", async ({ toolScope, agentType }) => {
+  const scriptHookManager = new ScriptHookManager();
+  const lifecycle = vi.spyOn(scriptHookManager, "runLifecycleEvent");
+  const command = ["node", "-e", `
+    const input = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+    if (input.hook_event_name === "SubagentStop" && !input.stop_hook_active) {
+      process.stderr.write("Revise the stage result.");
+      process.exitCode = 2;
+    }
+    process.stdout.write(JSON.stringify({ action: "allow", reason: "received", received: input }));
+  `];
+  const prompts: string[] = [];
+  const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider({
+    vendor: "claude",
+    async *streamTurn({ messages }) {
+      prompts.push(messages.map(message => message.content).join("\n"));
+      yield { type: "text_delta", text: `Stage result ${prompts.length}` };
+      yield { type: "message_complete", stopReason: "end_turn" };
+    },
+  });
+  let memory: MemoryManager | undefined;
+  try {
+    await withHarness(async h => {
+      const version = await h.confirm([auto("a", { toolScope })]);
+      const id = await h.addItem(version);
+      expect(await h.start(id, h.local(version))).toMatchObject({ status: "completed" });
+
+      const stage = await h.stageRun(id, "a");
+      const sessionId = stage.childSessionId;
+      if (!sessionId) throw new Error("Expected a stage child session");
+      const payloads = lifecycle.mock.settledResults
+        .filter(result => result.type === "fulfilled")
+        .flatMap(({ value }) => value.results.map(result => JSON.parse(result.rawStdout).received));
+      expect(payloads).toMatchObject([
+        { hook_event_name: "SubagentStart", agent_type: agentType, session_id: sessionId },
+        { hook_event_name: "SubagentStop", agent_type: agentType, session_id: sessionId, stop_hook_active: false },
+        { hook_event_name: "SubagentStop", agent_type: agentType, session_id: sessionId, stop_hook_active: true },
+      ]);
+      expect(memory?.sessions.loadSessionMetadata(sessionId)).toMatchObject({ profileMode: agentType });
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]).toContain("do NOT ask the user any questions");
+      expect(prompts[0]).not.toContain("<ave-agent-mode-posture>");
+      expect(prompts[0]).not.toContain("<ave-agent-mode-skills>");
+      expect(prompts[1]).toContain("Revise the stage result.");
+    }, {
+      runner: dir => {
+        scriptHookManager.setTrustedRegistry([], (["SubagentStart", "SubagentStop"] as const).map(event => ({
+          id: event, event, matcher: agentType, command,
+          timeoutMs: DEFAULT_HOOK_TIMEOUT_MS, source: "config", configDir: dir,
+        })));
+        const registry = new ToolRegistry();
+        registry.register(new ReadFileTool());
+        memory = new MemoryManager({ aveDir: join(dir, "children") });
+        return new SubAgentRunner({
+          parentDeps: makeSubagentLoopDeps(registry, {
+            scriptHookManager,
+            networkFetch: async () => Response.json({ data: [] }),
+            authorizeProject: projectRoot => ({ projectRoot, isDefault: false }),
+          }),
+          toolRegistry: registry,
+          subAgentMemoryManager: memory,
+        });
+      },
+    });
+  } finally {
+    hasProviderSpy.mockRestore();
+    refreshProviderSpy.mockRestore();
+  }
+});
 
 it("a gate decision taken before the launch call settles is part of its result, and each stage still passes only by its own approval", async () => {
   // Each write that opens a gate returns only once the test has read that gate from the run file after the hold began and the event loop
