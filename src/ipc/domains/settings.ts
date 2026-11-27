@@ -115,7 +115,13 @@ export async function rendererSettingsSnapshot(
   // `upstreamProxy` has its own channels (permissions upstreamProxyGet/Set).
   const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, memoryEmbedding: _embeddingConfig, ...projected } = structuredClone(snapshot);
   const activeChatModel = await resolveMainActiveChatModel(settingsService);
-  if (!(await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable()) delete projected.features?.sessionIndexingWithoutContainment;
+  if (process.platform === "win32") {
+    if ((await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable()) {
+      projected.features = { ...projected.features, sessionIndexingWithoutContainment: projected.features?.sessionIndexingWithoutContainment ?? true };
+    } else {
+      delete projected.features?.sessionIndexingWithoutContainment;
+    }
+  }
   return { ...projected, activeChatModel };
 }
 
@@ -756,7 +762,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     // The last await before the patch: the admission is decided here and nothing below yields until the merge is applied.
     const features = partial?.features;
     let switchAdmission: SettingsWriteAdmission | undefined;
-    if (features && typeof features === "object" && Object.hasOwn(features, "sessionIndexingWithoutContainment")) {
+    if (process.platform === "win32" && features && typeof features === "object" && Object.hasOwn(features, "sessionIndexingWithoutContainment")) {
       if (typeof features.sessionIndexingWithoutContainment !== "boolean") return { ok: false, error: "invalid-input" };
       const admission = await refreshWindowsBackgroundAdmission("switches");
       if (!admission.areSwitchesAvailable()) return { ok: false, error: "invalid-input" };
@@ -789,12 +795,14 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       partial = { ...partial, system: { ...partial.system, mainLayout: browserTabRegistry.prepareLayoutBindings(window.id, parsed.layout) } };
     }
     let switchRefused = false;
-    const persistSettings = (switchAdmission === undefined ? settingsService.patch(partial) : settingsService.patch(partial, { admission: switchAdmission })).catch((error: unknown) => {
-      if (!(error instanceof SettingsWriteRefusedError)) throw error;
-      // Only the switch was kept out of the save; the rest of the patch is on disk and still needs its follow-up.
-      switchRefused = true;
-      return settingsService.getAll();
-    });
+    const persistSettings = switchAdmission === undefined
+      ? settingsService.patch(partial)
+      : settingsService.patch(partial, { admission: switchAdmission }).catch((error: unknown) => {
+        if (!(error instanceof SettingsWriteRefusedError)) throw error;
+        // The rest of the patch is on disk and still needs its follow-up.
+        switchRefused = true;
+        return settingsService.getAll();
+      });
     if (layoutPatch !== undefined) browserTabRegistry.trackBindingWrite(persistSettings);
     // SettingsService applies its merge before awaiting disk persistence. Capture this request's exact LLM snapshot before another renderer can supersede it.
     const appliedLlm = settingsService.get("llm");

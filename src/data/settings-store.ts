@@ -1,4 +1,4 @@
-import { normalizeMemoryEmbeddingConfig, type MemoryEmbeddingConfig } from '../shared/memory-embedding-config.js';
+import { normalizeMemoryEmbeddingConfig, normalizeWindowsMemoryEmbeddingConfig, type WindowsMemoryEmbeddingConfig } from '../shared/memory-embedding-config.js';
 import { isSubAgentMaxRounds } from "../shared/subagent-policy.js";
 import { isTelemetryLevel, telemetryLevel, telemetryLevelFlags, type TelemetryLevel } from "../shared/telemetry-policy.js";
 import { isZoomLevel } from "../shared/app-zoom.js";
@@ -523,7 +523,7 @@ export interface DiagnosticsSettings {
 }
 
 export interface AppSettings {
-  memoryEmbedding?: MemoryEmbeddingConfig;
+  memoryEmbedding?: WindowsMemoryEmbeddingConfig;
   llm: LLMSettings;
   chat: ChatSettings;
   /** Host-owned P4-5 routing configuration. Secrets remain in SettingsService secret storage. */
@@ -1868,7 +1868,9 @@ export class SettingsService {
         migrationWriteBack = true;
       }
       const result: AppSettings = {
-        memoryEmbedding: normalizeMemoryEmbeddingConfig(parsed.memoryEmbedding) ?? structuredClone(DEFAULT_SETTINGS.memoryEmbedding),
+        memoryEmbedding: process.platform === "win32"
+          ? normalizeWindowsMemoryEmbeddingConfig(parsed.memoryEmbedding)
+          : normalizeMemoryEmbeddingConfig(parsed.memoryEmbedding),
         llm,
         chat: normalizeChat(parsed.chat),
         a2aRemote: normalizeA2ARemote(parsed.a2aRemote),
