@@ -150,9 +150,10 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     mkdirSync(replacement);
     symlinkSync(original, alias, "junction");
     const target = join(alias, "new.txt");
+    const sealedEntry = join(original, "new.txt");
     const renames: string[] = [];
     hooks.beforeRename = (source, destination) => {
-      if (destination !== target) return;
+      if (destination !== sealedEntry) return;
       renames.push(destination);
       if (renames.length > 1) return;
       if (!existsSync(source)) throw new Error("missing temporary write");
@@ -169,7 +170,7 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
       executionCwd: project, sessionId: "write-target", permissionContext: { trustOrigin: "user-keyboard" },
     });
     expect(result?.is_error).toBe(true);
-    expect(renames, JSON.stringify(result)).toEqual([target]);
+    expect(renames, JSON.stringify(result)).toEqual([sealedEntry]);
     expect(existsSync(join(replacement, "new.txt"))).toBe(false);
     expect(readdirSync(original)).toEqual(["note.txt"]);
   });
