@@ -163,6 +163,33 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
     }));
 
     if (sandboxOptIn) {
+      // Finish the Linux shell preflight before checking dependencies so the gate can decide as soon as they settle.
+      if (process.platform === "linux" && shellRequested && getAveHomePrivacyFailure() === undefined && isContainerShellRouteEnabled("linux")) {
+        const [{ detectHostMxcLinuxShellSupport }, { establishMxcRuntimeRoot }, { sweepMxcLinuxPlaceholders }, { setContainerShellSubstrate }, { getHostResources }] = await Promise.all([
+          import("../../permissions/mxc-linux.js"),
+          import("../../permissions/mxc-runtime-root.js"),
+          import("../../permissions/mxc-linux-placeholders.js"),
+          import("../../permissions/sandbox-capability.js"),
+          import("../../main/host-resources.js"),
+        ]);
+        try {
+          establishMxcRuntimeRoot();
+          await sweepMxcLinuxPlaceholders();
+        } catch (error) {
+          log.warn("boot: container runtime root unavailable: %s", errorMessage(error));
+        }
+        const support = await detectHostMxcLinuxShellSupport(getHostResources(), startupSignal);
+        setContainerShellSubstrate("linux", support);
+        if (support.state === "unavailable") {
+          if (shellExplicitEnv) {
+            const message = `Linux container shell unavailable (${support.reason})`;
+            recordGate("abort", "abort-linux-runtime-probe-failed", [message], ["linux-runtime-probe-failed"]);
+            await bootAuditLogger.flush();
+            throw new Error(message);
+          }
+          log.warn("boot: Linux container shell unavailable (%s)", support.reason);
+        }
+      }
       const deps = process.platform === "win32"
         ? await checkWindowsBootDependencies()
         : await checkAsrtDependencies();
@@ -233,32 +260,6 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             });
 
       const privacyFailure = getAveHomePrivacyFailure();
-      if (process.platform === "linux" && shellRequested && privacyFailure === undefined && isContainerShellRouteEnabled("linux")) {
-        const [{ detectHostMxcLinuxShellSupport }, { establishMxcRuntimeRoot }, { sweepMxcLinuxPlaceholders }, { setContainerShellSubstrate }, { getHostResources }] = await Promise.all([
-          import("../../permissions/mxc-linux.js"),
-          import("../../permissions/mxc-runtime-root.js"),
-          import("../../permissions/mxc-linux-placeholders.js"),
-          import("../../permissions/sandbox-capability.js"),
-          import("../../main/host-resources.js"),
-        ]);
-        try {
-          establishMxcRuntimeRoot();
-          await sweepMxcLinuxPlaceholders();
-        } catch (error) {
-          log.warn("boot: container runtime root unavailable: %s", errorMessage(error));
-        }
-        const support = await detectHostMxcLinuxShellSupport(getHostResources(), startupSignal);
-        setContainerShellSubstrate("linux", support);
-        if (support.state === "unavailable") {
-          if (shellExplicitEnv) {
-            const message = `Linux container shell unavailable (${support.reason})`;
-            recordGate("abort", "abort-linux-runtime-probe-failed", [message], ["linux-runtime-probe-failed"]);
-            await bootAuditLogger.flush();
-            throw new Error(message);
-          }
-          log.warn("boot: Linux container shell unavailable (%s)", support.reason);
-        }
-      }
       // Every home pins its profile-child deny rows (the profile ~/.ave root is always one) through the same helper, so helper-unavailable also refuses proxy-only.
       if (privacyFailure !== undefined && (windowsStart !== "proxy-only" || !isAveHomePrivacyApprovable(privacyFailure.category))) {
         const path = privacyFailure.failedPath ?? privacyFailure.home;
