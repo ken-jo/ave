@@ -183,7 +183,10 @@ write is never a confirmation: a write is confirmed by reading the file back.
     of any other shape, which says neither which operation it was nor which
     entry.
 
-  A board that shows nothing keeps every marker.
+  A board that shows nothing keeps every marker. If read-back continues to
+  fail, Stop for a run held by an unknown delete waits until the next board
+  event that can resolve the marker. The run’s effect authority stays revoked
+  while it waits.
 - A held row or card stays deletable by the user. That delete publishes a
   fresh intent for the marker's run, owned by it, and the same run-file write
   drops the old marker; from there the new delete's own lifecycle applies.
