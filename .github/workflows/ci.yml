@@ -411,6 +411,7 @@ jobs:
         working-directory: ave
         run: rm -f ajv pino
       - name: Run script tests
+        if: matrix.shard == 1
         run: bun run test:scripts
         working-directory: ave
       - name: Run the suite (coverage gate on nightly and dispatch)

@@ -1789,6 +1789,13 @@ describe("installer smoke and packaging discipline", () => {
     });
   });
 
+  it("runs Linux script tests only on the first planned shard", () => {
+    const { jobs } = parseYaml(readRepoFile(".github/workflows/ci.yml"));
+    const steps = jobs.vitest.steps.filter((step: { run?: string }) => step.run === "bun run test:scripts");
+    expect(steps).toHaveLength(1);
+    expect(steps[0].if).toBe("matrix.shard == 1");
+  });
+
   it("requires independent gates through the build-and-test aggregate", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
     const verification = jobs.get("build-and-test");
