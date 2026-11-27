@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import { deferred } from "../../../__tests__/test-helpers.js";
 import {
   CHATGPT_PLAN_AUTHORIZE_URL,
   CHATGPT_PLAN_DISCOVERY_URL,
@@ -398,6 +399,36 @@ describe("plan-usage token refresh", () => {
 });
 
 describe("plan-usage sign-out", () => {
+  it("retires held listener preparation before logout completes", async () => {
+    const preparing = deferred<void>();
+    const release = deferred<void>();
+    const callback = deferred<URL>();
+    let closed = false;
+    const h = harness({
+      token: [tokens(1)],
+      startListener: async (state) => {
+        preparing.resolve();
+        await release.promise;
+        callback.resolve(new URL(`http://127.0.0.1:1455/auth/callback?code=c1&state=${state}&client_id=oaiapp_1`));
+        return {
+          redirectUri: "http://127.0.0.1:1455/auth/callback",
+          callback: callback.promise,
+          close: () => { closed = true; },
+        };
+      },
+    });
+    const older = h.session.startSignIn().then(({ completion }) => completion);
+    const result = older.catch((error: unknown) => error);
+    await preparing.promise;
+    await h.session.signOut();
+    release.resolve();
+    await expect(result).resolves.toMatchObject({ failure: "sign-in-failed" });
+    expect(closed).toBe(true);
+    expect(h.loginWindows).toHaveLength(0);
+    expect(h.secrets.writes).toBe(0);
+    expect((await h.session.status()).connection).toBe("signed-out");
+  });
+
   it("revokes the refresh token, retries a 5xx, then clears tokens but keeps the registration", async () => {
     const h = await connected({ revoke: [() => new Response("", { status: 503 }), () => new Response("", { status: 200 })] });
     await h.session.signOut();

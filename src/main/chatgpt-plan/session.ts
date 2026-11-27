@@ -163,6 +163,7 @@ function parseRecord(raw: string): AccountRecord {
 export class ChatGptPlanSession {
   connectionLost?: () => void;
   private record: AccountRecord | null | undefined;
+  private signInOwner: symbol | null = null;
   private pending: { readonly listener: ChatGptPlanCallbackListener; readonly completion: Promise<void> } | null = null;
   private refreshing: Promise<StoredTokens> | null = null;
   private notice: ChatGptPlanNotice | null = null;
@@ -199,10 +200,26 @@ export class ChatGptPlanSession {
    * previously declined, and is set only by that explicit action.
    */
   async startSignIn(options: { readonly requestConsent?: boolean } = {}): Promise<{ readonly completion: Promise<void> }> {
-    if (this.pending || this.signingOut) throw new ChatGptPlanSessionError("sign-in-in-progress");
+    if (this.signInOwner || this.pending || this.signingOut) throw new ChatGptPlanSessionError("sign-in-in-progress");
+    const owner = Symbol();
+    this.signInOwner = owner;
+    try {
+      return await this.prepareSignIn(owner, options);
+    } catch (error) {
+      if (this.signInOwner === owner) this.signInOwner = null;
+      throw error;
+    }
+  }
+
+  private async prepareSignIn(
+    owner: symbol,
+    options: { readonly requestConsent?: boolean },
+  ): Promise<{ readonly completion: Promise<void> }> {
     if (!await this.options.secrets.isSecretStorageEncrypted()) {
       throw new ChatGptPlanSessionError("secure-storage-unavailable");
     }
+    await this.refreshing?.catch(() => undefined);
+    this.assertSignInOwner(owner);
     const record = await this.load();
     const hostId = await this.options.hostId();
     try {
@@ -222,17 +239,25 @@ export class ChatGptPlanSession {
           clientId: record.clientId,
           ...(record.tokens?.idToken ? { idTokenHint: record.tokens.idToken } : {}),
           ...(record.email ? { loginHint: record.email } : {}),
-          ...(options.requestConsent ? { requestConsent: true } : {}),
+          ...(options.requestConsent ?? (record.tokens !== null && !record.tokens.scopes.includes(CHATGPT_PLAN_USAGE_SCOPE))
+            ? { requestConsent: true } : {}),
         }
       : { kind: "register" };
     const attempt = createAuthorizationAttempt();
+    this.assertSignInOwner(owner);
     const listener = await this.options.startListener(attempt.state);
+    if (this.signInOwner !== owner) {
+      void listener.callback.catch(() => undefined);
+      listener.close();
+      this.assertSignInOwner(owner);
+    }
     const url = buildAuthorizationUrl({ attempt, redirectUri: listener.redirectUri, hostId, target });
     // Set when the login window ends first; its reason, not the listener teardown it causes, explains the failure.
     let windowEnd: OAuthLoginEndReason | null = null;
     const completion = (async () => {
       try {
         const callbackUrl = await listener.callback;
+        this.assertSignInOwner(owner);
         const result = parseAuthorizationCallback(callbackUrl, { state: attempt.state, target });
         if (result.kind === "declined") throw new ChatGptPlanSessionError("declined");
         let tokens: ChatGptPlanTokenResponse;
@@ -243,9 +268,10 @@ export class ChatGptPlanSession {
             codeVerifier: attempt.codeVerifier,
             redirectUri: listener.redirectUri,
           }, () => {
-            if (record && this.record === record) this.withdrawGrant();
+            if (this.signInOwner === owner && record && this.record === record) this.withdrawGrant();
           });
         } catch (error) {
+          this.assertSignInOwner(owner);
           if (record && this.record === record && error instanceof ChatGptPlanOAuthError && error.failure === "invalid-client") {
             await this.discardRegistration();
           }
@@ -255,14 +281,15 @@ export class ChatGptPlanSession {
             await this.save({
               version: 1, issuer: CHATGPT_PLAN_ISSUER, clientId: result.clientId,
               subject: null, email: null, tokens: null, welcomed: false,
-            });
+            }, owner);
           }
           throw error;
         }
         const identity = await this.options.verifier.verify(tokens.idToken!, {
           clientId: result.clientId,
           nonce: attempt.nonce,
-        });
+        }, owner);
+        this.assertSignInOwner(owner);
         if (record?.subject && identity.subject !== record.subject) {
           throw new ChatGptPlanSessionError("account-mismatch");
         }
@@ -288,6 +315,7 @@ export class ChatGptPlanSession {
         this.cancelRequested = false;
         listener.close();
         this.pending = null;
+        if (this.signInOwner === owner) this.signInOwner = null;
       }
     })();
     this.pending = { listener, completion };
@@ -295,6 +323,7 @@ export class ChatGptPlanSession {
     completion.catch(() => undefined);
     this.emit({ event: "sign-in-started" });
     const openWindow = async () => {
+      this.assertSignInOwner(owner);
       await this.options.openAuthorizationUrl(url, {
         completion: listener.callback,
         onCancel: (reason = "failed") => {
@@ -312,6 +341,7 @@ export class ChatGptPlanSession {
   }
 
   cancelSignIn(): void {
+    this.signInOwner = null;
     if (!this.pending) return;
     this.cancelRequested = true;
     this.pending.listener.close();
@@ -400,6 +430,7 @@ export class ChatGptPlanSession {
   private refresh(): Promise<StoredTokens> {
     if (this.refreshing) return this.refreshing;
     if (this.signingOut || this.grantWithdrawn) return Promise.reject(new ChatGptPlanSessionError("signed-out"));
+    if (this.signInOwner) return Promise.reject(new ChatGptPlanSessionError("temporarily-unavailable"));
     const run = (async () => {
       const record = await this.load();
       if (!record?.tokens) throw new ChatGptPlanSessionError("signed-out");
@@ -486,7 +517,12 @@ export class ChatGptPlanSession {
     return this.record;
   }
 
-  private async save(record: AccountRecord): Promise<void> {
+  private assertSignInOwner(owner: symbol): void {
+    if (this.signInOwner !== owner) throw new ChatGptPlanSessionError("sign-in-failed");
+  }
+
+  private async save(record: AccountRecord, signInOwner?: symbol): Promise<void> {
+    if (signInOwner !== undefined) this.assertSignInOwner(signInOwner);
     if (this.record?.tokens?.scopes.includes(CHATGPT_PLAN_USAGE_SCOPE)
       && !record.tokens?.scopes.includes(CHATGPT_PLAN_USAGE_SCOPE)) {
       this.withdrawGrant();
@@ -494,6 +530,7 @@ export class ChatGptPlanSession {
     if (!await this.options.secrets.isSecretStorageEncrypted()) {
       throw new ChatGptPlanSessionError("secure-storage-unavailable");
     }
+    if (signInOwner !== undefined) this.assertSignInOwner(signInOwner);
     await this.options.secrets.setSecret(CHATGPT_PLAN_ACCOUNT_SECRET_KEY, JSON.stringify(record));
     this.record = record;
     this.grantWithdrawn = false;

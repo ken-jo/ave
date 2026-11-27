@@ -1777,7 +1777,7 @@ export class SubscriptionRuntimeService {
       this.disconnect(provider);
     }
     try {
-      await this.stopSessionsFor(provider);
+      if (provider !== "chatgpt-plan") await this.stopSessionsFor(provider);
       const status = await mutation();
       if (state && isCliProvider(provider)) {
         if (state.intent === intent && state.loginAttempt === undefined) this.projectLogin(provider, state, status);

@@ -139,14 +139,7 @@ export class ChatGptPlanRuntime {
   async startLogin(): Promise<SubscriptionRuntimeStatus> {
     this.forgetCatalog();
     return stable(async () => {
-      let requestConsent = false;
-      try {
-        requestConsent = (await this.session.status()).planUsage === "disabled";
-      } catch {
-        throw new ChatGptPlanRuntimeError("subscription-operation-failed");
-      }
-      // The completion settles after the browser returns; the renderer polls the pending status meanwhile.
-      await this.session.startSignIn(requestConsent ? { requestConsent: true } : {});
+      await this.session.startSignIn();
       return this.getStatus();
     });
   }
