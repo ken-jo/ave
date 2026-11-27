@@ -1,8 +1,11 @@
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { _detectMxcLinuxShellSupportForTest as detect, _trustedLinuxPathForTest, buildBubblewrapShellRequest } from "../mxc-linux.js";
+import seccompPins from "../mxc-linux-seccomp-pins.json" with { type: "json" };
 import { posixPolicyLookups } from "../mxc-posix.js";
 
 function probeInputs() {
@@ -80,4 +83,15 @@ it("keeps the Linux request bytes stable and requires the nearest cwd row to all
   expect(environment).toBe("export HOME='/work/sandbox-home'\nexport TMPDIR='/work/sandbox-home/temp'\nexport PATH='/usr/bin'\n");
   expect(buildBubblewrapShellRequest({ ...input, env: { TOKEN: "it's", "BAD-NAME": "x" } }).environment).toBe("export TOKEN='it'\"'\"'s'\n");
   expect(() => buildBubblewrapShellRequest({ ...input, cwd: "/work/.ave/hooks" })).toThrow("outside its filesystem grants");
+});
+
+describe("checked-in Linux shell filters", () => {
+  // A line-ending conversion on checkout (autocrlf, a text attribute) would change the bytes packaging hashes.
+  it.each(Object.entries(seccompPins))("keeps the %s filter byte-identical to its blob and its pin", (arch, pin) => {
+    const path = `resources/linux-shell-seccomp/${arch}/apply-seccomp`;
+    expect(execFileSync("git", ["check-attr", "binary", "--", path], { encoding: "utf8" })).toBe(`${path}: binary: set\n`);
+    const blob = execFileSync("git", ["cat-file", "blob", `HEAD:${path}`], { maxBuffer: 16 * 1024 * 1024 });
+    expect(readFileSync(path).equals(blob)).toBe(true);
+    expect(createHash("sha256").update(blob).digest("hex")).toBe(pin);
+  });
 });

@@ -30,8 +30,8 @@ export function stagePackagedLinuxShellFilter(resources, arch) {
   mkdirSync(path.dirname(packaged), { recursive: true });
   copyFileSync(new URL(relative, source), packaged);
   const entry = lstatSync(packaged);
-  if (!entry.isFile() || (entry.mode & 0o111) !== 0o111
-    || createHash("sha256").update(readFileSync(packaged)).digest("hex") !== LINUX_FILTER_PINS[arch]) {
+  if (!entry.isFile() || (entry.mode & 0o111) !== 0o111) throw new Error(`Packaged Linux shell filter is not an executable file: ${packaged}`);
+  if (createHash("sha256").update(readFileSync(packaged)).digest("hex") !== LINUX_FILTER_PINS[arch]) {
     throw new Error(`Packaged Linux shell filter does not match its ${arch} pin`);
   }
   cpSync(new URL("licenses/linux-shell-seccomp/", source), path.join(resources, "licenses", "linux-shell-seccomp"), { recursive: true });
