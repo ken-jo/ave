@@ -9,7 +9,7 @@ import { MAIN_ENTRY_POINTS } from "../../scripts/lib/main-entry-points.mjs";
 describe("main bundle manifest", () => {
   it("allows every emitted main bundle entry in the package footprint", () => {
     const outdir = resolve("dist/src/main");
-    const outputs = Object.fromEntries(
+    const outputs = Object.fromEntries<{ bytes: number }>(
       Object.keys(MAIN_ENTRY_POINTS).map((entry) => [join(outdir, `${entry}.js`), { bytes: 1 }]),
     );
     const manifest = createMainBundleManifest({ outputs }, { outdir });
