@@ -205,7 +205,7 @@ function webFetchCategoryForInput(input: unknown): "network" {
 export function createWebFetchTool(singleHopFetch: typeof fetch): Tool {
   const tool = createDynamicTool({
     name: "web_fetch",
-    unattendedEffect: "safe",
+    unattendedEffect: "unknown",
     description: t("be_tools.webFetchDescription"),
     source: "builtin",
     category: "network",

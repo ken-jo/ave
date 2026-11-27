@@ -1,6 +1,10 @@
 import { expect, it } from "vitest";
 import { requiredValue } from "../../__tests__/support/required-value.js";
 import type { EnvelopeToolRef, StageEnvelope, TemplateGraph } from "../../shared/workflow-template-types.js";
+import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
+import { ToolRegistry } from "../../tools/registry.js";
+import { createWebFetchTool } from "../../tools/web-fetch.js";
+import { createWebSearchTool } from "../../tools/web-search.js";
 import { qualifyUnattended } from "../template-graph.js";
 
 const collections = ["tools", "mcpReadOnlyTools", "mcpGenerationTools", "pluginGenerationTools"] as const;
@@ -49,4 +53,17 @@ it("qualifies a version with an envelope on every stage and no envelope tools", 
   const envelope = requiredValue(input.stages[0].envelope);
   for (const collection of collections) envelope[collection] = [];
   expect(qualifyUnattended(input, null)).toEqual({ ok: true });
+});
+
+it.each(["web_fetch", "web_search"])("refuses to qualify %s without an unattended network route", name => {
+  const registry = new ToolRegistry();
+  registry.register(createWebFetchTool(fetch));
+  registry.register(createWebSearchTool({ get: () => undefined } as never, fetch));
+  const input = graph();
+  const envelope = requiredValue(input.stages[0].envelope);
+  for (const collection of collections) envelope[collection] = [];
+  envelope.tools = [name];
+  expect(qualifyUnattended(input, createToolEffectResolver(registry))).toEqual({
+    ok: false, code: "tool-effect-unknown", tool: { stageId: "first", collection: "tools", name },
+  });
 });

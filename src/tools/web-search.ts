@@ -60,7 +60,7 @@ export function createWebSearchTool(
 ): Tool {
   return createDynamicTool({
     name: "web_search",
-    unattendedEffect: "safe",
+    unattendedEffect: "unknown",
     description: t("be_tools.webSearchDescription"),
     source: "builtin",
     category: "read",
