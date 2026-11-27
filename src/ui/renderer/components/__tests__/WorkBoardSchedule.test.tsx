@@ -53,6 +53,7 @@ function stubApi(initialRunning: Array<{ routineId: string; firedAt: string }> =
     listRoutines: vi.fn(async () => ({ routines: [routine("brief", "Morning brief"), routine("deps", "Dependency check"), ...extraRoutines], invalid: [] })),
     listRoutineOccurrences: vi.fn(async () => ({ ...occurrences, running: [...running] })),
     onRoutineFired: noop,
+    onRoutinesChanged: noop,
     onRoutineRunningStarted: (h: (p: { routineId: string; firedAt: string }) => void) => { started = h; return () => {}; },
     onRoutineRunningFinished: (h: (routineId: string) => void) => { finished = h; return () => {}; },
     onRoutineFailed: noop,

@@ -1531,7 +1531,6 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
               originSessionId: origin,
               projectRoot: stageRoot,
               ...(item.projectName ? { projectName: item.projectName } : {}),
-              profileMode: readOnly ? "plan" : "execute",
               profileModel: profile?.model,
               ...(budget ? { maxRounds: budget.rounds } : readOnly ? { maxRounds: READ_STAGE_ROUND_BUDGET } : {}),
               ...(claimRound ? { claimRound } : {}),

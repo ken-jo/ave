@@ -16,9 +16,13 @@ import { SubAgentRunner } from "../../engine/subagent-runner.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 import { ReadFileTool } from "../../tools/file-tools.js";
 import { ToolRegistry } from "../../tools/registry.js";
+import { createWebSearchTool } from "../../tools/web-search.js";
 import { STAGE_TOOL_CALLS_REFUSED } from "../../shared/workflow-template-types.js";
+import { t } from "../../i18n/index.js";
 import { en } from "../../i18n/messages/en.js";
 import { ko } from "../../i18n/messages/ko.js";
 
@@ -40,7 +44,8 @@ it("spawns only the pinned version's stages with the stage's tool scope", () => 
   const [a] = await h.untilLive(1);
   expect(a.input.title).toContain("Stage a");
   expect(a.input.toolScope).toEqual({ kind: "exactly", names: ["read_file", "grep_files", "sample_lookup"] });
-  expect(a.input.profileMode).toBe("plan");
+  expect(a.input.profileMode).toBeUndefined();
+  expect(a.input.instructions).toContain("do NOT ask the user any questions");
   expect(a.input.instructions).toContain(`Working folder: ${JSON.stringify(a.input.projectRoot)}`);
   a.finish();
   // The launch call settles once the run waits at its first gate; nothing is decided before it has.
@@ -52,7 +57,8 @@ it("spawns only the pinned version's stages with the stage's tool scope", () => 
   const [b] = await h.untilLive(1);
   expect(b.input.title).toContain("Stage b");
   expect(b.input.toolScope.kind).toBe("parent-all");
-  expect(b.input.profileMode).toBe("execute");
+  expect(b.input.profileMode).toBeUndefined();
+  expect(b.input.instructions).toContain("do NOT ask the user any questions");
   expect(b.input.instructions).toContain("output of child-1");
   b.finish();
   await h.untilStage(id, "b", "awaiting_gate");
@@ -651,20 +657,40 @@ it("a scheduled run parks at its human gate after reconcile and a local approve 
 const missingFile = { type: "tool_call", id: "missing", name: "read_file", input: { path: "missing.txt" } } as const;
 const unknownTool = { type: "tool_call", id: "unknown", name: "unavailable_tool", input: {} } as const;
 
-it.each<{ outcome: string; calls: StreamEvent[]; refused?: true; deny?: true }>([
-  { outcome: "permission denied", calls: [missingFile], refused: true, deny: true },
+it.each<{ outcome: string; calls: StreamEvent[]; refused?: true; deny?: "rule" | "user"; scheduled?: true }>([
+  { outcome: "permission denied", calls: [missingFile], refused: true, deny: "rule" },
+  { outcome: "the user denies the approval card", calls: [{ ...missingFile, input: { path: ".env" } }], refused: true, deny: "user" },
   { outcome: "malformed arguments", calls: [{ ...missingFile, input: {}, invalidInput: { raw: "{", reason: "unparsable-json", rawChars: 1 } }], refused: true },
   { outcome: "invalid arguments", calls: [{ ...missingFile, input: { path: 42 } }], refused: true },
   { outcome: "tool not found", calls: [unknownTool], refused: true },
+  { outcome: "scheduled web_search is not found", calls: [{ ...unknownTool, name: "web_search", input: { query: "fixture" } }], refused: true, scheduled: true },
   { outcome: "ordinary file error", calls: [missingFile] },
   { outcome: "mixed refusal and file error", calls: [unknownTool, missingFile] },
   { outcome: "no calls", calls: [] },
-])("uses the child's output for stage_ok after $outcome unless every call was refused", async ({ calls, refused, deny }) => {
+])("uses the child's output for stage_ok after $outcome unless every call was refused", async ({ calls, refused, deny, scheduled }) => {
   const registry = new ToolRegistry();
   registry.register(new ReadFileTool());
+  const webFetch = vi.fn<typeof fetch>();
+  if (scheduled) registry.register(createWebSearchTool(makeSubagentLoopDeps(registry).settingsService, webFetch));
+  const contents = makeMockWebContents();
+  const approvalGate = deny === "user" ? new ApprovalGate(contents as never) : undefined;
+  const cards: ApprovalRequest[] = [];
+  if (approvalGate) contents.send.mockImplementation((channel, value) => {
+    if (channel !== IPC_APPROVAL_REQUEST) return;
+    const request = value as ApprovalRequest;
+    cards.push(request);
+    queueMicrotask(() => approvalGate.resolveFromDesktopRenderer(request.id, {
+      requestId: request.id, choice: "deny-once", nonce: request.nonce, hmac: request.hmac,
+    }, contents as never));
+  });
+  let sawToolNotFound = false;
   const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider({
     vendor: "claude",
     async *streamTurn({ messages }) {
+      if (scheduled && messages.some(message => message.role === "tool_result" && message.isError
+        && message.content === t("be_executor.toolNotFound", { name: "web_search" }))) {
+        sawToolNotFound = true;
+      }
       if (calls.length && !messages.some(message => message.role === "tool_result")) {
         yield* calls;
         yield { type: "message_complete", stopReason: "tool_use" };
@@ -677,8 +703,19 @@ it.each<{ outcome: string; calls: StreamEvent[]; refused?: true; deny?: true }>(
   try {
     await withHarness(async h => {
       const version = await h.confirm([auto("a")]);
-      const id = await h.addItem(version);
-      const settled = await h.start(id, h.local(version));
+      const start = async () => {
+        if (scheduled) {
+          const { source } = await h.attach(version);
+          if (source.kind !== "schedule-attachment") throw new Error("Expected schedule source");
+          const started = await h.engine.startScheduledTemplate(source, "Scheduled work");
+          if (!started.ok) throw new Error(started.code);
+          return { id: started.itemId, result: started.result };
+        }
+        const id = await h.addItem(version);
+        return { id, result: h.start(id, h.local(version)) };
+      };
+      const { id, result } = await start();
+      const settled = await result;
       if (refused) {
         expect(settled).toMatchObject({ status: "awaiting_approval" });
         expect(await h.stageRun(id, "a")).toMatchObject({
@@ -689,13 +726,22 @@ it.each<{ outcome: string; calls: StreamEvent[]; refused?: true; deny?: true }>(
         expect(settled).toMatchObject({ status: "completed" });
         expect(await h.stageRun(id, "a")).toMatchObject({ status: "passed", output: "No input was available." });
       }
+      if (deny === "user") expect(cards).toMatchObject([{ toolName: "read_file" }]);
+      if (scheduled) {
+        expect(sawToolNotFound).toBe(true);
+        expect(webFetch).not.toHaveBeenCalled();
+        expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+        await h.until(id, row => row.runStatus === "cancelled");
+        expect(await h.stageRun(id, "a")).toMatchObject({ status: "failed", failure: "error", failureReason: STAGE_TOOL_CALLS_REFUSED });
+      }
     }, {
       runner: dir => {
         const permissionManager = new PermissionManager(join(dir, "permissions.json"));
-        if (deny) permissionManager.checkDetailed = () => ({ decision: "deny", reason: "Fixture permission denied", provenance: RULE_PROVENANCE });
+        if (deny === "rule") permissionManager.checkDetailed = () => ({ decision: "deny", reason: "Fixture permission denied", provenance: RULE_PROVENANCE });
+        if (deny === "user") permissionManager.setMode("default");
         return new SubAgentRunner({
           parentDeps: makeSubagentLoopDeps(registry, {
-            permissionManager, authorizeProject: projectRoot => ({ projectRoot, isDefault: false }),
+            permissionManager, approvalGate, authorizeProject: projectRoot => ({ projectRoot, isDefault: false }),
           }),
           toolRegistry: registry,
           subAgentMemoryManager: new MemoryManager({ aveDir: join(dir, "children") }),

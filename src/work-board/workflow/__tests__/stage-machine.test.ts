@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { StageJoin, TemplateGraph, WorkItemStageRun } from "../../../shared/workflow-template-types.js";
+import { STAGE_TOOL_CALLS_REFUSED, type StageJoin, type TemplateGraph, type WorkItemStageRun } from "../../../shared/workflow-template-types.js";
 import { MAX_PARALLEL_STAGES, reduceRun, type RunEffect, type RunEvent } from "../stage-machine.js";
 import { graphOf, stageOf, waitingRuns } from "./stage-fixtures.js";
 
@@ -51,6 +51,35 @@ describe("stage machine", () => {
     expect(d.joins()).toEqual([]);
     expect(d.status("z")).toBe("waiting");
     expect(d.runStatus()).toBe("executing");
+  });
+
+  it.each<{ event: RunEvent; status: "running" | "failed"; stopping?: true }>([
+    { event: { type: "retry_requested", stageId: "a" }, status: "running" },
+    { event: { type: "continue_requested" }, status: "failed" },
+    { event: { type: "gate_decided", stageId: "a", attempt: 1, decision: "request_changes", note: "Revise" }, status: "failed" },
+    { event: { type: "stop_requested" }, stopping: true, status: "failed" },
+  ])("$event.type handles failure-only fields of a failed stage", ({ event, status, stopping }) => {
+    const failures: Pick<WorkItemStageRun, "failure" | "failureReason" | "blocked">[] = [
+      { failure: "error", failureReason: STAGE_TOOL_CALLS_REFUSED },
+      { failure: "error", blocked: { code: "isolation-unproven", at: "2026-11-16T00:00:00.000Z" } },
+    ];
+    for (const failure of failures) {
+      const d = driver(graphOf([stageOf("a")]));
+      d.send({ type: "started" });
+      d.send({ type: "stage_ended", stageId: "a", attempt: 1, ok: false, ...failure });
+      expect(d.run("a")).toMatchObject({ status: "failed", ...failure });
+
+      d.flags.stopping = stopping ?? false;
+      const effects = d.send(event);
+      expect(d.run("a")).toMatchObject({ status, attempt: status === "running" ? 2 : 1 });
+      if (status === "running") {
+        expect(effects).toEqual([{ type: "spawn", stageId: "a", attempt: 2 }]);
+        for (const field of Object.keys(failure)) expect(d.run("a")).not.toHaveProperty(field);
+      } else {
+        expect(d.run("a")).toMatchObject(failure);
+      }
+      expect(d.runStatus()).toBe(stopping ? "cancelled" : "executing");
+    }
   });
 
   it("request changes reruns the same stage with attempt + 1 and refuses a fourth", () => {

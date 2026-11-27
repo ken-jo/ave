@@ -954,6 +954,7 @@ export type AvePreloadApi = {
   pauseRoutine: (id: string) => Promise<{ ok: true; routine: import("../../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }>;
   resumeRoutine: (id: string) => Promise<{ ok: true; routine: import("../../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }>;
   listRoutineOccurrences: (query: { projectRoot?: string; from: string; to: string }) => Promise<import("../../shared/routines-types.js").RoutineOccurrencesResult>;
+  onRoutinesChanged: (handler: () => void) => () => void;
   onRoutineFired: (
     handler: (event: import("../../shared/routines-types.js").RoutineFiredPayload) => void,
   ) => () => void;
