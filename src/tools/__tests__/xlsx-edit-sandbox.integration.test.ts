@@ -58,8 +58,12 @@ describe("native governed XLSX command", () => {
     const developmentScripts = testScripts ?? join(resolve("dist"), "skill-scripts");
     const windows = process.platform === "win32";
     const windowsBuild = windows ? realpathSync.native(mkdtempSync(join(tmpdir(), "ave-xlsx-pinned-build-"))) : undefined;
-    const stageWindowsResources = (resourcePath: string) => {
-      for (const binary of [join("mxc", process.arch, "wxc-exec.exe"), join("windows-path-kind", process.arch, "ave-path-kind.exe")]) {
+    // A resource root other than the checkout's carries the platform's pinned container launcher and helper.
+    const platformBinaries = windows
+      ? [join("mxc", process.arch, "wxc-exec.exe"), join("windows-path-kind", process.arch, "ave-path-kind.exe")]
+      : linux ? [join("mxc", process.arch, "lxc-exec"), join("linux-shell-seccomp", process.arch, "apply-seccomp")] : [];
+    const stagePlatformResources = (resourcePath: string) => {
+      for (const binary of platformBinaries) {
         mkdirSync(dirname(join(resourcePath, binary)), { recursive: true });
         copyFileSync(resolve("resources", binary), join(resourcePath, binary));
       }
@@ -70,11 +74,12 @@ describe("native governed XLSX command", () => {
     };
     if (mac) cpSync(developmentScripts, join(hostResources.resourcePath, "..", "dist", "skill-scripts"), { recursive: true });
     if (windowsBuild) {
-      stageWindowsResources(hostResources.resourcePath);
+      stagePlatformResources(hostResources.resourcePath);
       const pin = windowsPeImageDigest(readFileSync(windowsPathKindHelperIn(hostResources.resourcePath)));
       await buildSkillScripts({ directory: join(windowsBuild, "dist", "skill-scripts") });
       vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", pin);
     }
+    if (linux && hostResources.resourcePath !== resolve("resources")) stagePlatformResources(hostResources.resourcePath);
     configureHostResources(hostResources);
     const runtime = hostScriptRuntimePaths();
     if (!runtime) throw new Error("Host script runtime is unavailable");
@@ -438,13 +443,7 @@ describe("native governed XLSX command", () => {
       writeFileSync(probe, source);
       writeFileSync(join(protectedDirectory, "manifest.json"), JSON.stringify({ version: 1,
         scripts: { "write-probe.cjs": createHash("sha256").update(source).digest("hex") } }));
-      if (windows) stageWindowsResources(fixtureResources);
-      if (linux) {
-        for (const binary of [join("mxc", process.arch, "lxc-exec"), join("linux-shell-seccomp", process.arch, "apply-seccomp")]) {
-          mkdirSync(dirname(join(fixtureResources, binary)), { recursive: true });
-          copyFileSync(resolve("resources", binary), join(fixtureResources, binary));
-        }
-      }
+      stagePlatformResources(fixtureResources);
       currentResources = { resourcePath: fixtureResources, isPackaged: !mac };
       configureHostResources(currentResources);
       if (mac) await provePosixContainer("darwin");
