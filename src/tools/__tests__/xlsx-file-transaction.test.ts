@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+import { constants, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
   renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -18,11 +18,13 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
 });
 
-// Confined shells refuse hard links; every case here runs without that right.
-vi.mock("node:fs", async (importOriginal) => ({
-  ...await importOriginal<typeof import("node:fs")>(),
-  linkSync: () => { throw Object.assign(new Error("EPERM: operation not permitted, link"), { code: "EPERM" }); },
-}));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, linkSync: vi.fn((source: string, target: string) => {
+    if (process.platform === "win32") throw Object.assign(new Error("Hard link refused"), { code: "EPERM" });
+    return actual.linkSync(source, target);
+  }) };
+});
 
 let directory: string;
 beforeEach(() => {
@@ -151,13 +153,43 @@ describe("workbook file transaction", () => {
     expect(temporaryNames()).toEqual([]);
   });
 
-  it("publishes a verified recovery copy without a hard link", async () => {
+  it.skipIf(process.platform !== "win32")("publishes a verified recovery copy without a hard link", async () => {
     const { path, before, output } = await workbook(true);
     const snapshot = readWorkbookSnapshot(path);
     expect(publishWorkbookEdit(path, snapshot, output, 1)).toEqual({ editedCells: 1, needsRecalculation: true, backup: `${path}.ave-bak` });
     expect(readFileSync(`${path}.ave-bak`).equals(before)).toBe(true);
     expect(readFileSync(path).equals(output)).toBe(true);
     expect(temporaryNames()).toEqual([]);
+  });
+
+  it.each(["darwin", "linux"])("publishes the recovery name only after staging on %s", async (platform) => {
+    const path = join(directory, "book.xlsx");
+    const before = Buffer.alloc(8 * 1024 * 1024 + 1, 0x61);
+    const output = Buffer.from("validated output");
+    const backup = `${path}.ave-bak`;
+    writeFileSync(path, before);
+    const snapshot = readWorkbookSnapshot(path);
+    const publish = vi.mocked(linkSync).mockImplementationOnce((source, target) => {
+      expect(target).toBe(backup);
+      expect(existsSync(backup)).toBe(false);
+      expect(readFileSync(source).equals(before)).toBe(true);
+      copyFileSync(source, target, constants.COPYFILE_EXCL);
+    });
+    publish.mockClear();
+    vi.stubGlobal("process", Object.create(process, { platform: { value: platform } }));
+    try {
+      expect(publishWorkbookEdit(path, snapshot, output, 1, { write(descriptor, bytes, offset, length) {
+        if (bytes === snapshot.data) expect(existsSync(backup)).toBe(false);
+        return writeSync(descriptor, bytes, offset, length);
+      } })).toEqual({ editedCells: 1, needsRecalculation: true, backup });
+      expect(publish).toHaveBeenCalledOnce();
+      expect(readFileSync(backup).equals(before)).toBe(true);
+      expect(readFileSync(path)).toEqual(output);
+      expect(temporaryNames()).toEqual([]);
+    } finally {
+      publish.mockReset();
+      vi.unstubAllGlobals();
+    }
   });
 
   it.skipIf(process.platform === "win32")("creates the recovery copy owner-only", async () => {

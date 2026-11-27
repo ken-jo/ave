@@ -179,10 +179,20 @@ export function publishWorkbookEdit(path: string, snapshot: WorkbookFileSnapshot
   path = location.path;
   const source = { path, identity: snapshot.identity };
   let backup: string | null = null;
-  if (snapshot.data.length > XLSX_EDIT_LIMITS.backupBytes) {
+  const needsBackup = snapshot.data.length > XLSX_EDIT_LIMITS.backupBytes;
+  if (needsBackup && process.platform === "win32") {
     backup = backupPath;
     checkSource(requestedPath, snapshot, location);
     writeRecoveryCopy(source, `${path}.ave-bak`, snapshot.data, io, () => checkSource(requestedPath, snapshot, location));
+  } else if (needsBackup) {
+    backup = backupPath;
+    const staged = temporaryFile(path);
+    try {
+      try { writeAndSync(staged.descriptor, snapshot.data, io); } finally { fs.closeSync(staged.descriptor); }
+      verifyStagedBytes(staged.path, snapshot.data, "Backup verification failed.");
+      checkSource(requestedPath, snapshot, location);
+      fs.linkSync(staged.path, `${location.path}.ave-bak`);
+    } finally { fs.unlinkSync(staged.path); }
   }
   checkSource(requestedPath, snapshot, location);
   const staged = temporaryFile(path);

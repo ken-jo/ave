@@ -176,12 +176,14 @@ sources or observed link substitutions. The host observer imports no workbook
 publisher and never changes the source or backup.
 
 The source and complete edited output must fit the 20 MiB ceiling. For source
-bytes strictly above the 8 MiB backup threshold, the writer exclusively creates
-`<path>.ave-bak` in the workbook's directory, writes the recovery bytes, calls
-`fsync`, and verifies their length and SHA-256. An existing recovery path,
-including a partial backup or dangling link, refuses the edit. A failed copy is
-removed when it still holds the identity created by this edit. Files at or below
-the threshold have no automatic backup.
+bytes strictly above the 8 MiB backup threshold, the writer saves the recovery
+bytes, calls `fsync`, verifies their length and SHA-256, and rechecks the source.
+On macOS and Linux it stages the bytes in a sibling temporary file and publishes
+the verified copy as `<path>.ave-bak` with a hard link. On Windows confined shells
+cannot create hard links, so the writer creates the recovery name exclusively
+and removes a failed copy when it still holds the identity created by this edit.
+An existing recovery path, including a partial backup or dangling link, refuses
+the edit. Files at or below the threshold have no automatic backup.
 
 On Windows, the writer checks each newly created backup or staging file before
 writing workbook bytes. The native helper reports DACL control flags and the
