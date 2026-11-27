@@ -226,6 +226,20 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
       workerTransport: "output-only-v1", parent, allowWrite: [workerData] })).rejects.toThrow("Extension parent backend is no longer admitted");
   });
 
+  it("N15: the plugin child runtime, Electron as Node, starts and speaks over its pipes inside a holder", async () => {
+    // The checkout is an authorized workspace, and no holder runs an executable from a workspace: run a clone of the
+    // runtime's app bundle from outside it, as the packaged app runs its own.
+    const bundle = process.execPath.slice(0, process.execPath.indexOf(".app/") + ".app".length);
+    const clone = join(root, "runtime", bundle.slice(bundle.lastIndexOf("/") + 1));
+    mkdirSync(join(root, "runtime"));
+    execFileSync("/bin/cp", ["-cR", bundle, clone]);
+    const started = await holder("", { command: clone + process.execPath.slice(bundle.length), args: ["-e", "process.stdin.on('data', d => process.stdout.write('node:' + d))"],
+      baseEnv: { PATH, ELECTRON_RUN_AS_NODE: "1" }, holderEnv: {} });
+    const echoed = line(started.process.stdout);
+    started.process.stdin.write("hello\n");
+    expect(await echoed).toBe("node:hello");
+  });
+
   it("N13: a kernel-refused start runs nothing and leaves no staging tree", async () => {
     const staging = join(cache, "ai.agent-connector.ave", "mxc-runtime", "staging");
     const before = existsSync(staging) ? readdirSync(staging).length : 0;
