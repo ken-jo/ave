@@ -10,6 +10,7 @@
       "src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts",
       "src/tools/__tests__/bash-sandbox-home-integration.test.ts",
       "src/tools/__tests__/session-read-shell.test.ts",
+      "src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts",
       "src/tools/__tests__/shell-asrt-source.test.ts",
       "src/mcp/__tests__/mcp-stdio-sandbox-wrap.test.ts"
     ],
