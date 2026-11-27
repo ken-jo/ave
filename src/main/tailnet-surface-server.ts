@@ -275,9 +275,6 @@ export function resolveTailnetObserverPort(
   if (environment?.serveStatusKnown === false && environmentEnabled) {
     return { port: LEGACY_TAILNET_OBSERVER_PORT, canChoosePort: false };
   }
-  if (file !== null && entryPoint === "settings" && !environmentEnabled) {
-    return { port: LEGACY_TAILNET_OBSERVER_PORT, canChoosePort: false };
-  }
   return { port: DEFAULT_TAILNET_OBSERVER_PORT, canChoosePort: entryPoint === "guided-setup" };
 }
 

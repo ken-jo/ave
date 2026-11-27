@@ -955,7 +955,7 @@ describe("Tailnet observer configuration surface", () => {
     { enabled: undefined, env: {} },
     { enabled: true, env: { AVE_TAILNET_OBSERVER: "0" } },
   ])("preserves disabled legacy file bytes across boot and Settings refresh (%j)", async ({ enabled, env }) => {
-    const port = 46_173;
+    const port = enabled ? 46_173 : DEFAULT_TAILNET_OBSERVER_PORT;
     const dir = makeTempDir();
     const configPath = join(dir, "observer.json");
     const namespace = {
@@ -1048,17 +1048,17 @@ describe("Tailnet observer port state table", () => {
     { id: "C7 forced OFF", file: "on", route: "absent", enable: false, boot: null, draft: legacyPort, guided: "forced-off" },
     {
       id: "C8 with occupied legacy port", file: "off", route: "absent", occupied: legacyPort,
-      boot: null, draft: legacyPort, guided: defaultPort,
+      boot: null, draft: defaultPort, guided: defaultPort,
     },
     {
       id: "C8 with occupied default", file: "off", route: "absent", occupied: defaultPort,
-      boot: null, draft: legacyPort, guided: "alternate",
+      boot: null, draft: defaultPort, guided: "alternate",
     },
     { id: "C8 environment ON", file: "off", route: "absent", enable: true, boot: defaultPort, draft: defaultPort, guided: defaultPort },
     { id: "C9", file: "off", route: "foreground", boot: null, draft: legacyPort, guided: legacyPort },
     { id: "C9 environment ON", file: "off", route: "background", enable: true, boot: legacyPort, draft: legacyPort, guided: legacyPort },
-    { id: "C10 ready", file: "off", route: "failed", boot: null, draft: legacyPort, guided: defaultPort },
-    { id: "C10 unavailable", file: "off", route: "unavailable", boot: null, draft: legacyPort, guided: "not-ready" },
+    { id: "C10 ready", file: "off", route: "failed", boot: null, draft: defaultPort, guided: defaultPort },
+    { id: "C10 unavailable", file: "off", route: "unavailable", boot: null, draft: defaultPort, guided: "not-ready" },
     { id: "C10 environment ON", file: "off", route: "failed", enable: true, boot: legacyPort, draft: legacyPort, guided: legacyPort },
     { id: "C11", file: savedPort, route: "foreground", boot: null, draft: savedPort, guided: savedPort },
     {
