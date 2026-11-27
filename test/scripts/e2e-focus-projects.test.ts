@@ -104,18 +104,61 @@ describe("native focus test selection", () => {
     expect(ci).not.toContain("background-shard");
   });
 
-  it("requires background approvals and keyboard authority in the existing build job", () => {
+  it("requires background approvals and keyboard authority from Build's artifact", () => {
     const workflow = parse(readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"));
     const build = workflow.jobs.build;
-    expect(build["runs-on"]).toBe("ubuntu-24.04-arm");
-    const step = build.steps.find((entry: { name?: string }) => entry.name === "Verify background approvals and keyboard authority");
-    expect(step.if).toBe("steps.docs-impact.outputs.docs_only != 'true'");
+    const background = workflow.jobs["background-ui"];
+    expect(background?.needs).toBe("build");
+    expect(background.if).toBe("needs.build.outputs.docs_only != 'true'");
+    expect(background["runs-on"]).toBe(build["runs-on"]);
+    expect(background["runs-on"]).toBe("ubuntu-24.04-arm");
+    expect(background["continue-on-error"]).toBeUndefined();
+    expect(background.env).toEqual(build.env);
+    expect(background.steps).toEqual(expect.arrayContaining([
+      expect.objectContaining({ uses: "./ave/.github/actions/setup-bun", with: { "bun-version-file": "ave/.bun-version" } }),
+      expect.objectContaining({ run: "bun install --frozen-lockfile" }),
+      expect.objectContaining({ run: "node scripts/fetch-uv.mjs" }),
+      expect.objectContaining({ uses: expect.stringMatching(/^actions\/setup-python@/), with: { "python-version": "3.12" } }),
+    ]));
+
+    const upload = build.steps.find((entry: { with?: { name?: string } }) => entry.with?.name === "ci-build");
+    expect(upload.with.path).toBe("ave/dist");
+    expect(background.steps[0].uses).toBe(build.steps[0].uses);
+    expect(background.steps[0].with).toMatchObject({
+      path: "ave",
+      ref: "$" + "{{ github.sha }}",
+      "persist-credentials": false,
+    });
+    const download = background.steps.find((entry: { uses?: string }) => entry.uses?.startsWith("actions/download-artifact@"));
+    expect(download?.with).toEqual({ name: "ci-build", path: "ave/dist" });
+
+    const runtime = background.steps.find((entry: { name?: string }) => entry.name === "Install background UI runtime dependencies");
+    expect(runtime.with.packages).toBe("xvfb xauth libgtk-3-0t64 libnss3 libasound2t64 libgbm1");
+    const step = background.steps.find((entry: { name?: string }) => entry.name === "Verify background approvals and keyboard authority");
+    expect(step.if).toBeUndefined();
+    expect(step["continue-on-error"]).toBeUndefined();
     expect(step["timeout-minutes"]).toBe(5);
+    expect(step["working-directory"]).toBe("ave");
     expect(step.env.AVE_E2E_OS_FOCUS).toBe("0");
-    expect(step.run).toContain("xvfb-run -a -s '-screen 0 1600x1000x24' bun run test:ui-e2e ui/approval-dialog.spec.ts ui/background-focus.spec.ts --retries=0");
-    expect(step.run).toContain("--output=test-results/background/cases");
+    expect(step.env.PLAYWRIGHT_JSON_OUTPUT_NAME).toBe("$" + "{{ github.workspace }}/ave/test-results/background/results.json");
+    expect(step.run).toContain('mktemp -d "$RUNNER_TEMP/background-ui-home.XXXXXX"');
+    expect(step.run).toContain('export HOME="$task_home" AVE_HOME="$task_home/.ave" TMPDIR="$task_home/tmp"');
+    expect(step.run).toContain("xvfb-run -a -s '-screen 0 1600x1000x24' bun run test:ui-e2e ui/approval-dialog.spec.ts ui/background-focus.spec.ts --retries=0 --reporter=list,json --output=test-results/background/cases");
     expect(step.run).toContain("GITHUB_STEP_SUMMARY");
-    expect(build.steps.find((entry: { name?: string }) => entry.name === "Upload background UI evidence").if).toContain("always()");
+    expect(background.steps.indexOf(download)).toBeLessThan(background.steps.indexOf(step));
+
+    const evidence = background.steps.at(-1);
+    expect(evidence).toMatchObject({
+      name: "Upload background UI evidence",
+      if: "always()",
+      uses: expect.stringMatching(/^actions\/upload-artifact@/),
+      with: {
+        name: "background-ui-results",
+        path: "ave/test-results/background",
+        "if-no-files-found": "error",
+        "retention-days": 7,
+      },
+    });
   });
 
 });
