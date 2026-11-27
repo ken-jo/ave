@@ -21,6 +21,8 @@ export interface PosixPolicyLookups {
   children(path: string, limit: number): readonly string[];
   /** Whether the host account can read the path and search it if it is a directory. */
   readable(path: string): boolean;
+  /** Directory identity, without following a final link. */
+  directoryIdentity(path: string): { readonly device: bigint; readonly inode: bigint } | undefined;
   readonly home: string;
   readonly foldsCase: boolean;
 }
@@ -33,6 +35,7 @@ export interface PosixFilesystemGrants extends MxcFilesystemGrants {
   readonly chainFolders: readonly string[];
   readonly ungrantedDenies: readonly string[];
   readonly carvedReadLimitedAt?: readonly string[];
+  readonly pins?: readonly string[];
 }
 
 function isAbsent(error: unknown): boolean {
@@ -82,6 +85,15 @@ export function posixPolicyLookups(home: string, foldsCase: boolean): PosixPolic
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         if (isAbsent(error) || code === "EACCES" || code === "EPERM") return false;
+        throw error;
+      }
+    },
+    directoryIdentity(path) {
+      try {
+        const stat = lstatSync(path, { bigint: true });
+        return stat.isDirectory() ? { device: stat.dev, inode: stat.ino } : undefined;
+      } catch (error) {
+        if (isAbsent(error)) return undefined;
         throw error;
       }
     },
@@ -318,7 +330,13 @@ function rankRows(model: PolicyModel, nestedRule: NestedGrantRule, lookups: Posi
     const writeFloor = writeFloorRows.filter((path) => readwrite.some((grant) => strictlyCovers(grant, path)));
     const writableKeys = new Set(readwrite.map(key));
     const readonly = dedupe([
-      ...requestedReadonly, ...writeFloor.filter((path) => !coveredBy(path, denied)),
+      ...requestedReadonly, ...writeFloor.filter((path) => {
+        const deny = nearestEnclosing(path, denied, lookups.foldsCase);
+        if (deny === undefined) return true;
+        if (nestedRule === "deny-wins") return false;
+        const write = nearestEnclosing(path, readwrite, lookups.foldsCase);
+        return write !== undefined && write.length > deny.length;
+      }),
     ]).filter((path) => !writableKeys.has(key(path)));
 
     return { readwrite, readonly, denied };
@@ -331,7 +349,7 @@ function rankRows(model: PolicyModel, nestedRule: NestedGrantRule, lookups: Posi
   return { ...result, ungrantedDenies: readDenies.filter(deny => !deniedKeys.has(key(deny))) };
 }
 
-function applyBubblewrapRows(result: PosixFilesystemGrants, lookups: PosixPolicyLookups): PosixFilesystemGrants {
+function bubblewrapReadBase(result: PosixFilesystemGrants, lookups: PosixPolicyLookups): PosixFilesystemGrants {
   if (!result.readonly.includes("/")) return result;
 
   const children = lookups.children("/", MAX_CARVE_ENTRIES + 1);
@@ -356,6 +374,28 @@ function applyBubblewrapRows(result: PosixFilesystemGrants, lookups: PosixPolicy
     if (parent === "/") readonly.push(path);
   }
   return { ...result, readonly };
+}
+
+function applyBubblewrapRows(result: PosixFilesystemGrants, lookups: PosixPolicyLookups): PosixFilesystemGrants {
+  const { readwrite, readonly, denied } = bubblewrapReadBase(result, lookups);
+  const enclosingRows = [...readwrite, ...readonly, ...denied];
+  const writeRows = new Set(readwrite);
+  const pins = new Set<string>();
+  for (const path of [...readonly, ...denied]) {
+    const parent = posix.dirname(path);
+    const enclosing = nearestEnclosing(parent, enclosingRows, false);
+    if (enclosing === undefined || !writeRows.has(enclosing)) continue;
+    for (let folder = parent; folder !== enclosing; folder = posix.dirname(folder)) {
+      if (lookups.directoryIdentity(folder) !== undefined) pins.add(folder);
+    }
+  }
+
+  const writable = [...readwrite, ...pins];
+  const firstExcess = [...writable, ...readonly, ...denied][MAX_CARVE_GRANTS];
+  if (firstExcess !== undefined) {
+    throw new PosixContainerPolicyError("grant-limit-exceeded", `Container grant limit (${MAX_CARVE_GRANTS}) exceeded at: ${firstExcess}`);
+  }
+  return { ...result, readwrite: writable, readonly, denied, pins: [...pins] };
 }
 
 /** Rank the literal rows and retain the carve information needed to render the profile. */

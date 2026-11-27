@@ -5,7 +5,7 @@ import { _seatbeltDenyGlobForTest, buildSeatbeltShellProfile, splitSeatbeltPolic
 
 const lookups: PosixPolicyLookups = {
   home: "/users/example", foldsCase: true, canonical: path => path,
-  exists: () => true, children: () => [], readable: () => true,
+  exists: () => true, children: () => [], readable: () => true, directoryIdentity: () => undefined,
 };
 
 function fixture(paths = lookups) {

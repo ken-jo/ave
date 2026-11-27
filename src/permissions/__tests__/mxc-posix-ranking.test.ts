@@ -12,6 +12,7 @@ const lookups: PosixPolicyLookups = {
   children: () => [],
   exists: (path) => !path.includes("/missing"),
   readable: () => true,
+  directoryIdentity: (path) => path.includes("/missing") ? undefined : { device: 1n, inode: 2n },
   canonical: (path) => path.replace(/^\/tmp(?=\/|$)/u, "/private/tmp"),
 };
 
@@ -251,6 +252,37 @@ describe("POSIX container filesystem ranking", () => {
   it("rejects a writable root even when a deny also names it", () => {
     expect(() => rankPosixContainerRows(model([deny("/")], write("/")), "bubblewrap", lookups))
       .toThrow(expect.objectContaining({ code: "root-write-grant" }));
+  });
+
+  it("pins each existing folder between a write grant and a protected row", () => {
+    const pins = ["/work/.git", "/work/.ave/nested", "/work/.ave"];
+    const ranked = rankPosixContainerRows(model([
+      protect("/work/.git/hooks"), deny("/work/.ave/nested/hooks"),
+      protect("/work/direct"), deny("/views/upper/lower"),
+    ], write("/work"), read("/views")), "bubblewrap", lookups);
+    expect(ranked.pins).toEqual(pins);
+    expect(ranked.readwrite).toEqual(["/work", ...pins]);
+    expect(ranked.readonly).toContain("/work/.git/hooks");
+    expect(ranked.denied).toContain("/work/.ave/nested/hooks");
+  });
+
+  it("keeps and pins a write floor inside a write grant below a read deny", () => {
+    const ranked = rankPosixContainerRows(model([
+      deny("/work/private"), protect("/work/private/open/.git/hooks"),
+    ], read("/work"), write("/work/private/open")), "bubblewrap", lookups);
+    expect(ranked.pins).toEqual(["/work/private/open/.git"]);
+    expect(ranked.readonly).toContain("/work/private/open/.git/hooks");
+    expect(ranked.denied).toEqual(["/work/private"]);
+  });
+
+  it("counts a pin against the container row limit", () => {
+    const leaves = Array.from({ length: 398 }, (_, index) => read(`/read/leaf-${index}`));
+    const path = "/work/.git/hooks";
+    const noPin = { ...lookups, directoryIdentity: () => undefined };
+    const policy = model([protect(path)], write("/work"), ...leaves);
+    expect(rankPosixContainerRows(policy, "bubblewrap", noPin).pins).toEqual([]);
+    expect(() => rankPosixContainerRows(policy, "bubblewrap", lookups))
+      .toThrow(expect.objectContaining({ code: "grant-limit-exceeded" }));
   });
 
   it("preserves the Seatbelt lists for a carved read", () => {
