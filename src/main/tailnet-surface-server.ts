@@ -765,8 +765,10 @@ export async function maybeStartTailnetObserverServer(
   }
 }
 
+type TailnetObserverRestartResult = TailnetObserverServer | null | "startup-failed";
+
 // Advance the lifecycle generation before restart so an earlier in-flight start cannot install stale configuration.
-async function restartOnce(mode?: "apply"): Promise<TailnetObserverServer | null> {
+async function restartOnce(mode?: "apply"): Promise<TailnetObserverRestartResult> {
   if (stopped) throw new Error("tailnet-observer-stopped");
   const options = compositionOptions;
   if (options === null) throw new Error("tailnet-observer-not-composed");
@@ -785,14 +787,16 @@ async function restartOnce(mode?: "apply"): Promise<TailnetObserverServer | null
     return await startForBoot(options, generation, mode);
   } catch (error) {
     if (generation === lifecycleGeneration) recordTailnetObserverStartError(error);
-    if (mode === "apply") return null;
+    if (mode === "apply") return "startup-failed";
     throw error;
   }
 }
 
 // Apply a saved configuration to the running process. Callers are the owner-facing configuration service; a restart is the whole reason "takes effect
 // the next time the app starts" is gone.
-export function restartTailnetObserverServer(mode?: "apply"): Promise<TailnetObserverServer | null> {
+export function restartTailnetObserverServer(mode?: undefined): Promise<TailnetObserverServer | null>;
+export function restartTailnetObserverServer(mode: "apply" | undefined): Promise<TailnetObserverRestartResult>;
+export function restartTailnetObserverServer(mode?: "apply"): Promise<TailnetObserverRestartResult> {
   const restart = () => restartOnce(mode);
   const next = lifecycleChain.then(restart, restart);
   lifecycleChain = next.then(() => undefined, () => undefined);

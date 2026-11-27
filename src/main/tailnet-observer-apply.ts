@@ -3,6 +3,7 @@ import type { TailnetObserverApplyStatus, TailnetObserverPortBlock } from "../sh
 interface TailnetObserverApplyState {
   readonly boundPort: number | null;
   readonly boundNow?: boolean;
+  readonly startupFailed?: boolean;
   readonly portBlock: TailnetObserverPortBlock | null;
   readonly lastStartError: string | null;
 }
@@ -11,17 +12,18 @@ export function resolveTailnetObserverApply(
   savedEnabled: boolean,
   enableOverride: boolean | undefined,
   effectivePort: number | null,
-  { boundPort, boundNow, portBlock, lastStartError }: TailnetObserverApplyState,
+  { boundPort, boundNow, startupFailed, portBlock, lastStartError }: TailnetObserverApplyState,
 ): { readonly status: TailnetObserverApplyStatus; readonly portBlock: TailnetObserverPortBlock | null; readonly lastStartError: string | null } {
-  const observerOff = !savedEnabled && enableOverride !== true && boundPort === null;
-  const failure = observerOff || boundNow ? { portBlock: null, lastStartError: null } : { portBlock, lastStartError };
+  const observerOff = !startupFailed && !savedEnabled && enableOverride !== true && boundPort === null;
+  const clearDiagnostics = !startupFailed && (observerOff || boundNow);
+  const diagnostics = clearDiagnostics ? { portBlock: null, lastStartError: null } : { portBlock, lastStartError };
   if (observerOff) {
-    return { status: { outcome: "observer-off", restartNeeded: false }, ...failure };
+    return { status: { outcome: "observer-off", restartNeeded: false }, ...diagnostics };
   }
 
-  if (effectivePort === null || effectivePort !== boundPort) {
-    return { status: { outcome: "restart-needed", restartNeeded: true }, ...failure };
+  if (startupFailed || effectivePort === null || effectivePort !== boundPort) {
+    return { status: { outcome: "restart-needed", restartNeeded: true }, ...diagnostics };
   }
 
-  return { status: { outcome: savedEnabled ? "applied" : "saved", restartNeeded: false }, ...failure };
+  return { status: { outcome: savedEnabled ? "applied" : "saved", restartNeeded: false }, ...diagnostics };
 }

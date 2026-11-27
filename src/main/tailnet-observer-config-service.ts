@@ -194,12 +194,13 @@ export function createTailnetObserverConfigService(
     const reduceOnly = mode === "apply" && config !== null && file.enabled !== true && enableOverride === true;
     if (config && !reduceOnly) await assertTailnetListenerPortAllowed(config.port);
     await writeConfigFile(file);
+    let startupFailed = false;
     if (reduceOnly) await reduceTailnetObserverCapabilities(config);
-    else await restartListener(mode === "apply" ? "apply" : undefined);
+    else startupFailed = await restartListener(mode === "apply" ? "apply" : undefined) === "startup-failed";
 
     const { listeningPort, portBlock, lastStartError } = runtimeState();
     return resolveTailnetObserverApply(file.enabled === true, enableOverride, config?.port ?? null, {
-      boundPort: listeningPort, portBlock, lastStartError,
+      boundPort: listeningPort, startupFailed, portBlock, lastStartError,
     }).status;
   }
 

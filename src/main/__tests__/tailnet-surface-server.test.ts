@@ -1240,15 +1240,21 @@ const applyPortProvenances = [
 const applyCases = applyRows.flatMap(row =>
   applyPortProvenances.flatMap(port =>
     [false, true].flatMap(hasPriorBlock =>
-      (row.outcome === "applied" ? [false, true] : [false]).map(boundNow => ({ ...row, ...port, hasPriorBlock, boundNow })),
+      (row.outcome === "applied" ? [false, true] : [false]).flatMap(boundNow =>
+        (row.bound === null && (row.savedEnabled || row.enableOverride !== true) ? [false, true] : [false]).map(startupFailed => ({
+          ...row, ...port, hasPriorBlock, boundNow, startupFailed,
+          outcome: startupFailed ? "restart-needed" : row.outcome,
+          restartNeeded: startupFailed || row.restartNeeded,
+        })),
+      ),
     ),
   ),
 );
 
 describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer Apply on %s", platform => {
   it.each(applyCases)(
-    "resolves $row ($provenance, prior block: $hasPriorBlock, newly bound: $boundNow)",
-    async ({ savedEnabled, enableOverride, bound, pin, outcome, restartNeeded, hasPriorBlock, boundNow }) => {
+    "resolves $row ($provenance, prior block: $hasPriorBlock, newly bound: $boundNow, startup failed: $startupFailed)",
+    async ({ savedEnabled, enableOverride, bound, pin, outcome, restartNeeded, hasPriorBlock, boundNow, startupFailed }) => {
       const host = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
       const policy = vi.spyOn(listenerPortPolicy, "assertTailnetListenerPortAllowed").mockResolvedValue(undefined);
       const env = {
@@ -1259,8 +1265,8 @@ describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer Apply on 
       const otherPort = effectivePort === OTHER_PORT ? APPLY_PORT : OTHER_PORT;
       const boundPort = bound === "matching" ? effectivePort : bound === "other" ? otherPort : null;
       const portBlock = hasPriorBlock ? { port: otherPort, code: "EADDRINUSE" as const, hint: null } : null;
-      const lastStartError = hasPriorBlock ? TAILNET_OBSERVER_PORT_BLOCKED : null;
-      const restartListener = vi.fn(async () => undefined);
+      const lastStartError = startupFailed ? "tailnet-observer-config-file-unreadable" : hasPriorBlock ? TAILNET_OBSERVER_PORT_BLOCKED : null;
+      const restartListener = vi.fn(async () => startupFailed ? "startup-failed" as const : undefined);
       const writeConfigFile = vi.fn(async (_file: TailnetObserverConfigFile) => undefined);
       const settings = createTailnetObserverConfigService({
         env,
@@ -1284,7 +1290,9 @@ describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer Apply on 
         expect.soft(policy.mock.calls).toEqual(restarts && effectivePort !== null ? [[effectivePort]] : []);
 
         const clears = outcome === "observer-off" || boundNow;
-        expect(resolveTailnetObserverApply(savedEnabled, enableOverride, effectivePort, { boundPort, boundNow, portBlock, lastStartError }))
+        expect(resolveTailnetObserverApply(savedEnabled, enableOverride, effectivePort, {
+          boundPort, boundNow, startupFailed, portBlock, lastStartError,
+        }))
           .toEqual({
             status: { outcome, restartNeeded },
             portBlock: clears ? null : portBlock,
@@ -1296,6 +1304,49 @@ describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer Apply on 
       }
     },
   );
+
+  it.each([undefined, "0"])("preserves the failure after a transient post-write read (enable override: %s)", async enableOverride => {
+    const env: NodeJS.ProcessEnv = {};
+    let file: TailnetObserverConfigFile = { enabled: true, authorization: APP_CAPABILITY, port: OTHER_PORT };
+    const readConfigFile = vi.fn(async () => file);
+    const { input, startServer } = options(env);
+    input.dependencies.readConfigFile = readConfigFile;
+    const host = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+    const policy = vi.spyOn(listenerPortPolicy, "assertTailnetListenerPortAllowed").mockResolvedValue(undefined);
+    const hint = vi.spyOn(portHints, "getWindowsTailnetPortHint").mockResolvedValue(null);
+    const error = "tailnet-observer-config-file-unreadable";
+    const settings = createTailnetObserverConfigService({
+      env, readConfigFile,
+      writeConfigFile: async next => {
+        file = next;
+        readConfigFile.mockRejectedValueOnce(new Error(error));
+      },
+      pairedSharingBootstrapFailed: () => false,
+      readOwnDeviceAdmission: async () => false,
+      probeEnvironment: async () => tailscaleEnvironment(null),
+    });
+    startServer.mockRejectedValueOnce(Object.assign(new Error("Port in use"), { code: "EADDRINUSE" }));
+
+    try {
+      await expect(maybeStartTailnetObserverServer(input)).rejects.toThrow(TAILNET_OBSERVER_PORT_BLOCKED);
+      env.AVE_TAILNET_OBSERVER = enableOverride;
+      const { saved } = await settings.snapshot();
+      await expect.soft(settings.apply({ ...saved, enabled: false, port: APPLY_PORT })).resolves.toEqual({
+        outcome: "restart-needed", restartNeeded: true,
+      });
+      await expect(settings.snapshot()).resolves.toMatchObject({
+        saved: { enabled: false, port: APPLY_PORT },
+        listeningPort: null,
+        lastStartError: error,
+        portBlock: { port: OTHER_PORT, code: "EADDRINUSE", hint: null },
+      });
+      expect(startServer).toHaveBeenCalledOnce();
+    } finally {
+      hint.mockRestore();
+      policy.mockRestore();
+      host.mockRestore();
+    }
+  });
 
   it("reports restart needed when startup refuses the saved configuration before listening", async () => {
     const env = {};
