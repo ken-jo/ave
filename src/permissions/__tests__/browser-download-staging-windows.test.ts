@@ -33,6 +33,7 @@ const runtime = vi.hoisted(() => ({
   containerBackend: false,
   aclHolderGrants: false,
   policyFrames: [] as Buffer[],
+  policyPayloads: [] as { bytes: Buffer; pipe: string }[],
 }));
 const needsFixtureGrantPins = () => runtime.containerBackend || (hostPlatform !== "win32" && runtime.aclHolderGrants);
 
@@ -391,6 +392,15 @@ vi.mock("node:child_process", async (original) => {
     },
   } };
 });
+vi.mock("../mxc-policy-pipe.js", async (original) => {
+  const actual = await original<typeof import("../mxc-policy-pipe.js")>();
+  const openMxcPolicyPipe: typeof actual.openMxcPolicyPipe = async (bytes, pipe, admission) => {
+    const transport = await actual.openMxcPolicyPipe(bytes, pipe, admission);
+    runtime.policyPayloads.push({ bytes, pipe });
+    return transport;
+  };
+  return { ...actual, openMxcPolicyPipe };
+});
 vi.mock("../../main/windows-path-kind-launcher.js", async (original) => {
   const actual = await original<typeof import("../../main/windows-path-kind-launcher.js")>();
   return { ...actual, withWindowsPathKindHelper: <T>(launch: (path: string) => T) => hostPlatform === "win32"
@@ -576,6 +586,7 @@ afterEach(async () => {
     windowsAdmission.native = false;
     runtime.aclHolderGrants = false;
     runtime.policyFrames.length = 0;
+    runtime.policyPayloads.length = 0;
   }
 });
 
@@ -634,13 +645,19 @@ async function containerShellRequest(input: { cwd: string; writePaths: readonly 
     if (launch.argv[1] === "--config") {
       expect(launch.argv[2]).toMatch(/^\\\\\.\\pipe\\ave-mxc-[a-f0-9]{32}$/u);
       expect(runtime.policyFrames).toHaveLength(1);
+      expect(runtime.policyPayloads).toHaveLength(1);
       const frame = runtime.policyFrames.pop();
-      if (!frame) throw new Error("The policy helper received no frame");
-      expect(frame.readUInt32LE(0)).toBe(frame.length - 4);
-      bytes = frame.subarray(4);
+      const payload = runtime.policyPayloads.pop();
+      if (!frame || !payload) throw new Error("Missing policy header or payload");
+      // Gated delivery sends the body only after the launcher binds, so observe it at transport entry.
+      expect(frame).toHaveLength(4);
+      expect(frame.readUInt32LE(0)).toBe(payload.bytes.length);
+      expect(launch.argv[2]).toBe(payload.pipe);
+      bytes = payload.bytes;
     } else {
       expect(launch.argv[1]).toBe("--config-base64");
       expect(runtime.policyFrames).toHaveLength(0);
+      expect(runtime.policyPayloads).toHaveLength(0);
       bytes = Buffer.from(launch.argv[2] ?? "", "base64");
     }
     if (input.policyPadding) expect(launch.argv[1]).toBe("--config");
