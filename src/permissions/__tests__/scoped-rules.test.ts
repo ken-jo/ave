@@ -21,6 +21,7 @@ import { mcpToolToTool } from "../../mcp/mcp-tool-adapter.js";
 import { scopedRuleSubjectFor } from "../../tools/pipeline/scoped-rule-subject.js";
 import { createWebFetchTool } from "../../tools/web-fetch.js";
 import { createDynamicTool } from "../../tools/base.js";
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
@@ -495,6 +496,39 @@ describe("scoped permission rules", () => {
     expect(requestAndWait).toHaveBeenCalledTimes(1);
     expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ kind: "out-of-allowed-dir" }));
     expect(() => readFileSync(sibling, "utf8")).toThrow();
+  });
+
+  it("audits and propagates the turn grant for a session-bound remote saved Edit", async () => {
+    const external = join(directory, "external");
+    mkdirSync(external);
+    const target = join(external, "new.txt");
+    await manager.addRulePersist(allow(`Edit(${foldCanonicalPathSeparators(target)})`), { kind: "project", projectCwd: project });
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    const registry = new ToolRegistry();
+    registry.register(new WriteFileTool());
+    const requestAndWait = vi.fn();
+    const onTurnDirectoryGrant = vi.fn();
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const sessionId = "remote-edit";
+    const remoteControllerAuthority = bindRemoteControllerToSession({
+      kind: "tailnet-controller", actorId: "tailnet:alice",
+      pairedShare: { pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+      pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => true },
+    }, sessionId);
+    const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
+      { id: "remote-edit", name: "write_file", input: { path: target, content: "created" } },
+    ], { sessionId, permissionContext: userPermissionContext({
+      trustOrigin: "tailnet-surface", remoteControllerAuthority, onTurnDirectoryGrant,
+    }) }));
+    expect(result?.is_error === true, result?.content).toBe(false);
+    expect(readFileSync(target, "utf8")).toBe("created");
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect.soft(onTurnDirectoryGrant).toHaveBeenCalledExactlyOnceWith(target);
+    const grants = readFileSync(audit.getPermissionAuditLogFile(), "utf8").trim().split("\n")
+      .map(line => JSON.parse(line)).filter(row => row.directoryAllowed === true && row.grantLifetime === "turn");
+    expect(grants).toEqual([expect.objectContaining({
+      directory: target, grantLifetime: "turn", tool: "write_file", toolUseId: "remote-edit",
+    })]);
   });
 
   it("does not turn a generic tool allow into an external Edit grant", async () => {

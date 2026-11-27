@@ -1,21 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { openFeatureNamespace, type FeatureNamespaceHandle } from "../../main/storage/feature-namespace.js";
-import { maskSensitiveData, scrubDiagnosticSecretsStrict } from "../../shared/dlp.js";
-import { redactHomePathsInText } from "../../audit/dlp-filter.js";
+import { redactRecentlyDeniedText as redact } from "./recently-denied-redaction.js";
 import { isValidSessionId } from "../../shared/session-id.js";
 import { normalizeRecentlyDeniedInvocationRef } from "./recently-denied-replay.js";
 import type { RecentlyDeniedEntry, RecentlyDeniedInvocationRef, RecentlyDeniedRerunResult } from "../../shared/recently-denied.js";
 
 const HISTORY_LIMIT = 100;
-const SUMMARY_LIMIT = 2048;
 const HISTORY_FILE = "recently-denied.json";
 export type RecentlyDeniedReplayResolver = (entry: RecentlyDeniedEntry) => Promise<RecentlyDeniedRerunResult>;
 
 type StoredDenial = Omit<RecentlyDeniedEntry, "rerunAvailable">;
-
-function redact(value: string, limit = SUMMARY_LIMIT): string {
-  return redactHomePathsInText(maskSensitiveData(scrubDiagnosticSecretsStrict(value), { pii: true }).masked).slice(0, limit);
-}
 
 /** Session ids are structural replay keys: content DLP would mask card- or phone-shaped UUID digits and break replay. */
 function sessionIdField(value: string): string {

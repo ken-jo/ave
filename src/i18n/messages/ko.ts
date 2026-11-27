@@ -6934,6 +6934,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "workflowTemplates.confirmSave": "확인하고 v1 저장",
   "workflowTemplates.saving": "템플릿 저장 중…",
   "workflowTemplates.saved": "템플릿 버전 1을 저장했습니다.",
+  "workflowTemplates.unattendedMark": "무인 실행 불가: {tool} {reason}",
   "workflowTemplates.unavailable": "이 워크플로 초안을 다시 열 수 없습니다. 새 초안을 요청하세요.",
   "workflowTemplates.saveFailed": "템플릿을 저장하지 못했습니다. 확인하고 저장을 다시 눌러 주세요.",
   "workflowTemplates.allProjects": "모든 프로젝트에서 사용 가능",

@@ -65,6 +65,7 @@ import type {
 } from "./types.js";
 import { ToolUnavailableError, trustFromSource } from "./types.js";
 import { PermissionManager, requiredTier, type PermissionCheckResult } from "../permissions/permission-manager.js";
+import { registeredUnattendedStageOf, reportUnattendedDenial, unattendedStageOf } from "../permissions/unattended-lane-registry.js";
 import {
   isRemoteControllerBoundToSession,
   remoteControllerOriginOf,
@@ -1636,6 +1637,16 @@ async function runToolInvocationAttempt(
       await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true, startTime, refusal(reason, RULE_PROVENANCE), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, durationMs });
     };
+    const denyUnresolvedFileTargets = async (reason: string): Promise<ToolResult> => {
+      const result = await denyFileTargets(reason);
+      if (sessionId !== undefined && (invocationCategory === "read" || invocationCategory === "write") && unattendedStageOf(sessionId)?.isolation.proven) {
+        reportUnattendedDenial({
+          sessionId, code: "outside-envelope",
+          call: { toolName: toolUse.name, source, inputSummary: JSON.stringify(auditInput) },
+        });
+      }
+      return result;
+    };
     const changedTargetReason = t("be_executor.fileTargetChanged");
     let directoryAuthorization: AuthorizationStageContext["directoryAuthorization"];
     const directoryApprovalSignal = (approvalSignal?: AbortSignal) =>
@@ -1692,6 +1703,8 @@ async function runToolInvocationAttempt(
         assertFileTargetsUnchanged();
         return manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
           ...invocationPermissionContext, sessionId, projectRulesCwd,
+          unattendedInvokedEffect: tool.unattendedEffect ?? "unknown",
+          unattendedCallInput: auditInput,
           ...(hostShellExecutionPermitBinding ? { hostShellCwdIdentity: hostShellExecutionPermitBinding.cwdIdentity ?? null } : {}),
           userOwnedBrowser: userOwnedBrowserScopeOf(tool, approvalMemory),
           agentBrowser: agentBrowserScopeOf(tool, approvalMemory),
@@ -1721,7 +1734,7 @@ async function runToolInvocationAttempt(
         return { allowed: false, result: await denyFileTargets(changedTargetReason) };
       }
       const memoryRequest = directoryPermission.pipelineRequest;
-      if (behavior === undefined && directoryPermission.decision !== "allow" && memoryRequest && !memoryRequest.admissionDenial && !memoryRequest.floor
+      if (behavior === undefined && directoryPermission.decision !== "allow" && memoryRequest && !memoryRequest.unattended && !memoryRequest.admissionDenial && !memoryRequest.floor
         && !memoryRequest.rules?.deny && !memoryRequest.rules?.ask && !memoryRequest.manualRerun && !rationaleResumeContext) {
         const remembered = await services.tryUserApprovalMemorySkip(toolUse.name, source, invocationCategory, reviewerPathFields,
           finalInput, executionCwd, directoryScope, [], invocationPermissionContext, approvalCacheKey, {},
@@ -1733,8 +1746,11 @@ async function runToolInvocationAttempt(
           directoryScope, [] as string[], invocationPermissionContext,
           makeDirectoryEvaluationContext({ pathFields: reviewerPathFields, targetFilePaths: [outOfAllowedTarget.filePath] }),
           {}, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, auditInput, sessionId, directoryPermission] as const;
-        if (headless) directoryPermission = (await dispatchReviewerForHeadless(...reviewerArgs)).permissionResult;
-        else directoryPermission = await dispatchReviewerForInteractiveAuto(...reviewerArgs) ?? directoryPermission;
+        if (headless || (memoryRequest?.unattended && directoryPermission.reviewer.route === "headless")) {
+          directoryPermission = (await dispatchReviewerForHeadless(...reviewerArgs)).permissionResult;
+        } else {
+          directoryPermission = await dispatchReviewerForInteractiveAuto(...reviewerArgs) ?? directoryPermission;
+        }
       }
       if (directoryPermission.decision === "allow") return { allowed: true, approvedDirectory: outOfAllowedTarget.realPath, scope: "turn", permissionResult: directoryPermission,
         ...(rationaleResumeContext === undefined ? {} : { pendingRationale: true as const }) };
@@ -2634,7 +2650,7 @@ async function runToolInvocationAttempt(
     if (isWindows) {
       try { initialPathScope = initialPathJudgment(); }
       catch {
-        return await denyFileTargets(pathEffect === "write" ? "Cannot resolve write target" : "Cannot resolve file target");
+        return await denyUnresolvedFileTargets(pathEffect === "write" ? "Cannot resolve write target" : "Cannot resolve file target");
       }
     } else {
       unsealedRuleSubject = scopedRuleSubjectFor(tool, finalInput, executionCwd);
@@ -2651,13 +2667,7 @@ async function runToolInvocationAttempt(
             runtimePath = resolvePathForPolicy(filePath);
           }
         } catch {
-          const reason = "Cannot resolve write target";
-          const blocked: PermissionCheckResult = { decision: "deny", reason, provenance: RULE_PROVENANCE };
-          const durationMs = Date.now() - startTime;
-          emitToolStart(callbacks, toolUse.name, finalInput, meta);
-          callbacks?.onToolEnd?.(toolUse.name, reason, true, meta, undefined, durationMs);
-          await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true, startTime, blocked, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-          return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, durationMs });
+          return await denyUnresolvedFileTargets("Cannot resolve write target");
         }
         canonicalTargets.push({ filePath, canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath });
       }
@@ -2782,6 +2792,9 @@ async function runToolInvocationAttempt(
           assertFileTargetsUnchanged();
           const editDecision = manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
             ...invocationPermissionContext, ruleSubject: editSubject, projectRulesCwd: executionCwd,
+            ...(registeredUnattendedStageOf(sessionId) !== undefined ? {
+              sessionId, fileWritePolicy, unattendedInvokedEffect: tool.unattendedEffect ?? "unknown", reportUnattendedDenials: false,
+            } : {}),
           });
           return editDecision.decision === "allow" && manager.checkScopedRules(editSubject, executionCwd).decision === "allow";
         });

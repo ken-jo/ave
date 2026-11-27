@@ -11,9 +11,10 @@ import { WORK_BOARD } from "../../../../shared/ipc-channels.js";
 import { workBoardDecisionProps } from "../../../../shared/work-board-decision-intent.js";
 import type { ProjectIdentity } from "../../../../shared/project-identity.js";
 import type { WorkItemResolved } from "../../../../shared/work-board-types.js";
-import type { TemplateVersion, WorkflowTemplate, WorkflowTemplateDraftInput, WorkflowTemplateRecord } from "../../../../shared/workflow-template-types.js";
+import type { TemplateVersion, WorkflowTemplate, WorkflowTemplateConfirmResult, WorkflowTemplateDraftInput, WorkflowTemplateRecord } from "../../../../shared/workflow-template-types.js";
 import type { AveApi } from "../../types.js";
 import { WorkflowDraftReview, draftFromRecord, editableDraft } from "./WorkflowDraftReview.js";
+import { WorkflowUnattendedMark } from "./WorkflowUnattendedMark.js";
 import { emptyWorkflowDraft } from "./WorkflowTemplateEditor.js";
 import { WorkflowTemplateDetails } from "./workflow-template-details.js";
 import { stageDisplayName, WorkflowStageGraph } from "./workflow-template-graph.js";
@@ -46,6 +47,7 @@ export function WorkflowTemplateLibrary({ api, project, projects, existingItem, 
   const selectedId = selection?.id;
   const [record, setRecord] = useState<WorkflowTemplateRecord>();
   const [selectedVersion, setSelectedVersion] = useState<number>();
+  const [confirmation, setConfirmation] = useState<WorkflowTemplateConfirmResult>();
   const [pinnedItems, setPinnedItems] = useState<WorkItemResolved[]>([]);
   const [pinListError, setPinListError] = useState(false);
   const [editor, setEditor] = useState<{ id: string | null; draft: WorkflowTemplateDraftInput }>();
@@ -132,6 +134,7 @@ export function WorkflowTemplateLibrary({ api, project, projects, existingItem, 
       return;
     }
     setSelection(undefined);
+    setConfirmation(undefined);
     setSelectedVersion(undefined);
     setRecord(undefined);
     setStarting(false);
@@ -162,9 +165,10 @@ export function WorkflowTemplateLibrary({ api, project, projects, existingItem, 
               {t("workflowTemplates.backToTemplates")}
             </Button>
             <WorkflowDraftReview api={api} templateId={editor.id} initialDraft={editor.draft} projects={projects}
-              onBusyChange={setBusy} onSaved={confirmed => {
+              onBusyChange={setBusy} onSaved={({ version, unattended }) => {
+                setConfirmation({ version, unattended });
                 setEditor(undefined);
-                setSelection({ id: confirmed.templateId });
+                setSelection({ id: version.templateId });
               }} />
           </>
         ) : starting && record && current && !record.template.archivedAt ? (
@@ -186,11 +190,14 @@ export function WorkflowTemplateLibrary({ api, project, projects, existingItem, 
                 {record.versions.length > 0 && <Label className="flex flex-wrap items-center gap-2">
                   {t("workflowTemplates.versions")}
                   <select className="rounded-md border border-input bg-background px-2 py-1 text-sm focus-visible:ring-2 focus-visible:ring-ring"
-                    value={selectedVersion} onChange={event => setSelectedVersion(Number(event.target.value))}>
+                    value={selectedVersion} onChange={event => { setConfirmation(undefined); setSelectedVersion(Number(event.target.value)); }}>
                     {[...record.versions].reverse().map(entry => <option key={entry.version} value={entry.version}>{t("workflowTemplates.version", { version: entry.version })}</option>)}
                   </select>
                 </Label>}
                 {version && <>
+                  {confirmation?.version.templateId === version.templateId && confirmation.version.version === version.version &&
+                    confirmation.version.graphHash === version.graphHash &&
+                    <WorkflowUnattendedMark qualification={confirmation.unattended} />}
                   <WorkflowStageGraph graph={version} />
                   <section className="space-y-1 text-sm">
                     <h3 className="font-semibold">{t("workflowTemplates.pinnedRuns")}</h3>
@@ -217,7 +224,7 @@ export function WorkflowTemplateLibrary({ api, project, projects, existingItem, 
                     {t("workflowTemplates.editVersion")}
                   </Button>}
                   {!record.template.archivedAt && current && version?.version === current.version && (
-                    <Button size="sm" onClick={() => setStarting(true)}>{t("workflowTemplates.startRun")}</Button>
+                    <Button size="sm" onClick={() => { setConfirmation(undefined); setStarting(true); }}>{t("workflowTemplates.startRun")}</Button>
                   )}
                 </div>
               </section>

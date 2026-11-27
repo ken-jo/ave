@@ -1814,6 +1814,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
   }
 
   readonly name = "bash";
+  readonly unattendedEffect = "safe";
   readonly description =
     "Run a non-interactive shell command in the local repository under permission and path checks. " +
     "Prefer the dedicated tools when one fits: grep_files instead of grep/rg, glob_files or list_files instead of " +
@@ -3610,6 +3611,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
   }
 
   readonly name = "powershell";
+  readonly unattendedEffect = "safe";
   readonly description = "Run a non-interactive PowerShell command in the local repository.";
   readonly inputSchema = PowerShellToolInputSchema;
   override readonly category: ToolCategory = "shell";

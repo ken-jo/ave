@@ -416,6 +416,8 @@ export async function authorizeToolInvocation(
             shellReadOnlyProven: context.shellReadOnlyProven,
             shellEscalated: context.shellEscalated,
             mcpReadOnlyHint: tool.mcpReadOnlyHint === true && (source !== "plugin" || invocationCategory === "read"),
+            unattendedInvokedEffect: tool.unattendedEffect ?? "unknown",
+            unattendedCallInput: auditInput,
             ...(shellRuleSubject ? { ruleSubject: shellRuleSubject } : {}),
             ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
             ...(hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan }),
@@ -492,7 +494,7 @@ export async function authorizeToolInvocation(
     // has no human approver. The manager preserves admission, floor and ask
     // precedence when it incorporates a matching grant.
     const ordinaryRequest = permissionResult.pipelineRequest;
-    if (permissionResult.decision !== "allow" && ordinaryRequest !== undefined && !ordinaryRequest.admissionDenial &&
+    if (permissionResult.decision !== "allow" && ordinaryRequest !== undefined && !ordinaryRequest.unattended && !ordinaryRequest.admissionDenial &&
         !ordinaryRequest.floor && ordinaryRequest.rules?.deny === undefined && ordinaryRequest.rules?.ask === undefined &&
         ordinaryRequest.manualRerun !== true && !context.hostTerminalReapproval && context.reviewedPermissionForCard === undefined && rationaleResumeContext === undefined &&
         rationaleBatchContext === undefined && services.permissionManager !== undefined) {
@@ -725,7 +727,9 @@ export async function authorizeToolInvocation(
       }
       rationaleResumeContext.prepared = prepared.value;
     }
-    if (permissionResult.decision === "deny") {
+    const unattendedReview = permissionResult.pipelineRequest?.unattended !== undefined &&
+      permissionResult.reviewer?.route === "headless" && permissionResult.reviewer.verdict === undefined;
+    if (permissionResult.decision === "deny" && !unattendedReview) {
       if (permissionResult.reasonCode === "no-approver" && invocationPermissionContext.headless !== true &&
           invocationPermissionContext.approvalSurface === "unavailable") {
         return returnAuthorizationRequired(permissionResult);
@@ -770,7 +774,7 @@ export async function authorizeToolInvocation(
         durationMs,
       });
     }
-    if (permissionResult.decision === "ask" && !rationaleResumeContext?.prepared) {
+    if (unattendedReview || permissionResult.decision === "ask" && !rationaleResumeContext?.prepared) {
       if (invocationPermissionContext.headless === true || permissionResult.reviewer?.route === "headless") {
         const headlessReviewerRoute =
           permissionResult.reviewer?.route === "headless";

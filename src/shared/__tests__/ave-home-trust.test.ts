@@ -1,3 +1,4 @@
+import { unknownToolEffects } from "../../__tests__/support/tool-effect-resolver.js";
 // Home content trust (slice 3): the manifest, the load gate, R4 write admission, R5 intents and the review actions.
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 
@@ -857,7 +858,7 @@ it("refuses a foreign edit through the covered template store without rewriting 
   const path = join(dir, "work-board", "templates.json"); const store = new WorkflowTemplateStore(path);
   const record = await store.draft(null, { name: "Read", scope: { kind: "all" }, stages: [{ id: "a", name: "A", goal: "Read", inputs: [], toolScope: "read", allowSubAgents: false, gate: { type: "human" } }], edges: [] });
   const draft = record.draft; if (!draft) throw new Error("Missing draft");
-  const version = await store.confirmDraft(record.template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision }, { who: "user", origin: "local-desktop" });
+  const { version } = await store.confirmDraft(record.template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision }, { who: "user", origin: "local-desktop" }, unknownToolEffects);
   const edited = `${readFileSync(path, "utf8")} `; writeFileSync(path, edited);
   await expect(store.resolveVersion({ templateId: record.template.id, version: 1, graphHash: version.graphHash })).rejects.toMatchObject({ code: "invalid-template-file" });
   await expect(store.archive(record.template.id)).rejects.toMatchObject({ code: "invalid-template-file" });

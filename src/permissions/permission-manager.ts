@@ -41,7 +41,7 @@ import { parseShellFloorCommand } from "./rules/shell-exfiltration.js";
 import { inspectShellCommand } from "./rules/literal-shell-inspection.js";
 import { ShellFloorContext, shellFloorInputExceeded, shellFloorParserBudgetExceeded } from "./rules/shell-floor-policy.js";
 import { prepareShellFloorInput, type ShellFloorInput } from "./rules/shell-literal-data.js";
-import { inspectPowerShellCommand, inspectPowerShellPermissionPaths, parsePowerShellCommand } from "./rules/powershell-exfiltration.js";
+import { inspectPowerShellCommand, inspectPowerShellPermissionPaths, parsePowerShellCommand, powerShellRuleShape } from "./rules/powershell-exfiltration.js";
 import { isActiveBrokerGuestSubstrate, type DisposablePathPolicyRelaxation } from "./execution-router.js";
 import { getActiveWorkloadBrokerProjection } from "../workload/runtime.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
@@ -50,6 +50,9 @@ import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-reviewer-framework.js";
 import type { ApprovalMemory, UserApprovalHitPayload, UserApprovalVerdict } from "../shared/permissions-events.js";
 import { decidePermission, EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, SHELL_ANALYSIS_LIMIT_REASON, type PermissionDecisionRequest } from "./decision-pipeline.js";
+import { registeredUnattendedStageOf, reportUnattendedDenial, unattendedStageOf } from "./unattended-lane-registry.js";
+import { unattendedGenerationTool } from "./unattended-lane.js";
+import type { ToolEffectEvidence, ToolEffectResolver } from "./tool-effect-evidence.js";
 import { exactShellRuleFor } from "./rules/shell-rule-approval.js";
 import { isHostNetworkSubject } from "./host-network-subject.js";
 import { canonicalEgressHost, isValidEgressPort } from "./egress-grants.js";
@@ -277,6 +280,12 @@ export interface PermissionCheckContext {
   sessionId?: string;
   // Host-detected approval-store corruption is an admission failure, naming the file.
   permissionStoreError?: string;
+  unattendedInvokedEffect?: ToolEffectEvidence;
+  unattendedCallInput?: unknown;
+  // Preliminary checks can evaluate lane policy without publishing a denial.
+  reportUnattendedDenials?: false;
+  unattendedNetwork?: PermissionDecisionRequest["unattendedNetwork"];
+  unattendedNetworkRule?: NetworkRuleDecision;
 }
 
 type HostTerminalPermissionContext = Pick<PermissionCheckContext, "agentBrowser" | "hostTerminalTurn" | "userOwnedBrowser" | "trustOrigin" | "sessionId" | "remoteControllerAuthority" | "headless" | "approvalSurface">;
@@ -604,6 +613,11 @@ function pathGrantRemovalMatcher(root: string, preserveRoots: readonly string[] 
 }
 
 export class PermissionManager {
+  private unattendedEffects?: ToolEffectResolver;
+
+  setUnattendedToolEffectResolver(effects: ToolEffectResolver): void {
+    this.unattendedEffects = effects;
+  }
   private rules: PermissionRule[] = [];
   // The rules set in memory before the user file merges in (boot's standing allows): a refresh starts again from these.
   private baseRules: PermissionRule[] = [];
@@ -654,6 +668,7 @@ export class PermissionManager {
   // `addRunRule`, `endRun`). Such a step changes nothing but what a fresh rule match returns, so an approval card that was open across it
   // can be judged again instead of refused (`getPolicyContextEpoch`).
   private memoryRuleGeneration = 0;
+  private modeGeneration = 0;
   private permissionStoreError: string | undefined;
   private reviewerSettingsError: string | undefined;
   private reviewerReconfiguration: object | undefined;
@@ -885,7 +900,7 @@ export class PermissionManager {
   // Settings
 
   setMode(mode: ExecutionMode): void {
-    if (this.mode !== mode) this.policyGeneration += 1;
+    if (this.mode !== mode) this.modeGeneration += 1;
     this.mode = mode;
   }
 
@@ -915,7 +930,7 @@ export class PermissionManager {
   getPolicyEpoch(): string {
     this.refreshPermissionStoreError();
     this.refreshReviewerSettingsError();
-    return `${this.policyGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}`;
+    return `${this.policyGeneration + this.modeGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}`;
   }
 
   // The policy epoch without the memory-only rule steps. Equal before and after: every change in between was a conversation's or a
@@ -925,7 +940,14 @@ export class PermissionManager {
     // The same refreshes as `getPolicyEpoch`, so the two are read of one state whichever is asked first.
     this.refreshPermissionStoreError();
     this.refreshReviewerSettingsError();
-    return `${this.policyGeneration - this.memoryRuleGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}`;
+    return `${this.policyGeneration + this.modeGeneration - this.memoryRuleGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}`;
+  }
+
+  private requestPolicyEpoch(request: PermissionDecisionRequest | undefined): string {
+    if (!request?.unattended) return this.getPolicyEpoch();
+    this.refreshPermissionStoreError();
+    this.refreshReviewerSettingsError();
+    return `${this.policyGeneration - this.memoryRuleGeneration}:${this.projectRuleScopes.getRevision()}`;
   }
 
   private refreshReviewerSettingsError(): string | undefined {
@@ -1228,11 +1250,13 @@ export class PermissionManager {
   private matchLoadedNetworkRule(subject: NetworkRuleSubject): NetworkRuleDecision | undefined {
     const state = subject.projectCwd === undefined ? undefined : this.projectRuleScopes.stateFor(subject.projectCwd);
     if (state?.ok === false) throw state.error;
-    const sessionRules = this.sessionRulesInScope(subject.sessionId);
+    const unattended = registeredUnattendedStageOf(subject.sessionId) !== undefined;
+    const sessionRules = unattended ? [] : this.sessionRulesInScope(subject.sessionId);
     const matched: { deny?: { pattern: string; scope: NetworkRuleScope }; ask?: { pattern: string; scope: NetworkRuleScope }; allow?: { pattern: string; scope: NetworkRuleScope } } = {};
     const scoped: Array<[NetworkRuleScope, readonly PermissionRule[]]> = [["user", this.rules], ["project", state?.rules ?? []], ["session", sessionRules]];
     for (const [scope, rules] of scoped) {
       for (const rule of rules) {
+        if (unattended && rule.action === "allow") continue;
         if (rule.source || storedRuleInvalidReason(rule) !== null || !isRuleSpecifier(rule.pattern)) continue;
         const spec = parseRuleSpecifier(rule.pattern);
         if (spec.kind !== "network" || !matchesWebFetchHost(spec, subject.host, subject.port)) continue;
@@ -1309,16 +1333,22 @@ export class PermissionManager {
     if (subject === undefined) admissionDenial ??= { code: "invalid-network-destination", reason: "Network destination is invalid" };
     if (rulesError) admissionDenial ??= { code: "policy-unreadable", reason: rulesError.message };
     const rule = matched?.decision !== "allow" || destination.network === "public" && destination.ruleScopes?.includes(matched.scope) ? matched : undefined;
+    const unattended = registeredUnattendedStageOf(context.sessionId) !== undefined;
     const base = this.evaluatePermission("sandbox_network", destination.source, "network", undefined, {
       headless: context.headless, ownerUnattended: context.ownerUnattended, approvalSurface: context.approvalSurface,
       sessionId: context.sessionId, projectRulesCwd: context.projectRulesCwd, permissionStoreError: context.permissionStoreError,
       remoteControllerAuthority: context.remoteControllerAuthority, floor: context.floor, exfiltration: context.exfiltration, paths: context.paths,
       manualRerun: context.manualRerun, admissionDenial, approvalCacheKey: identity,
       hostTerminalTurn: context.hostTerminalTurn, trustOrigin: context.trustOrigin,
+      ...(unattended ? {
+        unattendedNetwork: { ...exactDestination, sandboxed: destination.network === "public", connection: true },
+        unattendedCallInput: exactDestination,
+        unattendedNetworkRule: rule,
+      } : {}),
     });
     const issued = this.pipelineRequests.get(base);
     if (!issued) throw new Error("Network permission request was not issued");
-    const permission = rule === undefined ? base : this.pipelineResult({
+    const permission = rule === undefined || unattended ? base : this.pipelineResult({
       ...issued.request, rules: { ...issued.request.rules, [rule.decision]: rule.pattern },
     }, issued.hostTerminalContext);
     if (permission.reasonCode === undefined) throw new Error("Network permission decision has no reason code");
@@ -1565,8 +1595,7 @@ export class PermissionManager {
     await this.updateRulesFile((file) => {
       file.mode = mode;
     });
-    if (this.mode !== mode) this.policyGeneration += 1;
-    this.mode = mode;
+    this.setMode(mode);
   }
 
   // Retain the version actually written, never adopt another writer's unseen rules.
@@ -1633,13 +1662,24 @@ export class PermissionManager {
     return { admissionDenial, floor };
   }
 
-  private pipelineResult(evidence: PermissionDecisionRequest, context?: HostTerminalPermissionContext): PermissionCheckResult {
-    const unattended = turnExtensionPolicyContext.getStore()?.unattendedStage === true;
-    if (unattended) {
-      // The interim read tier uses Default and has no ambient grants. Keep the existing admission and floor order.
+  private pipelineResult(evidence: PermissionDecisionRequest, context?: HostTerminalPermissionContext, reportDenial = true): PermissionCheckResult {
+    const liveUnattended = unattendedStageOf(evidence.sessionId);
+    const unattended = evidence.unattended ?? registeredUnattendedStageOf(evidence.sessionId);
+    if (unattended || turnExtensionPolicyContext.getStore()?.unattendedStage === true) {
       const { deny, ask } = evidence.rules ?? {};
-      evidence = { ...evidence, mode: "strict", headless: true, rules: { deny, ask } };
+      evidence = { ...evidence, mode: unattended ? "default" : "strict", headless: true, rules: { deny, ask } };
       if (context) context = { ...context, headless: true, approvalSurface: "unavailable" };
+    }
+    if (unattended) {
+      const { source, name } = evidence.tool;
+      const collection = source === "builtin" ? "tools" : source === "mcp" ? "mcpReadOnlyTools" : "pluginGenerationTools";
+      const currentEffect = this.unattendedEffects?.effectOf({ collection, name }) ?? "unknown";
+      evidence = {
+        ...evidence, unattended,
+        unattendedEffect: evidence.unattendedEffect === undefined || evidence.unattendedEffect === "safe"
+          ? currentEffect : evidence.unattendedEffect,
+        ...(liveUnattended !== unattended ? { admissionDenial: { code: "unattended-session-ended", reason: "The unattended session ended." } } : {}),
+      };
     }
     const hostTerminalContext = context?.agentBrowser || context?.hostTerminalTurn || context?.userOwnedBrowser || context?.remoteControllerAuthority ? Object.freeze({
       agentBrowser: context.agentBrowser,
@@ -1663,7 +1703,7 @@ export class PermissionManager {
       ...(hostTerminalContext?.agentBrowser ? { agentBrowser: true as const } : {}),
       ...(surface ? { userOwnedSurface: Object.freeze({ kind: surface,
         // A scheduled wake turn does not inherit the conversation's shared choice; it asks, the default.
-        choice: sessionAuthorityWithheld(evidence.sessionId, evidence.sessionId === undefined ? undefined : approvalConversationRoot(evidence.sessionId))
+        choice: unattended || sessionAuthorityWithheld(evidence.sessionId, evidence.sessionId === undefined ? undefined : approvalConversationRoot(evidence.sessionId))
           ? "ask" : this.getUserOwnedSurfaceChoice(evidence.sessionId ?? "", surface) }) } : {}),
       ...(permissionStoreError ? { admissionDenial: Object.freeze({ code: "policy-unreadable", reason: permissionStoreError }) } : {}),
       ...(pause ? { automationPause: Object.freeze({ kind: pause, reason: "Automated approval is paused for this turn; human approval is required." }) } : {}),
@@ -1681,6 +1721,12 @@ export class PermissionManager {
       ...(evidence.reviewer ? { reviewer: Object.freeze({ ...evidence.reviewer }) } : {}),
     });
     const decision = decidePermission(request);
+    if (reportDenial && unattended && request.sessionId !== undefined && decision.outcome === "deny" && !decision.reviewRequired) {
+      reportUnattendedDenial({
+        sessionId: request.sessionId, code: decision.reasonCode,
+        call: { toolName: request.tool.name, source: request.tool.source, inputSummary: request.unattendedInputSummary ?? "" },
+      });
+    }
     const result: PermissionCheckResult = {
       // Nobody able to answer is the host's refusal, not a policy that forbids the action.
       provenance: decision.reasonCode === "no-approver" ? HOST_PROVENANCE : RULE_PROVENANCE,
@@ -1692,7 +1738,8 @@ export class PermissionManager {
       ...(decision.outcome === "ask-forced" || (request.manualRerun || request.agentBrowser && request.exfiltration !== undefined) && decision.outcome === "ask" ? { forceModal: true } : {}),
       ...(decision.reviewRequired ? { reviewer: { route: request.headless ? "headless" as const : "foreground-auto" as const } } : {}),
     };
-    this.pipelineRequests.set(result, { request, policyEpoch: this.getPolicyEpoch(), policyContextEpoch: this.getPolicyContextEpoch(), ...(hostTerminalContext ? { hostTerminalContext } : {}) });
+    const policyEpoch = this.requestPolicyEpoch(request);
+    this.pipelineRequests.set(result, { request, policyEpoch, policyContextEpoch: unattended ? policyEpoch : this.getPolicyContextEpoch(), ...(hostTerminalContext ? { hostTerminalContext } : {}) });
     return result;
   }
 
@@ -1703,8 +1750,8 @@ export class PermissionManager {
     const issued = this.pipelineRequests.get(result);
     if (!issued) throw new JudgeContractError("Permission recheck requires an issued pipeline request");
     this.pipelineRequests.delete(result);
-    const stale = issued.policyEpoch !== this.getPolicyEpoch()
-      && !(options?.acrossMemoryRuleChanges === true && issued.policyContextEpoch === this.getPolicyContextEpoch());
+    const stale = issued.policyEpoch !== this.requestPolicyEpoch(issued.request)
+      && !(!issued.request.unattended && options?.acrossMemoryRuleChanges === true && issued.policyContextEpoch === this.getPolicyContextEpoch());
     const refreshed = this.pipelineResult({ ...issued.request,
       ...(stale ? { admissionDenial: STALE_PERMISSION_POLICY } : {}),
     }, issued.hostTerminalContext);
@@ -1741,8 +1788,9 @@ export class PermissionManager {
       throw new JudgeContractError("Permission review requires valid judge evidence");
     }
     this.pipelineRequests.delete(result);
-    const stale = issued.policyEpoch !== this.getPolicyEpoch();
-    const failed = stale || !isReviewerAutoDecisionOutcome(review.outcome) || judge.judged && judge.fallback !== undefined;
+    const stale = issued.policyEpoch !== this.requestPolicyEpoch(issued.request);
+    const failed = stale || !isReviewerAutoDecisionOutcome(review.outcome) || judge.judged && judge.fallback !== undefined ||
+      issued.request.unattended !== undefined && (!judge.judged || judge.mode !== "active" || !judge.applied);
     const level = judge.judged && judge.decision !== "allow" ? "high" : review.verdict.level;
     const resolved = this.pipelineResult({ ...issued.request, ...(stale ? { admissionDenial: { code: "policy-changed", reason: "Permission policy changed during review." } } : {}), reviewer: {
       level, status: failed ? "error" : "success",
@@ -1756,7 +1804,7 @@ export class PermissionManager {
   resolveRememberedPermission(result: PermissionCheckResult, rememberedReason: string): PermissionCheckResult {
     const issued = this.pipelineRequests.get(result);
     if (!issued) throw new Error("Permission memory requires an issued pipeline request");
-    const stale = issued.policyEpoch !== this.getPolicyEpoch();
+    const stale = issued.policyEpoch !== this.requestPolicyEpoch(issued.request);
     return this.pipelineResult({ ...issued.request,
       ...(stale ? { admissionDenial: { code: "policy-changed", reason: "Permission policy changed during approval lookup." } } : {}),
       rules: { ...issued.request.rules, remembered: rememberedReason },
@@ -1781,6 +1829,7 @@ export class PermissionManager {
     overlayTriggerOrigin: string | null | undefined,
     context: PermissionCheckContext,
   ): PermissionCheckResult {
+    const unattended = registeredUnattendedStageOf(context.sessionId);
     // Wins over every other stage, headless and session grants included: no approval may run this shell.
     let admissionDenial = isHomePrivacyHelperUnavailablePlan(context.hostShellExecutionPlan) ? HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL : context.admissionDenial;
     let floor = context.floor;
@@ -1872,7 +1921,9 @@ export class PermissionManager {
       throw new Error("Permission rule subject does not match the tool source");
     }
     if (scopedSubject && projectRuleState === undefined) throw new Error("Scoped permission rules require an explicit project scope");
-    const scopedRules = scopedSubject ? evaluateScopedRules(scopedSubject, projectRuleState!.projectRoot, this.rules, projectRules) : undefined;
+    const userRules = unattended ? this.rules.filter(rule => rule.action !== "allow") : this.rules;
+    const applicableProjectRules = unattended ? projectRules.filter(rule => rule.action !== "allow") : projectRules;
+    const scopedRules = scopedSubject ? evaluateScopedRules(scopedSubject, projectRuleState!.projectRoot, userRules, applicableProjectRules) : undefined;
     if (scopedRules?.admissionDenial) admissionDenial ??= { code: "invalid-rule-target", reason: scopedRules.admissionDenial };
     const ownStageEdit = scopedSubject?.kind === "edit" && scopedRules?.floorCode === "protected-path" && ownStagePath(scopedSubject.cwd)
       && scopedSubject.paths.every(path => !path.split(/[\\/]/u).includes("..")
@@ -1943,14 +1994,14 @@ export class PermissionManager {
         : windowsDenyUnenforceableAtBoot() === "path" ? t("shellExecution.denyPathUnenforceableAsk")
         : "The OS sandbox is unavailable, so this shell command would run without isolation; it needs your approval once or for this session." };
     }
-    const floorSessionEligible = sandboxUnavailableAsk && !competingFloor;
+    const floorSessionEligible = !unattended && sandboxUnavailableAsk && !competingFloor;
     const shadowedFloor = otherFloor !== undefined && otherFloor !== floor ? otherFloor : undefined;
     const terminalFloorSubject = source === "builtin" && toolName === "terminal_run" && context.hostTerminalTurn !== undefined;
     const floorSessionGranted = floorSessionEligible && context.hostShellExecutionPlan !== undefined && requestedRuleSubject !== undefined &&
       (requestedRuleSubject.dialect === toolName || terminalFloorSubject) &&
       this.holdsFloorSessionGrant(context.sessionId);
-    const sessionRules = this.sessionRulesInScope(context.sessionId);
-    const ruleScopes = [this.rules, projectRules, sessionRules];
+    const sessionRules = unattended ? [] : this.sessionRulesInScope(context.sessionId);
+    const ruleScopes = [userRules, applicableProjectRules, sessionRules];
     const approvalKey = normalizeApprovalCacheKey(context.approvalCacheKey);
     const denyTargets = approvalKey ? [toolName, approvalKey] : [toolName];
     const allowTarget = approvalKey ?? toolName;
@@ -1964,7 +2015,8 @@ export class PermissionManager {
     });
     const rules: NonNullable<PermissionDecisionRequest["rules"]> = {};
     let exactHostRuleProof: Pick<ShellAllowRuleAuthorization, "cwdIdentity" | "persistedPolicyVersions"> | undefined;
-    if (deny || shellDeny?.pattern !== undefined || scopedRules?.decision === "deny") rules.deny = deny?.pattern ?? shellDeny?.pattern ?? scopedRules?.pattern ?? "Deny rule matched";
+    const networkRule = context.unattendedNetworkRule;
+    if (deny || shellDeny?.pattern !== undefined || scopedRules?.decision === "deny" || networkRule?.decision === "deny") rules.deny = deny?.pattern ?? shellDeny?.pattern ?? scopedRules?.pattern ?? networkRule?.pattern ?? "Deny rule matched";
     if (rules.deny === undefined && shellDeny?.analysisRefused) {
       admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell analysis could not check saved deny rules for this command." };
     } else {
@@ -1995,14 +2047,16 @@ export class PermissionManager {
         }
       }
       const ask = matchingRule("ask");
-      const allow = matchingRule("allow");
-      if (ask || shellRules?.decision === "ask" || scopedRules?.decision === "ask" || (!shellAnalysisLimited && shellDeny?.unreadable)) rules.ask = ask?.pattern ?? (shellRules?.decision === "ask" ? shellRules.pattern : undefined) ?? scopedRules?.pattern ?? "Ask rule matched";
-      if (allow || shellRules?.decision === "allow" || scopedRules?.decision === "allow") rules.allow = allow?.pattern ?? (shellRules?.decision === "allow" ? shellRules.patterns.join(", ") : scopedRules?.pattern) ?? "Allow rule matched";
-      if (floorSessionGranted) rules.floorSession = "You allowed shell commands without the sandbox for this session.";
-      if (source === "builtin" && category === "meta" && context.decisionOverride === "always-allow-with-audit") rules.allow ??= "The host operation supplies its own audited decision.";
-      if (context.fileWritePolicy?.directoryApproved) rules.remembered = "The user approved this write together with its directory grant.";
-      const grant = this.alwaysAllowed.get(allowTarget);
-      if (grant !== undefined && grantCovers(grant, category)) rules.remembered = "Previous approval covers this tool.";
+      if (ask || shellRules?.decision === "ask" || scopedRules?.decision === "ask" || networkRule?.decision === "ask" || (!shellAnalysisLimited && shellDeny?.unreadable)) rules.ask = ask?.pattern ?? (shellRules?.decision === "ask" ? shellRules.pattern : undefined) ?? scopedRules?.pattern ?? networkRule?.pattern ?? "Ask rule matched";
+      if (!unattended) {
+        const allow = matchingRule("allow");
+        if (allow || shellRules?.decision === "allow" || scopedRules?.decision === "allow") rules.allow = allow?.pattern ?? (shellRules?.decision === "allow" ? shellRules.patterns.join(", ") : scopedRules?.pattern) ?? "Allow rule matched";
+        if (floorSessionGranted) rules.floorSession = "You allowed shell commands without the sandbox for this session.";
+        if (source === "builtin" && category === "meta" && context.decisionOverride === "always-allow-with-audit") rules.allow ??= "The host operation supplies its own audited decision.";
+        if (context.fileWritePolicy?.directoryApproved) rules.remembered = "The user approved this write together with its directory grant.";
+        const grant = this.alwaysAllowed.get(allowTarget);
+        if (grant !== undefined && grantCovers(grant, category)) rules.remembered = "Previous approval covers this tool.";
+      }
     }
     const shellDestructive = ruleSubject !== undefined && Boolean((floorInput?.destructive ?? isDestructiveShellText(ruleSubject.command)) || (shellShape?.ok && shellShape.commands.some((leaf) => {
       const wrapped = wrapperCommand(leaf.argv);
@@ -2010,15 +2064,27 @@ export class PermissionManager {
       return isDestructiveShellArgv(argv) || noReusableRuleReason(argv.map((arg) => arg ?? "")) !== null;
     })));
     const readOnlyProven = context.shellReadOnlyProven ?? (command !== undefined && !analysisLimited && !ruleProofLimited && isReadOnlyCommand(command, parsed, ruleSubject?.kind === "shell" ? ruleSubject.dialect : "bash"));
+    const unattendedPowerShell = unattended && parsedPowerShell && !analysisLimited && !ruleProofLimited
+      ? powerShellRuleShape(parsedPowerShell) : undefined;
     // Meta is host dispatch metadata; normalize its authenticated contract to an effect kind.
     const effectKind = category === "meta" && !invalidMeta
       ? context.decisionOverride === "always-allow-with-audit" ? "read" : "write"
       : category;
+    const mediatedConnection = unattended !== undefined && context.unattendedNetwork?.connection === true;
     const request: PermissionDecisionRequest = {
       sessionId: context.sessionId,
-      tool: { name: toolName, source, kind: source === "mcp" ? "mcp" : context.fileWritePolicy ? "file-write" : effectKind, readOnlyHint: context.mcpReadOnlyHint },
-      mode: this.mode,
-      rationaleAvailable: context.rationaleAvailable === true,
+      tool: { name: toolName, source, kind: source === "mcp" && !mediatedConnection ? "mcp" : context.fileWritePolicy ? "file-write" : effectKind, readOnlyHint: context.mcpReadOnlyHint },
+      mode: unattended ? "default" : this.mode,
+      rationaleAvailable: !unattended && context.rationaleAvailable === true,
+      ...(unattended ? {
+        unattended, unattendedEffect: context.unattendedInvokedEffect,
+        unattendedInputSummary: JSON.stringify(context.unattendedCallInput),
+        unattendedNetwork: context.unattendedNetwork,
+        unattendedCommand: shellShape?.ok && shellShape.hidden.length === 0
+          ? shellShape.commands.map(leaf => leaf.raw)
+          : command !== undefined && unattendedPowerShell?.ok && unattendedPowerShell.opaque === null && unattendedPowerShell.commands.length === 1
+            ? [command] : undefined,
+      } : {}),
       headless: context.headless === true || context.approvalSurface === "unavailable", ownerAway: context.ownerUnattended, paths: [...(context.paths ?? []), ...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])].map(({lexical,canonical,effect}) => ({lexical,canonical,effect})),
       admissionDenial, floor, exfiltration, rules, secretRead, manualRerun: context.manualRerun,
       ...(shellAnalysisLimited ? { shellAnalysisLimited: true as const } : {}),
@@ -2028,7 +2094,7 @@ export class PermissionManager {
       ...(context.fileWritePolicy ? { fileWrite: { ...context.fileWritePolicy, checkpointAvailable: context.fileWritePolicy.checkpointAvailable === true } } : {}),
       ...(category === "shell" ? { shell: { sandboxed: shellExecution.runsSandboxed, readOnlyProven, unproven: shellAnalysisLimited || ruleProofLimited || shellPaths?.unproven != null || powerShellPaths?.unproven === true || !hostBoundWriteTargets && !readOnlyProven && (shellSignals?.outcome === "unproven" || Boolean(shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason)), destructive: shellDestructive, escalated: context.shellEscalated } } : {}),
     };
-    const result = this.pipelineResult(request, context);
+    const result = this.pipelineResult(request, context, context.reportUnattendedDenials);
     if (result.decision === "allow" && result.reasonCode === "floor-session-allow" && requestedRuleSubject?.cwd !== undefined && context.hostShellExecutionPlan !== undefined) {
       issuedFloorSessionDecisions.set(result, Object.freeze({ toolName, dialect: requestedRuleSubject.dialect, command: requestedRuleSubject.command, cwd: requestedRuleSubject.cwd,
         planIdentity: context.hostShellExecutionPlan.identity, issuer: this, policyEpoch: this.getPolicyEpoch() }));
@@ -2058,6 +2124,10 @@ export class PermissionManager {
     }
     const permission = input.permissionDecision as PermissionCheckResult | undefined;
     const issued = permission === undefined ? undefined : this.pipelineRequests.get(permission);
+    if (issued?.request.unattended && !this.judgeDeps) {
+      return { verdict: { level: "high", reason: "Automatic review is unavailable." }, outcome: "unavailable",
+        cacheReason: "miss-not-found", judge: { judged: false, skip: "judge-off" } };
+    }
     let verifiedSurfaceReview = false;
     if (issued?.request.userOwnedSurface?.choice === "auto") {
       const current = this.pipelineResult(issued.request, issued.hostTerminalContext);
@@ -2079,12 +2149,14 @@ export class PermissionManager {
         routineScope, ...(verifiedSurfaceReview ? { logicalSurface: true as const } : {}), ...(options?.purpose === "approval-scope" ? { baseline: true as const, scopeAssessment: true as const } : {}),
       });
     } catch (error) {
-      if (!options?.abortSignal?.aborted || error instanceof JudgeContractError) throw error;
+      const aborted = options?.abortSignal?.aborted === true;
+      if (!issued?.request.unattended && (!aborted || error instanceof JudgeContractError)) throw error;
       // A caller stop is terminal, never a classifier block or a cached grant.
+      const reason = aborted ? "reviewer cancelled by caller" : "Automatic review failed.";
       return {
-        verdict: { level: "high", reason: "reviewer cancelled by caller" }, outcome: "error", cacheReason: "miss-not-found",
+        verdict: { level: "high", reason }, outcome: "error", cacheReason: "miss-not-found",
         judge: { judged: true, mode: "active", decision: "deny", applied: true,
-          source: "fallback", fallback: "error", rationale: "reviewer cancelled by caller", breakerTripped: false },
+          source: "fallback", fallback: "error", rationale: reason, breakerTripped: false },
       };
     }
     const requestIdentity = input.rationaleAvailable === true && issued?.request.rationaleAvailable === true ? { requestId: input.invocationId } : {};
@@ -2132,6 +2204,8 @@ export class PermissionManager {
         input.pluginId, input.hostShellExecutionPlan, input.disposableSubstrate,
       );
     let sandboxCacheState = readSandboxCacheState();
+    const generation = input.permissionDecision?.pipelineRequest && unattendedGenerationTool(input.permissionDecision.pipelineRequest);
+    const unattendedGeneration = generation && { effect: generation.effect, dataSent: generation.dataSent };
     const buildReviewerContext = (
       reviewerSandboxState: ReviewerSandboxCacheState = sandboxCacheState,
     ): ToolInvocationContext => ({
@@ -2143,6 +2217,7 @@ export class PermissionManager {
       sensitivePathsAdjacent: input.sensitivePathsAdjacent,
       sandboxCapability: reviewerSandboxState.capability,
       ...(input.permissionDecision ? { permissionReason: input.permissionDecision.reason } : {}),
+      ...(unattendedGeneration ? { unattendedGeneration } : {}),
       ...(input.conversationContext ? { conversationContext: input.conversationContext } : {}),
       ...(input.ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot: input.ownerPluginSandboxRoot } : {}),
     });
@@ -2201,7 +2276,7 @@ export class PermissionManager {
     // User-approval memory hit Check the user-approval store before consulting the LLM classifier. A memory hit for a non-revoked approval bypasses the LLM call and returns the rule-based verdict directly (composition rule still applies — sandbox/context quality can only raise, not lower). HIGH-verdict approvals are intentionally included: if the user already justified a HIGH action this session, re-running the LLM is wasteful. Built outside the storage catch: a key without its identity mode is an internal contract violation and must surface, not read as a miss.
     const userApprovalIdentity = approvalCacheKeyIdentity(input.approvalCacheKey, input.approvalMemory);
     const userApprovalArgs = canonicalStringify(cacheIdentityInput);
-    const rememberedDecision = await lookupApproval(
+    const rememberedDecision = input.permissionDecision?.pipelineRequest?.unattended ? null : await lookupApproval(
       toolName,
       userApprovalArgs,
       input.source,
@@ -2234,6 +2309,7 @@ export class PermissionManager {
         allowedDirectories: input.allowedDirectories,
         scope: {
           ...(routineScope ?? {}),
+          ...(input.permissionDecision?.pipelineRequest?.unattended ? { unattended: { generation: unattendedGeneration ?? null } } : {}),
           reviewer: options?.cacheScope ?? this.reviewerCacheScope,
           reviewerFrameworkVersion: PERMISSION_REVIEWER_FRAMEWORK_VERSION,
           reviewerOutcomeContractVersion: 1,
@@ -2421,17 +2497,20 @@ export class PermissionManager {
       chain: [{ settings: defaultStage, judge: new BuiltinLlmJudge(this.reviewerClassifier, this.reviewerModel) }],
       breaker: wired.breaker, audit: wired.audit,
     } : wired;
-    const policyEpoch = this.getPolicyEpoch();
+    const reviewedRequest = input.permissionDecision ? this.pipelineRequests.get(input.permissionDecision as PermissionCheckResult)?.request : undefined;
+    const policyEpoch = this.requestPolicyEpoch(reviewedRequest);
     const sandboxState = resolveReviewerSandboxCacheState(
       input.source, toolName, input.mcpServerId, input.workerId, input.pluginId,
       input.hostShellExecutionPlan, input.disposableSubstrate,
     );
+    const generation = reviewedRequest && unattendedGenerationTool(reviewedRequest);
     const invocation: ToolInvocationContext = {
       toolName, source: input.source, category: input.category, pathFields: input.pathFields,
       trustOrigin: input.trustOrigin, finalInput: input.finalInput, executionCwd: input.executionCwd,
       allowedDirectories: input.allowedDirectories, sensitivePathsAdjacent: input.sensitivePathsAdjacent,
       sandboxCapability: sandboxState.capability,
       ...(input.permissionDecision ? { permissionReason: input.permissionDecision.reason } : {}),
+      ...(generation ? { unattendedGeneration: { effect: generation.effect, dataSent: generation.dataSent } } : {}),
       ...(input.conversationContext ? { conversationContext: input.conversationContext } : {}),
       ...(input.ownerPluginSandboxRoot ? { ownerPluginSandboxRoot: input.ownerPluginSandboxRoot } : {}),
     };
@@ -2468,7 +2547,6 @@ export class PermissionManager {
         },
       }, builtin.model) };
     });
-    const reviewedRequest = input.permissionDecision ? this.pipelineRequests.get(input.permissionDecision as PermissionCheckResult)?.request : undefined;
     const gate: JudgeGate = {
       priorDecision: "undecided", strictMode: context?.scopeAssessment !== true && context?.logicalSurface !== true && (reviewedRequest?.mode ?? this.mode) === "strict",
       capabilityGrant: !baseline && input.category === "meta",
@@ -2481,7 +2559,7 @@ export class PermissionManager {
       lane, invocation,
       recentUserMessages: input.conversationContext?.recentUserMessage ? [input.conversationContext.recentUserMessage] : [],
       projectRoot: projectRulesLocation(dirname(this.permissionsFilePath), input.executionCwd).projectRoot,
-      ruleVerdict, policy: { mode: this.mode },
+      ruleVerdict, policy: { mode: reviewedRequest?.unattended ? "default" : this.mode },
     };
     let outcome = await resolveJudge(gate, request, {
       ...deps,
@@ -2498,7 +2576,7 @@ export class PermissionManager {
             input.source, toolName, input.mcpServerId, input.workerId, input.pluginId,
             input.hostShellExecutionPlan, input.disposableSubstrate,
           );
-          const policyChanged = this.getPolicyEpoch() !== policyEpoch;
+          const policyChanged = this.requestPolicyEpoch(reviewedRequest) !== policyEpoch;
           return policyChanged || !sameReviewerSandboxCacheState(sandboxState, current)
             ? { decision: decision === "allow" ? "ask" : decision,
                 rationale: policyChanged ? "Permission policy changed during judge review" : "Execution sandbox changed during judge review", fallback: "unavailable" }
@@ -2508,7 +2586,7 @@ export class PermissionManager {
     }, abortSignal);
     // Audit and the unchanged shadow reviewer can both await. Recheck the host snapshot after their last await before publishing any allow.
     const staleReason = (): string | undefined => {
-      if (this.getPolicyEpoch() !== policyEpoch) return "Permission policy changed during judge review";
+      if (this.requestPolicyEpoch(reviewedRequest) !== policyEpoch) return "Permission policy changed during judge review";
       const current = resolveReviewerSandboxCacheState(
         input.source, toolName, input.mcpServerId, input.workerId, input.pluginId,
         input.hostShellExecutionPlan, input.disposableSubstrate,

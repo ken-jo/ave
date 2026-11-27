@@ -4,6 +4,9 @@ import { dirname, join } from "node:path";
 import { expect, it, type MockInstance, vi } from "vitest";
 import { aveHome } from "../../shared/ave-home.js";
 import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
+import { unattendedStageOf } from "../../permissions/unattended-lane-registry.js";
+import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
+import type { StageEnvelope } from "../../shared/workflow-template-types.js";
 import type { RemovedRun } from "../workflow-run-store.js";
 import { runScopePermissions, setPath, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import type { StageWorkspaceProvider } from "../../work-board/workflow/stage-workspace.js";
@@ -14,6 +17,66 @@ import { RUN_FILE } from "../../work-board/workflow/workspace-layout.js";
 /** The project root a discard was given for each run. */
 const rootsOf = (projects: ReadonlyMap<string, { projectRoot: string }>): Map<string, string> => new Map([...projects].map(([runId, named]) => [runId, named.projectRoot]));
 const auto = (id: string, inputs: string[] = []) => stageOf(id, { inputs, gate: { type: "auto", pass: { kind: "stage_ok" } } });
+const readEnvelope: StageEnvelope = {
+  tools: ["read_file"], readRoots: [], writePaths: [], commands: [], network: [],
+  mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+  outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+};
+
+it("refuses a qualified non-read-only schedule at spawn with lane-unavailable", async () => {
+  const h = await stageRunHarness({
+    script: () => ({ summary: "started" }),
+    workflow: { unattendedAllowed: () => ({ ok: true }) },
+    wiring: (store, harness) => ({
+      ...workflowEngineExtensions(store, harness.templates, runScopePermissions()),
+      workspace: harness.workspace, workspaceBinding: undefined,
+    }),
+  });
+  await h.runThenEnd(async () => {
+    const readOnly = await h.confirm([auto("a")]);
+    const { id: attachmentId, source } = await h.attach(readOnly);
+    const version = await h.confirm([auto("a"), { ...auto("b", ["a"]), toolScope: "all" }], { id: readOnly.templateId });
+    const pin = h.pinOf(version);
+    // The normal attach guard still refuses these versions. Exercise the independent spawn guard.
+    setPath(join(h.dir, "templates.json"), ["templates", 0, "scheduleAttachments", 0], {
+      ...await h.templates.getAttachment(attachmentId), ...pin,
+    });
+    const id = await h.addItem(version);
+    await h.start(id, { ...source, pin });
+    expect.soft(h.children).toHaveLength(0);
+    expect((await h.item(id)).stageRuns[0]).toMatchObject({
+      stageId: "a", status: "failed", blocked: { code: "lane-unavailable" },
+    });
+  });
+});
+
+it("runs a read-only schedule with an envelope under the interim permission policy", async () => {
+  const manager = runScopePermissions();
+  manager.setMode("allow");
+  const h = await stageRunHarness({
+    wiring: (store, harness) => ({
+      ...workflowEngineExtensions(store, harness.templates, manager),
+      workspace: harness.workspace, workspaceBinding: undefined,
+    }),
+  });
+  await h.runThenEnd(async () => {
+    const version = await h.confirm([{ ...auto("a"), envelope: readEnvelope }]);
+    const { source } = await h.attach(version);
+    const id = await h.addItem(version);
+    const run = h.start(id, source);
+    const [child] = await h.untilLive(1);
+    expect.soft(child.input.unattendedStage).toMatchObject({ stageId: "a" });
+    expect.soft(unattendedStageOf(child.sessionId)).toBeUndefined();
+    const permission = turnExtensionPolicyContext.run({
+      allowExternalHooks: false, unattendedStage: true, withholdSessionAuthority: true,
+    }, () => manager.checkDetailed("read_file", "builtin", "read", undefined, { sessionId: child.sessionId }));
+    expect.soft(permission).toMatchObject({
+      decision: "allow", reasonCode: "ordinary-read", pipelineRequest: { headless: true, mode: "strict" },
+    });
+    child.finish(permission.decision === "allow" ? { summary: "done" } : { ok: false, error: permission.reason });
+    expect(await run).toMatchObject({ status: "completed", output: "done" });
+  });
+});
 
 it("with the production parts and a workspace provider, an authorised template run starts, is stored in the run file and completes", async () => {
   // Only the workspace provider is the harness's, and with it no session is bound: its folders are not under the home (the real ones are, below).
@@ -198,7 +261,10 @@ async function withGitRun(work: (scene: GitRunScene) => Promise<void>): Promise<
     h = await stageRunHarness({ wiring: (store, harness) => {
       const read = store.runsWithoutItem.bind(store);
       vi.spyOn(store, "runsWithoutItem").mockImplementation(async () => { await gates.shift(); return read(); });
-      parts = workflowEngineExtensions(store, { getAttachment: async (id) => { await reading; return { ...await harness.templates.getAttachment(id), approvedScope: { kind: "project", projectRoot: fx.repo } } as never; } }, runScopePermissions());
+      parts = workflowEngineExtensions(store, {
+        getAttachment: async (id) => { await reading; return { ...await harness.templates.getAttachment(id), approvedScope: { kind: "project", projectRoot: fx.repo } } as never; },
+        resolveVersion: pin => harness.templates.resolveVersion(pin),
+      }, runScopePermissions());
       const { workspace } = parts;
       const discardWorkspace = workspace.discard.bind(workspace);
       discard = vi.spyOn(workspace, "discard").mockImplementation(harness.waking(discardWorkspace));
