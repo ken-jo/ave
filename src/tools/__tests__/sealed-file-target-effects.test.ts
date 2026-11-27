@@ -97,12 +97,12 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     rmSync(root, { recursive: true, force: true });
   });
 
-  async function write(path: string, cwd: string) {
+  async function write(path: string, cwd: string, requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" }))) {
     const tool = new WriteFileTool();
     const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "written", isError: false });
     const registry = new ToolRegistry();
     registry.register(tool);
-    const gate = { requestAndWait: answeringRequestAndWait(async (request) => ({ requestId: request.id, choice: "deny-once" })) };
+    const gate = { requestAndWait };
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit);
     const [result] = await executor.executeAll([{ id: "sealed-target", name: tool.name, input: { path, content: "changed" } }], {
       executionCwd: cwd, sessionId: "sealed-target", permissionContext: { trustOrigin: "user-keyboard" },
@@ -256,6 +256,27 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     });
     expect(hooks.opens).toEqual([]);
     expect(readFileSync(join(project, "sub", "note.txt"), "utf8")).toBe("before");
+  });
+
+  it("refuses an approved write when its sealed route becomes unavailable while the card is open", async () => {
+    const alias = join(project, "alias");
+    symlinkSync(join(project, "sub"), alias, "junction");
+    manager.setMode("strict");
+    const requestAndWait = answeringRequestAndWait(() => {
+      refuseRouteAt(alias, "incomplete");
+      return { choice: "allow-once" };
+    });
+
+    const { result, execute } = await write("alias/note.txt", project, requestAndWait);
+
+    expect(requestAndWait).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(hooks.opens.filter((path) => path.endsWith("note.txt"))).toEqual([]);
+    expect(readFileSync(join(project, "sub", "note.txt"), "utf8")).toBe("before");
+    expect(result).toMatchObject({
+      is_error: true,
+      content: expect.stringContaining(t("be_executor.fileTargetUnverified")),
+    });
   });
 
   it.each([

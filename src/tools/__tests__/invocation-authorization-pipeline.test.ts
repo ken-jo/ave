@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { toolUseAnswer } from "../../__tests__/support/standing-answer.js";
+import { t } from "../../i18n/index.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { Tool } from "../base.js";
 import { authorizeToolInvocation, type AuthorizationStageContext } from "../invocation-authorization.js";
@@ -125,6 +126,27 @@ describe("invocation permission pipeline orchestration", () => {
     expect(allowsPolicyTransition).toHaveBeenCalledOnce();
     expect(context.tool.execute).not.toHaveBeenCalled();
     expect(context.finalInput).toEqual({ path: join(directory, "resource.txt"), content: "unchanged input" });
+  });
+
+  it.runIf(process.platform === "win32")("records a rule denial when a sealed target becomes a share during approval", async () => {
+    const { context, requestAndWait } = fixture({ category: "write", mode: "strict" });
+    const reason = t("be_executor.fileTargetUnverified");
+    requestAndWait.mockImplementation(async (request) => {
+      context.assertFileTargetsUnchanged = () => {
+        throw Object.assign(new Error("Network share path"), { code: "ENETWORKSHAREPATH" });
+      };
+      return answeredApprovalDecision(
+        { requestId: request.id, choice: "allow-once" }, "desk", context.toolUse.name, context.toolUse.id,
+      );
+    });
+
+    const result = await authorizeToolInvocation(context);
+
+    expect(requestAndWait).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(reason) });
+    expect(vi.mocked(context.auditCurrentToolCall).mock.calls.at(-1)?.[8]).toEqual({
+      decision: "deny", provenance: RULE_PROVENANCE, reason,
+    });
   });
 
   it("carries an exact directory authorization without a second policy check or card", async () => {

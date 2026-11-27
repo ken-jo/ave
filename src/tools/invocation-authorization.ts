@@ -39,6 +39,7 @@ import {
 } from "../shared/chat-origin.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { t } from "../i18n/index.js";
+import { fileTargetSealFailureKey } from "../permissions/target-seal.js";
 import { withLocalityDecision } from "../shared/local-path-io.js";
 import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostShutdownDenial, isSettledRefusal, refusal } from "./pipeline/approval-outcome.js";
 import { toolInvocationShutdownStarted } from "./invocation-ledger.js";
@@ -457,7 +458,7 @@ export async function authorizeToolInvocation(
       });
     } catch (error) {
       if (targetsChecked) throw error;
-      return refusal(t("be_executor.fileTargetChanged"), RULE_PROVENANCE);
+      return refusal(t(fileTargetSealFailureKey(error)), RULE_PROVENANCE);
     }
   }
   if (needsCentralDecision && checkCurrentPermission) {
