@@ -1,3 +1,4 @@
+import { InMemoryHostInvocationStartCasStore } from "../pipeline/rationale-ticket-lifecycle.js";
 import { registerRunSession, __resetRunGrantsForTest } from "../../permissions/run-grants.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -32,7 +33,6 @@ import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { createTestRequestAnchor, rationaleResponseFor } from "../pipeline/__tests__/rationale-fixtures.js";
 import { InMemoryHostAnchorRoundCasStore } from "../pipeline/rationale-control.js";
 import { RationaleHostCoordinator } from "../pipeline/rationale-host-coordinator.js";
-import { InMemoryHostInvocationStartCasStore, type InvocationAuditRecord } from "../pipeline/rationale-ticket-lifecycle.js";
 import { InProcessRationaleTicketStore } from "../pipeline/rationale-ticket-store.js";
 import { tryUserApprovalMemorySkip } from "../pipeline/approval-memory-skip.js";
 import { ToolRegistry } from "../registry.js";
@@ -118,12 +118,11 @@ async function rationaleContinuation(surface: "native" | "unavailable" = "native
   registry.register(makeWriteProbeTool(execute));
   const hooks = new ScriptHookManager();
   const { gate, cards, approve } = manualGate();
-  const invocationAudits: InvocationAuditRecord[] = [];
   const scopeComplete = vi.fn<LlmReviewerProvider["complete"]>(async () => ({
     text: JSON.stringify({ level: "medium", reason: "bounded action", scopeAlignment: "aligned", scopeReasons: ["sealed target matches the request"] }),
     tokensIn: 1, tokensOut: 1, costUsd: 0,
   }));
-  const ticketStore = new InProcessRationaleTicketStore({ onAudit: () => {} });
+  const ticketStore = new InProcessRationaleTicketStore();
   const coordinator = new RationaleHostCoordinator({
     requestAnchor: createTestRequestAnchor({ sessionId: current.sessionId }),
     userRoleTexts: ["Perform the requested operation."],
@@ -136,8 +135,6 @@ async function rationaleContinuation(surface: "native" | "unavailable" = "native
     getSandboxGeneration: () => "sandbox-one",
     anchorRoundCas: new InMemoryHostAnchorRoundCasStore(),
     hostInvocationStartCas: new InMemoryHostInvocationStartCasStore(),
-    onInvocationAudit: (record) => { invocationAudits.push(record); },
-    onProjectionAudit: () => {},
   });
   const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
   const options = {
@@ -166,7 +163,7 @@ async function rationaleContinuation(surface: "native" | "unavailable" = "native
   const resumeOptions = { ...options, rationaleResumeRuntime: coordinator, permissionContext: { ...options.permissionContext,
     ...(surface === "unavailable" ? { approvalSurface: "unavailable" as const } : {}),
   } };
-  return { ...current, execute, hooks, reached, release, gate, cards, approve, invocationAudits, executor, sealed, resumeOptions };
+  return { ...current, execute, hooks, reached, release, gate, cards, approve, executor, sealed, resumeOptions };
 }
 
 function manualGate() {
@@ -559,7 +556,6 @@ describe("executor automated approval pause", () => {
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.cards).toHaveLength(0);
     expect(f.manager.isAutomatedApprovalPaused(f.sessionId)).toBe(true);
-    expect(f.invocationAudits.some((record) => record.state === "started" || record.state === "completed")).toBe(false);
     const replay = await f.executor.executeSealedRationaleResume(f.sealed.resumeRequest, f.resumeOptions);
     expect(replay.is_error).toBe(true);
     expect(f.execute).not.toHaveBeenCalled();

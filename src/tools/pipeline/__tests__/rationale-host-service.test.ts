@@ -7,7 +7,6 @@ import type { PermissionCheckResult } from "../../../permissions/permission-mana
 import type {
   RationaleScopeReviewer,
 } from "../../../permissions/reviewer/rationale-scope-reviewer.js";
-import type { RationaleAuditSink } from "../../../audit/rationale-audit-adapter.js";
 import {
   createRequestAnchor,
   createTriggeringBatchDisposition,
@@ -110,14 +109,6 @@ function authorizedRecord(): InvocationAuditRecord {
 }
 
 function setup() {
-  const appendTicket = vi.fn((event) => event as never);
-  const appendProjection = vi.fn((_sessionId, projection, _at) => projection as never);
-  const auditSink = {
-    assertWritable: vi.fn(),
-    appendTicket,
-    appendInvocation: vi.fn((_sessionId, record) => record as never),
-    appendProjection,
-  } satisfies RationaleAuditSink;
   const reviewer = {
     reevaluate: vi.fn(async (input) =>
       createReviewerScopeReevaluation({
@@ -159,7 +150,6 @@ function setup() {
     getRegistryGeneration: () => "registry-1",
     getSandboxGeneration: () => "sandbox-1",
     invocationStartCas,
-    auditSink,
     now: () => NOW,
   });
   const factory = service.createCoordinatorFactory({
@@ -182,9 +172,6 @@ function setup() {
     factory,
     anchor,
     createCoordinator,
-    auditSink,
-    appendTicket,
-    appendProjection,
     getRationaleScopeReviewer,
     reviewer,
     requestAndWait,
@@ -194,24 +181,6 @@ function setup() {
 }
 
 describe("RationaleHostService", () => {
-  it("keeps factory injection dormant and fails closed on audit preflight", async () => {
-    const state = setup();
-
-    expect(state.auditSink.assertWritable).not.toHaveBeenCalled();
-    expect(state.getRationaleScopeReviewer).not.toHaveBeenCalled();
-    state.auditSink.assertWritable.mockImplementationOnce(() => {
-      throw new Error("audit unavailable");
-    });
-
-    expect(await state.factory({
-      requestAnchor: state.anchor,
-      rationaleProvenance,
-      sessionId: SESSION_ID,
-    })).toBeNull();
-    expect(state.getRationaleScopeReviewer).not.toHaveBeenCalled();
-    expect(state.commitStart).not.toHaveBeenCalled();
-  });
-
   it("overwrites caller session identity and rejects starts after close", async () => {
     const state = setup();
     const coordinator = await state.createCoordinator();
@@ -220,7 +189,6 @@ describe("RationaleHostService", () => {
       control: {} as never,
       authorized: authorizedRecord(),
       expectedInvocationVersion: 0 as const,
-      persistAudit: vi.fn(),
       now: NOW,
     };
 
@@ -253,15 +221,6 @@ describe("RationaleHostService", () => {
       now: NOW,
     });
     expect(resolved?.ticket.ticket.state).toBe("user_pending");
-    expect(state.appendProjection).toHaveBeenCalledWith(
-      SESSION_ID,
-      expect.objectContaining({
-        projection: "rationale-ui-audit",
-        terminalReason: null,
-      }),
-      NOW,
-    );
-
     state.service.closeSession(SESSION_ID, NOW + 1);
     expect(await coordinator.promptForApproval(
       materialized.control.ticketId,
@@ -304,9 +263,7 @@ describe("RationaleHostService", () => {
     );
     expect(state.requestAndWait).toHaveBeenCalledOnce();
 
-    expect(() => state.service.closeSession(SESSION_ID, NOW + 2)).toThrow(
-      AggregateError,
-    );
+    expect(() => state.service.closeSession(SESSION_ID, NOW + 2)).toThrow(AggregateError);
     expect(state.cancelPendingRequest).toHaveBeenCalledTimes(1);
 
     expect(() => state.service.closeSession(SESSION_ID, NOW + 3)).not.toThrow();
@@ -314,7 +271,7 @@ describe("RationaleHostService", () => {
     await expect(pendingPrompt).resolves.toBeNull();
   });
 
-  it("quarantines coordinator contexts before a close audit failure", async () => {
+  it("retires coordinator contexts on close", async () => {
     const state = setup();
     const coordinator = await state.createCoordinator();
     const materialized = coordinator.materializeRationaleControl(
@@ -329,13 +286,8 @@ describe("RationaleHostService", () => {
       },
       now: NOW,
     });
-    state.appendTicket.mockImplementation(() => {
-      throw new Error("audit append failed");
-    });
 
-    expect(() => coordinator.closeSession(SESSION_ID, NOW + 1)).toThrow(
-      AggregateError,
-    );
+    expect(() => coordinator.closeSession(SESSION_ID, NOW + 1)).not.toThrow();
     expect(await coordinator.promptForApproval(
       materialized.control.ticketId,
       { now: NOW + 1 },
@@ -343,24 +295,20 @@ describe("RationaleHostService", () => {
     expect(state.requestAndWait).not.toHaveBeenCalled();
   });
 
-  it("keeps stale start authority closed when shutdown audit teardown fails", async () => {
+  it("keeps stale start authority closed after shutdown", async () => {
     const state = setup();
     const coordinator = await state.createCoordinator();
     const materialized = coordinator.materializeRationaleControl(
       createCandidate(state.anchor, { requestAndWait: state.requestAndWait }),
     );
     expect(materialized).not.toBeNull();
-    state.appendTicket.mockImplementation(() => {
-      throw new Error("audit append failed");
-    });
 
-    expect(() => state.service.shutdown(NOW + 1)).toThrow(AggregateError);
+    expect(() => state.service.shutdown(NOW + 1)).not.toThrow();
     expect(await coordinator.hostInvocationStartCas.commitStart({
       sessionId: SESSION_ID,
       control: {} as never,
       authorized: authorizedRecord(),
       expectedInvocationVersion: 0,
-      persistAudit: vi.fn(),
       now: NOW + 1,
     })).toBeNull();
     expect(state.commitStart).not.toHaveBeenCalled();

@@ -1,188 +1,67 @@
-import { describe, expect, it, vi } from "vitest";
-import type {
-  DurableRationaleAuditAdapterOptions,
-  RationaleAuditSink,
-} from "../../../audit/rationale-audit-adapter.js";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { useTempDirs } from "../../../__tests__/test-helpers.js";
+import { watchPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import type { BootContext } from "../../context.js";
-import type { RationaleHostService } from "../../../tools/pipeline/rationale-host-service.js";
-import { MemorySecretStore } from "../../../audit/hmac-chain.js";
-import type { DurableHostInvocationStartCasStoreOptions } from "../../../tools/pipeline/rationale-invocation-journal.js";
 import { wireRationaleHost } from "../rationale-host-wiring.js";
 
-const logInfo = vi.hoisted(() => vi.fn());
-vi.mock("../../../lib/logger.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
-  return {
-    ...actual,
-    createLogger: (name: string) => {
-      const logger = actual.createLogger(name);
-      return new Proxy(logger, { get: (target, key, receiver) => key === "info" ? logInfo : Reflect.get(target, key, receiver) });
-    },
-  };
+const temp = useTempDirs("ave-rationale-boot-");
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
-function makeContext(): BootContext {
-  return {
-    rationaleHostService: undefined,
-    bootAuditLogger: {
-      getAuditDir: vi.fn(() => "C:\\audit"),
-      getPermissionAuditSecret: vi.fn(() => "s".repeat(64)),
-      getPermissionAuditSealStore: vi.fn(() => new MemorySecretStore()),
-    },
-    approvalGate: {},
-    toolRegistry: { getGeneration: vi.fn(() => "registry-1") },
-    rationaleScopeReviewer: { reevaluate: vi.fn() },
-  } as unknown as BootContext;
-}
-
-function makeAuditSink(
-  onInvocation?: (sessionId: string, record: unknown) => void,
-): RationaleAuditSink {
-  return {
-    assertWritable: vi.fn(),
-    appendTicket: vi.fn(),
-    appendInvocation: vi.fn((sessionId, record) => {
-      onInvocation?.(sessionId, record);
-      return {} as never;
-    }),
-    appendProjection: vi.fn(() => ({} as never)),
+function makeContext() {
+  const home = temp();
+  vi.stubEnv("AVE_HOME", home);
+  const encryption = {
+    isAsyncEncryptionAvailable: async () => true,
+    encryptStringAsync: async (value: string) => Buffer.from(value),
+    decryptStringAsync: async (value: Buffer) => ({ result: value.toString(), shouldReEncrypt: false }),
   };
+  const ctx = {
+    host: { encryption },
+    approvalGate: {},
+    permissionManager: {},
+    toolRegistry: { getGeneration: vi.fn(() => "registry-1") },
+    get rationaleScopeReviewer() {
+      throw new Error("Reviewer must be resolved at invocation");
+    },
+  } as unknown as BootContext;
+  return { ctx, home };
 }
 
 describe("wireRationaleHost", () => {
-  it("publishes a dormant service without audit, recovery, or reviewer access", async () => {
-    const ctx = makeContext();
-    let reviewerReads = 0;
-    Object.defineProperty(ctx, "rationaleScopeReviewer", {
-      configurable: true,
-      get: () => {
-        reviewerReads += 1;
-        return { reevaluate: vi.fn() };
-      },
-    });
-    const service = {
-      createCoordinatorFactory: vi.fn(),
-      closeSession: vi.fn(),
-      shutdown: vi.fn(),
-    } as unknown as RationaleHostService;
-    const auditSink = makeAuditSink();
-    const recoverAfterCrash = vi.fn();
-    let capturedAuditOptions: DurableRationaleAuditAdapterOptions | undefined;
-    let capturedJournalOptions: DurableHostInvocationStartCasStoreOptions | undefined;
-    const createAuditSink = vi.fn((options: DurableRationaleAuditAdapterOptions) => {
-      capturedAuditOptions = options;
-      return auditSink;
-    });
-    const createInvocationJournal = vi.fn(
-      (options: DurableHostInvocationStartCasStoreOptions) => {
-        capturedJournalOptions = options;
-        return {
-          commitStart: vi.fn(),
-          commitTerminal: vi.fn(),
-          recoverAfterCrash,
-        };
-      },
-    );
-    const createHostService = vi.fn(() => service);
+  it("opens new execution state while leaving a corrupt previous journal in place", async () => {
+    const { ctx, home } = makeContext();
+    const oldDir = join(home, "rationale");
+    mkdirSync(oldDir);
+    const legacy = join(oldDir, "invocation-journal-v1.json");
+    writeFileSync(legacy, "corrupt");
+    const events: Record<string, unknown>[] = [];
+    watchPermissionEvents((event) => events.push(event));
 
-    await wireRationaleHost(ctx, {
-      productionEnabled: false,
-      createAuditSink,
-      createInvocationJournal,
-      createHostService,
-    });
-
-    expect(ctx.rationaleHostService).toBe(service);
-    expect(ctx.bootAuditLogger.getAuditDir).toHaveBeenCalledOnce();
-    expect(ctx.bootAuditLogger.getPermissionAuditSecret).toHaveBeenCalledOnce();
-    expect(ctx.bootAuditLogger.getPermissionAuditSealStore).toHaveBeenCalledOnce();
-    expect(createAuditSink).toHaveBeenCalledOnce();
-    expect(createInvocationJournal).toHaveBeenCalledOnce();
-    expect(capturedJournalOptions?.auditSecret).toBe(
-      capturedAuditOptions?.auditSecret,
-    );
-    expect(capturedJournalOptions?.sealStore).toBe(
-      capturedAuditOptions?.sealStore,
-    );
-    expect(createHostService).toHaveBeenCalledOnce();
-    expect(auditSink.assertWritable).not.toHaveBeenCalled();
-    expect(auditSink.appendInvocation).not.toHaveBeenCalled();
-    expect(auditSink.appendProjection).not.toHaveBeenCalled();
-    expect(recoverAfterCrash).not.toHaveBeenCalled();
-    expect(reviewerReads).toBe(0);
+    await wireRationaleHost(ctx);
+    expect(ctx.rationaleHostService).toBeDefined();
+    expect(events).toContainEqual(expect.objectContaining({ event: "rationale_recovery", recovered: 0 }));
+    expect(readFileSync(legacy, "utf8")).toBe("corrupt");
   });
 
-  it("publishes the service only after recovery and preserves origin session audit attribution", async () => {
-    const ctx = makeContext();
-    const service = {
-      createCoordinatorFactory: vi.fn(),
-      closeSession: vi.fn(),
-      shutdown: vi.fn(),
-    } as unknown as RationaleHostService;
-    const publicationStates: Array<RationaleHostService | undefined> = [];
-    const appendInvocation = vi.fn((sessionId: string, record: unknown) => {
-      publicationStates.push(ctx.rationaleHostService);
-      expect(sessionId).toBe("origin-session");
-      expect(record).toEqual({ state: "unknown-after-crash" });
-    });
-    const auditSink = makeAuditSink(appendInvocation);
-    const recoverAfterCrash = vi.fn(async (input: {
-      persistAudit: (sessionId: string, record: never) => Promise<void> | void;
-    }) => {
-      await input.persistAudit("origin-session", {
-        state: "unknown-after-crash",
-      } as never);
-      publicationStates.push(ctx.rationaleHostService);
-      return { recovered: 1, delivered: 1 };
-    });
-    const createHostService = vi.fn(() => {
-      publicationStates.push(ctx.rationaleHostService);
-      return service;
-    });
+  it("leaves rationale authority unavailable when execution recovery fails", async () => {
+    const { ctx } = makeContext();
+    const createHostService = vi.fn();
 
     await wireRationaleHost(ctx, {
-      productionEnabled: true,
-      createAuditSink: () => auditSink,
       createInvocationJournal: () => ({
         commitStart: vi.fn(),
         commitTerminal: vi.fn(),
-        recoverAfterCrash,
+        recoverAfterCrash: vi.fn(async () => { throw new Error("Corrupt state"); }),
       }),
       createHostService,
     });
 
-    expect(auditSink.assertWritable).toHaveBeenCalledOnce();
-    expect(recoverAfterCrash).toHaveBeenCalledOnce();
-    expect(appendInvocation).toHaveBeenCalledOnce();
-    expect(publicationStates).toEqual([undefined, undefined, undefined]);
-    expect(ctx.rationaleHostService).toBe(service);
-    expect(logInfo).toHaveBeenCalledWith(
-      "boot: invocation journal recovered %d unknown-after-crash, delivered %d audit records", 1, 1,
-    );
-  });
-
-  it("fails closed when recovery reports corruption", async () => {
-    const ctx = makeContext();
-    const auditSink = makeAuditSink();
-    const createHostService = vi.fn();
-
-    await expect(
-      wireRationaleHost(ctx, {
-        productionEnabled: true,
-        createAuditSink: () => auditSink,
-        createInvocationJournal: () => ({
-          commitStart: vi.fn(),
-          commitTerminal: vi.fn(),
-          recoverAfterCrash: vi.fn(async () => {
-            throw new Error("corrupt C:\\secret\\journal");
-          }),
-        }),
-        createHostService,
-      }),
-    ).resolves.toBeUndefined();
-
     expect(ctx.rationaleHostService).toBeUndefined();
     expect(createHostService).not.toHaveBeenCalled();
-    expect(auditSink.appendInvocation).not.toHaveBeenCalled();
   });
 });

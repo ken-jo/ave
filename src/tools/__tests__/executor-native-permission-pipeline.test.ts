@@ -1071,12 +1071,11 @@ describe("native invocation permission evidence", () => {
     const coordinator = new RationaleHostCoordinator({
       requestAnchor: createTestRequestAnchor({ sessionId }), userRoleTexts: ["Perform the requested operation."],
       rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
-      ticketStore: new InProcessRationaleTicketStore({ onAudit: () => {} }),
+      ticketStore: new InProcessRationaleTicketStore(),
       rationaleScopeReviewer: new LlmRationaleScopeReviewer({ complete: vi.fn() }, "fixture-reviewer"),
       approvalGate: gate, getRationalePolicyEpoch: () => manager.getPolicyEpoch(),
       getRegistryGeneration: () => registry.getGeneration(), getSandboxGeneration: () => "fixture-sandbox",
       anchorRoundCas: new InMemoryHostAnchorRoundCasStore(), hostInvocationStartCas: new InMemoryHostInvocationStartCasStore(),
-      onInvocationAudit: () => {}, onProjectionAudit: () => {},
     });
     const hooks = new ScriptHookManager();
     const lifecycle = vi.spyOn(hooks, "runLifecycleEvent");
@@ -1172,12 +1171,11 @@ describe("native invocation permission evidence", () => {
     const coordinator = new RationaleHostCoordinator({
       requestAnchor: createTestRequestAnchor({ sessionId }), userRoleTexts: ["Perform the requested operation."],
       rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
-      ticketStore: new InProcessRationaleTicketStore({ onAudit: () => {} }),
+      ticketStore: new InProcessRationaleTicketStore(),
       rationaleScopeReviewer: new LlmRationaleScopeReviewer({ complete: scopeComplete }, "fixture-reviewer"),
       approvalGate: gate, getRationalePolicyEpoch: () => policy().epoch, getRationalePolicySnapshot: policy,
       getRegistryGeneration: () => registry.getGeneration(), getSandboxGeneration: () => "fixture-sandbox",
       anchorRoundCas: new InMemoryHostAnchorRoundCasStore(), hostInvocationStartCas: new InMemoryHostInvocationStartCasStore(),
-      onInvocationAudit: () => {}, onProjectionAudit: () => {},
       onReviewerChoiceResolved: (session, request, decision) => manager.resolveReviewerChoice(session, request, decision),
     });
     const lifecycle = { allowDirectory: async (directory: string) => {

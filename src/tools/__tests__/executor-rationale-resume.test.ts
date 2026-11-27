@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 import { AuditLogger } from "../../audit/audit-logger.js";
@@ -28,7 +29,6 @@ import type {
 import {
   InMemoryHostInvocationStartCasStore,
   type HostInvocationStartCas,
-  type InvocationAuditRecord,
 } from "../pipeline/rationale-ticket-lifecycle.js";
 import {
   InProcessRationaleTicketStore,
@@ -208,7 +208,7 @@ function tracedStartCas(
 async function fixture(audit?: (directory: string) => Promise<AuditLogger>) {
   const directory = mkdtempSync(join(tmpdir(), "ave-rationale-resume-"));
   const order: string[] = [];
-  const invocationAudits: InvocationAuditRecord[] = [];
+  const invocationAudits: Array<{ state: unknown }> = [];
   const registry = new ToolRegistry();
   const execute = vi.fn(async () => {
     order.push("tool-execute");
@@ -270,7 +270,7 @@ async function fixture(audit?: (directory: string) => Promise<AuditLogger>) {
     throw new Error("expected initial rationale control");
   }
   const control = initial.control.control;
-  const ticketStore = new InProcessRationaleTicketStore({ onAudit: () => {} });
+  const ticketStore = new InProcessRationaleTicketStore();
   let snapshot = ticketStore.create({
     sessionId: "ef975fd1-380d-4acf-8e50-7f1535885ebc",
     control,
@@ -334,17 +334,18 @@ async function fixture(audit?: (directory: string) => Promise<AuditLogger>) {
     loadHostResumeProvenance: (candidate) => candidate.ticketId === request.ticketId ? answeredApprovalProvenance(resumeAnswer) : null,
     isAuthenticConsumedAllowOnceReceipt: authenticateReceipt,
     hostInvocationStartCas: tracedStartCas(order, startStore),
-    onInvocationAudit: (record) => {
-      invocationAudits.push(record);
-      order.push(
-        record.state === "authorized"
-          ? "authorized-audit"
-          : record.state === "started"
-            ? "started-audit"
-            : "terminal-audit",
-      );
-    },
   };
+  const log = watchPermissionEvents((event) => {
+    if (event.event !== "rationale_invocation") return;
+    invocationAudits.push({ state: event.state });
+    order.push(
+      event.state === "authorized"
+        ? "authorized-audit"
+        : event.state === "started"
+          ? "started-audit"
+          : "terminal-audit",
+    );
+  });
   const options: RationaleResumeExecuteOptions = {
     executionCwd: process.cwd(),
     sessionId: "ef975fd1-380d-4acf-8e50-7f1535885ebc",
@@ -376,6 +377,7 @@ async function fixture(audit?: (directory: string) => Promise<AuditLogger>) {
     loadReceipt,
     control,
     invocationAudits,
+    log,
     auditLogger,
   };
 }
@@ -422,6 +424,7 @@ describe("ToolExecutor sealed rationale resume", () => {
         "tool-end",
       ]);
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
@@ -436,6 +439,7 @@ describe("ToolExecutor sealed rationale resume", () => {
       const terminal = append.mock.calls.slice(before).map(([entry]) => entry).filter(entry => entry.decision !== "ask" && !("grantLifetime" in entry));
       expect(terminal).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
@@ -463,6 +467,7 @@ describe("ToolExecutor sealed rationale resume", () => {
       }
       expect(f.approvalGate.requestAndWait).not.toHaveBeenCalled();
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
@@ -489,6 +494,7 @@ describe("ToolExecutor sealed rationale resume", () => {
       expect(vi.mocked(f.scriptHooks.runLifecycleEvent).mock.calls.filter(([event]) => event === "PermissionDenied")).toHaveLength(1);
     } finally {
       await audit.close();
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
@@ -510,6 +516,7 @@ describe("ToolExecutor sealed rationale resume", () => {
       expect(f.execute).not.toHaveBeenCalled();
       expect(f.order).not.toContain("tool-start");
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
@@ -594,6 +601,7 @@ describe("ToolExecutor sealed rationale resume", () => {
       ]);
       expect(f.approvalGate.requestAndWait).not.toHaveBeenCalled();
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
@@ -614,6 +622,7 @@ describe("ToolExecutor sealed rationale resume", () => {
       expect(f.order).not.toContain("start-cas");
       expect(f.execute).not.toHaveBeenCalled();
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
@@ -631,6 +640,7 @@ describe("ToolExecutor sealed rationale resume", () => {
         "failed",
       ]);
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
@@ -659,6 +669,7 @@ describe("ToolExecutor sealed rationale resume", () => {
         "failed",
       ]);
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
@@ -679,27 +690,24 @@ describe("ToolExecutor sealed rationale resume", () => {
       expect(f.execute).not.toHaveBeenCalled();
       expect(f.invocationAudits).toEqual([]);
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
-  it("fails closed before start when the invocation audit sink is missing", async () => {
+  it("dispatches an approved effect once when writing its log throws", async () => {
     const f = await fixture();
     try {
-      const { onInvocationAudit: _missing, ...withoutAudit } = f.resumeRuntime;
-      const result = await f.executor.executeSealedRationaleResume(
-        f.request,
-        {
-          ...f.options,
-          rationaleResumeRuntime:
-            withoutAudit as unknown as RationaleResumeHostRuntime,
-        },
-      );
-
-      expect(result.is_error).toBe(true);
-      expect(result.content).toContain("invocation audit sink is unavailable");
-      expect(f.execute).not.toHaveBeenCalled();
-      expect(f.invocationAudits).toEqual([]);
+      f.log.mockImplementation((message) => {
+        if (message === "[permissions] rationale_invocation") throw new Error("Log sink unavailable");
+      });
+      const first = await resumeFixture(f);
+      const replay = await resumeFixture(f);
+      expect(first.is_error).toBeUndefined();
+      expect(replay.is_error).toBe(true);
+      expect(f.execute).toHaveBeenCalledOnce();
+      expect(f.order).toContain("terminal-cas");
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
@@ -719,6 +727,7 @@ describe("ToolExecutor sealed rationale resume", () => {
       expect(f.execute).not.toHaveBeenCalled();
       expect(f.invocationAudits).toEqual([]);
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
@@ -737,6 +746,7 @@ describe("ToolExecutor sealed rationale resume", () => {
       expect(result.content).toContain("ActionIdentity resolver is unavailable");
       expect(f.execute).not.toHaveBeenCalled();
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
@@ -750,7 +760,7 @@ describe("ToolExecutor sealed rationale resume", () => {
         if (!startCas) throw new Error("test start CAS was not wired");
         const commitTerminal = vi.fn(async () => {
           if (terminalFailure === "throw") {
-            throw new Error("terminal audit projection failed");
+            throw new Error("execution state write failed");
           }
           return false;
         });
@@ -793,12 +803,13 @@ describe("ToolExecutor sealed rationale resume", () => {
           "started",
         ]);
       } finally {
+        f.log.mockRestore();
         await cleanupTmpDir(f.directory);
       }
     },
   );
 
-  it("masks a tool failure when its terminal audit cannot be committed", async () => {
+  it("masks a tool failure when terminal execution state cannot be committed", async () => {
     const f = await fixture();
     try {
       const startCas = f.resumeRuntime.hostInvocationStartCas;
@@ -842,6 +853,7 @@ describe("ToolExecutor sealed rationale resume", () => {
         "started",
       ]);
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
@@ -881,11 +893,12 @@ describe("ToolExecutor sealed rationale resume", () => {
         "started",
       ]);
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });
 
-  it("commits the terminal audit before publishing the external tool callback", async () => {
+  it("commits terminal execution state before publishing the external tool callback", async () => {
     const f = await fixture();
     try {
       const startCas = f.resumeRuntime.hostInvocationStartCas;
@@ -923,6 +936,7 @@ describe("ToolExecutor sealed rationale resume", () => {
       expect(onToolEnd).toHaveBeenCalledOnce();
       expect(onToolEnd.mock.calls[0]?.[1]).toBe("resume-ok");
     } finally {
+      f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
   });

@@ -1007,13 +1007,13 @@ describe("invocation audit and sealed resume", () => {
       sessionId: control.anchor.sessionId,
       control,
       authorized, expectedInvocationVersion: 1 as never,
-      persistAudit: () => {}, now: NOW,
+      now: NOW,
     })).rejects.toThrow(/invalid invocation-start CAS expectation/);
     const startCommit = await startStore.commitStart({
       sessionId: control.anchor.sessionId,
       control,
       authorized, expectedInvocationVersion: 0,
-      persistAudit: () => {}, now: NOW,
+      now: NOW,
     });
     if (!startCommit) throw new Error("expected invocation start lease");
     const { lease: startLease, startedInvocationAudit: started } = startCommit;
@@ -1034,7 +1034,7 @@ describe("invocation audit and sealed resume", () => {
       sessionId: control.anchor.sessionId,
       control,
       authorized, expectedInvocationVersion: 0,
-      persistAudit: () => {}, now: NOW,
+      now: NOW,
     })).toBeNull();
     expect(started).toMatchObject({ state: "started", version: 1,
       invocationStartLeaseId: startLease.leaseId });
@@ -1049,7 +1049,7 @@ describe("invocation audit and sealed resume", () => {
         sessionId: control.anchor.sessionId,
         control,
         authorized, expectedInvocationVersion: 0,
-        persistAudit: () => {}, now: NOW,
+        now: NOW,
       });
     }));
     expect(concurrent.filter((commit) => commit !== null)).toHaveLength(1);
@@ -1071,13 +1071,12 @@ describe("invocation audit and sealed resume", () => {
     expect(await startStore.commitTerminal({
       lease: startLease,
       terminal: completed,
-      persistAudit: () => {},
-    })).toBe(true);
+      })).toBe(true);
     expect(await startStore.commitStart({
       sessionId: control.anchor.sessionId,
       control,
       authorized, expectedInvocationVersion: 0,
-      persistAudit: () => {}, now: NOW,
+      now: NOW,
     })).toBeNull();
   });
 
@@ -1114,7 +1113,7 @@ describe("invocation audit and sealed resume", () => {
       sessionId: control.anchor.sessionId,
       control,
       authorized, expectedInvocationVersion: 0,
-      persistAudit: () => {}, now: NOW,
+      now: NOW,
     });
     if (!startCommit) throw new Error("expected start lease");
     const authorityEntry = createRationaleExecutionAuthorityEntry({

@@ -126,7 +126,6 @@
     src/tools/pipeline/__tests__/rationale-ticket-store.test.ts
     src/engine/turn/__tests__/rationale-real-stack.integration.test.ts
     src/audit/__tests__/hmac-chain.test.ts
-    src/audit/__tests__/rationale-audit-adapter.test.ts
     src/boot/__tests__/plugin-surface-permissions.test.ts
     src/main/__tests__/windows-job-launcher.test.ts
     src/main/__tests__/codex-executable-location.test.ts

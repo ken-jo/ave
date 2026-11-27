@@ -3,7 +3,6 @@ import type { RationaleScopeReviewer } from "../../permissions/reviewer/rational
 import type {
   RationaleCoordinatorFactory,
 } from "../../engine/turn/rationale-conversation-orchestration.js";
-import type { RationaleAuditSink } from "../../audit/rationale-audit-adapter.js";
 import {
   InMemoryHostAnchorRoundCasStore,
   retireRationaleHumanWaitsForSession,
@@ -30,7 +29,6 @@ export interface RationaleHostServiceOptions {
   readonly getSandboxGeneration: () => string | number;
   // Boot must supply durable journal authority and complete crash recovery before activation.
   readonly invocationStartCas: HostInvocationStartCas;
-  readonly auditSink: RationaleAuditSink;
   readonly now?: () => number;
 }
 
@@ -50,7 +48,6 @@ export class RationaleHostService {
   readonly #getRegistryGeneration: () => string | number;
   readonly #getSandboxGeneration: () => string | number;
   readonly #invocationStartCas: HostInvocationStartCas;
-  readonly #auditSink: RationaleAuditSink;
   readonly #now: () => number;
   readonly #ticketStore: InProcessRationaleTicketStore;
   readonly #anchorRoundCas = new InMemoryHostAnchorRoundCasStore();
@@ -61,15 +58,6 @@ export class RationaleHostService {
   #shutdownComplete = false;
 
   constructor(options: RationaleHostServiceOptions) {
-    if (
-      !options ||
-      typeof options.auditSink?.assertWritable !== "function" ||
-      typeof options.auditSink?.appendTicket !== "function" ||
-      typeof options.auditSink.appendInvocation !== "function" ||
-      typeof options.auditSink.appendProjection !== "function"
-    ) {
-      throw new TypeError("rationale host service requires a synchronous audit sink");
-    }
     if (!options.invocationStartCas) {
       throw new TypeError("rationale host service requires invocation-start authority");
     }
@@ -79,16 +67,11 @@ export class RationaleHostService {
     this.#getRegistryGeneration = options.getRegistryGeneration;
     this.#getSandboxGeneration = options.getSandboxGeneration;
     this.#invocationStartCas = options.invocationStartCas;
-    this.#auditSink = options.auditSink;
     this.#now = options.now ?? Date.now;
-    this.#ticketStore = new InProcessRationaleTicketStore({
-      onAudit: (event) => {
-        this.#auditSink.appendTicket(event);
-      },
-    });
+    this.#ticketStore = new InProcessRationaleTicketStore();
   }
 
-  // Factory injection is dormant until activation: no audit, reviewer, or journal access.
+  // Factory injection is dormant until activation: no reviewer or journal access.
   createCoordinatorFactory(
     scope: RationaleCoordinatorFactoryScope,
   ): RationaleCoordinatorFactory {
@@ -114,7 +97,6 @@ export class RationaleHostService {
       }
 
       try {
-        this.#auditSink.assertWritable(now);
         const reviewer = this.#getRationaleScopeReviewer();
         if (!reviewer || typeof reviewer.reevaluate !== "function") return null;
 
@@ -159,15 +141,6 @@ export class RationaleHostService {
           getSandboxGeneration: this.#getSandboxGeneration,
           anchorRoundCas,
           hostInvocationStartCas: invocationStartCas,
-          onInvocationAudit: (record) => {
-            this.#auditSink.appendInvocation(input.sessionId, record);
-          },
-          onProjectionAudit: (sessionId, projection, at) => {
-            if (sessionId !== input.sessionId) {
-              throw new Error("rationale projection audit session mismatch");
-            }
-            this.#auditSink.appendProjection(sessionId, projection, at);
-          },
           isCurrent,
           now: this.#now,
         });

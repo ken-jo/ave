@@ -375,12 +375,11 @@ it("runs one real safe host effect after primary high and one verified-quote low
   const policy = () => captureRationalePolicySnapshot({ permissionManager: permission, hookRunner, additionalDirectories: [] });
   const coordinator = new RationaleHostCoordinator({
     requestAnchor: anchor, userRoleTexts: [request], rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
-    ticketStore: new InProcessRationaleTicketStore({ onAudit: () => {} }),
+    ticketStore: new InProcessRationaleTicketStore(),
     rationaleScopeReviewer: new LlmRationaleScopeReviewer({ complete: scopeComplete }, "fixture-reviewer"),
     approvalGate: gate, getRationalePolicyEpoch: () => policy().epoch, getRationalePolicySnapshot: policy,
     getRegistryGeneration: () => registry.getGeneration(), getSandboxGeneration: () => "controlled-host",
     anchorRoundCas: new InMemoryHostAnchorRoundCasStore(), hostInvocationStartCas: new InMemoryHostInvocationStartCasStore(),
-    onInvocationAudit: () => {}, onProjectionAudit: () => {},
     onReviewerChoiceResolved: (session, identity, decision) => permission.resolveReviewerChoice(session, identity, decision),
   });
   const executor = new ToolExecutor(registry, hookRunner, permission, undefined, gate, undefined, recordedAudit().logger);

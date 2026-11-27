@@ -105,7 +105,6 @@ function runtime(
     requestAnchor: input.requestAnchor,
     rationaleProvenance: input.rationaleProvenance,
     materializeRationaleControl: vi.fn(),
-    onInvocationAudit: vi.fn(),
     handleRationaleRoundResult: vi.fn(async () => ({ status: "ready" })),
     promptForApproval: prompt,
     createSealedResume: vi.fn(async () => ({
