@@ -1591,19 +1591,26 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           );
         };
         let running: ReturnType<typeof launchChild> | undefined;
+        let launchFailure: { error: unknown } | undefined;
         const pendingStart = state.pendingStart;
         if (pendingStart) {
           // Only one first stage commits the launch. Its runner call follows the guarded rename without yielding.
           pendingStart.acceptance ??= store.acceptProvisionalTemplateStart(state.itemId, state.runId, pendingStart.authority,
             canLaunch, () => {
-              running = launchChild();
-              void running.catch(() => undefined);
+              try {
+                running = launchChild();
+                void running.catch(() => undefined);
+              } catch (error) {
+                // Let the board finish publishing acceptance. Classify launch failure at the launch boundary.
+                launchFailure = { error };
+              }
             });
           const { acceptance } = pendingStart;
           try { await beforeDeadline(() => acceptance); } catch (error) {
             if (error instanceof WorkDecisionAuthorityError) throw new WorkflowInvariantError("run-not-authorised", error.code);
             throw new WorkflowInvariantError("run-state-failed", error instanceof WorkBoardWriteRefusal ? error.code : "run-state-unavailable");
           }
+          if (launchFailure) throw launchFailure.error;
         }
         running ??= launchChild();
         if (state.pendingStart) {
