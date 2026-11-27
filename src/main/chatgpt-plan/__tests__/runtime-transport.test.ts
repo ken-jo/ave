@@ -6,7 +6,7 @@ import { ChatGptPlanRuntime, ChatGptPlanRuntimeError, createChatGptPlanRuntime }
 import { CHATGPT_PLAN_ACCOUNT_SECRET_KEY, ChatGptPlanSession, type ChatGptPlanSecretStore } from "../session.js";
 import { ChatGptPlanTransport } from "../transport.js";
 import { RetiredModelError } from "../../../engine/llm/retired-model-error.js";
-import { SubscriptionRuntimeService, SubscriptionRuntimeServiceError } from "../../subscription-runtime-service.js";
+import { subscriptionConnectionProjection, SubscriptionRuntimeService, SubscriptionRuntimeServiceError } from "../../subscription-runtime-service.js";
 import type { AcpSubscriptionRuntimeRegistry } from "../../subscription-runtime-service.js";
 import type { CodexAppServerClient } from "../../codex-app-server-client.js";
 import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace } from "../../../__tests__/support/subscription-runtime-namespace.js";
@@ -604,6 +604,22 @@ describe("SubscriptionRuntimeService with ChatGPT plan usage", () => {
       await expect(svc.acknowledgeNotice("codex")).rejects.toMatchObject({ code: "subscription-provider-not-supported" });
       await expect(svc.openTextSession({ kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" }))
         .rejects.toMatchObject({ code: "subscription-chat-unavailable" });
+    } finally {
+      await svc.stop();
+    }
+  });
+
+  it("withdraws host authority when a terminal refresh clears the grant", async () => {
+    const h = harness(PLAN_SCOPES, () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 }));
+    const svc = await service(h.runtime);
+    try {
+      await expect(svc.isConnected("chatgpt-plan")).resolves.toBe(true);
+      const before = subscriptionConnectionProjection("chatgpt-plan");
+      await expect(h.runtime.confirmSession()).rejects.toMatchObject({ code: "subscription-chat-unavailable" });
+      const after = subscriptionConnectionProjection("chatgpt-plan");
+      expect(after).toMatchObject({ connected: false });
+      expect(after?.scope).not.toBe(before?.scope);
+      await expect(svc.isConnected("chatgpt-plan")).resolves.toBe(false);
     } finally {
       await svc.stop();
     }

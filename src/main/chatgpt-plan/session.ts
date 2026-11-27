@@ -161,6 +161,7 @@ function parseRecord(raw: string): AccountRecord {
  * this process; the main process is the only owner of the record.
  */
 export class ChatGptPlanSession {
+  connectionLost?: () => void;
   private record: AccountRecord | null | undefined;
   private pending: { readonly listener: ChatGptPlanCallbackListener; readonly completion: Promise<void> } | null = null;
   private refreshing: Promise<StoredTokens> | null = null;
@@ -169,6 +170,7 @@ export class ChatGptPlanSession {
   private cancelRequested = false;
   /** Set while signing out: no new refresh may start and rotate the token. */
   private signingOut = false;
+  private grantWithdrawn = false;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
 
@@ -179,11 +181,11 @@ export class ChatGptPlanSession {
 
   async status(): Promise<ChatGptPlanStatus> {
     const record = await this.load();
-    const tokens = record?.tokens ?? null;
+    const tokens = this.grantWithdrawn ? null : record?.tokens ?? null;
     const planUsage = tokens ? (tokens.scopes.includes(CHATGPT_PLAN_USAGE_SCOPE) ? "enabled" : "disabled") : null;
     const notice = this.notice ?? (planUsage === "disabled" ? "plan-usage-disabled" : null);
     return Object.freeze({
-      connection: this.pending ? "pending" : tokens ? "connected" : "signed-out",
+      connection: this.signingOut ? "signed-out" : this.pending ? "pending" : tokens ? "connected" : "signed-out",
       planUsage,
       accountLabel: tokens ? record?.email ?? null : null,
       notice,
@@ -197,7 +199,7 @@ export class ChatGptPlanSession {
    * previously declined, and is set only by that explicit action.
    */
   async startSignIn(options: { readonly requestConsent?: boolean } = {}): Promise<{ readonly completion: Promise<void> }> {
-    if (this.pending) throw new ChatGptPlanSessionError("sign-in-in-progress");
+    if (this.pending || this.signingOut) throw new ChatGptPlanSessionError("sign-in-in-progress");
     if (!await this.options.secrets.isSecretStorageEncrypted()) {
       throw new ChatGptPlanSessionError("secure-storage-unavailable");
     }
@@ -322,7 +324,7 @@ export class ChatGptPlanSession {
    */
   async accessToken(): Promise<string> {
     const record = await this.load();
-    if (!record?.tokens) throw new ChatGptPlanSessionError("signed-out");
+    if (this.signingOut || this.grantWithdrawn || !record?.tokens) throw new ChatGptPlanSessionError("signed-out");
     if (!record.tokens.scopes.includes(CHATGPT_PLAN_USAGE_SCOPE)) {
       throw new ChatGptPlanSessionError("plan-usage-disabled");
     }
@@ -332,7 +334,9 @@ export class ChatGptPlanSession {
     const nearExpiry = now >= tokens.expiresAt - REFRESH_MARGIN_MS;
     const refreshAllowed = tokens.earliestRefreshAt === undefined || now >= tokens.earliestRefreshAt * 1000;
     if (!expired && !(nearExpiry && refreshAllowed)) return tokens.accessToken;
-    return (await this.refresh()).accessToken;
+    const refreshed = await this.refresh();
+    if (this.signingOut || this.grantWithdrawn) throw new ChatGptPlanSessionError("signed-out");
+    return refreshed.accessToken;
   }
 
   /**
@@ -357,7 +361,9 @@ export class ChatGptPlanSession {
   async signOut(): Promise<void> {
     this.signingOut = true;
     try {
+      this.connectionLost?.();
       this.cancelSignIn();
+      await this.pending?.completion.catch(() => undefined);
       // A refresh already in flight finishes and is saved first, so the token
       // revoked below is the latest rotation rather than a superseded one.
       if (this.refreshing) await this.refreshing.catch(() => undefined);
@@ -388,7 +394,7 @@ export class ChatGptPlanSession {
 
   private refresh(): Promise<StoredTokens> {
     if (this.refreshing) return this.refreshing;
-    if (this.signingOut) return Promise.reject(new ChatGptPlanSessionError("signed-out"));
+    if (this.signingOut || this.grantWithdrawn) return Promise.reject(new ChatGptPlanSessionError("signed-out"));
     const run = (async () => {
       const record = await this.load();
       if (!record?.tokens) throw new ChatGptPlanSessionError("signed-out");
@@ -466,11 +472,17 @@ export class ChatGptPlanSession {
   }
 
   private async save(record: AccountRecord): Promise<void> {
+    if (this.record?.tokens?.scopes.includes(CHATGPT_PLAN_USAGE_SCOPE)
+      && !record.tokens?.scopes.includes(CHATGPT_PLAN_USAGE_SCOPE)) {
+      this.grantWithdrawn = true;
+      this.connectionLost?.();
+    }
     if (!await this.options.secrets.isSecretStorageEncrypted()) {
       throw new ChatGptPlanSessionError("secure-storage-unavailable");
     }
     await this.options.secrets.setSecret(CHATGPT_PLAN_ACCOUNT_SECRET_KEY, JSON.stringify(record));
     this.record = record;
+    this.grantWithdrawn = false;
   }
 
   private emit(event: ChatGptPlanSessionEvent): void {

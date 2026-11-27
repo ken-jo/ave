@@ -105,6 +105,13 @@ export class ChatGptPlanRuntime {
     this.fetch = planFetch;
   }
 
+  onConnectionLost(listener: () => void): void {
+    this.session.connectionLost = () => {
+      this.forgetCatalog();
+      listener();
+    };
+  }
+
   /**
    * Project the session for the renderer. A sign-in whose grant lacks plan
    * usage is not a usable connection: it shows as signed out so "Continue

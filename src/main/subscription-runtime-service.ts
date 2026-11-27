@@ -1133,7 +1133,7 @@ export class SubscriptionRuntimeService {
   private readonly readGenerationByProvider = new Map<SubscriptionRuntimeId, number>();
   private readonly authChangeRevisionByProvider = new Map<SubscriptionRuntimeId, number>();
   private readonly mutationsInFlight = new Map<SubscriptionRuntimeId, number>();
-  private readonly connections = new Map<CliProvider, HostConnection>();
+  private readonly connections = new Map<SubscriptionRuntimeId, HostConnection>();
   private sequence = 0;
   // Terminal per-instance guard for callers that retained a service reference during shutdown.
   private stopped = false;
@@ -1156,6 +1156,7 @@ export class SubscriptionRuntimeService {
   ) {
     this.codexClient.connectionEvidence = this.evidenceSink("codex");
     this.claudeCodeClient.connectionEvidence = this.evidenceSink("claude-code");
+    this.chatGptPlan?.onConnectionLost(() => this.disconnect("chatgpt-plan"));
   }
 
   static async create(
@@ -1277,7 +1278,8 @@ export class SubscriptionRuntimeService {
   }
 
   async isConnected(runtimeId: SubscriptionRuntimeId): Promise<boolean> {
-    return (await this.getStatus(runtimeId, { allowCached: true })).connection === "connected";
+    await this.getStatus(runtimeId, { allowCached: true });
+    return this.connectionHasAuthority(runtimeId, this.connection(runtimeId).status);
   }
 
   /** Drop settled reads kept for settings surfaces, e.g. after a settings change for this provider. */
@@ -1291,7 +1293,10 @@ export class SubscriptionRuntimeService {
   async getCachedStatus(runtimeId: SubscriptionRuntimeId): Promise<SubscriptionRuntimeStatus | undefined> {
     if (this.stopped) return undefined;
     if (isCliProvider(runtimeId)) return this.currentProjection(runtimeId);
-    if (runtimeId === "chatgpt-plan") return this.chatGptPlanStatus();
+    if (runtimeId === "chatgpt-plan") {
+      const state = this.connections.get(runtimeId);
+      return state ? { ...state.status, ...state.login, revision: state.revision } : undefined;
+    }
     return this.cachedStatuses.get(runtimeId)?.value;
   }
 
@@ -1334,6 +1339,8 @@ export class SubscriptionRuntimeService {
     if (isCliProvider(runtimeId) ? this.connection(runtimeId).busy : this.mutationsInFlight.has(runtimeId)) {
       throw new SubscriptionRuntimeServiceError("subscription-status-superseded");
     }
+    if (runtimeId === "chatgpt-plan") return this.getStatus(runtimeId);
+    const start = ++this.sequence;
     const hadProof = this.hasSafetyProof(runtimeId);
     const verificationEpoch = this.invalidateSafety(runtimeId);
     if (hadProof && isCliProvider(runtimeId)) this.publishConnection(runtimeId);
@@ -1345,7 +1352,10 @@ export class SubscriptionRuntimeService {
     };
     await this.stopSessionsFor(runtimeId);
     assertCurrent();
-    const sample = await this.verifyRuntime(runtimeId, assertCurrent);
+    const sample = await this.verifyRuntime(runtimeId, assertCurrent).catch((error: unknown) => {
+      if (isAcpRuntime(runtimeId) && this.safetyEpochIsCurrent(runtimeId, verificationEpoch)) this.disconnect(runtimeId);
+      throw error;
+    });
     if (isCliProvider(runtimeId)) {
       const state = this.connection(runtimeId);
       if (sample.proven) assertCurrent();
@@ -1363,15 +1373,15 @@ export class SubscriptionRuntimeService {
       this.safelyVerified.add(runtimeId);
       notifyStatusChanged(runtimeId);
     }
-    const status = sample.project();
-    if (runtimeId !== "chatgpt-plan" && isSettledStatus(status)) {
+    const status = this.observeIndependentStatus(runtimeId, start, sample.project());
+    if (isSettledStatus(status)) {
       this.cachedStatuses.set(runtimeId, this.cachedRead(status));
     }
     return status;
   }
 
   private async verifyRuntime(
-    runtimeId: SubscriptionRuntimeId,
+    runtimeId: Exclude<SubscriptionRuntimeId, "chatgpt-plan">,
     assertCurrent: () => void,
   ): Promise<VerificationSample> {
     return this.withStableErrors(async () => {
@@ -1389,11 +1399,6 @@ export class SubscriptionRuntimeService {
           runtime.stop();
         }
         return { proven: true, project };
-      }
-      // No executable or isolated transport to prove: chat is available exactly when a plan-usage grant is stored.
-      if (runtimeId === "chatgpt-plan") {
-        const status = await this.chatGptPlanStatus();
-        return { proven: false, project: () => status };
       }
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
         const status = await this.claudeCodeClient.verify();
@@ -1480,7 +1485,10 @@ export class SubscriptionRuntimeService {
   async acknowledgeNotice(runtimeId: SubscriptionRuntimeId): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
     if (runtimeId !== "chatgpt-plan") throw new SubscriptionRuntimeServiceError("subscription-provider-not-supported");
-    return this.requireChatGptPlan().acknowledgeNotice();
+    return this.withStableErrors(() => this.readThrough(this.cachedStatuses, runtimeId, {}, async () => {
+      const status = await this.requireChatGptPlan().acknowledgeNotice();
+      return () => status;
+    }, (status) => status, (_, status) => status));
   }
 
   async listModels(
@@ -1763,7 +1771,7 @@ export class SubscriptionRuntimeService {
     } else {
       this.authChangeRevisionByProvider.set(provider, intent);
       this.mutationsInFlight.set(provider, (this.mutationsInFlight.get(provider) ?? 0) + 1);
-      this.invalidateSafety(provider);
+      this.disconnect(provider);
     }
     try {
       await this.stopSessionsFor(provider);
@@ -1775,7 +1783,7 @@ export class SubscriptionRuntimeService {
       if (this.authChangeRevisionByProvider.get(provider) !== intent) {
         throw new SubscriptionRuntimeServiceError("subscription-status-superseded");
       }
-      return status;
+      if (status.connection !== "connected") return this.observeIndependentStatus(provider, ++this.sequence, status);
     } finally {
       this.invalidateCachedReads(provider);
       if (state && isCliProvider(provider)) {
@@ -1790,6 +1798,7 @@ export class SubscriptionRuntimeService {
         else this.mutationsInFlight.set(provider, remaining);
       }
     }
+    return this.getStatus(provider);
   }
 
   private async readThrough<T>(
@@ -1807,18 +1816,24 @@ export class SubscriptionRuntimeService {
     }
     const generation = this.readGeneration(runtimeId);
     if (this.mutationsInFlight.has(runtimeId)) throw new SubscriptionRuntimeServiceError("subscription-status-superseded");
-    const project = await read();
+    const start = ++this.sequence;
+    const project = await read().catch((error: unknown) => {
+      if (isAcpRuntime(runtimeId) && this.readGeneration(runtimeId) === generation && subscriptionConnectionProjection(runtimeId)?.connected) {
+        this.disconnect(runtimeId);
+      }
+      throw error;
+    });
     this.assertRunning();
     if (this.readGeneration(runtimeId) !== generation) throw new SubscriptionRuntimeServiceError("subscription-status-superseded");
     const value = project();
-    const status = statusOf(value);
+    const status = this.observeIndependentStatus(runtimeId, start, statusOf(value));
     if (cacheEnabled) this.reconcileSafety(runtimeId, status);
     const result = withStatus(value, status);
     if (cacheEnabled && isSettledStatus(status)) cache.set(runtimeId, this.cachedRead(result));
     return result;
   }
 
-  private connection(provider: CliProvider): HostConnection {
+  private connection(provider: SubscriptionRuntimeId): HostConnection {
     let state = this.connections.get(provider);
     if (!state) {
       state = {
@@ -1829,6 +1844,30 @@ export class SubscriptionRuntimeService {
       this.connections.set(provider, state);
     }
     return state;
+  }
+
+  private disconnect(provider: SubscriptionRuntimeId): void {
+    if (!this.stopped) this.latchConnection(provider, this.connection(provider), "unknown");
+  }
+
+  private observeIndependentStatus(
+    provider: SubscriptionRuntimeId, start: number, status: SubscriptionRuntimeStatus,
+  ): SubscriptionRuntimeStatus {
+    const state = this.connection(provider);
+    if (start <= state.latch || start <= state.acceptedRead) {
+      return { ...state.status, ...state.login, revision: state.revision };
+    }
+    const wasConnected = this.connectionHasAuthority(provider, state.status);
+    const connected = this.connectionHasAuthority(provider, status);
+    state.acceptedRead = start;
+    state.login = { pendingLogin: status.pendingLogin, pendingDeviceCode: status.pendingDeviceCode };
+    if (wasConnected && !connected) {
+      this.latchConnection(provider, state, status.connection === "signed-out" ? "signed-out" : "unknown", status.version, undefined, status);
+    } else {
+      state.status = status;
+      if (connected && !wasConnected) this.publishConnection(provider);
+    }
+    return { ...status, revision: state.revision };
   }
 
   private currentProjection(provider: CliProvider): SubscriptionRuntimeStatus {
@@ -1980,10 +2019,10 @@ export class SubscriptionRuntimeService {
   }
 
   private latchConnection(
-    provider: CliProvider, state: HostConnection, connection: "unknown" | "signed-out", version = state.status.version,
-    runtime?: "not-configured" | "unavailable",
+    provider: SubscriptionRuntimeId, state: HostConnection, connection: "unknown" | "signed-out", version = state.status.version,
+    runtime?: "not-configured" | "unavailable", observed?: SubscriptionRuntimeStatus,
   ): void {
-    const nextRuntime = runtime ?? (connection === "signed-out" ? (provider === "codex" ? "ready" : "unverified") : "unavailable");
+    const nextRuntime = observed?.runtime ?? runtime ?? (connection === "signed-out" ? (provider === "codex" ? "ready" : "unverified") : "unavailable");
     const changed = state.status.connection !== connection || state.status.runtime !== nextRuntime
       || state.status.version !== version || state.latch === 0;
     state.latch = ++this.sequence;
@@ -1991,18 +2030,24 @@ export class SubscriptionRuntimeService {
     this.invalidateSafety(provider);
     state.status = {
       ...this.failedProbeStatus(provider, version),
-      connection,
+      ...observed,
+      connection: observed?.connection ?? connection,
       runtime: nextRuntime,
     };
-    if (changed) this.publishConnection(provider);
-    this.confirmAccount(provider, state);
+    if (!observed && !isCliProvider(provider)) state.login = NO_PENDING_LOGIN;
+    if (changed || (observed && !observed.capabilities.chat)) this.publishConnection(provider);
+    if (isCliProvider(provider)) this.confirmAccount(provider, state);
   }
 
-  private publishConnection(provider: CliProvider): void {
+  private connectionHasAuthority(provider: SubscriptionRuntimeId, status: AccountStatus): boolean {
+    return status.connection === "connected" && (isCliProvider(provider) || (status.runtime === "ready" && status.capabilities.chat));
+  }
+
+  private publishConnection(provider: SubscriptionRuntimeId): void {
     this.invalidateCachedReads(provider);
     const state = this.connection(provider);
     state.revision = nextSubscriptionHostRevision();
-    const connected = state.status.connection === "connected";
+    const connected = this.connectionHasAuthority(provider, state.status);
     connectionProjections.set(provider, { revision: state.revision, connected, scope: `${state.scope}:${state.generation}` });
     notifyStatusChanged(provider, connected, state.revision);
   }
@@ -2102,7 +2147,8 @@ export class SubscriptionRuntimeService {
   }
 
   private sessionFailed(provider: SubscriptionRuntimeId): void {
-    this.invalidateSessionProof(provider);
+    if (isAcpRuntime(provider)) this.disconnect(provider);
+    else this.invalidateSessionProof(provider);
     this.emitAudit({ provider, outcome: "session-failed" });
   }
 

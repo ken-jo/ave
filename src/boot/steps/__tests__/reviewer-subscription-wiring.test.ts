@@ -29,6 +29,9 @@ import type { OAuthLoginOptions } from "../../../main/oauth-login.js";
 import { CodexAppServerClient } from "../../../main/codex-app-server-client.js";
 import { ClaudeCodeConversationRuntime } from "../../../main/claude-code-conversation-runtime.js";
 import { ClaudeCodeSubscriptionClient } from "../../../main/claude-code-subscription-client.js";
+import { ChatGptPlanRuntime } from "../../../main/chatgpt-plan/runtime.js";
+import type { ChatGptPlanSession } from "../../../main/chatgpt-plan/session.js";
+import { acpSubscriptionStatus } from "../../../shared/acp-subscription.js";
 import { claudeCodeSubscriptionStatus } from "../../../shared/claude-code-subscription.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
@@ -210,6 +213,7 @@ const confirmationCases = new Map<string, {
 
 it.each([
   ...confirmationCases.keys(),
+  "direct plan logout", "managed ACP logout", "ACP executable removal",
   "sign-out batched with initialization", "prompt pipe loss", "account replacement during isolation proof", "live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog",
   "logout during failed login", "cancel detects sign-out during failed login",
   "account notification confirmation", "account notification overtaken by logout", "account notification retries after rejection",
@@ -251,7 +255,17 @@ it.each([
   const cancelStarted = deferred<void>();
   const cancelReply = deferred<void>();
   const promptPipeLoss = scenario === "prompt pipe loss";
-  const provider = promptPipeLoss || scenario === "live disconnect" || scenario === "logout during failed login" || scenario === "cancel detects sign-out during failed login" ? "claude-code" : "codex";
+  const directPlan = scenario === "direct plan logout";
+  const managedAcp = scenario === "managed ACP logout";
+  const removesExecutable = scenario === "ACP executable removal";
+  const acpProvider = removesExecutable ? "kimi-code" : "grok-build";
+  let independentConnected = true;
+  const revokeIndependent = () => { independentConnected = false; };
+  const getAcpStatus = async () => acpSubscriptionStatus(
+    acpProvider, independentConnected || managedAcp ? "ready" : "not-configured", independentConnected ? "connected" : "signed-out",
+  );
+  const disconnectAcp = async () => { revokeIndependent(); return getAcpStatus(); };
+  const provider = directPlan ? "chatgpt-plan" : managedAcp || removesExecutable ? acpProvider : promptPipeLoss || scenario === "live disconnect" || scenario === "logout during failed login" || scenario === "cancel detects sign-out during failed login" ? "claude-code" : "codex";
   const heldLogout = deferred<void>();
   const logoutStarted = deferred<void>();
   const heldLogin = deferred<void>();
@@ -431,11 +445,15 @@ it.each([
         return server as unknown as ChildProcess;
       },
     }) : ({ verifyIsolation: async () => {}, stop: vi.fn() }) as never,
-    acpRegistry: { stopAll: vi.fn() } as never,
+    acpRegistry: { stopAll: vi.fn(), getStatus: getAcpStatus, verify: getAcpStatus, logout: disconnectAcp, forgetExecutable: disconnectAcp } as never,
+    ...(directPlan ? { chatGptPlanRuntime: new ChatGptPlanRuntime({
+      status: async () => ({ connection: independentConnected ? "connected" : "signed-out", planUsage: independentConnected ? "enabled" : null }),
+      signOut: async () => revokeIndependent(), cancelSignIn: vi.fn(),
+    } as unknown as ChatGptPlanSession, vi.fn()) } : {}),
   });
   const manager = new PermissionManager(join(tempDir, "permissions.json"));
   manager.setMode("auto");
-  const selection = { kind: "subscription", provider, ...(provider === "codex" ? { model: "fixture-model" } : {}) } as const;
+  const selection = { kind: "subscription", provider, ...(provider === "codex" || directPlan ? { model: "fixture-model" } : {}) } as const;
   const reviewStarted = deferred<void>();
   const releaseReview = deferred<void>();
   const streamTurn = vi.fn(async function* (): ReturnType<LLMProvider["streamTurn"]> {
@@ -475,10 +493,11 @@ it.each([
   let stopListening: (() => void) | undefined;
   try {
     const { wireReviewerAndPermissions } = await import("../reviewer-permission-wiring.js");
-    if (promptPipeLoss) await runtime.verify(provider);
+    if (promptPipeLoss || managedAcp || removesExecutable) await runtime.verify(provider);
     dispose = await wireReviewerAndPermissions(context as never);
-    expect((await dispatch(false)).review.outcome).toBe("fresh");
-    expect((await dispatch(false)).review.outcome).toBe("cache");
+    const independentRoute = directPlan || managedAcp || removesExecutable;
+    expect((await dispatch(independentRoute)).review.outcome).toBe("fresh");
+    expect((await dispatch(independentRoute)).review.outcome).toBe("cache");
     expect(streamTurn).toHaveBeenCalledOnce();
     // Observe the gate in the same turn as the host callback, before the queued rewire can complete.
     let immediate: ReturnType<typeof dispatch> | undefined;
@@ -490,7 +509,17 @@ it.each([
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     const wiringsBeforeDisconnect = subscriptionProviderFactory.mock.calls.length;
-    if (confirmationCase) {
+    if (independentRoute) {
+      const mutation = removesExecutable ? runtime.forgetExecutable(provider) : runtime.logout(provider);
+      const immediately = dispatch(true);
+      await mutation;
+      const afterLogout = dispatch(true);
+      expect(await immediately).toMatchObject({
+        review: { outcome: expect.not.stringMatching(/^cache$/) },
+        result: { decision: "deny" },
+      });
+      expect((await afterLogout).result.decision).toBe("deny");
+    } else if (confirmationCase) {
       const { hint, cause } = confirmationCase;
       const server = requiredFixture(child);
       const send = (target: RuntimeProcessFixture, message: object) => target.stdout.write(`${JSON.stringify(message)}\n`);
@@ -968,7 +997,9 @@ it.each([
 
     status = connected;
     accountConnected = true;
-    await runtime.getStatus(selection.provider);
+    independentConnected = true;
+    if (managedAcp || removesExecutable) await runtime.verify(provider);
+    else await runtime.getStatus(selection.provider);
     await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
     expect((await dispatch(true)).result.decision).toBe("allow");
     expect(subscriptionProviderFactory.mock.calls.slice(wiringsBeforeDisconnect)).toEqual([[selection]]);
