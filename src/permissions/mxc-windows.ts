@@ -317,6 +317,12 @@ export interface MxcFilesystemGrants {
   readonly watched?: readonly MxcWatchedRow[];
 }
 
+const rankedGrantIdentities = new WeakMap<MxcFilesystemGrants, string>();
+
+export function mxcRankedGrantIdentity(grants: MxcFilesystemGrants): string | undefined {
+  return rankedGrantIdentities.get(grants);
+}
+
 /** An absent protected name with the deepest existing folder above it, as admitted for this launch. */
 export interface MxcWatchedRow {
   readonly path: string;
@@ -937,13 +943,15 @@ export interface MxcRankedPath {
 }
 
 export function rankMxcFilesystem(model: PolicyModel, retainPaths?: (paths: readonly MxcRankedPath[]) => void): MxcFilesystemGrants {
-  const { patterns, userPatterns, required } = obligationRowsOf(model);
-  return rankAdmittedMxcFilesystem(admitMxcFilesystem(model), patterns, userPatterns, required, retainPaths);
+  return withLocalityDecision(() => {
+    const { patterns, userPatterns, required } = obligationRowsOf(model);
+    return rankAdmittedMxcFilesystem(admitMxcFilesystem(model), patterns, userPatterns, required, retainPaths);
+  });
 }
 
 /** The model's literal rows admitted for one container launch; pattern denies are admitted when the launch is ranked. */
 export function admitMxcFilesystem(model: PolicyModel): ObligationSet {
-  return admitObligations({ purpose: "mxc-launch", principal: "mxc", rows: obligationRowsOf(model).rows });
+  return withLocalityDecision(() => admitObligations({ purpose: "mxc-launch", principal: "mxc", rows: obligationRowsOf(model).rows }));
 }
 
 function rankAdmittedMxcFilesystem(
@@ -1073,6 +1081,7 @@ function rankAdmittedMxcFilesystem(
       ...reads.map(obligation => ({ path: obligation.target, obligation })), ...deniedPaths]
       .filter(({ path }) => emitted.has(foldPath(path))));
   }
+  if (process.platform === "win32") rankedGrantIdentities.set(result, JSON.stringify(allows.map(entry => [entry.target, entry.identity])));
   return result;
 }
 

@@ -1,3 +1,4 @@
+import { rethrowLocalityFailure, withLocalityDecision } from "../../shared/local-path-io.js";
 import { isDestructiveShellArgv, noReusableRuleReason } from "../rules/shell-prefix-values.js";
 // Disabled mode yields LOW while mandatory gates still apply. Model review composes conservatively with deterministic evidence and redacts provider input.
 import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../../tools/types.js";
@@ -1279,23 +1280,26 @@ function isGraphMetadataRead(input: Record<string, unknown>, target: NetworkTarg
 
 // Resolve native targets once before deriving policy keys. Distinct native names can share a folded key but still require separate content inspection.
 function extractDeclaredPathTargets(ctx: ToolInvocationContext): Array<{ nativePath: string; canonicalPath: string }> {
-  const paths = new Map<string, string>();
-  const guest = isDisposableSubstrateCapability(ctx.sandboxCapability);
-  for (const field of ctx.pathFields) {
-    const values = selectDeclaredPathValues(ctx.finalInput, field);
-    for (const value of values) {
-      if (typeof value !== "string" || value.length === 0) continue;
-      if (guest && !posix.isAbsolute(value)) continue;
-      try {
-        const nativePath = guest ? posix.normalize(value)
-          : resolvePathForPolicy(resolveToolPathForPermission(value, ctx.executionCwd));
-        paths.set(nativePath, caseFoldForMatch(foldCanonicalPathSeparators(nativePath)));
-      } catch {
-        // Mirror the enforcer: tool schema validation owns argument-type failures. An unresolvable path contributes nothing, and an empty path list falls through to the "write path not declared" HIGH rule — the safe direction.
+  return withLocalityDecision(() => {
+    const paths = new Map<string, string>();
+    const guest = isDisposableSubstrateCapability(ctx.sandboxCapability);
+    for (const field of ctx.pathFields) {
+      const values = selectDeclaredPathValues(ctx.finalInput, field);
+      for (const value of values) {
+        if (typeof value !== "string" || value.length === 0) continue;
+        if (guest && !posix.isAbsolute(value)) continue;
+        try {
+          const nativePath = guest ? posix.normalize(value)
+            : resolvePathForPolicy(resolveToolPathForPermission(value, ctx.executionCwd));
+          paths.set(nativePath, caseFoldForMatch(foldCanonicalPathSeparators(nativePath)));
+        } catch (error) {
+          rethrowLocalityFailure(error);
+          // Mirror the enforcer: tool schema validation owns argument-type failures. An unresolvable path contributes nothing, and an empty path list falls through to the "write path not declared" HIGH rule — the safe direction.
+        }
       }
     }
-  }
-  return [...paths].map(([nativePath, canonicalPath]) => ({ nativePath, canonicalPath }));
+    return [...paths].map(([nativePath, canonicalPath]) => ({ nativePath, canonicalPath }));
+  });
 }
 
 // Resolve ~ and relative operands against invocation cwd with the same resolver as enforcement, then canonicalize/case-fold before comparing. Both sides need identical normalization so traversal, symlink, Unicode or case spelling cannot bypass sandbox containment.
@@ -1577,19 +1581,21 @@ export function matchesStaticMissingWritePathVerdict(verdict: RiskVerdict, subje
 
 export class RuleBasedRiskClassifier implements RiskClassifier {
   classify(input: ToolInvocationContext): RiskVerdict {
-    for (const rule of RULES) {
-      const v = rule(input);
-      if (v) {
-        const verdict = input.permissionReason === undefined ? v : { ...v, reason: input.permissionReason };
-        if (v.level === "high" && v.reason === "write path not declared") {
-          const identity = staticRiskSubjectIdentity(input);
-          if (identity !== undefined) missingWritePathVerdicts.set(verdict, identity);
+    return withLocalityDecision(() => {
+      for (const rule of RULES) {
+        const v = rule(input);
+        if (v) {
+          const verdict = input.permissionReason === undefined ? v : { ...v, reason: input.permissionReason };
+          if (v.level === "high" && v.reason === "write path not declared") {
+            const identity = staticRiskSubjectIdentity(input);
+            if (identity !== undefined) missingWritePathVerdicts.set(verdict, identity);
+          }
+          return verdict;
         }
-        return verdict;
       }
-    }
-    // Default fail-safe: MEDIUM (never silently LOW for an unknown shape).
-    return { level: "medium", reason: "no rule matched (fail-safe medium)" };
+      // Default fail-safe: MEDIUM (never silently LOW for an unknown shape).
+      return { level: "medium", reason: "no rule matched (fail-safe medium)" };
+    });
   }
 }
 
@@ -1636,26 +1642,31 @@ function buildUserPrompt(
       ? maskSensitiveData(recentUserMessage).masked.slice(0, 500)
       : undefined;
   // Use the same resolver and predicates as the rule classifier. This is evidence about declared operands, not an attestation about tool code.
-  const declaredPaths = extractDeclaredPathTargets(input);
-  const guest = isDisposableSubstrateCapability(input.sandboxCapability);
-  const canonicalizeGuestPath = (path: string) => foldCanonicalPathSeparators(posix.normalize(path));
-  const sensitiveRead = guest ? createSensitivePathMatcher("read", undefined, canonicalizeGuestPath, { inspectKeyMaterial: false })
-    : (path: string) => isSensitivePath(path, "read");
-  const sensitiveWrite = guest ? createSensitivePathMatcher("write", undefined, canonicalizeGuestPath, { inspectKeyMaterial: false })
-    : (path: string) => isSensitivePath(path, "write");
-  const pathChecks = declaredPaths.map(({ nativePath, canonicalPath }) => ({
-    path: nativePath,
-    insideAllowedDirectories: isInsideAllowed(canonicalPath, input.allowedDirectories),
-    sensitiveRead: sensitiveRead(nativePath) !== null,
-    sensitiveWrite: sensitiveWrite(nativePath) !== null,
-  }));
+  const pathChecks = withLocalityDecision(() => {
+    const isWindows = process.platform === "win32";
+    const declaredPaths = isWindows ? undefined : extractDeclaredPathTargets(input);
+    const guest = isDisposableSubstrateCapability(input.sandboxCapability);
+    const canonicalizeGuestPath = (path: string) => foldCanonicalPathSeparators(posix.normalize(path));
+    const sensitiveRead = guest ? createSensitivePathMatcher("read", undefined, canonicalizeGuestPath, { inspectKeyMaterial: false })
+      : isWindows ? createSensitivePathMatcher("read") : (path: string) => isSensitivePath(path, "read");
+    const sensitiveWrite = guest ? createSensitivePathMatcher("write", undefined, canonicalizeGuestPath, { inspectKeyMaterial: false })
+      : isWindows ? createSensitivePathMatcher("write") : (path: string) => isSensitivePath(path, "write");
+    const checkPath = ({ nativePath, canonicalPath }: ReturnType<typeof extractDeclaredPathTargets>[number]) => ({
+      path: nativePath,
+      insideAllowedDirectories: isInsideAllowed(canonicalPath, input.allowedDirectories),
+      sensitiveRead: sensitiveRead(nativePath) !== null,
+      sensitiveWrite: sensitiveWrite(nativePath) !== null,
+    });
+    if (declaredPaths !== undefined) return declaredPaths.map(checkPath);
+    return extractDeclaredPathTargets(input).map(checkPath);
+  });
   const hostPolicyFacts = {
     ...(input.unattendedGeneration ? { unattendedGeneration: input.unattendedGeneration } : {}),
     ruleVerdict: input.permissionReason === undefined ? ruleVerdict
       : { ...ruleVerdict, reason: maskSensitiveData(input.permissionReason).masked },
     executionCwd: input.executionCwd.slice(0, 512),
     executionCwdTruncated: input.executionCwd.length > 512,
-    declaredPathCount: declaredPaths.length,
+    declaredPathCount: pathChecks.length,
     allDeclaredPathsInsideAllowedDirectories: pathChecks.length > 0 &&
       pathChecks.every((path) => path.insideAllowedDirectories),
     anyDeclaredPathSensitiveRead: pathChecks.some((path) => path.sensitiveRead),
@@ -1857,13 +1868,50 @@ export class LlmRiskClassifier implements RiskClassifier {
   }
 
   // Audit callers need the raw rule + LLM verdicts separately from the composed final verdict. The public RiskClassifier interface remains the final-verdict-only surface so non-LLM classifiers stay simple.
-  async classifyWithTrace(
+  classifyWithTrace(
     input: ToolInvocationContext,
     opts?: { abortSignal?: AbortSignal },
+    prepared?: { ruleVerdict: RiskVerdict; userPrompt: string },
   ): Promise<LlmRiskClassificationTrace> {
-    // Composition baseline — rule first, LLM cannot downgrade.
-    const ruleVerdict = this.rule.classify(input);
+    if (process.platform !== "win32") return this.classifyPrepared(input, undefined, undefined, opts);
+    return this.classifyWithWindowsTrace(input, opts, prepared);
+  }
 
+  private async classifyWithWindowsTrace(
+    input: ToolInvocationContext,
+    opts?: { abortSignal?: AbortSignal },
+    prepared?: { ruleVerdict: RiskVerdict; userPrompt: string },
+  ): Promise<LlmRiskClassificationTrace> {
+    const { ruleVerdict, userPrompt } = prepared ?? this.observeClassification(input);
+    return this.classifyPrepared(input, ruleVerdict, userPrompt, opts);
+  }
+
+  prepareClassification(input: ToolInvocationContext) {
+    const prepared = this.observeClassification(input);
+    return {
+      ruleVerdict: prepared.ruleVerdict,
+      providerPrompt: prepared.userPrompt || undefined,
+      classify: (options?: { abortSignal?: AbortSignal }) => this.classifyWithTrace(input, options, prepared),
+    };
+  }
+
+  private observeClassification(input: ToolInvocationContext) {
+    // Composition baseline — rule first, LLM cannot downgrade. The baseline and the prompt's operand facts are one
+    // judgment: one decision observes them, and a failed observation fails the review instead of taking a fallback.
+    return withLocalityDecision(() => {
+      const ruleVerdict = this.rule.classify(input);
+      const settled = isHostDeterminedRiskTool(input) || ruleVerdict.level === "high" || ruleVerdict.requiresExplicitApproval === true;
+      return { ruleVerdict, userPrompt: settled ? "" : buildUserPrompt(input, ruleVerdict) };
+    });
+  }
+
+  private async classifyPrepared(
+    input: ToolInvocationContext,
+    preparedRuleVerdict: RiskVerdict | undefined,
+    preparedPrompt: string | undefined,
+    opts?: { abortSignal?: AbortSignal },
+  ): Promise<LlmRiskClassificationTrace> {
+    const ruleVerdict = preparedRuleVerdict ?? this.rule.classify(input);
     // Host-determined tools never consult the LLM: their risk is settled by system structure, not by anything a model could weigh. For agent_spawn the structural fact is that every effectful call the child makes re-enters this same permission pipeline — a fact that is not in the reviewer prompt, so asking the LLM poses a question it cannot answer; it kept replying HIGH ("no sandbox isolation, file access") and the max(rule, llm) composition let that guess override the host's LOW. Name-scoped and builtin-only: a plugin/MCP tool that happens to share the name still takes the full composed path.
     if (isHostDeterminedRiskTool(input)) {
       return { ruleVerdict, llmVerdict: null, finalVerdict: ruleVerdict, outcome: "host-determined" };
@@ -1880,7 +1928,7 @@ export class LlmRiskClassifier implements RiskClassifier {
 
     let llmVerdict: RiskVerdict;
     try {
-      const userPrompt = buildUserPrompt(input, ruleVerdict);
+      const userPrompt = preparedPrompt ?? buildUserPrompt(input, ruleVerdict);
       const { completion, attempts } = await this.runProviderWithRetry(
         userPrompt,
         opts?.abortSignal,

@@ -13,6 +13,7 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { drainMxcHolderLifetimes } from "../mxc-holder-lifetime.js";
 import { planWindowsExtensionHolder } from "../mxc-extension-readiness.js";
 import { mxcPolicyModel } from "../../__tests__/support/mxc-policy-rows.js";
+import { decisionMemo } from "../../shared/local-path-io.js";
 import { t } from "../../i18n/index.js";
 
 const state = vi.hoisted(() => ({
@@ -216,6 +217,18 @@ describe("native confined holder admission", () => {
     });
     await expect(spawnMxcConfinedChild(spec())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
     expect(revoke).toHaveBeenCalledOnce();
+  });
+
+  it("revalidates the caller's and the admitted filesystem in one decision per launch pass", async () => {
+    const owner = {};
+    const seen: Array<[string, unknown]> = [];
+    state.validate.mockImplementation(() => { seen.push(["admitted", decisionMemo(owner)]); });
+    const child = await spawnMxcConfinedChild({ ...spec(), assertStillValid: () => { seen.push(["caller", decisionMemo(owner)]); } });
+    await child.release();
+    // Admission, native creation and the native start's end are each one pass over the caller's and the admitted checks.
+    const passes = seen.slice(-6);
+    expect(passes.map(([check]) => check)).toEqual(["caller", "admitted", "caller", "admitted", "caller", "admitted"]);
+    for (let pass = 0; pass < 6; pass += 2) expect(passes[pass]?.[1]).toBe(passes[pass + 1]?.[1]);
   });
 
   it("carries a reviewed plugin hostDirectory certs read through the admitted rank", async () => {
@@ -922,7 +935,7 @@ describe("co-holder nesting and executable identity", () => {
     state.admit.mockReturnValueOnce({ model: mxcPolicyModel({ allowRead: ["C:\\runtime", "C:\\Windows"],
       allowWrite: ["D:\\work"], denyRead: [], denyWrite: children, requiredWriteDenies: children, protectedFloor: [] }), assertStillValid: state.validate });
     // A holder has no command result of its own to carry what its release moved or could not move.
-    const claim = vi.spyOn(watchedRows, "claimMxcWatchedRows").mockReturnValue({ start: vi.fn(), release: async () => {
+    const claim = vi.spyOn(watchedRows, "claimMxcWatchedRows").mockReturnValue({ start: (assertStillValid) => assertStillValid?.(), release: async () => {
       if (kind === "failure") throw new WatchedQuarantineError("[fixture] holder quarantine failed");
       return "[fixture] holder quarantine receipt";
     } });

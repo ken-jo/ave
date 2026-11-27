@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { canonicalizePathForMatch, createPathCanonicalizer } from "../sensitive-paths.js";
 import { PermissionManager } from "../permission-manager.js";
 import { prepareShellFloorInput } from "../rules/shell-literal-data.js";
@@ -139,6 +140,69 @@ describe("bounded visible floor inspection", () => {
     } finally { recorder.stop(); }
   });
 
+  it.skipIf(process.platform === "win32").each([
+    ["Bash", () => {
+      const parsed = shellFloorSyntax.parseShellFloorCommand("cat ./data/secrets/note.txt");
+      return (cwd: string) => shellFloors.inspectShellCommand(parsed, cwd);
+    }],
+    ["PowerShell", () => {
+      const parsed = parsePowerShellCommand("Get-Content ./data/secrets/note.txt");
+      return (cwd: string) => inspectPowerShellCommand(parsed, cwd);
+    }],
+  ] as const)("retains the %s floor on a reused POSIX parse", async (_dialect, prepare) => {
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), "floor-reused-parse-")));
+    const initialHome = join(directory, "initial");
+    const nextHome = join(directory, "data");
+    mkdirSync(initialHome);
+    mkdirSync(join(nextHome, "secrets"), { recursive: true });
+    writeFileSync(join(nextHome, "secrets", "note.txt"), "fixture");
+    vi.stubEnv("AVE_HOME", initialHome);
+    try {
+      const inspect = prepare();
+      expect(inspect(directory).sensitive).toBeNull();
+      await Promise.resolve();
+      vi.stubEnv("AVE_HOME", nextHome);
+      expect(prepare()(directory).sensitive).toBe("ave-home:secrets");
+      expect(inspect(directory).sensitive).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32").each([
+    ["Bash", () => {
+      const parsed = shellFloorSyntax.parseShellFloorCommand("cat ./data/secrets/note.txt");
+      return (cwd: string) => shellFloors.inspectShellCommand(parsed, cwd);
+    }],
+    ["PowerShell", () => {
+      const parsed = parsePowerShellCommand("Get-Content ./data/secrets/note.txt");
+      return (cwd: string) => inspectPowerShellCommand(parsed, cwd);
+    }],
+  ] as const)("retains the %s matcher snapshot on a reused POSIX parse across a cwd change", (_dialect, prepare) => {
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), "floor-reused-parse-cwd-")));
+    const initialCwd = join(directory, "initial-work");
+    const nextCwd = join(directory, "next-work");
+    const initialHome = join(directory, "initial-home");
+    const nextHome = join(nextCwd, "data");
+    for (const cwd of [initialCwd, nextCwd]) {
+      mkdirSync(join(cwd, "data", "secrets"), { recursive: true });
+      writeFileSync(join(cwd, "data", "secrets", "note.txt"), "fixture");
+    }
+    mkdirSync(initialHome);
+    vi.stubEnv("AVE_HOME", initialHome);
+    try {
+      const inspect = prepare();
+      expect(inspect(initialCwd).sensitive).toBeNull();
+      vi.stubEnv("AVE_HOME", nextHome);
+      expect(prepare()(nextCwd).sensitive).toBe("ave-home:secrets");
+      expect(inspect(nextCwd).sensitive).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("reuses failed ancestor observations across sibling paths", () => {
     const directory = realpathSync(mkdtempSync(join(tmpdir(), "floor-path-cache-")));
     try {
@@ -147,11 +211,13 @@ describe("bounded visible floor inspection", () => {
       const expected = [canonicalizePathForMatch(first), canonicalizePathForMatch(second)];
       const native = vi.spyOn(realpathSync, "native");
       try {
-        const canonicalize = createPathCanonicalizer();
-        expect(canonicalize(first)).toBe(expected[0]);
-        const observed = native.mock.calls.length;
-        expect(canonicalize(second)).toBe(expected[1]);
-        expect(native).toHaveBeenCalledTimes(observed);
+        withLocalityDecision(() => {
+          const canonicalize = createPathCanonicalizer();
+          expect(canonicalize(first)).toBe(expected[0]);
+          const observed = native.mock.calls.length;
+          expect(canonicalize(second)).toBe(expected[1]);
+          expect(native).toHaveBeenCalledTimes(observed);
+        });
       } finally { native.mockRestore(); }
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });

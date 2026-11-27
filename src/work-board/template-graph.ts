@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
 import type { StageEnvelope, StageGenerationTool, RequestedOutputKind, RequestedOutputDecl, TemplateScope, TemplateGraph, TemplateStage, WorkflowTemplateDraftInput, WorkflowTemplateErrorCode, EnvelopeRefusal, StageInputDecl } from "../shared/workflow-template-types.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { isSensitivePath, protectedControlEntryFor } from "../permissions/sensitive-paths.js";
 import { hasOnlyKeys, isPlainRecord, isRecord } from "../shared/is-record.js";
 
@@ -226,9 +227,11 @@ export function validateStageForConfirm(stage: TemplateStage, template: Template
   if (stage.toolScope === "read" && (envelope.tools.some(tool => !READ_ENVELOPE_TOOLS.has(tool)) || envelope.mcpGenerationTools.length > 0 || envelope.pluginGenerationTools.length > 0)) refusals.push("tools-broader-than-scope");
   if (envelope.tools.some(tool => ["host_shell", "host_bash", "host_powershell"].includes(tool))) refusals.push("host-shell");
   if (envelope.tools.some(tool => tool.startsWith("browser_") || tool.startsWith("terminal_"))) refusals.push("user-owned-surface");
-  for (const path of [...envelope.writePaths, ...envelope.readRoots]) {
-    if (protectedControlEntryFor(path)) refusals.push("floor-target");
-    if (isSensitivePath(path, "read")) refusals.push("secret-path");
-  }
-  return [...new Set(refusals)];
+  return withLocalityDecision(() => {
+    for (const path of [...envelope.writePaths, ...envelope.readRoots]) {
+      if (protectedControlEntryFor(path)) refusals.push("floor-target");
+      if (isSensitivePath(path, "read")) refusals.push("secret-path");
+    }
+    return [...new Set(refusals)];
+  });
 }

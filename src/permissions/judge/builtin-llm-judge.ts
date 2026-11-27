@@ -1,6 +1,7 @@
 // Successful low and medium review allows; high review asks the owner. Failures always require a human decision.
 import { LlmRiskClassifier, RuleBasedRiskClassifier, type RiskClassifier, type LlmRiskClassificationTrace, type RiskVerdict, type ToolInvocationContext } from "../reviewer/risk-classifier.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { isLocalityFailure } from "../../shared/local-path-io.js";
 import {
   JudgeFailure,
   JudgeContractError,
@@ -13,6 +14,11 @@ import {
 
 export interface TracingRiskClassifier {
   reviewUserOwnedSurface?: RiskClassifier["reviewUserOwnedSurface"];
+  prepareWindowsReview?(input: ToolInvocationContext): {
+    ruleVerdict: RiskVerdict;
+    providerPrompt?: string;
+    classify(options?: { abortSignal?: AbortSignal }): Promise<LlmRiskClassificationTrace>;
+  } | undefined;
   classifyWithTrace(
     input: ToolInvocationContext,
     opts?: { abortSignal?: AbortSignal },
@@ -35,6 +41,15 @@ export function assertRiskClassificationTrace(trace: LlmRiskClassificationTrace)
 export function traceRiskClassifier(classifier: RiskClassifier): TracingRiskClassifier {
   return {
     ...(classifier.reviewUserOwnedSurface ? { reviewUserOwnedSurface: classifier.reviewUserOwnedSurface.bind(classifier) } : {}),
+    prepareWindowsReview(input) {
+      if (classifier instanceof LlmRiskClassifier) return classifier.prepareClassification(input);
+      if (classifier instanceof RuleBasedRiskClassifier &&
+        (input.pathFields.length > 0 || input.category === "shell" || input.ownerPluginSandboxRoot !== undefined)) {
+        const ruleVerdict = classifier.classify(input);
+        return { ruleVerdict, classify: async () => ({ ruleVerdict, llmVerdict: null, finalVerdict: ruleVerdict, outcome: "fresh" }) };
+      }
+      return undefined;
+    },
     async classifyWithTrace(input, options) {
       try {
         if (classifier instanceof LlmRiskClassifier) {
@@ -46,7 +61,8 @@ export function traceRiskClassifier(classifier: RiskClassifier): TracingRiskClas
         if (error instanceof JudgeContractError) throw error;
         const finalVerdict: RiskVerdict = { level: "high", reason: `reviewer error — ${errorMessage(error)}` };
         return {
-          ruleVerdict: new RuleBasedRiskClassifier().classify(input),
+          // A failed drive query failed the judgment; no fresh rule pass stands in for it.
+          ruleVerdict: isLocalityFailure(error) ? finalVerdict : new RuleBasedRiskClassifier().classify(input),
           llmVerdict: classifier instanceof LlmRiskClassifier ? finalVerdict : null,
           finalVerdict, outcome: "error",
         };

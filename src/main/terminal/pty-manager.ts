@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession } from "../../shared/chat-origin.js";
 import { currentEffectGateContext } from "../../permissions/effect-enforcement.js";
 /** Host terminals belong to visible tabs; confined terminals belong to conversations. */
@@ -366,18 +367,20 @@ function resolveTerminalCwd(
   if (typeof candidate !== "string" || !isAbsolute(candidate)) {
     return { ok: false, message: "terminal cwd must be an absolute path" };
   }
-  const canonical = canonicalizePathForMatch(candidate);
-  const forMatch = caseFoldForMatch(canonical);
-  if (forMatch === caseFoldForMatch(canonicalizePathForMatch(homedir()))) {
-    return { ok: false, message: "terminal cwd must not be the user home directory" };
-  }
-  const directories = listAuthorizedWorkspaceProjects().map((project) =>
-    caseFoldForMatch(canonicalizePathForMatch(project.projectRoot)),
-  );
-  if (!isPathAllowed(forMatch, { directories })) {
-    return { ok: false, message: "terminal cwd must be within an authorized workspace project" };
-  }
-  return { ok: true, cwd: canonical };
+  return withLocalityDecision(() => {
+    const canonical = canonicalizePathForMatch(candidate);
+    const forMatch = caseFoldForMatch(canonical);
+    if (forMatch === caseFoldForMatch(canonicalizePathForMatch(homedir()))) {
+      return { ok: false, message: "terminal cwd must not be the user home directory" };
+    }
+    const directories = listAuthorizedWorkspaceProjects().map((project) =>
+      caseFoldForMatch(canonicalizePathForMatch(project.projectRoot)),
+    );
+    if (!isPathAllowed(forMatch, { directories })) {
+      return { ok: false, message: "terminal cwd must be within an authorized workspace project" };
+    }
+    return { ok: true, cwd: canonical };
+  });
 }
 
 /** The command string ASRT runs under its `-c` wrapper: exec the interactive login shell so it takes over the PTY node-pty allocated for the sandbox

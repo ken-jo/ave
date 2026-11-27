@@ -65,6 +65,7 @@ import { resolve as pathResolve } from "node:path";
 import { caseFoldForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { isEgressGrantScope, type EgressGrantNetwork, type EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { isTerminalTabId } from "../shared/tab-id.js";
+import { judgeOrRefuse, withLocalityDecision } from "../shared/local-path-io.js";
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
 import type { ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 import { HOST_PROVENANCE, RULE_PROVENANCE, type HostProvenance, type RuleProvenance } from "./decision-provenance.js";
@@ -1679,43 +1680,46 @@ export class ApprovalGate {
     const riskCeilingAtApproval = verifiedApprovalBasis?.ruleVerdict;
     // One-shot requests never persist a working-directory identity. Do not make their approval depend on validating an unrelated persistent-store scope.
     const boundShellCwd = shellDirectory?.binding.cwdIdentity?.realpath;
-    const shellRuleCwd = boundShellCwd ?? req.evaluationContext?.executionCwd;
-    const workingDirectory = canRememberRequest
-      ? verifiedApprovalBasis?.workingDirectory ?? (shellRuleCwd
-          ? captureApprovalWorkingDirectory(shellRuleCwd) : undefined)
-      : undefined;
-    const persistentAllowAllowed = canRememberRequest && workingDirectory !== undefined;
-    const readjudication = persistentAllowAllowed && verdictAtApproval === "high" &&
-      req.source === "plugin" && req.evaluationContext?.headless === false &&
-      !assessmentUnavailable && matchesPluginReadjudicationBasis(readjudicationBasis, req)
-      ? Object.freeze({ ...readjudicationBasis.evidence }) : undefined;
-    // Ordinary shell cards may save a rule; forced one-shot cards cannot create remembered authority.
-    const shellRuleSaveAllowed = hasShellRuleApprovalContract && !hasOneShotApprovalChoiceContract || floorSessionGrant !== undefined;
-    const shellRuleDialect = req.toolName === "bash" || req.toolName === "powershell" ? req.toolName : undefined;
-    if (hostTerminal !== undefined && rawShellArgs?.command !== hostTerminal.command) throw new Error("approval: host terminal command does not match the request");
-    const builtShellRule = userOwnedSurface !== undefined || hostTerminal !== undefined ? undefined : req.source === "builtin" && shellRuleDialect !== undefined &&
-      (req.kind === undefined || req.kind === "tool") && req.category === "tool" &&
-      typeof rawShellArgs?.command === "string" && shellRuleCwd
-      ? buildShellRuleApproval(shellRuleDialect, rawShellArgs.command, shellRuleCwd, {
-        allow: shellRuleSaveAllowed,
-        // A forced one-shot card cannot create remembered authority.
-        deny: !forceExplicit,
-      }, req.sessionId, verifiedShellCommand, hostShellExecutionPlan)
-      : undefined;
-    // The floor's session allow covers this conversation's later shells and hooks on this floor, saved by the host from the pending card: no rule text, no project or global rule.
-    const terminalFloorContext = hostTerminal !== undefined && floorSessionGrant !== undefined ? {
-      dialect: "bash" as const,
-      denyRule: null,
-      denyAllowed: false,
-      projectCwd: hostTerminal.physicalCwd,
-      projectRoot: hostTerminal.physicalCwd,
-    } : undefined;
-    const floorRuleContext = builtShellRule ?? terminalFloorContext;
-    const shellRule: ShellRuleApproval | undefined = floorRuleContext !== undefined && floorSessionGrant !== undefined
-      ? { ...floorRuleContext, exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true }
-      : builtShellRule;
-    const projectRootBinding = shellRule?.persistentAllowed ? captureProjectRuleRootBinding(shellRule.projectCwd) : undefined;
-    const shellRuleProjectRoot = projectRootBinding?.path === shellRule?.projectRoot ? projectRootBinding : undefined;
+    const { workingDirectory, persistentAllowAllowed, readjudication, shellRule, shellRuleProjectRoot } = withLocalityDecision(() => {
+      const shellRuleCwd = boundShellCwd ?? req.evaluationContext?.executionCwd;
+      const workingDirectory = canRememberRequest
+        ? verifiedApprovalBasis?.workingDirectory ?? (shellRuleCwd
+            ? captureApprovalWorkingDirectory(shellRuleCwd) : undefined)
+        : undefined;
+      const persistentAllowAllowed = canRememberRequest && workingDirectory !== undefined;
+      const readjudication = persistentAllowAllowed && verdictAtApproval === "high" &&
+        req.source === "plugin" && req.evaluationContext?.headless === false &&
+        !assessmentUnavailable && matchesPluginReadjudicationBasis(readjudicationBasis, req)
+        ? Object.freeze({ ...readjudicationBasis.evidence }) : undefined;
+      // Ordinary shell cards may save a rule; forced one-shot cards cannot create remembered authority.
+      const shellRuleSaveAllowed = hasShellRuleApprovalContract && !hasOneShotApprovalChoiceContract || floorSessionGrant !== undefined;
+      const shellRuleDialect = req.toolName === "bash" || req.toolName === "powershell" ? req.toolName : undefined;
+      if (hostTerminal !== undefined && rawShellArgs?.command !== hostTerminal.command) throw new Error("approval: host terminal command does not match the request");
+      const builtShellRule = userOwnedSurface !== undefined || hostTerminal !== undefined ? undefined : req.source === "builtin" && shellRuleDialect !== undefined &&
+        (req.kind === undefined || req.kind === "tool") && req.category === "tool" &&
+        typeof rawShellArgs?.command === "string" && shellRuleCwd
+        ? buildShellRuleApproval(shellRuleDialect, rawShellArgs.command, shellRuleCwd, {
+          allow: shellRuleSaveAllowed,
+          // A forced one-shot card cannot create remembered authority.
+          deny: !forceExplicit,
+        }, req.sessionId, verifiedShellCommand, hostShellExecutionPlan)
+        : undefined;
+      // The floor's session allow covers this conversation's later shells and hooks on this floor, saved by the host from the pending card: no rule text, no project or global rule.
+      const terminalFloorContext = hostTerminal !== undefined && floorSessionGrant !== undefined ? {
+        dialect: "bash" as const,
+        denyRule: null,
+        denyAllowed: false,
+        projectCwd: hostTerminal.physicalCwd,
+        projectRoot: hostTerminal.physicalCwd,
+      } : undefined;
+      const floorRuleContext = builtShellRule ?? terminalFloorContext;
+      const shellRule: ShellRuleApproval | undefined = floorRuleContext !== undefined && floorSessionGrant !== undefined
+        ? { ...floorRuleContext, exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true }
+        : builtShellRule;
+      const projectRootBinding = shellRule?.persistentAllowed ? captureProjectRuleRootBinding(shellRule.projectCwd) : undefined;
+      const shellRuleProjectRoot = projectRootBinding?.path === shellRule?.projectRoot ? projectRootBinding : undefined;
+      return { workingDirectory, persistentAllowAllowed, readjudication, shellRule, shellRuleProjectRoot };
+    });
     // One approval lane per stage session: the card names the stage of the run member that asked. "Allow for this run" is offered where
     // this card's session allow is: a shell card's session rule, any other card's remembered exact allow. A scope that only ever lives
     // for its own session (a browser or terminal target) and a schedule-started run offer none.
@@ -2165,7 +2169,7 @@ export class ApprovalGate {
         isCurrent: () => this.pending.get(requestId) === entry &&
           isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId),
       },
-      isWorkingDirectoryCurrent: () => {
+      isWorkingDirectoryCurrent: () => judgeOrRefuse(() => {
         if (hostTerminal !== undefined) {
           const identity = captureShellWorkingDirectoryIdentity(hostTerminal.physicalCwd);
           return identity !== undefined && foldCanonicalPathSeparators(identity.realpath) === hostTerminal.physicalCwd &&
@@ -2173,7 +2177,7 @@ export class ApprovalGate {
         }
         return shellWorkingDirectory === undefined ||
           matchesShellWorkingDirectoryIdentity(shellWorkingDirectory.path, shellWorkingDirectory.identity);
-      },
+      }),
     };
   }
 

@@ -1,3 +1,4 @@
+import fsPromises from "node:fs/promises";
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
@@ -14,7 +15,8 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { randomUUID } from "node:crypto";
+import crypto, { randomUUID } from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -33,6 +35,7 @@ import { ToolRegistry } from "../registry.js";
 import {
   ApplyPatchInputSchema,
   ApplyPatchTool,
+  collectFiles,
   createFileTools,
   DeleteFileTool,
   EditFileTool,
@@ -47,7 +50,7 @@ import {
   withProjectWriteRoots,
   isFileCopyCheckpointSupported,
 } from "../file-tools.js";
-import { canonicalizePathForMatch, caseFoldForMatch } from "../../permissions/sensitive-paths.js";
+import { allowKeyMaterialInspectionUnder, canonicalizePathForMatch, caseFoldForMatch } from "../../permissions/sensitive-paths.js";
 import type { ToolExecutionContext } from "../base.js";
 import {
   dispatchPermissionDirCommand,
@@ -728,6 +731,59 @@ describe("file native tools", () => {
 
     expect(result.isError).toBe(false);
     expect(readFileSync(join(workDir, target), "utf8")).toBe("created\n");
+  });
+
+  it.skipIf(process.platform === "win32").each([
+    [
+      "keeps listing a POSIX file-tree root that stops being sensitive during directory I/O",
+      true,
+      [{ relativePath: "notes.txt" }, { relativePath: "report.pem" }],
+    ],
+    ["hides rows when a POSIX file-tree root becomes sensitive during directory I/O", false, []],
+  ] as const)("%s", async (_name, sensitiveAtSetup, files) => {
+    const home = join(workDir, "listing-home");
+    const otherHome = join(workDir, "other-home");
+    const root = join(home, "config");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "notes.txt"), "ordinary report text");
+    writeFileSync(join(root, "report.pem"), "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----\n");
+    const previousHome = process.env.AVE_HOME;
+    const release = allowKeyMaterialInspectionUnder(() => [root]);
+    const readdir = fsPromises.readdir;
+    const directoryRead = vi.spyOn(fsPromises, "readdir").mockImplementationOnce((...args) => {
+      process.env.AVE_HOME = sensitiveAtSetup ? otherHome : home;
+      return readdir(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      process.env.AVE_HOME = sensitiveAtSetup ? home : otherHome;
+      const listed = await collectFiles(root, 10);
+      expect(directoryRead).toHaveBeenCalledTimes(1);
+      expect(listed).toMatchObject({ ok: true, value: { files } });
+    } finally {
+      directoryRead.mockRestore();
+      syncBuiltinESMExports();
+      release();
+      if (previousHome === undefined) delete process.env.AVE_HOME;
+      else process.env.AVE_HOME = previousHome;
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("cleans the POSIX staging name when its exclusive open fails", async () => {
+    const target = join(workDir, "collision.txt");
+    const id = "00000000-0000-0000-0000-000000000001";
+    const staging = `${target}.ave-tmp-${process.pid}-${id}`;
+    writeFileSync(staging, "existing entry");
+    const uuid = vi.spyOn(crypto, "randomUUID").mockReturnValue(id);
+    syncBuiltinESMExports();
+    try {
+      await expect(new WriteFileTool().execute({ path: target, content: "new" }, ctx())).rejects.toMatchObject({ code: "EEXIST" });
+      expect(existsSync(staging)).toBe(false);
+      expect(existsSync(target)).toBe(false);
+    } finally {
+      uuid.mockRestore();
+      syncBuiltinESMExports();
+    }
   });
 
   it("write_file uses unique temp files under parallel writes to the same target", async () => {

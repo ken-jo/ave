@@ -30,6 +30,7 @@ import { setAgentObservationSink, type ObservedFileEffect } from "../tools/agent
 import { TerminalObservationRuntime } from "./terminal-observation.js";
 import type { ObservationResponse } from "../shared/agent-observation.js";
 import { installBrowserObservation, type BrowserObservationRuntime } from "./browser-observation.js";
+import { decisionMemo, judgeOrRefuse } from "../shared/local-path-io.js";
 
 interface ViewOwner {
   id: string;
@@ -60,7 +61,6 @@ export class DocumentObservationRuntime {
   private readonly knownTargets = new Map<string, { identity: ObservationIdentity; path: string }>();
   private readonly previewSessions = new Map<string, number>();
   private readonly previewReader = createTableObservationEngine();
-  private readonly readableVerdicts = new Map<string, boolean>();
   private disposed = false;
 
   constructor(private readonly deps: IpcDeps, private readonly engine: DocumentObservationEngine | null = createHostDocumentObservationEngine()) {
@@ -107,21 +107,20 @@ export class DocumentObservationRuntime {
     return this.isReadablePath(view.path);
   }
 
-  // The read policy walks the filesystem for the path and for every protected floor entry, and a journal
-  // chunk asks it twice per record (the adapter, then the daemon's publish), all in one synchronous run. A
-  // verdict is reused until the clearing microtask queued with its first evaluation runs. The rest of that
-  // run, and microtasks queued before that evaluation, see the same verdict; that is harmless because the
-  // daemon re-checks before delivery in a later macrotask, and every later task evaluates the policy afresh.
+  // The read policy walks the filesystem; a verdict serves only the decision that computed it (a journal read
+  // asks once per record and again on publish, all inside the read's decision).
   private isReadablePath(path: string): boolean {
-    const known = this.readableVerdicts.get(path);
-    if (known !== undefined) return known;
-    if (this.readableVerdicts.size === 0) queueMicrotask(() => this.readableVerdicts.clear());
-    const additional = readPermissionSettings().permissions.additionalDirectories;
-    const verdict = assertReadableFilePath(path, process.cwd(), buildRuntimeAllowedDirectories(additional));
-    const readable = verdict.ok && verdict.resolved === path
-      && protectedReadDenyCovering(path, getProtectedReadDenyFloor()) === undefined;
-    this.readableVerdicts.set(path, readable);
-    return readable;
+    return judgeOrRefuse(() => {
+      const verdicts = decisionMemo<boolean>(this);
+      const known = verdicts.get(path);
+      if (known !== undefined) return known;
+      const additional = readPermissionSettings().permissions.additionalDirectories;
+      const verdict = assertReadableFilePath(path, process.cwd(), buildRuntimeAllowedDirectories(additional));
+      const readable = verdict.ok && verdict.resolved === path
+        && protectedReadDenyCovering(path, getProtectedReadDenyFloor()) === undefined;
+      verdicts.set(path, readable);
+      return readable;
+    });
   }
 
   private prune(): void {
@@ -188,12 +187,42 @@ export class DocumentObservationRuntime {
 
   registerView(event: IpcMainInvokeEvent, sessionId: unknown, path: string, bytes: Buffer,
     document: ObservedDocument): ObservationBinding | undefined {
+    if (process.platform === "win32") {
+      let publish: (() => ObservationBinding) | undefined;
+      judgeOrRefuse(() => {
+        publish = this.prepareView(event, sessionId, path, bytes, document);
+        return publish !== undefined;
+      });
+      return publish?.();
+    }
     if (typeof sessionId !== "string" || sessionId.length === 0 || sessionId.length > 256) return undefined;
     const prospective = { event, sessionId, path };
     if (!this.isCurrent(prospective)) return undefined;
     this.prune();
     for (const view of this.views.values()) if (view.event.sender === event.sender && view.event.senderFrame === event.senderFrame
       && view.sessionId === sessionId && view.path === path) this.release(view.id);
+    return this.publishView(prospective, bytes, document);
+  }
+
+  prepareView(event: IpcMainInvokeEvent, sessionId: unknown, path: string, bytes: Buffer,
+    document: ObservedDocument): (() => ObservationBinding) | undefined {
+    if (typeof sessionId !== "string" || sessionId.length === 0 || sessionId.length > 256) return undefined;
+    const prospective = { event, sessionId, path };
+    if (!this.isCurrent(prospective)) return undefined;
+    const superseded = [...this.views.values()].filter((view) => !this.isCurrent(view)
+      || (view.event.sender === event.sender && view.event.senderFrame === event.senderFrame
+        && view.sessionId === sessionId && view.path === path));
+    const knownTurns = [...this.knownTargets.values()].flatMap((target) =>
+      target.identity.sessionId === sessionId && target.path === path ? [target.identity.turnId] : []);
+    return () => {
+      for (const view of superseded) this.release(view.id);
+      return this.publishView(prospective, bytes, document, knownTurns);
+    };
+  }
+
+  private publishView(prospective: Pick<ViewOwner, "event" | "sessionId" | "path">, bytes: Buffer, document: ObservedDocument,
+    knownTurns?: readonly string[]): ObservationBinding {
+    const { event, sessionId, path } = prospective;
     // The daemon's limit is shared with terminal and browser targets, so its capacity, not the document view count, decides.
     if (this.views.size >= OBSERVATION_LIMITS.maxViews || !this.daemon.hasCapacity()) throw new TableDocumentError("busy", "Document observation limit exceeded");
     const id = randomUUID();
@@ -220,15 +249,17 @@ export class DocumentObservationRuntime {
           if (!this.isCurrent(view)) { this.release(id); return; }
           event.sender.send(CHANNELS.preview.observationEvents, events);
         },
-      });
+      }, knownTurns);
     } catch (error) {
       // Leave no view owner, listener or timer behind.
       this.release(id);
       if (error instanceof ObservationCapacityError) throw new TableDocumentError("busy", "Document observation limit exceeded");
       throw error;
     }
-    for (const target of this.knownTargets.values()) if (target.identity.sessionId === sessionId && target.path === path) {
-      this.adapter.admitKnownTarget(sessionId, target.identity.turnId, path);
+    if (knownTurns === undefined) {
+      for (const target of this.knownTargets.values()) if (target.identity.sessionId === sessionId && target.path === path) {
+        this.adapter.admitKnownTarget(sessionId, target.identity.turnId, path);
+      }
     }
     return { targetId: id, sessionId, seq: 0 };
   }

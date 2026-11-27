@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import type { ConversationLoop, SessionTransitionLease } from "../conversation-loop.js";
 import { posix, win32 } from "node:path";
 import { isValidSessionId } from "../../shared/session-id.js";
@@ -28,7 +29,7 @@ function normalizeProjectString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function applyProjectContext(self: ConversationLoop, project?: SessionProjectContext): void {
+function planProjectContext(self: ConversationLoop, project?: SessionProjectContext) {
   let projectRoot = normalizeProjectString(project?.projectRoot);
   let projectName = normalizeProjectString(project?.projectName);
   if (projectRoot && self.deps.authorizeProject) {
@@ -47,10 +48,18 @@ function applyProjectContext(self: ConversationLoop, project?: SessionProjectCon
   const projectIsDefault = projectRoot
     ? project?.isDefault === true || self.deps.isDefaultProjectRoot?.(projectRoot) === true
     : false;
+  return { projectRoot, projectName, projectIsDefault };
+}
+
+function commitProjectContext(
+  self: ConversationLoop,
+  { projectRoot, projectName, projectIsDefault }: ReturnType<typeof planProjectContext>,
+  directories: string[],
+): void {
   self.sessionProjectRoot = projectRoot;
   self.sessionProjectName = projectName;
   self.sessionProjectIsDefault = projectIsDefault;
-  self.sessionAdditionalDirectories = projectRoot ? [projectRoot] : [];
+  self.sessionAdditionalDirectories = directories;
   self.deps.systemPromptBuilder.setProjectContext?.(projectRoot
     ? {
         projectRoot,
@@ -58,6 +67,11 @@ function applyProjectContext(self: ConversationLoop, project?: SessionProjectCon
         ...(projectIsDefault ? { isDefault: true } : {}),
       }
     : null);
+}
+
+function applyProjectContext(self: ConversationLoop, project?: SessionProjectContext): void {
+  const planned = withLocalityDecision(() => planProjectContext(self, project));
+  commitProjectContext(self, planned, planned.projectRoot ? [planned.projectRoot] : []);
 }
 
 function currentProjectContext(self: ConversationLoop): SessionProjectContext {
@@ -129,7 +143,7 @@ export function workspaceRootRemovalAffectsTurn(
   self: ConversationLoop,
   removedRoot: string,
 ): boolean {
-  return self.hasActiveTurn() && workspaceRootRemovalOwnsSession(self, removedRoot);
+  return self.hasActiveTurn() && withLocalityDecision(() => workspaceRootRemovalOwnsSession(self, removedRoot));
 }
 
 function workspaceRootRemovalOwnsSession(self: ConversationLoop, removedRoot: string): boolean {
@@ -146,9 +160,12 @@ function workspaceRootRemovalOwnsSession(self: ConversationLoop, removedRoot: st
   if (self.sessionProjectIsDefault && self.deps.isDefaultProjectRoot?.(projectRoot) === false) {
     throw new Error("Active turn project binding is inconsistent");
   }
-  const normalizedRoot = normalizeProjectString(removedRoot);
-  if (!normalizedRoot) return false;
-  return projectRootEquals(projectRoot, normalizedRoot);
+  return withLocalityDecision(() => {
+    const normalizedRoot = normalizeProjectString(removedRoot);
+    if (!normalizedRoot) return false;
+    return projectRootEquals(projectRoot, normalizedRoot);
+  });
+
 }
 
 // Revoke grants under removed roots; keep independently authorized children and fall back for unauthorized projects.
@@ -157,6 +174,7 @@ export function revokeWorkspaceRoot(
   removedRoot: string,
   options: WorkspaceRootRevocationOptions = {},
 ): WorkspaceRootRevocationResult {
+  if (process.platform === "win32") return planWorkspaceRootRevocation(self, removedRoot, options)();
   const normalizedRoot = normalizeProjectString(removedRoot);
   if (!normalizedRoot) {
     return { sessionDirectoriesRemoved: 0, turnDirectoriesRemoved: 0, projectRebound: false };
@@ -175,12 +193,12 @@ export function revokeWorkspaceRoot(
     self.revokeProjectWork();
   }
 
-  const retainedSessionDirectories = previousSessionDirectories.filter(
+  const retainedSessionDirectories = withLocalityDecision(() => previousSessionDirectories.filter(
     (directory) => !isRevoked(directory),
-  );
-  self.turnAdditionalDirectories = previousTurnDirectories.filter(
+  ));
+  self.turnAdditionalDirectories = withLocalityDecision(() => previousTurnDirectories.filter(
     (directory) => !isRevoked(directory),
-  );
+  ));
   const projectNeedsReauthorization = Boolean(
     previousProjectRoot && isRevoked(previousProjectRoot),
   );
@@ -206,6 +224,62 @@ export function revokeWorkspaceRoot(
     self.deps.broadcastPermissionConfigChanged?.();
   }
   return { sessionDirectoriesRemoved, turnDirectoriesRemoved, projectRebound };
+}
+
+/**
+ * Judge a revocation without changing anything and return the change to apply. Judging several owners in one decision
+ * and applying only after it returns leaves no owner half revoked when a later judgment fails.
+ */
+export function planWorkspaceRootRevocation(
+  self: ConversationLoop,
+  removedRoot: string,
+  options: WorkspaceRootRevocationOptions = {},
+): () => WorkspaceRootRevocationResult {
+  const normalizedRoot = normalizeProjectString(removedRoot);
+  if (!normalizedRoot) {
+    return () => ({ sessionDirectoriesRemoved: 0, turnDirectoriesRemoved: 0, projectRebound: false });
+  }
+  const previousSessionDirectories = [...self.sessionAdditionalDirectories];
+  const previousTurnDirectories = [...self.turnAdditionalDirectories];
+  const previousProjectRoot = self.sessionProjectRoot;
+  const previousProjectName = self.sessionProjectName;
+  const previousProjectWasDefault = self.sessionProjectIsDefault;
+  const plan = withLocalityDecision(() => {
+    const isRevoked = createWorkspaceRootRevocationFilter(normalizedRoot, options.preserveRoots);
+    const ownsSession = workspaceRootRemovalOwnsSession(self, removedRoot);
+    const retainedSessionDirectories = previousSessionDirectories.filter(directory => !isRevoked(directory));
+    const turnDirectories = previousTurnDirectories.filter(directory => !isRevoked(directory));
+    const project = previousProjectRoot && isRevoked(previousProjectRoot)
+      ? planProjectContext(self, currentProjectContext(self))
+      : undefined;
+    const sessionDirectories = project === undefined ? retainedSessionDirectories : project.projectRoot ? [project.projectRoot] : [];
+    if (project) {
+      for (const directory of retainedSessionDirectories) {
+        if (!sessionDirectories.some((current) => projectRootEquals(current, directory))) sessionDirectories.push(directory);
+      }
+    }
+    const projectRebound = project !== undefined && (
+      !projectRootEquals(previousProjectRoot ?? "", project.projectRoot ?? "")
+      || previousProjectName !== project.projectName
+      || previousProjectWasDefault !== project.projectIsDefault
+    );
+    return {
+      ownsSession, project, projectRebound, sessionDirectories, turnDirectories,
+      sessionDirectoriesRemoved: previousSessionDirectories.length - retainedSessionDirectories.length,
+      turnDirectoriesRemoved: previousTurnDirectories.length - turnDirectories.length,
+    };
+  });
+  return () => {
+    const { project, projectRebound, sessionDirectoriesRemoved, turnDirectoriesRemoved } = plan;
+    if (plan.ownsSession) self.revokeProjectWork();
+    self.turnAdditionalDirectories = plan.turnDirectories;
+    if (project) commitProjectContext(self, project, plan.sessionDirectories);
+    else self.sessionAdditionalDirectories = plan.sessionDirectories;
+    if (project || sessionDirectoriesRemoved > 0 || turnDirectoriesRemoved > 0) {
+      self.deps.broadcastPermissionConfigChanged?.();
+    }
+    return { sessionDirectoriesRemoved, turnDirectoriesRemoved, projectRebound };
+  };
 }
 
 export function initializeConversation(

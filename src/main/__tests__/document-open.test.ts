@@ -30,6 +30,7 @@ vi.mock("../../permissions/allowed-directories.js", () => ({ buildRuntimeAllowed
 import { openDocumentForSession, registerDocumentOpenHandlers } from "../document-open.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { sealTargets, TargetIdentityChangedError } from "../../permissions/target-seal.js";
 
 const context = (): ToolExecutionContext => ({ cwd: "/workspace", extraAllowedDirectories: [], metadata: { sessionId: "session-one" } });
 const frame = { url: "file:///app/index.html", detached: false, isDestroyed: () => false };
@@ -79,6 +80,22 @@ describe("document panel opening", () => {
     finish();
     expect((await result).isError).toBe(true);
     expect(sender.send).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("does not dispatch a panel when the authorized document changes during engine preparation", async () => {
+    let complete!: () => void;
+    const ready = new Promise<void>((resolve) => { complete = resolve; });
+    const release = vi.fn();
+    vi.spyOn(observations, "acquireDocumentEnginePreparation").mockReturnValueOnce({ ready, release });
+    let target = "/workspace/book.xlsx";
+    const fileTargetSeal = sealTargets(() => target);
+    const result = openDocumentForSession(target, { ...context(), fileTargetSeal }).catch((error: unknown) => error);
+    target = "/workspace/other.xlsx";
+    complete();
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.documentPanelAckMs + 1);
+    expect(sender.send).not.toHaveBeenCalled();
+    expect(await result).toBeInstanceOf(TargetIdentityChangedError);
     expect(release).toHaveBeenCalledOnce();
   });
   it("releases a failed engine preparation without dispatching a panel", async () => {

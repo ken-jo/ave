@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * place until the test ends. The open never gets the flag that refuses a link in the last name, as on Windows. */
 const hook = vi.hoisted(() => ({
   target: "",
+  alternate: undefined as undefined | string,
+  receiptAlternate: undefined as undefined | string,
   around: undefined as { swap: () => void; restore: () => void; keep: boolean } | undefined,
 }));
 
@@ -52,10 +54,24 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       if (around && !around.keep) around.restore();
     }
   }) as typeof actual.open;
-  return { ...actual, default: { ...actual, open }, open };
+  const realpath = (async (...args: Parameters<typeof actual.realpath>) => {
+    if (args[0] === hook.target && hook.receiptAlternate !== undefined) return hook.receiptAlternate;
+    return actual.realpath(...args);
+  }) as typeof actual.realpath;
+  return { ...actual, default: { ...actual, open, realpath }, open, realpath };
+});
+
+vi.mock("../../shared/shell-filesystem-path.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../shared/shell-filesystem-path.js")>();
+  return {
+    ...actual,
+    resolvePhysicalFilesystemPath: (...args: Parameters<typeof actual.resolvePhysicalFilesystemPath>) =>
+      args[0] === hook.target && hook.alternate !== undefined ? hook.alternate : actual.resolvePhysicalFilesystemPath(...args),
+  };
 });
 
 const { ReadFileTool } = await import("../file-tools.js");
+const { disposeSessionFileReads, lookupFileRead } = await import("../file-read-state.js");
 
 let base: string;
 let folder: string;
@@ -77,6 +93,9 @@ beforeEach(() => {
 
 afterEach(() => {
   hook.around = undefined;
+  hook.alternate = undefined;
+  hook.receiptAlternate = undefined;
+  disposeSessionFileReads("read-binding");
   rmSync(base, { recursive: true, force: true });
 });
 
@@ -126,6 +145,27 @@ describe("read_file binds its text to the judged path", () => {
     } finally {
       restoreFolder();
     }
+  });
+
+  it.runIf(process.platform === "win32")("opens the path from the invocation seal without adopting a later lookup", async () => {
+    hook.alternate = join(folder, "other.txt");
+    writeFileSync(hook.alternate, "other text\n");
+    const fileTargetSeal = { verify: vi.fn(), pathFor: (path: string) => path === file ? file : undefined };
+    const result = await new ReadFileTool().execute({ path: file },
+      { cwd: join(base, "project"), extraAllowedDirectories: [], metadata: {}, fileTargetSeal });
+    expect(result.isError, result.output).toBe(false);
+    expect(result.output).toContain("buy milk");
+    expect(result.output).not.toContain("other text");
+  });
+
+  it.runIf(process.platform === "win32")("publishes the read receipt for the sealed path", async () => {
+    hook.receiptAlternate = join(folder, "other.txt");
+    const fileTargetSeal = { verify: vi.fn(), pathFor: (path: string) => path === file ? file : undefined };
+    const result = await new ReadFileTool().execute({ path: file },
+      { cwd: join(base, "project"), extraAllowedDirectories: [], metadata: { sessionId: "read-binding" }, fileTargetSeal });
+    expect(result.isError, result.output).toBe(false);
+    expect(lookupFileRead("read-binding", file)).toBeDefined();
+    expect(lookupFileRead("read-binding", hook.receiptAlternate)).toBeUndefined();
   });
 
   it("reads the file when nothing changes, through a linked folder too", async () => {

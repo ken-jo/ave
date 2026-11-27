@@ -61,6 +61,7 @@ import {
   branchFromCheckpoint,
   startRoutineConversation,
   revokeWorkspaceRoot,
+  planWorkspaceRootRevocation,
   workspaceRootRemovalAffectsTurn,
   type WorkspaceRootRevocationResult,
   type SessionProjectContext,
@@ -604,6 +605,14 @@ export class ConversationLoop {
     options?: WorkspaceRootRevocationOptions,
   ): WorkspaceRootRevocationResult {
     return revokeWorkspaceRoot(this, root, options);
+  }
+
+  /** Judge a revocation now and return the change, applied by calling it. */
+  planWorkspaceRootRevocation(
+    root: string,
+    options?: WorkspaceRootRevocationOptions,
+  ): () => WorkspaceRootRevocationResult {
+    return planWorkspaceRootRevocation(this, root, options);
   }
 
   /** Whether removing `root` now would stop a running turn here: the removal preview's count, by the removal's own test. */

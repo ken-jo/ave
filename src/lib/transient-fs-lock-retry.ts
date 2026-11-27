@@ -125,3 +125,7 @@ export function renameFile(from: string, to: string): Promise<void> {
 export function renameFileOnce(from: string, to: string): Promise<void> {
   return fsRename(from, to);
 }
+
+export function renameFileOnceSync(from: string, to: string): void {
+  fsRenameSync(from, to);
+}

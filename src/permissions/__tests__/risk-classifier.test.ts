@@ -1150,6 +1150,19 @@ describe("LlmRiskClassifier — fallbackOnError", () => {
     },
   );
 
+  it.skipIf(process.platform === "win32")("applies the POSIX reviewer fallback when prompt serialization throws", async () => {
+    const complete = vi.fn<LlmReviewerProvider["complete"]>();
+    const classifier = new LlmRiskClassifier({ complete }, "reviewer", "rule");
+    const extra: { self?: unknown } = {};
+    extra.self = extra;
+    const input = ctx({ category: "read", toolName: "read_file", finalInput: { path: "/Users/example/work/notes.txt", extra } });
+
+    const trace = await classifier.classifyWithTrace(input);
+    expect(trace).toMatchObject({ outcome: "error", llmVerdict: null });
+    expect(trace.finalVerdict).toEqual(trace.ruleVerdict);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
   it("provider throws + fallbackOnError='rule' → returns rule verdict", async () => {
     const provider: LlmReviewerProvider = {
       complete: vi.fn(async () => {

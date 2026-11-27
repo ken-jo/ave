@@ -191,6 +191,10 @@ function withoutShadowedFaults(results: readonly StateResult[]): readonly StateR
 
 /** Same original text and prepared child facts are inspected at both gates. */
 export function inspectShellExecution(command: string, cwd: string, facts: ShellExecutionFacts, inspector: ShellExecutionInspector, totalTokenLimit?: number, prepared?: PreparedShellAnalysis): void {
+  withLocalityDecision(() => inspectShellExecutionInDecision(command, cwd, facts, inspector, totalTokenLimit, prepared));
+}
+
+function inspectShellExecutionInDecision(command: string, cwd: string, facts: ShellExecutionFacts, inspector: ShellExecutionInspector, totalTokenLimit?: number, prepared?: PreparedShellAnalysis): void {
   const analysis = prepared === undefined ? analyzeShell(command, "bash", totalTokenLimit === undefined ? undefined : { totalTokens: totalTokenLimit }) : validatePreparedShellAnalysis(command, prepared);
   if (!analysis.ok) throw new ShellExecutionError(analysis.reason);
   let remainingTokens = totalTokenLimit;

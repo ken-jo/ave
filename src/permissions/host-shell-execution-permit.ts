@@ -1,4 +1,5 @@
 // Plans describe substrates, not authorization. Bind proof privately to one final action and consume it before plain-host spawn.
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import type { ChildProcess } from "node:child_process";
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
@@ -116,10 +117,12 @@ export function resolveHostShellWorkingDirectory(
 export function canonicalizeHostShellAllowedDirectories(
   directories: readonly string[],
 ): readonly string[] {
-  const canonical = directories
-    .filter((directory) => directory.length > 0)
-    .map((directory) => caseFoldForMatch(canonicalizePathForMatch(directory)));
-  return Object.freeze([...new Set(canonical)].sort());
+  return withLocalityDecision(() => {
+    const canonical = directories
+      .filter((directory) => directory.length > 0)
+      .map((directory) => caseFoldForMatch(canonicalizePathForMatch(directory)));
+    return Object.freeze([...new Set(canonical)].sort());
+  });
 }
 
 // Build the host-only action binding after all path grants and hooks have finalized the invocation. Undefined means the raw input cannot represent a native shell spawn, so the invocation must fail closed before requesting a permit.
@@ -133,25 +136,27 @@ export function buildHostShellExecutionPermitBinding(input: {
 }): HostShellExecutionPermitBinding | undefined {
   const parsed = parseHostShellExecutionInput(input.rawInput);
   if (parsed === undefined || parsed.executionMode !== input.plan.executionRequest) return undefined;
-  const resolvedCwd = resolveHostShellWorkingDirectory(input.executionCwd, parsed.cwd);
-  const cwdIdentity = captureShellWorkingDirectoryIdentity(resolvedCwd);
-  return Object.freeze({
-    planIdentity: input.plan.identity,
-    plan: input.plan,
-    toolName: input.toolName,
-    toolUseId: input.toolUseId,
-    command: parsed.command,
-    requestedCwd: parsed.cwd,
-    executionCwd: input.executionCwd,
-    resolvedCwd,
-    ...(cwdIdentity === undefined ? {} : { cwdIdentity }),
-    timeoutSeconds: parsed.timeoutSeconds,
-    executionMode: parsed.executionMode,
-    justification: parsed.justification,
-    runInBackground: parsed.runInBackground,
-    allowedDirectories: canonicalizeHostShellAllowedDirectories(
-      input.extraAllowedDirectories,
-    ),
+  return withLocalityDecision(() => {
+    const resolvedCwd = resolveHostShellWorkingDirectory(input.executionCwd, parsed.cwd);
+    const cwdIdentity = captureShellWorkingDirectoryIdentity(resolvedCwd);
+    return Object.freeze({
+      planIdentity: input.plan.identity,
+      plan: input.plan,
+      toolName: input.toolName,
+      toolUseId: input.toolUseId,
+      command: parsed.command,
+      requestedCwd: parsed.cwd,
+      executionCwd: input.executionCwd,
+      resolvedCwd,
+      ...(cwdIdentity === undefined ? {} : { cwdIdentity }),
+      timeoutSeconds: parsed.timeoutSeconds,
+      executionMode: parsed.executionMode,
+      justification: parsed.justification,
+      runInBackground: parsed.runInBackground,
+      allowedDirectories: canonicalizeHostShellAllowedDirectories(
+        input.extraAllowedDirectories,
+      ),
+    });
   });
 }
 
@@ -177,6 +182,16 @@ export function mintHostShellExecutionPermit(input: {
   permissionManager?: Pick<PermissionManager, "getPolicyEpoch"> | undefined;
   binding: HostShellExecutionPermitBinding;
 }): HostShellExecutionPermit | undefined {
+  const record = process.platform === "win32"
+    ? withLocalityDecision(() => authorizeHostShellExecutionPermit(input))
+    : authorizeHostShellExecutionPermit(input);
+  if (record === undefined) return undefined;
+  const permit = Object.freeze({}) as HostShellExecutionPermit;
+  permits.set(permit, record);
+  return permit;
+}
+
+function authorizeHostShellExecutionPermit(input: Parameters<typeof mintHostShellExecutionPermit>[0]): PermitRecord | undefined {
   // The public TypeScript surface declares these fields as required, but module consumers can still arrive through untyped JavaScript or a stale compiled caller. Treat any incomplete input as an unauthorised request instead of throwing before the fail-closed decision.
   if (input.binding === undefined) return undefined;
   let allowRuleAuthorization: ShellAllowRuleAuthorization | undefined;
@@ -232,9 +247,7 @@ export function mintHostShellExecutionPermit(input: {
   if (cwdIdentity === undefined ||
       (allowRuleAuthorization !== undefined && !sameShellWorkingDirectoryIdentity(cwdIdentity, allowRuleAuthorization.cwdIdentity)) ||
       !matchesShellWorkingDirectoryIdentity(input.binding.resolvedCwd, cwdIdentity)) return undefined;
-  const permit = Object.freeze({}) as HostShellExecutionPermit;
-  permits.set(permit, Object.freeze({ ...input.binding, plan: input.plan, allowRuleAuthorization, cwdIdentity }));
-  return permit;
+  return Object.freeze({ ...input.binding, plan: input.plan, allowRuleAuthorization, cwdIdentity });
 }
 
 // Verify and irreversibly consume the permit. Delete before comparison so a mismatched/replayed attempt cannot probe or reuse an approved capability.
@@ -251,32 +264,35 @@ export function consumeHostShellExecutionPermitForSpawn(input: {
   executionMode: HostShellExecutionRequest;
   justification: string | undefined;
   runInBackground: boolean;
-  allowedDirectories: readonly string[];
+  allowedDirectories: readonly string[] | (() => readonly string[]);
 }): HostShellSpawnAuthorization | undefined {
   if (input.permit === undefined) return undefined;
   const record = permits.get(input.permit);
   if (record === undefined) return undefined;
   permits.delete(input.permit);
-  const valid = (
-    (record.allowRuleAuthorization === undefined || isShellAllowRuleAuthorizationCurrent(record.allowRuleAuthorization)) &&
-    matchesShellWorkingDirectoryIdentity(record.resolvedCwd, record.cwdIdentity) &&
-    record.plan === input.plan &&
-    record.toolName === input.toolName &&
-    record.toolUseId === input.toolUseId &&
-    record.command === input.command &&
-    record.requestedCwd === input.requestedCwd &&
-    record.executionCwd === input.executionCwd &&
-    record.resolvedCwd === input.resolvedCwd &&
-    record.timeoutSeconds === input.timeoutSeconds &&
-    record.executionMode === input.executionMode &&
-    record.justification === input.justification &&
-    record.runInBackground === input.runInBackground &&
-    record.executionMode === input.plan.executionRequest &&
-    record.allowedDirectories.length === input.allowedDirectories.length &&
-    record.allowedDirectories.every(
-      (directory, index) => directory === input.allowedDirectories[index],
-    )
-  );
+  const valid = withLocalityDecision(() => {
+    const allowedDirectories = typeof input.allowedDirectories === "function" ? input.allowedDirectories() : input.allowedDirectories;
+    return (
+      (record.allowRuleAuthorization === undefined || isShellAllowRuleAuthorizationCurrent(record.allowRuleAuthorization)) &&
+      matchesShellWorkingDirectoryIdentity(record.resolvedCwd, record.cwdIdentity) &&
+      record.plan === input.plan &&
+      record.toolName === input.toolName &&
+      record.toolUseId === input.toolUseId &&
+      record.command === input.command &&
+      record.requestedCwd === input.requestedCwd &&
+      record.executionCwd === input.executionCwd &&
+      record.resolvedCwd === input.resolvedCwd &&
+      record.timeoutSeconds === input.timeoutSeconds &&
+      record.executionMode === input.executionMode &&
+      record.justification === input.justification &&
+      record.runInBackground === input.runInBackground &&
+      record.executionMode === input.plan.executionRequest &&
+      record.allowedDirectories.length === allowedDirectories.length &&
+      record.allowedDirectories.every(
+        (directory, index) => directory === allowedDirectories[index],
+      )
+    );
+  });
   if (!valid) return undefined;
   const authorization = Object.freeze({ cwdIdentity: record.cwdIdentity });
   pendingHandoffs.set(authorization, record);

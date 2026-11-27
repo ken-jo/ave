@@ -15,7 +15,9 @@ import {
   type PluginStorage,
 } from "./types.js";
 import { instrumentEffectsByPath } from "../permissions/hostapi-effect-recorder.js";
+import { verifyStorageEffectTargets } from "../permissions/effect-enforcement.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
+import { rethrowLocalityFailure } from "../shared/local-path-io.js";
 
 // Create directories as 0o700 and files as 0o600; chmod at first creation because later writes preserve mode.
 const PLUGIN_DIR_MODE = 0o700;
@@ -102,6 +104,7 @@ export function createPluginStorage(
     // Stop at the lexical or filesystem root and bound the climb.
     for (let depth = 0; depth < 4096; depth++) {
       try {
+        verifyStorageEffectTargets();
         const real = await realpath(probe);
         if (!isPathWithin(canonicalRoot, real)) {
           if (storageRootAbsent) {
@@ -120,10 +123,12 @@ export function createPluginStorage(
         }
         return;
       } catch (err) {
+        rethrowLocalityFailure(err);
         if (err instanceof PluginStorageError) throw err;
         if (isMissingPathError(err)) {
           // Missing entries may climb; dangling links must fail closed because their future targets cannot be verified.
           try {
+            verifyStorageEffectTargets();
             const stats = await lstat(probe);
             if (stats.isSymbolicLink()) {
               log?.(`storage: rejected dangling symlink`, { target, probe });
@@ -135,6 +140,7 @@ export function createPluginStorage(
             }
             // For nondirectory ancestors, climb until a directory can be canonicalized.
           } catch (lstatErr) {
+            rethrowLocalityFailure(lstatErr);
             if (lstatErr instanceof PluginStorageError) throw lstatErr;
             if ((lstatErr as NodeJS.ErrnoException).code !== "ENOENT") throw lstatErr;
           }
@@ -176,16 +182,19 @@ export function createPluginStorage(
 
     async read(rel) {
       const target = await guard(rel);
+      verifyStorageEffectTargets();
       return readFile(target);
     },
 
     async readText(rel, encoding = "utf-8") {
       const target = await guard(rel);
+      verifyStorageEffectTargets();
       return readFile(target, encoding);
     },
 
     async readJson<T = unknown>(rel: string): Promise<T | null> {
       const target = await guard(rel);
+      verifyStorageEffectTargets();
       try {
         const text = await readFile(target, "utf-8");
         return JSON.parse(text) as T;
@@ -197,7 +206,9 @@ export function createPluginStorage(
 
     async write(rel, data, encoding) {
       const target = await guard(rel);
+      verifyStorageEffectTargets();
       await ensureParent(target);
+      verifyStorageEffectTargets();
       if (typeof data === "string") {
         await writeFile(target, data, { encoding: encoding ?? "utf-8", mode: PLUGIN_FILE_MODE });
       } else {
@@ -207,7 +218,9 @@ export function createPluginStorage(
 
     async writeJson<T>(rel: string, value: T, indent = 2): Promise<void> {
       const target = await guard(rel);
+      verifyStorageEffectTargets();
       await ensureParent(target);
+      verifyStorageEffectTargets();
       await writeFile(target, JSON.stringify(value, null, indent), {
         encoding: "utf-8",
         mode: PLUGIN_FILE_MODE,
@@ -216,12 +229,14 @@ export function createPluginStorage(
 
     async rm(rel, options) {
       const target = await guard(rel);
+      verifyStorageEffectTargets();
       // Recursive walks require the host-only root so no confined child can swap links midwalk.
       await rm(target, { recursive: options?.recursive ?? false, force: true });
     },
 
     async list(rel = ".") {
       const target = await guard(rel);
+      verifyStorageEffectTargets();
       try {
         return await readdir(target);
       } catch (err) {
@@ -232,6 +247,7 @@ export function createPluginStorage(
 
     async exists(rel) {
       const target = await guard(rel);
+      verifyStorageEffectTargets();
       try {
         await stat(target);
         return true;
@@ -243,6 +259,7 @@ export function createPluginStorage(
 
     async mkdir(rel) {
       const target = await guard(rel);
+      verifyStorageEffectTargets();
       await mkdir(target, { recursive: true, mode: PLUGIN_DIR_MODE });
     },
 
@@ -259,15 +276,20 @@ export function createPluginStorage(
       if (!await encryption.isAsyncEncryptionAvailable()) {
         throw new PluginStorageEncryptionUnavailableError(pluginId);
       }
+      verifyStorageEffectTargets();
       if (encryption.getSelectedStorageBackend() === "external_key") {
         let existing: Buffer | undefined;
         try { existing = await readFile(target); } catch (error) {
           if (!isMissingPathError(error)) throw error;
         }
+        verifyStorageEffectTargets();
         if (existing !== undefined) await encryption.decryptStringAsync(existing);
       }
+      verifyStorageEffectTargets();
       const ciphertext = await encryption.encryptStringAsync(plaintext);
+      verifyStorageEffectTargets();
       await ensureParent(target);
+      verifyStorageEffectTargets();
       // Secret ciphertext also requires owner-only mode.
       await writeFile(target, ciphertext, { mode: PLUGIN_FILE_MODE });
     },
@@ -278,7 +300,9 @@ export function createPluginStorage(
         throw new PluginStorageEncryptionUnavailableError(pluginId);
       }
       // Read raw ciphertext and preserve missing-file ENOENT behavior.
+      verifyStorageEffectTargets();
       const ciphertext = await readFile(target);
+      verifyStorageEffectTargets();
       // No re-encryption on read: plugin files have no write lock, so a rewrite here could undo a concurrent writeEncrypted.
       return (await encryption.decryptStringAsync(Buffer.from(ciphertext))).result;
     },

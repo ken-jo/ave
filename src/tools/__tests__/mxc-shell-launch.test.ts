@@ -34,17 +34,32 @@ const h = vi.hoisted(() => ({
   // Stands for the issued-HOME identity check (its own suite runs it on real directories): the invocation's HOME itself.
   issuedHome: vi.fn((cwd: string, home: string | undefined): boolean => cwd === home),
   assertHome: vi.fn(),
-  // Directory watches the launch arms; a failure stands for EMFILE.
+  // Notified as each launch pass checks the HOME and the declared state; the test reads which decision each ran in.
+  observe: undefined as undefined | ((check: string) => void),
+  afterTransport: undefined as undefined | (() => void),
 }));
 vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/mxc-runtime-root.js")>(),
   requireMxcContainerStartRoot: () => h.startRoot(),
 }));
-vi.mock("../../permissions/sandbox-home-registry.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../permissions/sandbox-home-registry.js")>(),
-  isIssuedContainerHome: (cwd: string, home: string | undefined) => h.issuedHome(cwd, home),
-  assertIssuedContainerHomeInPlace: (home: string | undefined) => h.assertHome(home),
-}));
+vi.mock("../../permissions/sandbox-home-registry.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../permissions/sandbox-home-registry.js")>();
+  return {
+    ...actual,
+    isIssuedContainerHome: (cwd: string, home: string | undefined) => h.issuedHome(cwd, home),
+    assertIssuedContainerHomeInPlace: (home: string | undefined) => { h.observe?.("home"); h.assertHome(home); actual.assertIssuedContainerHomeInPlace(home); },
+  };
+});
+vi.mock("../../permissions/confinement-state-paths.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../permissions/confinement-state-paths.js")>();
+  return {
+    ...actual,
+    declaredConfinementStatePaths: (...args: Parameters<typeof actual.declaredConfinementStatePaths>) => {
+      h.observe?.("declared");
+      return actual.declaredConfinementStatePaths(...args);
+    },
+  };
+});
 type DriveKind = "dir" | "file" | "link" | "placeholder" | "vanished";
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -121,7 +136,8 @@ vi.mock("../../shared/windows-path-facts.js", async (importOriginal) => {
     const link = entry?.isSymbolicLink() === true;
     const reparseTag = link ? 0xa0000003 : listed?.kind === "placeholder" ? 0x9000001a : 0;
     const directory = entry?.isDirectory() === true || link;
-    const id = canonical === null ? null : `0x${createHash("md5").update(canonical.toLowerCase() + (h.replaced.has(path.toLowerCase()) ? ":replacement" : "")).digest("hex")}`;
+    const id = canonical === null ? null
+      : `0x${createHash("md5").update(canonical.toLowerCase()).update(h.replaced.has(canonical.toLowerCase()) ? ":replacement" : "").digest("hex")}`;
     const volume = id === null ? null : "0x0000000000000007";
     return { exists: canonical !== null, canonical, directory, attributes: (directory ? 0x10 : 0) | (reparseTag === 0 ? 0 : 0x400),
       volumeSerial: volume, volumeSerialNumber: volume, fileId: id, fileIndex: id, changeTime: id === null ? null : "0x0000000000000001",
@@ -171,6 +187,11 @@ vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => {
     },
     getHostWxcExecIdentity: () => "verified-launcher",
     resolveHostWxcExecPath: h.wxcExec,
+    openMxcRequestTransport: async (...args: Parameters<typeof actual.openMxcRequestTransport>) => {
+      const transport = await actual.openMxcRequestTransport(...args);
+      h.afterTransport?.();
+      return transport;
+    },
   };
 });
 vi.mock("../../permissions/windows-confinement-evidence.js", () => {
@@ -188,6 +209,7 @@ import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation
 import * as policyPipe from "../../permissions/mxc-policy-pipe.js";
 import * as sandboxCapability from "../../permissions/sandbox-capability.js";
 import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../../permissions/sandbox-home-registry.js";
+import { decisionMemo } from "../../shared/local-path-io.js";
 
 // The container route goes away: no capability, announced as a status change.
 function endRoute(): () => void {
@@ -273,8 +295,87 @@ describe("prepareMxcShellLaunch", () => {
       live = false;
       if (change === "grant") h.drive.delete(WS.toLowerCase());
       resume.resolve();
-      await expect(pending.then(launch => launch.activate())).rejects.toThrow(/proof expired|grant changed/iu);
+      await expect(pending.then(launch => launch.activate())).rejects.toThrow(/proof expired|grant changed|target identity changed|working directory identity/iu);
     } finally { h.assertHome.mockReset(); await lifecycle.dispose(); }
+  });
+
+  it("refuses activation after a read grant moves during request transport setup", async () => {
+    relay();
+    const read = String.raw`C:\work\reading`;
+    const replacement = String.raw`C:\work\replacement`;
+    onDrive(read);
+    onDrive(replacement);
+    h.afterTransport = () => { onDrive(read, "link", replacement); };
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const launch = await prepareMxcShellLaunch({
+        ...INPUT,
+        filesystem: { ...INPUT.filesystem, allowRead: [read] },
+      }, lifecycle);
+      expect(() => launch.activate()).toThrow();
+      expect(h.openRelay.mock.calls[0]?.[1].acceptsConnections()).toBe(false);
+    } finally {
+      h.afterTransport = undefined;
+      await lifecycle.dispose();
+    }
+  });
+  it.runIf(process.platform === "win32")("refuses activation when a granted directory is replaced at the same path", async () => {
+    relay();
+    const release = vi.fn(async () => {});
+    vi.spyOn(policyPipe, "openMxcPolicyPipe").mockResolvedValue({ bindChild: () => {}, release });
+    const read = String.raw`C:\work\reading`;
+    onDrive(read);
+    h.afterTransport = () => { h.replaced.add(read.toLowerCase()); };
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const launch = await prepareMxcShellLaunch({
+        ...INPUT,
+        commandLine: "x".repeat(25_000),
+        filesystem: { ...INPUT.filesystem, allowRead: [read] },
+      }, lifecycle);
+      expect(launch.argv[1]).toBe("--config");
+      expect(() => launch.activate()).toThrow("Target identity changed");
+      expect(h.openRelay.mock.calls[0]?.[1].acceptsConnections()).toBe(false);
+      expect(await lifecycle.dispose()).toEqual([]);
+      expect(h.closeRelay).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+      expect(await probePort(launch.proxyPort)).toBe("refused");
+    } finally {
+      h.afterTransport = undefined;
+      h.replaced.clear();
+      await lifecycle.dispose();
+    }
+  });
+  it("checks the HOME and the declared state of each launch pass in one decision", async () => {
+    relay();
+    const owner = {};
+    const seen: Array<[string, unknown]> = [];
+    h.observe = (check) => { seen.push([check, decisionMemo(owner)]); };
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      await prepareMxcShellLaunch(INPUT, lifecycle);
+    } finally {
+      h.observe = undefined;
+      await lifecycle.dispose();
+    }
+    const final = seen.slice(-2);
+    expect(final.map(([check]) => check)).toEqual(["home", "declared"]);
+    expect(final[0]?.[1]).toBe(final[1]?.[1]);
+  });
+
+  it("refuses a working directory the runtime root came to cover during the launch's waits", async () => {
+    h.openRelay.mockImplementationOnce(async (_token: string, admission?: { adopt(close: () => Promise<void>): void }) => {
+      admission?.adopt(h.closeRelay);
+      h.privateRoots.mockReturnValue([WS]);
+      return { port: 9, proxyAuthorization: "Basic eA==", registerPort: h.registerPort, recordRefusal: h.recordRefusal, close: h.closeRelay };
+    });
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      await expect(prepareMxcShellLaunch(INPUT, lifecycle)).rejects.toThrow(/inside the sandbox runtime root/);
+    } finally {
+      h.privateRoots.mockReturnValue([]);
+      await lifecycle.dispose();
+    }
   });
 
   it.runIf(process.platform === "win32")("claims the watched project children at activation and quarantines only them after the shell job exits", async () => {
@@ -349,6 +450,46 @@ describe("prepareMxcShellLaunch", () => {
       expect(watchedProtectedRows()).toEqual(expect.arrayContaining(children));
       expect(await lifecycle.dispose()).toEqual([]);
       expect(watchedProtectedRows().some((path) => children.includes(path))).toBe(false);
+    } finally {
+      await lifecycle.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "win32")("publishes no watched claim and sweeps nothing when the final cwd check fails", async () => {
+    relay();
+    configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-shell-check-")));
+    const cwd = join(root, "project");
+    const home = join(root, "home");
+    mkdirSync(cwd);
+    mkdirSync(home);
+    vi.stubEnv("AVE_HOME", home);
+    const watched = join(cwd, ".ave", "commands");
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const launch = await prepareMxcShellLaunch({ ...INPUT, cwd,
+        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: [watched], requiredWriteDenies: [watched] },
+        exists: (path) => existsSync(path) || path.endsWith("wxc-exec.exe"),
+      }, lifecycle);
+      const before = watchedProtectedRows();
+      const failure = new Error("Final shell cwd check failed");
+      let refused: unknown;
+      try {
+        launch.activate(() => { throw failure; });
+      } catch (error) {
+        refused = error;
+      }
+      const after = watchedProtectedRows();
+      const active = h.openRelay.mock.calls[0]?.[1].acceptsConnections();
+      mkdirSync(watched, { recursive: true });
+
+      expect(await lifecycle.dispose()).toEqual([]);
+      expect(existsSync(watched)).toBe(true);
+      expect(launch.watchedNotice).toBeUndefined();
+      expect(after).toEqual(before);
+      expect(active).toBe(false);
+      expect(refused).toBe(failure);
     } finally {
       await lifecycle.dispose();
       rmSync(root, { recursive: true, force: true });

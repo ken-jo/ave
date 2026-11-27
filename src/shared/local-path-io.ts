@@ -11,19 +11,56 @@ import { classifyWindowsSpelling, normalizeWindowsPathSpelling, windowsVolumeRoo
  *     parent a lookup answers with, and admits any lookup of the path or an ancestor (`admitRouteAncestor`).
  * A share, device, ambiguous or unproven spelling is refused (`ENETWORKSHAREPATH`) before anything is opened, and so is a
  * walk that cannot finish. A verdict serves only the decision that issued it.
+ *
+ * A decision computes and returns what it found; authority-bearing live state (grants, allow-lists, revocations) is
+ * changed after it returns, so a failed drive query, which fails the whole decision at its exit, never leaves a
+ * half-applied change behind. A failed drive query poisons its decision: a catch that turns lookup errors into "no
+ * answer" calls `rethrowLocalityFailure` first, and nothing filesystem-backed runs on the poisoned decision afterwards.
+ * Windows filesystem facts are never memoized across decisions.
  */
 
 class Decision {
   readonly drives = new Map<string, DriveIdentity>();
+  failure?: { error: unknown; drive: string };
   readonly memos = new Map<object, Map<string, unknown>>();
   // A decision opened by a single lookup outside any running decision; it serves only the synchronous run that opened it.
   open = true;
   constructor(readonly detached = false, readonly resourcePath?: string) {}
+
+  close(): void {
+    this.open = false;
+    this.drives.clear();
+    for (const memo of this.memos.values()) memo.clear();
+    this.memos.clear();
+  }
+
+  assertUsable(): void {
+    if (this.failure !== undefined) throw this.failure.error;
+  }
 }
 
 let active: Decision | undefined;
+const driveQueryFailures = new WeakMap<object, string>();
+const ownerMemos = new WeakMap<object, Map<string, unknown>>();
 
-/** One permission, sandbox or listing decision; drive mappings are read again for the next one. */
+/** Whether `error` is a failed drive query: no fallback, default or provider path may stand in for its decision. */
+export function isLocalityFailure(error: unknown): boolean {
+  return typeof error === "object" && error !== null && driveQueryFailures.has(error);
+}
+
+export function localityFailureAffectsPath(error: unknown, path: string): boolean {
+  const spelling = classifyWindowsSpelling(path, "win32");
+  return spelling.kind === "local-drive" && typeof error === "object" && error !== null &&
+    driveQueryFailures.get(error) === spelling.drive;
+}
+
+/** For a catch that maps lookup errors to "no answer": a failed drive query, or any error inside a failed decision, propagates. */
+export function rethrowLocalityFailure(error: unknown): void {
+  if (isLocalityFailure(error)) throw error;
+  active?.assertUsable();
+}
+
+/** A single synchronous judgment with an explicit helper resource path. */
 export type LocalityDecision = object;
 
 export function openLocalityDecision(resourcePath?: string): LocalityDecision {
@@ -31,45 +68,68 @@ export function openLocalityDecision(resourcePath?: string): LocalityDecision {
 }
 
 /**
- * Runs `fn` in `decision`, else in the decision already running, else in a new one. Two top-level calls never share a
- * decision, so no drive answer serves a judgment that did not read it.
+ * A yes/no judgment for a caller that has no decision of its own (a timer, an event callback): a failed drive query
+ * answers no. Inside a running decision the failure propagates to that decision instead.
  */
+export function judgeOrRefuse(judge: () => boolean): boolean {
+  if (active !== undefined) return withLocalityDecision(judge);
+  try {
+    return withLocalityDecision(judge);
+  } catch (error) {
+    if (isLocalityFailure(error)) return false;
+    throw error;
+  }
+}
+
+/** Propagate a failed drive query before continuing with native filesystem work. */
+export function assertLocalityDecisionUsable(): void {
+  active?.assertUsable();
+}
+
+/** Reuse an enclosing synchronous judgment or open a fresh one. */
 export function withLocalityDecision<T>(fn: () => T, decision?: LocalityDecision): T {
   const chosen = decision ?? active ?? new Decision();
-  if (!(chosen instanceof Decision)) throw new TypeError("Unknown locality decision");
-  if (chosen === active) return fn();
+  if (process.platform !== "win32") {
+    if (!(chosen instanceof Decision)) throw new TypeError("Unknown locality decision");
+    if (chosen === active) return fn();
+    const previous = active;
+    active = chosen;
+    try {
+      const result = fn();
+      if (typeof (result as { then?: unknown } | null)?.then === "function") throw new Error("A locality decision cannot span an await");
+      return result;
+    } finally {
+      active = previous;
+    }
+  }
+  if (!(chosen instanceof Decision) || chosen.detached || !chosen.open || (active !== undefined && chosen !== active)) {
+    throw new TypeError("Invalid locality decision");
+  }
+  chosen.assertUsable();
   const previous = active;
   active = chosen;
   try {
     const result = fn();
+    chosen.assertUsable();
     if (typeof (result as { then?: unknown } | null)?.then === "function") throw new Error("A locality decision cannot span an await");
     return result;
+  } catch (error) {
+    // Whatever a failed decision throws carries its failure, however a lookup wrapped it.
+    if (chosen.failure !== undefined && typeof error === "object" && error !== null) driveQueryFailures.set(error, chosen.failure.drive);
+    throw error;
   } finally {
     active = previous;
+    if (previous === undefined) chosen.close();
   }
 }
 
-/**
- * A decision for each synchronous run of a caller that is entered repeatedly, such as the rows of one listing: rows in
- * one run share drive answers, and the first row after an await proves them again. Inside a running decision, that one.
- */
-export function createRunLocality(): () => LocalityDecision {
-  let current: Decision | undefined;
-  return () => {
-    if (active !== undefined) return active;
-    if (current?.open !== true) {
-      const decision = new Decision();
-      current = decision;
-      queueMicrotask(() => { decision.open = false; });
-    }
-    return current;
-  };
-}
-
 function currentDecision(): Decision {
-  if (active !== undefined) return active;
+  if (active !== undefined) {
+    active.assertUsable();
+    return active;
+  }
   const decision = new Decision(true);
-  queueMicrotask(() => { decision.open = false; });
+  queueMicrotask(() => { decision.close(); });
   return decision;
 }
 
@@ -80,6 +140,17 @@ export function decisionMemo<V>(owner: object): Map<string, V> {
   if (memo === undefined) {
     memo = new Map();
     decision.memos.set(owner, memo);
+  }
+  return memo as Map<string, V>;
+}
+
+/** Matcher facts live for one Windows decision or for the lifetime of their owner on other hosts. */
+export function matcherMemo<V>(owner: object): Map<string, V> {
+  if (process.platform === "win32") return decisionMemo<V>(owner);
+  let memo = ownerMemos.get(owner);
+  if (memo === undefined) {
+    memo = new Map();
+    ownerMemos.set(owner, memo);
   }
   return memo as Map<string, V>;
 }
@@ -99,6 +170,8 @@ export interface LocalRoute {
   verdict: LocalPathVerdict;
   /** The physical path the walk reached; undefined when it found a missing name. */
   physical: string | undefined;
+  /** The last existing physical component when projecting a missing suffix. */
+  existingAncestor?: string;
   /** Whether the walk followed a symbolic link or junction to reach the physical path. */
   followedLink: boolean;
 }
@@ -106,6 +179,7 @@ export interface LocalRoute {
 function use(verdict: LocalPathVerdict, route: boolean): string {
   const own = active === undefined ? verdict.decision.detached && verdict.decision.open : verdict.decision === active;
   if (!issued.has(verdict) || !own) throw new Error("Filesystem lookup without a verdict of this decision");
+  verdict.decision.assertUsable();
   if (route && !verdict.route) throw new Error("Filesystem lookup follows a name its verdict did not walk");
   return verdict.path;
 }
@@ -132,9 +206,21 @@ function refuseSpelling(path: string): string | undefined {
 }
 
 function driveIdentity(drive: string, decision: Decision): DriveIdentity {
+  decision.assertUsable();
   let identity = decision.drives.get(drive);
   if (identity === undefined) {
-    identity = queryDriveIdentity(drive, decision.resourcePath);
+    try {
+      identity = decision.resourcePath === undefined
+        ? queryDriveIdentity(drive)
+        : queryDriveIdentity(drive, decision.resourcePath);
+      if (!identity.local && identity.unavailable !== undefined) {
+        throw Object.assign(refused(identity.root), { cause: identity.unavailable });
+      }
+    } catch (error) {
+      if (typeof error === "object" && error !== null) driveQueryFailures.set(error, drive);
+      decision.failure = { error, drive };
+      throw error;
+    }
     decision.drives.set(drive, identity);
   }
   return identity;
@@ -152,8 +238,7 @@ function proveSpelling(path: string, decision: Decision, rest: readonly string[]
   const identity = driveIdentity(drive, decision);
   if (identity.local) return;
   const components = path.replace(/^[\\/]{2}\?[\\/]/u, "").slice(3).split(/[\\/]+/u).filter(Boolean);
-  const refusal = refused(identity.root, [identity.root.replace(/[\\/]+$/u, ""), ...components, ...rest].join("\\"));
-  throw identity.unavailable === undefined ? refusal : Object.assign(refusal, { cause: identity.unavailable });
+  throw refused(identity.root, [identity.root.replace(/[\\/]+$/u, ""), ...components, ...rest].join("\\"));
 }
 
 /** Whether drive `drive` (`X:`) exists in this decision: a local volume, or a mapping nothing has proved local. */
@@ -257,9 +342,10 @@ export function admitRouteAncestor(route: LocalRoute, ancestor: string): LocalPa
 function walkWindowsRoute(
   path: string, decision: Decision, maxSymlinkHops: number, facts: LocalFilesystemFacts | undefined, projectMissing: boolean,
   rejectDanglingLink = false,
-): Pick<LocalRoute, "physical" | "followedLink"> {
+): Pick<LocalRoute, "physical" | "followedLink" | "existingAncestor"> {
   let hops = 0;
   let projectedMissing = false;
+  let existingAncestor: string | undefined;
   const entry = (candidate: string) => LocalPathVerdict.issue(candidate, false, decision);
   const routed = (candidate: string) => LocalPathVerdict.issue(candidate, true, decision);
   const reachedPastLink = (error: unknown, rest: readonly string[]): unknown => {
@@ -308,6 +394,7 @@ function walkWindowsRoute(
     const pending = components.slice(remaining);
     // A lookup that answers with another spelling re-enters the boundary: a share, a device or another drive.
     proveSpelling(physicalParent, decision, pending);
+    if (projectMissing) existingAncestor = physicalParent;
     facts?.onLocalPath(lexicalParent, physicalParent, false, hops !== 0);
     for (const [index, component] of pending.entries()) {
       if (component === ".") continue;
@@ -354,12 +441,13 @@ function walkWindowsRoute(
         catch (error) { throw unproven(candidate, rest, error); }
       } else physicalParent = candidate;
       proveSpelling(physicalParent, decision, rest);
+      if (projectMissing && !projectedMissing) existingAncestor = physicalParent;
       facts?.onLocalPath(lexicalParent, physicalParent, false, hops !== 0);
     }
     return physicalParent;
   };
   const physical = walk(path);
-  return { physical, followedLink: hops !== 0 };
+  return { physical, followedLink: hops !== 0, ...(existingAncestor === undefined ? {} : { existingAncestor }) };
 }
 
 function missingEntry(error: unknown): boolean {
@@ -419,6 +507,7 @@ export function routeLocality(path: string): "local" | "refused" | "incomplete" 
     withLocalityDecision(() => admitLocalRoute(path));
     return "local";
   } catch (error) {
+    assertLocalityDecisionUsable();
     const { code, incomplete } = error as { code?: unknown; incomplete?: unknown };
     return code === "ENETWORKSHAREPATH" && incomplete !== true ? "refused" : "incomplete";
   }

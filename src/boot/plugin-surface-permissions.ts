@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import type { PluginToolInvocationContext } from "../plugins/runtime/index.js";
 import type { ToolPermissionContext } from "../tools/executor.js";
 import { createWorkspaceRootRevocationFilter } from "../permissions/workspace-root-lifecycle.js";
@@ -51,13 +52,18 @@ export function createPluginSurfacePermissionScope(
       removedRoot: string,
       revocation: { readonly preserveRoots?: readonly string[] } = {},
     ): { sessionDirectoriesRemoved: number; turnDirectoriesRemoved: number } {
-      const isRevoked = createWorkspaceRootRevocationFilter(
-        removedRoot,
-        revocation.preserveRoots ?? [],
-      );
+      // Judge every owner's grants first; the live map changes only once the whole judgment has succeeded.
+      const plan = withLocalityDecision(() => {
+        const isRevoked = createWorkspaceRootRevocationFilter(
+          removedRoot,
+          revocation.preserveRoots ?? [],
+        );
+        return [...sessionAdditionalDirectories].map(([subject, directories]) => ({
+          subject, directories, retained: directories.filter((directory) => !isRevoked(directory)),
+        }));
+      });
       let sessionDirectoriesRemoved = 0;
-      for (const [subject, directories] of sessionAdditionalDirectories) {
-        const retained = directories.filter((directory) => !isRevoked(directory));
+      for (const { subject, directories, retained } of plan) {
         if (retained.length === directories.length) continue;
         sessionDirectoriesRemoved += directories.length - retained.length;
         if (retained.length === 0) sessionAdditionalDirectories.delete(subject);
