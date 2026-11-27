@@ -1,9 +1,13 @@
 import { spawn } from "node:child_process";
-import { closeSync, mkdtempSync, openSync, rmSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  buildBubblewrapShellRequest, LINUX_SHELL_ENVIRONMENT_FAILED_CODE, LINUX_SHELL_READY_FD, linuxShellExtraDescriptors, writeLinuxShellEnvironment,
+} from "../mxc-linux.js";
+import { posixPolicyLookups } from "../mxc-posix.js";
 
 const NATIVE = process.env.AVE_RUN_MXC_LINUX_BOUNDARY === "1";
 const HELPER = resolve("resources", "linux-shell-seccomp", process.arch, "apply-seccomp");
@@ -73,5 +77,49 @@ describe.runIf(NATIVE)("native Linux filter helper options", () => {
 
   it("keeps the option-free form: the first word is the command", async () => {
     await expect(run(["/bin/echo", "--close-other-fds"])).resolves.toMatchObject({ code: 0, stdout: "--close-other-fds\n" });
+  });
+});
+
+// The Linux shell's bootstrap, as the request carries it, under the filter, under dash and under bash started as `sh`
+// (some distributions link /bin/sh to bash, whose POSIX mode ends the shell on a failed special builtin).
+describe.runIf(NATIVE)("native Linux shell bootstrap under each POSIX sh", () => {
+  let root: string;
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), "ave-shell-bootstrap-")); });
+  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+
+  const shells = [["dash", "/bin/sh"], ["bash as sh", "bash"]] as const;
+
+  async function run(shell: string, script: string) {
+    const { request } = buildBubblewrapShellRequest({
+      grants: { readwrite: ["/work"], readonly: ["/usr"], denied: [], chainFolders: [], ungrantedDenies: [] },
+      lookups: { ...posixPolicyLookups("/home/example", false), exists: () => true, canonical: (path: string) => path },
+      cwd: "/work", commandLine: 'printf "ran %s\\n" "$AVE_MARKER"', timeoutMs: 3000, env: {},
+      proxyUrl: "http://127.0.0.1:12345", helper: HELPER,
+    });
+    let commandLine: string = request.process.commandLine;
+    if (shell === "bash") {
+      // bash takes POSIX mode from the name it was started under.
+      const link = join(root, "sh");
+      symlinkSync("/bin/bash", link);
+      commandLine = commandLine.replace(" -- /bin/sh -c ", ` -- ${link} -c `);
+      expect(commandLine).toContain(link);
+    }
+    const child = spawn("/bin/sh", ["-c", commandLine], { stdio: ["ignore", "pipe", "pipe", ...linuxShellExtraDescriptors(), "pipe"] });
+    writeLinuxShellEnvironment(child, Buffer.from(script));
+    const [stdout, stderr, ready, code] = await Promise.all([
+      collect(child.stdout), collect(child.stderr), collect(child.stdio[LINUX_SHELL_READY_FD] as Readable),
+      new Promise<number | null>(done => child.once("close", done)),
+    ]);
+    return { stdout, stderr, ready, code };
+  }
+
+  it.each(shells)("loads the environment, signals ready and runs the command under %s", async (_name, shell) => {
+    const result = await run(shell, "export AVE_MARKER='present\n'\n");
+    expect(result, result.stderr).toMatchObject({ code: 0, ready: "\n", stdout: "ran present\n\n" });
+  });
+
+  it.each(shells)("exits %s's bootstrap with the load-failure status and no ready byte when an export fails", async (_name, shell) => {
+    const result = await run(shell, "readonly AVE_MARKER=fixed\nexport AVE_MARKER=changed\n");
+    expect(result).toMatchObject({ code: LINUX_SHELL_ENVIRONMENT_FAILED_CODE, ready: "", stdout: "" });
   });
 });

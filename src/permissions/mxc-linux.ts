@@ -322,13 +322,16 @@ export function buildBubblewrapShellRequest(input: {
     && grants.placeholders?.some(row => row.path === posix.join(home, ".gitconfig"))) env.GIT_CONFIG_GLOBAL = "/dev/null";
   // The environment arrives on its descriptor, a socket Ave writes and closes, which the shell reads whole and closes
   // before the command. It is read into the positional parameters, never a named variable the environment could
-  // hold; the trailing `.` proves the read finished and keeps trailing newlines. `command eval` keeps a failed export
-  // from ending the shell before it reports the failure, in every POSIX sh. The ready byte follows the load.
+  // hold; the trailing `.` proves the read finished and keeps trailing newlines. The script is loaded once in a
+  // subshell first: bash started as `sh` ends the shell on a failed assignment even under `command`, and only a
+  // subshell lets the bootstrap report it. The script is only exports, so the second load does the same. The ready
+  // byte follows the load.
   const fd = LINUX_SHELL_ENVIRONMENT_FD;
   const ready = LINUX_SHELL_READY_FD;
   const failed = LINUX_SHELL_ENVIRONMENT_FAILED_CODE;
   const bootstrap = `set -- "$(/bin/cat <&${fd} && printf .)" && exec ${fd}<&- || exit ${failed}\n`
     + `case $1 in *.) ;; *) exit ${failed} ;; esac\n`
+    + `(command eval "\${1%.}") || exit ${failed}\n`
     + `command eval "\${1%.}" || exit ${failed}\n`
     + "set --\n"
     + `printf '\\n' >&${ready} && exec ${ready}>&- || exit ${failed}\n`

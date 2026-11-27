@@ -460,11 +460,12 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
       '  [ -f "$fd" ] || continue',
       '  printf "holder %s\\n" "$fd"; if (printf x >> "$fd") 2>/dev/null; then echo appended; fi',
       "done",
-      "true",
+      'printf "marker %s\\n" "$AVE_MARKER"',
     ].join("\n"), { env: { AVE_MARKER: "present" } });
     const result = await run(launch);
     expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout).toBe("");
+    // Delivered, and no process in the namespace holds it as a file.
+    expect(result.stdout).toBe("marker present\n");
   });
 
   it("tunnels a verified TLS response through the invocation proxy", async () => {
@@ -553,7 +554,7 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
         return { requestPath, requestSha256: digest(requestPath), environmentPath, environmentSha256: digest(environmentPath) };
       };
       // The real launcher runs the command; the stand-in then records a launcher error after it, as a launcher that
-      // failed after the start does. Only the helper inside the container can have written the ready byte.
+      // failed after the start does. Only the shell's bootstrap inside the container can have written the ready byte.
       const failing = join(scratch, "failing-launcher");
       writeFileSync(failing, `#!/bin/sh\n${quote(programs.launcher)} "$@"\nstatus=$?\n`
         + `printf 'Exit code: -1 (0xFFFFFFFF)\\nError: forced after the start\\n' >> "$2"\nexit "$status"\n`, { mode: 0o755 });

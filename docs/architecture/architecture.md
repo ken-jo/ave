@@ -3578,14 +3578,25 @@ reason to ask. Headless runs deny. A failed contained launch is refused.
 
 The request carries no environment, because the launcher would put it on
 bwrap's command line, where any local process can read it. The shell's
-environment is a 0600 script beside the request under the runtime root. The
-launch hands it over on descriptor 9, and the contained shell sources it and
-closes it before the command. The filter helper closes every other inherited
-descriptor, among them one to the launcher's user namespace. Once its filter is
-on, it writes one byte on descriptor 4 just before the command. A launcher error
+environment is a 0600 script beside the request under the runtime root, checked
+against its hash at launch. The launch writes those bytes into a socket on
+descriptor 9 and closes its side. It is never the file: the launcher's own shell
+inside the container keeps descriptor 9 open for the whole run, and a file there
+could be reopened for writing through `/proc`. The contained shell reads the
+socket whole with `/bin/cat` into its positional parameters, loads it once in
+a subshell (bash started as `sh` ends the shell on a failed assignment) and
+then for real, and closes it before the command. This is proved natively under
+dash and under bash started as `sh`. Every name must be one a POSIX
+shell can export and does not own; any other name refuses the launch. The
+filter helper closes every inherited descriptor but 9 and 4, among them one to
+the launcher's user namespace. Once the environment has loaded under the
+filter, the shell writes one byte on descriptor 4 just before the command. A
+shell whose environment did not load exits 125 with no such byte, reported as
+`container-environment-failed`, never as the command's status. A launcher error
 with no such byte is a refused start. A launcher error after it is a failed run
 (`container-run-failed`): its output is returned, because the command may have
-run in part.
+run in part. The boot canary keeps at most 64 KiB of its launcher's output and
+stops a launcher that writes more.
 
 Cancellation sends TERM to the launcher and escalates to its process group
 after two seconds if necessary. The launcher also enforces the command deadline,

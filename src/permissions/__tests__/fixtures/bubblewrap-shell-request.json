@@ -2,7 +2,7 @@
   "version": "0.9.0-alpha",
   "containment": "bubblewrap",
   "process": {
-    "commandLine": "'/app/filter/apply-seccomp' --close-other-fds --keep-fd 9 --keep-fd 4 -- /bin/sh -c 'set -- \"$(/bin/cat <&9 && printf .)\" && exec 9<&- || exit 125\ncase $1 in *.) ;; *) exit 125 ;; esac\ncommand eval \"${1%.}\" || exit 125\nset --\nprintf '\"'\"'\\n'\"'\"' >&4 && exec 4>&- || exit 125\nexport NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1\nprintf '\"'\"'%s'\"'\"' control'",
+    "commandLine": "'/app/filter/apply-seccomp' --close-other-fds --keep-fd 9 --keep-fd 4 -- /bin/sh -c 'set -- \"$(/bin/cat <&9 && printf .)\" && exec 9<&- || exit 125\ncase $1 in *.) ;; *) exit 125 ;; esac\n(command eval \"${1%.}\") || exit 125\ncommand eval \"${1%.}\" || exit 125\nset --\nprintf '\"'\"'\\n'\"'\"' >&4 && exec 4>&- || exit 125\nexport NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1\nprintf '\"'\"'%s'\"'\"' control'",
     "cwd": "/work",
     "timeout": 3000,
     "inheritDefaultEnv": false,
