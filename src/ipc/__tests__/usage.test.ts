@@ -217,7 +217,7 @@ describe("ave:usage:export-csv", () => {
     expect(result.canceled).toBe(true);
   });
 
-  it("saves blank incomplete cost and the endpoint reason count in the CSV file", async () => {
+  it("saves a priced subtotal with partial coverage and leaves unavailable prices blank in the CSV file", async () => {
     const { dialog } = await import("electron");
     const root = mkdtempSync(join(tmpdir(), "ave-usage-csv-"));
     try {
@@ -247,7 +247,7 @@ describe("ave:usage:export-csv", () => {
       expect(csv.split("\r\n")).toEqual([
         "date,vendor,model,inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens,totalTokens,cost,unknownCostTurns,endpointPriceUnavailableTurns,legacyRouteUnrecordedTurns,auditIncomplete",
         '"2026-05-22","openai","gpt-4o",100,10,20,5,110,"",1,1,0,""',
-        '"range-total","openai","gpt-4o","","","","","","",1,0,1,1',
+        '"range-total","openai","gpt-4o","","","","","",0.25,1,0,1,1',
       ]);
     } finally {
       await cleanupTmpDir(root);

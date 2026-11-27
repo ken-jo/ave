@@ -34,6 +34,8 @@ export interface UsageTotals {
   totalTokens: number;
   /** Subtotal of priced requests. Unknown requests contribute no amount. */
   cost: number;
+  /** A known price can contribute a zero subtotal. */
+  hasPricedCost?: true;
   unknownCostTurns?: number;
   endpointPriceUnavailableTurns?: number;
   legacyRouteUnrecordedTurns?: number;
@@ -208,8 +210,12 @@ function addTo(
       ? input + output + cacheRead + cacheWrite
       : input + output;
   const subtotal = cost === undefined ? undefined : target.cost + cost;
-  if (subtotal !== undefined && Number.isFinite(subtotal)) target.cost = subtotal;
-  else target.unknownCostTurns = (target.unknownCostTurns ?? 0) + 1;
+  if (subtotal !== undefined && Number.isFinite(subtotal)) {
+    target.cost = subtotal;
+    target.hasPricedCost = true;
+  } else {
+    target.unknownCostTurns = (target.unknownCostTurns ?? 0) + 1;
+  }
   if (unknownPricingReason === "endpoint-price-unavailable") {
     target.endpointPriceUnavailableTurns = (target.endpointPriceUnavailableTurns ?? 0) + 1;
   } else if (unknownPricingReason === "legacy-route-unrecorded") {

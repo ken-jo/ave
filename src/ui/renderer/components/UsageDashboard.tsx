@@ -64,7 +64,7 @@ function buildCsvRows(summary: UsageSummaryShape): Array<Record<string, string |
     cacheReadTokens: usage.cacheReadTokens ?? 0,
     cacheWriteTokens: usage.cacheWriteTokens ?? 0,
     totalTokens: usage.totalTokens,
-    cost: summary.auditIncomplete || usage.unknownCostTurns || !Number.isFinite(usage.cost) ? "" : usage.cost,
+    cost: Number.isFinite(usage.cost) && (usage.hasPricedCost || !usage.unknownCostTurns || usage.cost > 0) ? usage.cost : "",
     ...(summary.auditIncomplete ? { auditIncomplete: 1 } : {}),
     unknownCostTurns: usage.unknownCostTurns ?? 0,
     endpointPriceUnavailableTurns: usage.endpointPriceUnavailableTurns ?? 0,

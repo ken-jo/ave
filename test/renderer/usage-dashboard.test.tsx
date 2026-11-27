@@ -203,8 +203,8 @@ describe("UsageDashboard", () => {
     if (readable) {
       fireEvent.click(screen.getByRole("button", { name: t("usageDashboard.exportCsv") }));
       await waitFor(() => expect(api.exportUsageCsv).toHaveBeenCalledWith([
-        expect.objectContaining({ cost: "", totalTokens: 1_000, auditIncomplete: 1 }),
-        expect.objectContaining({ date: "range-total", cost: "", totalTokens: 1_000, auditIncomplete: 1 }),
+        expect.objectContaining({ cost: 0.003, totalTokens: 1_000, auditIncomplete: 1 }),
+        expect.objectContaining({ date: "range-total", cost: 0.003, totalTokens: 1_000, auditIncomplete: 1 }),
       ]));
     }
   });

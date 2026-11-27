@@ -54,7 +54,7 @@ export function registerUsageHandlers(deps: IpcDeps): void {
     const lines = [
       headers.join(","),
       ...rows.map((row) => headers.map((header) => {
-        const value = header === "cost" && row.auditIncomplete === 1 ? "" : row[header];
+        const value = row[header];
         return typeof value === "number" ? String(value) : `"${String(value ?? "").replaceAll('"', '""')}"`;
       }).join(",")),
     ];
