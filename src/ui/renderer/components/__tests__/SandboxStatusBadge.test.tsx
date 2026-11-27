@@ -71,7 +71,7 @@ describe("SandboxStatusBadge", () => {
     render(<SandboxStatusBadge capability={{
       ...capability({ platform: "linux", active: true }),
       containerShell: { state: "unavailable", reason: "tools-missing", detail: ["slirp4netns"],
-        egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } },
+        egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" } },
     }} />);
     expect(screen.getByTestId("sandbox-off-status")).toHaveTextContent("셸 격리 사용 불가");
   });

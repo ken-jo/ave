@@ -2052,7 +2052,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       platform: "linux", enabled: true, available: true, kind: "full", reason: "",
       runtime: { available: true, kind: "full", reason: "" },
       containerShell: { state: "unavailable", reason: "tools-missing", detail: ["bwrap", "iptables", "iptables-restore"],
-        egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } },
+        egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" } },
       confines: { filesystem: true, process: true, network: true },
     } as never);
     await act(async () => { render(<PermissionsTab />); });
