@@ -734,7 +734,11 @@ describe("file native tools", () => {
   });
 
   it.skipIf(process.platform === "win32").each([
-    ["keeps listing a POSIX file-tree root that stops being sensitive during directory I/O", true, [{ relativePath: "notes.txt" }]],
+    [
+      "keeps listing a POSIX file-tree root that stops being sensitive during directory I/O",
+      true,
+      [{ relativePath: "notes.txt" }, { relativePath: "report.pem" }],
+    ],
     ["hides rows when a POSIX file-tree root becomes sensitive during directory I/O", false, []],
   ] as const)("%s", async (_name, sensitiveAtSetup, files) => {
     const home = join(workDir, "listing-home");
