@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
@@ -6,9 +6,13 @@ import { connect, createServer, type Server } from "node:net";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import type { Writable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildNativeShellSupervisor } from "../../__tests__/support/mxc-shell-supervisor-native.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { __resetManagedChildProcessesForTest, forceKillAndDrainManagedChildProcesses, forceKillManagedChildProcesses,
+  trackManagedChildProcess } from "../../main/managed-child-processes.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { createContainedShellLifecycle } from "../../tools/contained-shell-lifecycle.js";
 import { prepareMxcPosixShellLaunch } from "../../tools/mxc-posix-shell-launch.js";
 import { quoteSandboxWrappedWord as quote } from "../sandbox-wrapped-command.js";
@@ -20,7 +24,7 @@ import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootFor
 import pins from "../mxc-launcher-pins.json" with { type: "json" };
 import { _runSeatbeltCanaryForTest, buildSeatbeltShellRequest, detectHostMxcMacShellSupport } from "../mxc-macos.js";
 import { posixPolicyLookups } from "../mxc-posix.js";
-import { stageMxcShellRequest, startMxcShellSupervisor } from "../mxc-shell-supervisor-client.js";
+import { _mxcShellStandbyPidForTest, stageMxcShellRequest, startMxcShellSupervisor } from "../mxc-shell-supervisor-client.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../policy-model.js";
 
 const NATIVE = process.platform === "darwin" && process.arch === "arm64";
@@ -29,6 +33,63 @@ let supervisor: Awaited<ReturnType<typeof buildNativeShellSupervisor>>;
 if (NATIVE) {
   beforeAll(async () => { supervisor = await buildNativeShellSupervisor(); });
   afterAll(() => supervisor.dispose());
+}
+
+// Five process kinds the backend must reap: the shell, a background child, a separate-session writer that keeps the
+// inherited stdout open, a double-fork daemon reparented to launchd, and a nohup loop. Each records its pid and ticks.
+const DETACH_KINDS = ["shell", "child", "setsid", "daemon", "nohup"] as const;
+const DETACH_WORKLOAD = [
+  "echo $$ > shell.pid",
+  "/bin/sleep 47 & echo $! > child.pid",
+  `/usr/bin/perl -MPOSIX -e 'POSIX::setsid(); open(F,">setsid.pid"); print F $$; close F; $|=1; while(1){ open(T,">>tick-setsid"); print T "t\\n"; close T; print "tick\\n"; select(undef,undef,undef,0.1);}' &`,
+  `/usr/bin/perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exit if fork; open(F,">daemon.pid"); print F $$; close F; while(1){ open(T,">>tick-daemon"); print T "t\\n"; close T; select(undef,undef,undef,0.1);}'`,
+  "/usr/bin/nohup /bin/sh -c 'echo $$ > nohup.pid; while :; do echo t >> tick-nohup; /bin/sleep 0.1; done' >/dev/null 2>&1 &",
+  "/bin/sleep 47",
+].join("\n");
+const DETACH_TICKS = ["tick-setsid", "tick-daemon", "tick-nohup"];
+// A respawner that forks, leaves and starts a new session every 5 ms.
+const RESPAWN_WORKLOAD = [
+  "echo $$ > shell.pid",
+  `/usr/bin/perl -MPOSIX -e 'while(1){ my $p=fork; if($p){ exit; } POSIX::setsid(); open(F,">hop.pid"); print F $$; close F; open(T,">>tick-hop"); print T "t\\n"; close T; select(undef,undef,undef,0.005);}' &`,
+  "/bin/sleep 47",
+].join("\n");
+
+/** The pids among `pids` that `ps` lists as running. */
+function livePids(pids: readonly number[]): number[] {
+  const listed = spawnSync("/bin/ps", ["-o", "pid=", "-p", pids.join(",")], { encoding: "utf8" });
+  return listed.stdout.split("\n").map(line => Number(line.trim())).filter(pid => pids.includes(pid));
+}
+
+async function recordedPids(dir: string, names: readonly string[]): Promise<Record<string, number>> {
+  const pids: Record<string, number> = {};
+  await vi.waitFor(() => {
+    for (const name of names) {
+      const file = join(dir, `${name}.pid`);
+      const pid = existsSync(file) ? Number(readFileSync(file, "utf8").trim()) : NaN;
+      expect(pid, name).toBeGreaterThan(1);
+      pids[name] = pid;
+    }
+  }, { interval: 20, timeout: 5_000 });
+  return pids;
+}
+
+function tickSizes(dir: string, ticks: readonly string[]): number[] {
+  return ticks.map(name => statSync(join(dir, name), { throwIfNoEntry: false })?.size ?? 0);
+}
+
+/** Every recorded pid is gone and no tick file grows afterwards. */
+async function expectReaped(dir: string, pids: Record<string, number>, ticks: readonly string[]): Promise<void> {
+  expect(livePids(Object.values(pids)), JSON.stringify(pids)).toEqual([]);
+  const before = tickSizes(dir, ticks);
+  await new Promise(resolve => setTimeout(resolve, 400));
+  expect(tickSizes(dir, ticks)).toEqual(before);
+}
+
+/** Test cleanup only: stop pids this test recorded, after its assertions. Ave itself signals none of them. */
+function reapRecorded(pids: Record<string, number>): void {
+  for (const pid of livePids(Object.values(pids))) {
+    try { process.kill(pid, "SIGKILL"); } catch { /* exited between listing and kill */ }
+  }
 }
 
 async function collectShell(launch: ReturnType<typeof startMxcShellSupervisor>) {
@@ -482,17 +543,286 @@ req.end();
     expect((await otherRun.completion).cancelled).toBe(true);
   }, 20_000);
 
-  it("records one-start latency across twenty product shell commands", async () => {
+  /** A staged request outside the product launch, for supervisor-level cases; the profile admits `project` only. */
+  async function stageDirect(
+    commandLine: string, timeoutMs: number,
+    edit?: (request: ReturnType<typeof buildSeatbeltShellRequest>["request"]) => void,
+    model = buildPolicyModel({
+      floors: [], userGrants: [], extensionManifests: [], launchGrants: [policyGrantRow(project, "rw", "launch-grant", true)],
+    }),
+  ) {
+    const { request } = buildSeatbeltShellRequest({
+      model, cwd: project, commandLine, timeoutMs, lookups: posixPolicyLookups(root, true),
+      env: { HOME: home, PATH: "/usr/bin:/bin" }, proxyUrl: "http://127.0.0.1:1",
+    });
+    edit?.(request);
+    const staging = mkdtempSync(join(root, "direct-"));
+    return { staging, staged: await stageMxcShellRequest(join(staging, "request.json"), request) };
+  }
+
+  it("cancels every process kind at once, including a separate-session writer on inherited stdout", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const launch = await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 });
+    const lease = leases.at(-1)!;
+    const pending = run(launch);
+    const pids = await recordedPids(project, DETACH_KINDS);
+    try {
+      await vi.waitFor(() => expect(tickSizes(project, DETACH_TICKS).every(size => size > 0)).toBe(true));
+      expect(livePids(Object.values(pids)).sort()).toEqual(Object.values(pids).sort());
+      const stoppedAt = performance.now();
+      lease.revoke();
+      const result = await pending;
+      expect(performance.now() - stoppedAt).toBeLessThan(2_000);
+      expect(result).toMatchObject({ cancelled: true, timedOut: false, cleanupUnverified: false });
+      expect(result.stdout).toContain("tick");
+      await expectReaped(project, pids, DETACH_TICKS);
+      expect(await lease.dispose()).toEqual([]);
+    } finally {
+      reapRecorded(pids);
+    }
+  });
+
+  it("reaps every process kind on the request timeout", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const pending = run(await prepare(DETACH_WORKLOAD, { timeoutMs: 2_500 }));
+    const pids = await recordedPids(project, DETACH_KINDS);
+    try {
+      expect(livePids(Object.values(pids)).sort()).toEqual(Object.values(pids).sort());
+      expect(await pending).toMatchObject({ timedOut: true, cancelled: false, cleanupUnverified: false });
+      await expectReaped(project, pids, DETACH_TICKS);
+    } finally {
+      reapRecorded(pids);
+    }
+  });
+
+  it("leaves nothing writing after cancelling a session-hopping respawner", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const launch = await prepare(RESPAWN_WORKLOAD, { timeoutMs: 60_000 });
+    const lease = leases.at(-1)!;
+    const pending = run(launch);
+    const pids = await recordedPids(project, ["shell", "hop"]);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      lease.revoke();
+      expect(await pending).toMatchObject({ cancelled: true, cleanupUnverified: false });
+      const last = Number(readFileSync(join(project, "hop.pid"), "utf8").trim());
+      await expectReaped(project, { ...pids, last }, ["tick-hop"]);
+    } finally {
+      reapRecorded(pids);
+    }
+  });
+
+  it("cancels a command whose stop arrives before the shell is ready", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const launch = await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 });
+    const lease = leases.at(-1)!;
+    const pending = run(launch);
+    lease.revoke();
+    const result = await pending;
+    expect(result).toMatchObject({ cancelled: true, cleanupUnverified: false });
+    const started = DETACH_KINDS.filter(name => existsSync(join(project, `${name}.pid`)));
+    const pids = Object.fromEntries(started.map(name => [name, Number(readFileSync(join(project, `${name}.pid`), "utf8").trim())]));
+    try {
+      await expectReaped(project, pids, DETACH_TICKS);
+      expect(await lease.dispose()).toEqual([]);
+    } finally {
+      reapRecorded(pids);
+    }
+  });
+
+  it("reports cleanup unverified when the supervisor ignores the watchdog's stop, without waiting on its output", async () => {
+    const { staging, staged } = await stageDirect("/usr/bin/true", 100);
+    const revoke = vi.fn();
+    const launch = startMxcShellSupervisor(staged, 100, undefined, revoke, "test:ignore-stop", supervisor.ignoreStopLocation);
+    const pending = collectShell(launch);
+    const holder = await recordedPids(staging, ["holder"]);
+    try {
+      const result = await pending;
+      const settledAt = Date.now();
+      const stopAt = Number(readFileSync(join(staging, "stop-received"), "utf8"));
+      expect(result).toMatchObject({ code: null, cancelled: false, timedOut: false, rejected: false, cleanupUnverified: true });
+      expect(stopAt - Number(statSync(staged.requestPath).mtimeMs)).toBeGreaterThanOrEqual(TOOL_TIMEOUT_POLICY.mxcMacShellStopMs);
+      // The stop deadline, then the one-second output allowance (the holder keeps both pipes open), then scheduling.
+      expect(settledAt - stopAt).toBeLessThan(TOOL_TIMEOUT_POLICY.mxcMacShellStopMs + TOOL_TIMEOUT_POLICY.mxcMacShellOutputDrainMs + 500);
+      expect(revoke).toHaveBeenCalled();
+      expect(launch.child.signalCode).toBe("SIGKILL");
+      expect(launch.child.stdout.destroyed && launch.child.stderr.destroyed).toBe(true);
+      // The output holder is still alive: settlement did not wait for its pipe.
+      expect(livePids([holder.holder!])).toEqual([holder.holder]);
+    } finally {
+      reapRecorded(holder);
+    }
+  }, 40_000);
+
+  it("reports cleanup unverified when the supervisor is killed mid-run and signals nothing else", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const started = (await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 })).start("test:supervisor-killed");
+    const pending = collectShell(started);
+    const pids = await recordedPids(project, DETACH_KINDS);
+    const signals = vi.spyOn(process, "kill");
+    try {
+      started.child.kill("SIGKILL");
+      const result = await pending;
+      expect(result).toMatchObject({ code: null, cancelled: false, timedOut: false, cleanupUnverified: true });
+      expect(signals).not.toHaveBeenCalled();
+      // The disclosed fault limit: the workload outlives a killed supervisor, still confined.
+      expect(livePids([pids.daemon!, pids.nohup!])).toHaveLength(2);
+    } finally {
+      signals.mockRestore();
+      reapRecorded(pids);
+    }
+  });
+
+  it("reaps everything and exits cleanly when its owner pipe closes", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const started = (await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 })).start("test:owner-lost");
+    const pending = collectShell(started);
+    const pids = await recordedPids(project, DETACH_KINDS);
+    try {
+      (started.child.stdio[3] as Writable).destroy();
+      await pending;
+      expect(started.child.exitCode).toBe(0);
+      await expectReaped(project, pids, DETACH_TICKS);
+    } finally {
+      reapRecorded(pids);
+    }
+  });
+
+  it("reaps everything and exits when the supervisor receives SIGTERM", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const started = (await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 })).start("test:supervisor-term");
+    const pending = collectShell(started);
+    const pids = await recordedPids(project, DETACH_KINDS);
+    try {
+      started.child.kill("SIGTERM");
+      expect(await pending).toMatchObject({ cancelled: true, cleanupUnverified: false });
+      expect(started.child.exitCode).toBe(0);
+      await expectReaped(project, pids, DETACH_TICKS);
+    } finally {
+      reapRecorded(pids);
+    }
+  });
+
+  it("refuses a kernel-rejected profile and an unreadable request before anything runs", async () => {
+    const marker = join(project, "marker");
+    const rejected = await stageDirect(`/usr/bin/touch ${quote(marker)}`, 5_000, request => {
+      request.seatbelt.profileOverride = "(version 1)(bogus-operation)";
+    });
+    const kernel = await collectShell(startMxcShellSupervisor(rejected.staged, 5_000, undefined, () => {}, "test:kernel-reject", supervisor.location));
+    expect(kernel).toMatchObject({ rejected: true, cleanupUnverified: false, failure: { code: "start-refused", sdkCode: "backend_error" } });
+    const malformed = join(mkdtempSync(join(root, "direct-")), "request.json");
+    writeFileSync(malformed, "{", { mode: 0o600 });
+    const requestSha256 = createHash("sha256").update("{").digest("hex");
+    const unreadable = await collectShell(startMxcShellSupervisor({ type: "shell-start", requestPath: malformed, requestSha256 },
+      5_000, undefined, () => {}, "test:malformed", supervisor.location));
+    expect(unreadable).toMatchObject({ rejected: true, failure: { code: "start-refused", sdkCode: "malformed_request" } });
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("reports literal and signal exits, passes large output byte-exact and ends the workload's stdin", async () => {
+    startEgressRelayService({ ask: async () => false });
+    expect(await run(await prepare("exit 255"))).toMatchObject({ code: 255, cancelled: false, cleanupUnverified: false });
+    expect(await run(await prepare("kill -KILL $$"))).toMatchObject({ code: -1, cancelled: false, cleanupUnverified: false });
+    const large = await run(await prepare("/usr/bin/head -c 1048576 /dev/zero | /usr/bin/tr '\\0' a"));
+    expect(large.code).toBe(0);
+    expect(large.stdout).toBe("a".repeat(1_048_576));
+    const startedAt = performance.now();
+    expect(await run(await prepare("/bin/cat"))).toMatchObject({ code: 0, stdout: "" });
+    expect(performance.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it("runs a row-cap request above one frame and refuses a staged file altered after its digest", async () => {
+    // About 400 generated rows: an admitted folder with a denied child, 199 times, beside the project grant.
+    const folders = Array.from({ length: 199 }, (_, index) => join(root, "rows", `r${index}`));
+    for (const folder of folders) mkdirSync(join(folder, "secret"), { recursive: true });
+    const capped = await stageDirect("printf cap-ok", 10_000, undefined, buildPolicyModel({
+      userGrants: [], extensionManifests: [],
+      floors: folders.map(folder => policyFloorRow(join(folder, "secret"), "denied", "read-boundary", true)),
+      launchGrants: [policyGrantRow(project, "rw", "launch-grant", true),
+        ...folders.map(folder => policyGrantRow(folder, "ro", "launch-grant", true))],
+    }));
+    expect(statSync(capped.staged.requestPath).size).toBeGreaterThan(65_536);
+    expect(await collectShell(startMxcShellSupervisor(capped.staged, 10_000, undefined, () => {}, "test:row-cap", supervisor.location)))
+      .toMatchObject({ code: 0, stdout: "cap-ok", cleanupUnverified: false });
+
+    const marker = join(project, "altered");
+    const altered = await stageDirect(`/usr/bin/touch ${quote(marker)}`, 5_000);
+    writeFileSync(altered.staged.requestPath, `${readFileSync(altered.staged.requestPath, "utf8")} `);
+    expect(await collectShell(startMxcShellSupervisor(altered.staged, 5_000, undefined, () => {}, "test:altered", supervisor.location)))
+      .toMatchObject({ rejected: true, failure: { code: "start-refused" } });
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it.each([
+    ["immediate", () => { forceKillManagedChildProcesses("test quit"); }],
+    ["draining", () => forceKillAndDrainManagedChildProcesses("test quit", TOOL_TIMEOUT_POLICY.mxcMacShellStopMs)],
+  ] as const)("stops a live command cooperatively in the %s quit sweep and still force-kills other children", async (_name, sweep) => {
+    startEgressRelayService({ ask: async () => false });
+    const started = (await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 })).start("test:quit-sweep");
+    const pending = collectShell(started);
+    const pids = await recordedPids(project, DETACH_KINDS);
+    const other = spawn("/bin/sleep", ["30"], { stdio: "ignore" });
+    trackManagedChildProcess(other, { label: "test:other-child" });
+    const otherExit = new Promise(resolve => other.once("exit", (_code, signal) => resolve(signal)));
+    try {
+      await sweep();
+      await pending;
+      expect(started.child.signalCode).toBeNull();
+      expect(started.child.exitCode).toBe(0);
+      expect(await otherExit).toBe("SIGKILL");
+      await expectReaped(project, pids, DETACH_TICKS);
+    } finally {
+      reapRecorded(pids);
+      other.kill("SIGKILL");
+      __resetManagedChildProcessesForTest();
+    }
+  });
+
+  it("hands the next command an idle verified standby and drops it on a sandbox status change or quit", async () => {
+    startEgressRelayService({ ask: async () => false });
+    expect((await run(await prepare("/usr/bin/true"))).code).toBe(0);
+    let standby: number | undefined;
+    await vi.waitFor(() => { standby = _mxcShellStandbyPidForTest(supervisor.location); expect(standby).toBeDefined(); });
+    const warm = (await prepare("printf warm")).start("test:warm-standby");
+    expect(warm.child.pid).toBe(standby);
+    expect(await collectShell(warm)).toMatchObject({ code: 0, stdout: "warm" });
+
+    let replacement: number | undefined;
+    await vi.waitFor(() => {
+      replacement = _mxcShellStandbyPidForTest(supervisor.location);
+      expect(replacement).toBeDefined();
+      expect(replacement).not.toBe(standby);
+    });
+    setActiveSandboxCapability({
+      kind: "asrt", platform: "darwin", confidence: "verified", reason: "Status change",
+      confines: { filesystem: true, network: true, process: true },
+    });
+    expect(_mxcShellStandbyPidForTest(supervisor.location)).toBeUndefined();
+    await vi.waitFor(() => expect(livePids([replacement!])).toEqual([]), { timeout: 5_000 });
+
+    expect((await run(await prepare("/usr/bin/true"))).code).toBe(0);
+    let idle: number | undefined;
+    await vi.waitFor(() => { idle = _mxcShellStandbyPidForTest(supervisor.location); expect(idle).toBeDefined(); });
+    try {
+      await forceKillAndDrainManagedChildProcesses("test quit", 5_000);
+      await vi.waitFor(() => expect(livePids([idle!])).toEqual([]), { timeout: 5_000 });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(_mxcShellStandbyPidForTest(supervisor.location)).toBeUndefined();
+    } finally {
+      __resetManagedChildProcessesForTest();
+    }
+  });
+
+  it("records one-start latency across twenty-one product shell commands", async () => {
     startEgressRelayService({ ask: async () => false });
     const elapsed: number[] = [];
-    for (let index = 0; index < 20; index++) {
+    for (let index = 0; index < 21; index++) {
       const start = performance.now();
       const exit = await run(await prepare("/usr/bin/true"));
       expect(exit.code, exit.stderr).toBe(0);
       elapsed.push(performance.now() - start);
     }
     elapsed.sort((left, right) => left - right);
-    const median = elapsed.slice(9, 11).reduce((sum, sample) => sum + sample, 0) / 2;
-    console.info("Native shell launch, 20 commands, median %s ms", median.toFixed(1));
+    console.info("Native shell launch, 21 commands, median %s ms", elapsed[10]!.toFixed(1));
   }, 25_000);
 });
