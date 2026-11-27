@@ -185,7 +185,7 @@ for (const systemRootName of ["SystemRoot", "SYSTEMROOT"]) {
   it(`launches the system parser with literal command lookup and an edition-specific environment (${systemRootName})`, t => {
     const originalEnv = process.env;
     const launch = t.mock.method(childProcess, "spawnSync", () => ({
-      status: 0, stdout: JSON.stringify({ cmdlets: [], aliases: [], steps: [{ errors: [], functions: [], commands: [] }] }),
+      status: 0, stdout: JSON.stringify({ resolutions: [{ cmdlets: [], aliases: [] }], steps: [{ errors: [], functions: [], commands: [] }] }),
     }));
     syncBuiltinESMExports();
     const env = Object.fromEntries(Object.entries(originalEnv).filter(([key]) => !/^systemroot$/i.test(key)));
@@ -259,8 +259,7 @@ it("uses the configured edition, its aliases, and the enclosing function scopes"
   const problems = powerShellCommandProblems(steps, (edition, sources) => {
     calls.push([edition, sources]);
     return edition === "pwsh" ? {
-      cmdlets: [],
-      aliases: ["alice"],
+      resolutions: [{ cmdlets: [], aliases: ["alice"] }],
       steps: [{
         errors: [],
         functions: [{ name: "shared", scope: 0 }, { name: "example", scope: 10 }],
@@ -270,8 +269,7 @@ it("uses the configured edition, its aliases, and the enclosing function scopes"
         ],
       }],
     } : {
-      cmdlets: [],
-      aliases: ["bob"],
+      resolutions: [{ cmdlets: [], aliases: ["bob"] }],
       steps: [{ errors: [], functions: [], commands: [command("alice", 1, [0]), command("bob", 2, [0])] }],
     };
   });
@@ -358,8 +356,8 @@ function parsedCommand(source, line, { text = source, redirected = false, operat
 const KEYWORD_RE = /^(?:if|elseif|else|foreach|for|while|switch|try|catch|finally|throw|exit|return)\b/iu;
 // Reports what the parser reports for this workflow's simple lines: statements split at braces, one command per
 // pipeline element, and none for keywords, comments or expressions.
-function parsedLines(_shell, sources) {
-  return { cmdlets: ["ConvertFrom-Json"], aliases: [], steps: sources.map(source => ({ errors: [], functions: [],
+function parsedLines(_shell, sources, groupSizes = [sources.length]) {
+  return { resolutions: groupSizes.map(() => ({ cmdlets: ["ConvertFrom-Json"], aliases: [] })), steps: sources.map(source => ({ errors: [], functions: [],
     commands: source.split("\n").flatMap((line, index) => line.split(/[{}]/u).flatMap(statement => {
       const pipeline = statement.trim().replace(/^\$\w+\s*=\s*/u, "");
       if (!pipeline || /^[#$[('"]/u.test(pipeline) || KEYWORD_RE.test(pipeline)) return [];
@@ -374,6 +372,29 @@ it("accepts the workflow's contained commands and stated exemptions", realParser
 
 it("accepts the workflow's contained commands and stated exemptions from parsed lines", () => {
   checkWindowsWorkflow(workflow, parsedLines);
+});
+
+it("inspects every workflow source in one launch per edition and keeps later job diagnostics", () => {
+  function runGuard(source) {
+    const calls = new Map();
+    checkWindowsWorkflow(source, (edition, sources, groupSizes) => {
+      if (calls.has(edition)) throw Object.assign(new Error("Second parser launch"), { code: "ETIMEDOUT" });
+      calls.set(edition, sources);
+      const inspection = parsedLines(edition, sources, groupSizes);
+      return { ...inspection.resolutions[0], ...inspection };
+    });
+    const steps = windowsRunSteps(source);
+    for (const edition of ["pwsh", "powershell"]) {
+      const expected = steps.filter(step => step.shell.split(/[ .]/u)[0].toLowerCase() === edition).map(step => step.run);
+      assert.ok(expected.length > 0);
+      assert.deepEqual(calls.get(edition).toSorted(), expected.toSorted());
+    }
+  }
+  runGuard(workflow);
+  const changed = changedWorkflow(steps => {
+    steps.splice(-1, 0, { name: "Malformed command", run: "unknown-example-command" });
+  }, "windows-dev-boot");
+  assert.throws(() => runGuard(changed), /windows-dev-boot: Malformed command: line 1: unrecognized command unknown-example-command/);
 });
 
 // Every command after job-root setup is a manifest invocation or one of the guard's stated exemptions.
@@ -454,7 +475,7 @@ for (const [name, commands, expected] of [
 ]) {
   it(`checks parsed contained commands: ${name}`, () => {
     const steps = [{ name: "example", shell: "pwsh", run: "example", contained: true }];
-    const inspect = () => ({ cmdlets: [], aliases: [], steps: [{ errors: [], functions: [], commands }] });
+    const inspect = () => ({ resolutions: [{ cmdlets: [], aliases: [] }], steps: [{ errors: [], functions: [], commands }] });
     assert.deepEqual(powerShellCommandProblems(steps, inspect, EXAMPLE_MANIFEST), expected);
   });
 }
