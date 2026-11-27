@@ -9,19 +9,11 @@ import {
 } from "node:fs";
 import { readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
-// Keep the CommonJS default runtime import separate from its constructor type.
-import sonicBoomDefault, {
-  type SonicBoom as SonicBoomInstance,
-  type SonicBoomOpts,
-} from "sonic-boom";
 import { aveHome } from "../shared/ave-home.js";
 import { LOG_RETENTION_DAYS } from "../shared/log-retention.js";
 import { utcDateKey } from "../shared/local-date.js";
 import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from "./atomic-file.js";
-
-const SonicBoomCtor = sonicBoomDefault as unknown as {
-  new (opts: SonicBoomOpts): SonicBoomInstance;
-};
+import { createAsyncLogDestination } from "./async-log-destination.js";
 
 export { LOG_RETENTION_DAYS } from "../shared/log-retention.js";
 
@@ -256,6 +248,8 @@ export interface LogFileSinkOptions {
 
 export interface LogFileSink {
   write(chunk: string): void;
+  flush(): Promise<void>;
+  readonly pending: number;
   destroy(): void;
   readonly currentFile: string;
 }
@@ -278,9 +272,10 @@ export function createLogFileSink(options: LogFileSinkOptions = {}): LogFileSink
   try { activeBytes = statSync(currentFile).size; } catch { /* New or unavailable file. */ }
   let closed = false;
   let nextFile: string | undefined;
-  const boom = new SonicBoomCtor({
+  const destination = createAsyncLogDestination({
     dest: currentFile, sync: false, mode: PRIVATE_FILE_MODE, maxLength: LOG_MAX_BYTES,
   });
+  const { stream: boom } = destination;
 
   let pruning = false;
   let pruneRequested = false;
@@ -318,17 +313,14 @@ export function createLogFileSink(options: LogFileSinkOptions = {}): LogFileSink
   boom.on("error", () => { nextFile = undefined; });
 
   return {
+    flush: destination.flush,
+    get pending() { return destination.pending; },
     get currentFile(): string {
       return currentFile;
     },
     write(chunk: string): void {
       if (closed) return;
-      try {
-        boom.write(chunk);
-      } catch {
-        // File-write failures must not propagate to log callers.
-        return;
-      }
+      destination.write(chunk);
     },
     destroy(): void {
       if (closed) return;

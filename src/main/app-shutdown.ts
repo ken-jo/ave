@@ -4,7 +4,7 @@ import { browserTabRegistry } from "./browser/browser-tab-registry.js";
 // Ordered teardown runs under a hard deadline so a wedged subsystem cannot hang app.quit(). Unordered cleanup belongs in registerShutdownHook instead of
 // separate before-quit listeners.
 import { createLogger, closeFileLogSink } from "../lib/logger.js";
-import { logger as rootPinoLogger } from "../lib/logger.js";
+import { flushPermissionLogs } from "../lib/permission-log.js";
 import { runShutdownRoutines } from "./shutdown-routines.js";
 import { stopLocalApiServer } from "./local-api-server.js";
 import { stopTailnetObserverServer } from "./tailnet-surface-server.js";
@@ -148,30 +148,6 @@ export function createAppBeforeQuitHandler(options: {
   };
 }
 
-// Flush the final timeout diagnostic before hard exit, with its own short deadline so logging cannot defeat shutdown.
-async function flushLogger(): Promise<void> {
-  await new Promise<void>((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      resolve();
-    };
-    // Hard cap so a stuck transport can't defeat the timeout itself.
-    const cap = setTimeout(finish, 500);
-    cap.unref?.();
-    try {
-      rootPinoLogger.flush(() => {
-        clearTimeout(cap);
-        finish();
-      });
-    } catch {
-      clearTimeout(cap);
-      finish();
-    }
-  });
-}
-
 // Reset the OS sandbox runtime after every confined child is down and before the host closes: on Windows its reset spawns the private srt-win copy
 // to revoke the session's ACEs, and that copy's exit handler removes it only once the reset has finished.
 async function releaseOsSandboxForExit(): Promise<void> {
@@ -249,7 +225,7 @@ async function finishIncompleteBootShutdown(result: { status: "completed" | "fai
     await releaseOsSandboxAfterIncompleteShutdown(reason);
     log.error({ status: result.status }, "incomplete host bootstrap cleanup did not complete");
   }
-  await flushLogger();
+  await flushPermissionLogs();
   closeFileLogSink();
   setAppShutdownCompleted(true);
   return result.status;
@@ -441,7 +417,7 @@ export async function runAppShutdownCleanup(options: {
         reason: options.reason,
       }, "shutdown cleanup timed out");
       // Flush the logger so the diagnostic above (and any preceding warn about which subsystem hung) makes it to disk before the process leaves.
-      await flushLogger();
+      await flushPermissionLogs();
       // Close the file log sink last so no shutdown or timeout diagnostic is lost.
       closeFileLogSink();
       setAppShutdownCompleted(true);
@@ -466,7 +442,7 @@ export async function runAppShutdownCleanup(options: {
         options.reason,
         errorMessage(result.error),
       );
-      await flushLogger();
+      await flushPermissionLogs();
       // LAST step (failed path): close the file sink after the failure diagnostic has been flushed. See the timed-out branch above.
       closeFileLogSink();
       setAppShutdownCompleted(true);
@@ -475,7 +451,7 @@ export async function runAppShutdownCleanup(options: {
 
     await shutdownHost?.close();
     // LAST step (happy path): flush any remaining buffered logs, then close the production log file sink after every shutdown step has logged.
-    await flushLogger();
+    await flushPermissionLogs();
     closeFileLogSink();
     setAppShutdownCompleted(true);
     return "completed";

@@ -110,6 +110,7 @@ it.each(["normal", "slow"])("logs safely to production console, file and support
     "import { installApprovalCardPresenters } from \"./src/permissions/approval-presentation.ts\";",
     "import { ApprovalGate, IPC_APPROVAL_REQUEST } from \"./src/permissions/approval-gate.ts\";",
     "import { logPermissionEvent } from \"./src/lib/permission-log.ts\";",
+    "import * as permissionLog from \"./src/lib/permission-log.ts\";",
     "import { drainToolInvocationsForExit } from \"./src/tools/invocation-ledger.ts\";",
     "import { configureHostResources } from \"./src/main/host-resources.ts\";",
     "configureHostResources({ resourcePath: join(process.cwd(), \"resources\"), isPackaged: false });",
@@ -145,6 +146,8 @@ it.each(["normal", "slow"])("logs safely to production console, file and support
     "  uninstall();",
     "  if (await drainToolInvocationsForExit(25) !== \"committed\") throw new Error(\"Forced drain waited on storage\");",
     "}",
+    "logPermissionEvent(\"shutdown_probe\", {});",
+    "await permissionLog.flushPermissionLogs?.();",
     "closeFileLogSink();",
     "release();",
     "if (storage === \"slow\") {",
@@ -168,6 +171,7 @@ it.each(["normal", "slow"])("logs safely to production console, file and support
     expect(decisions).toHaveLength(1);
     expect(output).not.toContain(OPAQUE_PROVIDER_ID);
     expect(output).not.toContain(CANARY);
+    expect(output).toContain('"event":"shutdown_probe"');
     correlationIds.push(decisions[0]?.match(/"correlationId":"([a-f0-9]{32})"/)?.[1]);
   }
   expect(correlationIds[0]).toMatch(/^[a-f0-9]{32}$/);

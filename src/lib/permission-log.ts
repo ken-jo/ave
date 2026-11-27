@@ -1,7 +1,7 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { maskSensitiveData } from "../shared/dlp.js";
 import { isPackagedElectronProcess } from "../boot/dev-flags.js";
-import { createLogger } from "./logger.js";
+import { createLogger, flushLogDestinations } from "./logger.js";
 
 let log: ReturnType<typeof createLogger> | undefined;
 const useTestConsole = !isPackagedElectronProcess(process)
@@ -56,6 +56,15 @@ function deliver(event: string, fields: PermissionLogFields, level: PermissionLo
   } catch {
     // Log delivery cannot affect permission or execution state.
   }
+}
+
+export async function flushPermissionLogs(): Promise<void> {
+  for (const { event, fields, level } of pending.splice(0)) deliver(event, fields, level);
+  if (dropped > 0) {
+    deliver("permission_log_overflow", { dropped }, "warn");
+    dropped = 0;
+  }
+  await flushLogDestinations();
 }
 
 export function permissionLogId(value: unknown): string | undefined {

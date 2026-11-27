@@ -59,7 +59,7 @@ const stopAllHeldShells = vi.fn(async (_signal: AbortSignal) => {});
 vi.mock("electron", () => ({ app: { exit: vi.fn() }, ipcMain: { handle: vi.fn() } }));
 vi.mock("../../lib/logger.js", () => ({
   createLogger: () => ({ info: (...a: unknown[]) => logInfo(...a), warn: (...a: unknown[]) => logWarn(...a), error: (...a: unknown[]) => logError(...a), debug: vi.fn() }),
-  logger: { flush: (cb: () => void) => cb() },
+  flushLogDestinations: async () => {},
   closeFileLogSink: (...a: unknown[]) => closeFileLogSink(...a),
 }));
 vi.mock("../shutdown-routines.js", () => ({ runShutdownRoutines: (...a: unknown[]) => runShutdownRoutines(...a) }));
@@ -356,7 +356,7 @@ describe("OS sandbox release at quit", () => {
       }));
       await vi.waitFor(() => expect(cards).toHaveLength(2));
       const rows = () => logInfo.mock.calls.map(([fields]) => fields as Record<string, unknown>).filter((fields) =>
-        fields?.event === "permission_decision" && ids.includes(String(fields.toolUseId)) && fields.decision !== "ask",
+        fields?.event === "permission_decision" && fields.decision !== "ask",
       );
       // The timed-out quit hard-exits, so its boundary is the host exit; the failed cleanup returns after the last sink closes.
       let rowsAtExit: Array<Record<string, unknown>> = [];
@@ -376,8 +376,12 @@ describe("OS sandbox release at quit", () => {
       const boundary = status === "timed-out" ? "hostExit" : "closeFileLogSink";
       expect(calls.at(-1)).toBe(boundary);
       for (const id of ids) {
-        expect(rowsAtExit.filter((row) => row.toolUseId === id)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
-        expect(rowsAtExit.find((row) => row.toolUseId === id)).toMatchObject({ terminalKind: "cancelled" });
+        expect(rowsAtExit.filter((row) => row.sessionId === `session-${id}`)).toEqual([
+          expect.objectContaining({
+            decision: "deny", trustOrigin: "unknown", terminalKind: "cancelled",
+            correlationId: expect.stringMatching(/^[a-f0-9]{32}$/),
+          }),
+        ]);
       }
       // The continuations resume after the real quit closed the sink: no effect and no further row.
       const results = (await Promise.all(running)).flat();

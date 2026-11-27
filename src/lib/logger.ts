@@ -1,7 +1,7 @@
 /** Attach file logging at boot through a mutable stream target. */
 import pino from "pino";
 import prettyStream from "pino-pretty";
-import sonicBoom, { type SonicBoom as SonicBoomInstance, type SonicBoomOpts } from "sonic-boom";
+import { createAsyncLogDestination } from "./async-log-destination.js";
 import { createLogFileSink, type LogFileSink, type LogFileSinkOptions } from "./log-file-sink.js";
 import { isPackagedElectronProcess } from "../boot/dev-flags.js";
 import { execModeRequested } from "../main/exec-mode.js";
@@ -100,18 +100,17 @@ export function closeFileLogSink(): void {
   try { sink?.destroy(); } catch { /* Logging cannot affect shutdown. */ }
 }
 
-const SonicBoomCtor = sonicBoom as unknown as new (opts: SonicBoomOpts) => SonicBoomInstance;
-
 let bestEffortLogger: pino.Logger | undefined;
+let permissionConsole: ReturnType<typeof createAsyncLogDestination> | undefined;
 
 function getBestEffortLogger(): pino.Logger {
   if (!bestEffortLogger) {
-    const destination = new SonicBoomCtor({
+    const destination = createAsyncLogDestination({
       fd: execHeadless ? 2 : 1,
       sync: false,
       maxLength: 1024 * 1024,
     });
-    destination.on("error", () => {});
+    permissionConsole = destination;
     const pretty = useJsonFormat ? undefined : prettyStream.prettyFactory(prettyOptions);
     const consoleStream = { write: (chunk: string) => destination.write(pretty ? pretty(chunk) : chunk) };
     bestEffortLogger = pino({ level: LOG_LEVEL, redact }, pino.multistream([
@@ -120,6 +119,29 @@ function getBestEffortLogger(): pino.Logger {
     ]));
   }
   return bestEffortLogger;
+}
+
+export async function flushLogDestinations(): Promise<void> {
+  const file = fileSink;
+  const console = permissionConsole;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.all([file?.flush(), console?.flush(), new Promise<void>((resolve) => {
+        try { logger.flush(() => resolve()); } catch { resolve(); }
+      })]),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, 500); }),
+    ]);
+    // Pending counts are records accepted since the last confirmed drain.
+    const undelivered = (file?.pending ?? 0) + (console?.pending ?? 0);
+    if (undelivered > 0) {
+      getBestEffortLogger().warn({ event: "permission_log_shutdown_loss", undelivered }, "permission_log_shutdown_loss");
+    }
+  } catch {
+    // A broken destination cannot change shutdown status.
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Use console proxies only in unpackaged tests; packaged runs retain structured production logging. */
