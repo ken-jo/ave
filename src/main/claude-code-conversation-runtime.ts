@@ -1,3 +1,4 @@
+import type { SubscriptionEvidenceSink } from "./subscription-connection-evidence.js";
 // Main-owned print transport. Ave retains history and executes host tools.
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -36,6 +37,7 @@ const HOST_TOOL_ACCEPTED = "Ave accepted the host tool request and will provide 
 const ARGUMENT_ERROR_MARKERS = ["error: unknown option ", "error: unknown argument ", "error: too many arguments"] as const;
 
 export interface ClaudeCodeConversationRuntimeOptions {
+  readonly connectionEvidence?: SubscriptionEvidenceSink;
   readonly onPlanUsage?: (windows: readonly SubscriptionPlanUsageWindow[]) => void;
   readonly resolveRuntime: () => Promise<ClaudeCodeExecutable>;
   readonly runtimeHome: string;
@@ -195,7 +197,12 @@ export class ClaudeCodeConversationRuntime {
           reader.write(chunk);
         } catch { fail(operationFailed()); }
       };
-      spawned.on("error", () => fail(new ClaudeCodeSubscriptionError("claude-code-runtime-unavailable")));
+      const transportFailed = () => {
+        if (child !== spawned || ended || failure) return;
+        this.options.connectionEvidence?.({ kind: "transport-lost", source: spawned });
+        fail(new ClaudeCodeSubscriptionError("claude-code-runtime-unavailable"));
+      };
+      spawned.on("error", transportFailed);
       spawned.stdout?.on("error", () => fail(operationFailed()));
       spawned.stderr?.on("error", () => fail(operationFailed()));
       spawned.stdin?.on("error", () => fail(operationFailed()));
@@ -227,7 +234,7 @@ export class ClaudeCodeConversationRuntime {
           reader.write("\n");
           reader.close();
           if (failure) return;
-          if (exitSignal) throw operationFailed();
+          if (exitSignal) { transportFailed(); return; }
           if (code !== 0) {
             throw !stream.initialized && code !== null && rejectedArguments
               ? new ClaudeCodeSubscriptionError("claude-code-runtime-incompatible") : operationFailed();

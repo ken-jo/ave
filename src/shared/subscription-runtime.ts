@@ -128,10 +128,11 @@ export function isSubscriptionRuntimeId(value: unknown): value is SubscriptionRu
     && (SUBSCRIPTION_RUNTIME_IDS as readonly string[]).includes(value);
 }
 
-/** Invalidation events carry only a revision; re-read safe status without exposing URLs, paths, credentials, or provider output. */
+/** Safe host projection invalidation. */
 export interface SubscriptionRuntimeStatusUpdatedEvent {
   readonly provider: SubscriptionRuntimeId;
   readonly revision: number;
+  readonly connected?: boolean;
 }
 
 export function isSubscriptionRuntimeStatusUpdatedEvent(
@@ -142,7 +143,7 @@ export function isSubscriptionRuntimeStatusUpdatedEvent(
   }
   const payload = value as Record<string, unknown>;
   const keys = Object.keys(payload);
-  return keys.length === 2
+  return (keys.length === 2 || (keys.length === 3 && typeof payload.connected === "boolean"))
     && Object.prototype.hasOwnProperty.call(payload, "provider")
     && Object.prototype.hasOwnProperty.call(payload, "revision")
     && isSubscriptionRuntimeId(payload.provider)
@@ -498,6 +499,7 @@ export type SubscriptionRuntimeNotice =
 
 /** Never include verification URLs, access tokens, raw CLI output, or executable paths in renderer status. */
 export interface SubscriptionRuntimeStatus {
+  readonly revision?: number;
   readonly planUsage?: SubscriptionPlanUsage;
   provider: SubscriptionRuntimeId;
   runtime: SubscriptionRuntimeState;
