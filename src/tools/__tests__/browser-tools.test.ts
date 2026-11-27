@@ -1565,6 +1565,27 @@ describe("browser tools", () => {
     expect(direct.match(/<\s*browser-content/gi)).toHaveLength(1);
   });
 
+  it.each([false, true])("honors read consent and blocks mutation in a paused pane (deny read: %s)", async (denySurface) => {
+    const h = harness({ noTabOpener: true, denySurface });
+    const tab = h.userTab("https://a.example/form");
+    const tabId = `renderer-${tab.guest.id}`;
+    h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId } });
+    h.tabs.acquireControl(h.tabs.liveTab(tab.handle)!, { sessionId: HOST_SESSION });
+    expect(h.tabs.pause(1, tabId)).toBe(true);
+
+    const read = await h.run(BROWSER_TOOL.readText, {});
+    expect(read.isError).toBe(denySurface);
+    expect(h.cards).toMatchObject([{ toolName: BROWSER_TOOL.readText, userOwnedSurface: "browser" }]);
+    expect(h.page.calls.map((call) => call.action)).toEqual(denySurface ? [] : ["readText"]);
+
+    if (!denySurface) {
+      const mutation = await h.run(BROWSER_TOOL.click, { ref: "e1" });
+      expect(mutation).toMatchObject({ isError: true, output: expect.stringContaining("paused") });
+      expect(h.page.calls.map((call) => call.action)).toEqual(["readText"]);
+      expect(h.tabs.liveTab(tab.handle)?.controlMode).toBe("human-paused");
+    }
+  });
+
   it("stops a stale wait on takeover while fresh observation remains available and mutations stay paused", async () => {
     const { run, page, agentTab, tabs } = harness();
     const agent = await agentTab("https://a.example/");

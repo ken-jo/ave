@@ -70,7 +70,11 @@ describe("browser pane turn guidance", () => {
     expect(loop.buildSystemPromptForScope(SCOPE)).toContain(`This chat is bound to browser tab ${tab.handle}`);
   });
 
-  it("asks the user to resume paused control before advertising browser actions again", () => {
+  it.each([
+    ["en", "before navigating, interacting with, or changing the page", "Read-only actions remain available with the usual approvals."],
+    ["ko", "다른 주소로 이동하거나 페이지를 조작 또는 변경하기 전에", "읽기 전용 작업은 평소와 같은 승인 절차를 거쳐 할 수 있습니다."],
+  ] as const)("explains the pause for mutations and approved reads in %s", (locale, mutation, read) => {
+    setLocale(locale);
     const loop = createLoop(WINDOW_ID);
     const sessionId = loop.getSessionId();
     const tab = bindPage(1, PANE.tabId, BOUND_URL);
@@ -78,10 +82,12 @@ describe("browser pane turn guidance", () => {
     browserTabRegistry.acquireControl(tab, { sessionId });
     expect(browserTabRegistry.pause(WINDOW_ID, PANE.tabId)).toBe(true);
     const paused = loop.buildSystemPromptForScope(SCOPE);
-    expect(paused).toContain("Browser control is paused. Ask the user to resume");
-    expect(paused).not.toContain("Omit tabId to act in this tab.");
+    const normalRouting = locale === "en" ? "Omit tabId to act in this tab." : "이 탭을 조작하려면 tabId를 생략하세요.";
+    expect(paused).toContain(mutation);
+    expect(paused).toContain(read);
+    expect(paused).not.toContain(normalRouting);
     expect(browserTabRegistry.resume(WINDOW_ID, PANE.tabId)).toBe(true);
-    expect(loop.buildSystemPromptForScope(SCOPE)).toContain("Omit tabId to act in this tab.");
+    expect(loop.buildSystemPromptForScope(SCOPE)).toContain(normalRouting);
   });
 
   it("names the bound page in a pane turn even when another tab is active", () => {

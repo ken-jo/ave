@@ -815,7 +815,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_browserTools.paneEmptyGuidance": "이 채팅은 현재 열린 페이지가 없는 브라우저 창에 연결되어 있습니다. 창이 비어 있으면 browser_navigate에서 tabId를 생략해 URL을 그 창에 여세요. 이 채팅은 별도의 탭을 열 수 없습니다.",
   "be_browserTools.paneUnavailableGuidance": "이 채팅에 연결된 브라우저 페이지가 닫혔거나 사용할 수 없습니다. tabId를 생략하면 조작할 페이지가 없습니다. 이 채팅은 별도의 탭을 열 수 없습니다. 필요한 경우 사용자에게 페이지를 다시 열어 달라고 요청하세요.",
   "be_browserTools.paneBlockedGuidance": "이 채팅은 연결된 브라우저 탭에 접근할 수 없습니다. 필요한 경우 사용자에게 연결된 탭을 사용할 수 있게 해 달라고 요청하세요. 이 채팅은 별도의 탭을 열 수 없습니다.",
-  "be_browserTools.panePausedGuidance": "브라우저 제어가 일시 중지되었습니다. 연결된 브라우저 탭을 조작하기 전에 사용자에게 제어를 재개해 달라고 요청하세요. 이 채팅은 별도의 탭을 열 수 없습니다.",
+  "be_browserTools.panePausedGuidance": "브라우저 제어가 일시 중지되었습니다. 연결된 브라우저 탭에서 다른 주소로 이동하거나 페이지를 조작 또는 변경하기 전에 사용자에게 제어를 재개해 달라고 요청하세요. 읽기 전용 작업은 평소와 같은 승인 절차를 거쳐 할 수 있습니다. 이 채팅은 별도의 탭을 열 수 없습니다.",
   "be_browserTools.tabsSelectDescription": "앞으로 가져올 탭 id.",
   "be_browserTools.snapshotDescription": "한 번의 도구 결과에 맞춘 제한된 접근성 개요를 읽습니다. 동작할 수 있는 요소에는 browser_click과 browser_type에 쓸 ref(예: [ref=e12])가 붙습니다. 개요가 잘리면 interactive 또는 delta로 범위를 좁히세요.",
   "be_browserTools.readTextDescription": "페이지의 읽을 수 있는 본문을 한 번의 제한된 결과로 읽습니다. 헤드라인 수집, 요약, 기사 읽기에 우선 사용하고 요소 ref가 필요할 때 browser_snapshot을 사용하세요. 숨겨진 콘텐츠와 하위 프레임은 제외합니다.",
