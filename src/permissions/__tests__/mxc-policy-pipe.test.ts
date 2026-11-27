@@ -87,7 +87,7 @@ describe.skipIf(process.platform !== "win32")("native policy pipe reader identit
       process.stdout.write(Buffer.concat(chunks).equals(Buffer.from("reader-policy-".repeat(500))) ? "ok" : "mismatch");
     } catch (error) { process.stdout.write(String(error.code)); }
   `;
-  type Reader = "launched" | "launcher-bound-as-reader" | "launcher-itself" | "child-of-reader";
+  type Reader = "launched" | "launcher-bound-as-reader" | "launcher-itself" | "child-of-reader" | "grandchild-of-launcher";
 
   async function read(mode: Reader): Promise<string> {
     vi.restoreAllMocks();
@@ -96,8 +96,8 @@ describe.skipIf(process.platform !== "win32")("native policy pipe reader identit
     const transport = await openMxcPolicyPipe(Buffer.from("reader-policy-".repeat(500)), pipe);
     try {
       const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
-      const viaJob = mode === "launched" || mode === "launcher-bound-as-reader";
-      const args = mode === "child-of-reader"
+      const viaJob = mode === "launched" || mode === "launcher-bound-as-reader" || mode === "grandchild-of-launcher";
+      const args = mode === "child-of-reader" || mode === "grandchild-of-launcher"
         ? ["-e", `require("node:child_process").execFileSync(process.execPath, ["-e", ${JSON.stringify(READER)}, process.argv[1]], { stdio: ["ignore", "inherit", "inherit"] })`, pipe]
         : ["-e", READER, pipe];
       const child = viaJob
@@ -107,7 +107,7 @@ describe.skipIf(process.platform !== "win32")("native policy pipe reader identit
       child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
       child.stderr.resume();
       const closed = new Promise<void>((resolveClosed) => child.once("close", () => resolveClosed()));
-      transport.bindChild(child, mode === "launched" || mode === "launcher-itself");
+      transport.bindChild(child, mode === "launched" || mode === "launcher-itself" || mode === "grandchild-of-launcher");
       const timer = setTimeout(() => child.kill(), TOOL_TIMEOUT_POLICY.mxcRequestTransportMs);
       await closed;
       clearTimeout(timer);
@@ -120,9 +120,10 @@ describe.skipIf(process.platform !== "win32")("native policy pipe reader identit
     expect(await read("launched")).toBe("ok");
   });
 
-  it.for(["launcher-bound-as-reader", "launcher-itself", "child-of-reader"] as const)("refuses a reader that is not the bound one: %s", async (mode, { skip }) => {
+  it.for(["launcher-bound-as-reader", "launcher-itself", "child-of-reader", "grandchild-of-launcher"] as const)("refuses a reader that is not the bound one: %s", async (mode, { skip }) => {
     requireMxcPolicyPipeHelper(skip);
-    expect(await read(mode)).not.toBe("ok");
+    // A refused reader is disconnected before any byte.
+    expect(await read(mode)).toBe("EPIPE");
   });
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
