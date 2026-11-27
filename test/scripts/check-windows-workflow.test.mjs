@@ -21,14 +21,27 @@ const WINDOWS_VALIDATION_RESULTS = {
   "windows-dev-boot": "WINDOWS_DEV_BOOT_RESULT",
 };
 const BASE_AGGREGATE_JOBS = [
-  "build", "vitest", "vitest-tiers", "windows-native-preparation", "windows-permission-tests", "windows-tier-tests",
+  "build", "background-ui", "vitest", "vitest-tiers", "windows-native-preparation", "windows-permission-tests", "windows-tier-tests",
   "windows-arm64-path-kind", "macos-permission-tests", "linux-confinement-tests", "gate-core", "mxc-pins",
 ];
+const SHARD_JOB_EVIDENCE = JSON.stringify([{
+  total_count: 1,
+  jobs: [{ name: "Vitest shard 1", status: "completed", conclusion: "success" }],
+}]);
+
+function runAggregate(step, env) {
+  const command = `gh() { printf "%s" "$SHARD_JOB_EVIDENCE"; }\n${step.run}`;
+  return spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", windowsHide: true, env: {
+    ...process.env, BACKGROUND_UI_RESULT: env.DOCS_ONLY === "true" ? "skipped" : "success",
+    VITEST_SHARDS: "[1]", VITEST_SHARD_COUNT: "1", SHARD_JOB_EVIDENCE, ...env,
+  } });
+}
 
 it("keeps every aggregate dependency and adds the three Windows validations", () => {
   const { jobs } = parse(workflow);
   const aggregate = jobs["build-and-test"];
   assert.deepEqual([...aggregate.needs].sort(), [...BASE_AGGREGATE_JOBS, ...Object.keys(WINDOWS_VALIDATION_RESULTS)].sort());
+  assert.equal(aggregate.steps[0].env.BACKGROUND_UI_RESULT, `\${{ needs.background-ui.result }}`);
 
   for (const [id, variable] of Object.entries(WINDOWS_VALIDATION_RESULTS)) {
     const job = jobs[id];
@@ -48,8 +61,8 @@ it("requires every extracted Windows validation whenever preparation is selected
     const values = Object.values(WINDOWS_VALIDATION_RESULTS);
     for (const variable of values) {
       for (const result of ["success", "skipped", "failure", "cancelled", ""]) {
-        const run = spawnSync("bash", ["-e", "-c", step.run], { encoding: "utf8", windowsHide: true, env: {
-          ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
+        const run = runAggregate(step, {
+          GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
           VITEST_RESULT: "success", DOCS_ONLY: "false", PLATFORM_CHECKS: String(platform),
           WINDOWS_PREPARATION_RESULT: expected,
           WINDOWS_RESULT: platform ? "success" : "skipped", MACOS_RESULT: platform ? "success" : "skipped",
@@ -57,7 +70,7 @@ it("requires every extracted Windows validation whenever preparation is selected
           VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: String(tiers),
           WINDOWS_TIER_RESULT: tiers ? "success" : "skipped",
           ...Object.fromEntries(values.map(key => [key, expected])), [variable]: result,
-        } });
+        });
         assert.ifError(run.error);
         assert.equal(run.status, result === expected ? 0 : 1, `${variable}=${result} with platform=${platform}, tiers=${tiers}`);
       }
@@ -474,14 +487,14 @@ it("requires the arm64 result for selected runs, including docs-only main pushes
       ["true", "success", 0], ["true", "failure", 1], ["true", "cancelled", 1], ["true", "skipped", 1],
       ["false", "skipped", 0], ["false", "failure", 1], ["false", "cancelled", 1], ["", "skipped", 1],
     ]) {
-      const result = spawnSync("bash", ["-e", "-c", step.run], { encoding: "utf8", windowsHide: true, env: {
-        ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
+      const result = runAggregate(step, {
+        GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
         VITEST_RESULT: docs === "true" ? "skipped" : "success", DOCS_ONLY: docs, PLATFORM_CHECKS: "false",
         ...Object.fromEntries(Object.values(WINDOWS_VALIDATION_RESULTS).map(variable => [variable, "skipped"])),
         WINDOWS_PREPARATION_RESULT: "skipped", WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
         WINDOWS_ARM64_PATH_KIND: selected, WINDOWS_ARM64_PATH_KIND_RESULT: arm64,
         VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: "false", WINDOWS_TIER_RESULT: "skipped",
-      } });
+      });
       assert.ifError(result.error);
       assert.equal(result.status, status, JSON.stringify({ docs, selected, arm64, output: result.stdout + result.stderr }));
     }
@@ -563,14 +576,14 @@ it("requires selected Windows tiers when the platform matrix is skipped", () => 
     ["true", "success", "success", 0], ["true", "skipped", "skipped", 1], ["true", "success", "skipped", 1],
     ["true", "failure", "skipped", 1], ["false", "skipped", "skipped", 0], ["false", "success", "skipped", 1],
   ]) {
-    const result = spawnSync("bash", ["-e", "-c", step.run], { encoding: "utf8", windowsHide: true, env: {
-      ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
+    const result = runAggregate(step, {
+      GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
       VITEST_RESULT: "success", DOCS_ONLY: "false", PLATFORM_CHECKS: "false",
       ...Object.fromEntries(Object.values(WINDOWS_VALIDATION_RESULTS).map(variable => [variable, tiers === "true" ? "success" : "skipped"])),
       WINDOWS_PREPARATION_RESULT: preparation, WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
       WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
       VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: tiers, WINDOWS_TIER_RESULT: tierResult,
-    } });
+    });
     assert.ifError(result.error);
     assert.equal(result.status, status, JSON.stringify({ tiers, preparation, tierResult, output: result.stdout + result.stderr }));
   }
