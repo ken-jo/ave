@@ -108,7 +108,10 @@ struct IoStatus(usize, usize);
 unsafe extern "system" {
     pub fn GetLastError() -> u32;
     pub fn GetStdHandle(index: u32) -> Raw;
-    pub fn QueryDosDeviceW(name: *const u16, text: *mut u16, len: u32) -> u32;
+    fn QueryDosDeviceW(name: *const u16, text: *mut u16, len: u32) -> u32;
+    fn FindFirstVolumeW(name: *mut u16, len: u32) -> Raw;
+    fn FindNextVolumeW(search: Raw, name: *mut u16, len: u32) -> i32;
+    fn FindVolumeClose(search: Raw) -> i32;
     pub fn GetSystemDirectoryW(text: *mut u16, len: u32) -> u32;
     pub fn GetFullPathNameW(path: *const u16, len: u32, out: *mut u16, part: *mut *mut u16) -> u32;
     pub fn GetFinalPathNameByHandleW(handle: Raw, out: *mut u16, len: u32, flags: u32) -> u32;
@@ -426,6 +429,63 @@ pub fn legacy(handle: Raw) -> Result<Legacy, u32> {
     Ok(value)
 }
 
+pub fn dos_device_mapping(name: &[u16]) -> Result<Vec<u16>, u32> {
+    let name = c_wide(name);
+    let mut buffer = vec![0; 1024];
+    loop {
+        if unsafe { QueryDosDeviceW(name.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) } != 0 {
+            buffer.truncate(before_nul(&buffer).len());
+            return Ok(buffer);
+        }
+        let error = last_error();
+        if error != 122 || buffer.len() >= 1 << 20 {
+            return Err(error);
+        }
+        buffer.resize(buffer.len() * 4, 0);
+    }
+}
+
+pub fn volume_guid(device: &[u16]) -> Option<Vec<u16>> {
+    // Resolve the proved device through the volume list without consulting the drive letter.
+    let mut buffer = [0; 50];
+    let capacity = buffer.len() as u32;
+    let prefix = ascii(r"\\?\");
+    let search = unsafe { FindFirstVolumeW(buffer.as_mut_ptr(), capacity) };
+    if search == INVALID {
+        return None;
+    }
+    let volume = loop {
+        let path = before_nul(&buffer);
+        if let Some(name) = path
+            .strip_prefix(prefix.as_slice())
+            .and_then(|name| name.strip_suffix(&[92]))
+            && dos_device_mapping(name).is_ok_and(|mapping| mapping == device)
+        {
+            break Some(path.to_vec());
+        }
+        if unsafe { FindNextVolumeW(search, buffer.as_mut_ptr(), capacity) } == 0 {
+            break None;
+        }
+    };
+    unsafe { FindVolumeClose(search) };
+    volume
+}
+
+pub fn volume_root_matches(handle: Raw, device: &[u16]) -> bool {
+    const VOLUME_NAME_NT: u32 = 2;
+    let mut name = vec![0; device.len() + 2];
+    let written = unsafe {
+        GetFinalPathNameByHandleW(handle, name.as_mut_ptr(), name.len() as u32, VOLUME_NAME_NT)
+    } as usize;
+    written == device.len() + 1
+        && &name[..device.len()] == device
+        && name[device.len()] == 92
+}
+
+pub fn open_volume_root(root: &[u16], access: u32, share: u32) -> Result<Handle, u32> {
+    open_extended(root, access, share, OPEN_REPARSE | FILE_FLAG_BACKUP_SEMANTICS)
+}
+
 pub fn open_root(root: &[u16], access: u32, share: u32) -> Result<Handle, u32> {
     open_absolute(root, access, share, OPEN_REPARSE | FILE_FLAG_BACKUP_SEMANTICS)
 }
@@ -436,9 +496,13 @@ pub fn open_absolute(path: &[u16], access: u32, share: u32, flags: u32) -> Resul
     } else {
         [ascii(r"\\?\"), path.to_vec()].concat()
     };
+    open_extended(&extended, access, share, flags)
+}
+
+fn open_extended(path: &[u16], access: u32, share: u32, flags: u32) -> Result<Handle, u32> {
     unsafe {
         Handle::from_raw(CreateFileW(
-            c_wide(&extended).as_ptr(),
+            c_wide(path).as_ptr(),
             access,
             share,
             null_mut(),

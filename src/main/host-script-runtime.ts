@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
+import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { admitWindowsReparse, mapWindowsGenericRights, readWindowsDacls } from "../shared/windows-path-facts.js";
+import { classifyWindowsSpelling } from "../shared/windows-path-spelling.js";
 import { getConfiguredHostResources, type HostResources } from "./host-resources.js";
 
 interface ScriptRuntimePaths { javascriptRuntime: string; bundledScriptsDirectory: string }
@@ -117,8 +118,7 @@ const CREATOR_OWNER_SID = "S-1-3-0";
 
 export function checkWindowsWorkbookAccess(path: string): { identity: string } | { reason: string } {
   try {
-    // Prove the drive locally, then let the native handle walk admit each component.
-    withLocalityDecision(() => admitLocalPath(path));
+    if (classifyWindowsSpelling(path, "win32").kind !== "local-drive") return { reason: WORKBOOK_ACL_UNREADABLE };
     const [facts] = readWindowsDacls([path], { parent: true, access: true });
     if (facts && admitWindowsReparse(facts) !== true) return { reason: WORKBOOK_ACL_DIFFERS };
     if (!facts?.exists || !facts.dacl?.sacl || !facts.parent?.sacl || !facts.volumeSerialNumber || !facts.fileIndex || !facts.changeTime

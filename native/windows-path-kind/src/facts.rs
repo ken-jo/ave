@@ -1,4 +1,4 @@
-use crate::pin::{Facts, pin, verify};
+use crate::pin::{Facts, pin, pin_local, verify};
 use crate::security::{self, Descriptor};
 use crate::windows::*;
 use std::fmt::Write;
@@ -233,7 +233,7 @@ fn framed_row_fits(output_size: usize, row_size: usize, first: bool) -> bool {
 }
 
 fn file_access_row(path: &[u16]) -> Option<String> {
-    let pinned = pin(path, false)?;
+    let pinned = pin_local(path, false)?;
     let (facts, ancestors) = pinned.facts.split_last()?;
     if ancestors.is_empty()
         || facts.exists != Some(true)
@@ -358,7 +358,8 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
     let mut output = String::from("[");
     for (index, path) in paths.iter().enumerate() {
         let first = index == 0;
-        let pinned = pin(path, content).ok_or_else(|| {
+        let pin_path = if access { pin_local } else { pin };
+        let pinned = pin_path(path, content).ok_or_else(|| {
             diagnose("could not read path facts");
             4_u8
         })?;
