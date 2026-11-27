@@ -201,6 +201,52 @@ describe("CodexAppServerClient", () => {
     expect(harness.server.requests.filter((request) => request.method === "account/rateLimits/read")).toHaveLength(1);
   });
 
+  it.each(["same account", "disconnected", "logged out", "different account"] as const)(
+    "settles a first-turn isolation proof after a later observation of %s",
+    async (scenario) => {
+      const held = deferred<void>();
+      const started = deferred<void>();
+      let email: string | null = "alice@example.test";
+      const harness = await createHarness((request) => {
+        if (request.method === "account/read") return { account: email && { type: "chatgpt", email, planType: "plus" } };
+        if (request.method === "account/logout") { email = null; return {}; }
+        return standardInitialize(request);
+      });
+      const service = await SubscriptionRuntimeService.create(async () => undefined, {
+        namespace: createSubscriptionRuntimeNamespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
+        claudeCodeReleaseFetch: async () => { throw new Error("Unexpected release request"); },
+        acpRegistry: { stopAll: async () => {} } as unknown as AcpSubscriptionRuntimeRegistry,
+        codexClient: harness.client,
+        createCodexConversationRuntime: () => ({
+          verifyIsolation: async () => { started.resolve(); await held.promise; },
+          stop: vi.fn(),
+        }) as unknown as CodexConversationRuntime,
+      });
+      try {
+        const turn = service.openTextSession({ kind: "subscription", provider: "codex" });
+        void turn.catch(() => {});
+        await started.promise;
+        if (scenario === "disconnected") email = null;
+        if (scenario === "different account") email = "bob@example.test";
+        const status = await (scenario === "logged out" ? service.logout("codex") : service.getStatus("codex"));
+        expect(status.capabilities.chat).toBe(false);
+        held.resolve();
+        if (scenario === "same account") {
+          const session = await turn;
+          expect(session.provider).toBe("codex");
+          await session.stop();
+          expect((await service.getStatus("codex", { allowCached: true })).capabilities.chat).toBe(true);
+        } else {
+          await expect(turn).rejects.toMatchObject({ code: "subscription-status-superseded" });
+          expect((await service.getStatus("codex", { allowCached: true })).capabilities.chat).toBe(false);
+        }
+      } finally {
+        held.resolve();
+        await service.stop();
+      }
+    },
+  );
+
   it("keeps the authenticated transport usable after an optional quota timeout", async () => {
     const requested = deferred<RpcRequest>();
     const harness = await createHarness((request) => {

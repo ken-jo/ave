@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { OAuthLoginAttempt, type OpenOAuthLogin } from "./oauth-login.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
@@ -36,6 +37,12 @@ import type { SubscriptionPlanUsageUpdate } from "../shared/subscription-plan-us
 const MAX_MODEL_COUNT = 100;
 const MAX_PLAN_TYPE_LENGTH = 80;
 const MAX_DEVICE_CODE_LENGTH = 128;
+
+const accountIdentities = new WeakMap<CodexSubscriptionStatus, string>();
+
+export function codexAccountIdentity(status: CodexSubscriptionStatus): string | undefined {
+  return accountIdentities.get(status);
+}
 
 export type CodexAppServerErrorCode = CodexSubscriptionErrorCode;
 
@@ -146,6 +153,7 @@ export class CodexAppServerClient {
   private readonly pendingRequests = new JsonRpcPendingRequests();
   private transportReader: JsonLineReader | null = null;
   private accountStatus: CodexSubscriptionStatus = blankStatus("ready");
+  private accountRevision = 0;
   private planUsageGeneration = 0;
   private planUsageRead: { readonly generation: number; readonly promise: Promise<void> } | null = null;
   private pendingLogin: PendingLogin | null = null;
@@ -176,7 +184,9 @@ export class CodexAppServerClient {
       }
       throw error;
     }
+    const accountRevision = this.accountRevision;
     const result = await this.request("account/read", { refreshToken: false });
+    if (accountRevision !== this.accountRevision) throw new CodexAppServerError("codex-operation-failed");
     this.accountStatus = this.projectAccountStatus(result);
     if (this.accountStatus.connection === "connected") {
       this.pendingLogin?.window.finish();
@@ -193,7 +203,13 @@ export class CodexAppServerClient {
       this.completedLoginError = null;
       throw new CodexAppServerError(completedLoginError);
     }
-    return this.currentStatus();
+    const status = this.currentStatus();
+    const account = isCodexJsonRecord(result) && isCodexJsonRecord(result.account) ? result.account : null;
+    if (status.connection === "connected") {
+      const email = boundedString(account?.email, 320);
+      accountIdentities.set(status, createHash("sha256").update(JSON.stringify([accountRevision, email])).digest("hex"));
+    }
+    return status;
   }
 
   // Returns the in-memory projection only; it never causes token refresh.
@@ -576,6 +592,7 @@ export class CodexAppServerClient {
       return;
     }
     if (method === "account/updated" && payload) {
+      this.accountRevision += 1;
       this.invalidatePlanUsage();
       if (payload.authMode === "chatgpt") {
         this.pendingLogin?.window.finish();
