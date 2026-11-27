@@ -14,6 +14,7 @@ import { mainDir } from '../../main-paths.js';
 import { MemoryMapHostError } from '../errors.js';
 import type { LocalInferenceRoute } from '../local-runtime-win32.js';
 import type { ConfinedChildSpec } from '../../../permissions/confined-child.js';
+import { MxcProcessCleanupError } from '../../../permissions/mxc-extension-errors.js';
 import type { WindowsBackgroundAdmission } from '../../../permissions/windows-background-features.js';
 import { parseChildLaunchArgs } from '../../../plugins/isolation/child-loopback-link.js';
 import { runInferenceChild } from '../inference-child-win32.js';
@@ -460,6 +461,21 @@ it('keeps a container start refusal instead of starting a host child', async () 
   await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toThrow('Container refused');
   expect(spawnHost).not.toHaveBeenCalled();
   expect(spawn).not.toHaveBeenCalled();
+});
+
+it('keeps the container cleanup refusal when Cancel stops an active inference', async () => {
+  route.mockReturnValue('mxc');
+  const writing = deferred<void>();
+  const { child } = serveReply(() => { writing.resolve(); return new Promise(() => {}); });
+  const failure = new MxcProcessCleanupError('Container exit unconfirmed');
+  const release = vi.fn().mockRejectedValue(failure);
+  spawnMxc.mockResolvedValue({ process: Object.assign(child, { fenceInput: vi.fn() }), release });
+  const controller = new AbortController();
+  const outcome = runInferenceChild(folder, TASK, controller.signal).catch((error: unknown) => error);
+  await writing.promise;
+  controller.abort();
+  expect(await outcome).toBe(failure);
+  expect(release).toHaveBeenCalledOnce();
 });
 
 it('streams verified bytes to a managed host child only for the unconfined route', async () => {

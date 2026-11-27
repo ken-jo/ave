@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { NODE_PRESERVE_SYMLINK_FLAGS, spawnConfinedChild, srtWinTargetEnv } from '../../permissions/confined-child.js';
+import { MxcProcessCleanupError } from '../../permissions/mxc-extension-errors.js';
 import { isSandboxHomeUnavailable } from '../../permissions/sandbox-process-home.js';
 import { CHILD_LOOPBACK_TRANSPORT_ARG, connectToAnnouncedChild, encodeChildEnv } from '../../plugins/isolation/child-loopback-link.js';
 import { prepareManagedWindowsProcessHome, spawnMxcBundledHolder } from '../../sandbox/wrap-bundled-command.js';
@@ -207,7 +208,8 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
             });
           } catch (refusal) { reject(refusal as Error); }
         },
-        (cleanupError: unknown) => reject(cleanupError instanceof ManagedExitUnconfirmedError ? cleanupError : error ?? cleanupError),
+        (cleanupError: unknown) => reject(cleanupError instanceof ManagedExitUnconfirmedError || cleanupError instanceof MxcProcessCleanupError
+          ? cleanupError : error ?? cleanupError),
       );
     };
     const abort = () => finish(new Error('Memory worker cancelled'));

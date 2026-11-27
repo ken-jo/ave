@@ -16,6 +16,7 @@ import { runMemoryWorker } from '../../main/memory-map/worker-client-win32.js';
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager-win32.js';
 import { downloadModelFile } from '../../main/memory-map/model-download-win32.js';
 import { ManagedExitUnconfirmedError } from '../../main/managed-child-processes.js';
+import { MxcProcessCleanupError } from '../../permissions/mxc-extension-errors.js';
 import { MemoryMapHost, MemoryMapHostError } from '../../main/memory-map/host-win32.js';
 import { readGraphCatalog, memoryFacets, graphMemoryRevision, isGraphMemory, matchesGraphRecord, memoryMapScopeId, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 import { ProviderEmbeddings } from '../../main/memory-map/provider-embeddings-win32.js';
@@ -205,7 +206,8 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
       const builds = [...activeBuilds];
       cancelBuild();
       const outcomes = await Promise.allSettled(builds);
-      if (outcomes.some(outcome => outcome.status === 'rejected' && outcome.reason instanceof ManagedExitUnconfirmedError)) {
+      if (outcomes.some(outcome => outcome.status === 'rejected'
+        && (outcome.reason instanceof ManagedExitUnconfirmedError || outcome.reason instanceof MxcProcessCleanupError))) {
         throw new MemoryMapHostError('build-exit-unconfirmed');
       }
       return null;
@@ -297,7 +299,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
       return pending;
     },
     errorCode: error => {
-      if (error instanceof ManagedExitUnconfirmedError) return 'local-runtime-unavailable';
+      if (error instanceof ManagedExitUnconfirmedError || error instanceof MxcProcessCleanupError) return 'local-runtime-unavailable';
       return error instanceof MemoryModelError || error instanceof MemoryMapHostError ? error.code : undefined;
     },
     readSource: (id, rawScope, contentRevision) => {
