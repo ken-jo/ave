@@ -78,7 +78,7 @@ vi.mock("../../workload/runtime.js", async original => ({ ...await original<type
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { t } from "../../i18n/index.js";
 import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
@@ -239,10 +239,11 @@ describe("native Windows file permission targets", () => {
     const firstObservation = observations.get(first) ?? 0;
     expect(queries[firstObservation - 1]).toBe("D:");
     expect(observations.get(second)).toBe(firstObservation);
-    expect(scopeQueries).toEqual([[], []]);
+    const homeDrive = win32.parse(root).root.slice(0, 2).toUpperCase();
+    expect(scopeQueries).toEqual([ORIGINAL_PLATFORM === "win32" && homeDrive !== "D:" ? [homeDrive] : [], []]);
   });
 
-  it("queries the drive once for a standalone multi-target scope check", () => {
+  it("queries the policy home drive once for a standalone multi-target scope check", () => {
     const query = vi.fn(() => LOCAL_DRIVE);
     setWindowsDriveQueryForTest(query);
     expect(PermissionManager.checkPathScope({
@@ -251,7 +252,8 @@ describe("native Windows file permission targets", () => {
       })),
       allowedDirectories: ["d:/fixture/project"], effect: "write", blockReadsOutsideWorkingDirectories: true,
     })).toEqual({ sensitiveHit: null, outOfAllowed: null, readOutsideScope: null });
-    expect(query.mock.calls).toEqual([["D:"]]);
+    const homeDrive = win32.parse(root).root.slice(0, 2).toUpperCase();
+    expect(query.mock.calls).toEqual(ORIGINAL_PLATFORM === "win32" ? [[homeDrive]] : []);
   });
 
   it.each([
