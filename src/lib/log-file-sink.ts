@@ -271,7 +271,14 @@ export function createLogFileSink(options: LogFileSinkOptions = {}, onProgress?:
   let nextFile: string | undefined;
   const destination = createAsyncLogDestination({
     dest: currentFile, sync: false, mode: PRIVATE_FILE_MODE, maxLength: LOG_MAX_BYTES,
-  }, onProgress);
+  }, onProgress, (error) => {
+    if (!nextFile || error.syscall !== "open" || error.path !== nextFile) return false;
+    nextFile = undefined;
+    // Settle reopen listeners while the old descriptor is still current.
+    boom.emit("ready");
+    if (!closed) boom.flush();
+    return true;
+  });
   const { stream: boom } = destination;
 
   let pruning = false;
@@ -307,8 +314,6 @@ export function createLogFileSink(options: LogFileSinkOptions = {}, onProgress?:
     activeBytes = 0;
     requestCap();
   });
-  boom.on("error", () => { nextFile = undefined; });
-
   return {
     flush: destination.flush,
     get pending() { return destination.pending; },

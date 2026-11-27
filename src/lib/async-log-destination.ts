@@ -2,14 +2,23 @@ import sonicBoom, { type SonicBoom as SonicBoomInstance, type SonicBoomOpts } fr
 
 const SonicBoom = sonicBoom as unknown as new (options: SonicBoomOpts & { maxWriteRetries: number }) => SonicBoomInstance;
 
-export function createAsyncLogDestination(options: SonicBoomOpts, onProgress?: () => void) {
+export function createAsyncLogDestination(
+  options: SonicBoomOpts,
+  onProgress?: () => void,
+  recoverFromError?: (error: NodeJS.ErrnoException) => boolean,
+) {
   const stream = new SonicBoom({ ...options, maxWriteRetries: 3 });
   const pending = new Map<number, { bytes: number; counted: boolean }>();
   let sequence = 0;
   let dropped = 0;
   let failed = false;
-  stream.on("error", () => {
+  let recoveredError: Error | undefined;
+  stream.on("error", (error: NodeJS.ErrnoException) => {
     if (failed) return;
+    if (recoverFromError?.(error)) {
+      recoveredError = error;
+      return;
+    }
     failed = true;
     for (const record of pending.values()) {
       if (record.counted) dropped += 1;
@@ -62,9 +71,15 @@ export function createAsyncLogDestination(options: SonicBoomOpts, onProgress?: (
           resolve();
           return;
         }
-        try {
-          stream.flush(() => resolve());
-        } catch { resolve(); }
+        const flush = (): void => {
+          try {
+            stream.flush((error) => {
+              if (error && error === recoveredError && pending.size > 0) flush();
+              else resolve();
+            });
+          } catch { resolve(); }
+        };
+        flush();
       });
     },
   };

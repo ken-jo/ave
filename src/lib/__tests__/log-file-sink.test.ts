@@ -217,6 +217,43 @@ describe("createLogFileSink — size-based sequence rolling", () => {
     }
   });
 
+  it("keeps writing to the active file after a rollover open fails", async () => {
+    const sink = createLogFileSink({ dir: logDir, maxBytes: 4 });
+    const base = sink.currentFile;
+    const rolled = join(logDir, `ave-${todayDateStr()}.1.log`);
+    const open = fs.open;
+    const failOpen = deferred<() => void>();
+    let held = false;
+    const spy = vi.spyOn(fs, "open").mockImplementation((...args: Parameters<typeof open>) => {
+      if (args[0] === rolled && !held) {
+        held = true;
+        const callback = args[args.length - 1] as (error: NodeJS.ErrnoException) => void;
+        failOpen.resolve(() => callback(Object.assign(new Error("Rollover open failed"), {
+          code: "EACCES", syscall: "open", path: rolled,
+        })));
+        return;
+      }
+      Reflect.apply(open, fs, args);
+    });
+    try {
+      sink.write("first\n");
+      const fail = await failOpen.promise;
+      sink.write("buffered\n");
+      const flush = sink.flush();
+      fail();
+      await flush;
+      expect(fs.readFileSync(base, "utf8")).toBe("first\nbuffered\n");
+      await vi.waitFor(() => expect(sink.currentFile).toBe(rolled));
+      sink.write("later\n");
+      await sink.flush();
+      expect(fs.readFileSync(rolled, "utf8")).toBe("later\n");
+      expect(sink.dropped).toBe(0);
+    } finally {
+      spy.mockRestore();
+      sink.destroy();
+    }
+  });
+
   it("resumes into a fresh sequence when today's base file is already oversized", async () => {
     const base = join(logDir, `ave-${todayDateStr()}.log`);
     writeFileSync(base, "y".repeat(200));
