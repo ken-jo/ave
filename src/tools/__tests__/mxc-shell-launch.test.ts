@@ -308,6 +308,22 @@ describe("prepareMxcShellLaunch", () => {
     expect(final[0]?.[1]).toBe(final[1]?.[1]);
   });
 
+  it("marks parser preparation through the final seal verification", async () => {
+    relay();
+    const markParserTiming = vi.fn();
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const launch = await prepareMxcShellLaunch({ ...INPUT, markParserTiming }, lifecycle);
+      expect(markParserTiming.mock.calls.flat()).toEqual([
+        "launcher-verified", "sandbox-prep", "egress-prep", "seal-verified", "inline-policy-ready",
+      ]);
+      launch.activate();
+      expect(markParserTiming).toHaveBeenLastCalledWith("seal-verified-at-activation");
+    } finally {
+      await lifecycle.dispose();
+    }
+  });
+
   it("refuses a working directory the runtime root came to cover during the launch's waits", async () => {
     h.openRelay.mockImplementationOnce(async (_token: string, admission?: { adopt(close: () => Promise<void>): void }) => {
       admission?.adopt(h.closeRelay);

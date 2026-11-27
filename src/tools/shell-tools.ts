@@ -98,7 +98,7 @@ import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
 import { isWindowsPathAtOrUnder, MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
 import { prepareMxcPosixShellLaunch } from "./mxc-posix-shell-launch.js";
-import { prepareMxcShellLaunch, type MxcShellLaunch, type MxcShellPreparationStage } from "./mxc-shell-launch.js";
+import { prepareMxcShellLaunch, type MxcParserPreparationStage, type MxcShellLaunch, type MxcShellPreparationStage } from "./mxc-shell-launch.js";
 import { deferWatchedReceipt } from "../permissions/windows-watched-rows.js";
 import { createContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 import { buildMandatorySandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
@@ -4227,7 +4227,10 @@ export function resolvePowerShellExecutable(): string {
   return installation.executable;
 }
 
-type MxcPowerShellStage = MxcShellPreparationStage | "parser-exit" | "ast-checks-done" | "permit-checked" | "cwd-hold-ready" | "write-policy-ready" | "launch";
+type MxcPowerShellParserStage = MxcParserPreparationStage | "write-roots-ready" | "installation-ready" | "home-ready" | "cwd-hold-ready"
+  | "powershell-ready" | "read-policy-ready" | "sensitive-write-floor-ready" | "write-policy-ready" | "launch";
+type MxcPowerShellStage = MxcShellPreparationStage | `parser-${MxcPowerShellParserStage}`
+  | "parser-exit" | "ast-checks-done" | "permit-checked" | "cwd-hold-ready" | "write-policy-ready" | "launch";
 type MxcPowerShellTiming = (stage: MxcPowerShellStage) => void;
 
 let mxcTimingId = 0;
@@ -4249,6 +4252,7 @@ async function parsePowerShellAstInMxc(command: string, cwd: string, ctx: ToolEx
     ...(ctx.ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot: ctx.ownerPluginSandboxRoot } : {}),
     allowedDirectories: containerShellAllowedDirectories(cwd, ctx.extraAllowedDirectories),
   });
+  markTiming?.("parser-write-roots-ready");
   const response = createPowerShellParserResponse();
   const result = await spawnPowerShellInMxc(parserScript, cwd, writePaths, timeoutSeconds, ctx.abortSignal, undefined, undefined,
     typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, response, [], undefined, boundarySessionOf(ctx),
@@ -4646,6 +4650,9 @@ async function spawnPowerShellInMxc(
     || win32Path.normalize(installation.executable).toLowerCase() !== systemExecutable.toLowerCase()) {
     return mxcSpawnFailure("trusted system installation is unavailable");
   }
+  const markParserTiming = parserResponse === undefined || markTiming === undefined ? undefined
+    : (stage: MxcPowerShellParserStage) => markTiming(`parser-${stage}`);
+  markParserTiming?.("installation-ready");
   // The invocation's one owner: each resource below registers with it as it is allocated, and every
   // failure is formatted only after disposal, from the raw errors.
   const lifecycle = createContainedShellLifecycle();
@@ -4669,15 +4676,19 @@ async function spawnPowerShellInMxc(
     const sandboxHome = createSandboxProcessHome();
     failurePrefix = "";
     lifecycle.defer(() => sandboxHome.cleanup());
+    markParserTiming?.("home-ready");
     const cwdHold = await holdHostShellSpawnDirectory(spawnAuthorization);
     lifecycle.defer(() => cwdHold.dispose());
     if (parserResponse === undefined) markTiming?.("cwd-hold-ready");
+    else markParserTiming?.("cwd-hold-ready");
     const powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome);
+    markParserTiming?.("powershell-ready");
     const sandboxWritePaths = [...writePaths, sandboxHome.path];
     const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
     // One Ave home boundary snapshot serves this command's read policy and its container grants.
     const boundarySnapshot = createAveHomeBoundarySnapshot(sessionId);
     const { allowRead, denyRead, floorPierces, withheldSessionReadRoot, policyNotices: readNotices } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path, boundarySnapshot, "mxc");
+    markParserTiming?.("read-policy-ready");
     policyNotices = [...readNotices, ...savedSessionReadNotices(withheldSessionReadRoot, commandReadPaths)];
     const egress = openEgressInvocation(
       { kind: "shell", toolName: "powershell", toolUseId, requiresListener: true, context: ambientShellEgressContext() },
@@ -4691,8 +4702,10 @@ async function spawnPowerShellInMxc(
     // approval and egress grant stores. Ranking keeps a deny inside a granted
     // directory as read-only (existing) or denied (absent).
     const sensitiveDenyWrite = await runWithSandboxWritePreflight(signal, () => getDefaultSensitiveWriteDenyPaths());
+    markParserTiming?.("sensitive-write-floor-ready");
     const mandatory = withLocalityDecision(() => buildMandatorySandboxWritePolicy(sandboxWritePaths, undefined, sensitiveDenyWrite));
     if (parserResponse === undefined) markTiming?.("write-policy-ready");
+    else markParserTiming?.("write-policy-ready");
     launch = await boundarySnapshot.run(() => prepareMxcShellLaunch({
       egressToken: token,
       commandLine: powerShellMxcCommandLine(systemRoot, powerShellLaunch.args.at(-1)!, cwd),
@@ -4712,6 +4725,7 @@ async function spawnPowerShellInMxc(
       directoryHeld: cwdHold.stdio !== undefined,
       exists: existsSync,
       ...(parserResponse === undefined && markTiming !== undefined ? { markTiming } : {}),
+      ...(markParserTiming !== undefined ? { markParserTiming } : {}),
     }, lifecycle));
     signal?.throwIfAborted();
     const gate = currentEffectGateContext();
@@ -4737,6 +4751,7 @@ async function spawnPowerShellInMxc(
       if (bindHeldPolicy !== undefined && holdStdio === undefined) throw new Error("Windows sandbox policy requires a directory hold");
       const target = bindHeldPolicy === undefined ? cwdHold.command(cmd, args) : cwdHold.command(cmd, args, true);
       if (parserResponse === undefined) markTiming?.("launch");
+      else markParserTiming?.("launch");
       child = spawn(target.executable, target.args, {
         // The launcher runs from its own (per-machine, admin-only) directory, so
         // nothing in the workspace sits beside it; the container's working

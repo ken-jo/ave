@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { logger } from "../../lib/logger.js";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 const childProcessMock = vi.hoisted(() => ({
@@ -348,6 +349,17 @@ describe("builtin shell — Windows MXC containers", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("reports parser preparation timing without invocation data", async () => {
+    bootMxcShells();
+    vi.spyOn(logger, "isLevelEnabled").mockReturnValue(true);
+    const debug = vi.spyOn(logger, "debug").mockImplementation(() => {});
+    expect((await executePowerShell(context("parser-timing"))).isError).toBe(false);
+    const records = debug.mock.calls.filter(([, message]) => message === "Windows PowerShell launch timing").map(([data]) => data);
+    const stages = ["parser-write-roots-ready", "parser-installation-ready", "parser-home-ready", "parser-cwd-hold-ready",
+      "parser-powershell-ready", "parser-read-policy-ready", "parser-sensitive-write-floor-ready", "parser-write-policy-ready", "parser-launch"];
+    expect(records.slice(0, stages.length)).toEqual(stages.map(stage => ({ id: expect.any(Number), stage, elapsedMs: expect.any(Number) })));
   });
 
   it("observes only the approved command container and excludes its internal parser", async () => {
