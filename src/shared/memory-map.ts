@@ -50,6 +50,18 @@ export interface MemoryEmbeddingSettings { source: 'local' | 'provider'; namespa
 export type MemoryMapError = 'unauthorized-frame' | 'invalid-input' | 'catalog-too-large' | 'project-not-allowed' | 'model-unconfigured' | 'model-integrity-failed' | 'local-runtime-unavailable' | 'local-inference-disabled' | 'sandbox-home-unavailable' | 'graph-unavailable' | 'graph-stale' | 'graph-build-failed' | 'build-exit-unconfirmed' | 'request-stale' | 'provider-unavailable' | 'provider-no-embedding-model' | 'provider-route-ineligible' | 'provider-consent-required' | 'provider-embedding-failed' | 'provider-dimension-mismatch' | 'model-download-failed' | 'model-folder-invalid' | 'model-cancelled';
 type MemoryMapResult<T> = { ok: true; value: T } | { ok: false; error: MemoryMapError };
 export interface MemoryMapScope { projectRoot?: string; projectName?: string; includeUnscoped?: boolean }
+export type MemoryBuildOutcome = { kind: 'ready' } | { kind: 'cancelled' } | { kind: 'failed'; code: MemoryMapError };
+export interface MemoryBuildStatus {
+  id: string;
+  phase: 'admitting' | 'running' | 'stopping' | 'stopped' | 'exit-unconfirmed';
+  outcome?: MemoryBuildOutcome;
+}
+export interface MemoryBuildView {
+  instance: string;
+  revision: number;
+  snapshot: GraphSnapshot | null;
+  builds: MemoryBuildStatus[];
+}
 export interface MemoryMapApi {
   get: (scope?: MemoryMapScope) => Promise<MemoryMapResult<GraphSnapshot | null>>;
   build: (scope?: MemoryMapScope, buildId?: string) => Promise<MemoryMapResult<GraphSnapshot>>;
