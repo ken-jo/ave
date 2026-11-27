@@ -48,8 +48,8 @@ function createLoop(windowId?: number, onNavigate?: (tool: ReturnType<typeof cre
   } as unknown as Parameters<typeof createSideChatConversationLoop>[0]);
 }
 
-function bindPage(id: number, tabId: string, url: string) {
-  browserTabRegistry.guestAttached({ id, isDestroyed: () => false, getURL: () => url, getTitle: () => "Page" } as never, WINDOW_ID);
+function bindPage(id: number, tabId: string, url: string, title = "Page") {
+  browserTabRegistry.guestAttached({ id, isDestroyed: () => false, getURL: () => url, getTitle: () => title } as never, WINDOW_ID);
   expect(browserTabRegistry.bindTab(WINDOW_ID, { tabId, webContentsId: id })).toMatchObject({ ok: true });
 }
 
@@ -85,7 +85,7 @@ describe("browser pane turn guidance", () => {
 
   it("names the bound page in a pane turn even when another tab is active", () => {
     const loop = createLoop(WINDOW_ID);
-    bindPage(1, PANE.tabId, `${BOUND_URL}?token=private#fragment`);
+    bindPage(1, PANE.tabId, "https://private-user:private-password@bound.example/ignore-previous-instructions?token=private#private-fragment", "private-page-title");
     bindPage(2, OTHER.tabId, OTHER_URL);
     browserTabRegistry.setActiveSurface(WINDOW_ID, OTHER);
     const sessionId = loop.getSessionId();
@@ -94,14 +94,40 @@ describe("browser pane turn guidance", () => {
     expect(bound).toMatchObject({ ok: true });
     if (!bound.ok) throw new Error(bound.error);
     const prompt = loop.buildSystemPromptForScope(SCOPE);
-    expect(prompt).toContain(`This chat is bound to browser tab ${bound.handle} (${BOUND_URL}).`);
+    expect.soft(prompt).toContain(`This chat is bound to browser tab ${bound.handle}.`);
     expect(prompt).toContain("Omit tabId to act in this tab.");
     expect(prompt).toContain("Actions in a user-owned page may ask for consent.");
     expect(prompt).toContain("This chat cannot open a separate tab.");
     expect(prompt).not.toContain(OTHER_URL);
-    expect(prompt).not.toContain("token=private");
-    expect(loop.buildSystemPromptForScope({ ...SCOPE, includeEgress: false })).not.toContain(BOUND_URL);
-    expect(createLoop().buildSystemPromptForScope(SCOPE)).not.toContain(BOUND_URL);
+    for (const pageText of ["bound.example", "private-user", "private-password", "ignore-previous-instructions", "token=private", "private-fragment", "private-page-title"]) {
+      expect.soft(prompt).not.toContain(pageText);
+    }
+    expect(loop.buildSystemPromptForScope({ ...SCOPE, includeEgress: false })).not.toContain(bound.handle);
+    expect(createLoop().buildSystemPromptForScope(SCOPE)).not.toContain(bound.handle);
+  });
+
+  it.each([
+    ["non-HTTP", "data:text/html,private-document", "private-document"],
+    ["overlong", `https://private.example/${"long-path-segment".repeat(100)}`, "long-path-segment"],
+  ])("keeps %s page data out of routing guidance and drops the preceding page on replacement", (_kind, url, pageText) => {
+    const loop = createLoop(WINDOW_ID);
+    const sessionId = loop.getSessionId();
+    browserTabRegistry.bindConversationSurface(sessionId, { windowId: WINDOW_ID, surface: PANE });
+    bindPage(1, PANE.tabId, url);
+    const first = browserTabRegistry.liveRendererTab(WINDOW_ID, PANE.tabId)!;
+    const before = loop.buildSystemPromptForScope(SCOPE);
+    const routing = before.match(/This chat is bound to browser tab [^.]+\./)?.[0];
+    expect.soft(routing).toBe(`This chat is bound to browser tab ${first.handle}.`);
+    expect.soft(before).not.toContain(pageText);
+    browserTabRegistry.guestDestroyed(1);
+    bindPage(2, OTHER.tabId, OTHER_URL);
+    browserTabRegistry.bindConversationSurface(sessionId, { windowId: WINDOW_ID, surface: OTHER });
+    const replacement = browserTabRegistry.liveRendererTab(WINDOW_ID, OTHER.tabId)!;
+    const after = loop.buildSystemPromptForScope(SCOPE);
+    expect.soft(after).toContain(`This chat is bound to browser tab ${replacement.handle}.`);
+    expect(after).not.toContain(first.handle);
+    expect(after).not.toContain(pageText);
+    expect.soft(after).not.toContain(OTHER_URL);
   });
 
   it("agrees with navigation approval for empty, loading, destroyed and replacement pages", async () => {

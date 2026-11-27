@@ -14,8 +14,6 @@ import type { BashAstValidator } from "../main/bash-ast-validator.js";
 import type { PluginRuntime } from "../plugins/runtime.js";
 import { SystemPromptBuilder } from "../prompts/system-prompt-builder.js";
 import { browserTabRegistry } from "../main/browser/browser-tab-registry.js";
-import { isPiiRedactionEnabled, maskSensitiveData } from "../shared/dlp.js";
-import { fenceAttrValue } from "../shared/fence-sanitizer.js";
 import { t } from "../i18n/index.js";
 import { PermissionManager } from "../permissions/permission-manager.js";
 import { readPermissionSettings } from "../permissions/permission-settings-store.js";
@@ -414,12 +412,7 @@ function browserPaneGuidance(windowId: number, sessionId: string): string {
   if (target.kind === "paused") return t("be_browserTools.panePausedGuidance");
   if (target.kind !== "live") return t("be_browserTools.paneUnavailableGuidance");
 
-  const url = URL.parse(target.url);
-  // Page URLs are external data. Drop credentials, query and fragment before showing a routing hint.
-  const location = url && (url.protocol === "https:" || url.protocol === "http:")
-    ? fenceAttrValue(maskSensitiveData(`${url.origin}${url.pathname}`, { pii: isPiiRedactionEnabled() }).masked, 512)
-    : "";
-  return t("be_browserTools.paneBoundGuidance", { handle: target.handle, url: location ? ` (${location})` : "" });
+  return t("be_browserTools.paneBoundGuidance", { handle: target.handle });
 }
 
 export function createConversationLoop(deps: ConversationDeps,

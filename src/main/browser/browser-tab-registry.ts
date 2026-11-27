@@ -1362,7 +1362,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   browserPaneTarget(windowId: number, sessionId: string):
-    | { kind: "live"; handle: string; url: string }
+    | { kind: "live"; handle: string }
     | { kind: "empty" | "unavailable" | "blocked" | "paused" }
     | undefined {
     const bound = this.conversationSurface(windowId, sessionId);
@@ -1374,7 +1374,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     const access = this.tabActionAccess(windowId, target.handle, { sessionId });
     if (!access) return { kind: "blocked" };
     if (access.paused) return { kind: "paused" };
-    return { kind: "live", handle: target.handle, url: access.tab.guest?.getURL() ?? "" };
+    return { kind: "live", handle: target.handle };
   }
 
   // A live tab by handle, in any window. For approval hooks, which have no session.
