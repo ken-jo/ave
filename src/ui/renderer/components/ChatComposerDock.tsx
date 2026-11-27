@@ -62,6 +62,7 @@ export interface ChatComposerDockProps {
   setAttachments: React.Dispatch<React.SetStateAction<Attachment[]>>;
   attachmentNCounter: { current: number };
   onComposerSend: (intent: UserKeyboardIntentSnapshot) => void;
+  composerSubmitBlocked: boolean;
   suggestedReplies: SuggestedRepliesSnapshot;
   commandActions: QuickAction[];
   plugins: PluginEntry[];
@@ -266,6 +267,7 @@ export function ChatComposerDock({
   setAttachments,
   attachmentNCounter,
   onComposerSend,
+  composerSubmitBlocked,
   suggestedReplies,
   commandActions,
   plugins,
@@ -350,7 +352,7 @@ export function ChatComposerDock({
     || runtimePending
     || !question.trimStart().startsWith("/")
   ));
-  const composerSendDisabled = pendingApprovals.length > 0
+  const composerSendDisabled = composerSubmitBlocked
     || !attachmentInputsReady
     || composerInputDisabled
     || draftHasUnsupportedAttachment;
