@@ -108,6 +108,7 @@ export const TAILNET_WORK_REVIEW_STYLE = `
   #output-execution-cards { display: grid; gap: .75rem; margin-block: .75rem; }
   #output-execution-cards .work-review-card { padding: .85rem; }
   #output-execution-cards pre { max-block-size: min(45vh, 25rem); overflow: auto; }
+  #output-retries .work-review-card { padding: .85rem; margin-block: .75rem; }
   .work-review-body label { display: grid; gap: .25rem; margin-block: .65rem; }
   .work-review-body :is(input, select, textarea) { box-sizing: border-box; inline-size: 100%; min-inline-size: 0; color: inherit; }
   .work-review-body textarea { min-block-size: 4rem; }
@@ -143,6 +144,8 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
     const recentResults = document.getElementById("work-review-recent-results");
     const outputList = document.getElementById("output-execution-cards");
     const executionCards = new Map();
+    const retryList = document.getElementById("output-retries");
+    const retries = new Map();
     const states = new Map();
     const submissions = new Map();
     let submissionOrder = 0;
@@ -236,6 +239,50 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
         if (visible.has(id)) continue;
         held.node.remove();
         executionCards.delete(id);
+      }
+    }
+    function updateRetries(snapshot) {
+      if (!retryList) return;
+      const visible = new Set();
+      for (const retry of snapshot.outputRetries ?? []) {
+        const { itemId, input, summary, detail, refusal: blocked } = retry;
+        const key = JSON.stringify([itemId, input, summary, detail, blocked]);
+        visible.add(key);
+        if (retries.has(key)) continue;
+        const node = element("article");
+        node.className = "work-review-card";
+        node.append(element("h3", summary));
+        if (detail) node.append(element("p", refusal(detail)));
+        if (blocked) node.append(element("p", refusal(blocked)));
+        else {
+          const button = element("button", workText("outputRetry"));
+          button.type = "button";
+          const status = element("p");
+          status.setAttribute("role", "status");
+          button.addEventListener("click", async () => {
+            if (button.disabled || revoked || scope !== snapshot.scope || !node.isConnected) return;
+            button.disabled = true;
+            status.textContent = workText("submitting");
+            try {
+              const response = await request(boot.workDecisionPath, {
+                method: "POST", headers: { "content-type": "application/json" },
+                body: JSON.stringify({ id: crypto.randomUUID(), scope, kind: "output-retry", itemId, input }),
+              });
+              const result = await response.json();
+              status.textContent = response.ok && result.ok ? workText("outputRetryAccepted") : refusal(result.error);
+              if (!response.ok || !result.ok) button.disabled = false;
+            } catch { status.textContent = workText("submissionUnknown"); }
+            finally { scheduleRefresh(false, 0); }
+          });
+          node.append(button, status);
+        }
+        retries.set(key, node);
+        retryList.append(node);
+      }
+      for (const [key, node] of retries) {
+        if (visible.has(key)) continue;
+        node.remove();
+        retries.delete(key);
       }
     }
     function detail(parent, label) {
@@ -647,6 +694,8 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
     function clear(text) {
       outputList?.replaceChildren();
       executionCards.clear();
+      retryList?.replaceChildren();
+      retries.clear();
       for (const state of states.values()) {
         state.card?.node.remove();
         state.card = undefined;
@@ -886,6 +935,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
       }
       latestSnapshot = snapshot;
       updateExecutionCards(snapshot);
+      updateRetries(snapshot);
       reviews = new Map();
       for (const item of snapshot.workReviews) {
         reviews.set(reviewIdentity(item), item);
@@ -929,7 +979,7 @@ export const TAILNET_WORK_REVIEW_SCRIPT = String.raw`
           states.delete(identity);
         }
       }
-      empty.hidden = reviews.size !== 0 || executionCards.size !== 0;
+      empty.hidden = reviews.size !== 0 || executionCards.size !== 0 || retries.size !== 0;
       section.hidden = false;
       recentResults.hidden = false;
       syncRecentHeading();

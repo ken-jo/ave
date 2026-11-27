@@ -1,4 +1,4 @@
-import type { StageGateDecideInput, StageJoinDecideInput, WorkPlanApprovalStatus, WorkPlanDecideInput } from "./work-board-types.js";
+import type { StageGateDecideInput, StageJoinDecideInput, StageOutputRetryInput, WorkPlanApprovalStatus, WorkPlanDecideInput } from "./work-board-types.js";
 import type { RequestedOutputCardChoice, RequestedOutputCardView } from "./requested-output-card.js";
 import type { RoutineRecord } from "./routines-types.js";
 import type { WorkApprovalProject, WorkPlanApprovalView, WorkflowApprovalView } from "./work-approvals-types.js";
@@ -25,7 +25,8 @@ type TailnetWorkObjectDecision =
   | { kind: "create-and-run"; input: TemplateVersionPin & { projectRoot?: string; title: string; detail?: string } }
   | { kind: "schedule-attachment"; input: ScheduleAttachmentRequest }
   | { kind: "requested-output"; input: TailnetRequestedOutputDecision }
-  | { kind: "output-execution-card"; input: { handle: string; choice: RequestedOutputCardChoice } };
+  | { kind: "output-execution-card"; input: { handle: string; choice: RequestedOutputCardChoice } }
+  | { kind: "output-retry"; itemId: number; input: StageOutputRetryInput };
 
 /** Same-origin POST with the Web session cookie and CSRF header. Reuse the UUID for a retry of the same submission. */
 export type TailnetWorkDecisionRequest = TailnetWorkObjectDecision & {
@@ -75,11 +76,12 @@ export interface TailnetWorkReviewSnapshot {
   readonly scope: string;
   readonly workReviews?: readonly TailnetWorkReview[];
   readonly outputCards?: readonly RequestedOutputCardView[];
+  readonly outputRetries?: readonly { itemId: number; input: StageOutputRetryInput; summary: string; detail?: string; refusal?: string }[];
 }
 
 export type TailnetWorkDecisionResponse =
   | { ok: true; kind: "plan" | "stage"; status: Exclude<WorkPlanApprovalStatus, "pending"> }
-  | { ok: true; kind: "join" | "requested-output" | "output-execution-card" }
+  | { ok: true; kind: "join" | "requested-output" | "output-execution-card" | "output-retry" }
   | { ok: true; kind: "template-confirmation"; pin: TemplateVersionPin }
   | { ok: true; kind: "create-and-run"; itemId: number; runId: string }
   | { ok: true; kind: "schedule-attachment"; attachmentId: string; scheduleId: string }

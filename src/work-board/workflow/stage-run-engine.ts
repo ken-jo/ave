@@ -123,6 +123,13 @@ export type StageGateDecider = { kind: "local-desktop"; receipt: SecuritySetting
     controller: import("../../shared/chat-origin.js").TailnetControllerAuthority;
     canDeliver: () => boolean;
   } };
+export type StageOutputRetryDecider = SecuritySettingsDecision | {
+  kind: "tailnet";
+  controller: import("../../shared/chat-origin.js").TailnetControllerAuthority;
+  authority: WorkDecisionAuthority;
+  canDeliver: () => boolean;
+};
+
 interface StageRunStart {
   source: RunAuthoritySource;
   authority?: WorkDecisionAuthority;
@@ -143,7 +150,7 @@ export interface StageRunEngine {
   decideGate(itemId: number, i: StageGateDecideInput, decider?: StageGateDecider): Promise<StageGateDecideResult>;
   decideJoin(itemId: number, i: StageJoinDecideInput, authority?: WorkDecisionAuthority): Promise<StageJoinDecideResult>;
   openJoin(itemId: number, i: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
-  retryOutput(itemId: number, input: StageOutputRetryInput, receipt: SecuritySettingsDecision): Promise<StageOutputRetryResult>;
+  retryOutput(itemId: number, input: StageOutputRetryInput, decider: StageOutputRetryDecider): Promise<StageOutputRetryResult>;
   retryStage(itemId: number, i: StageRetryInput): Promise<StageRetryResult>;
   /** Start whatever is ready in a run that has no live child (after a restart). Not a retry: no attempt is used. */
   continueRun(itemId: number, i: { runId: string }): Promise<StageRetryResult>;
@@ -2146,11 +2153,17 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return state !== undefined && state.pendingStart === undefined && !state.stopping && state.refused === null && state.faulted === null;
   };
 
-  async function retryOutput(itemId: number, input: StageOutputRetryInput, receipt: SecuritySettingsDecision): Promise<StageOutputRetryResult> {
-    const surface = securitySettingsGestures.redeem(receipt, {
+  async function retryOutput(itemId: number, input: StageOutputRetryInput, decider: StageOutputRetryDecider): Promise<StageOutputRetryResult> {
+    if ("kind" in decider) {
+      return outputEffects.retry(itemId, input, { desktop: null, controller: decider.controller }, {
+        authority: decider.authority, canDeliver: decider.canDeliver,
+        supervise: work => detach(() => work().catch(error => log.warn("Requested output retry could not finish (id=%d): %s", itemId, errorMessage(error)))),
+      });
+    }
+    const surface = securitySettingsGestures.redeem(decider, {
       channel: WORK_BOARD.retryOutput, payload: workBoardDecisionKey(WORK_BOARD.retryOutput, itemId, input),
     });
-    return surface ? outputEffects.retry(itemId, input, surface) : { ok: false, reason: "user-gesture-required" };
+    return surface ? outputEffects.retry(itemId, input, { desktop: surface }) : { ok: false, reason: "user-gesture-required" };
   }
 
   async function decideGate(itemId: number, i: StageGateDecideInput, decider?: StageGateDecider): Promise<StageGateDecideResult> {

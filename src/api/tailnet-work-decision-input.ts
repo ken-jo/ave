@@ -14,6 +14,14 @@ export function parseTailnetWorkDecision(raw: unknown): TailnetWorkDecisionReque
   if (reviewHandle !== undefined && ((kind !== "stage" && kind !== "requested-output")
     || typeof reviewHandle !== "string" || !UUID_PATTERN.test(reviewHandle))) return null;
   const base = { id, scope, ...(reviewHandle === undefined ? {} : { reviewHandle }) };
+  if (kind === "output-retry") {
+    if (!isPositiveSafeInteger(itemId) || templateId !== undefined
+      || !hasTemplateKeys(input, ["runId", "stageId", "attempt", "outputHash", "outputId"])
+      || typeof input.runId !== "string" || !RUN_ID_PATTERN.test(input.runId) || !isStageId(input.stageId)
+      || !isPositiveSafeInteger(input.attempt) || !isGraphHash(input.outputHash)
+      || typeof input.outputId !== "string" || !UUID_PATTERN.test(input.outputId)) return null;
+    return { ...base, kind, itemId, input: { runId: input.runId, stageId: input.stageId, attempt: input.attempt, outputHash: input.outputHash, outputId: input.outputId } };
+  }
   if (kind === "plan" || kind === "stage" || kind === "join") {
     if (!isPositiveSafeInteger(itemId) || templateId !== undefined) return null;
     if (kind === "plan") {

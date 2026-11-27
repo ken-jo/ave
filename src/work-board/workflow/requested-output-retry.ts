@@ -1,7 +1,7 @@
 import type { OutputExecution } from "./shipped-shapes.js";
-import type { WebContents } from "electron";
 import { isRemoteControllerAuthorityCurrent } from "../../shared/chat-origin.js";
 import type { StageOutputRetryInput, StageOutputRetryResult } from "../../shared/work-board-types.js";
+import type { WorkDecisionAuthority } from "../work-decision-authority.js";
 import type { TemplateStage, TemplateVersion, WorkItemStageRun, RequestedOutput } from "../../shared/workflow-template-types.js";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
 import { isWorkflowPush } from "./host-git.js";
@@ -13,6 +13,13 @@ function sameApprovedStage(stage: WorkItemStageRun | undefined, attempt: number,
   return hash !== undefined && stage?.attempt === attempt && stage.status === "passed" && stage.gate?.type === "human"
     && stage.gate.status === "approved" && stage.output !== undefined && stage.resultHash === resultHashOf(stage.output)
     && requestedOutputHash(stage) === hash;
+}
+
+/** Only a recorded pre-dispatch outcome proves that retry cannot duplicate a tool effect. */
+export function canRetryOutputFromPhone(previous: OutputExecution): boolean {
+  return previous.status === "denied" || (previous.status === "failed" && (
+    previous.detail === "output-execution-not-dispatched" || previous.detail === "output-args-not-displayable" || previous.detail === "workspace-unavailable"
+  ));
 }
 
 export function createRecordedOutputEffects(deps: {
@@ -64,7 +71,9 @@ export function createRecordedOutputEffects(deps: {
     return saved.ok;
   }
 
-  async function retry(itemId: number, input: StageOutputRetryInput, surface: WebContents): Promise<StageOutputRetryResult> {
+  async function retry(itemId: number, input: StageOutputRetryInput, surface: OutputApprovalSurface, remote?: {
+    authority: WorkDecisionAuthority; canDeliver: () => boolean; supervise: (work: () => Promise<unknown>) => void;
+  }): Promise<StageOutputRetryResult> {
     const { runId, stageId, attempt, outputId, outputHash } = input;
     const record = await records.get(itemId, runId);
     if (!record) return { ok: false, reason: "not_found" };
@@ -76,12 +85,14 @@ export function createRecordedOutputEffects(deps: {
     const project = source.kind === "schedule-attachment" ? await deps.scheduledProject(source) : source.projectRoot;
     if (project === null) return { ok: false, reason: "not_found" };
     const projectRoot = project === undefined ? undefined : resolveProjectRoot(project);
-    const canExecute = () => !surface.isDestroyed() && (project === undefined || resolveProjectRoot(project) === projectRoot && projectRoot !== null);
+    const canExecute = () => (surface.desktop?.isDestroyed() === false || surface.controller !== undefined && isRemoteControllerAuthorityCurrent(surface.controller))
+      && (project === undefined || resolveProjectRoot(project) === projectRoot && projectRoot !== null);
     if (!canExecute()) return { ok: false, reason: "not_found" };
 
     let selected: RequestedOutput | undefined;
     let reason: Extract<StageOutputRetryResult, { ok: false }>["reason"] = "not_pending";
     const reserved = await records.update(itemId, runId, stored => {
+      if (remote && !remote.canDeliver()) { reason = "requested-output-card-unavailable"; return null; }
       if (!canExecute() || !deps.canAdmitRunEffect(identity, authority)) { reason = "run_mismatch"; return null; }
       const stage = stored.stageRuns.find(row => row.stageId === stageId);
       if (!sameApprovedStage(stage, attempt, outputHash)) { reason = "output_mismatch"; return null; }
@@ -90,14 +101,18 @@ export function createRecordedOutputEffects(deps: {
       if (isWorkflowPush(output.decl)) { reason = "push-retry-forbidden"; return null; }
       const previous = stage.outputExecutions?.find(row => row.id === outputId);
       if (previous?.status !== "failed" && previous?.status !== "denied") return null;
+      if (remote && !canRetryOutputFromPhone(previous)) { reason = "output-retry-effect-unknown"; return null; }
       selected = output;
       return { ...stored, stageRuns: stored.stageRuns.map(row => row === stage
         ? { ...stage, outputExecutions: stage.outputExecutions?.map(entry => entry === previous ? { id: outputId, status: "pending" } : entry) } : row) };
-    });
+    }, undefined, remote?.authority);
     const stage = reserved.ok && reserved.run.stageRuns.find(row => row.stageId === stageId);
     if (!stage || !selected) return { ok: false, reason };
     const run = { ...identity, projectRoot: projectRoot ?? undefined };
-    if (!await execute(record, stage, definition, selected, run, { desktop: surface }, canExecute, authority, undefined, authority)) return { ok: false, reason: "run_mismatch" };
+    const output = selected;
+    const dispatch = () => execute(record, stage, definition, output, run, surface, canExecute, authority, undefined, authority);
+    if (remote) remote.supervise(dispatch);
+    else if (!await dispatch()) return { ok: false, reason: "run_mismatch" };
     return { ok: true };
   }
 

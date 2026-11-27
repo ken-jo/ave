@@ -3396,6 +3396,7 @@ describe("phone work reviews", () => {
         case "stage": return { ok: true, kind: decision.kind, status: action === "reject" ? "rejected" : "approved" };
         case "join":
         case "output-execution-card":
+        case "output-retry":
         case "requested-output": return { ok: true, kind: decision.kind };
         case "template-confirmation": return { ok: true, kind: decision.kind, pin };
         case "create-and-run": return { ok: true, kind: decision.kind, itemId: 5, runId };

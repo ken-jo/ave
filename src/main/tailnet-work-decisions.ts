@@ -18,6 +18,7 @@ import { isAuthorizedWorkspaceProjectRoot, listAuthorizedWorkspaceProjects, reso
 import { maskWorkflowText } from "../work-board/workflow/run-read-projection.js";
 import { isWorkflowPush, workflowPushBinding } from "../work-board/workflow/host-git.js";
 import { requestedOutputHash } from "../work-board/workflow/requested-outputs.js";
+import { canRetryOutputFromPhone } from "../work-board/workflow/requested-output-retry.js";
 import { planScope, planView, workflowApprovalViews } from "./work-approval-review.js";
 import type { RoutinesStore } from "./routines-store.js";
 import type { WorkBoardStore } from "./work-board-store.js";
@@ -49,7 +50,7 @@ interface RequestedOutputDecisions {
 export interface TailnetWorkDecisions {
   readonly decide: TailnetWorkDecisionHandler;
   list(evidence: RemoteWorkDecisionEvidence): Promise<readonly TailnetWorkReview[]>;
-  outputSnapshot(evidence: RemoteWorkDecisionEvidence): Promise<Pick<TailnetWorkReviewSnapshot, "outputCards">>;
+  outputSnapshot(evidence: RemoteWorkDecisionEvidence): Promise<Pick<TailnetWorkReviewSnapshot, "outputCards" | "outputRetries">>;
   registerRequestedOutputDecision(handler: RequestedOutputDecisions): () => void;
 }
 
@@ -305,6 +306,16 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
     if (item.item.templateRunError) return refused("invalid-template-run");
     evidence = withProjectAuthority(evidence, item.item.projectRoot);
 
+    if (request.kind === "output-retry") {
+      const page = outputPage(evidence);
+      const controller = evidence.outputPage?.controller;
+      if (!gate || !page || !controller) return refused("requested-output-card-unavailable");
+      const canDeliver = () => gate.canReceiveRequestedOutputs(page, item.item.projectRoot);
+      if (!canDeliver()) return refused("requested-output-card-unavailable");
+      const result = await engine.retryOutput(itemId, request.input, { kind: "tailnet", authority: evidence.authority, controller, canDeliver });
+      return result.ok ? { ok: true, kind: request.kind } : refused(result.reason);
+    }
+
     const gateDecider = (input: RequestedOutputBinding, resultHash: string) => {
       const { outputPage: page, authority } = evidence;
       const recipient = outputPage(evidence);
@@ -359,7 +370,30 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
     list,
     async outputSnapshot(evidence) {
       const page = outputPage(evidence);
-      return page && gate ? { outputCards: gate.listRequestedOutputCards(page) } : {};
+      if (!page || !gate) return {};
+      const items = await board.readApprovalItems();
+      if (!items) return {};
+      const runs = await board.runs.view();
+      const outputRetries: NonNullable<TailnetWorkReviewSnapshot["outputRetries"]>[number][] = [];
+      for (const item of items) {
+        if (!item.runId || !item.templateId || item.templateRunError || !canViewOutputProject(item.projectRoot)) continue;
+        const stored = runs.get(item.runId);
+        if (stored.status !== "found" || stored.run.itemId !== item.id || stored.run.pin.templateId !== item.templateId) continue;
+        for (const stage of stored.run.stageRuns) {
+          if (stage.status !== "passed" || stage.gate?.type !== "human" || stage.gate.status !== "approved") continue;
+          const outputHash = requestedOutputHash(stage);
+          if (!outputHash) continue;
+          for (const outcome of stage.outputExecutions ?? []) {
+            if (outcome.status !== "failed" && outcome.status !== "denied") continue;
+            const output = stage.requestedOutputs?.find(candidate => candidate.id === outcome.id);
+            if (!output) continue;
+            const refusal = isWorkflowPush(output.decl) ? "push-retry-forbidden" : !canRetryOutputFromPhone(outcome) ? "output-retry-effect-unknown" : undefined;
+            outputRetries.push({ itemId: item.id, input: { runId: stored.run.runId, stageId: stage.stageId, attempt: stage.attempt, outputId: output.id, outputHash },
+              summary: maskWorkflowText(output.summary), detail: outcome.detail === undefined ? undefined : maskWorkflowText(outcome.detail), refusal });
+          }
+        }
+      }
+      return page.authority.isCurrent() ? { outputCards: gate.listRequestedOutputCards(page), outputRetries } : {};
     },
     registerRequestedOutputDecision(handler) {
       if (outputRegistration) throw new Error("Requested output decision handler already registered");
@@ -448,6 +482,8 @@ function auditBindingOf(request: Exclude<TailnetWorkDecisionRequest, { kind: "ou
       const { itemId, runId, stageId, attempt, outputHash, decision } = request.input;
       return { itemId, runId, stageId, attempt, outputHash, decision };
     }
+    case "output-retry":
+      return { itemId: request.itemId, ...request.input };
     case "template-confirmation": {
       const { expectedGraphHash, expectedDraftRevision } = request.input;
       return { templateId: request.templateId, expectedGraphHash, expectedDraftRevision };

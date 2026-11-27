@@ -466,7 +466,7 @@ export interface StageOutputRetryInput extends StageRetryInput {
   outputId: string;
   outputHash: string;
 }
-export type StageOutputRetryResult = { ok: true } | { ok: false; reason: StageRunRefusal | "output_mismatch" | "push-retry-forbidden" | "user-gesture-required" };
+export type StageOutputRetryResult = { ok: true } | { ok: false; reason: StageRunRefusal | "output_mismatch" | "push-retry-forbidden" | "user-gesture-required" | "requested-output-card-unavailable" | "output-retry-effect-unknown" };
 export type StageOutputRetryIpcResult = StageOutputRetryResult | { ok: false; reason: "invalid-input" | StageStoreRefusal };
 
 export interface StageGateDecideInput {

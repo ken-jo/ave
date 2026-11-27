@@ -116,7 +116,7 @@ export type TailnetWorkDecisionHandler = (request: TailnetWorkDecisionRequest, e
 interface TailnetWebWorkDecisions {
   readonly decide: TailnetWorkDecisionHandler;
   readonly list?: (evidence: RemoteWorkDecisionEvidence) => Promise<readonly TailnetWorkReview[]>;
-  readonly outputSnapshot?: (evidence: RemoteWorkDecisionEvidence) => Promise<Pick<TailnetWorkReviewSnapshot, "outputCards">>;
+  readonly outputSnapshot?: (evidence: RemoteWorkDecisionEvidence) => Promise<Pick<TailnetWorkReviewSnapshot, "outputCards" | "outputRetries">>;
   readonly verifyServeTarget: () => Promise<boolean>;
   readonly receipts: TailnetControllerReceiptStore;
 }
@@ -1070,7 +1070,7 @@ async function routeTailnetWebSnapshot(
   const work = web.workDecisions;
   const { pairedShare, scope } = authorization;
   let workReviews: readonly TailnetWorkReview[] | undefined;
-  let outputSnapshot: Pick<TailnetWorkReviewSnapshot, "outputCards"> = {};
+  let outputSnapshot: Pick<TailnetWorkReviewSnapshot, "outputCards" | "outputRetries"> = {};
   if (work?.list && pairedShare.permission === "control"
     && authorizedTailnetLogin(req.headers, options.authorization, TAILNET_WORK_DECISION_CAPABILITY) !== undefined) {
     const supportsOutput = work.outputSnapshot !== undefined && singleHeader(req.headers, TAILNET_OUTPUT_CARD_HEADER) === "1";
@@ -1799,6 +1799,7 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "<p id=\"work-review-empty\" data-web-message=\"empty\" hidden></p>",
     "<div id=\"work-review-list\"></div>",
     "<div id=\"output-execution-cards\"></div>",
+    "<div id=\"output-retries\"></div>",
     "</section>",
     "<section aria-labelledby=\"assistant-heading\">",
     "<h2 id=\"assistant-heading\" data-web-message=\"assistant\"></h2>",

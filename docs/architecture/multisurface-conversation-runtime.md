@@ -200,8 +200,14 @@ page's cookie and CSRF binding. The first valid answer consumes the request.
 Other surfaces close their copy and show the answering surface, which is also
 audited. A new request or a fresh page cannot reuse another page's handle.
 The winning surface, the originating authority for a remote gate, and the run
-must still be current when the exact invocation reaches the handler. The host
-does not replay pending execution after restart.
+must still be current when the exact invocation reaches the handler.
+
+The phone can explicitly retry an output when its recorded outcome proves the
+handler was never entered. Each retry reserves the original arguments and uses
+a new execution card. If an external effect could have succeeded before a tool
+returned an error, the host refuses the retry until it can establish the outcome.
+A failed push still needs a new request and gate approval. The host does not
+replay pending execution after restart.
 
 The document requires an authorized observer identity plus an active P2 observe
 share. Without that share it serves the invitation-code page rather than raw

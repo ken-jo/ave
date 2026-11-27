@@ -36,6 +36,7 @@ import { WORK_BOARD } from "../../shared/ipc-channels.js";
 import { workBoardDecisionKey } from "../../shared/work-board-decision-intent.js";
 import { canonicalWorkflowJson } from "../../shared/workflow-template-output.js";
 import type { RequestedOutputPage } from "../../permissions/requested-output-approval.js";
+import type { TailnetControllerAuthority } from "../../shared/chat-origin.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { ToolExecutor } from "../../tools/executor.js";
 import { ToolRegistry } from "../../tools/registry.js";
@@ -317,6 +318,11 @@ function outputPhonePage(id: string, authority: RequestedOutputPage["authority"]
   return { id, login: "owner@example.test", authority, canViewProject: () => true };
 }
 
+function outputPhoneController(): TailnetControllerAuthority {
+  return { kind: "tailnet-controller", actorId: "tailnet:owner", pairedShare: { pairingId: "owner", pairingEpoch: 1,
+    shareId: "current", shareEpoch: 1, scope: "current" }, pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => true } };
+}
+
 it.each(["desktop", "phone"] as const)("lets the %s win a shared output card once across paired pages", winningSurface => withOutputExecutor({
   args: plainArgs,
 }, async fixture => {
@@ -357,6 +363,54 @@ it.each(["desktop", "phone"] as const)("lets the %s win a shared output card onc
   expect(entries).toHaveLength(1);
   expect(entries[0].output).toContain(`answeredBy=${winningSurface === "phone" ? "tailnet-surface" : "desk"}`);
   expect(entries[0].output).not.toContain(exactArgs.body);
+}));
+
+it("requires a fresh one-shot phone card when retrying a refused output", () => withOutputExecutor({ args: plainArgs }, async fixture => {
+  const { gate, h, handler } = fixture;
+  const page = outputPhonePage("retry-page");
+  gate.listRequestedOutputCards(page);
+  const { itemId, card, decision, binding } = await openOutputGate(fixture);
+  const [original] = gate.listRequestedOutputCards(page);
+  if (!original || !("handle" in original)) throw new Error("No original output card");
+  answerOutput(fixture, card, "deny-once");
+  await expect(decision).resolves.toMatchObject({ ok: true });
+  await h.until(itemId, row => row.runStatus === "completed");
+  const [outcome] = (await h.stageRun(itemId, binding.stageId)).outputExecutions ?? [];
+  expect(outcome).toMatchObject({ status: "denied" });
+  const input = { ...binding, outputId: outcome.id };
+  const decider = { kind: "tailnet" as const, controller: outputPhoneController(), authority: page.authority, canDeliver: () => true };
+  const reserved = await h.engine.retryOutput(itemId, input, decider);
+  expect(reserved).toEqual({ ok: true });
+  await expect(h.engine.retryOutput(itemId, input, decider)).resolves.toEqual({ ok: false, reason: "not_pending" });
+  const retry = await vi.waitFor(() => {
+    const fresh = gate.listRequestedOutputCards(page).find(entry => "handle" in entry);
+    if (!fresh || !("handle" in fresh)) throw new Error("No new output card");
+    return fresh;
+  });
+  expect(retry.requestId).not.toBe(original.requestId);
+  expect(retry.content).toEqual(original.content);
+  await expect(gate.answerRequestedOutputCard(original.handle, "allow-once", page)).resolves.toBe("approval-already-resolved");
+  expect(handler).not.toHaveBeenCalled();
+  await expect(gate.answerRequestedOutputCard(retry.handle, "allow-once", page)).resolves.toBe("accepted");
+  await h.drainRunWork();
+  expect(handler).toHaveBeenCalledOnce();
+  expect((await h.stageRun(itemId, binding.stageId)).outputExecutions).toMatchObject([{ status: "done" }]);
+}));
+
+it("refuses to retry when the previous tool failure can already have had an effect", () => withOutputExecutor({ args: plainArgs }, async fixture => {
+  const { h, handler } = fixture;
+  handler.mockRejectedValueOnce(new Error("Delivery outcome unavailable"));
+  const { itemId, card, decision, binding } = await openOutputGate(fixture);
+  answerOutput(fixture, card);
+  await expect(decision).resolves.toMatchObject({ ok: true });
+  await h.until(itemId, row => row.runStatus === "completed");
+  const [outcome] = (await h.stageRun(itemId, binding.stageId)).outputExecutions ?? [];
+  expect(outcome).toMatchObject({ status: "failed", detail: "output-execution-failed" });
+  const authority = { isCurrent: () => true, refreshCurrent: async () => true };
+  await expect(h.engine.retryOutput(itemId, { ...binding, outputId: outcome.id }, {
+    kind: "tailnet", controller: outputPhoneController(), authority, canDeliver: () => true,
+  })).resolves.toEqual({ ok: false, reason: "output-retry-effect-unknown" });
+  expect(handler).toHaveBeenCalledOnce();
 }));
 
 it("refuses handler entry when the winning phone loses authority after Allow once", () => withOutputExecutor({ args: plainArgs }, async fixture => {
