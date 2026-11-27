@@ -320,10 +320,11 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
    * project root never reads can name a driver, so its drivers are read there first; a filter required there alone (`required` are the
    * project root's) cannot be asked about the way `open` asks, and refuses the folder.
    */
-  async function checkOut(at: Held, key: string, folder: OwnedDir, required: readonly string[]): Promise<void> {
+  async function checkOut(at: Held, key: string, folder: OwnedDir, required: readonly string[], isCurrent?: () => boolean): Promise<void> {
     await assertRepository(at);
     const drivers = await driversIn(at, key, folder);
     if (drivers.requiredFilters.some(name => !required.includes(name))) throw new Error("a filter is required in the worktree alone");
+    if (isCurrent?.() === false) throw new Error("the stage attempt is no longer current");
     answered(["reset"], await gitIn(at, key, folder)(["reset", "--hard", "-q"], { drivers: drivers.config }));
   }
 
@@ -642,7 +643,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       if (await recordRegistration(at, stage.id, at.run.child(stageDirName(stage.id), held.id)) === undefined || added?.code !== 0) throw new Error("the stage worktree was not made");
       if (!isCurrent()) return "workspace-unavailable";
       held.check();
-      await checkOut(at, stage.id, held, drivers.requiredFilters);
+      await checkOut(at, stage.id, held, drivers.requiredFilters, isCurrent);
       if (!isCurrent()) return "workspace-unavailable";
       held.check();
       // A tracked secret file is not handed to a stage. It is found, and then removed, by its name: one that is no text is neither.

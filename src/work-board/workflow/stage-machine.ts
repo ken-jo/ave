@@ -19,9 +19,15 @@ export function issueJoinConflict(join: StageJoin, conflict: JoinConflict): Stag
 export const MAX_PARALLEL_STAGES = 3;
 export const MAX_STAGE_ATTEMPTS = 3;
 
+export type StageEnded = {
+  type: "stage_ended"; stageId: string; attempt: number; ok: boolean; output?: string; taint?: WorkItemStageRun["taint"]; reason?: string;
+  interrupted?: boolean; failure?: StageFailure; usage?: WorkItemStageRun["usage"]; deniedCalls?: WorkItemStageRun["deniedCalls"];
+  childSessionId?: string; blocked?: WorkItemStageRun["blocked"];
+};
+
 export type RunEvent =
   | { type: "started" } | { type: "stage_linked"; stageId: string; childSessionId: string; usage?: WorkItemStageRun["usage"] }
-  | { type: "stage_ended"; stageId: string; attempt: number; ok: boolean; output?: string; taint?: WorkItemStageRun["taint"]; reason?: string; interrupted?: boolean; failure?: StageFailure; usage?: WorkItemStageRun["usage"]; deniedCalls?: WorkItemStageRun["deniedCalls"]; childSessionId?: string }
+  | StageEnded | { type: "slot_released"; stageId: string; attempt: number }
   | { type: "gate_evaluated"; stageId: string; attempt: number; passed: boolean; evidence: string; judgedBy: "host" | "model" }
   | { type: "gate_decided"; stageId: string; attempt: number; decision: WorkPlanDecision; note?: string }
   | { type: "retry_requested"; stageId: string } | { type: "continue_requested" } | { type: "stop_requested" }
@@ -47,7 +53,7 @@ export interface RunSnapshot {
   faulted?: boolean;
   /** Recovery may finish an existing join while leaving the next child for an explicit continuation. */
   parked?: boolean;
-  /** A timed-out child keeps its slot while unwinding after the stage's failure is stored. */
+  /** A live or starting child keeps its slot after the stage's failure is stored. */
   liveStageIds?: readonly string[];
   now: string;
 }
@@ -65,6 +71,10 @@ function rerun(run: WorkItemStageRun): void {
   for (const key of ["failure", "resultHash", "childSessionId", "startedAt", "endedAt", "blocked", "usage", "deniedCalls"] as const) delete run[key];
 }
 
+export function hasRejectedWork(stageRuns: readonly WorkItemStageRun[], joins: readonly StageJoin[]): boolean {
+  return stageRuns.some(run => run.status === "rejected") || joins.some(join => join.status === "rejected");
+}
+
 /** The whole scheduler as one pure step. It never spawns, writes or reads a clock; the engine runs the effects it returns. */
 export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
   const { graph, now } = snapshot;
@@ -72,9 +82,8 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
   const joins = snapshot.joins.map(join => ({ ...join }));
   const effects: RunEffect[] = [];
   const find = (stageId: string): WorkItemStageRun | undefined => stageRuns.find(run => run.stageId === stageId);
-  const denied = (): boolean => stageRuns.some(run => run.status === "rejected") || joins.some(join => join.status === "rejected");
   const faulted = snapshot.faulted === true || event.type === "fault";
-  const winding = (): boolean => snapshot.stopping || snapshot.refused || faulted || denied();
+  const winding = (): boolean => snapshot.stopping || snapshot.refused || faulted || hasRejectedWork(stageRuns, joins);
   const interruptRunning = (): void => {
     for (const run of stageRuns) if (run.status === "running") effects.push({ type: "interrupt", stageId: run.stageId });
   };
@@ -86,6 +95,7 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
   switch (event.type) {
     case "started":
     case "continue_requested":
+    case "slot_released":
       break;
     case "fault":
       // A live child is never left behind: each is interrupted, and the run ends when the last one has unwound.
@@ -106,6 +116,7 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
       if (event.childSessionId !== undefined) run.childSessionId = event.childSessionId;
       if (event.usage) run.usage = event.usage;
       if (event.deniedCalls) run.deniedCalls = event.deniedCalls;
+      if (event.blocked) run.blocked = event.blocked;
       if (event.output !== undefined) run.output = event.output;
       if (event.taint) run.taint = event.taint;
       if (winding()) run.status = "cancelled";

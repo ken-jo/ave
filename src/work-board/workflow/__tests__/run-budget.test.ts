@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { clearTimeout, setTimeout } from "node:timers";
 import { expect, it, vi } from "vitest";
-import { deferred } from "../../../__tests__/support/deferred.js";
+import { afterQueuedCallbacks, deferred } from "../../../__tests__/support/deferred.js";
 import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
 import { within } from "../../../__tests__/support/signal-wait.js";
 import { AuditLogger } from "../../../audit/audit-logger.js";
@@ -16,14 +16,17 @@ import { createDynamicTool } from "../../../tools/base.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { checkStageBudget, MAX_LANE_DENIALS_PER_STAGE, type StageUsage } from "../run-budget.js";
 import type { StageEnvelope, TemplateScope, TemplateStage } from "../../../shared/workflow-template-types.js";
+import { boardParentToolRegistry } from "../../__tests__/board-test-fixtures.js";
 import * as templateGraph from "../../template-graph.js";
 import type { StageRunEngineDeps } from "../stage-run-engine.js";
 import * as stageMachine from "../stage-machine.js";
+import { authoriseRunSource } from "../run-authority.js";
+import { boardRunState } from "../run-state.js";
 import { createHostGit } from "../host-git.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
-import { stageDirName } from "../workspace-layout.js";
+import { RUN_FILE, stageDirName } from "../workspace-layout.js";
 import * as workspaceSeed from "../workspace-seed.js";
-import { autoStageOf } from "./stage-fixtures.js";
+import { autoStageOf, stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
 const LIMITS = { rounds: 2, minutes: 1, costUsd: 1 };
@@ -82,7 +85,8 @@ const beforeUnblock = (expire: () => void) => {
   return () => clearTimeout(timer);
 };
 
-it.each([true, false])("expires parallel preparation on the real workspace queue (sibling seals: %s)", async siblingSeals => {
+it.each(["seals before expiry", "seals after expiry", "also expires"])("expires parallel preparation on the real workspace queue when a sibling %s", async sibling => {
+  const siblingSeals = sibling !== "also expires";
   const checking = deferred<void>();
   const release = deferred<void>();
   const queued = deferred<void>();
@@ -133,11 +137,12 @@ it.each([true, false])("expires parallel preparation on the real workspace queue
     vi.stubEnv("AVE_HOME", home);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const seeded = autoStageOf("second", { envelope: ENVELOPE, inputFiles: [{ from: "project", paths: ["input.txt"] }] });
-    const first = siblingSeals ? autoStageOf("first", { envelope: ENVELOPE }) : { ...seeded, id: "first" };
+    const long = { ...ENVELOPE, budget: { ...LIMITS, minutes: 2 } };
+    const first = siblingSeals ? autoStageOf("first", { envelope: sibling === "seals after expiry" ? long : ENVELOPE }) : { ...seeded, id: "first" };
     try {
       const started = await startScheduled(h, [first, seeded], { kind: "project", projectRoot });
       await within(Promise.all([checking.promise, queued.promise]), "both preparations to reach the workspace queue", beforeUnblock);
-      if (siblingSeals) {
+      if (sibling === "seals before expiry") {
         const [child] = await h.untilLive(1);
         child.finish();
         await within(sealing.promise, "the first stage to queue its seal", beforeUnblock);
@@ -145,9 +150,15 @@ it.each([true, false])("expires parallel preparation on the real workspace queue
       const running = await h.item(started.itemId);
       const root = running.record?.runWorkspace?.runRoot;
       if (!root) throw new Error("Expected a run workspace");
-      expect(running.stageRuns.map(stage => stage.status)).toEqual([siblingSeals ? "passed" : "running", "running"]);
+      expect(running.stageRuns.map(stage => stage.status)).toEqual([sibling === "seals before expiry" ? "passed" : "running", "running"]);
       expect(ignoreChecks).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(60_000);
+      if (sibling === "seals after expiry") {
+        await h.untilStage(started.itemId, "second", "failed");
+        const [child] = await h.untilLive(1);
+        child.finish();
+        await within(sealing.promise, "the surviving sibling to queue its seal", beforeUnblock);
+      }
       await expect(within(started.result, "the budget failure while the workspace queue is still held", beforeUnblock))
         .resolves.toMatchObject({ status: "awaiting_approval", reasonCode: "stage-failed" });
       const failed = await h.item(started.itemId);
@@ -183,7 +194,7 @@ it("interrupts and records the deadline while a sibling holds the real workspace
     return listSeedFiles(root, globs, rules);
   });
   const workspace = createStageWorkspaceProvider();
-  const h = await stageRunHarness({ observeRunWork: true, wiring: () => ({ workspace }) });
+  const h = await stageRunHarness({ observeRunWork: true, interruptChild: vi.fn(), wiring: () => ({ workspace }) });
   await h.runThenEnd(async () => {
     const home = join(h.dir, "home");
     mkdirSync(home);
@@ -199,9 +210,15 @@ it("interrupts and records the deadline while a sibling holds the real workspace
       await within(sealing.promise, "the first stage to hold the workspace queue while sealing", beforeUnblock);
       await vi.advanceTimersByTimeAsync(60_000);
       expect(h.interrupts).toEqual([second.sessionId]);
-      await expect(within(started.result, "the linked sibling's budget failure while sealing", beforeUnblock))
+      await h.untilStage(started.itemId, "second", "failed");
+      expect(await h.stageRun(started.itemId, "second")).toMatchObject({ failure: "budget", childSessionId: second.sessionId });
+      const fire = vi.fn();
+      void started.result.then(fire);
+      await afterQueuedCallbacks();
+      expect(fire).not.toHaveBeenCalled();
+      second.finish({ ok: false, stopReason: "interrupted" });
+      await expect(within(started.result, "the exited sibling's budget result while sealing", beforeUnblock))
         .resolves.toMatchObject({ status: "awaiting_approval", reasonCode: "stage-failed" });
-      expect(await h.stageRun(started.itemId, "second")).toMatchObject({ status: "failed", failure: "budget", childSessionId: second.sessionId });
     } finally {
       release.resolve();
       try {
@@ -272,12 +289,15 @@ it("persists a linked child's deadline before interruption finishes and keeps re
 });
 
 it("keeps a timed-out child in its parallel slot until it exits", async () => {
+  const reduce = vi.spyOn(stageMachine, "reduceRun");
   const h = await stageRunHarness({ observeRunWork: true, interruptChild: vi.fn() });
   await h.runThenEnd(async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     try {
       const short = { ...ENVELOPE, budget: { ...LIMITS, minutes: 0.5 } };
       const started = await startScheduled(h, ["first", "second", "third", "waiting"].map(id => autoStageOf(id, { envelope: id === "first" ? short : ENVELOPE })));
+      const fire = vi.fn();
+      void started.result.then(fire);
       const children = await h.untilLive(3);
       const child = children.find(candidate => candidate.input.unattendedStage?.stageId === "first");
       if (!child) throw new Error("Expected the first stage's child");
@@ -286,10 +306,14 @@ it("keeps a timed-out child in its parallel slot until it exits", async () => {
       await within(h.untilStage(started.itemId, "first", "failed"), "the first stage's budget failure", beforeUnblock);
       expect(h.interrupts).toEqual([child.sessionId]);
       expect(await h.stageRun(started.itemId, "waiting")).toMatchObject({ status: "waiting" });
+      expect(fire).not.toHaveBeenCalled();
       child.finish({ ok: false, stopReason: "interrupted" });
       await within(h.untilStage(started.itemId, "waiting", "running"), "the fourth stage to claim the released slot", beforeUnblock);
       expect((await h.untilLive(3)).map(candidate => candidate.input.unattendedStage?.stageId)).toContain("waiting");
+      await h.drainRunWork();
+      expect(reduce.mock.calls.filter(([, event]) => event.type === "slot_released")).toHaveLength(1);
     } finally {
+      reduce.mockRestore();
       vi.useRealTimers();
     }
   });
@@ -567,4 +591,403 @@ it("fails on an unattended round-cap but keeps the attended round budget", async
     await expect(run).resolves.toMatchObject({ status: "completed" });
     expect((await h.stageRun(itemId, "attended")).usage).toBeUndefined();
   });
+});
+
+function controlledDeadlineTest(body: () => Promise<void>): Promise<void> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  return body().finally(() => vi.useRealTimers());
+}
+
+function budgetStages(ids: string[], short: string): TemplateStage[] {
+  return ids.map(id => autoStageOf(id, {
+    envelope: id === short ? { ...ENVELOPE, budget: { ...LIMITS, minutes: 0.5 } } : ENVELOPE,
+  }));
+}
+
+type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
+
+function childOf(h: Harness, id: string) {
+  const child = h.children.find(entry => entry.input.unattendedStage?.stageId === id);
+  if (!child) throw new Error(`Expected a child for ${id}`);
+  return child;
+}
+
+it.each(["stage failure", "write fault"])("reports a pre-link lane refusal as %s while a sibling seal is blocked", async expected => {
+  const admitting = deferred<void>();
+  const refuse = deferred<void>();
+  const sealing = deferred<void>();
+  const release = deferred<void>();
+  let failWrite = false;
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    workspace: {
+      seal: async () => { sealing.resolve(); await release.promise; return { ok: true }; },
+      release: async () => { await release.promise; },
+    },
+    wiring: store => {
+      const runs = boardRunState(store);
+      return { runs: { ...runs, update: (...args) => {
+        if (!failWrite) return runs.update(...args);
+        failWrite = false;
+        return Promise.resolve({ ok: false, reason: "unavailable" });
+      } } };
+    },
+    workflow: { lane: {
+      admit: async ({ stageId }) => {
+        if (stageId === "first") return { ok: true };
+        admitting.resolve();
+        await refuse.promise;
+        return { ok: false, code: "isolation-unproven" };
+      },
+      onDenied: () => () => undefined, sessionLinked: () => undefined, sessionEnded: () => undefined,
+    } },
+  });
+  await h.runThenEnd(() => controlledDeadlineTest(async () => {
+    try {
+      const started = await startScheduled(h, budgetStages(["first", "refused"], "refused"));
+      await within(admitting.promise, "lane admission to wait", beforeUnblock);
+      await h.untilLive(1);
+      childOf(h, "first").finish();
+      await within(sealing.promise, "the seal to hold the event chain", beforeUnblock);
+      failWrite = expected === "write fault";
+      refuse.resolve();
+      if (expected === "write fault") {
+        await h.untilRunFile(async () => {
+          expect((await h.item(started.itemId)).record?.settled?.status).toBe("error");
+        });
+        await expect(within(started.result, "the durable fault while cleanup is blocked", beforeUnblock))
+          .resolves.toMatchObject({ status: "error", reasonCode: "run-state-unavailable" });
+        expect(await started.breakerOutcome).toBe("failed");
+        return;
+      }
+      // Wait for the refusal to reach the store before advancing the clock.
+      await h.untilRunFile(async () => {
+        expect((await h.stageRun(started.itemId, "refused")).blocked?.code).toBe("isolation-unproven");
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(within(started.result, "the durable refusal while the seal is blocked", beforeUnblock))
+        .resolves.toMatchObject({ status: "awaiting_approval", reasonCode: "stage-failed" });
+      const stage = await h.stageRun(started.itemId, "refused");
+      expect(stage).toMatchObject({ status: "failed", failure: "error", blocked: { code: "isolation-unproven" } });
+      release.resolve();
+      await h.drainRunWork();
+      expect(await h.stageRun(started.itemId, "refused")).toEqual(stage);
+    } finally {
+      refuse.resolve();
+      release.resolve();
+    }
+  }));
+});
+
+it.each(["after expiry", "before expiry", "with a newer attempt"])("revalidates a held slot release when the board is lost %s", async order => {
+  const h = await stageRunHarness({ observeRunWork: true, interruptChild: vi.fn() });
+  await h.runThenEnd(() => controlledDeadlineTest(async () => {
+    const sameAttempt = order !== "with a newer attempt";
+    const started = await startScheduled(h, budgetStages(["short", "second", "third", "waiting"], "short"));
+    await h.untilLive(3);
+    await h.drainRunWork({ includeLaunches: false });
+    const initial = await h.item(started.itemId);
+    if (!initial.runId) throw new Error("Expected a run id");
+    const ref = { itemId: started.itemId, runId: initial.runId };
+    const board = readFileSync(h.boardPath);
+    const fire = vi.fn();
+    void started.result.then(fire);
+    try {
+      if (order === "before expiry") writeFileSync(h.boardPath, "{");
+      await vi.advanceTimersByTimeAsync(30_000);
+      await h.drainRunWork({ includeLaunches: false });
+      if (order !== "before expiry") {
+        expect(await h.stageRun(ref.itemId, "short")).toMatchObject({ status: "failed", failure: "budget" });
+        writeFileSync(h.boardPath, "{");
+      }
+      expect((await h.runOf(ref.runId))?.stageRuns.find(stage => stage.stageId === "waiting")?.status).toBe("waiting");
+      expect(fire).not.toHaveBeenCalled();
+      childOf(h, "short").finish({ ok: false, stopReason: "interrupted" });
+      await h.drainRunWork();
+      const markers = await h.board.runs.heldEvents(ref);
+      expect(markers.filter(entry => entry.kind === "slot_released")).toEqual([{ ...ref, stage: "short", attempt: 1, kind: "slot_released" }]);
+      writeFileSync(h.boardPath, board);
+      if (!sameAttempt) {
+        const advanced = await h.board.updateRun(ref.itemId, ref.runId, record => ({
+          ...record, stageRuns: record.stageRuns.map(stage => stage.stageId === "short" ? { ...stage, attempt: 2 } : stage),
+        }));
+        expect(advanced.status).toBe("stored");
+      }
+      await h.engine.adoptParkedTemplateRuns();
+      await h.drainRunWork();
+      expect(await h.board.runs.heldEvents(ref)).toEqual([]);
+      expect(await h.stageRun(ref.itemId, "short")).toMatchObject({ status: "failed", failure: "budget", attempt: sameAttempt ? 1 : 2 });
+      expect(await h.stageRun(ref.itemId, "waiting")).toMatchObject({ status: sameAttempt ? "running" : "waiting" });
+    } finally {
+      writeFileSync(h.boardPath, board);
+      await h.engine.adoptParkedTemplateRuns();
+    }
+  }));
+});
+
+it("checks the current attempt after Git driver discovery and before checkout reset", async () => {
+  const h = await stageRunHarness();
+  await h.runThenEnd(async () => {
+    const git = createHostGit();
+    const discovering = deferred<void>();
+    const release = deferred<void>();
+    const resets: string[] = [];
+    const projectRoot = join(realpathSync(h.dir), "project");
+    const home = join(h.dir, "home");
+    mkdirSync(projectRoot);
+    mkdirSync(home);
+    vi.stubEnv("AVE_HOME", home);
+    let current = true;
+    const workspace = createStageWorkspaceProvider({ git: {
+      ...git,
+      drivers: async (cwd, worktree, options) => {
+        const result = await git.drivers(cwd, worktree, options);
+        if (basename(cwd) === stageDirName("report")) {
+          discovering.resolve();
+          await release.promise;
+        }
+        return result;
+      },
+      run: (cwd, args, call) => {
+        if (args[0] === "reset" && basename(cwd) === stageDirName("report")) resets.push(cwd);
+        return git.run(cwd, args, call);
+      },
+    } });
+    const ref = { itemId: 1, runId: "checkout", runKey: "checkout", projectRoot };
+    try {
+      expect((await git.run(projectRoot, ["init", "-q"])).code).toBe(0);
+      expect((await git.run(projectRoot, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "initial"])).code).toBe(0);
+      const opened = await workspace.open(ref, projectRoot);
+      if (!opened.ok) throw new Error(opened.code);
+      expect(opened.workspace.kind).toBe("git");
+      const preparation = workspace.prepare(ref, autoStageOf("report"), 1, () => current);
+      try {
+        await within(discovering.promise, "driver discovery to pause before stage checkout", beforeUnblock);
+        current = false;
+      } finally {
+        release.resolve();
+        expect(await preparation).toMatchObject({ ok: false });
+      }
+      expect(resets).toEqual([]);
+      expect(existsSync(join(opened.workspace.runRoot, stageDirName("report")))).toBe(false);
+      expect(JSON.parse(readFileSync(join(opened.workspace.runRoot, RUN_FILE), "utf8")).stages).not.toHaveProperty("report");
+    } finally {
+      release.resolve();
+      await workspace.release(ref, "all");
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+it.each([
+  { action: "Stop", status: "cancelled", breaker: null },
+  { action: "authority refusal", status: "cancelled", breaker: null },
+  { action: "write fault", status: "error", breaker: "failed" },
+  { action: "human reject", status: "denied", breaker: null },
+])("reports $status after a timed-out child exits during $action", async ({ action, status, breaker }) => {
+  const attemptAdmission = deferred<void>();
+  const finishAdmission = deferred<void>();
+  let refuse = false;
+  let fault = false;
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    interruptChild: vi.fn(),
+    workflow: {
+      authoriseRunSource: input => refuse && input.phase === "spawn" ? { ok: false, code: "scope-changed" } : authoriseRunSource(input),
+      lane: {
+        admit: async ({ stageId }) => {
+          if (stageId === "trigger" && action !== "human reject") {
+            attemptAdmission.resolve();
+            await finishAdmission.promise;
+          }
+          return { ok: true };
+        },
+        onDenied: () => () => undefined, sessionLinked: () => undefined, sessionEnded: () => undefined,
+      },
+    },
+    wiring: store => {
+      const runs = boardRunState(store);
+      return { runs: { ...runs, update: (...args) => {
+        if (!fault) return runs.update(...args);
+        fault = false;
+        return Promise.resolve({ ok: false, reason: "unavailable" });
+      } } };
+    },
+  });
+  await h.runThenEnd(() => controlledDeadlineTest(async () => {
+    try {
+      const started = await startScheduled(h, [
+        ...budgetStages(["short", "failed"], "short"),
+        stageOf("trigger", { envelope: ENVELOPE }),
+      ]);
+      const fire = vi.fn();
+      const outcome = vi.fn();
+      void started.result.then(fire);
+      void started.breakerOutcome.then(outcome);
+      await h.untilLive(action === "human reject" ? 3 : 2);
+      if (action === "human reject") {
+        childOf(h, "trigger").finish();
+        await h.untilStage(started.itemId, "trigger", "awaiting_gate");
+      } else {
+        await within(attemptAdmission.promise, "trigger stage to reach admission", beforeUnblock);
+      }
+      childOf(h, "failed").finish({ ok: false });
+      await h.untilStage(started.itemId, "failed", "failed");
+      await vi.advanceTimersByTimeAsync(30_000);
+      await h.untilStage(started.itemId, "short", "failed");
+      if (action === "Stop") expect(h.engine.cancelRun(started.itemId)).toEqual({ ok: true });
+      else if (action === "human reject") expect(await h.decide(started.itemId, "trigger", "reject")).toEqual({ ok: true, status: "rejected" });
+      else if (action === "authority refusal") refuse = true;
+      else fault = true;
+      finishAdmission.resolve();
+      await h.drainRunWork();
+      expect(fire).not.toHaveBeenCalled();
+      if (action === "write fault") expect(outcome).not.toHaveBeenCalled();
+      childOf(h, "short").finish({ ok: false, stopReason: "interrupted" });
+      await expect(within(started.result, "the terminal fire after child exit", beforeUnblock)).resolves.toMatchObject({
+        status, ...(action === "authority refusal" ? { reasonCode: "scope-changed" } : {}),
+      });
+      expect((await h.item(started.itemId)).record?.settled?.status).toBe(status);
+      expect(await started.breakerOutcome).toBe(breaker);
+      expect(outcome).toHaveBeenCalledExactlyOnceWith(breaker);
+    } finally {
+      finishAdmission.resolve();
+    }
+  }));
+});
+
+it("waits for held winding ends even when the child has exited and the event chain is idle", async () => {
+  const h = await stageRunHarness({ observeRunWork: true, interruptChild: vi.fn() });
+  await h.runThenEnd(() => controlledDeadlineTest(async () => {
+    const started = await startScheduled(h, budgetStages(["short", "failed"], "short"));
+    await h.untilLive(2);
+    childOf(h, "failed").finish({ ok: false });
+    await h.untilStage(started.itemId, "failed", "failed");
+    await h.drainRunWork();
+    const fire = vi.fn();
+    void started.result.then(fire);
+    const board = readFileSync(h.boardPath);
+    try {
+      // The deadline can fire while winding, before the stage has a terminal record.
+      expect(h.engine.cancelRun(started.itemId)).toEqual({ ok: true });
+      await h.drainRunWork();
+      await vi.advanceTimersByTimeAsync(30_000);
+      await h.drainRunWork();
+      expect(await h.stageRun(started.itemId, "short")).toMatchObject({ status: "running" });
+      expect(fire).not.toHaveBeenCalled();
+      writeFileSync(h.boardPath, "{");
+      childOf(h, "short").finish({ ok: false, stopReason: "interrupted" });
+      await h.drainRunWork();
+      await afterQueuedCallbacks();
+      expect(fire).not.toHaveBeenCalled();
+    } finally {
+      writeFileSync(h.boardPath, board);
+      await h.engine.adoptParkedTemplateRuns();
+      await h.drainRunWork();
+    }
+    await expect(within(started.result, "the replayed stop result", beforeUnblock)).resolves.toMatchObject({ status: "cancelled" });
+    expect(await h.stageRun(started.itemId, "short")).toMatchObject({ status: "cancelled" });
+    expect(await started.breakerOutcome).toBeNull();
+  }));
+});
+
+it("holds a deadline behind the earlier covered write that discovers the board loss", async () => {
+  const updating = deferred<void>();
+  const release = deferred<void>();
+  let unreadable = false;
+  let holdNext = false;
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    interruptChild: vi.fn(),
+    wiring: store => {
+      const runs = boardRunState(store);
+      return { runs: { ...runs, update: async (...args) => {
+        if (holdNext) {
+          holdNext = false;
+          updating.resolve();
+          await release.promise;
+        }
+        return unreadable ? { ok: false, reason: "board-unread" } : runs.update(...args);
+      } } };
+    },
+  });
+  await h.runThenEnd(() => controlledDeadlineTest(async () => {
+    try {
+      const started = await startScheduled(h, budgetStages(["earlier", "short"], "short"));
+      await h.untilLive(2);
+      await h.drainRunWork();
+      const { runId } = await h.item(started.itemId);
+      if (!runId) throw new Error("Expected a run id");
+      const ref = { itemId: started.itemId, runId };
+      unreadable = true;
+      holdNext = true;
+      childOf(h, "earlier").finish({ ok: false });
+      await within(updating.promise, "the first write to be in flight", beforeUnblock);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await afterQueuedCallbacks();
+      release.resolve();
+      await h.drainRunWork();
+      expect((await h.board.runs.heldEvents(ref)).map(held => held.stage)).toEqual(["earlier", "short"]);
+      unreadable = false;
+      childOf(h, "short").finish({ ok: false, stopReason: "interrupted" });
+      await h.drainRunWork();
+      await h.engine.adoptParkedTemplateRuns();
+      await h.drainRunWork();
+      expect((await h.item(ref.itemId)).stageRuns.map(stage => stage.failure)).toEqual(["error", "budget"]);
+      expect(await h.board.runs.heldEvents(ref)).toEqual([]);
+    } finally {
+      unreadable = false;
+      release.resolve();
+    }
+  }));
+});
+
+it("bounds every launch admission await before runner spawn", () => {
+  const engine = readFileSync(new URL("../stage-run-engine.ts", import.meta.url), "utf8");
+  const admission = engine.split("state.starting.add(stageId);")[1]?.split(/const result = await (?:raceWithAbort\()?runner\.spawn\(/u)[0] ?? "";
+  const awaits = admission.match(/\bawait\b/gu) ?? [];
+  expect(awaits.length).toBeGreaterThan(5);
+  expect(admission.match(/\bawait\s+(?:beforeDeadline|authorise)\(/gu)).toHaveLength(awaits.length);
+});
+
+it("keeps a starting child in its slot until the runner confirms its exit", async () => {
+  const starting = deferred<void>();
+  const finishStarting = deferred<void>();
+  const spawned: string[] = [];
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    runner: () => ({
+      parentToolRegistry: boardParentToolRegistry,
+      spawn: async (input: Parameters<SubAgentRunner["spawn"]>[0], callbacks: Parameters<SubAgentRunner["spawn"]>[1]) => {
+        const id = input.unattendedStage?.stageId;
+        if (!id) throw new Error("Expected an unattended stage");
+        spawned.push(id);
+        if (id === "short") {
+          starting.resolve();
+          await finishStarting.promise;
+        }
+        callbacks?.onLinked?.({ childSessionId: id });
+        return { childSessionId: id, summary: "", entries: [], toolCallCount: 0, turnCount: 0, ok: false };
+      },
+    }) as unknown as SubAgentRunner,
+  });
+  await h.runThenEnd(() => controlledDeadlineTest(async () => {
+    try {
+      const started = await startScheduled(h, budgetStages(["short"], "short"));
+      const fire = vi.fn();
+      void started.result.then(fire);
+      await within(starting.promise, "the runner to begin starting the child", beforeUnblock);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await h.untilStage(started.itemId, "short", "failed");
+      await h.drainRunWork({ includeLaunches: false });
+      expect(fire).not.toHaveBeenCalled();
+      finishStarting.resolve();
+      await expect(within(started.result, "the start failure after the runner exits", beforeUnblock))
+        .resolves.toMatchObject({ status: "awaiting_approval", reasonCode: "stage-failed" });
+      expect(spawned).toEqual(["short"]);
+      expect(h.events.some(event => event.runSessionId === "short")).toBe(false);
+    } finally {
+      finishStarting.resolve();
+    }
+  }));
 });
