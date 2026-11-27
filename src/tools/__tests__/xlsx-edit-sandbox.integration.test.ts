@@ -133,7 +133,8 @@ describe("native governed XLSX command", () => {
       const proveMacContainer = async () => {
         establishMxcRuntimeRoot();
         const support = await detectHostMxcMacShellSupport(hostResourcesNow());
-        expect(support).toEqual({ state: "available" });
+        // The boot canary also measures raw IP; its verdict rides on the available state.
+        expect(support).toMatchObject({ state: "available", rawIpProbe: { rawIp: expect.stringMatching(/^(?:blocked|unknown)$/u) } });
         setContainerShellSubstrate(support);
       };
       let currentResources = hostResources;

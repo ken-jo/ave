@@ -215,7 +215,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
       configureHostResources(supervisor.resources);
       establishMxcRuntimeRoot();
       const support = await detectHostMxcMacShellSupport(supervisor.resources);
-      expect(support).toEqual({ state: "available" });
+      // The boot canary also measures raw IP; its verdict rides on the available state.
+      expect(support).toMatchObject({ state: "available", rawIpProbe: { rawIp: expect.stringMatching(/^(?:blocked|unknown)$/u) } });
       setContainerShellSubstrate(support);
     }
     const context = { cwd, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true, metadata: {} };

@@ -4,6 +4,9 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { _detectMxcMacShellSupportForTest, _seatbeltCanaryPassedForTest, buildSeatbeltShellRequest, mapSeatbeltShellRequest } from "../mxc-macos.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-model.js";
+import type { MacRawIpVerdict } from "../../shared/sandbox-capability-info.js";
+
+const BLOCKED: MacRawIpVerdict = { rawIp: "blocked", reason: "blocked", evidenceKind: "measured", reachableTargets: [], udpArrival: "absent" };
 
 describe("macOS container shell detector", () => {
   function makeDependencies() {
@@ -11,13 +14,15 @@ describe("macOS container shell detector", () => {
       arch: "arm64",
       libraryExists: vi.fn(() => true),
       requireRuntimeRoot: vi.fn(() => "/runtime"),
-      canary: vi.fn(async (): Promise<"available" | "request-rejected" | "shell-start-failed" | "launcher-mismatch"> => "available"),
+      canary: vi.fn(async (): Promise<{ verdict: "available"; rawIpProbe: MacRawIpVerdict }
+          | { verdict: "request-rejected" | "shell-start-failed" | "launcher-mismatch" }> =>
+        ({ verdict: "available", rawIpProbe: BLOCKED })),
     };
   }
 
   it("checks architecture, library presence and runtime root before proving a real start", async () => {
     const deps = makeDependencies();
-    await expect(_detectMxcMacShellSupportForTest(deps)).resolves.toEqual({ state: "available" });
+    await expect(_detectMxcMacShellSupportForTest(deps)).resolves.toEqual({ state: "available", rawIpProbe: BLOCKED });
     const order = [deps.libraryExists, deps.requireRuntimeRoot, deps.canary]
       .map(mock => mock.mock.invocationCallOrder[0]);
     expect(order).toEqual([...order].sort((left, right) => Number(left) - Number(right)));
@@ -52,7 +57,8 @@ describe("macOS container shell detector", () => {
 
   it.each(["request-rejected", "shell-start-failed", "launcher-mismatch"] as const)("reports %s as unavailable", async (reason) => {
     const deps = makeDependencies();
-    deps.canary.mockResolvedValue(reason);
+    // Even a canary that measured blocked cannot publish it on an unavailable container: that arm has no field.
+    deps.canary.mockResolvedValue({ verdict: reason });
     await expect(_detectMxcMacShellSupportForTest(deps)).resolves.toEqual({ state: "unavailable", reason });
   });
 });
@@ -112,8 +118,20 @@ describe("macOS container shell request", () => {
     const sdk = dirname(createRequire(import.meta.url).resolve("@microsoft/mxc-sdk/package.json"));
     const { prepareContainerRequest } = await import(pathToFileURL(join(sdk, "dist/v1/container.js")).href);
     const { containerId, lifecycle, ...wire } = JSON.parse(JSON.stringify(prepareContainerRequest(mapSeatbeltShellRequest(request))));
-    return { request, wire };
+    return { request, wire, containerId, lifecycle };
   }
+
+  it("lets the SDK name a fresh container per run and destroy it with its policy on exit", async () => {
+    const first = await preparedMapping();
+    const second = await preparedMapping();
+    // Ave sends no container name, so each run gets its own random id; nothing outlives the run.
+    expect(first.containerId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(second.containerId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(first.containerId).not.toBe(second.containerId);
+    expect(first.lifecycle).toStrictEqual({ destroyOnExit: true, preservePolicy: false });
+    expect(first.request).not.toHaveProperty("containerId");
+    expect(first.request).not.toHaveProperty("lifecycle");
+  });
 
   it("maps every wire field, accepting only documented omitted process defaults", async () => {
     const { request, wire } = await preparedMapping();

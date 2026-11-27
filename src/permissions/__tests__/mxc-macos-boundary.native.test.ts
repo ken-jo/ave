@@ -1,10 +1,10 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { connect, createServer, type Server } from "node:net";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { Writable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,18 +16,32 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { createContainedShellLifecycle } from "../../tools/contained-shell-lifecycle.js";
 import { prepareMxcPosixShellLaunch } from "../../tools/mxc-posix-shell-launch.js";
 import { quoteSandboxWrappedWord as quote } from "../sandbox-wrapped-command.js";
-import { openEgressInvocation } from "../egress-invocations.js";
+import { t } from "../../i18n/index.js";
+import { reserveTailnetListenerPort } from "../../shared/tailnet-listener-port.js";
+import { BashTool } from "../../tools/shell-tools.js";
+import { liveEgressInvocationCount, openEgressInvocation } from "../egress-invocations.js";
 import { startEgressRelayService, stopEgressRelayService, type EgressRelayServiceOptions } from "../egress-relay/relay.js";
 import { currentMxcRuntimeHost, establishMxcRuntimeRoot, _forgetMxcRuntimeRootForTest } from "../mxc-runtime-root.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability,
   setContainerShellSubstrate, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
 import pins from "../mxc-launcher-pins.json" with { type: "json" };
 import { _runSeatbeltCanaryForTest, buildSeatbeltShellRequest, detectHostMxcMacShellSupport } from "../mxc-macos.js";
+import { rawIpProbeShellLines } from "../mxc-macos-raw-ip.js";
 import { posixPolicyLookups } from "../mxc-posix.js";
-import { _mxcShellStandbyPidForTest, mxcShellSupervisorLocation, stageMxcShellRequest, startMxcShellSupervisor } from "../mxc-shell-supervisor-client.js";
+import { _mxcShellStandbyPidForTest, dropMxcShellStandbys, mxcShellSupervisorLocation, stageMxcShellRequest, startMxcShellSupervisor } from "../mxc-shell-supervisor-client.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../policy-model.js";
 
 const NATIVE = process.platform === "darwin" && process.arch === "arm64";
+// Darwin 25 is macOS 26. Its libsandbox compiles a carved profile deeply enough to overrun koffi's default 128 KiB
+// asynchronous stack; macOS 15 (Darwin 24) starts the same profiles on it (macos-15 CI runner, 2026-11-27).
+const DEFAULT_STACK_OVERRUNS = NATIVE && Number(release().split(".")[0]) >= 25;
+// One CLI start of the thirty-grant profile takes about 10 s on an M-series Mac and more than 12 s on the macos-15
+// runner, almost all of it libsandbox compiling the profile. The bound leaves room for the slower runner.
+const LAUNCHER_START_TIMEOUT_MS = 60_000;
+// The macOS permission job requires its cases: a macOS runner this suite cannot use fails here instead of skipping all of them.
+if (process.platform === "darwin" && !NATIVE && process.env.AVE_REQUIRE_SANDBOX_CASES === "1") {
+  throw new Error(`AVE_REQUIRE_SANDBOX_CASES=1 but this macOS host is ${process.arch}: the container boundary suite runs only on arm64`);
+}
 let supervisor: Awaited<ReturnType<typeof buildNativeShellSupervisor>>;
 
 if (NATIVE) {
@@ -60,8 +74,14 @@ function livePids(pids: readonly number[]): number[] {
   return listed.stdout.split("\n").map(line => Number(line.trim())).filter(pid => pids.includes(pid));
 }
 
-async function recordedPids<Name extends string>(dir: string, names: readonly Name[]): Promise<Record<Name, number>> {
-  const pids = {} as Record<Name, number>;
+// A shell start takes about 1.4 s through BashTool on an M-series Mac and about 5 s on the macos-15 runner, which
+// missed a 5 s wait once (2026-11-28). The wait only bounds how long a start may take; what it then checks is unchanged.
+const PID_FILE_WAIT_MS = 20_000;
+
+/** Waits for every `<name>.pid` in `dir`, filling `pids` as each appears so a caller can reap a partial start. */
+async function recordedPids<Name extends string>(
+  dir: string, names: readonly Name[], pids = {} as Record<Name, number>,
+): Promise<Record<Name, number>> {
   await vi.waitFor(() => {
     for (const name of names) {
       const file = join(dir, `${name}.pid`);
@@ -69,7 +89,7 @@ async function recordedPids<Name extends string>(dir: string, names: readonly Na
       expect(pid, name).toBeGreaterThan(1);
       pids[name] = pid;
     }
-  }, { interval: 20, timeout: 5_000 });
+  }, { interval: 20, timeout: PID_FILE_WAIT_MS });
   return pids;
 }
 
@@ -201,10 +221,77 @@ describe.runIf(NATIVE)("native macOS shell boundary", () => {
     }
   });
 
-  it("proves the boot canary through the installed sandbox library and cleans its staging", async () => {
-    await expect(_runSeatbeltCanaryForTest(supervisor.location, root)).resolves.toBe("available");
+  it("proves the boot canary through the installed sandbox library, measures raw IP in it and cleans its staging", async () => {
+    const result = await _runSeatbeltCanaryForTest(supervisor.location, root);
+    // The control passed with the nonce on both sides and T4 was refused by Seatbelt itself. With no IPv6 route the
+    // profile's default deny stands in for T6; the evidence kind records which this host gave.
+    expect(result).toMatchObject({ verdict: "available", rawIpProbe: { rawIp: "blocked", reachableTargets: [], udpArrival: "absent" } });
+    expect(["measured", "structural"]).toContain((result as { rawIpProbe: { evidenceKind: string } }).rawIpProbe.evidenceKind);
     expect(readdirSync(root)).toEqual(["work"]);
+  }, 30_000);
+
+  it("names the host-side targets that saw an open network when the profile lets them through", async () => {
+    // Aimed at loopback, the closed TCP port and the UDP listener are the only addresses the edit opens. Every other
+    // availability check still holds, the documentation addresses stay denied, and the run is the same on any network.
+    const result = await _runSeatbeltCanaryForTest(supervisor.location, root, undefined, {
+      hostAddress: "127.0.0.1",
+      editProfile: (profile, ports) => {
+        if (ports === undefined) throw new Error("Expected the host-side targets to bind on loopback");
+        return `${profile}\n(allow network-outbound (remote ip "localhost:${ports.tl}") (remote ip "localhost:${ports.udp}"))`;
+      },
+    });
+    // The closed port answers with ECONNREFUSED, so a packet reached a peer, and the UDP nonce arrives.
+    expect(result).toEqual({
+      verdict: "available",
+      rawIpProbe: { rawIp: "unknown", reason: "raw-ip-reachable", reachableTargets: ["tl", "udp"], udpArrival: "arrived" },
+    });
+  }, 30_000);
+
+  it.each([
+    ["returns", "/usr/bin/true", false],
+    ["stalls past the watchdog", "/bin/sleep 30", true],
+  ])("leaves no raw-IP watchdog process behind when the prober %s", (_name, prober, cutOff) => {
+    // Run on the host, outside any container, so no container teardown can reap what the lines leave behind.
+    const watchdogSeconds = cutOff ? `0.${String(randomInt(300_000, 400_000))}` : `13.${String(randomInt(100_000, 1_000_000))}`;
+    const marker = join(root, "probe.out");
+    const lines = rawIpProbeShellLines({ prober, output: marker, watchdogSeconds });
+    const started = Date.now();
+    const status = spawnSync("/bin/sh", ["-c", [...lines, 'echo "done $?"'].join("\n")], { encoding: "utf8", timeout: 10_000 });
+    expect(status.stdout.trim()).toMatch(/^done \d+$/u);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    spawnSync("/bin/sleep", ["0.2"]);
+    const processes = execFileSync("/bin/ps", ["-axww", "-o", "pid=,command="], { encoding: "utf8" });
+    expect(processes.split("\n").filter(line => line.includes(watchdogSeconds))).toEqual([]);
   });
+
+  it("leaves no raw-IP watchdog running once the canary has returned", async () => {
+    // A delay no other run uses marks this run's watchdog in the host's process table.
+    const watchdogSeconds = `13.${String(randomInt(100_000, 1_000_000))}`;
+    const result = await _runSeatbeltCanaryForTest(supervisor.location, root, undefined, { watchdogSeconds });
+    expect(result.verdict).toBe("available");
+    const processes = execFileSync("/bin/ps", ["-axww", "-o", "pid=,command="], { encoding: "utf8" });
+    expect(processes.split("\n").filter(line => line.includes(watchdogSeconds))).toEqual([]);
+  }, 30_000);
+
+  it("keeps the shell container available and the raw-IP verdict unknown when the host-side targets cannot bind", async () => {
+    // 192.0.2.1 is no address of this host, so both the closed TCP port and the UDP listener fail to bind there
+    // (EADDRNOTAVAIL). That is missing evidence about raw IP, never a reason the shell container is unavailable.
+    const result = await _runSeatbeltCanaryForTest(supervisor.location, root, undefined, { hostAddress: "192.0.2.1" });
+    expect(result).toEqual({
+      verdict: "available", rawIpProbe: { rawIp: "unknown", reason: "no-evidence", reachableTargets: [], udpArrival: "unmeasured" },
+    });
+    expect(readdirSync(root)).toEqual(["work"]);
+  }, 30_000);
+
+  it.each([
+    ["prints nothing", "exit 0;"],
+    ["dies before any line", "die 'prober unavailable';"],
+    ["stalls past its budget", "select(undef, undef, undef, 30);"],
+  ])("keeps the shell container available with an unknown raw-IP verdict when the prober %s", async (_name, prober) => {
+    const result = await _runSeatbeltCanaryForTest(supervisor.location, root, undefined, { prober });
+    expect(result).toEqual({ verdict: "available", rawIpProbe: { rawIp: "unknown", reason: "no-evidence", reachableTargets: [], udpArrival: "unmeasured" } });
+    expect(readdirSync(root)).toEqual(["work"]);
+  }, 30_000);
 
   it("cleans the canary staging when boot is cancelled", async () => {
     const controller = new AbortController();
@@ -316,21 +403,27 @@ describe.runIf(NATIVE)("native product shell launch", () => {
     expect(createHash("sha256").update(readFileSync(cli)).digest("hex")).toBe(pin.sha256);
 
     const previous = new Set(readdirSync(runtime));
-    const admitted = await prepare(command, { denyRead: [sealed], allowRead: allowed });
+    const admitted = await prepare(command, { denyRead: [sealed], allowRead: allowed, timeoutMs: LAUNCHER_START_TIMEOUT_MS });
     const staged = readdirSync(runtime).filter(name => name.startsWith("shell-") && !previous.has(name));
     expect(staged).toHaveLength(1);
     const requestPath = join(runtime, ...staged, "request.json");
+    const cliStarted = performance.now();
     const baseline = spawnSync(cli, ["--config", requestPath], {
-      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 12_000,
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: LAUNCHER_START_TIMEOUT_MS,
     });
+    console.info("Launcher CLI start with %d explicit read grants: %s ms", allowed.length, (performance.now() - cliStarted).toFixed(0));
     expect(baseline.error).toBeUndefined();
     expect(baseline).toMatchObject({ status: 0, stdout: "new access", stderr: "" });
 
-    // Regression check: the same staged bytes through the supervisor without its call stack setting die before exec.
+    // Regression check: the same staged bytes through the supervisor without its call stack setting die before exec
+    // where libsandbox overruns the default stack. Where it does not, they run exactly as the CLI did, so the
+    // configured stack changes nothing there.
     const requestSha256 = createHash("sha256").update(readFileSync(requestPath)).digest("hex");
     const unconfigured = await collectShell(startMxcShellSupervisor({ type: "shell-start", requestPath, requestSha256 },
-      10_000, undefined, () => {}, "test:default-stack-shell", supervisor.defaultStackLocation));
-    expect(unconfigured).toMatchObject({ code: -1, stdout: "", cleanupUnverified: false });
+      LAUNCHER_START_TIMEOUT_MS, undefined, () => {}, "test:default-stack-shell", supervisor.defaultStackLocation));
+    expect(unconfigured).toMatchObject(DEFAULT_STACK_OVERRUNS
+      ? { code: -1, stdout: "", cleanupUnverified: false }
+      : { code: baseline.status, stdout: baseline.stdout, stderr: baseline.stderr, cleanupUnverified: false });
 
     const supervised = await run(admitted);
     expect(supervised).toMatchObject({ code: baseline.status, stdout: baseline.stdout, stderr: baseline.stderr });
@@ -462,7 +555,7 @@ describe.runIf(NATIVE)("native product shell launch", () => {
       return offered;
     });
     await compareLauncher(`cat ${quote(allowed.at(-1) ?? "")}`, sealed, allowed);
-  });
+  }, 4 * LAUNCHER_START_TIMEOUT_MS);
 
   it("tunnels verified TLS from curl, git, node and python through its own live proxy only", async () => {
     const hostname = "shell-boundary.example";
@@ -557,6 +650,108 @@ req.end();
     expect((await otherRun.completion).cancelled).toBe(true);
   }, 20_000);
 
+  it("refuses a reserved Tailnet listener port directly, by loopback name and by any name, while another port still relays", async () => {
+    const hits: string[] = [];
+    let tailnetConnections = 0;
+    const tailnet = await listen(createServer(socket => { tailnetConnections++; socket.destroy(); }));
+    const release = reserveTailnetListenerPort(tailnet);
+    try {
+      const upstream = createHttpServer((req, res) => { hits.push(req.url ?? ""); res.end("relay-control"); });
+      const upstreamPort = await listen(upstream);
+      const asked: number[] = [];
+      startEgressRelayService({
+        ask: async (request) => { asked.push(request.port); return true; },
+        resolve: async () => [{ address: "93.184.215.14" }],
+        router: async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: upstreamPort, resolvesNames: true }] }),
+      });
+      const result = await run(await prepare([
+        "set -u",
+        `if /usr/bin/nc -z -w 1 127.0.0.1 ${tailnet}; then exit 41; fi`,
+        `if curl -fsS --max-time 3 http://127.0.0.1:${tailnet}/; then exit 42; fi`,
+        `if curl -fsS --max-time 3 http://tailnet-check.example:${tailnet}/; then exit 43; fi`,
+        `test "$(curl -fsS --max-time 3 http://tailnet-check.example:${upstreamPort + 1}/)" = relay-control || exit 44`,
+        "printf '%s' tailnet-control",
+      ].join("\n")));
+      expect(result.code, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain("tailnet-control");
+      // The control went through the relay; the reserved port reached nothing and was never asked about.
+      expect(hits).toEqual([`http://tailnet-check.example:${upstreamPort + 1}/`]);
+      expect(tailnetConnections).toBe(0);
+      expect(asked).not.toContain(tailnet);
+    } finally {
+      release();
+    }
+  }, 20_000);
+
+  it("holds protected and ordinary controls when workspace and deny names carry quotes, parentheses, backslashes and regex metacharacters", async () => {
+    startEgressRelayService({ ask: async () => false });
+    // Glob characters (`*?[]{}`) in a granted name are refused as a pattern grant before any profile is written, and the
+    // SDK refuses a double quote in any path; both are asserted at the end. The rest must reach the profile and hold.
+    const odd = `it's (a) \\ dir .+^$|`;
+    const workspace = join(project, odd);
+    const denied = join(home, `${odd} vault`);
+    const deniedPrefixSibling = join(home, `${odd} vault-open`);
+    mkdirSync(join(workspace, ".git", "hooks"), { recursive: true });
+    mkdirSync(denied, { recursive: true });
+    mkdirSync(deniedPrefixSibling, { recursive: true });
+    writeFileSync(join(denied, "secret"), "private fixture");
+    writeFileSync(join(deniedPrefixSibling, "open"), "open-control");
+    const result = await run(await prepare([
+      `cd ${quote(workspace)} || exit 50`,
+      "printf ordinary > ordinary.txt || exit 51",
+      "if (printf x > .git/hooks/pre-commit); then exit 52; fi",
+      `if /bin/cat ${quote(join(denied, "secret"))}; then exit 53; fi`,
+      `test "$(/bin/cat ${quote(join(deniedPrefixSibling, "open"))})" = open-control || exit 54`,
+      "printf '%s' escape-control",
+    ].join("\n"), { cwd: workspace, allowWrite: [workspace], denyRead: [denied], allowRead: [home] }));
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout).toContain("escape-control");
+    expect(readFileSync(join(workspace, "ordinary.txt"), "utf8")).toBe("ordinary");
+    expect(existsSync(join(workspace, ".git", "hooks", "pre-commit"))).toBe(false);
+
+    const globbed = join(project, "glob [x]{1}*?");
+    mkdirSync(globbed);
+    await expect(prepare("printf never", { cwd: globbed, allowWrite: [globbed] }))
+      .rejects.toMatchObject({ code: "pattern-row" });
+    const quoted = join(project, 'say "hi"');
+    mkdirSync(quoted);
+    expect(await run(await prepare(`printf never > ${quote(join(quoted, "ran"))}`, { cwd: quoted, allowWrite: [quoted] })))
+      .toMatchObject({ rejected: true, failure: { code: "start-refused", sdkCode: "malformed_request" } });
+    expect(existsSync(join(quoted, "ran"))).toBe(false);
+  });
+
+  it("cancels a real BashTool call on the container route: its invocation is revoked and nothing survives", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const invocationsBefore = liveEgressInvocationCount();
+    const controller = new AbortController();
+    // The same five kinds by bare program name: the tool's own path gate refuses absolute paths outside the workspace.
+    const workload = DETACH_WORKLOAD.replaceAll("/usr/bin/perl", "perl").replaceAll("/usr/bin/nohup", "nohup")
+      .replaceAll("/bin/sleep", "sleep").replaceAll("/bin/sh", "sh");
+    const pending = new BashTool().execute({ command: workload, timeoutSeconds: 60 }, {
+      cwd: project, extraAllowedDirectories: [], metadata: { toolUseId: "native-bash-cancel" }, abortSignal: controller.signal,
+    });
+    const pids = {} as Record<(typeof DETACH_KINDS)[number], number>;
+    try {
+      // A call that ends before its shell wrote every pid file says why, instead of the wait running out.
+      await Promise.race([recordedPids(project, DETACH_KINDS, pids), pending.then((early) => {
+        throw new Error(`BashTool returned before its shell started: ${JSON.stringify(early).slice(0, 800)}`);
+      })]);
+      await vi.waitFor(() => expect(tickSizes(project, DETACH_TICKS).every(size => size > 0)).toBe(true));
+      expect(liveEgressInvocationCount()).toBe(invocationsBefore + 1);
+      controller.abort();
+      const result = await pending;
+      expect(result).toMatchObject({ isError: true, metadata: { sandboxed: true, aborted: true } });
+      expect(result.output).toContain(t("sandboxPolicy.containerShellCancelled"));
+      await expectReaped(project, pids, DETACH_TICKS);
+      expect(liveEgressInvocationCount()).toBe(invocationsBefore);
+    } finally {
+      // On any failure above the call is still running: cancel it before reaping what it recorded.
+      controller.abort();
+      await pending;
+      reapRecorded(pids);
+    }
+  }, 60_000);
+
   /** A staged request outside the product launch, for supervisor-level cases; the profile admits `project` only. */
   async function stageDirect(
     commandLine: string, timeoutMs: number,
@@ -619,8 +814,10 @@ req.end();
       await new Promise(resolve => setTimeout(resolve, 500));
       lease.revoke();
       expect(await pending).toMatchObject({ cancelled: true, cleanupUnverified: false });
+      // The respawner rewrites its pid file every 5 ms; a stop between the truncate and the write leaves it empty.
+      // That last hop is then covered by its tick file alone.
       const last = Number(readFileSync(join(project, "hop.pid"), "utf8").trim());
-      await expectReaped(project, { ...pids, last }, ["tick-hop"]);
+      await expectReaped(project, { ...pids, ...(last > 1 ? { last } : {}) }, ["tick-hop"]);
     } finally {
       reapRecorded(pids);
     }
@@ -824,6 +1021,55 @@ req.end();
     }
   });
 
+  it("refuses with integrity, and runs nothing, when a warm standby's verified library was removed or replaced", async () => {
+    // A private copy of the installation: the real node modules by link, the SDK package as an APFS clone.
+    const modules = join(root, "copy", "node_modules");
+    mkdirSync(modules, { recursive: true });
+    // The pinned packages must be real directories; the verifier refuses a linked package.
+    const pinned = new Set(["@microsoft", "@koromix", "koffi", "node-pty"]);
+    for (const name of readdirSync(resolve("node_modules"))) {
+      if (pinned.has(name)) execFileSync("/bin/cp", ["-cR", resolve("node_modules", name), join(modules, name)]);
+      else symlinkSync(resolve("node_modules", name), join(modules, name));
+    }
+    const location = { ...supervisor.location, nodeModules: modules };
+    const library = join(modules, pins.sdk.packages["@microsoft/mxc-sdk"], pins.targets["darwin-arm64"].library.member);
+    const pristine = readFileSync(library);
+    const marker = join(project, "ran");
+    const start = async (commandLine: string) => {
+      const { staged } = await stageDirect(commandLine, 5_000);
+      return collectShell(startMxcShellSupervisor(staged, 5_000, undefined, () => {}, "test:library-swap", location));
+    };
+    const warmStandby = async () => {
+      const warmed = await start("/usr/bin/true");
+      expect(warmed.code, JSON.stringify(warmed)).toBe(0);
+      return vi.waitFor(() => {
+        const pid = _mxcShellStandbyPidForTest(location);
+        if (pid === undefined) throw new Error("No live standby");
+        return pid;
+      }, { timeout: 10_000 });
+    };
+    try {
+      await warmStandby();
+      rmSync(library);
+      expect(await start(`printf ran > ${quote(marker)}`)).toMatchObject({ rejected: true, failure: { code: "integrity" } });
+      expect(existsSync(marker)).toBe(false);
+
+      writeFileSync(library, pristine);
+      await warmStandby();
+      writeFileSync(library, Buffer.concat([pristine, Buffer.from("replaced")]));
+      expect(await start(`printf ran > ${quote(marker)}`)).toMatchObject({ rejected: true, failure: { code: "integrity" } });
+      expect(existsSync(marker)).toBe(false);
+
+      // Control: the same installation with its pinned bytes back runs the command.
+      writeFileSync(library, pristine);
+      await warmStandby();
+      expect(await start(`printf ran > ${quote(marker)}`)).toMatchObject({ code: 0 });
+      expect(readFileSync(marker, "utf8")).toBe("ran");
+    } finally {
+      dropMxcShellStandbys();
+    }
+  }, 60_000);
+
   it("records one-start latency across twenty-one product shell commands", async () => {
     startEgressRelayService({ ask: async () => false });
     const elapsed: number[] = [];
@@ -835,5 +1081,6 @@ req.end();
     }
     elapsed.sort((left, right) => left - right);
     console.info("Native shell launch, 21 commands, median %s ms", elapsed.at(10)?.toFixed(1));
-  }, 25_000);
+    // About 0.45 s a start on an M-series Mac; the macos-15 runner needs more than 1.2 s (25 s did not cover 21).
+  }, 120_000);
 });

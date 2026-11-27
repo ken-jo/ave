@@ -832,7 +832,7 @@ jobs:
             echo "::error::the Vitest shards ended $VITEST_RESULT"
             exit 1
           elif [[ ! "$VITEST_SHARD_COUNT" =~ ^[1-9][0-9]*$ ]] ||
-               [ "$VITEST_SHARDS" != "[$(seq -s, 1 "$VITEST_SHARD_COUNT")]" ]; then
+               [ "$VITEST_SHARDS" != "[$(seq 1 "$VITEST_SHARD_COUNT" | paste -sd, -)]" ]; then
             echo "::error::Vitest matrix '$VITEST_SHARDS' does not contain the $VITEST_SHARD_COUNT planned shards"
             exit 1
           else
@@ -1744,6 +1744,7 @@ jobs:
           src/permissions/__tests__/mxc-launcher.test.ts
           src/permissions/__tests__/mxc-posix-ranking.test.ts
           src/permissions/__tests__/mxc-runtime-root.test.ts
+          src/permissions/__tests__/mxc-macos-boundary.native.test.ts
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
           src/plugins/isolation/__tests__/plugin-stderr.test.ts
           src/permissions/__tests__/launcher-environment.test.ts

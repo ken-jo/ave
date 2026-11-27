@@ -42,6 +42,8 @@ import {
   egressProtocolCoverageFor,
   type EgressProtocolCoverage,
   type SandboxCapabilityInfo,
+  type MacRawIpUnknownReason,
+  type MacRawIpVerdict,
   type SandboxMacContainerShellUnavailableReason,
   type SandboxMxcUnavailableReason,
   type SandboxWindowsExtensionReason,
@@ -206,6 +208,24 @@ const MAC_CONTAINER_REASON_KEY = {
   "request-rejected": "permissionsTab.osSandboxMacContainerReasonRequestRejected",
   "shell-start-failed": "permissionsTab.osSandboxMacContainerReasonShellStartFailed",
 } as const satisfies Record<SandboxMacContainerShellUnavailableReason, string>;
+
+const MAC_RAW_IP_REASON_KEY = {
+  "raw-ip-reachable": "permissionsTab.osSandboxMacContainerRawIpReasonReachable",
+  "ipv6-unmeasured": "permissionsTab.osSandboxMacContainerRawIpReasonIpv6Unmeasured",
+  "no-route": "permissionsTab.osSandboxMacContainerRawIpReasonNoRoute",
+  timeout: "permissionsTab.osSandboxMacContainerRawIpReasonTimeout",
+  unclassified: "permissionsTab.osSandboxMacContainerRawIpReasonUnclassified",
+  "no-evidence": "permissionsTab.osSandboxMacContainerRawIpReasonNoEvidence",
+  "control-failed": "permissionsTab.osSandboxMacContainerRawIpReasonControlFailed",
+  "udp-unmeasured": "permissionsTab.osSandboxMacContainerRawIpReasonUdpUnmeasured",
+} as const satisfies Record<MacRawIpUnknownReason, string>;
+
+/** The measured raw-IP sentence for an available macOS container; an unmeasured one reads as not confirmed. */
+function macRawIpSentence(rawIp: MacRawIpVerdict | undefined): string {
+  const verdict = rawIp ?? { rawIp: "unknown", reason: "no-evidence" } as const;
+  return verdict.rawIp === "blocked" ? t("permissionsTab.osSandboxMacContainerRawIpBlocked")
+    : t("permissionsTab.osSandboxMacContainerRawIpUnknown", { reason: t(MAC_RAW_IP_REASON_KEY[verdict.reason]) });
+}
 
 /** Every reason the shared extension plan can carry, so no reason renders as a raw key. */
 const WINDOWS_EXTENSION_REASON_KEY = {
@@ -1375,7 +1395,8 @@ export function PermissionsTab({
               data-state={macContainer.state}
               className="rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-dense text-muted-foreground"
             >
-              {macContainer.state === "available" ? t("permissionsTab.osSandboxMacContainerAvailable")
+              {macContainer.state === "available"
+                ? `${t("permissionsTab.osSandboxMacContainerAvailable")} ${macRawIpSentence(macContainer.rawIpProbe)}`
                 : t("permissionsTab.osSandboxMacContainerUnavailable", { reason: t(MAC_CONTAINER_REASON_KEY[macContainer.reason]) })}
             </p>
           ) : null}
