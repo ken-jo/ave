@@ -234,6 +234,7 @@ export type EgressIdentityStrength = "kernel-channel" | "shared";
 /** Protocol coverage is independent of proxy endpoint scoping and identity. */
 export interface EgressProtocolCoverage {
   readonly dns: "host-resolver" | "brokered" | "blocked" | "unknown";
+  /** The Windows MXC probe checks UDP by arrival only. */
   readonly rawIp: "unknown" | "blocked";
 }
 

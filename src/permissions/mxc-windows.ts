@@ -26,6 +26,7 @@ import { isPlainWindowsPathComponent } from "../shared/windows-path-spelling.js"
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
 import { containerTarget } from "../shared/container-platform.js";
 import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
+import { openMxcRawIpUdpListener, type MxcRawIpUdpArrival, type MxcRawIpUdpSend } from "./mxc-raw-ip-udp.js";
 import { createLogger } from "../lib/logger.js";
 import type { openInvocationProxyListener } from "./egress-invocation-listener.js";
 
@@ -159,11 +160,13 @@ type MxcRawIpTargetResult = number | "connected" | "deadline" | "other";
 type MxcRawIpProbeEvidence = Readonly<Record<MxcRawIpTarget, MxcRawIpTargetResult>> & {
   readonly control: boolean;
   readonly capabilitySids: readonly string[] | null;
+  readonly udp: MxcRawIpUdpSend;
 };
 type MxcRawIpUnknownReason = "listener-unavailable" | "no-evidence" | "control-failed" | "raw-ip-reachable"
-  | "ipv6-unmeasured" | "no-route" | "timeout" | "unclassified";
+  | "ipv6-unmeasured" | "udp-unmeasured" | "no-route" | "timeout" | "unclassified";
 type MxcRawIpProbeVerdict = {
-  readonly reachableTargets: readonly MxcRawIpTarget[];
+  readonly reachableTargets: readonly (MxcRawIpTarget | "udp")[];
+  readonly udpArrival: MxcRawIpUdpArrival;
 } & ({ readonly rawIp: "blocked"; readonly reason: "blocked"; readonly evidenceKind: "measured" | "structural" }
   | { readonly rawIp: "unknown"; readonly reason: MxcRawIpUnknownReason });
 type MxcStartSupport = Extract<MxcSupport, { state: "unavailable" }>
@@ -187,9 +190,10 @@ export function parseMxcRawIpProbeEvidence(stdout: string, probeId: string, stde
   try {
     const evidence = JSON.parse(payload) as Partial<MxcRawIpProbeEvidence> | null;
     if (evidence === null || typeof evidence.control !== "boolean" || !Object.hasOwn(evidence, "capabilitySids")
+        || (evidence.udp !== "sent" && evidence.udp !== "refused-local" && evidence.udp !== "unmeasured")
         || !isRawIpTargetResult(evidence.t4) || !isRawIpTargetResult(evidence.t6) || !isRawIpTargetResult(evidence.tl)) return undefined;
-    const { control, t4, t6, tl, capabilitySids } = evidence;
-    const frame = { control, t4, t6, tl, capabilitySids };
+    const { control, t4, t6, tl, capabilitySids, udp } = evidence;
+    const frame = { control, t4, t6, tl, capabilitySids, udp };
     if (payload !== JSON.stringify(frame)) return undefined;
     return { ...frame, capabilitySids: Array.isArray(capabilitySids) && capabilitySids.every(isCapabilitySid) ? capabilitySids : null };
   } catch {
@@ -212,23 +216,38 @@ export function mxcRawIpBlockingRequirement({ t6, capabilitySids }: Pick<MxcRawI
   return rawIpInconclusiveReason(t6);
 }
 
-export function classifyMxcRawIpProbe(evidence: MxcRawIpProbeEvidence | undefined, controlRefused: boolean): MxcRawIpProbeVerdict {
-  if (evidence === undefined) return { rawIp: "unknown", reason: "no-evidence", reachableTargets: [] };
-  const reachableTargets = (["t4", "t6", "tl"] as const).filter(target => evidence[target] === "connected" || evidence[target] === 10061);
-  const unknown = (reason: MxcRawIpUnknownReason): MxcRawIpProbeVerdict => ({ rawIp: "unknown", reason, reachableTargets });
+export function classifyMxcRawIpProbe(
+  evidence: MxcRawIpProbeEvidence | undefined, controlRefused: boolean, udpArrival: MxcRawIpUdpArrival,
+): MxcRawIpProbeVerdict {
+  const reachableTargets: (MxcRawIpTarget | "udp")[] = evidence === undefined
+    ? [] : (["t4", "t6", "tl"] as const).filter(target => evidence[target] === "connected" || evidence[target] === 10061);
+  const unknown = (reason: MxcRawIpUnknownReason): MxcRawIpProbeVerdict => ({ rawIp: "unknown", reason, reachableTargets, udpArrival });
+  if (udpArrival === "arrived") {
+    reachableTargets.push("udp");
+    return unknown("raw-ip-reachable");
+  }
+  if (evidence === undefined) return unknown("no-evidence");
   if (!evidence.control || !controlRefused) return unknown("control-failed");
   if (reachableTargets.length > 0) return unknown("raw-ip-reachable");
   if (evidence.t4 === 10051 || evidence.t4 === 10065) return unknown("no-route");
   if (evidence.t4 !== 10013) return unknown(rawIpInconclusiveReason(evidence.t4));
   const t6 = mxcRawIpBlockingRequirement(evidence);
   if (t6 !== "refused-local" && t6 !== "refused-structural") return unknown(t6);
-  return { rawIp: "blocked", reason: "blocked", evidenceKind: t6 === "refused-local" ? "measured" : "structural", reachableTargets };
+  if (udpArrival === "unmeasured") return unknown("udp-unmeasured");
+  return { rawIp: "blocked", reason: "blocked", evidenceKind: t6 === "refused-local" ? "measured" : "structural", reachableTargets, udpArrival };
 }
 
-function buildMxcRawIpProbeScript(probeId: string, port: number, controlHost: string, lan: MxcLanProbeTarget | undefined, deadline: number): string {
+function buildMxcRawIpProbeScript(
+  probeId: string, port: number, controlHost: string, lan: MxcLanProbeTarget | undefined, udp: MxcLanProbeTarget | undefined, deadline: number,
+): string {
   const script = String.raw`
 function Get-Remaining($targetClock) {
   [int][Math]::Min(${MXC_RAW_IP_TARGET_TIMEOUT_MS} - $targetClock.ElapsedMilliseconds, $probeBudget - $probeClock.ElapsedMilliseconds)
+}
+function Get-SocketError($cause) {
+  while ($cause.InnerException -and $cause -isnot [Net.Sockets.SocketException]) { $cause = $cause.InnerException }
+  if ($cause -is [Net.Sockets.SocketException]) { return $cause.NativeErrorCode }
+  return 'other'
 }
 function Invoke-Tcp([string] $address, [int] $port, [string] $controlHost) {
   $clock = [Diagnostics.Stopwatch]::StartNew()
@@ -271,15 +290,29 @@ function Invoke-Tcp([string] $address, [int] $port, [string] $controlHost) {
     return 'other'
   } catch {
     if ((Get-Remaining $clock) -le 0) { return 'deadline' }
-    if ($connecting -and -not $controlHost) {
-      $errorCause = $_.Exception
-      while ($errorCause.InnerException -and $errorCause -isnot [Net.Sockets.SocketException]) { $errorCause = $errorCause.InnerException }
-      if ($errorCause -is [Net.Sockets.SocketException]) { return $errorCause.NativeErrorCode }
-    }
+    if ($connecting -and -not $controlHost) { return (Get-SocketError $_.Exception) }
     return 'other'
   } finally {
     if ($socket) { $socket.Dispose() }
   }
+}
+function Invoke-Udp([string] $address, [int] $port, [string] $nonce) {
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  $client = $null
+  try {
+    $client = [Net.Sockets.UdpClient]::new()
+    $target = [Net.IPEndPoint]::new([Net.IPAddress]::Parse($address), $port)
+    $bytes = [Text.Encoding]::ASCII.GetBytes($nonce)
+    $remaining = Get-Remaining $clock
+    if ($remaining -le 0) { return 'unmeasured' }
+    $client.Client.SendTimeout = $remaining
+    if ($client.Send($bytes, $bytes.Length, $target) -eq $bytes.Length) { return 'sent' }
+  } catch {
+    if ((Get-Remaining $clock) -gt 0 -and (Get-SocketError $_.Exception) -eq 10013) { return 'refused-local' }
+  } finally {
+    if ($client) { $client.Dispose() }
+  }
+  return 'unmeasured'
 }
 function Read-CapabilitySids {
   $identity = $null
@@ -326,19 +359,20 @@ try {
   if ($probeBudget -le 0) { exit 0 }
   $probeClock = [Diagnostics.Stopwatch]::StartNew()
   $control = (Invoke-Tcp '127.0.0.1' ${port} '${controlHost}') -ceq 'refused'
+  $udp = ${udp === undefined ? "'unmeasured'" : `Invoke-Udp '${udp.address}' ${udp.port} '${probeId}'`}
   $t4 = Invoke-Tcp '192.0.2.1' 443
   $t6 = Invoke-Tcp '2001:db8::1' 443
   $tl = ${lan === undefined ? "'other'" : `Invoke-Tcp '${lan.address}' ${lan.port}`}
   $capabilitySids = $null
   if ($t6 -eq 10051 -or $t6 -eq 10065) { $capabilitySids = Read-CapabilitySids }
   if ($probeClock.ElapsedMilliseconds -ge $probeBudget) { exit 0 }
-  $evidence = [ordered]@{ control = $control; t4 = $t4; t6 = $t6; tl = $tl; capabilitySids = $capabilitySids } | ConvertTo-Json -Compress
+  $evidence = [ordered]@{ control = $control; t4 = $t4; t6 = $t6; tl = $tl; capabilitySids = $capabilitySids; udp = $udp } | ConvertTo-Json -Compress
   [Console]::WriteLine('${MXC_RAW_IP_EVIDENCE_MARKER}${probeId} ' + $evidence)
 } catch {} finally { exit 0 }
 `;
   // The probe request encodes the PowerShell command line inside its own base64 envelope.
   const compressed = gzipSync(script).toString("base64");
-  return String.raw`
+  return `
 $inputStream = [IO.MemoryStream]::new([Convert]::FromBase64String('${compressed}'))
 $stream = [IO.Compression.GZipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
 $reader = [IO.StreamReader]::new($stream)
@@ -495,12 +529,13 @@ export async function probeMxcPowerShellStart(
 
   const measure = deps.platform === "win32" && openListener !== undefined;
   const available = { state: "available", windowsBuild: deps.windowsBuild } as const;
-  let rawIpProbe: MxcRawIpProbeVerdict = { rawIp: "unknown", reason: "listener-unavailable", reachableTargets: [] };
+  let rawIpProbe: MxcRawIpProbeVerdict = { rawIp: "unknown", reason: "listener-unavailable", reachableTargets: [], udpArrival: "unmeasured" };
   let result: Awaited<ReturnType<typeof launch>> | undefined;
   if (measure) {
     const deadline = Date.now() + MXC_START_PROBE_TIMEOUT_MS;
     const measurementDeadline = deadline - MXC_START_EXIT_RESERVE_MS;
     let listener: Awaited<ReturnType<typeof openListener>> | undefined;
+    let udp: Awaited<ReturnType<typeof openMxcRawIpUdpListener>>;
     try {
       const probeId = randomBytes(16).toString("hex");
       const controlHost = `127.${[...randomBytes(3)].join(".")}`;
@@ -509,21 +544,30 @@ export async function probeMxcPowerShellStart(
         upstream: () => undefined,
         onRefused: (destination) => { if (destination === controlHost) controlRefused = true; },
       });
-      rawIpProbe = classifyMxcRawIpProbe(undefined, false);
+      rawIpProbe = classifyMxcRawIpProbe(undefined, false, "unmeasured");
       const lookupBudget = Math.min(MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS, measurementDeadline - Date.now());
       const lan = lookupBudget > 0 ? await findMxcLanProbeTarget(deps, lookupBudget) : undefined;
+      if (lan !== undefined) udp = await openMxcRawIpUdpListener(lan.address, probeId, measurementDeadline);
       const startBudget = deadline - Date.now();
       if (startBudget > MXC_START_EXIT_RESERVE_MS) {
-        const script = buildMxcRawIpProbeScript(probeId, listener.port, controlHost, lan, measurementDeadline);
-        result = await launch(script, listener.url, startBudget);
-        if (result.started.code === 0) {
-          const evidence = parseMxcRawIpProbeEvidence(result.started.stdout, probeId, result.started.stderr);
-          rawIpProbe = classifyMxcRawIpProbe(evidence, controlRefused);
+        const script = buildMxcRawIpProbeScript(probeId, listener.port, controlHost, lan, udp, measurementDeadline);
+        try {
+          result = await launch(script, listener.url, startBudget);
+        } finally {
+          const started = result?.started;
+          const evidence = started?.code === 0 ? parseMxcRawIpProbeEvidence(started.stdout, probeId, started.stderr) : undefined;
+          const udpArrival = await udp?.observe(evidence?.udp ?? "unmeasured", MXC_RAW_IP_TARGET_TIMEOUT_MS) ?? "unmeasured";
+          rawIpProbe = classifyMxcRawIpProbe(evidence, controlRefused, udpArrival);
         }
       }
     } catch {
       // Optional measurement errors leave the plain startup check authoritative.
     } finally {
+      try {
+        udp?.close();
+      } catch {
+        log.warn("MXC startup UDP listener cleanup failed");
+      }
       const bound = listener;
       await bound?.close().catch(() => bound.close()).catch((error) => {
         log.warn({ error }, "MXC startup measurement listener cleanup failed");
@@ -540,7 +584,8 @@ export async function probeMxcPowerShellStart(
     log.info({ launcherSha256: pinnedWxcExecSha256(deps.arch), schema: request.version,
       network: request.network, windowsBuild: deps.windowsBuild,
       ...(rawIpProbe.rawIp === "blocked" ? { evidenceKind: rawIpProbe.evidenceKind } : {}) }, "MXC raw IP startup measurement");
-    if (rawIpProbe.reachableTargets.length > 0) log.warn("raw-ip-reachable");
+    if (rawIpProbe.udpArrival === "arrived") log.warn("raw-ip-reachable (udp)");
+    else if (rawIpProbe.reachableTargets.length > 0) log.warn("raw-ip-reachable");
     return { ...available, rawIpProbe };
   } catch (error) {
     return unavailable("powershell-start-failed", errorMessage(error));

@@ -3696,26 +3696,38 @@ in its directory.
   answer both lookups, so these results establish access to the host resolver.
   The resolver remains a potential egress path outside the proxy. MXC shell
   and extension plans report `dns: "host-resolver"`.
-- **Shell TCP egress measurement.** The existing post-boot shell start check
+- **Shell raw IP egress measurement.** The existing post-boot shell start check
   measures egress in a container with the same network policy as a user shell.
   The control requires a `403` with the `x-ave-egress-refused` header for a
   random loopback destination and a matching refusal recorded by the host
   invocation proxy. The script attempts direct TCP connections to
   `192.0.2.1:443`, `[2001:db8::1]:443`, and the host's primary LAN IPv4 on a
-  port selected from those without a listener. The host lookup and the
-  contained start share a sixty-second deadline. Measurement uses up to
-  three seconds per target and twelve seconds overall, leaving one second for
-  a successful exit. If the measured start fails, the plain exit check gets
-  its original budget.
-  `rawIp: "blocked"` requires the control to pass and a local `10013` refusal
-  for both public test addresses. A successful connection or remote refusal
-  on any target yields `rawIp: "unknown"` and a `raw-ip-reachable` warning.
+  port selected from those without a listener. UDP is checked by arrival only.
+  The host listens on that LAN address at an OS-assigned port, and the script
+  sends the launch identifier as a nonce. The host lookup, listener, and
+  contained start share a sixty-second budget. The script uses up to three
+  seconds per target and twelve seconds overall, with one second reserved for
+  exit. The host can wait up to three seconds for a sent datagram within that
+  measurement deadline. If the measured start fails, the plain exit check
+  gets its original budget.
+  `rawIp: "blocked"` requires the control to pass, an IPv4 local `10013`
+  refusal, IPv6 refusal evidence, no TCP response on the LAN target, and no UDP
+  arrival. A local IPv6 `10013` is measured evidence. For IPv6 no-route codes
+  `10051` or `10065`, a successful read of the container token with all three
+  network capability SIDs absent is structural evidence. A present network
+  capability or a failed or unparseable read leaves IPv6 unmeasured.
+  A successful TCP connection or remote refusal yields `rawIp: "unknown"`
+  with a `raw-ip-reachable` warning. A matching datagram yields unknown with
+  `raw-ip-reachable (udp)`. A UDP timeout or local send refusal leaves the TCP
+  verdict standing. An unavailable UDP observation leaves coverage unknown
+  when TCP would otherwise support a blocked verdict.
   The host accepts a single complete evidence frame with its launch identifier.
-  Missing evidence, a failed control, and an IPv6 no-route result leave coverage
-  unknown. Shell availability follows the PowerShell exit result. File logs
-  record the launcher hash, schema, network section, Windows build, and the
-  reachability warning. Coverage stays in memory for the current boot and is
-  reported on Windows MXC shell plans and in the Windows substrate snapshot.
+  Missing evidence or a failed control leaves coverage unknown. Shell
+  availability follows the PowerShell exit result. File logs record the
+  launcher hash, schema, network section, Windows build, evidence kind when
+  blocked, and any reachability warning. Coverage stays in memory for the
+  current boot and is reported on Windows MXC shell plans and in the Windows
+  substrate snapshot.
   The container request and host proxy enforce the network policy. Extension plans retain
   `rawIp: "unknown"`. Direct UDP and ICMP remain unverified.
 - **Inbound.** Proxy mode requires `ingress.default: "allow"`, which grants
