@@ -197,10 +197,10 @@ export function createTailnetObserverConfigService(
     if (reduceOnly) await reduceTailnetObserverCapabilities(config);
     else await restartListener(mode === "apply" ? "apply" : undefined);
 
-    const { listeningPort, portBlock } = runtimeState();
-    return resolveTailnetObserverApply(
-      file.enabled === true, enableOverride, config?.port ?? null, listeningPort, portBlock,
-    ).status;
+    const { listeningPort, portBlock, lastStartError } = runtimeState();
+    return resolveTailnetObserverApply(file.enabled === true, enableOverride, config?.port ?? null, {
+      boundPort: listeningPort, portBlock, lastStartError,
+    }).status;
   }
 
   const service: TailnetObserverConfigService = Object.freeze({

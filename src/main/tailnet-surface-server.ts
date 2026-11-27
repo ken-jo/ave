@@ -619,11 +619,6 @@ function recordTailnetObserverStartError(error: unknown): void {
   lastStartError = error instanceof Error ? error.message : "tailnet-observer-start-failed";
 }
 
-function clearTailnetObserverStartFailure(): void {
-  lastStartError = null;
-  portBlock = null;
-}
-
 async function startForBoot(
   options: StartTailnetObserverServerOptions,
   generation: number,
@@ -636,11 +631,9 @@ async function startForBoot(
   const { config } = await loadTailnetObserverConfig({ env, readConfigFile: async () => file });
   if (!config) {
     if (mode === "apply" && generation === lifecycleGeneration) {
-      const decision = resolveTailnetObserverApply(
-        file?.enabled === true, tailnetObserverEnableOverride(env), null, activeServer?.port ?? null, portBlock,
-      );
-      portBlock = decision.portBlock;
-      if (decision.status.outcome === "observer-off") lastStartError = null;
+      ({ portBlock, lastStartError } = resolveTailnetObserverApply(file?.enabled === true, tailnetObserverEnableOverride(env), null, {
+        boundPort: activeServer?.port ?? null, portBlock, lastStartError,
+      }));
     }
     return null;
   }
@@ -728,7 +721,9 @@ async function startForBoot(
   }
 
   activeServer = server;
-  clearTailnetObserverStartFailure();
+  ({ portBlock, lastStartError } = resolveTailnetObserverApply(file?.enabled === true, tailnetObserverEnableOverride(env), config.port, {
+    boundPort: server.port, boundNow: true, portBlock, lastStartError,
+  }));
   activeConfig = config;
   activePairedSharingRuntime = pairedSharingRuntime ?? null;
   options.log?.(

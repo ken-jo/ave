@@ -2461,7 +2461,7 @@ it.each([
   const port = await reservePort();
   const savedPort = pinMatchesSave ? port : port === 28_173 ? 28_174 : 28_173;
   const env = { AVE_TAILNET_OBSERVER: enableOverride, AVE_TAILNET_OBSERVER_PORT: String(port) };
-  const nextCapability = CAPABILITY + "-next";
+  const nextCapability = `${CAPABILITY}-next`;
   let file: TailnetObserverConfigFile = {
     enabled: true, authorization: APP_CAPABILITY, port: savedPort, pairedSharingEnabled: true,
   };
@@ -2481,7 +2481,7 @@ it.each([
     }),
   });
   const status = async (capability: string) => {
-    const response = await fetch("http://127.0.0.1:" + port + "/tailnet/v1/status", {
+    const response = await fetch(`http://127.0.0.1:${port}/tailnet/v1/status`, {
       headers: {
         ...observerHeaders(),
         Connection: "close",

@@ -1214,39 +1214,61 @@ const APPLY_PORT = DEFAULT_TAILNET_OBSERVER_PORT;
 const OTHER_PORT = APPLY_PORT + 1;
 
 const applyRows = [
-  { row: "A01", savedEnabled: false, enableOverride: undefined, effectivePort: null, boundPort: null, outcome: "observer-off", restartNeeded: false, clearsBlock: true },
-  { row: "A02", savedEnabled: false, enableOverride: undefined, effectivePort: null, boundPort: OTHER_PORT, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
-  { row: "A03", savedEnabled: false, enableOverride: false, effectivePort: null, boundPort: null, outcome: "observer-off", restartNeeded: false, clearsBlock: true },
-  { row: "A04", savedEnabled: false, enableOverride: false, effectivePort: null, boundPort: OTHER_PORT, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
-  { row: "A05", savedEnabled: false, enableOverride: true, effectivePort: APPLY_PORT, boundPort: null, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
-  { row: "A06", savedEnabled: false, enableOverride: true, effectivePort: APPLY_PORT, boundPort: APPLY_PORT, outcome: "saved", restartNeeded: false, clearsBlock: false },
-  { row: "A07", savedEnabled: false, enableOverride: true, effectivePort: APPLY_PORT, boundPort: OTHER_PORT, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
-  { row: "A08", savedEnabled: true, enableOverride: undefined, effectivePort: APPLY_PORT, boundPort: null, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
-  { row: "A09", savedEnabled: true, enableOverride: undefined, effectivePort: APPLY_PORT, boundPort: APPLY_PORT, outcome: "applied", restartNeeded: false, clearsBlock: false },
-  { row: "A10", savedEnabled: true, enableOverride: undefined, effectivePort: APPLY_PORT, boundPort: OTHER_PORT, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
-  { row: "A11", savedEnabled: true, enableOverride: false, effectivePort: null, boundPort: null, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
-  { row: "A12", savedEnabled: true, enableOverride: false, effectivePort: null, boundPort: OTHER_PORT, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
-  { row: "A13", savedEnabled: true, enableOverride: true, effectivePort: APPLY_PORT, boundPort: null, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
-  { row: "A14", savedEnabled: true, enableOverride: true, effectivePort: APPLY_PORT, boundPort: APPLY_PORT, outcome: "applied", restartNeeded: false, clearsBlock: false },
-  { row: "A15", savedEnabled: true, enableOverride: true, effectivePort: APPLY_PORT, boundPort: OTHER_PORT, outcome: "restart-needed", restartNeeded: true, clearsBlock: false },
+  { row: "A01", savedEnabled: false, enableOverride: undefined, bound: null, outcome: "observer-off", restartNeeded: false },
+  { row: "A02", savedEnabled: false, enableOverride: undefined, bound: "other", outcome: "restart-needed", restartNeeded: true },
+  { row: "A03", savedEnabled: false, enableOverride: false, bound: null, outcome: "observer-off", restartNeeded: false },
+  { row: "A04", savedEnabled: false, enableOverride: false, bound: "other", outcome: "restart-needed", restartNeeded: true },
+  { row: "A05", savedEnabled: false, enableOverride: true, bound: null, outcome: "restart-needed", restartNeeded: true },
+  { row: "A06", savedEnabled: false, enableOverride: true, bound: "matching", outcome: "saved", restartNeeded: false },
+  { row: "A07", savedEnabled: false, enableOverride: true, bound: "other", outcome: "restart-needed", restartNeeded: true },
+  { row: "A08", savedEnabled: true, enableOverride: undefined, bound: null, outcome: "restart-needed", restartNeeded: true },
+  { row: "A09", savedEnabled: true, enableOverride: undefined, bound: "matching", outcome: "applied", restartNeeded: false },
+  { row: "A10", savedEnabled: true, enableOverride: undefined, bound: "other", outcome: "restart-needed", restartNeeded: true },
+  { row: "A11", savedEnabled: true, enableOverride: false, bound: null, outcome: "restart-needed", restartNeeded: true },
+  { row: "A12", savedEnabled: true, enableOverride: false, bound: "other", outcome: "restart-needed", restartNeeded: true },
+  { row: "A13", savedEnabled: true, enableOverride: true, bound: null, outcome: "restart-needed", restartNeeded: true },
+  { row: "A14", savedEnabled: true, enableOverride: true, bound: "matching", outcome: "applied", restartNeeded: false },
+  { row: "A15", savedEnabled: true, enableOverride: true, bound: "other", outcome: "restart-needed", restartNeeded: true },
 ] as const;
 
+const applyPortProvenances = [
+  { provenance: "unpinned", pin: undefined },
+  { provenance: "pin equal to saved", pin: APPLY_PORT },
+  { provenance: "pin different from saved", pin: OTHER_PORT },
+] as const;
+
+const applyCases = applyRows.flatMap(row =>
+  applyPortProvenances.flatMap(port =>
+    [false, true].flatMap(hasPriorBlock =>
+      (row.outcome === "applied" ? [false, true] : [false]).map(boundNow => ({ ...row, ...port, hasPriorBlock, boundNow })),
+    ),
+  ),
+);
+
 describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer Apply on %s", platform => {
-  it.each(applyRows.flatMap(row => [false, true].map(hasPriorBlock => ({ ...row, hasPriorBlock }))))(
-    "resolves $row (prior block: $hasPriorBlock)",
-    async ({ savedEnabled, enableOverride, effectivePort, boundPort, outcome, restartNeeded, clearsBlock, hasPriorBlock }) => {
+  it.each(applyCases)(
+    "resolves $row ($provenance, prior block: $hasPriorBlock, newly bound: $boundNow)",
+    async ({ savedEnabled, enableOverride, bound, pin, outcome, restartNeeded, hasPriorBlock, boundNow }) => {
       const host = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
       const policy = vi.spyOn(listenerPortPolicy, "assertTailnetListenerPortAllowed").mockResolvedValue(undefined);
-      const env = enableOverride === undefined ? {} : { AVE_TAILNET_OBSERVER: enableOverride ? "1" : "0" };
-      const priorBlock = hasPriorBlock ? { port: OTHER_PORT, code: "EADDRINUSE" as const, hint: null } : null;
+      const env = {
+        AVE_TAILNET_OBSERVER: enableOverride === undefined ? undefined : enableOverride ? "1" : "0",
+        AVE_TAILNET_OBSERVER_PORT: pin === undefined ? undefined : String(pin),
+      };
+      const effectivePort = (enableOverride ?? savedEnabled) ? pin ?? APPLY_PORT : null;
+      const otherPort = effectivePort === OTHER_PORT ? APPLY_PORT : OTHER_PORT;
+      const boundPort = bound === "matching" ? effectivePort : bound === "other" ? otherPort : null;
+      const portBlock = hasPriorBlock ? { port: otherPort, code: "EADDRINUSE" as const, hint: null } : null;
+      const lastStartError = hasPriorBlock ? TAILNET_OBSERVER_PORT_BLOCKED : null;
       const restartListener = vi.fn(async () => undefined);
+      const writeConfigFile = vi.fn(async (_file: TailnetObserverConfigFile) => undefined);
       const settings = createTailnetObserverConfigService({
         env,
         pairedSharingBootstrapFailed: () => false,
-        writeConfigFile: async () => undefined,
+        writeConfigFile,
         readOwnDeviceAdmission: async () => false,
         probeEnvironment: async () => tailscaleEnvironment(null),
-        runtimeState: () => ({ listeningPort: boundPort, activeConfig: null, lastStartError: null, portBlock: priorBlock }),
+        runtimeState: () => ({ listeningPort: boundPort, activeConfig: null, lastStartError, portBlock }),
         restartListener,
       });
 
@@ -1255,13 +1277,19 @@ describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer Apply on 
           enabled: savedEnabled, authorization: TAILNET_IDENTITY, port: APPLY_PORT,
           controllerEnabled: false, pairedSharingEnabled: false, webEnabled: false, webOrigin: "",
         };
-        const result = await settings.apply(proposal);
-        expect.soft(result.restartNeeded).toBe(restartNeeded);
-        expect.soft(result).toMatchObject({ outcome });
-        if (enableOverride === true && !savedEnabled) expect.soft(restartListener).not.toHaveBeenCalled();
+        await expect.soft(settings.apply(proposal)).resolves.toEqual({ outcome, restartNeeded });
+        expect.soft(writeConfigFile).toHaveBeenCalledWith(expect.objectContaining({ port: APPLY_PORT }));
+        const restarts = enableOverride !== true || savedEnabled;
+        expect.soft(restartListener).toHaveBeenCalledTimes(restarts ? 1 : 0);
+        expect.soft(policy.mock.calls).toEqual(restarts && effectivePort !== null ? [[effectivePort]] : []);
 
-        expect(resolveTailnetObserverApply(savedEnabled, enableOverride, effectivePort, boundPort, priorBlock))
-          .toEqual({ status: { outcome, restartNeeded }, portBlock: clearsBlock ? null : priorBlock });
+        const clears = outcome === "observer-off" || boundNow;
+        expect(resolveTailnetObserverApply(savedEnabled, enableOverride, effectivePort, { boundPort, boundNow, portBlock, lastStartError }))
+          .toEqual({
+            status: { outcome, restartNeeded },
+            portBlock: clears ? null : portBlock,
+            lastStartError: clears ? null : lastStartError,
+          });
       } finally {
         policy.mockRestore();
         host.mockRestore();
@@ -1356,6 +1384,12 @@ describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer Apply on 
         outcome: "observer-off", restartNeeded: false,
       });
       await expect(settings.snapshot()).resolves.toMatchObject({ listeningPort: null, portBlock: null, lastStartError: null });
+
+      startServer.mockRejectedValueOnce(Object.assign(new Error("Port in use"), { code: "EADDRINUSE" }));
+      await expect(settings.apply(enabled)).resolves.toMatchObject({ restartNeeded: true });
+      await expect(settings.snapshot()).resolves.toMatchObject(blocked);
+      await expect(settings.apply({ ...enabled, port: APPLY_PORT })).resolves.toEqual({ outcome: "applied", restartNeeded: false });
+      await expect(settings.snapshot()).resolves.toMatchObject({ listeningPort: APPLY_PORT, portBlock: null, lastStartError: null });
     } finally {
       hint.mockRestore();
       policy.mockRestore();
