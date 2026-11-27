@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { connect, createServer, type Server } from "node:net";
@@ -26,6 +26,7 @@ import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootFor
   setContainerShellSubstrate, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
 import pins from "../mxc-launcher-pins.json" with { type: "json" };
 import { _runSeatbeltCanaryForTest, buildSeatbeltShellRequest, detectHostMxcMacShellSupport } from "../mxc-macos.js";
+import { rawIpProbeShellLines } from "../mxc-macos-raw-ip.js";
 import { posixPolicyLookups } from "../mxc-posix.js";
 import { _mxcShellStandbyPidForTest, dropMxcShellStandbys, mxcShellSupervisorLocation, stageMxcShellRequest, startMxcShellSupervisor } from "../mxc-shell-supervisor-client.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../policy-model.js";
@@ -220,6 +221,32 @@ describe.runIf(NATIVE)("native macOS shell boundary", () => {
         ['(allow network-outbound (remote ip "*:*"))', "(allow system-socket)", '(deny network-outbound (remote ip "localhost:*"))', proxyAllow].join("\n")),
     });
     expect(result).toMatchObject({ verdict: "available", rawIpProbe: { rawIp: "unknown", reason: "raw-ip-reachable" } });
+  }, 30_000);
+
+  it.each([
+    ["returns", "/usr/bin/true", false],
+    ["stalls past the watchdog", "/bin/sleep 30", true],
+  ])("leaves no raw-IP watchdog process behind when the prober %s", (_name, prober, cutOff) => {
+    // Run on the host, outside any container, so no container teardown can reap what the lines leave behind.
+    const watchdogSeconds = cutOff ? `0.${String(randomInt(300_000, 400_000))}` : `13.${String(randomInt(100_000, 1_000_000))}`;
+    const marker = join(root, "probe.out");
+    const lines = rawIpProbeShellLines({ prober, output: marker, watchdogSeconds });
+    const started = Date.now();
+    const status = spawnSync("/bin/sh", ["-c", [...lines, 'echo "done $?"'].join("\n")], { encoding: "utf8", timeout: 10_000 });
+    expect(status.stdout.trim()).toMatch(/^done \d+$/u);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    spawnSync("/bin/sleep", ["0.2"]);
+    const processes = execFileSync("/bin/ps", ["-axww", "-o", "pid=,command="], { encoding: "utf8" });
+    expect(processes.split("\n").filter(line => line.includes(watchdogSeconds))).toEqual([]);
+  });
+
+  it("leaves no raw-IP watchdog running once the canary has returned", async () => {
+    // A delay no other run uses marks this run's watchdog in the host's process table.
+    const watchdogSeconds = `13.${String(randomInt(100_000, 1_000_000))}`;
+    const result = await _runSeatbeltCanaryForTest(supervisor.location, root, undefined, { watchdogSeconds });
+    expect(result.verdict).toBe("available");
+    const processes = execFileSync("/bin/ps", ["-axww", "-o", "pid=,command="], { encoding: "utf8" });
+    expect(processes.split("\n").filter(line => line.includes(watchdogSeconds))).toEqual([]);
   }, 30_000);
 
   it("keeps the shell container available and the raw-IP verdict unknown when the host-side targets cannot bind", async () => {

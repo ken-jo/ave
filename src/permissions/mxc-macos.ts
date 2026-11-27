@@ -12,7 +12,7 @@ import { INVOCATION_PROXY_REFUSED_STATUS, openInvocationProxyListener } from "./
 import pins from "./mxc-launcher-pins.json" with { type: "json" };
 import { openMxcRawIpUdpListener, type MxcRawIpUdpSend } from "./mxc-raw-ip-udp.js";
 import {
-  parseRawIpProbeOutput, RAW_IP_PROBE_BUDGET_S, RAW_IP_PROBER, RAW_IP_TARGET_DEADLINE_S, rawIpVerdict, seatbeltProfileAllowsOnlyProxyEgress,
+  parseRawIpProbeOutput, RAW_IP_PROBE_BUDGET_S, RAW_IP_PROBER, rawIpProbeShellLines, RAW_IP_TARGET_DEADLINE_S, rawIpVerdict, seatbeltProfileAllowsOnlyProxyEgress,
 } from "./mxc-macos-raw-ip.js";
 import { atOrUnder, canonicalPath, posixPolicyLookups, rankPosixContainerRows, type PosixPolicyLookups } from "./mxc-posix.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
@@ -223,6 +223,8 @@ interface CanaryTestOverrides {
   readonly prober?: string;
   readonly editProfile?: (profile: string) => string;
   readonly hostAddress?: string;
+  /** The watchdog's delay in seconds, so a test can find its own watchdog among the host's processes. */
+  readonly watchdogSeconds?: string;
 }
 
 async function runSeatbeltCanary(
@@ -328,15 +330,11 @@ async function runSeatbeltCanary(
     const commandLine = [
       "(", ...availability, ")",
       "status=$?",
-      // The prober bounds each target itself; this watcher bounds the whole run, so a stalled prober is cut off
-      // before the canary's own deadline and only its missing lines say so.
       'if [ "$status" -eq 0 ]; then',
-      `  /usr/bin/perl ${quoteSandboxWrappedWord(prober)} ${rawIpArgs} > ${quoteSandboxWrappedWord(rawIpOutput)} 2>/dev/null &`,
-      "  prober=$!",
-      `  ( /bin/sleep ${RAW_IP_PROBE_BUDGET_S + 1}; kill -9 "$prober" ) >/dev/null 2>&1 &`,
-      "  watcher=$!",
-      '  wait "$prober" 2>/dev/null',
-      '  kill "$watcher" 2>/dev/null',
+      ...rawIpProbeShellLines({
+        prober: `/usr/bin/perl ${quoteSandboxWrappedWord(prober)} ${rawIpArgs}`, output: quoteSandboxWrappedWord(rawIpOutput),
+        watchdogSeconds: overrides.watchdogSeconds ?? String(RAW_IP_PROBE_BUDGET_S + 1),
+      }),
       "fi",
       'exit "$status"',
     ].join("\n");

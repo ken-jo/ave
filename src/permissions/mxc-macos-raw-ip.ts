@@ -133,6 +133,26 @@ export function rawIpVerdict(measurement: RawIpMeasurement): MacRawIpVerdict {
 }
 
 /**
+ * The shell lines that run the prober in the background under a watchdog. The prober bounds each target itself; the
+ * watchdog bounds the whole run, so a stalled prober is cut off before the canary's own deadline and only its missing
+ * lines say so. `prober` is the command, already quoted; `output` the quoted file its stdout goes to.
+ *
+ * The watchdog is one process, a Perl wait that kills the prober when it fires, so killing it once the prober returns
+ * ends the wait itself. A `( sleep; kill )` subshell would leave its sleep running after the subshell was killed.
+ */
+export function rawIpProbeShellLines(input: { readonly prober: string; readonly output: string; readonly watchdogSeconds: string }): string[] {
+  if (!/^\d+(?:\.\d+)?$/u.test(input.watchdogSeconds)) throw new Error(`Invalid raw-IP watchdog delay: ${input.watchdogSeconds}`);
+  return [
+    `${input.prober} > ${input.output} 2>/dev/null &`,
+    "prober=$!",
+    `/usr/bin/perl -e 'select(undef, undef, undef, shift); kill 9, shift' ${input.watchdogSeconds} "$prober" >/dev/null 2>&1 &`,
+    "watcher=$!",
+    'wait "$prober" 2>/dev/null',
+    'kill "$watcher" 2>/dev/null',
+  ];
+}
+
+/**
  * The in-container prober: core-Perl sockets, one process, sequential targets with a per-target deadline inside one
  * overall budget. It prints numeric codes only; the container decides nothing. Arguments: proxy port, nonce, TL host
  * (or "-" for none), TL port, UDP host, UDP port.
