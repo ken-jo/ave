@@ -1,7 +1,8 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import childProcess, { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
+import { syncBuiltinESMExports } from "node:module";
 import { connect, createServer, type Server } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -219,6 +220,7 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
     env?: Record<string, string>;
     cwd?: string;
     signal?: AbortSignal;
+    timeoutMs?: number;
   } = {}) {
     const lease = createContainedShellLifecycle();
     leases.push(lease);
@@ -228,7 +230,7 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
     }, options.signal ? { abortSignal: options.signal } : {});
     lease.onRevoke(egress.release);
     return prepareMxcPosixShellLaunch({
-      egressToken: egress.token, commandLine, timeoutMs: 10_000,
+      egressToken: egress.token, commandLine, timeoutMs: options.timeoutMs ?? 10_000,
       cwd: options.cwd ?? project, allowRead: options.allowRead ?? [], allowWrite: options.allowWrite ?? [project],
       denyRead: options.denyRead ?? [], floorPierces: [],
       env: { HOME: home, PATH: process.env.PATH ?? "/usr/bin:/bin", ...options.env },
@@ -324,7 +326,10 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
     expect(existsSync(config)).toBe(false);
   });
 
-  it("cancels a live launch after a setsid descendant starts and waits for all its children", async () => {
+  it.each([
+    { lookup: "successful child discovery", fails: false },
+    { lookup: "failed child discovery", fails: true },
+  ])("cancels a live launch and reaps its setsid descendant with $lookup", async ({ fails }) => {
     startEgressRelayService({ ask: async () => false });
     const controller = new AbortController();
     const launch = await prepare([
@@ -332,25 +337,60 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
       `/bin/sh -c ${quote(`echo denied > ${quote(join(root, "outside"))}`)} && exit 40`,
       "sleep 20 & echo $! > child.pid",
       "exec 3>&-",
-      '/usr/bin/perl -MPOSIX -e \'POSIX::setsid() >= 0 or die $!; open(my $pid, ">", "detached.pid") or die $!; print $pid $$; close($pid); sleep 20\' &',
+      '/usr/bin/perl -MPOSIX -e \'POSIX::setsid() >= 0 or die $!; open(my $pid, ">", "detached.pid") or die $!; print $pid $$; close($pid); sleep 20\' </dev/null >/dev/null 2>&1 &',
       "wait",
-    ].join("\n"), { signal: controller.signal });
+    ].join("\n"), { signal: controller.signal, timeoutMs: 6_000 });
     const completion = run(launch);
-    const pids = await vi.waitFor(() => ["shell", "child", "detached"].map(name => {
+    const started = vi.waitFor(() => ["shell", "child", "detached"].map(name => {
       const pid = Number(readFileSync(join(project, `${name}.pid`), "utf8").trim());
       expect(pid).toBeGreaterThan(1);
       expect(() => process.kill(pid, 0)).not.toThrow();
       return pid;
     }), { interval: 15, timeout: 3_000 });
+    const pids = await Promise.race([started, completion.then(outcome => {
+      throw new Error(`Launcher exited before the cancellation fixture started: ${JSON.stringify(outcome)}`);
+    })]);
     const session = execFileSync("/bin/ps", ["-o", "pid=,pgid=", "-p", String(pids[2])], { encoding: "utf8" }).trim().split(/\s+/u);
     expect(session.map(Number)).toEqual([pids[2], pids[2]]);
-    controller.abort();
-    const outcome = await completion;
-    expect(outcome).toMatchObject({ code: 255, cancelled: true, timedOut: false });
-    for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
-    expect(existsSync(join(root, "outside"))).toBe(false);
-    expect(await leases[0]?.dispose()).toEqual([]);
-  });
+    const execFile = childProcess.execFile;
+    let failedLookups = 0;
+    const lookup = fails ? vi.spyOn(childProcess, "execFile").mockImplementation((file, args, ...rest) => {
+      if (file === "/bin/ps" && Array.isArray(args) && args.includes("pid=,ppid=")) {
+        failedLookups += 1;
+        return Reflect.apply(execFile, undefined, [file, ["-o", "invalidProcessColumn"], ...rest]);
+      }
+      return Reflect.apply(execFile, undefined, [file, args, ...rest]);
+    }) : undefined;
+    if (lookup !== undefined) syncBuiltinESMExports();
+    try {
+      controller.abort();
+      const disposal = leases[0]?.dispose();
+      const outcome = await completion;
+      const survivingPids = pids.filter(pid => {
+        try { return process.kill(pid, 0); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          return false;
+        }
+      });
+      for (const pid of survivingPids) {
+        try { process.kill(pid, "SIGKILL"); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+      }
+      if (fails) expect(failedLookups).toBeGreaterThan(0);
+      expect({ outcome, survivingPids }).toMatchObject({
+        outcome: { code: 255, signal: null, cancelled: true, timedOut: false },
+        survivingPids: [],
+      });
+      expect(existsSync(join(root, "outside"))).toBe(false);
+      expect(await disposal).toEqual([]);
+    } finally {
+      if (lookup !== undefined) {
+        lookup.mockRestore();
+        syncBuiltinESMExports();
+      }
+    }
+  }, 12_000);
 
   it("checks the installed launcher bytes and refuses a changed or missing launcher", async () => {
     startEgressRelayService({ ask: async () => false });

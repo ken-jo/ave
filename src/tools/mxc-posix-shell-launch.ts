@@ -72,7 +72,7 @@ function signalOwnedProcess(pid: number, signal: NodeJS.Signals): void {
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
 }
 
-async function reapLauncherChild(launcher: LauncherChild, exited: Promise<unknown>, graceMs: number): Promise<void> {
+async function signalLauncherChild(launcher: LauncherChild, closed: Promise<unknown>, graceMs: number): Promise<void> {
   const parent = launcher.pid;
   if (parent === undefined) return;
   const stillRunning = (): boolean => launcher.exitCode === null && launcher.signalCode === null;
@@ -83,15 +83,12 @@ async function reapLauncherChild(launcher: LauncherChild, exited: Promise<unknow
       // Only the supervisor's child gets the signal. Its exit makes the supervisor reap
       // the whole sandbox, including descendants that left the launcher's process group.
       signalOwnedProcess(child, "SIGKILL");
-      await Promise.race([exited, sleep(Math.max(0, until - performance.now()))]);
-      break;
+      return;
     }
-    await Promise.race([exited, sleep(TOOL_TIMEOUT_POLICY.mxcMacShellChildPollMs)]);
+    await Promise.race([closed, sleep(TOOL_TIMEOUT_POLICY.mxcMacShellChildPollMs)]);
   }
-  if (!stillRunning()) return;
-  signalOwnedProcess(-parent, "SIGTERM");
-  await Promise.race([exited, sleep(graceMs)]);
-  if (stillRunning()) signalOwnedProcess(-parent, "SIGKILL");
+  // When discovery fails, the supervisor's configured deadline reaps the sandbox.
+  // Completion and disposal both wait for its close.
 }
 
 function isLauncherErrorEnvelope(line: string): boolean {
@@ -110,12 +107,12 @@ function superviseLauncher(
   let tail = "";
   let timedOut = false;
   let cancelled = false;
-  let reaping: Promise<void> | undefined;
+  let signalling: Promise<void> | undefined;
 
   const stop = (): void => {
-    reaping ??= reapLauncherChild(launcher, close, grace);
+    signalling ??= signalLauncherChild(launcher, close, grace);
     // The close path reports any teardown failure after the launcher leaves.
-    void reaping.catch(() => {});
+    void signalling.catch(() => {});
   };
   const handleAbort = (): void => {
     cancelled = !timedOut;
@@ -129,11 +126,12 @@ function superviseLauncher(
   lifecycle.jobStarted(close);
   lifecycle.signal.addEventListener("abort", handleAbort, { once: true });
   const timer = setTimeout(() => {
+    if (cancelled) return;
     timedOut = true;
     lifecycle.revoke();
   }, timeoutMs + grace);
   const completion = close.then(async ({ code, signal }) => {
-    await reaping;
+    await signalling;
     // The backend's own deadline is earlier than the host watchdog. Its status 255 also
     // represents a command signal or a literal exit 255.
     const rejected = !cancelled && code === 255 && tail.split("\n").some(isLauncherErrorEnvelope);
