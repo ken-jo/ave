@@ -107,7 +107,7 @@ describe("ave:logs:tail", () => {
       ["ave-2025-06-01.9.log", "ask"],
       ["ave-2025-06-01.10.log", "deny"],
     ]) {
-      writeFileSync(join(tmp, "logs", name), JSON.stringify({ level: 30, msg }) + "\n");
+      writeFileSync(join(tmp, "logs", name), `${JSON.stringify({ level: 30, msg })}\n`);
     }
     const tail = async (lines: number) => invokeRegisteredHandlerWithEvent(handlers, CHANNELS.logs.tail, ACCEPT_EVENT, { lines }) as Promise<{ ok: boolean; lines: string[] }>;
     expect((await tail(1)).lines.map((line) => JSON.parse(line).msg)).toEqual(["deny"]);
