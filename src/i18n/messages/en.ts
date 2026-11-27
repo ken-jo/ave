@@ -1530,6 +1530,7 @@ export const en = {
   // be_wrapBundledCommand
   "be_wrapBundledCommand.executableNotAdmissible": "This program cannot run in an extension container: {detail} ({code})",
   "be_wrapBundledCommand.executableRelative": "\"{command}\" is a relative path, which would resolve inside the working folder",
+  "be_wrapBundledCommand.interpreterNotAdmissible": "\"{path}\" is a script whose interpreter line Ave cannot run in a container ({line}). Use an absolute interpreter, or `#!/usr/bin/env NAME` with no options.",
   "be_wrapBundledCommand.executableNotFound": "\"{command}\" was not found as a Windows executable (.exe) on PATH",
   "be_wrapBundledCommand.executableUnresolvable": "\"{path}\" cannot be resolved ({reason})",
   "be_wrapBundledCommand.executableNotExe": "\"{path}\" is not a Windows executable (.exe); run its interpreter directly",

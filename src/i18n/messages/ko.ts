@@ -1532,6 +1532,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   // be_wrapBundledCommand
   "be_wrapBundledCommand.executableNotAdmissible": "이 프로그램은 익스텐션 컨테이너에서 실행할 수 없습니다: {detail}({code})",
   "be_wrapBundledCommand.executableRelative": "\"{command}\" 는 상대 경로라 작업 폴더 안에서 해석됩니다",
+  "be_wrapBundledCommand.interpreterNotAdmissible": "\"{path}\" 는 Ave 가 컨테이너에서 실행할 수 없는 인터프리터 줄을 가진 스크립트입니다({line}). 절대 경로 인터프리터나 옵션 없는 `#!/usr/bin/env NAME` 을 사용하세요.",
   "be_wrapBundledCommand.executableNotFound": "PATH 에서 \"{command}\" 를 Windows 실행 파일(.exe)로 찾지 못했습니다",
   "be_wrapBundledCommand.executableUnresolvable": "\"{path}\" 를 확인할 수 없습니다({reason})",
   "be_wrapBundledCommand.executableNotExe": "\"{path}\" 는 Windows 실행 파일(.exe)이 아닙니다. 해당 인터프리터를 직접 실행하세요",

@@ -15,7 +15,7 @@ import {
   releaseManagedResources, type ManagedResources, type RelayBestEffortExit,
 } from "../main/managed-child-processes.js";
 import { randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, posix as posixPath, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { t } from "../i18n/index.js";
@@ -529,6 +529,60 @@ function resolvePosixHolderExecutable(command: string, env: NodeJS.ProcessEnv): 
   throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableNotFound", { command }));
 }
 
+/** What the kernel runs for a macOS holder command. */
+export interface PosixHolderLaunch {
+  /** The program exec'd: the resolved file, or a script's interpreter. Row 2 measures this one. */
+  readonly command: string;
+  /** Arguments before the caller's: a script's interpreter arguments, then the script itself. */
+  readonly prefix: readonly string[];
+  /** Every file the launch runs or interprets; each takes the executable rule. */
+  readonly files: readonly string[];
+}
+
+const SHEBANG_BYTES = 512;
+
+/**
+ * macOS: a `#!` script runs its interpreter, which an `env` line would look up on the holder's PATH at run time. The
+ * interpreter is resolved here instead, by the same rule as the command and on the same PATH, and exec'd directly with
+ * the script as its argument. So the program that runs is the one row 2 measures, and both files take the executable
+ * rule. An interpreter that is itself a script, or an `env` line with options or assignments, is refused.
+ * @internal exported for its tests.
+ */
+export function resolvePosixHolderLaunch(command: string, env: NodeJS.ProcessEnv): PosixHolderLaunch {
+  const file = resolvePosixHolderExecutable(command, env);
+  const line = shebangOf(file);
+  if (line === undefined) return Object.freeze({ command: file, prefix: Object.freeze([]), files: Object.freeze([file]) });
+  const refuse = (): never => {
+    throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.interpreterNotAdmissible", { path: file, line: `#!${line}` }));
+  };
+  const [interpreter, ...interpreterArgs] = line.trim().split(/[ \t]+/u);
+  if (interpreter === undefined || !posixPath.isAbsolute(interpreter)) return refuse();
+  let program: string;
+  let programArgs: readonly string[];
+  if (interpreter === "/usr/bin/env") {
+    const [name, ...rest] = interpreterArgs;
+    if (name === undefined || rest.length > 0 || name.startsWith("-") || name.includes("=") || name.includes("/")) return refuse();
+    program = resolvePosixHolderExecutable(name, env);
+    programArgs = [];
+  } else {
+    program = resolvePosixHolderExecutable(interpreter, env);
+    programArgs = interpreterArgs;
+  }
+  if (shebangOf(program) !== undefined) return refuse();
+  return Object.freeze({ command: program, prefix: Object.freeze([...programArgs, file]), files: Object.freeze([file, program]) });
+}
+
+function shebangOf(file: string): string | undefined {
+  const head = Buffer.alloc(SHEBANG_BYTES);
+  const fd = openSync(file, "r");
+  let read: number;
+  try { read = readSync(fd, head, 0, SHEBANG_BYTES, 0); } finally { closeSync(fd); }
+  if (read < 2 || head[0] !== 0x23 || head[1] !== 0x21) return undefined;
+  const end = head.subarray(0, read).indexOf(0x0a);
+  if (end < 0) throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.interpreterNotAdmissible", { path: file, line: "#!" }));
+  return head.subarray(2, end).toString("utf8");
+}
+
 /** Contract rule: never an executable from a workspace or any holder-writable root, this holder's own included. */
 function assertExecutableAdmissible(executable: string, ownWriteRoots: readonly string[], workspaceRoots: readonly string[]): void {
   const forbidden = [
@@ -842,15 +896,16 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
   assertHolderEnvironmentAdmissible(input.baseEnv, input.holderEnv);
   // Before any staging: row 2 checks it again when it mints the receipt. macOS has no build-time record (L2).
   if (windowsHost()) assertMxcReleaseGateEvidence();
-  const executable = resolveHolderExecutable(input.command, input.baseEnv);
+  const posixLaunch = windowsHost() ? undefined : resolvePosixHolderLaunch(input.command, input.baseEnv);
+  const executable = posixLaunch?.command ?? resolveHolderExecutable(input.command, input.baseEnv);
   if (windowsHost()) assertMxcHolderNotBashForm(executable);
   const workspaceRoots = input.workspaceRoots ?? [];
-  assertExecutableAdmissible(executable, input.allowWrite, workspaceRoots);
+  for (const file of posixLaunch?.files ?? [executable]) assertExecutableAdmissible(file, input.allowWrite, workspaceRoots);
   assertNoLiveWorkspaceWriter(input.allowWrite, workspaceRoots);
   assertWriteGrantsOutsideConfinementState(input.allowWrite, declaredConfinementStatePaths());
   const staging = createHolderStaging();
   const allowWrite = [...new Set([...input.allowWrite, staging.root])];
-  const allowRead = [...new Set([...input.allowRead, hostPath().dirname(executable)])];
+  const allowRead = [...new Set([...input.allowRead, ...(posixLaunch?.files ?? [executable]).map(file => hostPath().dirname(file))])];
   const cwd = input.cwd ?? staging.home;
   let spawned: Awaited<ReturnType<typeof spawnMxcConfinedChild>>;
   try {
@@ -860,7 +915,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
     spawned = await spawnMxcConfinedChild({
       label: input.label,
       command: executable,
-      args: [...input.args],
+      args: [...(posixLaunch?.prefix ?? []), ...input.args],
       egressOwner: input.egressOwner,
       allowRead,
       allowWrite,

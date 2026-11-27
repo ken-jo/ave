@@ -132,6 +132,21 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     expect(await line(started.process.stdout)).toBe("ran");
   });
 
+  it("P2-2: a #!/usr/bin/env script runs the interpreter admission resolved, never one a writable PATH entry supplies", async () => {
+    const good = join(root, "good");
+    mkdirSync(good);
+    // A copied platform binary is killed at exec; a link resolves to the system program.
+    symlinkSync("/bin/echo", join(good, "interp"));
+    // The impostor sits in the holder's own writable root, first on the PATH the holder receives.
+    writeFileSync(join(data, "interp"), "#!/bin/sh\necho impostor\n");
+    chmodSync(join(data, "interp"), 0o755);
+    const script = join(root, "server.js");
+    writeFileSync(script, "#!/usr/bin/env interp\n");
+    chmodSync(script, 0o755);
+    const started = await holder("", { command: script, args: ["--flag"], baseEnv: { PATH: good }, holderEnv: { PATH: `${data}:${good}` } });
+    expect(await line(started.process.stdout)).toBe(`${script} --flag`);
+  });
+
   it("T12: refuses a second holder nested inside a live holder's writable root, and admits a sibling", async () => {
     const first = await holder("exec /bin/cat");
     const inner = join(data, "inner");
