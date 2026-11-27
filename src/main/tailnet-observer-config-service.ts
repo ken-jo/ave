@@ -31,7 +31,7 @@ import {
 
 export interface TailnetObserverConfigService {
   snapshot(): Promise<TailnetObserverSnapshot>;
-  apply(config: TailnetObserverConfigView): Promise<void>;
+  apply(config: TailnetObserverConfigView): Promise<{ readonly restartNeeded: boolean }>;
   // Run the Serve command the owner has just been shown and approved.
   configureServe(): Promise<TailnetServeResult>;
   // Derive the recommended port and web origin from host state rather than asking the owner.
@@ -183,7 +183,7 @@ export function createTailnetObserverConfigService(
   const writeOwnDeviceAdmission = options.writeOwnDeviceAdmission
     ?? ((enabled: boolean) => setTailnetOwnDeviceAdmission(enabled));
 
-  async function saveAndRestart(file: TailnetObserverConfigFile): Promise<void> {
+  async function saveAndRestart(file: TailnetObserverConfigFile) {
     const enableOverride = tailnetObserverEnableOverride(env);
     const forceOn = !file.enabled && enableOverride === true;
     const { config } = (file.enabled && enableOverride !== false) || forceOn
@@ -193,6 +193,7 @@ export function createTailnetObserverConfigService(
     await writeConfigFile(file);
     if (forceOn && config) await reduceTailnetObserverCapabilities(config);
     else await restartListener();
+    return { restartNeeded: config !== null && runtimeState().listeningPort !== config.port };
   }
 
   const service: TailnetObserverConfigService = Object.freeze({
@@ -234,9 +235,9 @@ export function createTailnetObserverConfigService(
       });
     },
 
-    async apply(config: TailnetObserverConfigView): Promise<void> {
+    async apply(config: TailnetObserverConfigView) {
       const environment = await probeEnvironment();
-      await saveAndRestart(proposalToFile(config, tailnetWebOriginFor(environment.dnsName)));
+      return saveAndRestart(proposalToFile(config, tailnetWebOriginFor(environment.dnsName)));
     },
 
     // No restart: the listener reads this policy per request, so a running remote session is not dropped to change who may skip an approval click.

@@ -2412,6 +2412,43 @@ it("retracts an unaccepted item after restart during workspace opening", async (
   });
 });
 
+it("reports the port as applied when manual enable binds a fileless observer", async () => {
+  const env = {};
+  const port = await reservePort();
+  let file: TailnetObserverConfigFile | null = null;
+  const readConfigFile = async () => file;
+  const projection = createSharedConversationProjectionStore(createPlatformConversationTimeline());
+  stores.push(projection);
+  const service = createTailnetObserverConfigService({
+    env, readConfigFile,
+    writeConfigFile: async saved => { file = saved; },
+    pairedSharingBootstrapFailed: () => false,
+    readOwnDeviceAdmission: async () => false,
+    probeEnvironment: async () => ({
+      state: "ready", cliPath: null, login: null, dnsName: null,
+      tailnetName: null, serveConfigured: false, serveTargetPort: null, detail: null,
+    }),
+  });
+  try {
+    await expect(maybeStartTailnetObserverServer({
+      env,
+      encryption: unavailableSecretEncryption,
+      conversationSurfaceRuntime: { sharedProjection: projection } as ConversationSurfaceRuntime,
+      getCurrentConversationId: () => CONVERSATION_ID,
+      isConversationBusy: () => false,
+      dependencies: { readConfigFile },
+    })).resolves.toBeNull();
+    const { saved } = await service.snapshot();
+    await expect.soft(service.apply({
+      ...saved, enabled: true, authorization: APP_CAPABILITY, port,
+    })).resolves.toEqual({ restartNeeded: false });
+    await expect(service.snapshot()).resolves.toMatchObject({ listeningPort: port, portBlock: null });
+  } finally {
+    await stopTailnetObserverServer();
+    resetTailnetObserverServerForTests();
+  }
+});
+
 it.each(["controller", "pairing", "web"] as const)("applies a saved %s reduction to the paired forced-on listener", async reduction => {
   const env = { AVE_TAILNET_OBSERVER: "1" };
   const port = await reservePort();

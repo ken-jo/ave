@@ -209,7 +209,10 @@ export function TailnetObserverSection({ api, onHostStateChanged }: TailnetObser
       // nothing said about it.
       await refresh();
       onHostStateChanged?.();
-      setFeedback({ tone: "success", text: t("tailnetObserver.saved") });
+      setFeedback({
+        tone: "success",
+        text: t(result.restartNeeded ? "tailnetObserver.savedRestartNeeded" : "tailnetObserver.saved"),
+      });
     } else if (result.error === TAILNET_OBSERVER_PORT_BLOCKED) {
       await refresh();
       onHostStateChanged?.();

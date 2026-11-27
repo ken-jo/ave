@@ -202,7 +202,7 @@ describe("Tailnet observer lifecycle", () => {
           status.mockClear();
         }
         const enabled = installed === "environment-disabled save";
-        await expect.soft(service.apply({ ...saved, enabled })).resolves.toBeUndefined();
+        await expect.soft(service.apply({ ...saved, enabled })).resolves.toEqual({ restartNeeded: false });
         expect.soft(status).not.toHaveBeenCalled();
         expect.soft(await read()).toEqual({ ...(enabled ? { enabled } : {}), authorization: TAILNET_IDENTITY, port: customPort });
         await stopTailnetObserverServer();
@@ -956,6 +956,54 @@ describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer port stat
     } finally {
       vi.mocked(createServer).mockReset();
       assertAllowed.mockRestore();
+      policy.mockRestore();
+      host.mockRestore();
+    }
+  });
+
+  it.each([
+    { name: "I2 fileless", file: null },
+    { name: "I5 portless and saved off", file: { enabled: false } },
+  ])("saves a replacement for the next launch after a blocked $name bind", async ({ file }) => {
+    const env = { AVE_TAILNET_OBSERVER: "1", AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV };
+    const steps: (number | string)[] = [];
+    const { readConfigFile, writeConfigFile } = settingsForPortTest(file, env, null, steps);
+    const { input, startServer } = options(env);
+    input.dependencies.readConfigFile = readConfigFile;
+    startServer.mockRejectedValueOnce(Object.assign(new Error("Port in use"), { code: "EADDRINUSE" }));
+    const host = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+    const policy = vi.spyOn(listenerPortPolicy, "assertTailnetListenerPortAllowed").mockResolvedValue(undefined);
+    const hint = vi.spyOn(portHints, "getWindowsTailnetPortHint").mockResolvedValue(null);
+    const settings = createTailnetObserverConfigService({
+      env, readConfigFile, writeConfigFile,
+      pairedSharingBootstrapFailed: () => false,
+      readOwnDeviceAdmission: async () => false,
+      probeEnvironment: async () => tailscaleEnvironment(null),
+    });
+    try {
+      await expect(maybeStartTailnetObserverServer(input)).rejects.toThrow(TAILNET_OBSERVER_PORT_BLOCKED);
+      const { saved } = await settings.snapshot();
+
+      await expect.soft(settings.apply({ ...saved, port: 28_173 })).resolves.toEqual({ restartNeeded: true });
+      expect.soft(steps).toEqual(["write"]);
+      expect.soft(startServer.mock.calls.map(([request]) => request.port)).toEqual([46_173]);
+      await expect.soft(settings.snapshot()).resolves.toMatchObject({
+        saved: { enabled: false, port: 28_173 },
+        listeningPort: null,
+        lastStartError: TAILNET_OBSERVER_PORT_BLOCKED,
+        portBlock: { port: 46_173, code: "EADDRINUSE" },
+      });
+
+      await stopTailnetObserverServer();
+      resetTailnetObserverServerForTests();
+      await expect(maybeStartTailnetObserverServer(input)).resolves.toEqual({ port: 28_173 });
+      await expect(settings.snapshot()).resolves.toMatchObject({
+        listeningPort: 28_173,
+        lastStartError: null,
+        portBlock: null,
+      });
+    } finally {
+      hint.mockRestore();
       policy.mockRestore();
       host.mockRestore();
     }

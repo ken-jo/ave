@@ -6007,6 +6007,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "tailnetObserver.webOriginLabel": "웹 오리진",
   "tailnetObserver.apply": "리스너 설정 저장",
   "tailnetObserver.saved": "리스너 설정을 저장하고 적용했습니다.",
+  "tailnetObserver.savedRestartNeeded": "리스너 설정을 저장했습니다. 설정한 포트에서 리스너를 시작하려면 앱을 다시 시작하세요.",
   "tailnetObserver.copy": "복사",
   "tailnetObserver.copied": "복사됨",
   "tailnetObserver.reset": "리스너 설정 초기화",

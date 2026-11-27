@@ -110,6 +110,10 @@ export type TailnetObserverMutationResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly error: TailnetObserverErrorCode };
 
+export type TailnetObserverApplyResult =
+  | { readonly ok: true; readonly restartNeeded: boolean }
+  | Extract<TailnetObserverMutationResult, { ok: false }>;
+
 /** Return the reachable URL on success and command output on failure. */
 export type TailnetServeResult =
   | { readonly ok: true; readonly url: string }
@@ -138,7 +142,7 @@ export type TailnetGuidedSetupResult =
 
 export interface TailnetObserverConfigApi {
   snapshot(): Promise<TailnetObserverSnapshotResult>;
-  apply(config: TailnetObserverConfigView): Promise<TailnetObserverMutationResult>;
+  apply(config: TailnetObserverConfigView): Promise<TailnetObserverApplyResult>;
   /** Put the running listener behind Tailscale Serve, after the owner approved the command. */
   configureServe(): Promise<TailnetServeResult>;
   guidedSetup(): Promise<TailnetGuidedSetupResult>;
@@ -348,6 +352,17 @@ export function parseTailnetObserverMutationResult(
     return Object.freeze({ ok: false as const, error: value.error });
   }
   return null;
+}
+
+export function parseTailnetObserverApplyResult(value: unknown): TailnetObserverApplyResult | null {
+  if (!isRecord(value)) return null;
+  if (value.ok === true) {
+    return typeof value.restartNeeded === "boolean"
+      ? Object.freeze({ ok: true as const, restartNeeded: value.restartNeeded })
+      : null;
+  }
+  const result = parseTailnetObserverMutationResult(value);
+  return result?.ok === false ? result : null;
 }
 
 export function parseTailnetGuidedSetupResult(

@@ -103,7 +103,7 @@ function makeApi(options: {
     port: DEFAULT_TAILNET_OBSERVER_PORT,
     serve: "configured" as const,
   }));
-  const apply = vi.fn(async () => ({ ok: true as const }));
+  const apply = vi.fn(async () => ({ ok: true as const, restartNeeded: false }));
   const configureServe = vi.fn(async () => ({ ok: true as const, url: WEB_ORIGIN + "/" }));
   const setOwnDeviceAdmission = vi.fn(async (_enabled: boolean) => (
     options.setOwnDeviceAdmission ?? { ok: true as const }

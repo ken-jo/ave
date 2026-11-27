@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_TAILNET_OBSERVER_PORT } from "../../../shared/tailnet-observer-config.js";
+import { DEFAULT_TAILNET_OBSERVER_PORT, parseTailnetObserverApplyResult } from "../../../shared/tailnet-observer-config.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { invokeFileIpcHandler } from "./test-helpers.js";
 
@@ -60,7 +60,7 @@ function snapshotFixture() {
 
 async function setup(overrides: {
   snapshot?: () => Promise<unknown>;
-  apply?: (config: unknown) => Promise<void>;
+  apply?: (config: unknown) => Promise<{ readonly restartNeeded: boolean }>;
   configureServe?: () => Promise<unknown>;
   guidedSetup?: () => Promise<unknown>;
   setOwnDeviceAdmission?: (enabled: boolean) => Promise<void>;
@@ -69,7 +69,7 @@ async function setup(overrides: {
   vi.clearAllMocks();
   const service = {
     snapshot: vi.fn(overrides.snapshot ?? (async () => snapshotFixture())),
-    apply: vi.fn(overrides.apply ?? (async () => undefined)),
+    apply: vi.fn(overrides.apply ?? (async () => ({ restartNeeded: false }))),
     configureServe: vi.fn(
       overrides.configureServe
         ?? (async () => ({ ok: true as const, url: "https://desk.example-tailnet.ts.net/" })),
@@ -152,10 +152,17 @@ describe("Tailnet observer configuration IPC boundary", () => {
     expect(service.apply).not.toHaveBeenCalled();
   });
 
+  it("preserves the restart result through the apply response validator", async () => {
+    await setup({ apply: async () => ({ restartNeeded: true }) });
+    const result = await invokeFileIpcHandler(handlers, CHANNELS.tailnetObserver.apply, { intent, config: CONFIG });
+    expect(parseTailnetObserverApplyResult(result)).toEqual({ ok: true, restartNeeded: true });
+    expect(parseTailnetObserverApplyResult({ ok: true })).toBeNull();
+  });
+
   it("passes a valid proposal through and returns the host's own rejection code", async () => {
     const accepted = await setup();
     await expect(invokeFileIpcHandler(handlers, CHANNELS.tailnetObserver.apply, { intent, config: CONFIG }))
-      .resolves.toEqual({ ok: true });
+      .resolves.toEqual({ ok: true, restartNeeded: false });
     expect(accepted.apply).toHaveBeenCalledWith(CONFIG);
 
     // Preserve the resolver's stable error code across IPC for localized status explanations.
