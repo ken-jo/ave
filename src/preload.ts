@@ -17,9 +17,11 @@ import {
 } from "./preload/internal-surface.js";
 import { LINK_WINDOW_SHELL_ARGUMENT } from "./shared/preload-bundles.js";
 import { installBrowserNativeInput } from "./preload/browser-native-input.js";
+import { installSkillMemoryInputTracking } from "./preload/skill-memory-input.js";
 
 function installHostDocumentPreload(): void {
   installBrowserNativeInput();
+  installSkillMemoryInputTracking();
 
   // Only the app renderer and splash consume appearance; link shells use their own titlebar tokens.
   const aveInitialWindowAppearance = process.argv.includes(LINK_WINDOW_SHELL_ARGUMENT) ? null : readInitialAppearance();

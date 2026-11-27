@@ -2,6 +2,7 @@
 import { withLocalityDecision } from "../shared/local-path-io.js";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { SHA256_HEX, sha256Hex } from "../lib/hex-digest-equal.js";
 import { isValidCronExpression } from "../routines/cron-evaluator.js";
 import { readJsonFileOrEmpty, writeFileAtomicAtPath } from "./storage/feature-namespace.js";
 import { createLogger } from "../lib/logger.js";
@@ -143,6 +144,7 @@ function isValidRecord(r: unknown): r is StoredRoutine {
   if (x.scope !== undefined && !isValidRoutineScope(x.scope)) return false;
   if (x.projectRoot !== undefined && (typeof x.projectRoot !== "string" || x.projectRoot.length === 0 || x.projectRoot.length > MAX_PROJECT_ROOT_LENGTH)) return false;
   if (x.createdBy !== undefined && !isActor(x.createdBy)) return false;
+  if (x.skillMemoryOwnerPromptDigest !== undefined && (typeof x.skillMemoryOwnerPromptDigest !== "string" || !SHA256_HEX.test(x.skillMemoryOwnerPromptDigest))) return false;
   if (x.pausedAt !== undefined && typeof x.pausedAt !== "string") return false;
   if ((x.pausedAt === undefined) !== (x.pausedBy === undefined)
     || (x.pausedBy !== undefined && !isActor(x.pausedBy) && !(x.execution === "template-run" && x.pausedBy === "schedule-breaker"))) return false;
@@ -576,7 +578,7 @@ export class RoutinesStore {
     return this.templateAttachments;
   }
 
-  async add(input: AddRoutineInput | TemplateRoutineInput, proof?: HostDecisionProof): Promise<RoutineRecord> {
+  async add(input: AddRoutineInput | TemplateRoutineInput, proof?: HostDecisionProof, ownerTypedPrompt?: true): Promise<RoutineRecord> {
     if (!this.loaded) await this.load();
 
     // An unknown trigger or execution would be dropped as a bad record on the next read, so refuse it here.
@@ -650,6 +652,7 @@ export class RoutinesStore {
       schedule: normalizedSchedule,
       execution: input.execution,
       prePrompt: input.prePrompt,
+      ...(ownerTypedPrompt && input.createdBy === "user" && typeof input.prePrompt === "string" ? { skillMemoryOwnerPromptDigest: sha256Hex(input.prePrompt) } : {}),
       title: input.title,
       notificationTitle: input.notificationTitle,
       notificationBody: input.notificationBody,
@@ -912,7 +915,7 @@ export class RoutinesStore {
   }
 
   // A user edit from the schedule panel, validated exactly as add validates. Null for an unknown or dismissed item.
-  async edit(id: string, patch: RoutineEditPatch, proof?: HostDecisionProof): Promise<RoutineRecord | null> {
+  async edit(id: string, patch: RoutineEditPatch, proof?: HostDecisionProof, ownerTypedPrompt?: true): Promise<RoutineRecord | null> {
     return this.mutate(id, (r) => {
       if (r.dismissedAt) return false;
       if ((patch as { execution?: unknown }).execution === "template-run" || r.execution === "template-run") {
@@ -935,7 +938,11 @@ export class RoutinesStore {
       }
       if (patch.title === null) delete r.title;
       else if (patch.title !== undefined) r.title = patch.title;
-      if (patch.prePrompt !== undefined) r.prePrompt = patch.prePrompt;
+      if (patch.prePrompt !== undefined) {
+        if (ownerTypedPrompt && r.createdBy === "user") r.skillMemoryOwnerPromptDigest = sha256Hex(patch.prePrompt);
+        else if (r.prePrompt !== patch.prePrompt) delete r.skillMemoryOwnerPromptDigest;
+        r.prePrompt = patch.prePrompt;
+      }
       if (patch.notificationTitle !== undefined) r.notificationTitle = patch.notificationTitle;
       if (patch.notificationBody !== undefined) r.notificationBody = patch.notificationBody;
       // A new schedule is a new series: the previous cron minute keys and skip markers belong to the old one, and a one-shot given

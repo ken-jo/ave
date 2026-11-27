@@ -188,6 +188,7 @@ export interface ConversationDeps {
   broadcastPermissionConfigChanged?: () => void;
   /** Per-conversation read-skill registry, cleared on newConversation(). */
   skillOverlay?: { clear(sessionId: string): void };
+  skillMemory?: import("../memory/skill-memory-service.js").SkillMemoryService;
   /** Whether `/<name>` names an indexed skill (routes a typed skill slash to the model). */
   isSkillName?: (name: string) => boolean;
   notificationService?: NotificationService;
@@ -210,6 +211,7 @@ export type RoutineConversationLoopDeps = Pick<
   | "memoryManager"
   | "memoryReviewer"
   | "permissionManager"
+  | "skillMemory"
   | "approvalGate"
   | "hookRunner"
   | "scriptHookManager"
@@ -299,6 +301,7 @@ export function createRoutineConversationLoop(
     ...(deps.sessionHeldElsewhere ? { sessionHeldElsewhere: deps.sessionHeldElsewhere } : {}),
     headless: true,
     // Routine loops omit interactive hooks; normal session persistence still applies.
+    skillMemory: deps.skillMemory,
   });
 }
 
@@ -432,6 +435,7 @@ export function createConversationLoop(deps: ConversationDeps,
     pluginOperationGrants: deps.pluginOperationGrants,
     pluginOperationIdentityProvider: deps.pluginOperationIdentityProvider,
     skillOverlay: deps.skillOverlay,
+    skillMemory: deps.skillMemory,
     isSkillName: deps.isSkillName,
     notificationService: deps.notificationService,
     auditLogger: deps.auditLogger,

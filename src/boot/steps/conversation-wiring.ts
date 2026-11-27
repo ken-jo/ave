@@ -19,6 +19,8 @@ import { broadcastPermissionConfigChangedFromHost } from "../permission-config-b
 import { PreferenceRefreshService } from "../../memory/preference-refresh-service.js";
 import { AgentsDocMergeService } from "../../memory/agents-doc-merge-service.js";
 import { MemoryConsolidationService, MemoryMaintenanceCoordinator, sessionMemoryProject } from "../../memory/memory-consolidation-service.js";
+import { SkillMemoryService } from "../../memory/skill-memory-service.js";
+import { SkillMemoryStore } from "../../memory/skill-memory-store.js";
 import { MemoryReviewerService } from "../../memory/memory-reviewer-service.js";
 import { SubAgentRunner } from "../../engine/subagent-runner.js";
 import { A2ASubAgentMessageBus } from "../../engine/a2a-subagent-message-bus.js";
@@ -222,8 +224,15 @@ export async function wireConversation(
   const memoryReviewer = new MemoryReviewerService({
     resolveActiveChatOneShot: () => lateBinding.llmCallerRef.fn,
   });
+  const skillMemory = new SkillMemoryService(new SkillMemoryStore(), {
+    enabled: () => settingsService.get("features")?.automaticSkillMemory === true,
+    authorizedProject: isAuthorizedWorkspaceProjectRoot,
+    loadSkill: (name) => ctx.skillStore.load(name),
+  });
+  skillMemory.setReviewer(memoryReviewer);
 
   const routineLoopDeps = {
+    skillMemory,
     settingsService,
     systemPromptBuilder,
     ...(ctx.tracing.enabled ? { tracer: ctx.tracing.tracer } : {}),
@@ -311,6 +320,7 @@ export async function wireConversation(
     pluginOperationGrants,
     pluginOperationIdentityProvider,
     skillOverlay,
+    skillMemory,
     isSkillName,
     notificationService,
     auditLogger: bootAuditLogger,
@@ -452,6 +462,7 @@ export async function wireConversation(
       pluginOperationGrants,
       pluginOperationIdentityProvider,
       skillOverlay,
+      skillMemory,
       isSkillName,
       notificationService,
       auditLogger: bootAuditLogger,

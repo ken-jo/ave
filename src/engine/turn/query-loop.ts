@@ -730,6 +730,8 @@ export async function queryLoop(
         if (rows[rows.length - 1]?.role === "user") appendedUserText.push(turnContextForRound());
         if (nudgeTextForRound !== undefined) appendedUserText.push(nudgeTextForRound);
         if (progressNudgeText !== undefined) appendedUserText.push(progressNudgeText);
+        const skillMemory = self.deps.skillMemory?.recallForCurrentTurn();
+        if (skillMemory) appendedUserText.push(skillMemory);
         return appendRequestOnlyText(rows, appendedUserText);
       };
       const projectRound = (

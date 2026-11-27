@@ -620,6 +620,8 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:sidechat:new",
         "ave:sidechat:pane-history",
         "ave:sidechat:send",
+        "ave:skill-memory:decide",
+        "ave:skill-memory:list",
         "ave:skills:list",
         "ave:starred:add",
         "ave:starred:list",

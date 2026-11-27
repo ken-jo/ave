@@ -6,6 +6,7 @@ const MEMORY_REVIEW_TASKS = [
   "consolidation",
   "recap",
   "merge",
+  "skill-improvement",
 ] as const;
 
 export type MemoryReviewTask = (typeof MEMORY_REVIEW_TASKS)[number];
@@ -19,6 +20,7 @@ const MEMORY_REVIEWER_TASK_LANES: Readonly<Record<MemoryReviewTask, MemoryReview
   consolidation: "background",
   recap: "foreground",
   merge: "foreground",
+  "skill-improvement": "background",
 };
 
 // Merges need a whole-document output ceiling; truncation could produce incomplete standing instructions.
@@ -28,12 +30,15 @@ export const MEMORY_REVIEWER_MAX_TOKENS: Readonly<Record<MemoryReviewTask, numbe
   consolidation: 1_400,
   recap: 1_200,
   merge: 8_000,
+  "skill-improvement": 2_500,
 };
 
 export interface MemoryReviewerCallOptions {
   maxTokens?: number;
   systemPrompt?: string;
   signal?: AbortSignal;
+  /** Recheck the host task and source before a queued request reaches the provider. */
+  canStart?: () => boolean;
   /** A trusted host recap keeps its originating chat route while using this service's queue and prompt contract. */
   recapCaller?: ActiveChatOneShot;
 }
@@ -66,6 +71,7 @@ const TASK_INSTRUCTIONS: Readonly<Record<MemoryReviewTask, string>> = {
     "Create a compact, derived long-term-memory overview of durable facts, constraints, goals, preferences, and uncertainty.",
   recap:
     "Create an accurate, compact recap of the supplied context only. Do not add facts that are not supported by that context.",
+  "skill-improvement": "Select at most three durable, skill-specific lessons actually stated by the owner. Return a JSON array of objects with exactly skill (the supplied skill id), anchor (an id listed for that skill), body (a verbatim excerpt from that anchor), and description (a short verbatim phrase from that excerpt). Return [] when the record lacks a reusable lesson. Do not infer instructions or supplement the evidence.",
   merge:
     "Combine the supplied documents into one document, preserving every instruction the user wrote. Do not add guidance that appears in neither.",
 };
@@ -153,6 +159,7 @@ export class MemoryReviewerService {
   private async execute(entry: QueuedReview): Promise<void> {
     try {
       throwIfAborted(entry.options.signal);
+      if (entry.options.canStart?.() === false) throw new MemoryReviewerUnavailableError();
       // Resolve the current provider when executing, not when queued.
       const oneShot = entry.task === "recap" && entry.options.recapCaller
         ? entry.options.recapCaller

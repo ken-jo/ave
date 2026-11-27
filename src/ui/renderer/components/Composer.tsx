@@ -987,6 +987,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         <Textarea
           ref={taRef}
           data-testid={TEST_IDS.composerTextarea}
+          data-skill-memory-source="chat"
           data-composer-surface={surface}
           // SpotlightTour anchor. The first-boot tour pins step 1 + step 4 to
           // the MAIN textarea, so the attribute MUST remain stable there and

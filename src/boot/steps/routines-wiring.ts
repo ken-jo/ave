@@ -1,5 +1,7 @@
 /** Prepare scheduling now, but start only after IPC listeners attach so overdue routines are not lost. */
 import { captureRoutineRun } from "../../engine/routine-run-metrics.js";
+import { runWithScheduledSkillEvidence, type ScheduledEvidence } from "../../memory/skill-memory-service.js";
+import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { ROUTINES } from "../../shared/ipc-channels.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
@@ -17,6 +19,7 @@ const log = createLogger("ave");
 
 export function wireRoutinesScheduler(ctx: BootContext): void {
   const { routinesScheduler, routineEngine, routinesStore, getMainWindow, notificationService, memoryManager } = ctx;
+  const skillMemory = ctx.conversationLoop?.deps?.skillMemory;
   // Routine state is app-wide: every open main window shows it.
   const appWindows = () => ctx.host.desktop?.getAppWindows() ?? [getMainWindow()];
   // Create and promote the Suggestions conversation in the same tick as each card send.
@@ -32,12 +35,14 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
     outcome: RoutineRunOutcome,
     metrics: RoutineRunMetrics,
     sessionId?: string,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     try {
       const updated = await routinesStore.recordRunOutcome(routineId, firedAt, outcome, metrics, sessionId);
       if (!updated) log.warn("routines llm-session outcome persist failed: routine not found (%s)", routineId);
+      return Boolean(updated);
     } catch (err) {
       log.warn("routines llm-session outcome persist failed (%s): %s", routineId, (err as Error).message);
+      return false;
     }
   };
 
@@ -114,7 +119,11 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       let routineSessionId: string | undefined;
       let runError: Error | undefined;
       let skipped = false;
-      const captured = captureRoutineRun(() => target !== undefined
+      const ownerEvidence: ScheduledEvidence | undefined = skillMemory && routine.createdBy === "user" && !routine.source && routine.prePrompt && routine.projectRoot
+        && sha256Hex(routine.prePrompt) === routine.skillMemoryOwnerPromptDigest
+        ? { input: routine.prePrompt, projectRoot: routine.projectRoot, completionId: sha256Hex(JSON.stringify([routine.id, firedAt])) }
+        : undefined;
+      const run = () => target !== undefined
         ? runConnected(routine, target, firedAt, title)
         : routineEngine.runRoutine({
           id: routine.id,
@@ -123,7 +132,8 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
           title: routine.title,
           scope: routine.scope,
           firedAt,
-        }));
+        });
+      const captured = captureRoutineRun(() => ownerEvidence ? runWithScheduledSkillEvidence(ownerEvidence, run) : run());
       try {
         const runResult: RunResult = await captured.result;
         skipped = runResult.skipped !== undefined;
@@ -165,11 +175,21 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
         }
         return;
       }
-      await persistRunOutcome(
+      const committed = await persistRunOutcome(
         routine.id, firedAt,
         runError ? { ok: false, kind: "error", reason: runError.message } : { ok: true },
         captured.metrics(), routineSessionId ?? captured.sessionId() ?? target,
       );
+      if (committed && !runError && ownerEvidence?.finished && ownerEvidence.sessionId && ownerEvidence.sessionId === routineSessionId) {
+        const { sessionId, projectRoot } = ownerEvidence;
+        await skillMemory?.complete({
+          sessionId, projectRoot, runKind: "scheduled",
+          completionId: ownerEvidence.completionId,
+          isCurrent: () => routinesStore.list().some(current => current.id === routine.id && current.createdBy === "user"
+            && current.prePrompt === ownerEvidence.input && current.skillMemoryOwnerPromptDigest === routine.skillMemoryOwnerPromptDigest
+            && current.projectRoot === projectRoot && !current.source && !current.pausedAt),
+        });
+      }
       const summary = runSummary;
       // Allow-list event fields; spreading the routine could expose private content.
       try {

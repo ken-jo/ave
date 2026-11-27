@@ -86,6 +86,8 @@ export interface RoutineRecord {
   lastTemplateSkip?: TemplateRoutineSkip;
   /** System prompt injected when execution === "llm-session". */
   prePrompt?: string;
+  /** Host receipt for the exact prompt typed in the local routine editor. */
+  skillMemoryOwnerPromptDigest?: string;
   title?: string;
   /** Shown as OS notification title when execution === "notification-only". */
   notificationTitle?: string;

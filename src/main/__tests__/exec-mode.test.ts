@@ -860,3 +860,20 @@ describe("runExecTurn — --set-secret", () => {
     expect(harness.runTurn).not.toHaveBeenCalled();
   });
 });
+
+describe("skill memory at the one-shot terminal boundary", () => {
+  it.each([
+    { prompt: "Check the type report.", stopReason: "end_turn", shouldReview: true },
+    { prompt: null, stopReason: "end_turn", shouldReview: false },
+    { prompt: "Check the type report.", stopReason: "round-cap", shouldReview: false },
+  ] as const)("admission for prompt $prompt at $stopReason", async ({ prompt, stopReason, shouldReview }) => {
+    const complete = vi.fn(async () => true);
+    const harness = makeDeps({ stdin: "Unverified pipe input", turnResult: { ...COMPLETED_TURN, stopReason } });
+    Object.assign(harness.deps.conversationLoop, { deps: { skillMemory: { complete } }, getSessionId: () => "host-session" });
+    await expect(runExecTurn(harness.deps, turnRequest({ prompt }))).resolves.toBe(0);
+    if (shouldReview) expect(complete).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      completionId: "exec:host-session", runKind: "headless", sessionId: "host-session",
+    }));
+    else expect(complete).not.toHaveBeenCalled();
+  });
+});
