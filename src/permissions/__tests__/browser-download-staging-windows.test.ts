@@ -296,9 +296,25 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
     const aces = [{ type: 0, flags: 3, mask: 0x1f01ff, sid: owner }, ...(readable(path) ? [{ type: 0, flags: 3, mask: 0x1200a9, sid: "S-1-5-32-545" }] : [])];
     return entry.exists ? { identity: { volumeSerial: entry.volumeSerial, fileId: entry.fileId }, owner, protected: true, nullDacl: false, aces } : null;
   };
+  const holdWindowsDirectory: typeof actual.holdWindowsDirectory = async (path) => {
+    const [directory] = pin([path]);
+    if (!directory?.directory) return undefined;
+    let held = true;
+    const unexpectedLauncher = (): never => { throw new Error("The fixture replaces the native launcher"); };
+    return {
+      facts: directory,
+      launcherArgs: [],
+      stdio: [],
+      command: unexpectedLauncher,
+      bind: unexpectedLauncher,
+      isHeld: () => held,
+      release: async () => { held = false; },
+    };
+  };
   return {
     ...actual,
     pinWindowsPaths: pin,
+    holdWindowsDirectory,
     readWindowsDacls: (paths: readonly string[], options?: { parent?: boolean }) => {
       const rows = pin(paths);
       const parents = options?.parent ? pin(paths.map(path => win32.dirname(path))) : [];
