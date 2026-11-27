@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { createSocket } from "node:dgram";
 import { existsSync, lstatSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
@@ -11,6 +10,7 @@ import type { MacRawIpVerdict, MxcRawIpUdpArrival, SandboxMacContainerShellSuppo
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { INVOCATION_PROXY_REFUSED_STATUS, openInvocationProxyListener } from "./egress-invocation-listener.js";
 import pins from "./mxc-launcher-pins.json" with { type: "json" };
+import { openMxcRawIpUdpListener, type MxcRawIpUdpSend } from "./mxc-raw-ip-udp.js";
 import {
   parseRawIpProbeOutput, RAW_IP_PROBE_BUDGET_S, RAW_IP_PROBER, RAW_IP_TARGET_DEADLINE_S, rawIpVerdict, seatbeltProfileAllowsOnlyProxyEgress,
 } from "./mxc-macos-raw-ip.js";
@@ -197,38 +197,32 @@ async function closedPortOn(address: string): Promise<number> {
   return port;
 }
 
-/** A host-side UDP listener for the arrival check; `arrived` turns true when a datagram carrying `nonce` comes in. */
-async function openUdpArrival(address: string, nonce: string) {
-  const socket = createSocket("udp4");
-  let arrived = false;
-  let notify: (() => void) | undefined;
-  socket.on("message", (message) => {
-    if (message.toString("utf8").includes(nonce)) { arrived = true; notify?.(); }
-  });
-  const port = await new Promise<number>((resolve, reject) => {
-    socket.once("error", reject);
-    socket.bind(0, address, () => resolve(socket.address().port));
-  });
-  return {
-    port,
-    get arrived() { return arrived; },
-    /** Waits up to the per-target deadline for a datagram that has not arrived yet. */
-    async settle(): Promise<boolean> {
-      if (arrived) return true;
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, RAW_IP_TARGET_DEADLINE_S * 1_000);
-        notify = () => { clearTimeout(timer); resolve(); };
-      });
-      return arrived;
-    },
-    close: () => new Promise<void>((resolve) => socket.close(() => resolve())),
-  };
+/**
+ * The host-side raw-IP targets on `address`: a just-closed TCP port and the UDP arrival listener, both or neither.
+ * A bind that fails there (say `EADDRNOTAVAIL` for an address the host no longer holds) is missing evidence about
+ * raw IP, never a reason the container is unavailable: the caller then runs the prober without them.
+ */
+async function bindRawIpHostTargets(
+  address: string, nonce: string, deadline: number, adopt: (close: () => Promise<void>) => void,
+) {
+  let tlPort: number;
+  try {
+    tlPort = await closedPortOn(address);
+  } catch {
+    return undefined;
+  }
+  const udp = await openMxcRawIpUdpListener(address, nonce, deadline, adopt);
+  return udp === undefined ? undefined : { address, tlPort, udp };
 }
 
-/** Native tests only: replace the prober text, or edit the staged profile, to drive the raw-IP failure and control cases. */
+/**
+ * Native tests only: replace the prober text, edit the staged profile, or aim the host-side targets at another
+ * address, to drive the raw-IP failure and control cases.
+ */
 interface CanaryTestOverrides {
   readonly prober?: string;
   readonly editProfile?: (profile: string) => string;
+  readonly hostAddress?: string;
 }
 
 async function runSeatbeltCanary(
@@ -245,10 +239,10 @@ async function runSeatbeltCanary(
   const unix = createServer(socket => { unixSocketConnected = true; socket.destroy(); });
   const other = createServer(socket => { otherPortConnected = true; socket.destroy(); });
   let proxy: Awaited<ReturnType<typeof openInvocationProxyListener>> | undefined;
-  let udp: Awaited<ReturnType<typeof openUdpArrival>> | undefined;
+  let closeUdp: (() => Promise<void>) | undefined;
   const teardown = async () => {
     await proxy?.close();
-    await udp?.close();
+    await closeUdp?.();
     other.close();
     unix.close();
     if (socketAlias !== undefined) await rm(socketAlias, { recursive: true });
@@ -307,9 +301,12 @@ async function runSeatbeltCanary(
       unix.once("error", reject);
       unix.listen(unixPath, resolve);
     });
-    const hostAddress = primaryIpv4();
-    const tlPort = hostAddress === undefined ? undefined : await closedPortOn(hostAddress);
-    if (hostAddress !== undefined) udp = await openUdpArrival(hostAddress, nonce);
+    const timeoutMs = TOOL_TIMEOUT_POLICY.mxcMacShellProbeMs + TOOL_TIMEOUT_POLICY.mxcRawIpProbeMs;
+    const hostAddress = overrides.hostAddress ?? primaryIpv4();
+    // The UDP listener counts an arrival until the run ends and the datagram's own window after it has passed.
+    const udpDeadline = Date.now() + timeoutMs + RAW_IP_TARGET_DEADLINE_S * 1_000;
+    const host = hostAddress === undefined ? undefined
+      : await bindRawIpHostTargets(hostAddress, nonce, udpDeadline, (close) => { closeUdp = close; });
     const config = join(scratch, "canary.json");
     const availability = [
       `printf '%s' ${quoteSandboxWrappedWord(CANARY_CONTROL)} > ${quoteSandboxWrappedWord(control)} || exit 11`,
@@ -326,7 +323,7 @@ async function runSeatbeltCanary(
     ];
     // Availability is decided by the checks above alone: their status is taken first, and the raw-IP prober writes
     // only to its own file, so nothing it does or prints can change it. It runs only after availability passed.
-    const rawIpArgs = [proxyPort, nonce, hostAddress ?? "-", tlPort ?? 0, hostAddress ?? "-", udp?.port ?? 0]
+    const rawIpArgs = [proxyPort, nonce, host?.address ?? "-", host?.tlPort ?? 0, host?.address ?? "-", host?.udp.port ?? 0]
       .map((value) => quoteSandboxWrappedWord(String(value))).join(" ");
     const commandLine = [
       "(", ...availability, ")",
@@ -343,7 +340,6 @@ async function runSeatbeltCanary(
       "fi",
       'exit "$status"',
     ].join("\n");
-    const timeoutMs = TOOL_TIMEOUT_POLICY.mxcMacShellProbeMs + TOOL_TIMEOUT_POLICY.mxcRawIpProbeMs;
     const { request } = buildSeatbeltShellRequest({
       model, lookups, commandLine, cwd: working, timeoutMs,
       env: { HOME: working, PATH: "/usr/bin:/bin" }, proxyUrl: proxy.url,
@@ -371,17 +367,18 @@ async function runSeatbeltCanary(
     });
     if (!available) return { verdict: "shell-start-failed" };
     const output = existsSync(rawIpOutput) ? parseRawIpProbeOutput(await readFile(rawIpOutput, "utf8")) : undefined;
-    // An arrival counts whatever the prober printed. A datagram that was sent is waited for up to its deadline; a send
-    // refused in the container is `absent`; no send at all is unmeasured.
-    const udpSend = output?.targets.UA;
-    const udpArrival: MxcRawIpUdpArrival = udp === undefined ? "unmeasured" : udp.arrived ? "arrived"
-      : udpSend === "0" ? await udp.settle() ? "arrived" : "absent"
-        : udpSend !== undefined && /^\d+$/u.test(udpSend) ? "absent" : "unmeasured";
+    // An arrival counts whatever the prober printed. A datagram that was sent is waited for up to its own window; a
+    // send refused in the container leaves nothing to wait on; no send at all is unmeasured.
+    const udpPrinted = output?.targets.UA;
+    const udpSend: MxcRawIpUdpSend = udpPrinted === "0" ? "sent"
+      : udpPrinted !== undefined && /^\d+$/u.test(udpPrinted) ? "refused-local" : "unmeasured";
+    const udpArrival: MxcRawIpUdpArrival = host === undefined ? "unmeasured"
+      : await host.udp.observe(udpSend, RAW_IP_TARGET_DEADLINE_S * 1_000);
     return {
       verdict: "available",
       rawIpProbe: rawIpVerdict({
         ran: true, ...(output === undefined ? {} : { output }), expectedStatus: INVOCATION_PROXY_REFUSED_STATUS,
-        nonceRecorded, tlRan: hostAddress !== undefined, udpArrival,
+        nonceRecorded, tlRan: host !== undefined, udpArrival,
         structuralIpv6: seatbeltProfileAllowsOnlyProxyEgress(request.seatbelt.profileOverride, proxyPort),
       }),
     };

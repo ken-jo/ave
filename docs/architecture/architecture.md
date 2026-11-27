@@ -3412,7 +3412,9 @@ verdict has the Windows start probe's shape: `rawIp`, `reason`,
 `evidenceKind` (measured or structural), `reachableTargets` and
 `udpArrival`. Every other
 outcome is `unknown` with a reason. That includes an unavailable container,
-an unmeasured one, a probe that printed nothing and a reachable address.
+an unmeasured one, a probe that printed nothing and a reachable address. A
+host-side target that cannot bind (the host's address went away, say) drops
+both host targets and gives `no-evidence`; it never changes availability.
 
 The verdict lives in memory for one boot and is never persisted. The prober
 writes only to its own file, after availability is decided, so it cannot

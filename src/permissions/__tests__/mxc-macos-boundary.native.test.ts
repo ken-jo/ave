@@ -222,6 +222,16 @@ describe.runIf(NATIVE)("native macOS shell boundary", () => {
     expect(result).toMatchObject({ verdict: "available", rawIpProbe: { rawIp: "unknown", reason: "raw-ip-reachable" } });
   }, 30_000);
 
+  it("keeps the shell container available and the raw-IP verdict unknown when the host-side targets cannot bind", async () => {
+    // 192.0.2.1 is no address of this host, so both the closed TCP port and the UDP listener fail to bind there
+    // (EADDRNOTAVAIL). That is missing evidence about raw IP, never a reason the shell container is unavailable.
+    const result = await _runSeatbeltCanaryForTest(supervisor.location, root, undefined, { hostAddress: "192.0.2.1" });
+    expect(result).toEqual({
+      verdict: "available", rawIpProbe: { rawIp: "unknown", reason: "no-evidence", reachableTargets: [], udpArrival: "unmeasured" },
+    });
+    expect(readdirSync(root)).toEqual(["work"]);
+  }, 30_000);
+
   it.each([
     ["prints nothing", "exit 0;"],
     ["dies before any line", "die 'prober unavailable';"],
