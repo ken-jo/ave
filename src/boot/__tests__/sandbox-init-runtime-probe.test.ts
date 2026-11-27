@@ -101,6 +101,21 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+it.each(["linux", "darwin"] as const)("decides the %s sandbox gate as soon as the dependency probe settles", async platform => {
+  setProcessPlatform(platform);
+  const order: string[] = [];
+  h.checkDeps.mockImplementationOnce(() => {
+    // The nested microtask runs before a continuation that awaits a derived promise.
+    queueMicrotask(() => queueMicrotask(() => { order.push("queued update"); }));
+    return Promise.resolve({ errors: ["missing sandbox dependency"], warnings: [] });
+  });
+  harness.logSandboxGate.mockImplementationOnce(() => { order.push("gate decision"); });
+
+  await initSandboxGate(harness.context(true));
+
+  expect(order).toEqual(["gate decision", "queued update"]);
+});
+
 describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
   it("degrades the default/settings path without publishing a verified capability", async () => {
     const probeError = new Error("configured wrapper denied");

@@ -3245,10 +3245,11 @@ async function initializeSandboxRuntime(
     assertAveHomePrivacyForConfinement();
   }
   // Containers confine this session's Windows children, so only the egress relay serves them: the wrap runtime stays unloaded.
-  const runtime = process.platform === "win32"
-    ? (trustedSettings.windows?.externalConfinement === true ? undefined : await loadWindowsSandboxRuntime())
-    : await import("@anthropic-ai/sandbox-runtime");
-  const SandboxManager = runtime?.SandboxManager;
+  const isWindows = process.platform === "win32";
+  const runtime = isWindows && trustedSettings.windows?.externalConfinement !== true
+    ? await loadWindowsSandboxRuntime()
+    : undefined;
+  const SandboxManager = isWindows ? runtime?.SandboxManager : await loadSandboxManager();
   startupSignal?.throwIfAborted();
   const linuxWrapperPrograms = process.platform === "linux" ? preflightLinuxPrograms ?? requireLinuxWrapperPrograms() : undefined;
   const backgroundInitialization = process.platform === "win32"

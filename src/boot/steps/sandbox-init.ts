@@ -156,13 +156,11 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
 
     // Interlock warnings use actual activation so requested-but-degraded confinement cannot suppress them.
     let sandboxActive = false;
-    const checkBootDependencies = (): ReturnType<typeof checkSandboxDependencies> => checkAsrtDependencies().catch((error: unknown) => {
-      if (process.platform !== "win32") throw error;
-      return { errors: [errorMessage(error)], warnings: [], dependencyFailure: error };
-    });
 
     if (sandboxOptIn) {
-      const deps = await checkBootDependencies();
+      const deps = process.platform === "win32"
+        ? await checkAsrtDependencies().catch((error: unknown) => ({ errors: [errorMessage(error)], warnings: [], dependencyFailure: error }))
+        : await checkAsrtDependencies();
       const dependencyCauses = deps.errors.length > 0
         ? classifySandboxDependencyErrors(process.platform, deps.errors, deps.dependencyFailure)
         : [];
