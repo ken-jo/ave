@@ -636,7 +636,6 @@ export async function wireConversation(
           { itemId, change: "updated", changedAt: new Date().toISOString() } satisfies WorkItemChangedEventPayload, { logger: log });
         fanOutToAllWindows(windows, WORK_APPROVALS.changed, undefined, { logger: log });
       },
-      audit: ({ itemId }) => logPermissionEvent("work_board_decision", { sessionId: permissionLogId(`work-board:${itemId}`) }),
     },
   });
   // Template runs after a restart: rows are shown as the run file says and unsettled runs are taken over. Nothing starts here.
