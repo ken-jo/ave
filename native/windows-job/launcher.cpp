@@ -294,6 +294,7 @@ int wmain(int argc, wchar_t** argv) {
   }
   DeleteProcThreadAttributeList(attributes);
   for (HANDLE handle : inherited) CloseHandle(handle);
+  if (!heldPolicy) CloseHandle(child.hThread);
   // A NUL stdin has no owner to watch; a held command is then bound to the hold helper alone.
   const bool watched = !held || GetFileType(GetStdHandle(STD_INPUT_HANDLE)) == FILE_TYPE_PIPE;
   HANDLE owner = watched ? CreateThread(nullptr, 0, watchOwner, GetStdHandle(STD_INPUT_HANDLE), 0, nullptr) : nullptr;
@@ -315,8 +316,8 @@ int wmain(int argc, wchar_t** argv) {
     }
     CloseHandle(confirm);
     CloseHandle(policyChannel);
+    CloseHandle(child.hThread);
   }
-  CloseHandle(child.hThread);
   HANDLE waits[]{child.hProcess, owner};
   DWORD result = WaitForMultipleObjects(watched ? 2 : 1, waits, FALSE, INFINITE);
   DWORD code = 125;

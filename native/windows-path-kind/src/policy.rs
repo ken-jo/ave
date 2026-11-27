@@ -63,8 +63,11 @@ fn watch_owner(delivery: &Delivery, acknowledge: bool) {
         return;
     }
     delivery.signal(&delivery.bound);
-    if acknowledge && write(unsafe { GetStdHandle(STDOUT) }, b"bound\n") != Ok(6) {
-        return delivery.fail();
+    if acknowledge {
+        let output = unsafe { GetStdHandle(STDOUT) };
+        if write(output, b"bound\n") != Ok(6) || unsafe { CloseHandle(output) } == 0 {
+            return delivery.fail();
+        }
     }
     let _ = read(input(), &mut [0]);
 }

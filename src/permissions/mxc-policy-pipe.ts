@@ -102,7 +102,7 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, held = fals
       let response = Buffer.alloc(0);
       server.stdout.on("data", (chunk: Buffer) => {
         if (released) return;
-        if (response.length + chunk.length > 64) {
+        if (acknowledged || response.length + chunk.length > 64) {
           void fail(new Error("Windows sandbox policy helper sent an invalid response"));
           return;
         }
@@ -117,15 +117,19 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, held = fals
           } else if (held && pendingBind !== undefined && frame === "bound\n") {
             acknowledged = true;
             response = Buffer.alloc(0);
-            pendingBind.resolve();
-            pendingBind = undefined;
           } else void fail(new Error("Windows sandbox policy helper sent an invalid response"));
         } catch (cause) {
           void fail(new Error("Windows sandbox policy helper sent invalid UTF-8", { cause }));
         }
       });
+      if (held) server.stdout.on("error", fail);
       server.stdout.once("end", () => {
-        if (!ready || (held && !released && !acknowledged)) void fail(new Error("Windows sandbox policy helper sent an incomplete response"));
+        if (!ready || (held && !released && !acknowledged)) {
+          fail(new Error("Windows sandbox policy helper sent an incomplete response"));
+        } else if (acknowledged) {
+          pendingBind?.resolve();
+          pendingBind = undefined;
+        }
       });
       try {
         stopTracking = trackManagedChildProcess(server, { killProcessGroup: false, label: "mxc:policy" });

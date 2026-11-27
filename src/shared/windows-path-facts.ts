@@ -346,7 +346,10 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     const launcherPid = launcher.pid;
     if (launcherPid === undefined || relay == null || report == null) {
       if (policy === undefined) void stop();
-      else failPolicy();
+      else {
+        failPolicy();
+        launcher.once("exit", () => finish({ kind: "unconfirmed" }));
+      }
       return run;
     }
     const stopAdmission = (): void => {
@@ -390,7 +393,9 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       else {
         let frame = Buffer.alloc(0);
         control.on("error", failPolicy);
-        control.once("close", () => { if (!policyConfirmed) failPolicy(); });
+        const controlEnded = (): void => { if (!policyConfirmed) failPolicy(); };
+        control.once("end", controlEnded);
+        control.once("close", controlEnded);
         control.on("data", (chunk: Buffer) => {
           if (done || deadline !== undefined) return;
           if (frame.length + chunk.length > HELD_POLICY_FRAME_BYTES) { failPolicy(); return; }
