@@ -303,6 +303,8 @@ export class MemoryMapHost {
         assertBuildAdmission = await this.options.refreshLocalAdmission();
       }
       const assertCanPublish = () => {
+        try { owner.assertAdmitted(); }
+        catch (error) { owner.stop('scope-denied'); throw error; }
         assertCurrent();
         assertBuildAdmission?.();
       };

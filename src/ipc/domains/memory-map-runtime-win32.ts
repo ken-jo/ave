@@ -27,7 +27,7 @@ import { SettingsWriteRefusedError } from '../../data/settings-store.js';
 import { getLlmVendorSettings, LLM_VENDORS } from '../../shared/llm-vendor-defaults.js';
 import { defaultWorkspaceProject } from '../../main/project-root-authorization.js';
 import { sendToWebContents } from '../safe-send.js';
-import type { NoteEntry } from '../../memory/memory-manager.js';
+import type { NoteEntry, ProjectScopedMemoryOptions } from '../../memory/memory-manager.js';
 import type { MemoryMapScopeResolver } from './memory-map.js';
 
 // Loaded on the first memory-map request so the host, model manager and provider stay out of the main entry.
@@ -47,7 +47,8 @@ type OnReplyAdmission = (assertLive: () => void) => void;
 export interface MemoryMapRuntime {
   get(scope: MemoryMapScope | undefined): unknown;
   buildView(scope: MemoryMapScope | undefined): unknown;
-  build(scope: MemoryMapScope | undefined, buildId: string, event: IpcMainInvokeEvent, onAdmission: OnReplyAdmission): unknown;
+  build(scope: MemoryMapScope | undefined, buildId: string, event: IpcMainInvokeEvent, onAdmission: OnReplyAdmission,
+    options: ProjectScopedMemoryOptions, assertRequestAdmitted: () => void): unknown;
   cancel(buildId: string): Promise<null>;
   facets(scope: MemoryMapScope | undefined): unknown;
   retrieve(request: MemoryRetrievalRequest, onAdmission: OnReplyAdmission): unknown;
@@ -185,12 +186,10 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   return {
     get: scope => host.get(catalog(scope)),
     buildView: scope => host.buildView(catalog(scope)),
-    build: async (scope, buildId, event, onAdmission) => {
-      const resolved = resolveScope(scope);
-      if (!resolved.ok) throw new MemoryMapHostError('project-not-allowed');
+    build: async (scope, buildId, event, onAdmission, options, assertRequestAdmitted) => {
       const owner = registry.register(buildId, {
-        scopeId: memoryMapScopeId(resolved.options),
-        assertAdmitted: () => {},
+        scopeId: memoryMapScopeId(options),
+        assertAdmitted: assertRequestAdmitted,
         onProgress: progress => {
           if (registry.current?.id === progress.jobId && validateHostRendererSender(event)) {
             sendToWebContents(event.sender, CHANNELS.memoryMap.progress, progress);

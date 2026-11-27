@@ -9,8 +9,10 @@ import { MemoryMapScopeSchema, MemoryRetrievalSchema, WindowsMemoryEmbeddingSett
 import type { NoteEntry, ProjectScopedMemoryOptions } from '../../memory/memory-manager.js';
 import type { MemoryMapRuntime } from './memory-map-runtime-win32.js';
 import { commitUnderAdmission } from '../../shared/admission-commit.js';
+import { MemoryMapHostError } from '../../main/memory-map/errors.js';
 
 export type MemoryMapScopeResolver = (raw: unknown) => { ok: true; options: ProjectScopedMemoryOptions } | { ok: false; error: string };
+interface RequestAdmission { options?: ProjectScopedMemoryOptions; assert(): void }
 
 const MemoryBuildIdSchema = z.uuidv4();
 const MemoryBuildRequestSchema = z.strictObject({ scope: MemoryMapScopeSchema.optional(), buildId: MemoryBuildIdSchema });
@@ -27,7 +29,8 @@ export function registerWindowsMemoryMapHandlers(deps: IpcDeps, resolveScope: Me
     );
     return loading;
   };
-  function handle<T>(channel: string, schema: z.ZodType<T>, action: (current: MemoryMapRuntime, value: T, event: IpcMainInvokeEvent, onAdmission: (assertLive: () => void) => void) => unknown) {
+  function handle<T>(channel: string, schema: z.ZodType<T>, action: (current: MemoryMapRuntime, value: T, event: IpcMainInvokeEvent,
+    onAdmission: (assertLive: () => void) => void, admission: RequestAdmission) => unknown) {
     ipcMain.handle(channel, async (event, raw: unknown, ...extra: unknown[]) => {
       if (!validateHostRendererSender(event)) { auditUnauthorized(deps.auditLogger, channel, event); return UNAUTHORIZED_FRAME; }
       const parsed = schema.safeParse(raw);
@@ -38,32 +41,39 @@ export function registerWindowsMemoryMapHandlers(deps: IpcDeps, resolveScope: Me
       const original = scoped ? resolveScope(scope) : undefined;
       const projectDenied = { ok: false, error: 'project-not-allowed' } as const;
       if (original?.ok === false) return projectDenied;
-      const refusal = () => {
+      const assertRequestAdmitted = () => {
         if (!validateHostRendererSender(event)) {
           auditUnauthorized(deps.auditLogger, channel, event);
-          return UNAUTHORIZED_FRAME;
+          throw new MemoryMapHostError('unauthorized-frame');
         }
         if (original?.ok) {
           const latest = resolveScope(scope);
-          if (!latest.ok || !isDeepStrictEqual(latest.options, original.options)) return projectDenied;
+          if (!latest.ok || !isDeepStrictEqual(latest.options, original.options)) throw new MemoryMapHostError('project-not-allowed');
         }
       };
       let current: MemoryMapRuntime | undefined;
       try {
         current = await loadRuntime();
-        const denied = refusal();
-        if (denied) return denied;
+        assertRequestAdmitted();
         let assertReply: (() => void) | undefined;
-        const value = await action(current, parsed.data, event, assertLive => { assertReply = assertLive; });
-        return refusal() ?? commitUnderAdmission(() => assertReply?.(), () => ({ ok: true, value }));
+        const value = await action(current, parsed.data, event, assertLive => { assertReply = assertLive; },
+          { options: original?.options, assert: assertRequestAdmitted });
+        return commitUnderAdmission(() => { assertRequestAdmitted(); assertReply?.(); }, () => ({ ok: true, value }));
       } catch (error) {
-        return refusal() ?? { ok: false, error: current?.errorCode(error) ?? ('graph-build-failed' satisfies MemoryMapError) };
+        if (error instanceof MemoryMapHostError && error.code === 'unauthorized-frame') return UNAUTHORIZED_FRAME;
+        try { assertRequestAdmitted(); } catch (denial) {
+          if (denial instanceof MemoryMapHostError) return { ok: false, error: denial.code };
+          throw denial;
+        }
+        return { ok: false, error: error instanceof MemoryMapHostError ? error.code : current?.errorCode(error) ?? ('graph-build-failed' satisfies MemoryMapError) };
       }
     });
   }
   handle(CHANNELS.memoryMap.get, MemoryMapScopeSchema.optional(), (current, scope) => current.get(scope));
-  handle(CHANNELS.memoryMap.build, MemoryBuildRequestSchema, (current, { scope, buildId }, event, onAdmission) =>
-    current.build(scope, buildId, event, onAdmission));
+  handle(CHANNELS.memoryMap.build, MemoryBuildRequestSchema, (current, { scope, buildId }, event, onAdmission, { options, assert }) => {
+    if (!options) throw new MemoryMapHostError('project-not-allowed');
+    return current.build(scope, buildId, event, onAdmission, options, assert);
+  });
   handle(CHANNELS.memoryMap.cancel, MemoryBuildIdSchema, (current, buildId) => current.cancel(buildId));
   handle(CHANNELS.memoryMap.facets, MemoryMapScopeSchema.optional(), (current, scope) => current.facets(scope));
   handle(CHANNELS.memoryMap.retrieve, MemoryRetrievalSchema, (current, request, _event, onAdmission) => current.retrieve(request, onAdmission));
