@@ -54,14 +54,23 @@ paths are missing or the shell reports failed verification or unavailable native
 confinement, report that prerequisite and leave the workbook untouched. Never
 install another runtime, download packages or request an unsandboxed retry.
 
-The script admits files up to 20 MiB. Above 8 MiB it writes an exclusive
-same-directory temporary backup, calls `fsync`, verifies its length and SHA-256,
-then publishes `<workbook>.ave-bak` with an exclusive hard link. An existing final
-backup, including a partial file or link, blocks that larger-file edit without
-changing it or the workbook. Preserve that copy and ask the user to move it to
-another recovery name before retrying. Failed temporary backups are removed; retry is possible
-when no final backup was published. Smaller files do not get automatic recovery
-copies. Shell edits are outside the host's checkpoint/rewind history.
+The script admits files up to 20 MiB. Above 8 MiB it saves the original bytes,
+calls `fsync`, then re-reads the copy and checks its length and SHA-256 before
+replacing the workbook. On macOS and Linux it writes to a sibling temporary
+file and links the verified copy to `<workbook>.ave-bak`. On Windows it creates
+the final recovery name exclusively and removes a failed copy if the path still
+names the file created by this edit. An interrupted Windows write can
+leave a partial `.ave-bak` under the final name. Treat only verified backups
+as valid copies. On Windows the host checks the literal workbook path and its
+inherited access rules before launch. It may refuse with
+`workbook-acl-differs` or `workbook-acl-unreadable`. Report the refusal to
+the user and leave the workbook untouched. The editor also refuses if the
+file changes between launch admission and its first snapshot. An existing
+backup, including a partial file or link, blocks that
+larger-file edit without changing it or the workbook. Preserve that copy and ask
+the user to move it to another recovery name before retrying. Smaller files do
+not get automatic recovery copies. Shell edits are outside the host's
+checkpoint/rewind history.
 
 Success writes JSON to stdout with `editedCells`, `needsRecalculation: true` and
 `backup` (an absolute path or null). Exit 1 reports a refusal on stderr. Exit 2

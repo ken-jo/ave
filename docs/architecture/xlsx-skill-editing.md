@@ -40,7 +40,11 @@ code-loading environment overrides. PowerShell uses the documented single
 mode-assignment prefix and one literal native command.
 
 The [shell policy](permission-policy-design.md#os-shell-sandbox-policy) grants
-read roles only to the exact host runtime and verified first script operand.
+read roles to the exact host runtime and verified first script operand.
+On Windows, the workbook command requires a direct PowerShell invocation with
+a literal workbook operand. The host uses the verified path helper before
+launch and supplies the observed workbook identity and change time to the
+confined editor. The editor uses only the runtime and script reads above.
 Workbook/request operands and redirections retain ordinary path, permission and
 approval checks. Runtime reads are bound to that invocation, cannot pierce
 protected read floors, and add no write roots. The host script directory remains
@@ -174,15 +178,24 @@ sources or observed link substitutions. The host observer imports no workbook
 publisher and never changes the source or backup.
 
 The source and complete edited output must fit the 20 MiB ceiling. For source
-bytes strictly above the 8 MiB backup threshold, the writer creates an exclusive
-temporary file in the workbook's directory, writes the recovery bytes, calls
-`fsync`, and verifies their length and SHA-256. Only then does an exclusive hard
-link publish `<path>.ave-bak`. An existing final path, including a partial backup
-or dangling link, refuses the edit without overwriting the recovery copy or
-workbook. A failed temporary backup is removed; retry can succeed when no final
-backup was published. Files at or below the threshold have no automatic backup.
-A filesystem that cannot publish the hard link refuses rather than weakening
-this rule.
+bytes strictly above the 8 MiB backup threshold, the writer saves the recovery
+bytes, calls `fsync`, verifies their length and SHA-256, and rechecks the source.
+On macOS and Linux it stages the bytes in a sibling temporary file and publishes
+the verified copy as `<path>.ave-bak` with a hard link. On Windows confined shells
+cannot create hard links, so the writer creates the recovery name exclusively
+and removes a failed copy when it still holds the identity created by this edit.
+An existing recovery path, including a partial backup or dangling link, refuses
+the edit. Files at or below the threshold have no automatic backup.
+
+Before launching a Windows workbook edit, the host confirms that the token is
+not elevated, the source is a regular unencrypted file owned by the current
+user, and its unprotected DACL contains exactly the ACEs inherited from
+its parent in order. A reparse point, a mandatory label on the workbook or
+inheritable by files from its parent, a dynamic access control entry on the
+workbook, or an unreadable descriptor refuses the edit. The host reads the
+descriptor and attributes from the leaf handle opened by the native component
+walk. The editor compares the host-observed volume serial, file index, and change time with its first
+snapshot before opening its journal or creating any recovery or staging file.
 
 A later edit above the threshold also refuses while that recovery path exists.
 The recovery copy must be preserved or moved separately before retrying; neither

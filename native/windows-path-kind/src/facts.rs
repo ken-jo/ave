@@ -1,4 +1,4 @@
-use crate::pin::{Facts, pin, verify};
+use crate::pin::{Facts, pin, pin_local, verify};
 use crate::security::{self, Descriptor};
 use crate::windows::*;
 use std::fmt::Write;
@@ -8,6 +8,7 @@ const MAX_FRAME: usize = 1024 * 1024;
 const MAX_PATHS: usize = 2048;
 pub(crate) const MAX_REPLY: usize = 8 * 1024 * 1024;
 const MAX_CONTENT: i64 = 1024 * 1024;
+const FILE_DACL_CONTROL_MASK: u16 = security::SE_DACL_PROTECTED | 0x0400 | 0x0100 | 0x0004;
 
 fn parse_frame(input: &mut impl Read) -> Option<Vec<Vec<u16>>> {
     fn length(input: &mut impl Read) -> Option<usize> {
@@ -109,8 +110,31 @@ fn facts_json(facts: &Facts) -> String {
     )
 }
 
-fn descriptor_json(handle: Raw, facts: &Facts) -> Option<String> {
-    let security = Descriptor::read(handle)?;
+fn label_json(label: Option<security::IntegrityLabel>) -> String {
+    match label {
+        Some(label) => format!(
+            r#"{{"sid":{},"policy":{},"flags":{}}}"#,
+            json(&label.sid),
+            label.policy,
+            label.flags
+        ),
+        None => "null".into(),
+    }
+}
+
+fn descriptor_json(handle: Raw, facts: &Facts, access: bool) -> Option<String> {
+    let (security, sacl) = if access {
+        let (descriptor, label, dynamic_access_control) = Descriptor::read_file_access(handle)?;
+        let label = label_json(label);
+        (
+            descriptor,
+            Some(format!(
+                r#","sacl":{{"integrityLabel":{label},"dynamicAccessControl":{dynamic_access_control}}}"#
+            )),
+        )
+    } else {
+        (Descriptor::read(handle)?, None)
+    };
     let owner = json(&security::sid_text(security.owner).ok()?);
     let mut output = format!(r#"{{"identity":{{{}}},"owner":{owner}"#, identity(facts.id));
     if !security.group.is_null() {
@@ -160,7 +184,14 @@ fn descriptor_json(handle: Raw, facts: &Facts) -> Option<String> {
         }
         output.push('}');
     }
-    output.push_str("]}");
+    output.push(']');
+    if let Some(sacl) = sacl {
+        if basic(handle).ok()?.change != facts.change {
+            return None;
+        }
+        output.push_str(&sacl);
+    }
+    output.push('}');
     Some(output)
 }
 
@@ -201,6 +232,62 @@ fn framed_row_fits(output_size: usize, row_size: usize, first: bool) -> bool {
     output_size + row_size + punctuation + STDOUT_LINE_ENDING.len() <= MAX_REPLY
 }
 
+fn file_access_row(path: &[u16]) -> Option<String> {
+    let pinned = pin_local(path, false)?;
+    let (facts, ancestors) = pinned.facts.split_last()?;
+    if ancestors.is_empty()
+        || facts.exists != Some(true)
+        || facts.tag.attributes & (DIRECTORY | REPARSE) != 0
+        || facts.legacy.links != 1
+    {
+        return None;
+    }
+    let file = pinned.handles.last()?.raw();
+    let (descriptor, label, dynamic_access_control) = Descriptor::read_file_access(file)?;
+    if basic(file).ok()?.change != facts.change || !verify(&pinned) {
+        return None;
+    }
+    let owner = json(&security::sid_text(descriptor.owner).ok()?);
+    let label = label_json(label);
+    let mut count = 0;
+    let acl = if let Some(revision) = descriptor.dacl_revision() {
+        let mut bytes = vec![revision];
+        for ace in descriptor.aces() {
+            bytes.extend_from_slice(ace?.bytes());
+            count += 1;
+        }
+        format!("\"{}\"", hex(bytes))
+    } else {
+        "null".into()
+    };
+    Some(format!(
+        r#"{{"volumeSerialNumber":"0x{:016x}","fileIndex":"0x{:016x}","changeTime":"0x{:016x}","ownerSid":{owner},"control":{},"aceCount":{count},"aclHex":{acl},"integrityLabel":{label},"dynamicAccessControl":{dynamic_access_control}}}"#,
+        facts.legacy.volume,
+        facts.legacy.index(),
+        facts.change as u64,
+        descriptor.control & FILE_DACL_CONTROL_MASK
+    ))
+}
+
+fn file_access(paths: &[Vec<u16>]) -> Result<String, u8> {
+    if paths.is_empty() {
+        return Err(2);
+    }
+    let mut output = String::from("[");
+    for (index, path) in paths.iter().enumerate() {
+        let row = file_access_row(path).ok_or(4_u8)?;
+        if !framed_row_fits(output.len(), row.len(), index == 0) {
+            return Err(4);
+        }
+        if index != 0 {
+            output.push(',');
+        }
+        output.push_str(&row);
+    }
+    output.push(']');
+    Ok(output)
+}
+
 // The caller adds any extra fields and closes the object.
 fn path_row(facts: &[Facts], fits: impl Fn(usize) -> bool) -> Option<String> {
     let (leaf, ancestors) = facts.split_last()?;
@@ -231,7 +318,7 @@ pub(crate) fn held_reply(facts: &[Facts], limit: usize) -> Option<String> {
 }
 
 fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
-    let (mut parent, mut content, mut framed) = (false, false, false);
+    let (mut parent, mut content, mut framed, mut access) = (false, false, false, false);
     let mut operands = args;
     while let Some((flag, rest)) = operands.split_first() {
         if !flag.starts_with(&[45, 45]) {
@@ -241,6 +328,8 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
             parent = true;
         } else if dacl && eq(flag, "--content") {
             content = true;
+        } else if dacl && eq(flag, "--access") {
+            access = true;
         } else if dacl && !framed && eq(flag, "--stdin") {
             framed = true;
         } else {
@@ -269,7 +358,8 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
     let mut output = String::from("[");
     for (index, path) in paths.iter().enumerate() {
         let first = index == 0;
-        let pinned = pin(path, content).ok_or_else(|| {
+        let pin_path = if access { pin_local } else { pin };
+        let pinned = pin_path(path, content).ok_or_else(|| {
             diagnose("could not read path facts");
             4_u8
         })?;
@@ -282,8 +372,14 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
             row.push_str(&context);
             let mut bytes = "null".into();
             if facts.exists == Some(true) {
+                if access
+                    && facts.tag.attributes & (DIRECTORY | REPARSE) == 0
+                    && facts.legacy.links != 1
+                {
+                    return Err(4);
+                }
                 let file = pinned.handles.last().ok_or(4_u8)?.raw();
-                let descriptor = descriptor_json(file, facts).ok_or(4_u8)?;
+                let descriptor = descriptor_json(file, facts, access).ok_or(4_u8)?;
                 if content && facts.tag.attributes & REPARSE == 0 {
                     if facts.tag.attributes & DIRECTORY != 0 {
                         return Err(4);
@@ -300,8 +396,12 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
                 let last = pinned.facts.len() - 1;
                 if last > 0 && pinned.facts[last - 1].exists == Some(true) {
                     row.push_str(
-                        &descriptor_json(pinned.handles[last - 1].raw(), &pinned.facts[last - 1])
-                            .ok_or(4_u8)?,
+                        &descriptor_json(
+                            pinned.handles[last - 1].raw(),
+                            &pinned.facts[last - 1],
+                            access,
+                        )
+                        .ok_or(4_u8)?,
                     );
                 } else {
                     row.push_str("null");
@@ -331,7 +431,11 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
 }
 
 pub fn run(args: &[Vec<u16>], dacl: bool) -> u8 {
-    match batch(args, dacl) {
+    let result = match args.split_first() {
+        Some((flag, paths)) if dacl && eq(flag, "--file-access") => file_access(paths),
+        _ => batch(args, dacl),
+    };
+    match result {
         Ok(output) => {
             if emit(&output).is_ok() {
                 0

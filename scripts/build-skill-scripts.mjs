@@ -7,8 +7,7 @@ import { SKILL_SCRIPT_ENTRIES } from "./lib/skill-script-inventory.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-export async function buildSkillScripts() {
-  const directory = resolve(ROOT, "dist/skill-scripts");
+export async function buildSkillScripts({ directory = resolve(ROOT, "dist/skill-scripts") } = {}) {
   await mkdir(directory, { recursive: true });
   const scripts = {};
   for (const [name, source] of Object.entries(SKILL_SCRIPT_ENTRIES)) {
