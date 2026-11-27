@@ -215,6 +215,7 @@ fn file_access_row(path: &[u16]) -> Option<String> {
         return None;
     }
     let descriptor = Descriptor::read(file.raw())?;
+    let owner = json(&security::sid_text(descriptor.owner).ok()?);
     let mut count = 0;
     let acl = if let Some(revision) = descriptor.dacl_revision() {
         let mut bytes = vec![revision];
@@ -227,7 +228,7 @@ fn file_access_row(path: &[u16]) -> Option<String> {
         "null".into()
     };
     Some(format!(
-        r#"{{"volumeSerialNumber":"0x{:016x}","fileIndex":"0x{:016x}","control":{},"aceCount":{count},"aclHex":{acl}}}"#,
+        r#"{{"volumeSerialNumber":"0x{:016x}","fileIndex":"0x{:016x}","ownerSid":{owner},"control":{},"aceCount":{count},"aclHex":{acl}}}"#,
         info.volume,
         info.index(),
         descriptor.control & FILE_DACL_CONTROL_MASK

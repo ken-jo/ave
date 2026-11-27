@@ -186,10 +186,10 @@ An existing recovery path, including a partial backup or dangling link, refuses
 the edit. Files at or below the threshold have no automatic backup.
 
 On Windows, the writer checks each newly created backup or staging file before
-writing workbook bytes. The native helper reports DACL control flags and the
-complete ordered ACE bytes for the source and new file. The writer checks both
-identities and requires equal DACLs. A missing, unreadable or different DACL
-refuses the edit.
+writing workbook bytes. The native helper reports the owner SID, DACL control
+flags and complete ordered ACE bytes for the source and new file. The writer
+checks both identities and requires the same owner SID and DACL. Missing,
+unreadable or differing access rules refuse the edit.
 
 A later edit above the threshold also refuses while that recovery path exists.
 The recovery copy must be preserved or moved separately before retrying; neither

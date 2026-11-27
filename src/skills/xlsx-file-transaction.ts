@@ -119,7 +119,7 @@ function accessRulesRefusal(kind: keyof typeof ACCESS_RULES_REFUSALS, reason: "d
   return Object.assign(new Error(`${refusal.text} [${refusal[reason]}]`), { code: refusal[reason] });
 }
 
-/** A created file only inherits its folder's access list; before any byte lands in it, it must equal the workbook's. */
+/** Check the created file's owner and access list before writing workbook bytes. */
 function requireSameAccessRules(kind: keyof typeof ACCESS_RULES_REFUSALS, source: WorkbookFile, copy: WorkbookFile): void {
   if (process.platform !== "win32") return;
   const files = [source, copy];
@@ -131,7 +131,7 @@ function requireSameAccessRules(kind: keyof typeof ACCESS_RULES_REFUSALS, source
     const identity = files[index]?.identity;
     return identity && BigInt(rule.volumeSerialNumber) === identity.dev && BigInt(rule.fileIndex) === identity.ino;
   })) throw accessRulesRefusal(kind, "unreadable");
-  if (original.control !== created.control || original.aclHex !== created.aclHex) {
+  if (original.ownerSid !== created.ownerSid || original.control !== created.control || original.aclHex !== created.aclHex) {
     throw accessRulesRefusal(kind, "differs");
   }
 }

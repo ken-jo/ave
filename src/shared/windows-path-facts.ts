@@ -529,6 +529,7 @@ export function readWindowsDacls(paths: readonly string[], options: { parent?: b
 interface WindowsFileDacl {
   readonly volumeSerialNumber: string;
   readonly fileIndex: string;
+  readonly ownerSid: string;
   readonly control: number;
   readonly aceCount: number;
   readonly aclHex: string | null;
@@ -585,12 +586,19 @@ function isCompleteFileAcl(aclHex: unknown, aceCount: number): boolean {
   return offset === bytes.length;
 }
 
+function isFileOwnerSid(value: unknown): value is string {
+  if (typeof value !== "string" || !/^S-1-(?:[0-9]{1,15}|0x[0-9a-fA-F]{12})(?:-[0-9]{1,10}){0,15}$/u.test(value)) return false;
+  const [, , authority, ...parts] = value.split("-");
+  return BigInt(authority!) <= 0xffffffffffffn && parts.every(part => Number(part) <= 0xffffffff);
+}
+
 function isFileDacl(value: unknown): value is WindowsFileDacl {
-  if (value === null || typeof value !== "object" || Object.keys(value).length !== 5) return false;
+  if (value === null || typeof value !== "object" || Object.keys(value).length !== 6) return false;
   const row = value as WindowsFileDacl;
   return typeof row.volumeSerialNumber === "string" && HEX_64_PATTERN.test(row.volumeSerialNumber)
     && BigInt(row.volumeSerialNumber) <= 0xffffffffn
     && typeof row.fileIndex === "string" && HEX_64_PATTERN.test(row.fileIndex)
+    && isFileOwnerSid(row.ownerSid)
     && isUint(row.control, FILE_DACL_CONTROL_MASK) && (row.control & ~FILE_DACL_CONTROL_MASK) === 0 && (row.control & DACL_PRESENT) !== 0
     && isUint(row.aceCount, 0xffff) && isCompleteFileAcl(row.aclHex, row.aceCount);
 }
