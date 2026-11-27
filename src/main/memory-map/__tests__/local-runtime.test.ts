@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setProcessPlatform } from '../../../__tests__/support/process-platform.js';
 const state = vi.hoisted(() => ({ confined: true, plan: undefined as undefined | { readiness: string; selectedBackend: string } }));
 vi.mock('../../../permissions/asrt-sandbox.js', () => ({ isOfflineProcessConfinementActive: () => state.confined }));
-vi.mock('../../../permissions/sandbox-capability.js', () => ({ getWindowsExtensionBackendPlan: () => state.plan }));
+vi.mock('../../../permissions/sandbox-capability.js', () => ({ getExtensionBackendPlan: () => state.plan }));
 import { assertLocalEmbeddingRuntime } from '../local-runtime.js';
 const hostPlatform = process.platform;
 function refusal(): string | undefined {

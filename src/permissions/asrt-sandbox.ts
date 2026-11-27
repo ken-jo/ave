@@ -75,7 +75,7 @@ import {
 } from "./egress-relay/relay.js";
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
 import {
-  getWindowsExtensionBackendPlan,
+  getExtensionBackendPlan,
   isPluginWorkerConfinementRequestedAtBoot,
   isShellSandboxRequestedAtBoot,
 } from "./sandbox-capability.js";
@@ -1437,7 +1437,7 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" 
   readonly start?: ExtensionStartPresentation;
   readonly hostOwned?: true;
 }): void {
-  const plan = process.platform === "win32" ? getWindowsExtensionBackendPlan() : undefined;
+  const plan = process.platform === "win32" ? getExtensionBackendPlan() : undefined;
   const nativeEntry = options !== undefined && "backend" in options;
   const legacy = options !== undefined && "backend" in options ? undefined : options;
   if (plan?.readiness === "checking" || plan?.readiness === "rejected") {

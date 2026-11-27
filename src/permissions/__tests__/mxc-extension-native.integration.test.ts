@@ -185,7 +185,7 @@ for (const leaf of [".agents", ".ave/commands", ".ave/hooks"]) {
       const baseEnv = { SYSTEMROOT: systemRoot, PATH: join(systemRoot, "System32") };
       const plan = planWindowsExtensionHolder({ requested: true, mxc: { state: "available" },
         fallback: { version: "", ready: false } });
-      const getPlan = vi.spyOn(sandboxCapability, "getWindowsExtensionBackendPlan").mockReturnValue(plan);
+      const getPlan = vi.spyOn(sandboxCapability, "getExtensionBackendPlan").mockReturnValue(plan);
       const unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
       let release: (() => Promise<void>) | undefined;
       const start = vi.mocked(spawnMxcExtensionProcess);

@@ -48,7 +48,7 @@ const accountRoute = vi.hoisted(() => vi.fn(() => { throw new Error("account rou
 const backendPlan = vi.hoisted(() => ({ current: undefined as unknown }));
 vi.mock("../../../permissions/sandbox-capability.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/sandbox-capability.js")>(),
-  getWindowsExtensionBackendPlan: () => backendPlan.current,
+  getExtensionBackendPlan: () => backendPlan.current,
 }));
 
 const PLUGIN_ID = "nativequarantine";

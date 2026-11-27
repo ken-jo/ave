@@ -313,6 +313,11 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
               log.warn("boot: macOS container shell unavailable (%s)", support.reason);
             }
           }
+          if (process.platform === "darwin") {
+            // Extensions and hooks on macOS do not run in containers yet: the plan says so, and no reader acts on it.
+            const { setMacExtensionPlan } = await import("../../permissions/sandbox-capability.js");
+            setMacExtensionPlan({ platform: "darwin", requestedBackend: "none", selectedBackend: "none", readiness: "off", reason: "not-requested", egressIdentity: "shared" });
+          }
           const sandboxTempRoot = useAppOwnedSandboxTempRoot();
           // Subscribe before starting the proxy so no deny precedes monitoring.
           {

@@ -1,6 +1,6 @@
 // Reviewer relaxation requires live OS isolation; none forbids intent-only downgrades from MEDIUM/HIGH to LOW. Inactive gates publish verified none; audit stores the resulting verdict rather than the full capability (docs/architecture/permission-policy-design.md).
 
-import { acceptMeasuredContainerEgress, assertSandboxWindowsExtensionPlan, containerEgressProtocolCoverage, egressProtocolCoverageFor } from "../shared/sandbox-capability-info.js";
+import { acceptMeasuredContainerEgress, assertSandboxMacExtensionPlan, assertSandboxWindowsExtensionPlan, containerEgressProtocolCoverage, egressProtocolCoverageFor } from "../shared/sandbox-capability-info.js";
 import { isContainerShellRouteEnabled } from "../shared/container-platform.js";
 import { getAveHomePrivacyFailure, isAveHomePrivacyApprovable, isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
 import { windowsDenyUnenforceableAtBoot } from "./admitted-obligation.js";
@@ -13,6 +13,8 @@ import type {
   SandboxMacContainerShellInfo,
   SandboxMacContainerShellSupport,
   SandboxWindowsSubstrateInfo,
+  SandboxExtensionPlan,
+  SandboxMacExtensionPlan,
   SandboxWindowsExtensionPlan,
 } from "../shared/sandbox-capability-info.js";
 import {
@@ -286,9 +288,29 @@ export function getWindowsMxcShellEgressMeasurement(): WindowsMxcShellEgressMeas
   return _windowsMxcShellEgressMeasurement;
 }
 
-/** Selected extension plan; absent records confer no MXC authority. Per-process markers remain mandatory. */
-export function getWindowsExtensionBackendPlan(): SandboxWindowsExtensionPlan | undefined {
-  return _windowsSubstrate?.extensionPlan;
+/** Selected extension plan of this platform; absent records confer no container authority. Per-process markers remain
+ * mandatory. Windows boot publishes its plan with the substrate; macOS boot publishes its own. Each boot publishes one. */
+export function getExtensionBackendPlan(): SandboxExtensionPlan | undefined {
+  return _windowsSubstrate?.extensionPlan ?? _macExtensionPlan;
+}
+
+let _macExtensionPlan: SandboxMacExtensionPlan | undefined;
+
+/** Publish the macOS extension plan (`sandbox-init.ts`). Admissions and live holders are bound to the plan object, so an
+ * identical plan keeps its identity; changed content starts a new generation. @internal — boot and tests only. */
+export function setMacExtensionPlan(plan: SandboxMacExtensionPlan): void {
+  assertSandboxMacExtensionPlan(plan);
+  const previous = _macExtensionPlan;
+  if (previous !== undefined && (Object.keys(plan) as (keyof SandboxMacExtensionPlan)[]).every((key) => previous[key] === plan[key])) return;
+  _macExtensionPlan = Object.freeze({ ...plan });
+  _sandboxGeneration += 1;
+  notifySandboxStatusChanged();
+}
+
+// @internal — test teardown only.
+export function __resetMacExtensionPlanForTest(): void {
+  if (_macExtensionPlan !== undefined) _sandboxGeneration += 1;
+  _macExtensionPlan = undefined;
 }
 
 let _containerShellSubstrate: SandboxMacContainerShellSupport | undefined;

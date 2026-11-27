@@ -36,7 +36,7 @@ import type { OwnedMxcExtensionProcess } from "../permissions/mxc-extension-proc
 import { planWindowsExtensionHolder } from "../permissions/mxc-extension-readiness.js";
 import { isWindowsPathAtOrUnder } from "../permissions/mxc-windows.js";
 import { isFullyQualifiedWindowsPath } from "../shared/windows-path-spelling.js";
-import { getWindowsExtensionBackendPlan } from "../permissions/sandbox-capability.js";
+import { getExtensionBackendPlan } from "../permissions/sandbox-capability.js";
 import { listAuthorizedWorkspaceRoots } from "../permissions/workspace-authorized-roots.js";
 import type { SandboxWindowsExtensionPlan } from "../shared/sandbox-capability-info.js";
 import { createSandboxProcessHome, resolvedHostProcessOwner } from "../permissions/sandbox-process-home.js";
@@ -282,7 +282,7 @@ export function hostRuntimeReads(command: string): string[] {
 /** The selected boot plan routes extension holders to containers. A checking or rejected plan is refused by the guard. */
 export function isMxcExtensionBackendSelected(): boolean {
   if (!isContainerHolderRouteEnabled(process.platform)) return false;
-  const plan = getWindowsExtensionBackendPlan();
+  const plan = getExtensionBackendPlan();
   return plan?.selectedBackend === "mxc" && plan.readiness === "ready";
 }
 

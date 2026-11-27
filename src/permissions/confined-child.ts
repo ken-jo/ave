@@ -33,10 +33,11 @@ import {
   getHostShellExecutionPlan,
   getIssuedHostShellExecutionPlanGeneration,
   getSandboxGeneration,
-  getWindowsExtensionBackendPlan,
+  getExtensionBackendPlan,
   isIssuedHostShellExecutionPlan,
 } from "./sandbox-capability.js";
 import type { HostShellExecutionPlan } from "./host-shell-execution-plan.js";
+import { isMacExtensionPlan } from "../shared/sandbox-capability-info.js";
 import { openMxcEgressLease } from "./egress-host-listener.js";
 import { buildMxcConfinedChildRequest } from "./mxc-confined-child-request.js";
 import { isWindowsPathAtOrUnder, rankMxcFilesystem, strictlyUnder, type MxcFilesystemGrants } from "./mxc-windows.js";
@@ -310,8 +311,8 @@ function assertWritesInsideEnvelope(grants: MxcFilesystemGrants, ownership: MxcE
 export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise<MxcConfinedChildSpawn> {
   assertExtensionStartAllowed({ backend: "mxc" });
   assertMxcWorkerTransport(spec.egressOwner, spec.workerTransport);
-  const plan = getWindowsExtensionBackendPlan();
-  if (process.platform !== "win32" || plan?.selectedBackend !== "mxc" || plan.readiness !== "ready") {
+  const plan = getExtensionBackendPlan();
+  if (process.platform !== "win32" || plan === undefined || isMacExtensionPlan(plan) || plan.selectedBackend !== "mxc" || plan.readiness !== "ready") {
     throw new MxcProcessContractError("Extension container backend is not ready");
   }
   // Checked before filesystem admission, the egress invocation and the lease.
@@ -456,7 +457,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     const { request, admissionInput, admission } = withLocalityDecision(() => {
       spec.assertStillValid?.();
       admitted.assertStillValid();
-      if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before admission");
+      if (getExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before admission");
       const request = buildMxcConfinedChildRequest({ ...spec, grants, proxyUrl });
       assertNesting();
       const admissionInput = { request, holder: spec.holder, executableIdentity: measureExecutableIdentity(spec.command), bootPlan: plan };
@@ -478,7 +479,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
             spec.assertStillValid?.();
             admitted.assertStillValid();
             assertManagedChildProcessAdmissionOpen(spec.label);
-            if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before native creation");
+            if (getExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before native creation");
             assertNesting();
             assertHomeOutsideState();
             consumeMxcExtensionAdmission(admission, { ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
@@ -496,7 +497,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       assertParent();
       admitted.assertStillValid();
       assertManagedChildProcessAdmissionOpen(spec.label);
-      if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed during native start");
+      if (getExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed during native start");
     });
     binding = { plan, active: true, children: new Set(), footprint: ownRoots };
     const result: MxcConfinedChildSpawn = Object.freeze({ process: child, confinement: "windows-mxc", release: lifetime.release });
@@ -539,7 +540,7 @@ function isAdmittedUserHookShellRoute(spec: ConfinedChildSpec): boolean {
 }
 
 export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<ConfinedChildSpawn> {
-  const extensionPlan = process.platform === "win32" && !isAdmittedUserHookShellRoute(spec) ? getWindowsExtensionBackendPlan() : undefined;
+  const extensionPlan = process.platform === "win32" && !isAdmittedUserHookShellRoute(spec) ? getExtensionBackendPlan() : undefined;
   if (extensionPlan?.readiness === "checking" || extensionPlan?.readiness === "rejected") {
     throw new MxcExtensionReadinessRefusedError();
   }
