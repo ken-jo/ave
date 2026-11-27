@@ -1957,7 +1957,7 @@ export function WorkBoardPanel({
     if (workflowDialog?.kind !== "launch-notice" || !workflowDialog.opening || !projectRootEquals(scopeRoot, workflowDialog.target.projectRoot)) return;
     setWorkflowDialog({ kind: "run", item: workflowDialog.item, requestedVersion: workflowDialog.version });
   }, [scopeRoot, workflowDialog]);
-  const { byItem: toolApprovals, surface: approvalSurfaceValue } = useBoardApprovals(visibleRunItems, runState, scopeRoot, project?.isDefault === true);
+  const { byItem: toolApprovals, surface: approvalSurfaceValue } = useBoardApprovals(visibleRunItems, runState, scopeRoot, project?.isDefault === true, workflowItem);
   const approvalSurface = useToolApprovalSurface(api);
 
   // The live step panel: which run it follows, whether it jumps to a newly started run, and whether a settled run stays listed.
