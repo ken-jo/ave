@@ -190,11 +190,12 @@ vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => {
 
 import { prepareMxcShellLaunch, type PrepareMxcShellLaunchInput } from "../mxc-shell-launch.js";
 import { createContainedShellLifecycle } from "../contained-shell-lifecycle.js";
-import { MXC_REQUEST_CHARACTER_LIMIT } from "../../permissions/mxc-windows.js";
+import { MXC_REQUEST_CHARACTER_LIMIT, probeMxcPowerShellStart } from "../../permissions/mxc-windows.js";
 import { ObligationRefusedError } from "../../permissions/admitted-obligation.js";
 import { mxcConfinementStatePaths } from "../../permissions/mxc-runtime-root.js";
 import { srtWinConfinementStatePaths } from "../../permissions/srt-win-integrity.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "../../permissions/egress-invocations.js";
+import * as invocationProxy from "../../permissions/egress-invocation-listener.js";
 import * as policyPipe from "../../permissions/mxc-policy-pipe.js";
 import * as sandboxCapability from "../../permissions/sandbox-capability.js";
 import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../../permissions/sandbox-home-registry.js";
@@ -591,6 +592,44 @@ describe("prepareMxcShellLaunch", () => {
     }
     expect(await probePort(launch.proxyPort)).toBe("refused");
     expect(h.closeRelay).toHaveBeenCalledOnce();
+  });
+
+  it("serializes the same network policy and each invocation's own proxy listener URL", async () => {
+    const networkBytes = (encoded: string | undefined): Buffer => {
+      const json = Buffer.from(encoded ?? "", "base64").toString("utf8");
+      const network = /,"network":(.+?),"runtimeConfig":/.exec(json)?.[1];
+      if (network === undefined) throw new Error("Missing network section");
+      return Buffer.from(network, "utf8");
+    };
+    relay();
+    const openListener = vi.spyOn(invocationProxy, "openInvocationProxyListener");
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const { argv } = await prepareMxcShellLaunch(INPUT, lifecycle);
+      let probeNetwork: Buffer | undefined;
+      let probeProxy: string | undefined;
+      await expect(probeMxcPowerShellStart({
+        platform: "win32", arch: "x64", resourcePath: "C:/example/resources", windowsBuild: null,
+        probeDirectory: "C:/example/scratch", systemRoot: "C:/Windows", exists: () => true, sha256: async () => "",
+        run: async (file, args) => {
+          if (args[0] === "--config-base64") {
+            probeNetwork = networkBytes(args[1]);
+            probeProxy = decodeRequest([file, ...args]).runtimeConfig.networkProxy;
+          }
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      }, openListener)).resolves.toMatchObject({ state: "available" });
+      expect(openListener).toHaveBeenCalledTimes(2);
+      const shellListener = await openListener.mock.results[0]?.value;
+      const probeListener = await openListener.mock.results[1]?.value;
+      if (shellListener === undefined || probeListener === undefined) throw new Error("Missing invocation listener");
+      expect(decodeRequest(argv).runtimeConfig.networkProxy).toBe(shellListener.url);
+      expect(probeProxy).toBe(probeListener.url);
+      expect(probeListener.url).not.toBe(shellListener.url);
+      expect(probeNetwork).toEqual(networkBytes(argv[2]));
+    } finally {
+      await lifecycle.dispose();
+    }
   });
 
   it("grants nothing inside the Ave home outside its re-allowed children", async () => {

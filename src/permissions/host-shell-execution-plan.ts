@@ -4,7 +4,7 @@ import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { en } from "../i18n/messages/en.js";
 import { containerPlatform } from "../shared/container-platform.js";
 import type { DisposableSubstrate, SandboxCapability } from "./sandbox-capability.js";
-import { containerEgressProtocolCoverage, egressProtocolCoverageFor, type EgressProtocolCoverage, type SandboxConfinement, type SandboxStartFailureCause } from "../shared/sandbox-capability-info.js";
+import { acceptMeasuredContainerEgress, containerEgressProtocolCoverage, egressProtocolCoverageFor, type EgressProtocolCoverage, type SandboxConfinement, type SandboxStartFailureCause } from "../shared/sandbox-capability-info.js";
 import { isRecord } from "../shared/is-record.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
@@ -212,6 +212,7 @@ export function buildHostShellExecutionPlan(input: {
   activeCapability: SandboxCapability;
   // What would confine a sandboxed child: `mxc` only when the host's MXC route is live and `activeCapability` is that route's capability. Defaults to the ASRT wrap.
   shellSubstrate?: "asrt" | "mxc" | "none";
+  measuredContainerEgress?: EgressProtocolCoverage;
   executionMode?: HostShellExecutionRequest;
   // Boot could not establish Ave home privacy (any category but helper-unavailable, which `unconfinedShellDenied` blocks): every plain host shell
   // then needs a human ask for every command.
@@ -332,7 +333,9 @@ export function buildHostShellExecutionPlan(input: {
     sandboxed: true,
     substrate: shellSubstrate,
     egressProtocolCoverage: container === undefined
-      ? egressProtocolCoverageFor(shellSubstrate) : containerEgressProtocolCoverage(container.backend),
+      ? egressProtocolCoverageFor(shellSubstrate)
+      : acceptMeasuredContainerEgress(input.platform, container.backend, input.measuredContainerEgress)
+        ?? containerEgressProtocolCoverage(container.backend),
     capability,
     fallbackReason: "none" as const,
     requiresExplicitUserApproval: false,

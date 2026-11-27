@@ -8,6 +8,7 @@ import { Loader } from "../../../../components/ui/loader.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { CheckSquare } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
+import { reasonText } from "../../hooks/use-work-board-run.js";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
 import { cn } from "../../../../lib/utils.js";
@@ -120,7 +121,7 @@ function routineReason(item: RoutineAttentionApprovalView, reason: RoutineAttent
     case "run-failed":
       if (!item.failure) throw new Error(`routine-attention ${item.routineId}: run-failed without a failure`);
       return item.failure.kind === "error"
-        ? t("workApprovals.routineRunFailed", { reason: item.failure.reason })
+        ? t("workApprovals.routineRunFailed", { reason: reasonText(item.failure.reason) ?? item.failure.reason })
         : t("workApprovals.routineShutdownTimeout");
   }
 }

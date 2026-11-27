@@ -2,11 +2,18 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
+import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import type { TemplateScope, TemplateVersion } from "../../shared/workflow-template-types.js";
+import { createDynamicTool } from "../../tools/base.js";
+import { ToolRegistry } from "../../tools/registry.js";
 import { createRoutineScheduleTool } from "../../tools/routine-schedule.js";
 import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
-import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+import { untilAsserted } from "../../__tests__/support/signal-wait.js";
+import { autoStageOf, runScopePermissions, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
+import { mayFire } from "../../work-board/workflow/schedule-breaker.js";
 import { RoutinesScheduler } from "../routines-scheduler.js";
 import { RoutinesStore, removeRoutineWithRuns, type TemplateRoutineFire } from "../routines-store.js";
 import { mintHostDecisionProof } from "../workflow-template-decision.js";
@@ -32,7 +39,7 @@ async function setup(h: Awaited<ReturnType<typeof stageRunHarness>>) {
   const { fireScheduledTemplate } = await import("../routines-template-run.js");
   const fire = (event: TemplateRoutineFire) => fireScheduledTemplate({
     routinesStore: store, workflowTemplateStore: h.templates, workBoardStore: h.board, workBoardEngine: h.engine,
-  }, event);
+  }, event, mayFire);
   scheduler.onTemplateRun(event => { dispatches.push(fire(event)); });
   const add = (at?: string) => store.add(input(at), proof());
   const attach = (scheduleId: string, version: TemplateVersion, scope: TemplateScope = { kind: "all" }) =>
@@ -222,6 +229,110 @@ it("two fires of one routine that arrive together start one run", () => fixture(
   expect(f.h.children).toHaveLength(1);
 }));
 
+it("two failed stages park their runs and pause the routine across reload until the owner resumes it", () => fixture(async f => {
+  const routine = await f.add();
+  const version = await f.h.confirm([autoStageOf("report")]);
+  const attachment = await f.attach(routine.id, version);
+  const waitForReport = async (from: number) => {
+    const started = await f.h.waitForProgress(event => event.stageId === "report" && event.runSessionId !== undefined, "report child", from);
+    const child = f.h.children.find(candidate => candidate.sessionId === started.runSessionId);
+    if (!child) throw new Error("Report child did not link");
+    return child;
+  };
+  const failAndStop = async () => {
+    const from = f.h.events.length;
+    const fire = await f.dispatch(routine.id);
+    const child = await waitForReport(from);
+    child.finish({ ok: false, error: "Stage failed" });
+    await fire.result;
+    const row = (await f.rows()).find(item => item.runStatus === "executing");
+    if (!row) throw new Error("Failed report did not park");
+    expect(f.h.engine.cancelRun(row.id)).toMatchObject({ ok: true });
+    await f.h.until(row.id, item => item.runStatus === "cancelled");
+  };
+  await failAndStop();
+  await failAndStop();
+
+  const reloaded = new RoutinesStore(f.path);
+  reloaded.bindTemplateAttachments(f.h.templates);
+  await reloaded.load();
+  const [shown] = (await reloaded.listScheduleDisplay()).routines;
+  expect(shown).toMatchObject({ attachmentId: attachment.id, pausedBy: "schedule-breaker", pausedAt: expect.any(String) });
+  const scheduler = new RoutinesScheduler(reloaded, async () => []);
+  expect(await scheduler.dispatchNow(routine.id)).toBe("paused");
+  expect(f.h.children).toHaveLength(2);
+
+  const replacement = await f.attach(routine.id, version);
+  expect(await scheduler.dispatchNow(routine.id)).toBe("paused");
+  expect((await f.store.resume(routine.id))?.pausedAt).toBeUndefined();
+  const from = f.h.events.length;
+  const fire = await f.dispatch(routine.id);
+  (await waitForReport(from)).finish();
+  await fire.result;
+  expect(f.h.children).toHaveLength(3);
+  expect((await f.store.listScheduleDisplay()).routines[0].attachmentId).toBe(replacement.id);
+}));
+
+it("two bad runs pause the schedule and a completed run resets the count", () => fixture(async f => {
+  const routine = await f.add();
+  await f.attach(routine.id, await f.h.confirm([autoStageOf("report")]));
+  const first = await f.dispatch(routine.id);
+  (await f.h.untilLive(1))[0].finish({ ok: false, error: "Stage failed" });
+  await first.result;
+  const [row] = await f.rows();
+  if (!row.runId) throw new Error("Expected the parked run");
+  expect(await f.h.engine.retryStage(row.id, { runId: row.runId, stageId: "report", attempt: 1 })).toEqual({ ok: true });
+  (await f.h.untilLive(1, row.id))[0].finish();
+  await f.h.until(row.id, item => item.runStatus === "completed");
+  await untilAsserted(wake => f.store.changed.subscribe(wake), () => {
+    expect(f.store.list()[0].lastFailure).toBeUndefined();
+  }, "the same firing's completed retry to clear its failure");
+
+  const from = f.h.events.length;
+  const second = await f.dispatch(routine.id);
+  const linked = await f.h.waitForProgress(event => event.stageId === "report" && event.runSessionId !== undefined, "the second scheduled child", from);
+  const child = f.h.children.find(candidate => candidate.sessionId === linked.runSessionId);
+  if (!child) throw new Error("Expected the second scheduled child");
+  child.finish({ ok: false, error: "Stage failed again" });
+  await second.result;
+  expect(f.store.list()[0].pausedAt).toBeUndefined();
+}));
+
+it("the breaker uses the ordinary pause guard for a dismissed routine", () => fixture(async f => {
+  const routine = await f.add();
+  const outcomeAt = new Date(Date.now()).toISOString();
+  await f.store.recordTemplateScheduleOutcome(routine.id, outcomeAt, "failed");
+  await f.store.dismiss(routine.id);
+  const secondAt = new Date(Date.parse(outcomeAt) + 1).toISOString();
+  expect(await f.store.pause(routine.id, "user")).toBeNull();
+  expect((await f.store.recordTemplateScheduleOutcome(routine.id, secondAt, "failed"))?.pausedAt).toBeUndefined();
+}));
+
+it("a post-link refusal does not count as an unavailable firing", async () => {
+  const tool = { stageId: "second", collection: "mcpReadOnlyTools", name: "lookup" } as const;
+  let available = false;
+  await fixture(async f => {
+    const routine = await f.add();
+    const version = await f.h.confirm([autoStageOf("first"), autoStageOf("second", { inputs: ["first"] })]);
+    await f.attach(routine.id, version);
+    await (await f.dispatch(routine.id)).result;
+    expect(f.store.list()[0].lastTemplateSkip).toEqual({ code: "tool-effect-unknown", tool });
+    available = true;
+    const linked = await f.dispatch(routine.id);
+    const [first] = await f.h.untilLive(1);
+    available = false;
+    first.finish();
+    await linked.result;
+    expect(await f.rows()).toMatchObject([{ runStatus: "cancelled" }]);
+    expect(f.store.list()[0]).toMatchObject({ lastFailure: { reason: "tool-effect-unknown" } });
+    expect(f.store.list()[0].lastTemplateSkip).toBeUndefined();
+    expect(f.store.list()[0].pausedAt).toBeUndefined();
+    expect(f.h.children).toHaveLength(1);
+    await (await f.dispatch(routine.id)).result;
+    expect(f.store.list()[0].pausedBy).toBe("schedule-breaker");
+  }, { workflow: { unattendedAllowed: () => available ? { ok: true } : { ok: false, code: "tool-effect-unknown", tool } } });
+});
+
 it("after a replacement attach a fire is skipped while the earlier attachment's run still has a live child, and that child is not interrupted", () => fixture(async f => {
   const routine = await f.add();
   const v1 = await f.h.confirm([stageOf("first"), autoStageOf("later", { inputs: ["first"] })]);
@@ -367,7 +478,9 @@ it("rolls back a fire revoked between the board write and beginStart", () => fix
 }));
 
 it.each(["scope-not-authorised", "scope-changed", "attachment-detached"] as const)(
-  "rolls back the prepared workspace and run on %s before the first child links", async code => {
+  "rolls back a pre-link %s refusal without a breaker outcome", async code => {
+    const tool = { stageId: "first", collection: "mcpReadOnlyTools", name: "lookup" } as const;
+    let available = false;
     await fixture(async f => {
       const projectRoot = join(f.h.dir, "project");
       await mkdir(projectRoot);
@@ -375,6 +488,9 @@ it.each(["scope-not-authorised", "scope-changed", "attachment-detached"] as cons
       const scope = project(projectRoot);
       const version = await f.h.confirm([autoStageOf("first")], { scope });
       const attachment = await f.attach(routine.id, version, scope);
+      await (await f.dispatch(routine.id)).result;
+      expect(f.store.list()[0].lastTemplateSkip).toEqual({ code: "tool-effect-unknown", tool });
+      available = true;
       let runRoot: string | undefined;
       const updateRun = f.h.board.updateRun.bind(f.h.board);
       const interleave = vi.spyOn(f.h.board, "updateRun").mockImplementation(async (...args) => {
@@ -399,12 +515,15 @@ it.each(["scope-not-authorised", "scope-changed", "attachment-detached"] as cons
         expect(await f.rows()).toEqual([]);
         expect(await f.h.board.runs.list()).toEqual({ status: "found", runs: [] });
         expect(f.h.children).toEqual([]);
+        expect(f.h.audits.at(-1)).toMatchObject({ code });
+        expect(f.store.list()[0].pausedAt).toBeUndefined();
         if (!runRoot) throw new Error("Expected a prepared workspace");
         await expect(access(runRoot)).rejects.toMatchObject({ code: "ENOENT" });
       } finally {
         interleave.mockRestore();
       }
     }, {
+      workflow: { unattendedAllowed: () => available ? { ok: true } : { ok: false, code: "tool-effect-unknown", tool } },
       wiring: store => ({ workspace: createStageWorkspaceProvider({ plainCeiling: tmpdir(), removable: () => store.runsWithoutItem() }) }),
     });
   },
@@ -489,3 +608,156 @@ it("a fire refuses unreadable attachment storage without starting or removing th
   expect(await f.h.board.runs.list()).toEqual({ status: "found", runs: [] });
   expect(f.h.children).toEqual([]);
 }));
+
+it("preserves the breaker streak across a human gate and clears it on approval and completion", async () => {
+  const tool = { stageId: "first", collection: "mcpReadOnlyTools", name: "lookup" } as const;
+  let available = false;
+  await fixture(async f => {
+    const routine = await f.add();
+    const version = await f.h.confirm([stageOf("first")]);
+    await f.attach(routine.id, version);
+    await (await f.dispatch(routine.id)).result;
+    available = true;
+    const fire = await f.dispatch(routine.id);
+    (await f.h.untilLive(1))[0].finish();
+    await fire.result;
+    const [row] = await f.rows();
+    expect((await f.h.stageRun(row.id, "first")).status).toBe("awaiting_gate");
+    expect(f.store.list()[0].pausedAt).toBeUndefined();
+    await (await f.dispatch(routine.id)).result;
+    expect(f.store.list()[0].lastTemplateSkip).toEqual({ code: "run-unsettled" });
+    await f.h.decide(row.id, "first", "approve");
+    await f.h.until(row.id, item => item.runStatus === "completed");
+
+    available = false;
+    await (await f.dispatch(routine.id)).result;
+    expect(f.store.list()[0].pausedAt).toBeUndefined();
+    await (await f.dispatch(routine.id)).result;
+    expect(f.store.list()[0].pausedBy).toBe("schedule-breaker");
+  }, { workflow: { unattendedAllowed: () => available ? { ok: true } : { ok: false, code: "tool-effect-unknown", tool } } });
+});
+
+it("pauses a schedule after registry qualification refuses two fires", async () => {
+  const registry = new ToolRegistry();
+  const tool = { stageId: "first", collection: "tools", name: "read_file" } as const;
+  const effects = createToolEffectResolver(registry);
+  await fixture(async f => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const routine = await f.add();
+      const version = await f.h.confirm([autoStageOf("first", { envelope: {
+        tools: [tool.name], writePaths: [], readRoots: [], network: [], commands: [], mcpReadOnlyTools: [],
+        mcpGenerationTools: [], pluginGenerationTools: [], outputs: [], budget: { rounds: 2, minutes: 1, costUsd: 0 },
+      } })]);
+      const attached = await f.attach(routine.id, version);
+      await (await f.dispatch(routine.id)).result;
+      expect(f.store.list()[0].lastTemplateSkip).toEqual({ code: "tool-effect-unknown", tool });
+      expect(f.store.list()[0].pausedAt).toBeUndefined();
+
+      registry.register(createDynamicTool({
+        name: tool.name, description: "Read a fixture", source: "builtin", category: "read",
+        unattendedEffect: "outward", jsonSchema: { type: "object" },
+        execute: async () => ({ output: "", isError: false }),
+      }));
+      vi.setSystemTime(Date.now() + 1_000);
+      await (await f.dispatch(routine.id)).result;
+      expect(f.store.list()[0]).toMatchObject({
+        lastTemplateSkip: { code: "outward-effect-tool", tool }, pausedBy: "schedule-breaker",
+      });
+      expect(await f.h.templates.getAttachment(attached.id)).toEqual(attached);
+      expect(await f.rows()).toEqual([]);
+      expect(f.h.children).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, {
+    wiring: (store, { templates, workspace }) => ({
+      ...workflowEngineExtensions(store, templates, runScopePermissions(), effects), workspace,
+    }),
+  });
+});
+
+it("counts a stage that fails after a human gate against the same routine", async () => {
+  const tool = { stageId: "first", collection: "mcpReadOnlyTools", name: "lookup" } as const;
+  let available = false;
+  await fixture(async f => {
+    const routine = await f.add();
+    const version = await f.h.confirm([stageOf("first"), autoStageOf("later", { inputs: ["first"] })]);
+    await f.attach(routine.id, version);
+    await (await f.dispatch(routine.id)).result;
+    available = true;
+    const fire = await f.dispatch(routine.id);
+    (await f.h.untilLive(1))[0].finish();
+    await fire.result;
+    const [row] = await f.rows();
+    expect(f.store.list()[0].pausedAt).toBeUndefined();
+    expect(await f.h.decide(row.id, "first", "approve")).toMatchObject({ ok: true });
+    (await f.h.untilLive(1))[0].finish({ ok: false, error: "Stage failed" });
+    await untilAsserted(wake => f.store.changed.subscribe(wake), () => {
+      expect(f.store.list()[0]).toMatchObject({ pausedBy: "schedule-breaker", lastFailure: { reason: "stage-failed" } });
+    }, "the routine to pause after the later stage fails");
+  }, { workflow: { unattendedAllowed: () => available ? { ok: true } : { ok: false, code: "tool-effect-unknown", tool } } });
+});
+
+it.each(["before classification", "after classification"])("does not count a timed-out failure when Stop settles %s", async settlement => {
+  let available = false;
+  await fixture(async f => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const scanEntered = deferred<void>();
+    const scanRelease = deferred<void>();
+    try {
+      const routine = await f.add();
+      const envelope = {
+        tools: [], writePaths: [], readRoots: [], network: [], commands: [], mcpReadOnlyTools: [],
+        mcpGenerationTools: [], pluginGenerationTools: [], outputs: [], budget: { rounds: 2, minutes: 1, costUsd: 0 },
+      };
+      await f.attach(routine.id, await f.h.confirm([stageOf("first"), autoStageOf("later", { inputs: ["first"], envelope })]));
+      await (await f.dispatch(routine.id)).result;
+      expect(f.store.list()[0].pausedAt).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1_000);
+      available = true;
+      const fire = await f.dispatch(routine.id);
+      (await f.h.untilLive(1))[0].finish();
+      await fire.result;
+      const [row] = await f.rows();
+      expect(await f.h.decide(row.id, "first", "approve")).toMatchObject({ ok: true });
+      const [later] = await f.h.untilLive(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await f.h.untilStage(row.id, "later", "failed");
+      expect(f.h.engine.cancelRun(row.id)).toEqual({ ok: true });
+      await f.h.drainRunWork();
+      expect(later.ended).toBe(false);
+      if (settlement === "before classification") {
+        const readOutcome = f.h.engine.readScheduledOutcome;
+        vi.spyOn(f.h.engine, "readScheduledOutcome").mockImplementationOnce(async snapshot => {
+          expect(snapshot.settled).toBeUndefined();
+          scanEntered.resolve();
+          await scanRelease.promise;
+          return readOutcome(snapshot);
+        });
+      }
+      const scan = await f.dispatch(routine.id);
+      if (settlement === "before classification") {
+        await scanEntered.promise;
+        later.finish({ ok: false, stopReason: "interrupted" });
+        await f.h.drainRunWork();
+        expect((await f.h.item(row.id)).record?.settled?.status).toBe("cancelled");
+        scanRelease.resolve();
+      }
+      await scan.result;
+      expect(f.store.list()[0]).toMatchObject({ lastTemplateSkip: { code: "run-unsettled" } });
+      expect(f.store.list()[0].pausedBy).toBeUndefined();
+      if (!later.ended) later.finish({ ok: false, stopReason: "interrupted" });
+      await f.h.drainRunWork();
+      expect((await f.h.item(row.id)).record?.settled?.status).toBe("cancelled");
+    } finally {
+      scanRelease.resolve();
+      vi.useRealTimers();
+    }
+  }, {
+    interruptChild: vi.fn(),
+    workflow: { unattendedAllowed: () => available ? { ok: true } : {
+      ok: false, code: "tool-effect-unknown", tool: { stageId: "first", collection: "mcpReadOnlyTools", name: "lookup" },
+    } },
+  });
+});

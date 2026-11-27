@@ -200,6 +200,8 @@ export interface SubAgentSpawnInput {
   /** Host-assigned round budget for the child loop, in assistant rounds. The LLM cannot pick this: the `agent_spawn` tool no longer exposes a `maxTurns` schema field. It is set ONLY by host callers that run a sub-agent for a FIXED-shape task (e.g. WorkBoardEngine's plan/execute
    * phases) and know the right budget for that phase. When absent, the budget is the user's configured `chat.subAgentMaxRounds` and finally `MAX_TURNS_DEFAULT`; see `spawn()`. This is host policy, not an LLM-tunable knob, so it is intentionally not surfaced in the tool schema. */
   maxRounds?: number;
+  /** Host-only round admission for an unattended stage and its descendants. */
+  claimRound?: () => boolean;
   /** Origin session id; audit attribution, and the conversation a tier-2 approval answer is attributed to when this run has one. */
   originSessionId?: string;
   /** The task the PARENT wrote, before any agent-profile body is rendered around it. Only a caller that can vouch for that sets it, and only a run that has it can have its child's approvals routed to its parent. Separate from `instructions`
@@ -610,6 +612,7 @@ interface ActiveSubAgentChild {
   lease: symbol;
   childSessionId: string;
   originSessionId?: string;
+  claimRound?: SubAgentSpawnInput["claimRound"];
   /** Filesystem-canonical root frozen before any live workspace revocation. */
   wireProjectRoot?: string;
   title: string;
@@ -2000,6 +2003,7 @@ export class SubAgentRunner {
   private registerActiveChild(args: {
     childSessionId: string;
     originSessionId?: string;
+    claimRound?: SubAgentSpawnInput["claimRound"];
     wireProjectRoot?: string;
     title: string;
     loop: ConversationLoop;
@@ -2822,6 +2826,8 @@ export class SubAgentRunner {
     stageParent?: { stage: StageSubAgentScope; abortSignal?: AbortSignal; activePluginIds: ReadonlySet<string> },
   ): Promise<SubAgentSpawnResult> {
     const childSessionId = buildChildSessionId(input.originSessionId);
+    const parent = input.originSessionId === undefined ? undefined : this.activeChildren.get(input.originSessionId);
+    const claimRound = parent?.claimRound ?? (input.unattendedStage ? input.claimRound : undefined);
     if (inheritUnattendedStage(childSessionId, input.originSessionId)) {
       checkpointChild.endLane = () => endUnattendedStage(childSessionId);
     }
@@ -2991,6 +2997,7 @@ export class SubAgentRunner {
     const activeLease = this.registerActiveChild({
       childSessionId,
       originSessionId: input.originSessionId,
+      claimRound,
       ...(executionPolicy && input.projectRoot ? { wireProjectRoot: input.projectRoot } : {}),
       title: input.title,
       loop: child,
@@ -3244,6 +3251,7 @@ export class SubAgentRunner {
         signal,
         {
           maxRounds: cappedRounds,
+          claimRound,
           sessionIdOverride: childSessionId,
           spawnDepth: stageParent ? 2 : 1,
           ...(stageScope ? { stageSubAgents: true as const } : {}),
@@ -4021,9 +4029,11 @@ export class SubAgentRunner {
     }
     // A resumed child is live as soon as its loop and project scope exist. Register it before mailbox or metadata I/O so
     // workspace removal cannot snapshot activeChildren in the construction-to-run gap and leave stale directories on the child loop.
+    const claimRound = originSessionId === undefined ? undefined : this.activeChildren.get(originSessionId)?.claimRound;
     activeLease = this.registerActiveChild({
       childSessionId: resumeId,
       originSessionId: meta.originSessionId,
+      claimRound,
       ...(executionPolicy && meta.projectRoot ? { wireProjectRoot: meta.projectRoot } : {}),
       title: meta.subAgentTitle,
       loop: child,
@@ -4200,6 +4210,7 @@ export class SubAgentRunner {
         cancellation.signal,
         {
           maxRounds: cappedRounds,
+          claimRound,
           sessionIdOverride: resumeId,
           spawnDepth: 1,
           ...(initialGuidance.length > 0 ? { initialGuidance } : {}),
