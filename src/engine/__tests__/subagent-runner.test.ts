@@ -521,11 +521,41 @@ it.each(["attended", "scheduled"] as const)("uses the bound stage folder for %s 
   }
 });
 
+it("refuses an unbound stage workspace before authorizing a project", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ave-unbound-stage-"));
+  const home = join(dir, "home");
+  const stage = join(home, "worktrees", "project", "abcdefghijkl", "gather");
+  const registry = new ToolRegistry();
+  const authorizeProject = vi.fn(() => null);
+  const getDefaultProject = vi.fn(() => ({ projectRoot: join(home, "workspace"), isDefault: true }));
+  vi.stubEnv("AVE_HOME", home);
+  const runner = new SubAgentRunner({
+    parentDeps: buildLoopDeps(registry, { authorizeProject, getDefaultProject }),
+    toolRegistry: registry, subAgentMemoryManager: fakeSubAgentMemoryManager(),
+  });
+  try {
+    const result = await runner.spawn({
+      title: "Gather stage", instructions: "Read the input", toolScope: DENY_ALL_TOOL_SCOPE,
+      originSessionId: workBoardOriginSessionId(97), projectRoot: stage,
+    });
+    expect(result).toMatchObject({ ok: false, error: "Workflow stage workspace binding is missing" });
+    expect(authorizeProject).not.toHaveBeenCalled();
+    expect(getDefaultProject).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllEnvs();
+    await cleanupTmpDir(dir);
+  }
+});
+
 describe("SubAgentRunner — authorization terminal propagation", () => {
   it.each([
     { name: "web_search", flags: { arbitraryEgress: true }, input: { query: "fixture" } },
     { name: "mcp_resource_read", flags: { requiresMcpScope: true }, input: { serverId: "fixture", uri: "fixture://entry" } },
     { name: "agent_send", flags: {}, input: { message: "fixture" } },
+    { name: "workflow_template_propose", flags: { requiresAttendedStage: true }, input: {} },
+    { name: "request_plugin", flags: { requiresAttendedStage: true }, input: { pluginId: "fixture" } },
+    { name: "session_goal", flags: { requiresAttendedStage: true }, input: {} },
+    { name: "session_tasks", flags: { requiresAttendedStage: true }, input: {} },
     ...Object.values(BROWSER_TOOL).map(name => ({ name, flags: {}, input: {} })),
   ])("a scheduled stage refuses an unadvertised $name call by name", async ({ name, flags, input }) => {
     const dir = mkdtempSync(join(tmpdir(), "ave-unattended-scope-"));
@@ -553,7 +583,7 @@ describe("SubAgentRunner — authorization terminal propagation", () => {
         projectRoot: dir, originSessionId: workBoardOriginSessionId(97), unattendedStage: { runKey: "report-run", stageId: "read" },
       });
       expect(execute).not.toHaveBeenCalled();
-      expect(result).toMatchObject({ ok: true, stopReason: "end_turn", allToolCallsFailed: true });
+      expect(result).toMatchObject({ ok: true, stopReason: "end_turn", allToolCallsRefused: true });
       expect(provider.observedToolNames[0]).toEqual(["read_file", "read_tool_result_chunk"]);
       expect(provider.observedMessages[1]).toContainEqual(expect.objectContaining({
         role: "tool_result", toolUseId: "outside-scope", content: t("be_executor.toolNotFound", { name }), isError: true,
@@ -594,6 +624,7 @@ describe("SubAgentRunner — authorization terminal propagation", () => {
       expect(check.mock.results.map(call => call.value)).toContainEqual(expect.objectContaining({
         decision: "deny", pipelineRequest: expect.objectContaining({ mode: "strict", headless: true }),
       }));
+      expect(result).toMatchObject({ ok: true, stopReason: "end_turn", allToolCallsRefused: true });
       expect(sessionAuthorityWithheld(result.childSessionId)).toBe(true);
       expect(gate.pendingCount).toBe(0);
       expect(contents.send).not.toHaveBeenCalledWith(IPC_APPROVAL_REQUEST, expect.anything());

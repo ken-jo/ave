@@ -373,24 +373,26 @@ function LiveRunChip({
   run,
   startedAt,
   toolApprovalPending,
+  reviewPending,
 }: {
   run: WorkItemRunState;
   startedAt: string | undefined;
   /** One of the run's tool approvals waits for the user: the run is paused on it. */
   toolApprovalPending: boolean;
+  reviewPending: boolean;
 }) {
-  const now = useNowTick(true);
-  const label = liveChipLabel(run.phase);
+  const now = useNowTick(!reviewPending);
+  const label = reviewPending ? t("workBoard.liveChipAwaitingReview") : liveChipLabel(run.phase);
   if (label === null) return null;
   const turn = currentPhaseTurn(run);
   const startMs = startedAt ? Date.parse(startedAt) : Number.NaN;
   // Stopping and a waiting tool approval outrank the phase word: they are what the run is doing now.
-  const state = run.stopping ? "stopping" : toolApprovalPending ? "tool-approval" : (run.phase ?? "starting");
+  const state = run.stopping ? "stopping" : toolApprovalPending ? "tool-approval" : reviewPending ? "awaiting-review" : (run.phase ?? "starting");
   const parts = [run.stopping ? t("workBoard.liveChipStopping") : toolApprovalPending ? t("workBoard.liveChipToolApproval") : label];
-  if (!run.stopping && turn !== undefined) parts.push(t("workBoard.liveChipTurn", { turn }));
-  if (!run.stopping && !toolApprovalPending && Number.isFinite(startMs)) parts.push(formatElapsed(now - startMs));
+  if (!run.stopping && !reviewPending && turn !== undefined) parts.push(t("workBoard.liveChipTurn", { turn }));
+  if (!run.stopping && !toolApprovalPending && !reviewPending && Number.isFinite(startMs)) parts.push(formatElapsed(now - startMs));
   // A plan or a tool call waiting on the user is "needs your answer": the warning token, as in the agent status slot.
-  const awaiting = toolApprovalPending || run.phase === "awaiting_approval";
+  const awaiting = toolApprovalPending || reviewPending || run.phase === "awaiting_approval";
   const tone = run.stopping
     ? "border-border bg-muted text-muted-foreground"
     : awaiting
@@ -400,7 +402,7 @@ function LiveRunChip({
     <span
       className={`inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-tiny font-medium leading-none tabular-nums border ${tone}`}
       data-testid="work-board-live-chip"
-      data-phase={run.phase ?? "starting"}
+      data-phase={reviewPending ? "awaiting_approval" : run.phase ?? "starting"}
       data-state={state}
     >
       {awaiting && !run.stopping ? (
@@ -536,7 +538,12 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
                     {t("workBoard.overdueBadge")}
                   </Badge>
                 )}
-                <LiveRunChip run={live} startedAt={runStartedAt(item)} toolApprovalPending={toolApproval !== undefined} />
+                <LiveRunChip
+                  run={live}
+                  startedAt={runStartedAt(item)}
+                  toolApprovalPending={toolApproval !== undefined}
+                  reviewPending={item.templateRunState === "awaiting_review"}
+                />
                 {/* A strut in the due line's type, so this row is exactly as tall as the due line it replaces. */}
                 <span aria-hidden="true" className="invisible w-0 text-dense">{"\u200b"}</span>
                 {!item.detail && narrationLine("min-w-0 flex-1 truncate text-dense text-muted-foreground")}

@@ -228,12 +228,12 @@ export interface TurnToolCall {
   name: string;
   input: Record<string, unknown>;
   result: string;
-  isError?: true;
 }
 
 export interface TurnResult {
   text: string;
   toolCalls: TurnToolCall[];
+  allToolCallsRefused?: true;
   route: string;
   usage?: TokenUsage;
   usageByModel?: TokenUsageByModel[];

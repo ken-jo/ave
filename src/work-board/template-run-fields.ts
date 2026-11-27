@@ -1,6 +1,6 @@
 import { isRecord } from "../shared/is-record.js";
 import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
-import type { WorkflowRunRecord } from "../shared/workflow-template-types.js";
+import { STAGE_TOOL_CALLS_REFUSED, type WorkflowRunRecord } from "../shared/workflow-template-types.js";
 import { hasTemplateKeys, parseRequestedOutputDecl, isGraphHash, isStageId, isTemplateId, isTemplateVersion, isWorkspaceGlob, requireTemplate, WorkflowTemplateError } from "./template-graph.js";
 import { MAX_LANE_DENIALS_PER_STAGE } from "./workflow/run-budget.js";
 const STAGE_STATUSES = ["waiting", "running", "awaiting_gate", "passed", "failed", "cancelled", "rejected"];
@@ -48,6 +48,7 @@ function validStage(value: unknown): boolean {
   if (typeof value.output === "string" && value.output.length > 48_000) throw new WorkflowTemplateError("invalid-template-run", "Stage output exceeds 48000 characters");
   if (!optional(value, "resultHash", isGraphHash) || "outputHash" in value) return false;
   if (!optional(value, "failure", v => ["error", "gate", "interrupted", "denied-tool", "workspace-lost", "workspace-revoked", "budget", "seed"].includes(v as string))
+    || !optional(value, "failureReason", v => v === STAGE_TOOL_CALLS_REFUSED && value.status === "failed" && value.failure === "error")
     || !optional(value, "taint", v => v === "file-content" || v === "agent-message") || !optional(value, "workspace", v => workspace(v, false))
     || !optional(value, "blocked", v => isRecord(v) && ["envelope-missing", "isolation-unproven", "lane-unavailable"].includes(v.code as string) && timestamp(v.at))
     || !optional(value, "requestedOutputs", v => uniqueEntries(v, 10, requestedOutput))

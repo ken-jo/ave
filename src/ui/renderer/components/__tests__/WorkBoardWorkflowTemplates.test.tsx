@@ -1,3 +1,4 @@
+import { STAGE_TOOL_CALLS_REFUSED } from "../../../../shared/workflow-template-types.js";
 import { useState } from "react";
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
@@ -399,6 +400,14 @@ it("the gate card of a push to an https remote shows the help text, and the card
   expect(view.queryByText(t("workflowTemplates.pushHttpsAccountsHelp"))).toBeNull();
 });
 
+it.each(["en", "ko"] as const)("renders the saved stage refusal reason in %s", async locale => {
+  await loadLocaleMessages(locale);
+  setLocale(locale);
+  render(<WorkflowStageEvidence stageName={id => id}
+    stage={{ stageId: "summarize", attempt: 1, status: "failed", failure: "error", failureReason: STAGE_TOOL_CALLS_REFUSED }} />);
+  expect(screen.getByText(t(STAGE_TOOL_CALLS_REFUSED))).toBeVisible();
+});
+
 it("the authentication failure shows the https accounts help text", () => {
   const detail = JSON.stringify({ exit: { code: "push-authentication", message: "Authentication failed" } });
   const view = render(<WorkflowStageEvidence stageName={id => id}
@@ -530,12 +539,23 @@ it("uses the decision gesture message when no gesture accompanies approval", asy
   expect(view.queryByText(t("reasonCodes.user-gesture-required"))).toBeNull();
 });
 
-it("keeps a template run with no plan in progress when its launch returns parked", async () => {
-  const { finish } = mount([{ ...item, runPin: pin, templateRunState: "running" }]);
+it.each(["running", "resuming"] as const)("keeps a %s template run in progress when its launch returns parked", async templateRunState => {
+  const { finish } = mount([{ ...item, runPin: pin, templateRunState }]);
   await screen.findByRole("button", { name: item.title });
   finish({ itemId: item.id, status: "awaiting_approval", at });
   const chip = await screen.findByTestId("work-board-live-chip");
   expect(chip).toHaveAttribute("data-phase", "executing");
   expect(screen.queryByText(t("workBoard.liveChipAwaitingApproval"), { exact: false })).toBeNull();
   expect(screen.queryByText(t("workBoard.liveNarrationWaiting"))).toBeNull();
+});
+
+it("shows the review waiting chip when a template run parks at a human gate", async () => {
+  const { finish } = mount([{ ...item, runPin: pin, templateRunState: "awaiting_review" }]);
+  await screen.findByRole("button", { name: item.title });
+  finish({ itemId: item.id, status: "awaiting_approval", at });
+  const chip = await screen.findByTestId("work-board-live-chip");
+  expect(chip).toHaveAttribute("data-state", "awaiting-review");
+  expect(chip).toHaveClass("text-warning");
+  expect(chip).toHaveTextContent(t("workBoard.liveChipAwaitingReview"));
+  expect(chip).not.toHaveTextContent(t("workBoard.liveChipExecuting"));
 });

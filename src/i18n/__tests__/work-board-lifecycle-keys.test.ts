@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { STAGE_TOOL_CALLS_REFUSED } from "../../shared/workflow-template-types.js";
 import { SUPPORTED_LOCALES } from "../locale.js";
 import { loadAllLocaleMessages } from "../messages/index.js";
 
@@ -12,8 +13,8 @@ const KEYS = [
 describe("work board lifecycle labels", () => {
   it.each(SUPPORTED_LOCALES)("has actual labels in %s without fallback", async (locale) => {
     const catalogs = await loadAllLocaleMessages();
-    for (const key of KEYS) {
-      expect(catalogs[locale][`workBoard.${key}`], `${locale}:${key}`).toEqual(expect.stringMatching(/\S/));
+    for (const key of [...KEYS.map(label => `workBoard.${label}`), "workBoard.liveChipAwaitingReview", STAGE_TOOL_CALLS_REFUSED]) {
+      expect(catalogs[locale][key], `${locale}:${key}`).toEqual(expect.stringMatching(/\S/));
     }
   });
 });

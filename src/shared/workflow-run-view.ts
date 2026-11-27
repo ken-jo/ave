@@ -35,7 +35,7 @@ export interface WorkflowStageInputView {
   truncated: boolean;
 }
 
-export interface WorkflowStageView extends Pick<WorkItemStageRun, "stageId" | "attempt" | "status" | "childSessionId" | "startedAt" | "endedAt" | "failure" | "gate" | "outputExecutions"> {
+export interface WorkflowStageView extends Pick<WorkItemStageRun, "stageId" | "attempt" | "status" | "childSessionId" | "startedAt" | "endedAt" | "failure" | "failureReason" | "gate" | "outputExecutions"> {
   deniedCalls?: WorkItemStageRun["deniedCalls"];
   result?: string;
   resultHash?: string;

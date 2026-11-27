@@ -15,6 +15,7 @@
  * builder, and the plugin/MCP lifecycle all consume this shape.
  */
 import { z } from "zod";
+import { markHostRefusal } from "./host-refusal.js";
 import { isBrowserToolName } from "../shared/browser-tools.js";
 import type {
   ToolSource,
@@ -204,8 +205,9 @@ export abstract class ZodTool<TSchema extends z.ZodTypeAny = z.ZodTypeAny>
     rawInput: unknown,
     ctx: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
-    const parsed = this.inputSchema.parse(rawInput) as z.infer<TSchema>;
-    return this.executeTyped(parsed, ctx);
+    const parsed = this.inputSchema.safeParse(rawInput);
+    if (!parsed.success) throw markHostRefusal(parsed.error);
+    return this.executeTyped(parsed.data as z.infer<TSchema>, ctx);
   }
 
   /** Typed execution after Zod parsing. Subclasses implement this; the public {@link execute} entry point threads raw LLM-supplied input through the zod schema before dispatching. */

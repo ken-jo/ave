@@ -10,6 +10,15 @@ import { OwnedFsError } from "../../work-board/workflow/owned-fs.js";
 import { RUN_FILE_REFUSALS } from "../../work-board/workflow/stage-run-engine.js";
 import { WORKSPACE_REFUSALS } from "../../work-board/workflow/stage-workspace.js";
 import type { RunAuthorityVerdict } from "../../work-board/workflow/run-authority.js";
+import { makeSubagentLoopDeps, patchLoopProvider } from "../../engine/__tests__/support/subagent-loop-fixtures.js";
+import type { StreamEvent } from "../../engine/llm/types.js";
+import { SubAgentRunner } from "../../engine/subagent-runner.js";
+import { MemoryManager } from "../../memory/memory-manager.js";
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
+import { PermissionManager } from "../../permissions/permission-manager.js";
+import { ReadFileTool } from "../../tools/file-tools.js";
+import { ToolRegistry } from "../../tools/registry.js";
+import { STAGE_TOOL_CALLS_REFUSED } from "../../shared/workflow-template-types.js";
 import { en } from "../../i18n/messages/en.js";
 import { ko } from "../../i18n/messages/ko.js";
 
@@ -639,22 +648,62 @@ it("a scheduled run parks at its human gate after reconcile and a local approve 
   await h.until(started.itemId, item => item.runStatus === "completed");
 }));
 
-it.each(["all failed", "recovered", "no calls"] as const)("uses the tool outcome for stage_ok when tools were %s", async outcome => {
-  await withHarness(async h => {
-    const version = await h.confirm([auto("a")]);
-    const id = await h.addItem(version);
-    const settled = h.start(id, h.local(version));
-    const [child] = await h.untilLive(1);
-    child.finish({
-      stopReason: "end_turn", toolCallCount: outcome === "no calls" ? 0 : outcome === "all failed" ? 1 : 2,
-      ...(outcome === "all failed" ? { allToolCallsFailed: true } : {}),
-    });
-    if (outcome === "all failed") {
-      await expect(settled).resolves.toMatchObject({ status: "awaiting_approval" });
-      expect(await h.stageRun(id, "a")).toMatchObject({ status: "failed", failure: "error" });
-    } else {
-      await expect(settled).resolves.toMatchObject({ status: "completed" });
-      expect(await h.stageRun(id, "a")).toMatchObject({ status: "passed" });
-    }
+const missingFile = { type: "tool_call", id: "missing", name: "read_file", input: { path: "missing.txt" } } as const;
+const unknownTool = { type: "tool_call", id: "unknown", name: "unavailable_tool", input: {} } as const;
+
+it.each<{ outcome: string; calls: StreamEvent[]; refused?: true; deny?: true }>([
+  { outcome: "permission denied", calls: [missingFile], refused: true, deny: true },
+  { outcome: "malformed arguments", calls: [{ ...missingFile, input: {}, invalidInput: { raw: "{", reason: "unparsable-json", rawChars: 1 } }], refused: true },
+  { outcome: "invalid arguments", calls: [{ ...missingFile, input: { path: 42 } }], refused: true },
+  { outcome: "tool not found", calls: [unknownTool], refused: true },
+  { outcome: "ordinary file error", calls: [missingFile] },
+  { outcome: "mixed refusal and file error", calls: [unknownTool, missingFile] },
+  { outcome: "no calls", calls: [] },
+])("uses the child's output for stage_ok after $outcome unless every call was refused", async ({ calls, refused, deny }) => {
+  const registry = new ToolRegistry();
+  registry.register(new ReadFileTool());
+  const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider({
+    vendor: "claude",
+    async *streamTurn({ messages }) {
+      if (calls.length && !messages.some(message => message.role === "tool_result")) {
+        yield* calls;
+        yield { type: "message_complete", stopReason: "tool_use" };
+        return;
+      }
+      yield { type: "text_delta", text: "No input was available." };
+      yield { type: "message_complete", stopReason: "end_turn" };
+    },
   });
+  try {
+    await withHarness(async h => {
+      const version = await h.confirm([auto("a")]);
+      const id = await h.addItem(version);
+      const settled = await h.start(id, h.local(version));
+      if (refused) {
+        expect(settled).toMatchObject({ status: "awaiting_approval" });
+        expect(await h.stageRun(id, "a")).toMatchObject({
+          status: "failed", failure: "error", failureReason: STAGE_TOOL_CALLS_REFUSED,
+        });
+        expect(h.events.some(event => event.workflowRun?.stages.some(stage => stage.failureReason === STAGE_TOOL_CALLS_REFUSED))).toBe(true);
+      } else {
+        expect(settled).toMatchObject({ status: "completed" });
+        expect(await h.stageRun(id, "a")).toMatchObject({ status: "passed", output: "No input was available." });
+      }
+    }, {
+      runner: dir => {
+        const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+        if (deny) permissionManager.checkDetailed = () => ({ decision: "deny", reason: "Fixture permission denied", provenance: RULE_PROVENANCE });
+        return new SubAgentRunner({
+          parentDeps: makeSubagentLoopDeps(registry, {
+            permissionManager, authorizeProject: projectRoot => ({ projectRoot, isDefault: false }),
+          }),
+          toolRegistry: registry,
+          subAgentMemoryManager: new MemoryManager({ aveDir: join(dir, "children") }),
+        });
+      },
+    });
+  } finally {
+    hasProviderSpy.mockRestore();
+    refreshProviderSpy.mockRestore();
+  }
 });

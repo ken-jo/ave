@@ -23,7 +23,7 @@ import {
   GUIDE_MAX_CHARS,
 } from "./turn/guidance-limits.js";
 import { createReadToolResultChunkTool } from "../tools/tool-result-chunk.js";
-import { boundStageWorkspace, isOwnStageWorkspacePath } from "../permissions/stage-workspace-binding.js";
+import { boundStageWorkspace, isOwnStageWorkspacePath, isStageWorkspacesPath } from "../permissions/stage-workspace-binding.js";
 import { isUnattendedReadTool } from "../tools/base.js";
 import type { Tool } from "../tools/base.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -269,7 +269,7 @@ export interface SubAgentSpawnResult {
    * `summary` carries the error text and {@link error} repeats it. Callers (WorkBoardEngine, agent_spawn) MUST branch on this rather than treating any returned `summary` as a completed run: a failed run that surfaced its error string as `summary` must not be recorded as success. */
   ok: boolean;
   /** Host-observed failure of every tool call in a nonempty turn. */
-  allToolCallsFailed?: true;
+  allToolCallsRefused?: true;
   /** Failure reason when `ok === false`. Absent on a clean completion. */
   error?: string;
   /** Why the child loop stopped, forwarded verbatim from the child's `runTurn`. Undefined when the
@@ -2925,6 +2925,9 @@ export class SubAgentRunner {
         });
 
         const stageRoot = boundStageWorkspace(childSessionId);
+        if (stageRoot === undefined && input.projectRoot !== undefined && isStageWorkspacesPath(input.projectRoot)) {
+          throw new Error("Workflow stage workspace binding is missing");
+        }
         if (stageRoot !== undefined) {
           if (input.projectRoot === undefined || !isOwnStageWorkspacePath(childSessionId, input.projectRoot)) {
             throw new Error("Workflow stage workspace binding rejected");
@@ -3199,7 +3202,7 @@ export class SubAgentRunner {
     this.updateRun(trackedRun, { taskState: projectSubAgentRunState("running") });
 
     let totalToolCalls = 0;
-    let allToolCallsFailed = false;
+    let allToolCallsRefused = false;
     let lastText = "";
     let turn = 0;
 
@@ -3296,7 +3299,7 @@ export class SubAgentRunner {
       // `result.toolCalls.length` is the authoritative final count (the incremental `totalToolCalls`
       // matches it round-by-round; pin to the engine's number in case a round dropped a callback).
       totalToolCalls = result.toolCalls.length;
-      allToolCallsFailed = totalToolCalls > 0 && result.toolCalls.every(call => call.isError === true);
+      allToolCallsRefused = result.allToolCallsRefused === true;
       lastText = result.text;
       childStopReason = result.stopReason;
       childEndTrustOrigin = result.endTrustOrigin;
@@ -3365,7 +3368,7 @@ export class SubAgentRunner {
       inputRequired: childInputRequired,
       suspensionSessionId: child.sessionId,
     });
-    return await persistFinalResult(allToolCallsFailed ? { ...result, allToolCallsFailed: true } : result);
+    return await persistFinalResult(allToolCallsRefused ? { ...result, allToolCallsRefused: true } : result);
   }
 
   /** Resume rehydrates frozen authorization; never consult the current parent registry or grant tools from unreadable metadata.

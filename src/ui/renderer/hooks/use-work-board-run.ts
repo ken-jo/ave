@@ -531,9 +531,9 @@ export function useWorkBoardRun(
     if (typeof api.onWorkBoardRunFinished === "function") {
       unsubs.push(
         api.onWorkBoardRunFinished(({ itemId, status }) => {
+          const pinned = currentItems.current.some(item => item.id === itemId && item.runPin !== undefined);
           update(itemId, cur => {
-            const templateRun = cur.workflowRun !== undefined || currentItems.current.some(item => item.id === itemId && item.runPin !== undefined);
-            const phase = phaseForRunResult(status, templateRun);
+            const phase = phaseForRunResult(status, pinned || cur.workflowRun !== undefined);
             return { ...cur, busy: phase === "executing", stopping: false, phase, heldNotice: phase !== undefined && isTerminalPhase(phase) ? undefined : cur.heldNotice };
           });
         }),
