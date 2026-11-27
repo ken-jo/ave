@@ -269,6 +269,56 @@ describe("settings persistence", () => {
     expect(saved.pluginConfigs).toMatchObject({ sample: { mode: "fast" }, other: { mode: "slow" } });
   });
 
+  const firstEmbeddingWrites = [
+    { label: "local source selection", value: { source: "local" }, names: ["source", "providerId", "modelId", "consent"] },
+    { label: "provider source selection", value: { source: "provider", providerId: "example", modelId: "example-model" }, names: ["source", "providerId", "modelId", "consent"] },
+    { label: "model path", value: { localModelPath: "example-model" }, names: ["localModelPath"] },
+    { label: "released on choice", value: { localInferenceWithoutSandbox: true }, names: ["localInferenceWithoutSandbox"] },
+    { label: "released off choice", value: { localInferenceWithoutSandbox: false }, names: ["localInferenceWithoutSandbox"] },
+  ] as const;
+
+  it.runIf(process.platform === "win32").each(firstEmbeddingWrites)("persists the first admitted Memory Map write ($label)", async ({ value, names }) => {
+    expect(service.get("memoryEmbedding")).toBeUndefined();
+    await service.set("memoryEmbedding", value, {
+      field: ["memoryEmbedding", ...names],
+      canCommit: () => true,
+    });
+    expect(service.get("memoryEmbedding")).toEqual(value);
+    expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8")).memoryEmbedding).toEqual(value);
+    const reloaded = new SettingsService({ userDataPath: root, encryption: unavailableSecretEncryption });
+    expect(reloaded.get("memoryEmbedding")).toMatchObject(value);
+  });
+
+  it.runIf(process.platform === "win32")("keeps Memory Map settings absent when admission is revoked before the first save", async () => {
+    const save = vi.spyOn(service as unknown as { saveSettings(settings: unknown): Promise<void> }, "saveSettings");
+    const realSave = (settings: unknown) => (SettingsService.prototype as unknown as { saveSettings(settings: unknown): Promise<void> }).saveSettings.call(service, settings);
+    let release!: () => void;
+    save.mockImplementationOnce(settings => new Promise<void>(resolve => { release = resolve; }).then(() => realSave(settings)));
+
+    const first = service.setPluginConfig("sample", { mode: "fast" });
+    let admitted = true;
+    const refused = expect(service.set("memoryEmbedding", { source: "local" }, {
+      field: ["memoryEmbedding", "source", "providerId", "modelId", "consent"],
+      canCommit: () => admitted,
+    })).rejects.toBeInstanceOf(SettingsWriteRefusedError);
+    admitted = false;
+    release();
+    await first;
+    await refused;
+
+    expect(service.get("memoryEmbedding")).toBeUndefined();
+    expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8"))).not.toHaveProperty("memoryEmbedding");
+  });
+
+  it.runIf(process.platform === "win32")("keeps Memory Map settings absent when an admitted write only removes fields", async () => {
+    await service.set("memoryEmbedding", {}, {
+      field: ["memoryEmbedding", "localModelPath"],
+      canCommit: () => true,
+    });
+    expect(service.get("memoryEmbedding")).toBeUndefined();
+    expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8"))).not.toHaveProperty("memoryEmbedding");
+  });
+
   it.runIf(process.platform === "win32")("keeps a switch that lost its admission while its save waited out of the file, and saves the changes around it", async () => {
     await service.patch({ features: { sessionIndexingWithoutContainment: true } });
     await service.set("memoryEmbedding", { source: "local", localInferenceWithoutSandbox: true });

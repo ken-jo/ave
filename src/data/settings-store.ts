@@ -828,10 +828,14 @@ function stageSettingsWrite(admission: SettingsWriteAdmission, value: object, re
   const [section, ...names] = admission.field;
   const fields = structuredClone(value) as Record<string, unknown>;
   return { admission, refuse, apply(settings) {
-    const target = settings[section] as Record<string, unknown>;
+    let target = settings[section] as Record<string, unknown> | undefined;
     for (const name of names) {
-      if (Object.hasOwn(fields, name)) target[name] = fields[name];
-      else delete target[name];
+      if (Object.hasOwn(fields, name)) {
+        target ??= (settings[section] = {});
+        target[name] = fields[name];
+      } else {
+        delete target?.[name];
+      }
     }
   } };
 }
