@@ -73,6 +73,7 @@ function requestArtifact(
     request.on('error', settle);
     request.once('close', fail);
     request.once('upgrade', (_incoming, socket) => {
+      socket.on('error', fail);
       socket.destroy();
       fail();
     });

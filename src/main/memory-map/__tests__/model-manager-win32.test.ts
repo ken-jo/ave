@@ -99,7 +99,13 @@ describe('local model lifecycle', () => {
     try {
       await waiting.promise;
       expect(send).toHaveBeenCalledTimes(phase === 'headers' ? 1 : 0);
-      if (outcome === 'upgrade') request.emit('upgrade', upgraded, socket, Buffer.alloc(0));
+      if (outcome === 'upgrade') {
+        destroySocket.mockImplementationOnce(() => {
+          socket.emit('error', new Error('Socket error during upgrade teardown'));
+        });
+        expect(() => request.emit('upgrade', upgraded, socket, Buffer.alloc(0))).not.toThrow();
+        expect(() => socket.emit('error', new Error('Late upgrade socket error'))).not.toThrow();
+      }
       if (outcome === 'status-101') {
         assert.ok(respondToFirst);
         respondToFirst(upgraded as unknown as IncomingMessage);
