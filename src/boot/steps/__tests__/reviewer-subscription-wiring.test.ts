@@ -352,6 +352,7 @@ async function withLiveReviewer(
       invoke: ReturnType<typeof makeAppIpcInvoker>;
       getSelection: () => LLMSettings["activeChatRuntime"];
       rewire: () => Promise<void>;
+      getSecret: ReturnType<typeof vi.fn<() => string>>;
     }>;
     dispatch: (headless: boolean) => Promise<{
       review: Awaited<ReturnType<PermissionManager["dispatchReviewer"]>>;
@@ -359,12 +360,20 @@ async function withLiveReviewer(
     }>;
   }) => Promise<void>,
   loss?: (typeof AUTH_LOSS_CASES)[number][2],
+  explicitReviewer = false,
 ) {
   const tempDir = mkdtempSync(join(tmpdir(), "reviewer-live-"));
   vi.resetModules();
   const resources = await import("../../../main/host-resources.js");
   resources.configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   const { DEFAULT_JUDGE_SETTINGS } = await import("../../../permissions/judge/judge-settings.js");
+  let selection: LLMSettings["activeChatRuntime"] = provider === "api" ? { kind: "api" } :
+    { kind: "subscription", provider, model: "fixture-model" };
+  const getLlm = () => ({
+    provider: "openai" as const, activeChatRuntime: selection, vendors: { openai: { model: "fixture-model" } },
+  });
+  const { systemSubagentCurrentRouteIdentity } = await import("../../../engine/system-subagent-route.js");
+  const reviewerRoute = systemSubagentCurrentRouteIdentity(getLlm() as LLMSettings, [], "openai");
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   vi.doMock("electron", () => ({
     BrowserWindow: { getAllWindows: () => [] },
@@ -372,7 +381,12 @@ async function withLiveReviewer(
   }));
   vi.doMock("../../../permissions/permission-settings-store.js", async importOriginal => ({
     ...await importOriginal<typeof import("../../../permissions/permission-settings-store.js")>(),
-    readJudgeSettings: () => ({ settings: DEFAULT_JUDGE_SETTINGS, issues: [] }),
+    readJudgeSettings: () => ({
+      settings: explicitReviewer
+        ? { ...DEFAULT_JUDGE_SETTINGS, model: { vendor: "openai", model: "fixture-model", route: reviewerRoute ?? undefined } }
+        : DEFAULT_JUDGE_SETTINGS,
+      issues: [],
+    }),
     readPermissionSettings: () => ({ permissions: { blockReadsOutsideWorkingDirectories: false }, fault: null }),
   }));
   const replyWithVerdict: LLMProvider["streamTurn"] = async function* () {
@@ -408,11 +422,6 @@ async function withLiveReviewer(
     const { PermissionManager } = await import("../../../permissions/permission-manager.js");
     const manager = new PermissionManager(join(tempDir, "permissions.json"));
     manager.setMode("auto");
-    let selection: LLMSettings["activeChatRuntime"] = provider === "api" ? { kind: "api" } :
-      { kind: "subscription", provider, model: "fixture-model" };
-    const getLlm = () => ({
-      provider: "openai", activeChatRuntime: selection, vendors: { openai: { model: "fixture-model" } },
-    });
     const context = {
       host: createBootHostFixture(), toolRegistry: { setDenyRules: vi.fn() }, permissionManager: manager,
       approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() }, getMainWindow: () => null,
@@ -495,7 +504,7 @@ async function withLiveReviewer(
         rewireReviewerAgent: rewire,
         refreshActiveLlmWildcard,
       } as never);
-      return { invoke: makeAppIpcInvoker(handlers), getSelection: () => selection, rewire };
+      return { invoke: makeAppIpcInvoker(handlers), getSelection: () => selection, rewire, getSecret: context.settingsService.getSecret };
     };
     await test({ manager, directory: tempDir, getCache, reply, apiReply, dispatch, seedVerdict, loseAuth, registerRouteSelection });
     if (loss === "startup") expect(auth?.openAcp).toHaveBeenCalled();
@@ -630,6 +639,94 @@ it("keeps review fenced until Settings rebinds the restored route after a failed
     }
     expect((await dispatch(true)).review.outcome).toBe("cache");
     expect(apiReply).toHaveBeenCalledOnce();
+  });
+});
+
+it("recovers automatic review on an ordinary rewire after both selection and rollback rebinds fail", async () => {
+  await withLiveReviewer("api", async ({ apiReply, getCache, dispatch, registerRouteSelection }) => {
+    const { invoke, getSelection, getSecret, rewire } = await registerRouteSelection(async () => {});
+    expect((await dispatch(true)).review.outcome).toBe("fresh");
+    await getCache().flush();
+    getSecret.mockClear();
+    getSecret.mockImplementation(() => { throw new Error("Credential store unavailable"); });
+
+    await expect(invoke(CHANNELS.settings.subscriptionUseForChat, "grok-build"))
+      .resolves.toMatchObject({ ok: false, error: "subscription-operation-failed" });
+    expect(getSelection()?.kind).toBe("api");
+    expect(getSecret).toHaveBeenCalledTimes(2);
+    expect((await dispatch(false)).result.decision).toBe("ask");
+    expect((await dispatch(true)).result.decision).toBe("deny");
+
+    getSecret.mockReturnValue("fixture-key");
+    await rewire();
+    const { review, result } = await dispatch(true);
+    expect(review.outcome).toBe("cache");
+    expect(result.decision).toBe("allow");
+    expect(apiReply).toHaveBeenCalledOnce();
+  }, undefined, true);
+});
+
+it("keeps warmed API review available during refresh of an identical settled Settings selection", async () => {
+  await withLiveReviewer("api", async ({ getCache, dispatch, registerRouteSelection }) => {
+    const refreshStarted = deferred<void>();
+    const releaseRefresh = deferred<void>();
+    const { invoke } = await registerRouteSelection(async () => {
+      refreshStarted.resolve();
+      await releaseRefresh.promise;
+    });
+    expect((await dispatch(true)).review.outcome).toBe("fresh");
+    await getCache().flush();
+
+    const pending = invoke(CHANNELS.settings.subscriptionUseApiForChat);
+    await refreshStarted.promise;
+    try {
+      const { review, result } = await dispatch(true);
+      expect(review.outcome).toBe("cache");
+      expect(result.decision).toBe("allow");
+    } finally {
+      releaseRefresh.resolve();
+      await expect(pending).resolves.toMatchObject({ ok: true });
+    }
+  });
+});
+
+it("keeps an identical pending Settings selection fenced when the older selection finishes last", async () => {
+  await withLiveReviewer("api", async ({ dispatch, registerRouteSelection }) => {
+    const olderStarted = deferred<void>();
+    const releaseOlder = deferred<void>();
+    const newerStarted = deferred<void>();
+    const releaseNewer = deferred<void>();
+    const refreshProvider = vi.fn(async () => {})
+      .mockImplementationOnce(async () => {
+        olderStarted.resolve();
+        await releaseOlder.promise;
+        throw new Error("Older provider refresh failed");
+      })
+      .mockImplementationOnce(async () => {
+        newerStarted.resolve();
+        await releaseNewer.promise;
+      });
+    const { invoke, getSelection, rewire } = await registerRouteSelection(refreshProvider);
+    const older = invoke(CHANNELS.settings.subscriptionUseForChat, "grok-build");
+    await olderStarted.promise;
+    const newer = invoke(CHANNELS.settings.subscriptionUseForChat, "grok-build");
+    await newerStarted.promise;
+    try {
+      expect(getSelection()?.kind).toBe("subscription");
+      await rewire();
+      expect((await dispatch(false)).result.decision).toBe("ask");
+      expect((await dispatch(true)).result.decision).toBe("deny");
+      releaseNewer.resolve();
+      await expect(newer).resolves.toMatchObject({ ok: true });
+      expect((await dispatch(true)).result.decision).toBe("allow");
+    } finally {
+      releaseNewer.resolve();
+      releaseOlder.resolve();
+      await newer;
+      await expect(older).resolves.toMatchObject({ ok: false, error: "subscription-operation-failed" });
+    }
+    expect(getSelection()?.kind).toBe("subscription");
+    expect((await dispatch(true)).result.decision).toBe("allow");
   });
 });
 

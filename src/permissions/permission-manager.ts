@@ -674,6 +674,7 @@ export class PermissionManager {
   private permissionStoreError: string | undefined;
   private reviewerSettingsError: string | undefined;
   private readonly reviewerReconfigurations = new Map<ReviewerReconfigurationScope, object>();
+  private chatRuntimeReviewerRecovery: { settingsToken: object; wiringToken?: object } | undefined;
   // Optional broadcast for memory-hit auto-approve disclosure.
   private broadcastUserApprovalHit: ((payload: UserApprovalHitPayload) => void) | null = null;
   // Architectural choke point for permission config fan-out — every persisted mutation through PermissionManager (addAlwaysAllowedPersist, addAlwaysDeniedPersist, removeRule) fires this callback so multi-window PermissionsTab refreshes without each call site re-implementing the broadcast wiring. Wired by boot from `ipc/domains/permissions.ts:broadcastPermissionConfigChanged`.
@@ -916,6 +917,9 @@ export class PermissionManager {
   beginReviewerReconfiguration(scope: ReviewerReconfigurationScope = "wiring"): object {
     const token = Object.freeze({});
     this.reviewerReconfigurations.set(scope, token);
+    if (scope === "wiring" && this.chatRuntimeReviewerRecovery) {
+      this.chatRuntimeReviewerRecovery.wiringToken = token;
+    }
     this.policyGeneration += 1;
     return token;
   }
@@ -928,7 +932,30 @@ export class PermissionManager {
       throw new JudgeContractError("Reviewer reconfiguration requires its current host token");
     }
     this.reviewerReconfigurations.delete(scope);
+    const recovery = this.chatRuntimeReviewerRecovery;
+    if (scope === "wiring" && recovery?.wiringToken === token
+      && this.reviewerReconfigurations.get("chat-runtime") === recovery.settingsToken) {
+      this.reviewerReconfigurations.delete("chat-runtime");
+      this.chatRuntimeReviewerRecovery = undefined;
+    }
     this.policyGeneration += 1;
+  }
+
+  beginChatRuntimeReviewerReconfiguration(routeChanged: boolean): object | undefined {
+    const unsettled = this.reviewerReconfigurations.has("chat-runtime") && !this.chatRuntimeReviewerRecovery;
+    if (!routeChanged && !unsettled) return undefined;
+    this.chatRuntimeReviewerRecovery = undefined;
+    return this.beginReviewerReconfiguration("chat-runtime");
+  }
+
+  settleChatRuntimeReviewerReconfiguration(token: object, reviewerBound: boolean): void {
+    if (this.reviewerReconfigurations.get("chat-runtime") !== token) return;
+    if (reviewerBound) {
+      this.completeReviewerReconfiguration(token, "chat-runtime");
+    } else {
+      // Only wiring that starts after settlement can recover this selection.
+      this.chatRuntimeReviewerRecovery = { settingsToken: token };
+    }
   }
 
   // Monotonic host policy identity for sealed rationale revalidation.
