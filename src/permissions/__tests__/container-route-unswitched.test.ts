@@ -82,14 +82,14 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
     expect(getContainerShellInfo()?.egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "unknown" });
     setContainerShellSubstrate("linux", { state: "available" });
     expect(getHostShellExecutionPlan()).toMatchObject({ identity: "host-shell-execution-plan/v4:linux:mxc", sandboxed: true,
-      egressProtocolCoverage: { dns: "blocked", rawIp: "unknown" } });
+      egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" } });
     setContainerShellSubstrate("linux", { state: "available", rawIpProbe: { rawIp: "unknown", reason: "timeout", reachableTargets: [], udpArrival: "absent" } });
-    expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "unknown" });
+    expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "unknown" });
     expect(getContainerShellInfo()).toMatchObject({ rawIpProbe: { rawIp: "unknown", reason: "timeout" } });
     setContainerShellSubstrate("linux", { state: "available",
       rawIpProbe: { rawIp: "blocked", reason: "blocked", evidenceKind: "arrival", reachableTargets: [], udpArrival: "absent" } });
-    expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "blocked" });
-    expect(getContainerShellInfo()?.egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "blocked" });
+    expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "blocked" });
+    expect(getContainerShellInfo()?.egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "blocked" });
     // The hook wrap is not the container, so it never carries the container's measurement.
     expect(getHostShellExecutionPlan("default", "hook").egressProtocolCoverage.rawIp).toBe("unknown");
   });

@@ -247,44 +247,38 @@ export function egressProtocolCoverageFor(substrate: "mxc" | "asrt" | "srt-win" 
 }
 
 // No constant `blocked`: a POSIX container's raw IP is `blocked` only when this boot's canary measured it
-// (`acceptMeasuredContainerEgress`). A seatbelt container's DNS is not measured, so it stays `unknown`.
-const MEASURED_SEATBELT_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "unknown", rawIp: "blocked" });
-const UNMEASURED_BUBBLEWRAP_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "unknown" });
-const MEASURED_BUBBLEWRAP_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "blocked" });
+// (`acceptMeasuredContainerEgress`). Neither the seatbelt nor the bubblewrap canary measures DNS, so it stays `unknown`.
+const MEASURED_POSIX_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "unknown", rawIp: "blocked" });
 
 /**
  * A container start's own measured coverage, accepted only in the exact shape its platform's probe publishes:
- * Windows MXC (`dns` from the host resolver), the macOS seatbelt container (`dns` unmeasured) or the Linux bubblewrap
- * container. Only the host's own backend counts; anything else is not a measurement and the backend's unmeasured
+ * Windows MXC (`dns` from the host resolver), or the macOS seatbelt and Linux bubblewrap containers (`dns` unmeasured).
+ * Only the host's own backend counts; anything else is not a measurement and the backend's unmeasured
  * coverage applies.
  */
 export function acceptMeasuredContainerEgress(
   platform: NodeJS.Platform, backend: ContainerBackend, coverage: EgressProtocolCoverage | undefined,
 ): EgressProtocolCoverage | undefined {
   const accepted = platform === "win32" && backend === "process-container" ? MEASURED_MXC_EGRESS_PROTOCOL_COVERAGE
-    : platform === "darwin" && backend === "seatbelt" ? MEASURED_SEATBELT_EGRESS_PROTOCOL_COVERAGE
-      : platform === "linux" && backend === "bubblewrap" ? MEASURED_BUBBLEWRAP_EGRESS_PROTOCOL_COVERAGE : undefined;
+    : (platform === "darwin" && backend === "seatbelt") || (platform === "linux" && backend === "bubblewrap")
+      ? MEASURED_POSIX_EGRESS_PROTOCOL_COVERAGE : undefined;
   if (accepted === undefined || typeof coverage !== "object" || coverage === null
       || Reflect.ownKeys(coverage).length !== 2 || !Object.hasOwn(coverage, "dns") || !Object.hasOwn(coverage, "rawIp")
       || coverage.dns !== accepted.dns || coverage.rawIp !== accepted.rawIp) return undefined;
   return accepted;
 }
 
-/** A container backend's coverage before any measurement: its raw IP is not `blocked` until a start measured it. */
+/** A container backend's coverage before any measurement: nothing about it is `blocked` until a start measured it. */
 export function containerEgressProtocolCoverage(backend: ContainerBackend): EgressProtocolCoverage {
-  if (backend === "process-container") return MXC_EGRESS_PROTOCOL_COVERAGE;
-  return backend === "bubblewrap" ? UNMEASURED_BUBBLEWRAP_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
+  return backend === "process-container" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
 }
 
 /**
  * The coverage a POSIX container start's raw-IP verdict measured, in the shape `acceptMeasuredContainerEgress` takes,
  * or undefined when it measured no `blocked` raw IP.
  */
-export function posixContainerMeasuredEgress(
-  backend: "seatbelt" | "bubblewrap", rawIpProbe: ContainerRawIpProbeVerdict | undefined,
-): EgressProtocolCoverage | undefined {
-  if (rawIpProbe?.rawIp !== "blocked") return undefined;
-  return backend === "seatbelt" ? MEASURED_SEATBELT_EGRESS_PROTOCOL_COVERAGE : MEASURED_BUBBLEWRAP_EGRESS_PROTOCOL_COVERAGE;
+export function posixContainerMeasuredEgress(rawIpProbe: ContainerRawIpProbeVerdict | undefined): EgressProtocolCoverage | undefined {
+  return rawIpProbe?.rawIp === "blocked" ? MEASURED_POSIX_EGRESS_PROTOCOL_COVERAGE : undefined;
 }
 
 /** The raw-IP probe's targets: an IPv4 and an IPv6 documentation address, and a closed port on the host's own IPv4. */

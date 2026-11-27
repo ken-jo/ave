@@ -168,12 +168,12 @@ describe("Linux raw-IP verdict rules", () => {
   });
 
   it("publishes container coverage from the verdict only", () => {
-    expect(containerEgressProtocolCoverage("bubblewrap")).toEqual({ dns: "blocked", rawIp: "unknown" });
+    expect(containerEgressProtocolCoverage("bubblewrap")).toEqual({ dns: "unknown", rawIp: "unknown" });
     const accepted = (rawIp: LinuxRawIpVerdict, platform: NodeJS.Platform = "linux") =>
-      acceptMeasuredContainerEgress(platform, "bubblewrap", posixContainerMeasuredEgress("bubblewrap", rawIp));
+      acceptMeasuredContainerEgress(platform, "bubblewrap", posixContainerMeasuredEgress(rawIp));
     expect(accepted(unknown("timeout"))).toBeUndefined();
-    expect(accepted(blocked("structural"))).toEqual({ dns: "blocked", rawIp: "blocked" });
-    expect(accepted(blocked("arrival"))).toEqual({ dns: "blocked", rawIp: "blocked" });
+    expect(accepted(blocked("structural"))).toEqual({ dns: "unknown", rawIp: "blocked" });
+    expect(accepted(blocked("arrival"))).toEqual({ dns: "unknown", rawIp: "blocked" });
     expect(accepted(blocked("arrival"), "darwin")).toBeUndefined();
     expect(accepted(blocked("arrival"), "win32")).toBeUndefined();
   });

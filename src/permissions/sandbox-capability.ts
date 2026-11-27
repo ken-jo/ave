@@ -338,7 +338,7 @@ export function getContainerShellInfo(): SandboxContainerShellInfo | undefined {
   // raw IP only from an available container's own measurement; an unavailable container has no coverage.
   const backend = platform === "darwin" ? "seatbelt" : "bubblewrap";
   const egressProtocolCoverage = support.state === "available"
-    ? acceptMeasuredContainerEgress(platform, backend, posixContainerMeasuredEgress(backend, support.rawIpProbe))
+    ? acceptMeasuredContainerEgress(platform, backend, posixContainerMeasuredEgress(support.rawIpProbe))
       ?? containerEgressProtocolCoverage(backend)
     : egressProtocolCoverageFor("none");
   return { ...support, egressProtocolCoverage };
@@ -454,7 +454,7 @@ export function getHostShellExecutionPlan(
     shellSubstrate: mxc !== undefined ? "mxc" : selectsPosixContainer ? "none" : "asrt",
     measuredContainerEgress: process.platform === "win32" && _windowsSubstrate?.shells === "mxc"
       ? getWindowsMxcShellEgressMeasurement()?.coverage
-      : posixContainerMeasuredEgress(process.platform === "darwin" ? "seatbelt" : "bubblewrap", containerRawIpProbe),
+      : posixContainerMeasuredEgress(containerRawIpProbe),
     executionMode,
     unavailableCauses: _bootOutcome?.causes,
     unavailableSandboxRequiresAsk: privacyFailure !== undefined || windowsDenyUnenforceableAtBoot() !== undefined,
