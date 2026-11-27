@@ -115,6 +115,19 @@ describe("buildMacosDirOps", () => {
     expect(build()).toHaveLength(1 + MACOS_DIR_OPS_TEST_BUILDS.length);
   });
 
+  it("rebuilds helpers when only the packaged macOS floor changes", () => {
+    const root = fixtureRoot({ helpers: NEW });
+    const calls: string[][] = [];
+    const build = () => buildMacosDirOps({ root, arch: "arm64", platform: "darwin", ifStale: true, testBuilds: true, spawn: compilerStub(calls), log: () => {} });
+    expect(build()).toEqual([]);
+    write(root, "package.json", new Date("2026-03-01T00:00:00Z"), JSON.stringify({
+      build: { mac: { minimumSystemVersion: "15.0" } },
+    }));
+    expect(build()).toHaveLength(1 + MACOS_DIR_OPS_TEST_BUILDS.length);
+    for (const args of calls) expect(args).toContain("-mmacosx-version-min=15.0");
+    expect(build()).toEqual([]);
+  });
+
   it("fails clearly on an unsupported architecture or a failed compile", () => {
     const calls: string[][] = [];
     expect(() => buildMacosDirOps({ root: fixtureRoot(), arch: "x64", platform: "darwin", spawn: compilerStub(calls), log: () => {} })).toThrow(/unsupported macOS helper architecture: x64/);

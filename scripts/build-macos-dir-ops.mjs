@@ -39,6 +39,7 @@ export function macosDirOpsOutput(root, arch, executable = MACOS_DIR_OPS_EXECUTA
 
 function sources(root) {
   return [
+    path.join(root, "package.json"),
     path.join(root, "scripts", "build-macos-dir-ops.mjs"),
     ...readdirSync(path.join(root, SOURCE_DIRECTORY)).map((name) => path.join(root, SOURCE_DIRECTORY, name)),
   ];
