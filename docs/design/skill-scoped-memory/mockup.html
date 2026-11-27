@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>Skill-scoped memory · Ave</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --background: light-dark(#fff, #0d1117);
+      --foreground: light-dark(#0a0e12, #f6fbff);
+      --card: light-dark(#f8f8f8, #11161b);
+      --muted: light-dark(#f1f2f3, #1a1e23);
+      --muted-foreground: light-dark(#575f68, #a0a7ac);
+      --accent: light-dark(#e8ecf0, #1e2329);
+      --border: light-dark(#d1d9e0, #2d3238);
+      --ring: light-dark(#0969da, #79b8ff);
+      --primary: var(--foreground);
+      --primary-foreground: var(--background);
+      --warning: light-dark(#805400, #ecb448);
+      --success: light-dark(#1a6834, #62bc79);
+      --destructive: light-dark(#a42922, #ff8880);
+      --chart-1: light-dark(#0969da, #58a6ff);
+      --chart-2: light-dark(#1a7f37, #56b76a);
+      --chart-3: light-dark(#8250df, #bf9bff);
+      --chrome-band-height: 36px;
+      --chrome-gap: 8px;
+      --shell-card-radius: 12px;
+      font: 14px/1.45 system-ui, sans-serif;
+    }
+    :root[data-theme="light"] { color-scheme: light; }
+    :root[data-theme="dark"] { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--foreground); background: var(--muted); }
+    h1, h2, h3, p, dl, dd { margin: 0; }
+    h1 { font-size: clamp(25px, 3vw, 34px); line-height: 1.15; letter-spacing: -.035em; }
+    h2 { font-size: 23px; line-height: 1.22; letter-spacing: -.025em; }
+    h3 { font-size: 15px; }
+    button, select { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, select:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+    button[aria-pressed="true"] { background: var(--accent); }
+    button[aria-current="true"] { border-color: var(--ring); background: var(--accent); }
+    .page { max-width: 1392px; margin: auto; padding: 30px clamp(12px, 3vw, 34px) 24px; }
+    .top, .toolbar, .chrome, .workspace-heading, .panel-heading, .actions, .meta, .crumbs {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .top, .toolbar, .workspace-heading, .panel-heading { justify-content: space-between; }
+    .top { align-items: end; gap: 16px; }
+    .kicker { color: var(--muted-foreground); font-size: 13px; font-weight: 650; margin-bottom: 6px; }
+    .toolbar { margin: 16px 0 14px; }
+    .control, .segmented button {
+      min-height: 34px; border: 1px solid var(--border); border-radius: 7px;
+      background: var(--background); padding: 5px 10px; font-weight: 550;
+    }
+    .control:hover, .segmented button:hover, .entry:hover, button.skill:hover { background: var(--accent); }
+    .segmented { display: flex; flex-wrap: wrap; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--card); }
+    .segmented button { min-height: 31px; border-color: transparent; background: transparent; }
+    .segmented button[aria-pressed="true"] { background: var(--accent); border-color: var(--border); }
+    .variant-key { margin-inline-end: 5px; font-variant-numeric: tabular-nums; }
+    .muted { color: var(--muted-foreground); }
+    .small, .meta { font-size: 12px; }
+    .window { border: 1px solid var(--border); border-radius: var(--shell-card-radius); overflow: hidden; background: var(--background); box-shadow: 0 12px 35px #0002; }
+    .chrome { min-height: var(--chrome-band-height); padding: 6px 14px; border-bottom: 1px solid var(--border); background: var(--card); }
+    .traffic { display: flex; gap: 5px; margin-inline-end: 9px; }
+    .traffic i { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+    .crumbs > span + span::before { content: '/'; margin-inline-end: 8px; color: var(--muted-foreground); }
+    .shell { display: grid; grid-template-columns: 52px 232px minmax(0, 1fr); min-height: 600px; }
+    .rail { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 5px; background: var(--card); border-inline-end: 1px solid var(--border); }
+    .rail button { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid transparent; border-radius: 8px; background: transparent; }
+    .rail button:hover { background: var(--accent); }
+    .rail-icon { display: block; width: 17px; height: 16px; border: 1.5px solid; border-radius: 3px; position: relative; }
+    .rail-icon::after { content: ''; position: absolute; inset: 3px 4px; border-block: 1px solid; }
+    .rail-icon.board::after { inset: 2px 5px; border-block: 0; border-inline: 1px solid; }
+    .sidebar { padding: 16px 12px; background: var(--card); border-inline-end: 1px solid var(--border); }
+    .sidebar select { width: 100%; margin: 5px 0 19px; }
+    .sidebar h3 { margin: 0 3px 7px; }
+    .skills { display: grid; gap: 5px; }
+    .skill { display: flex; align-items: center; justify-content: space-between; gap: 7px; width: 100%; min-height: 39px; padding: 6px 8px; text-align: start; background: transparent; border: 1px solid transparent; border-radius: 7px; }
+    .skill[aria-pressed="true"] { border-color: var(--border); }
+    .skill-name { display: flex; align-items: center; gap: 7px; }
+    .mark { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--mark, var(--muted-foreground)); }
+    .count { min-width: 22px; text-align: center; color: var(--muted-foreground); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .workspace { min-width: 0; display: flex; flex-direction: column; }
+    .workspace-heading { min-height: 78px; padding: 13px 16px; border-bottom: 1px solid var(--border); }
+    .workspace-heading .small { margin-top: 3px; }
+    .panes { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(246px, 34%); gap: var(--chrome-gap); padding: var(--chrome-gap); background: var(--muted); }
+    .collection, .inspector { min-width: 0; border: 1px solid var(--border); border-radius: var(--shell-card-radius); background: var(--background); }
+    .collection { padding: 13px; }
+    .panel-heading { margin-bottom: 10px; }
+    .entry-list { display: grid; align-content: start; gap: 7px; }
+    .entry {
+      display: grid; gap: 5px; width: 100%; text-align: start; padding: 10px; border: 1px solid var(--border);
+      border-radius: 8px; background: var(--background); overflow-wrap: anywhere;
+    }
+    .entry strong { font-size: 14px; }
+    .meta { color: var(--muted-foreground); gap: 6px; }
+    .pill { width: fit-content; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); font-size: 11px; font-weight: 650; }
+    .pending { color: var(--warning); }
+    .saved { color: var(--success); }
+    .lane-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .lane { min-width: 0; padding: 7px; border-radius: 8px; background: var(--muted); }
+    .lane .panel-heading { padding: 2px 3px; }
+    .inspector { display: flex; flex-direction: column; }
+    .inspect-section { padding: 13px; }
+    .inspect-section + .inspect-section, .inspector > .actions { border-top: 1px solid var(--border); }
+    .inspector .actions { padding: 10px 13px; margin-top: auto; }
+    .inspector h3 { margin-bottom: 7px; }
+    .inspector .meta { margin: 6px 0 9px; }
+    .details { display: grid; gap: 7px; }
+    .details div { display: grid; grid-template-columns: minmax(67px, 28%) 1fr; gap: 7px; }
+    .details dt { color: var(--muted-foreground); }
+    .policy-note { margin-top: 9px; }
+    .primary, .primary:hover { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
+    .danger { color: var(--destructive); }
+    .empty { padding: 12px 8px; color: var(--muted-foreground); }
+    .caption { padding-top: 12px; }
+    .status { min-height: 24px; padding-top: 10px; }
+    dialog { width: min(440px, calc(100% - 32px)); max-height: calc(100% - 32px); color: var(--foreground); background: var(--background); border: 1px solid var(--border); border-radius: var(--shell-card-radius); padding: 19px; box-shadow: 0 12px 35px #0004; }
+    dialog::backdrop { background: #0008; }
+    dialog p, dialog .actions { margin-top: 12px; }
+    .dialog-preview { padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
+    @media (max-width: 1120px) { .lane-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 930px) {
+      .shell { grid-template-columns: 44px 166px minmax(0, 1fr); }
+      .panes { grid-template-columns: 1fr; }
+      .lane-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 620px) {
+      .page { padding-top: 16px; }
+      .shell { grid-template-columns: minmax(0, 1fr); }
+      .rail { flex-direction: row; border-inline-end: 0; padding: 4px 12px; }
+      .sidebar { border-inline-end: 0; border-block: 1px solid var(--border); padding: 10px; }
+      .sidebar select { margin: 3px 0 8px; }
+      .skills { display: flex; flex-wrap: wrap; }
+      .skill { width: auto; }
+      .workspace-heading { min-height: 0; padding: 10px; }
+      .lane-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="top">
+      <div><p class="kicker" id="kicker"></p><h1 id="title"></h1></div>
+      <div class="actions">
+        <select class="control" id="locale"><option value="en" lang="en">English</option><option value="ko" lang="ko">한국어</option></select>
+        <select class="control" id="theme"><option value="system"></option><option value="light"></option><option value="dark"></option></select>
+      </div>
+    </header>
+    <div class="toolbar">
+      <div class="segmented" id="variants" role="group"></div>
+      <p class="muted small" id="sample"></p>
+    </div>
+    <div class="window" id="window"></div>
+    <div class="status" id="status" role="status"></div>
+    <p class="caption small muted" id="caption"></p>
+  </main>
+  <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+  <script>
+    const copy = {
+      en: {
+        title: 'Skill-scoped memory', room: 'Control room', language: 'Language', theme: 'Theme', system: 'System theme',
+        light: 'Light', dark: 'Dark', layouts: 'Layout variants', sample: 'Interactive mockup · fictional records',
+        a: 'Skill library', b: 'Review board', memory: 'Memory', board: 'Work board', skills: 'Skills',
+        queue: 'Memory review', project: 'Project', all: 'All', pending: 'Pending review', saved: 'Saved',
+        filters: 'Filter entries', filterSaved: 'Saved only', filterPending: 'Pending only',
+        entries: 'Entries', noEntries: 'No entries in this view.', choose: 'Select an entry to inspect it.',
+        owner: 'Owning skill', source: 'Source', local: 'Local skill', scope: 'Scope', skillProject: 'Skill in this project',
+        access: 'Skill access', read: 'Read', write: 'Write', ownSaved: 'Own saved entries in this project, when invoked.',
+        propose: 'Propose additions after tool permission passes. The account owner approves each entry.',
+        blocked: 'Other skills and projects are outside this scope. Global and project memory keep their own rules.',
+        actionCheck: 'Tool permission passed in this example. Content review is pending.',
+        savedCheck: 'The account owner approved this entry. It can appear in later invocations of this skill in this project.',
+        review: 'Review proposal', approve: 'Approve and save', reject: 'Reject proposal', forget: 'Forget entry',
+        cancel: 'Cancel', undo: 'Undo', approveMessage: 'Entry approved and saved.',
+        rejectMessage: 'Proposal rejected.', forgetMessage: 'Entry forgotten.', undoMessage: 'Entry restored.',
+        reviewQuestion: 'Save this text for this skill in the shown project? Rejecting discards the proposal.',
+        forgetQuestion: 'Remove this saved entry from future skill invocations? You can undo this in the preview.',
+        captionA: 'Start in Control room → Memory → Skills. Pick a skill to see its saved entries and proposals together.',
+        captionB: 'Start in Control room → Work board → Memory review. Compare proposals across skills in the selected project.',
+        north: 'Northstar', harbor: 'Harbor', release: 'Release checklist', changes: 'Change review', research: 'Research digest',
+        sourceRelease: 'Release planning', sourceChanges: 'Pull request review', sourceResearch: 'Research handoff',
+        freeze: 'Keep release freeze dates visible', freezeText: 'During the release freeze, place the next eligible deployment date at the top of the handoff.',
+        receipts: 'Record the rollout evidence', receiptsText: 'Keep the rollout receipt and the smoke-check result together in each release handoff.',
+        focus: 'Lead with the affected behavior', focusText: 'Start review summaries with the behavior a user can observe and name the check that exercised it.',
+        evidence: 'Link raw measurements', evidenceText: 'Include the measurement file and its collection date alongside the summary.',
+        compare: 'Keep the comparison window fixed', compareText: 'Use the same time window for every dataset in a comparison.',
+        backup: 'Confirm the rollback owner', backupText: 'Name the person responsible for rollback before the release handoff.'
+      },
+      ko: {
+        title: '스킬별 메모리', room: '관제실', language: '언어', theme: '테마', system: '시스템 테마',
+        light: '라이트', dark: '다크', layouts: '레이아웃 시안', sample: '인터랙티브 목업 · 예시 데이터',
+        a: '스킬 목록', b: '검토 보드', memory: '메모리', board: '작업 보드', skills: '스킬',
+        queue: '메모리 검토', project: '프로젝트', all: '전체', pending: '검토 대기', saved: '저장됨',
+        filters: '항목 필터', filterSaved: '저장됨만', filterPending: '검토 대기만',
+        entries: '메모리 항목', noEntries: '이 화면에 표시할 항목이 없습니다.', choose: '상세를 확인할 항목을 선택하세요.',
+        owner: '소유 스킬', source: '출처', local: '로컬 스킬', scope: '범위', skillProject: '이 프로젝트의 해당 스킬',
+        access: '스킬 접근 권한', read: '읽기', write: '쓰기', ownSaved: '스킬 실행 중 이 프로젝트에 저장된 자신의 메모리를 읽습니다.',
+        propose: '도구 권한 확인을 통과하면 새 항목을 제안할 수 있습니다. 계정 소유자가 항목마다 승인합니다.',
+        blocked: '다른 스킬·프로젝트는 접근 범위 밖입니다. 전역·프로젝트 메모리에는 기존 규칙이 적용됩니다.',
+        actionCheck: '이 예시에서는 도구 권한 확인을 통과했습니다. 내용 검토가 대기 중입니다.',
+        savedCheck: '계정 소유자가 승인했습니다. 이 프로젝트에서 해당 스킬을 다시 실행할 때 사용할 수 있습니다.',
+        review: '제안 검토', approve: '승인하고 저장', reject: '제안 거절', forget: '메모리 잊기',
+        cancel: '취소', undo: '실행 취소', approveMessage: '메모리를 승인하고 저장했습니다.',
+        rejectMessage: '제안을 거절했습니다.', forgetMessage: '메모리를 잊었습니다.', undoMessage: '메모리를 복원했습니다.',
+        reviewQuestion: '이 내용을 표시된 프로젝트의 해당 스킬 메모리로 저장할까요? 거절하면 제안이 삭제됩니다.',
+        forgetQuestion: '이 메모리를 삭제해 이후 스킬 실행에서 제외할까요? 목업에서 실행 취소할 수 있습니다.',
+        captionA: '관제실 → 메모리 → 스킬에서 시작합니다. 스킬을 선택하면 저장된 항목과 제안을 함께 볼 수 있습니다.',
+        captionB: '관제실 → 작업 보드 → 메모리 검토에서 시작합니다. 선택한 프로젝트의 여러 스킬이 올린 제안을 비교할 수 있습니다.',
+        north: '노스스타', harbor: '하버', release: '릴리스 체크리스트', changes: '변경 검토', research: '리서치 요약',
+        sourceRelease: '릴리스 계획', sourceChanges: '변경 요청 검토', sourceResearch: '리서치 인수인계',
+        freeze: '배포 동결 뒤 첫 배포일 표시', freezeText: '릴리스 동결 기간에는 다음 배포 가능일을 인수인계 문서 맨 위에 적습니다.',
+        receipts: '롤아웃 근거 기록', receiptsText: '릴리스 인수인계마다 롤아웃 확인 기록과 스모크 테스트 결과를 함께 남깁니다.',
+        focus: '사용자에게 보이는 변경부터 설명', focusText: '검토 요약 첫머리에 사용자가 확인할 수 있는 동작과 그 동작을 검증한 체크를 적습니다.',
+        evidence: '원본 측정값 연결', evidenceText: '요약과 함께 측정값 파일과 수집일을 표시합니다.',
+        compare: '동일한 기간으로 비교', compareText: '비교에 포함된 모든 데이터에 동일한 시간 범위를 적용합니다.',
+        backup: '롤백 담당자 확인', backupText: '릴리스 인수인계 전에 롤백 담당자를 정합니다.'
+      }
+    };
+
+    const projects = ['north', 'harbor'];
+    const skills = { release: ['--chart-1', 'sourceRelease'], changes: ['--chart-2', 'sourceChanges'], research: ['--chart-3', 'sourceResearch'] };
+    const entries = [
+      { id: 'freeze', project: 'north', skill: 'release', state: 'pending' },
+      { id: 'receipts', project: 'north', skill: 'release', state: 'saved' },
+      { id: 'focus', project: 'north', skill: 'changes', state: 'saved' },
+      { id: 'evidence', project: 'north', skill: 'research', state: 'pending' },
+      { id: 'compare', project: 'north', skill: 'research', state: 'saved' },
+      { id: 'backup', project: 'harbor', skill: 'release', state: 'pending' }
+    ];
+    const state = { locale: 'en', layout: 'a', project: 'north', skill: 'release', filter: 'all', selected: 'freeze', message: '', undo: null };
+    const byId = id => document.getElementById(id);
+    const t = key => copy[state.locale][key];
+    const pressed = (active) => `aria-pressed="${active}"`;
+    const projectEntries = () => entries.filter(entry => entry.project === state.project && ['pending', 'saved'].includes(entry.state));
+    const visibleEntries = () => projectEntries().filter(entry => state.layout === 'b'
+      || (entry.skill === state.skill && (state.filter === 'all' || entry.state === state.filter)));
+
+    function action(id, label, style = '') {
+      return `<button type="button" class="control ${style}" data-action="${id}">${t(label)}</button>`;
+    }
+
+    function accessSection() {
+      return `<section class="inspect-section">
+        <h3>${t('access')}</h3>
+        <dl class="details small">
+          <div><dt>${t('read')}</dt><dd>${t('ownSaved')}</dd></div>
+          <div><dt>${t('write')}</dt><dd>${t('propose')}</dd></div>
+        </dl>
+        <p class="policy-note small muted">${t('blocked')}</p>
+      </section>`;
+    }
+
+    function inspector(entry) {
+      if (!entry) return `<aside class="inspector"><p class="inspect-section muted">${t('choose')}</p>${state.layout === 'a' ? accessSection() : ''}</aside>`;
+      const waiting = entry.state === 'pending';
+      return `<aside class="inspector" aria-label="${t('entries')}">
+        <section class="inspect-section">
+          <span class="pill ${entry.state}">${t(entry.state)}</span>
+          <h3 style="margin-top: 8px">${t(entry.id)}</h3>
+          <p>${t(entry.id + 'Text')}</p>
+          <p class="policy-note small muted">${t(waiting ? 'actionCheck' : 'savedCheck')}</p>
+        </section>
+        <section class="inspect-section">
+          <dl class="details small">
+            <div><dt>${t('owner')}</dt><dd>${t(entry.skill)} · ${t('local')}</dd></div>
+            <div><dt>${t('scope')}</dt><dd>${t('skillProject')} · ${t(entry.project)}</dd></div>
+            <div><dt>${t('source')}</dt><dd>${t(skills[entry.skill][1])}</dd></div>
+          </dl>
+        </section>
+        ${accessSection()}
+        <div class="actions">
+          ${waiting ? action('review', 'review', 'primary') : action('forget', 'forget', 'danger')}
+        </div>
+      </aside>`;
+    }
+
+    function rows(records) {
+      if (!records.length) return `<p class="empty small">${t('noEntries')}</p>`;
+      return `<div class="entry-list">${records.map(entry => `
+        <button type="button" class="entry" data-action="entry:${entry.id}" aria-current="${entry.id === state.selected}">
+          <strong>${t(entry.id)}</strong>
+          <span class="meta"><span class="mark" style="--mark:var(${skills[entry.skill][0]})"></span>${t(entry.skill)}${state.layout === 'a' ? ` <span class="pill ${entry.state}">${t(entry.state)}</span>` : ''}</span>
+        </button>`).join('')}</div>`;
+    }
+
+    function render() {
+      const focused = document.activeElement;
+      const lastFocus = focused?.dataset.action;
+      const board = state.layout === 'b';
+      const records = visibleEntries();
+      const entry = records.find(record => record.id === state.selected) ?? records[0];
+      state.selected = entry?.id;
+
+      document.documentElement.lang = state.locale;
+      document.title = `${t('title')} · Ave`;
+      for (const key of ['title', 'sample']) byId(key).textContent = t(key);
+      byId('kicker').textContent = `Ave / ${t('room')}`;
+      byId('locale').setAttribute('aria-label', t('language'));
+      byId('theme').setAttribute('aria-label', t('theme'));
+      for (const option of byId('theme').options) option.textContent = t(option.value);
+      byId('variants').setAttribute('aria-label', t('layouts'));
+      byId('variants').innerHTML = ['a', 'b'].map(key => `<button type="button" data-action="variant:${key}" ${pressed(state.layout === key)}><b class="variant-key">${key.toUpperCase()}</b>${t(key)}</button>`).join('');
+      byId('caption').textContent = t(board ? 'captionB' : 'captionA');
+      byId('status').replaceChildren(document.createTextNode(state.message ? t(state.message) + ' ' : ''));
+      if (state.undo) byId('status').insertAdjacentHTML('beforeend', action('undo', 'undo'));
+
+      byId('window').innerHTML = `
+        <div class="chrome">
+          <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
+          <b>Ave</b>
+          <div class="crumbs small muted"><span>${t('room')}</span><span>${t(board ? 'board' : 'memory')}</span><span>${t(board ? 'queue' : 'skills')}</span></div>
+        </div>
+        <div class="shell">
+          <nav class="rail" aria-label="${t('room')}">
+            <button type="button" data-action="variant:a" data-rail ${pressed(!board)} aria-label="${t('memory')}" title="${t('memory')}"><span class="rail-icon" aria-hidden="true"></span></button>
+            <button type="button" data-action="variant:b" data-rail ${pressed(board)} aria-label="${t('board')}" title="${t('board')}"><span class="rail-icon board" aria-hidden="true"></span></button>
+          </nav>
+          <aside class="sidebar">
+            <label class="small muted" for="project">${t('project')}</label>
+            <select id="project" class="control">${projects.map(project => `<option value="${project}" ${project === state.project ? 'selected' : ''}>${t(project)}</option>`).join('')}</select>
+            <h3>${t('skills')}</h3>
+            <div class="skills">${Object.keys(skills).map(skill => {
+              const marker = `<span class="skill-name"><span class="mark" style="--mark:var(${skills[skill][0]})"></span>${t(skill)}</span>`;
+              const count = projectEntries().filter(record => record.skill === skill).length;
+              return board
+                ? `<div class="skill">${marker}<span class="count">${count}</span></div>`
+                : `<button type="button" class="skill" data-action="skill:${skill}" ${pressed(skill === state.skill)}>${marker}<span class="count">${count}</span></button>`;
+            }).join('')}</div>
+          </aside>
+          <section class="workspace">
+            <header class="workspace-heading">
+              <div><h2>${t(board ? 'queue' : state.skill)}</h2><p class="small muted">${t(state.project)} · ${t(board ? 'skills' : 'skillProject')}</p></div>
+              ${board ? '' : `<div class="segmented" role="group" aria-label="${t('filters')}">${['all', 'pending', 'saved'].map(key => `<button type="button" data-action="filter:${key}" ${pressed(state.filter === key)}>${t(key === 'all' ? 'all' : key === 'pending' ? 'filterPending' : 'filterSaved')}</button>`).join('')}</div>`}
+            </header>
+            <div class="panes">
+              <section class="collection" aria-label="${t('entries')}">
+                ${board ? `<div class="lane-grid">${['pending', 'saved'].map(key => {
+                  const lane = records.filter(record => record.state === key);
+                  return `<section class="lane"><div class="panel-heading"><h3 class="${key}">${t(key)}</h3><span class="count">${lane.length}</span></div>${rows(lane)}</section>`;
+                }).join('')}</div>` : `<div class="panel-heading"><h3>${t('entries')}</h3><span class="count">${records.length}</span></div>${rows(records)}`}
+              </section>
+              ${inspector(entry)}
+            </div>
+          </section>
+        </div>`;
+
+      if (lastFocus) {
+        const selector = `[data-action="${lastFocus}"]`;
+        const scope = focused.hasAttribute('data-rail') ? byId('window') : document;
+        const nextFocus = scope.querySelector(selector);
+        if (nextFocus) nextFocus.focus();
+      }
+    }
+
+    const dialog = byId('dialog');
+    let dialogAction = '';
+    let dialogEntry;
+    function openDialog(command) {
+      dialogEntry = visibleEntries().find(entry => entry.id === state.selected);
+      if (!dialogEntry) return;
+      dialogAction = command;
+      const reviewing = command === 'review';
+      dialog.innerHTML = `<h2 id="dialog-title">${t(command)}</h2>
+        <p>${t(reviewing ? 'reviewQuestion' : 'forgetQuestion')}</p>
+        <div class="dialog-preview">
+          <strong>${t(dialogEntry.id)}</strong>
+          <div class="meta">${t(dialogEntry.skill)} · ${t(dialogEntry.project)}</div>
+          ${reviewing ? `<p>${t(dialogEntry.id + 'Text')}</p>` : ''}
+        </div>
+        <div class="actions">${action('cancel', 'cancel')}
+          ${reviewing ? action('reject', 'reject', 'danger') + action('approve', 'approve', 'primary') : action('confirm-forget', 'forget', 'danger')}
+        </div>`;
+      dialog.showModal();
+    }
+
+    document.addEventListener('click', event => {
+      const button = event.target.closest('[data-action]');
+      if (!button) return;
+      const [command, value] = button.dataset.action.split(':');
+      switch (command) {
+        case 'variant':
+          state.layout = value;
+          state.filter = 'all';
+          if (value === 'a') state.skill = entries.find(entry => entry.id === state.selected)?.skill ?? state.skill;
+          break;
+        case 'skill':
+          state.skill = value;
+          state.filter = 'all';
+          break;
+        case 'filter':
+          state.filter = value;
+          break;
+        case 'entry':
+          state.selected = value;
+          break;
+        case 'review':
+        case 'forget':
+          openDialog(command);
+          return;
+        case 'cancel':
+          dialog.close();
+          return;
+        case 'approve':
+        case 'reject':
+        case 'confirm-forget': {
+          const reviewing = dialogAction === 'review' && dialogEntry?.state === 'pending';
+          const forgetting = dialogAction === 'forget' && dialogEntry?.state === 'saved';
+          if (!dialog.open || (command === 'confirm-forget' ? !forgetting : !reviewing)) return;
+          const nextState = { approve: 'saved', reject: 'rejected', 'confirm-forget': 'forgotten' };
+          const message = { approve: 'approveMessage', reject: 'rejectMessage', 'confirm-forget': 'forgetMessage' };
+          dialogEntry.state = nextState[command];
+          if (forgetting) state.undo = dialogEntry;
+          state.message = message[command];
+          if (command === 'approve' && state.filter === 'pending') state.filter = 'all';
+          dialog.close();
+          render();
+          const selected = byId('window').querySelector('[aria-current="true"]');
+          const focusTarget = selected ?? byId('project');
+          focusTarget.focus();
+          return;
+        }
+        case 'undo':
+          if (!state.undo) return;
+          state.undo.state = 'saved';
+          if (state.undo.project === state.project) {
+            state.skill = state.undo.skill;
+            state.selected = state.undo.id;
+            state.filter = 'all';
+          }
+          state.undo = null;
+          state.message = 'undoMessage';
+          break;
+        default:
+          return;
+      }
+      render();
+      if (command === 'undo') (byId('window').querySelector('[aria-current="true"]') ?? byId('project')).focus();
+    });
+
+    document.addEventListener('change', event => {
+      const { id, value } = event.target;
+      if (id === 'theme') {
+        if (value === 'system') delete document.documentElement.dataset.theme;
+        else document.documentElement.dataset.theme = value;
+      }
+      if (id === 'locale' || id === 'project') {
+        state[id] = value;
+        render();
+        byId(id).focus();
+      }
+    });
+
+    render();
+  </script>
+</body>
+</html>
