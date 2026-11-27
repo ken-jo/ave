@@ -49,7 +49,7 @@ const LAUNCH_FILES = [
   "main/host-runtime-probe.ts",
   "main/managed-child-processes.ts",
   // Starts the app's own runtime on a fixed absolute entry for unconfined local inference; no program is looked up.
-  "main/memory-map/inference-child.ts",
+  "main/memory-map/inference-child-win32.ts",
   "main/process-group-reaper.ts",
   "main/python-runtime.ts",
   "main/tailnet-cli.ts",
