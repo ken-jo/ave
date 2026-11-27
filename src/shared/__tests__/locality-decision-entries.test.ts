@@ -6,7 +6,7 @@ import { expect, it } from "vitest";
 const entries: Readonly<Record<string, readonly string[]>> = {
   "src/plugins/isolation/out-of-process-plugin.ts": ["outermostContainingRoots(spec.envelope.read", "outermostContainingRoots(spec.envelope.write", "resolveUserChosenDirectory(inputs, grant"],
   "src/plugins/isolation/host-api-dispatcher.ts": ["assertGrantsWithinEnvelope(call, \"allowReadPaths\"", "assertGrantsWithinEnvelope(call, \"allowWritePaths\""],
-  "src/permissions/asrt-sandbox.ts": ["isGrantPathWithin(root, path)", "assertWriteGrantsOutsideConfinementState(write, declaredConfinementStatePaths()", "buildSandboxConfigInDecision(...args)"],
+  "src/permissions/asrt-sandbox.ts": ["isGrantPathWithin(root, path)", "assertWriteGrantsOutsideConfinementState(write, declaredConfinementStatePaths()", "readDenyEvidence(trustedSettings)", "admitFilesystemPolicy(trustedSettings)"],
   "src/permissions/sandbox-write-policy.ts": ["canonicalize(root)", "canonicalize(path)"],
   "src/sandbox/path-validator.ts": ["validateInDecision(path, cwd", "admitWindowsLookupPaths([path], \"preview\""],
   "src/permissions/rules/shell-rule-approval.ts": ["decodePowerShellEncodedCommands(command, dialect)", "exactRuleOf(dialect, command, cwd", "shellRuleCoversParsedCommand(dialect, pattern, action, command, cwd, commandSyntax("],
