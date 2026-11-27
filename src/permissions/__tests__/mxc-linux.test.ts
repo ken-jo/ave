@@ -81,7 +81,11 @@ it("keeps the Linux request bytes stable and requires the nearest cwd row to all
   // The launcher would put a request's env on bwrap's command line, so the request carries none: the shell sources it.
   expect(request.process.env).toEqual([]);
   expect(environment).toBe("export HOME='/work/sandbox-home'\nexport TMPDIR='/work/sandbox-home/temp'\nexport PATH='/usr/bin'\n");
-  expect(buildBubblewrapShellRequest({ ...input, env: { TOKEN: "it's", "BAD-NAME": "x" } }).environment).toBe("export TOKEN='it'\"'\"'s'\n");
+  expect(buildBubblewrapShellRequest({ ...input, env: { TOKEN: "it's" } }).environment).toBe("export TOKEN='it'\"'\"'s'\n");
+  // A name sh cannot export, or one a shell owns (read-only in bash), is refused by name, never dropped.
+  for (const name of ["BAD-NAME", "UID", "SHELLOPTS", "BASH_ENV", "BASH_FUNC_x%%", "1X"]) {
+    expect(() => buildBubblewrapShellRequest({ ...input, env: { [name]: "x" } }), name).toThrow(JSON.stringify(name));
+  }
   expect(() => buildBubblewrapShellRequest({ ...input, cwd: "/work/.ave/hooks" })).toThrow("outside its filesystem grants");
 });
 

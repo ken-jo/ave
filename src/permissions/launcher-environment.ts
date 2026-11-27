@@ -44,6 +44,17 @@ function assertTargetOperand(name: string, value: string, folded: string): void 
   }
 }
 
+/**
+ * Refuses a variable a POSIX shell cannot export as given: a name `sh` cannot spell, or one a shell owns, which bash
+ * holds read-only (exporting it ends the shell under `set -e` semantics of special builtins).
+ */
+export function assertShellExportableName(name: string): void {
+  if (!ENV_NAME.test(name)) throw new LauncherEnvironmentError(name, "is not a name a POSIX shell can export");
+  if (SHELL_PARAMETER_NAMES.has(name) || name.startsWith("BASH_")) {
+    throw new LauncherEnvironmentError(name, "cannot be delivered by the sandbox shell");
+  }
+}
+
 export function assertConfiguredLauncherEnvironment(env: NodeJS.ProcessEnv): void {
   const windows = process.platform === "win32";
   for (const [name, value] of Object.entries(env)) {
@@ -112,9 +123,7 @@ function targetAssignments(env: NodeJS.ProcessEnv): string[] {
   for (const [name, value] of Object.entries(env)) {
     if (value === undefined) continue;
     assertTargetOperand(name, value, name);
-    if (SHELL_PARAMETER_NAMES.has(name) || name.startsWith("BASH_")) {
-      throw new LauncherEnvironmentError(name, "cannot be delivered by the sandbox shell");
-    }
+    assertShellExportableName(name);
     assignments.push(`${name}=${value}`);
   }
   return assignments;

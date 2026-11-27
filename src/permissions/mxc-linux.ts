@@ -16,6 +16,7 @@ import { isRecord } from "../shared/is-record.js";
 import type { LinuxRawIpVerdict, SandboxContainerShellSupport, SandboxContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { INVOCATION_PROXY_REFUSED_STATUS, openInvocationProxyListener } from "./egress-invocation-listener.js";
+import { assertShellExportableName } from "./launcher-environment.js";
 import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
 import { holdMxcLinuxPlaceholders } from "./mxc-linux-placeholders.js";
 import {
@@ -61,21 +62,18 @@ export function writeLinuxShellEnvironment(child: ChildProcess, bytes: Buffer): 
   pipe.on("error", () => {});
   pipe.end(bytes);
 }
-const PORTABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 
 /** Descriptors 3 to 8 of a launcher spawn: the ready pipe at {@link LINUX_SHELL_READY_FD}, nothing else. */
 export function linuxShellExtraDescriptors(): ("pipe" | "ignore")[] {
   return Array.from({ length: LINUX_SHELL_ENVIRONMENT_FD - 3 }, (_, index) => index + 3 === LINUX_SHELL_READY_FD ? "pipe" : "ignore");
 }
 
-/** The environment as a POSIX `sh` script of single-quoted exports. A name `sh` cannot export is left out, never renamed. */
+/** The environment as a POSIX `sh` script of single-quoted exports. A name `sh` cannot export refuses the launch. */
 function linuxShellEnvironmentScript(env: Readonly<Record<string, string>>): string {
-  const dropped: string[] = [];
-  const lines = Object.entries(env).flatMap(([key, value]) => {
-    if (!PORTABLE_NAME.test(key)) { dropped.push(key); return []; }
-    return [`export ${key}=${quote(value)}`];
+  const lines = Object.entries(env).map(([key, value]) => {
+    assertShellExportableName(key);
+    return `export ${key}=${quote(value)}`;
   });
-  if (dropped.length > 0) log.info("Linux container shell environment leaves out non-portable names: %s", dropped.join(", "));
   return `${lines.join("\n")}\n`;
 }
 
