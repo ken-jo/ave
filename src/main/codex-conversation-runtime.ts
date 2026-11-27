@@ -1247,7 +1247,7 @@ export class CodexConversationRuntime {
       }
       return;
     }
-    if (typeof message.method === "string") this.handleNotification(message.method, message.params);
+    if (typeof message.method === "string") this.handleNotification(message.method, message.params, child);
   }
 
   private handleServerRequest(
@@ -1431,12 +1431,14 @@ export class CodexConversationRuntime {
     };
   }
 
-  private handleNotification(method: string, params: unknown): void {
+  private handleNotification(method: string, params: unknown, child: ChildProcess): void {
     const payload = isCodexJsonRecord(params) ? params : null;
     if (!payload) return;
-    if (method === "account/updated" && this.initialized && this.child) {
-      if (payload.authMode === "chatgpt" || payload.authMode === null || payload.authMode === "apiKey") {
-        this.connectionEvidence?.({ kind: payload.authMode === "chatgpt" ? "advertisement" : "sign-out", source: this.child });
+    if (method === "account/updated") {
+      if (payload.authMode === null || payload.authMode === "apiKey") {
+        this.connectionEvidence?.({ kind: "sign-out", source: child });
+      } else if (this.initialized && payload.authMode === "chatgpt") {
+        this.connectionEvidence?.({ kind: "advertisement", source: child });
       }
       return;
     }

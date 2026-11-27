@@ -23,6 +23,7 @@ import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace } from 
 import { RuntimeProcessFixture } from "../../../main/__tests__/support/runtime-process.js";
 import { codexExecutableArtifactFixture, normalizeFixtureAncestorPermissions } from "../../../__tests__/support/native-executable.js";
 import { createPrivateDirectory } from "../../../main/codex-executable-location.js";
+import { CodexConversationRuntime } from "../../../main/codex-conversation-runtime.js";
 import { CodexAppServerClient } from "../../../main/codex-app-server-client.js";
 import { ClaudeCodeSubscriptionClient } from "../../../main/claude-code-subscription-client.js";
 import { claudeCodeSubscriptionStatus } from "../../../shared/claude-code-subscription.js";
@@ -192,7 +193,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
 });
 
 it.each([
-  "live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog",
+  "sign-out batched with initialization", "live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog",
   "logout during failed login", "cancel detects sign-out during failed login",
   "account notification confirmation", "account notification overtaken by logout", "account notification retries after rejection",
   "account notification retries after supersession", "account notification retry withdrawn by sign-out",
@@ -240,6 +241,9 @@ it.each([
     getStatus: getAccountStatus, listModels: CodexAppServerClient.prototype.listModels,
     request, stop: vi.fn(),
   };
+  let useConversation = false;
+  const startupSignOut = scenario === "sign-out batched with initialization";
+  const threadStarted = deferred<{ child: RuntimeProcessFixture; id: number }>();
   const holdsCatalog = scenario === "sign-out during catalog" || scenario === "process exit during catalog";
   const usesAccountNotification = scenario.startsWith("account notification") || scenario === "matching login completion" || scenario === "account read during cancel";
   const realCancelRace = scenario === "cancel detects sign-out during failed login";
@@ -249,12 +253,12 @@ it.each([
   let child: RuntimeProcessFixture | undefined;
   let accountConnected = true;
   let runtimeHome = tempDir;
-  if (holdsCatalog || usesAccountNotification || realCancelRace) {
+  if (startupSignOut || holdsCatalog || usesAccountNotification || realCancelRace) {
     if (process.platform !== "win32") normalizeFixtureAncestorPermissions(tempDir);
     runtimeHome = join(tempDir, "runtime");
     await createPrivateDirectory(runtimeHome);
   }
-  const artifact = holdsCatalog || usesAccountNotification ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
+  const artifact = startupSignOut || holdsCatalog || usesAccountNotification ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
   const cliArtifact = realCancelRace ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
   const realCli = cliArtifact && new ClaudeCodeSubscriptionClient({
     runtimeHome, workspaceDir: runtimeHome, runtimeTempDir: runtimeHome,
@@ -343,7 +347,27 @@ it.each([
         },
       }),
     } : { codexClient: subscriptionAccountFixture(accountClient) as never }),
-    createCodexConversationRuntime: () => ({ verifyIsolation: async () => {}, stop: vi.fn() }) as never,
+    createCodexConversationRuntime: (options) => useConversation && artifact ? new CodexConversationRuntime({
+      ...options, runtimeHome, sqliteHome: runtimeHome, workspaceDir: runtimeHome, runtimeTempDir: runtimeHome,
+      resolveRuntime: async () => ({ ...artifact, version: "0.153.4" }),
+      spawn: () => {
+        const server = new RuntimeProcessFixture();
+        server.stdin.on("data", (chunk) => {
+          for (const line of String(chunk).trim().split("\n")) {
+            const { method, id } = JSON.parse(line);
+            if (method === "initialize") {
+              server.stdout.write([JSON.stringify({ id, result: {} }),
+                JSON.stringify({ method: "account/updated", params: { authMode: null } }), ""].join("\n"));
+            } else if (method === "thread/start") {
+              threadStarted.resolve({ child: server, id });
+            } else if (id !== undefined) {
+              server.stdout.write(JSON.stringify({ id, result: { status: "ready" } }) + "\n");
+            }
+          }
+        });
+        return server as unknown as ChildProcess;
+      },
+    }) : ({ verifyIsolation: async () => {}, stop: vi.fn() }) as never,
     acpRegistry: { stopAll: vi.fn() } as never,
   });
   const manager = new PermissionManager(join(tempDir, "permissions.json"));
@@ -402,7 +426,20 @@ it.each([
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     const wiringsBeforeDisconnect = subscriptionProviderFactory.mock.calls.length;
-    if (holdsCatalog) {
+    if (startupSignOut) {
+      useConversation = true;
+      const session = await runtime.openTextSession({ kind: "subscription", provider: "codex" });
+      const settled = session.streamTurn("fixture prompt")[Symbol.asyncIterator]().next().catch(() => undefined);
+      const request = await threadStarted.promise;
+      try {
+        expect(immediate).toBeDefined();
+        expect(await immediate).toMatchObject({ result: { decision: "deny", reasonCode: "no-approver" } });
+      } finally {
+        request.child.stdout.write(JSON.stringify({ id: request.id, error: { code: -32603, message: "Turn ended" } }) + "\n");
+        await settled;
+        await session.stop();
+      }
+    } else if (holdsCatalog) {
       const session = runtime.openTextSession(selection);
       const outcome = session.then(async (opened) => { await opened.stop(); return "opened"; }, () => "rejected");
       const requestId = await catalogStarted.promise;
