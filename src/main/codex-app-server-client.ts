@@ -608,7 +608,7 @@ export class CodexAppServerClient {
         if (receipt(verdict) && isCodexJsonRecord(message.result)) this.acceptedAccountReplies.add(message.result);
       }
       if (pending.method === "account/logout" && message.error === undefined) {
-        if (!Object.prototype.hasOwnProperty.call(message, "result")) {
+        if (!Object.hasOwn(message, "result")) {
           pending.reject(new CodexAppServerError("codex-operation-failed"));
           return;
         }

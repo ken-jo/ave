@@ -334,6 +334,7 @@ export function useSubscriptionProviders(api: AveApi) {
   useEffect(() => {
     if (inEditor) return;
     const unsubscribe = api.onSettingsUpdated((settings) => {
+      if (settings.subscriptionRevision < hostSnapshotRevisionRef.current) return;
       settingsRevisionRef.current += 1;
       applySettings(settings);
     });

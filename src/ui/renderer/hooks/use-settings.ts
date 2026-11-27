@@ -290,6 +290,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
   // registration. The revision guard prevents a slow initial read from overwriting a newer broadcast snapshot.
   useEffect(() => {
     const unsubscribe = api.onSettingsUpdated((settings) => {
+      if (settings.subscriptionRevision < hostRevisionRef.current) return;
       snapshotRevisionRef.current += 1;
       applySettingsSnapshot(settings);
     });

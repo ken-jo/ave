@@ -144,7 +144,7 @@ export function isSubscriptionRuntimeStatusUpdatedEvent(
   const payload = value as Record<string, unknown>;
   const keys = Object.keys(payload);
   return (keys.length === 2 || (keys.length === 3
-    && Object.prototype.hasOwnProperty.call(payload, "connected") && typeof payload.connected === "boolean"))
+    && Object.hasOwn(payload, "connected") && typeof payload.connected === "boolean"))
     && Object.prototype.hasOwnProperty.call(payload, "provider")
     && Object.prototype.hasOwnProperty.call(payload, "revision")
     && isSubscriptionRuntimeId(payload.provider)

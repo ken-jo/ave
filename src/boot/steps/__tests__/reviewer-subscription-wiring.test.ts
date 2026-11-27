@@ -196,7 +196,7 @@ it.each([
   "logout during failed login", "cancel detects sign-out during failed login",
   "account notification confirmation", "account notification overtaken by logout", "account notification retries after rejection",
   "account notification retries after supersession", "account notification retry withdrawn by sign-out",
-  "account notification retry withdrawn by shutdown", "matching login completion",
+  "account notification retry withdrawn by shutdown", "matching login completion", "account read during cancel",
 ] as const)("invalidates a cached windowless reviewer verdict on %s and restores the saved route", async (scenario) => {
   const tempDir = mkdtempSync(join(tmpdir(), "windowless-reviewer-"));
   vi.resetModules();
@@ -241,7 +241,7 @@ it.each([
     request, stop: vi.fn(),
   };
   const holdsCatalog = scenario === "sign-out during catalog" || scenario === "process exit during catalog";
-  const usesAccountNotification = scenario.startsWith("account notification") || scenario === "matching login completion";
+  const usesAccountNotification = scenario.startsWith("account notification") || scenario === "matching login completion" || scenario === "account read during cancel";
   const realCancelRace = scenario === "cancel detects sign-out during failed login";
   const accountReads: number[] = [];
   let holdAccountReads = false;
@@ -421,7 +421,19 @@ it.each([
     } else if (usesAccountNotification) {
       const server = requiredFixture(child);
       holdAccountReads = true;
-      if (scenario === "matching login completion") {
+      if (scenario === "account read during cancel") {
+        const cancel = runtime.cancelLogin(provider);
+        await vi.waitFor(() => expect(accountReads).toHaveLength(1));
+        const newerLogin = runtime.startLogin(provider, "browser");
+        const loginFailed = expect(newerLogin).rejects.toMatchObject({ code: "subscription-operation-failed" });
+        server.stdout.write(`${JSON.stringify({ id: accountReads[0], result: { account: null } })}\n`);
+        await expect(cancel).resolves.toMatchObject({ connection: "signed-out" });
+        await loginFailed;
+        expect((await dispatch(true)).result.decision).toBe("deny");
+        expect(await runtime.getCachedStatus(provider)).toMatchObject({ connection: "signed-out" });
+        expect(accountReads).toHaveLength(1);
+        holdAccountReads = false;
+      } else if (scenario === "matching login completion") {
         const reply = (id: number, connected: boolean) => {
           server.stdout.write(`${JSON.stringify({ id, result: { account: connected ? { type: "chatgpt", planType: "plus" } : null } })}\n`);
         };
@@ -442,57 +454,58 @@ it.each([
         await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
         expect((await dispatch(true)).result.decision).toBe("allow");
         return;
-      }
-      const pendingReview = scenario === "account notification retries after rejection" ? dispatch(true, "/pending") : undefined;
-      if (pendingReview) await reviewStarted.promise;
-      const oldRead = runtime.getStatus(provider);
-      await vi.waitFor(() => expect(accountReads).toHaveLength(1));
-      const replyConnected = (id: number) => server.stdout.write(`${JSON.stringify({
-        id, result: { account: { type: "chatgpt", planType: "plus" } },
-      })}\n`);
-      server.stdout.write(`${JSON.stringify({ method: "account/updated", params: { authMode: "chatgpt" } })}\n`);
-      expect(immediate).toBeDefined();
-      replyConnected(requiredFixture(accountReads[0]));
-      await expect(oldRead).resolves.toMatchObject({ connection: "unknown" });
-      expect((await dispatch(true)).result.decision).toBe("deny");
-      await vi.waitFor(() => expect(accountReads).toHaveLength(2));
-      if (scenario === "account notification confirmation") {
-        replyConnected(requiredFixture(accountReads[1]));
-        await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
-        expect((await dispatch(true)).result.decision).toBe("allow");
-        expect(accountReads).toHaveLength(2);
-        return;
-      }
-      if (scenario.includes("retries") || scenario.includes("retry withdrawn")) {
-        if (scenario === "account notification retries after supersession") {
-          await expect(runtime.startLogin(provider, "browser")).rejects.toMatchObject({ code: "subscription-operation-failed" });
+      } else {
+        const pendingReview = scenario === "account notification retries after rejection" ? dispatch(true, "/pending") : undefined;
+        if (pendingReview) await reviewStarted.promise;
+        const oldRead = runtime.getStatus(provider);
+        await vi.waitFor(() => expect(accountReads).toHaveLength(1));
+        const replyConnected = (id: number) => server.stdout.write(`${JSON.stringify({
+          id, result: { account: { type: "chatgpt", planType: "plus" } },
+        })}\n`);
+        server.stdout.write(`${JSON.stringify({ method: "account/updated", params: { authMode: "chatgpt" } })}\n`);
+        expect(immediate).toBeDefined();
+        replyConnected(requiredFixture(accountReads[0]));
+        await expect(oldRead).resolves.toMatchObject({ connection: "unknown" });
+        expect((await dispatch(true)).result.decision).toBe("deny");
+        await vi.waitFor(() => expect(accountReads).toHaveLength(2));
+        if (scenario === "account notification confirmation") {
           replyConnected(requiredFixture(accountReads[1]));
-        } else {
-          server.stdout.write(`${JSON.stringify({ id: requiredFixture(accountReads[1]), error: { code: -32603, message: "Account read temporarily unavailable" } })}\n`);
-        }
-        if (scenario.includes("retry withdrawn")) {
-          if (scenario.endsWith("shutdown")) await runtime.stop();
-          else server.stdout.write(`${JSON.stringify({ method: "account/updated", params: { authMode: null } })}\n`);
-          await new Promise<void>((resolve) => setTimeout(resolve, 350));
+          await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
+          expect((await dispatch(true)).result.decision).toBe("allow");
           expect(accountReads).toHaveLength(2);
-          expect((await dispatch(true)).result.decision).toBe("deny");
           return;
         }
-        await vi.waitFor(() => expect(accountReads).toHaveLength(3), { timeout: 2500 });
-        expect((await dispatch(true)).result.decision).toBe("deny");
-        replyConnected(requiredFixture(accountReads[2]));
-        await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
-        releaseReview.resolve();
-        if (pendingReview) expect((await pendingReview).result.decision).toBe("deny");
-        expect(await dispatch(true)).toMatchObject({ review: { outcome: "fresh" }, result: { decision: "allow" } });
-        return;
+        if (scenario.includes("retries") || scenario.includes("retry withdrawn")) {
+          if (scenario === "account notification retries after supersession") {
+            await expect(runtime.startLogin(provider, "browser")).rejects.toMatchObject({ code: "subscription-operation-failed" });
+            replyConnected(requiredFixture(accountReads[1]));
+          } else {
+            server.stdout.write(`${JSON.stringify({ id: requiredFixture(accountReads[1]), error: { code: -32603, message: "Account read temporarily unavailable" } })}\n`);
+          }
+          if (scenario.includes("retry withdrawn")) {
+            if (scenario.endsWith("shutdown")) await runtime.stop();
+            else server.stdout.write(`${JSON.stringify({ method: "account/updated", params: { authMode: null } })}\n`);
+            await new Promise<void>((resolve) => setTimeout(resolve, 350));
+            expect(accountReads).toHaveLength(2);
+            expect((await dispatch(true)).result.decision).toBe("deny");
+            return;
+          }
+          await vi.waitFor(() => expect(accountReads).toHaveLength(3), { timeout: 2500 });
+          expect((await dispatch(true)).result.decision).toBe("deny");
+          replyConnected(requiredFixture(accountReads[2]));
+          await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
+          releaseReview.resolve();
+          if (pendingReview) expect((await pendingReview).result.decision).toBe("deny");
+          expect(await dispatch(true)).toMatchObject({ review: { outcome: "fresh" }, result: { decision: "allow" } });
+          return;
+        }
+        await expect(runtime.logout(provider)).resolves.toMatchObject({ connection: "signed-out" });
+        replyConnected(requiredFixture(accountReads[1]));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(accountReads).toHaveLength(2);
+        expect(subscriptionProviderFactory).toHaveBeenCalledTimes(wiringsBeforeDisconnect);
+        holdAccountReads = false;
       }
-      await expect(runtime.logout(provider)).resolves.toMatchObject({ connection: "signed-out" });
-      replyConnected(requiredFixture(accountReads[1]));
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(accountReads).toHaveLength(2);
-      expect(subscriptionProviderFactory).toHaveBeenCalledTimes(wiringsBeforeDisconnect);
-      holdAccountReads = false;
     } else if (provider === "codex") {
       const catalogError = new Error("Catalog unavailable");
       request.mockRejectedValueOnce(catalogError);

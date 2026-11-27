@@ -251,7 +251,7 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<() =
     if (connected === undefined) return;
     const active = settingsService.get("llm").activeChatRuntime;
     if (active?.kind !== "subscription" || active.provider !== provider) return;
-    if (!connected) {
+    if (!subscriptionConnectionProjection(provider)?.connected) {
       ctx.rationaleScopeReviewer = new UnavailableRationaleScopeReviewer();
       ctx.approvalSentenceSelector = new UnavailableApprovalSentenceSelector();
     }
