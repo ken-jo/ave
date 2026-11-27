@@ -311,6 +311,39 @@ describe.skipIf(process.platform !== "win32")("native held policy delivery", () 
     },
   );
 
+  it("expires while the owner watcher holds the startup lock", { timeout: TOOL_TIMEOUT_POLICY.windowsHoldStopMs * 2 }, async (context) => {
+    if (!existsSync(fixture)) context.skip("Native policy reader fixture is absent");
+    await withHold(async (held) => {
+      const launcher = start(held, "process.stdout.write('resumed');", undefined, fixture, undefined, "contend startup lock");
+      const { gate } = launcher;
+      if (gate === undefined) throw new Error("Native policy fixture gate is absent");
+      const gated = once(gate, "data") as Promise<[Buffer]>;
+      let record = "";
+      launcher.child.stdio.at(4)?.on("data", (chunk: Buffer) => { record += chunk.toString("latin1"); });
+      const bindReader = vi.fn(async (_pid: number) => { await gated; });
+      const run = held.bind(launcher.child, { bindReader, onFailure: vi.fn() });
+      const [ready] = await gated;
+      expect(ready.toString()).toBe("L");
+
+      // Let an unbounded acquisition proceed after the native ten-second deadline.
+      let released = false;
+      const release = setTimeout(() => {
+        released = true;
+        gate.write("+");
+      }, 13_000);
+      try {
+        const verdict = await run.verdict;
+        const pid = bindReader.mock.calls[0]?.[0];
+        if (pid === undefined || pid === 0) throw new Error("The suspended PID was not bound");
+        expect(bindReader).toHaveBeenCalledOnce();
+        await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow("ESRCH"));
+        expect({ verdict, record, exitCode: launcher.child.exitCode, output: launcher.output(), released }, launcher.errors()).toEqual({
+          verdict: { kind: "unconfirmed" }, record: "AVJ1 unconfirmed\n", exitCode: 125, output: "", released: false,
+        });
+      } finally { clearTimeout(release); }
+    });
+  });
+
   it("reaps a running held reader when the owner closes after resume", async () => {
     await withHold(async (held) => {
       const launcher = start(held, "process.stdout.write('resumed'); setInterval(() => {}, 1000);");

@@ -8,7 +8,7 @@
 #include <vector>
 #include <string>
 
-[[noreturn]] static void endHeld(const char* record, DWORD code);
+[[noreturn]] static void endHeld(const char* record, DWORD code, HANDLE jobToClose = nullptr);
 static const char kLost[] = "AVJ1 lost\n";
 static const char kUnconfirmed[] = "AVJ1 unconfirmed\n";
 static SRWLOCK startupLock = SRWLOCK_INIT;
@@ -18,15 +18,22 @@ static bool isPipeOpenAndEmpty(HANDLE pipe) {
   DWORD available = 0;
   return PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr) && available == 0;
 }
+#ifdef AVE_TEST_POLICY_READER
+static bool policyFixtureFault(const wchar_t* fault);
+static bool waitForPolicyFixture(char phase);
+#endif
 // The owner pipe is private to the launcher. EOF means its owner died or released the job.
 static DWORD WINAPI watchOwner(void* pipe) {
   const HANDLE ownerPipe = static_cast<HANDLE>(pipe);
+#ifdef AVE_TEST_POLICY_READER
+  const bool contendStartup = policyFixtureFault(L"contend startup lock");
+#endif
   AcquireSRWLockExclusive(&startupLock);
+#ifdef AVE_TEST_POLICY_READER
+  if (suspendedJob && contendStartup && !waitForPolicyFixture('L')) endHeld(kUnconfirmed, 125);
+#endif
   while (suspendedJob) {
-    if (!isPipeOpenAndEmpty(ownerPipe)) {
-      CloseHandle(suspendedJob);
-      endHeld(kUnconfirmed, 125);
-    }
+    if (!isPipeOpenAndEmpty(ownerPipe)) endHeld(kUnconfirmed, 125, suspendedJob);
     // A blocking read on the synchronous handle could stall the final resume probe.
     SleepConditionVariableSRW(&startupChanged, &startupLock, 25, 0);
   }
@@ -150,8 +157,9 @@ static char holdAsk(HANDLE channel, DWORD kind, DWORD value, ULONGLONG* answer =
 // exit. Ending this process closes its job, which stops the command's tree.
 static HANDLE verdictPipe = INVALID_HANDLE_VALUE;
 static volatile LONG ending = 0;
-[[noreturn]] static void endHeld(const char* record, DWORD code) {
+[[noreturn]] static void endHeld(const char* record, DWORD code, HANDLE jobToClose) {
   if (InterlockedExchange(&ending, 1) != 0) Sleep(INFINITE);
+  if (jobToClose) CloseHandle(jobToClose);
   DWORD written = 0;
   WriteFile(verdictPipe, record, static_cast<DWORD>(strlen(record)), &written, nullptr);
   TerminateProcess(GetCurrentProcess(), code);
@@ -412,26 +420,31 @@ int wmain(int argc, wchar_t** argv) {
     PolicyControl control{policyChannel, policyReport, child.dwProcessId, admissionProof};
     HANDLE confirm = CreateThread(nullptr, 0, confirmPolicyReader, &control, 0, nullptr);
     HANDLE startupWaits[]{owner, child.hProcess, confirm};
+    constexpr DWORD startupTimeoutMs = 10000;
+    const ULONGLONG startupDeadline = GetTickCount64() + startupTimeoutMs;
     DWORD result = 1;
-    const bool confirmed = confirm && WaitForMultipleObjects(3, startupWaits, FALSE, 10000) == WAIT_OBJECT_0 + 2 &&
+    const bool confirmed = confirm && WaitForMultipleObjects(3, startupWaits, FALSE, startupTimeoutMs) == WAIT_OBJECT_0 + 2 &&
         GetExitCodeThread(confirm, &result) && result == 0;
+    if (!confirmed) endHeld(kUnconfirmed, 125, job);
 #ifdef AVE_TEST_POLICY_READER
-    if (confirmed) measureOtherReaders(argv[0], startup);
+    measureOtherReaders(argv[0], startup);
     // Holds the resume decision until a stop requested at the gate reaches the owner watcher.
     const bool stopBeforeResume = policyFixtureFault(L"stop before resume");
-    if (confirmed && stopBeforeResume && waitForPolicyFixture('R')) WaitForSingleObject(owner, 5000);
-    if (confirmed && delayWatcher) {
+    if (stopBeforeResume && waitForPolicyFixture('R')) WaitForSingleObject(owner, 5000);
+    if (delayWatcher) {
       if (!waitForPolicyFixture('D')) return fail("fixture gate");
       if (PeekNamedPipe(ownerPipe, nullptr, 0, nullptr, nullptr, nullptr)) return fail("fixture owner still connected");
       const DWORD error = GetLastError();
       if (error != ERROR_BROKEN_PIPE && error != ERROR_PIPE_NOT_CONNECTED) return fail("fixture owner pipe");
     }
 #endif
-    AcquireSRWLockExclusive(&startupLock);
-    if (!confirmed || !isPipeOpenAndEmpty(ownerPipe) || ResumeThread(child.hThread) != 1) {
-      CloseHandle(job);
-      endHeld(kUnconfirmed, 125);
+    while (!TryAcquireSRWLockExclusive(&startupLock)) {
+      if (GetTickCount64() >= startupDeadline) endHeld(kUnconfirmed, 125, job);
+      Sleep(1);
     }
+    if (GetTickCount64() >= startupDeadline || !isPipeOpenAndEmpty(ownerPipe) ||
+        GetTickCount64() >= startupDeadline || ResumeThread(child.hThread) != 1)
+      endHeld(kUnconfirmed, 125, job);
     suspendedJob = nullptr;
     WakeConditionVariable(&startupChanged);
     ReleaseSRWLockExclusive(&startupLock);
