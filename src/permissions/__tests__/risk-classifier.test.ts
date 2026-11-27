@@ -1155,7 +1155,7 @@ describe("LlmRiskClassifier — fallbackOnError", () => {
     const classifier = new LlmRiskClassifier({ complete }, "reviewer", "rule");
     const extra: { self?: unknown } = {};
     extra.self = extra;
-    const input = ctx({ category: "read", toolName: "read_file", finalInput: { path: "notes.txt", extra } });
+    const input = ctx({ category: "read", toolName: "read_file", finalInput: { path: "/Users/example/work/notes.txt", extra } });
 
     const trace = await classifier.classifyWithTrace(input);
     expect(trace).toMatchObject({ outcome: "error", llmVerdict: null });
