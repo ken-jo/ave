@@ -91,7 +91,7 @@ Key IPC domains live under `src/ipc/domains/*.ts`. Representative channels inclu
 - Chat/session: `ave:chat:send`, `ave:chat:abort`, `ave:chat:sessions`, `ave:chat:session-resume`, `ave:chat:fork`, `ave:chat:branch-from-checkpoint`, `ave:chat:edit-resend`, `ave:chat:export`, `ave:chat:compact`
 - Workflow: `ave:ask-user-question:respond`
 - Meeting: `ave:meeting:start`, `ave:meeting:push-chunk`, `ave:meeting:stop`, `ave:meeting:transcript`
-- Governance: `ave:audit:search`, `ave:dlp:stats`, `ave:agents:list`, `ave:agents:install`
+- Governance: `ave:agents:list`, `ave:agents:install`
 
 ## Tech Stack
 

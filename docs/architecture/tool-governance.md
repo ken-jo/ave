@@ -65,7 +65,7 @@ Pipeline rules:
 
 Locked by `src/tools/__tests__/executor-public-contract.test.ts`,
 `src/tools/__tests__/executor-mcp-plugin-parity.test.ts`, and
-`src/tools/__tests__/executor-audit-chain.test.ts`.
+`src/tools/__tests__/executor-permission-logging.test.ts`.
 
 ## 4. Permission model
 

@@ -96,7 +96,6 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
 
   // ── Permission manager / audit state ──
   "no-permission-manager": "formatIpcError.noPermissionManager",
-  "audit-chain-not-initialized": "formatIpcError.auditChainNotInitialized",
   "rerun-unavailable": "recentlyDenied.unavailable",
   "rerun-failed": "recentlyDenied.error",
   "rerun-in-progress": "recentlyDenied.error",
