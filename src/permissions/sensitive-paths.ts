@@ -51,8 +51,6 @@ export const MAX_WALK_UP = 64;
 
 const NO_RUNTIME_SECRET_KEY_PATHS: readonly string[] = Object.freeze([]);
 let runtimeSecretKeyPaths: { configured: string; paths: readonly string[] } | undefined;
-const runtimeSecretKeyMemo = {};
-
 const runtimeSettingsScopes = new Map<symbol, ReadonlySet<string>>();
 
 /** Protect one live host's settings file and its directory until that host closes. */
@@ -80,14 +78,10 @@ export function getRuntimeSensitiveKeyPaths(): readonly string[] {
   return withLocalityDecision(() => {
     const configured = process.env.AVE_SECRET_KEY_FILE;
     if (configured === undefined) return NO_RUNTIME_SECRET_KEY_PATHS;
-    const pinned = runtimeSecretKeyPaths?.configured === configured ? runtimeSecretKeyPaths.paths : undefined;
-    if (pinned !== undefined && process.platform !== "win32") return pinned;
+    if (runtimeSecretKeyPaths?.configured === configured) return runtimeSecretKeyPaths.paths;
     if (!isAbsolute(configured) || configured.includes("\0")) {
       throw new Error("AVE_SECRET_KEY_FILE must be an absolute file path");
     }
-    const memo = decisionMemo<readonly string[]>(runtimeSecretKeyMemo);
-    const known = memo.get(configured);
-    if (known !== undefined) return known;
     // Refuse paths the sandbox would interpret as patterns.
     const assertSandboxLiteral = (path: string): void => {
       if (/[*?\[\]]/.test(path)) {
@@ -95,19 +89,15 @@ export function getRuntimeSensitiveKeyPaths(): readonly string[] {
       }
     };
     assertSandboxLiteral(configured);
-    let canonical: string | undefined;
+    let canonical: string;
     try {
-      const route = admitLocalRoute(configured);
-      if (route.physical !== undefined || pinned === undefined) canonical = localFs.realpathNative(route.verdict);
-      // Keep the process's original key under the floor and prove its drive again if it differs.
-      for (const target of pinned ?? []) admitLocalRoute(target, { projectMissing: true });
+      canonical = localFs.realpathNative(admitLocalRoute(configured).verdict);
     } catch {
       throw new Error("AVE_SECRET_KEY_FILE could not be resolved safely");
     }
-    if (canonical !== undefined) assertSandboxLiteral(canonical);
-    const paths = Object.freeze([...new Set([pathResolve(configured), ...(pinned ?? []), ...(canonical === undefined ? [] : [canonical])])]);
-    if (pinned === undefined) runtimeSecretKeyPaths = { configured, paths };
-    memo.set(configured, paths);
+    assertSandboxLiteral(canonical);
+    const paths = Object.freeze([...new Set([pathResolve(configured), canonical])]);
+    runtimeSecretKeyPaths = { configured, paths };
     return paths;
   });
 }
