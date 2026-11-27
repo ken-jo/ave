@@ -96,9 +96,11 @@ import { holdHostShellSpawnDirectory } from "../../permissions/host-shell-execut
 import type { WindowsHoldVerdict } from "../../shared/windows-path-facts.js";
 import { isWatchedWorkspaceConsumable, listWatchedQuarantine, pruneWatchedRows, WATCHED_ROW_VIOLATION } from "../../permissions/windows-watched-rows.js";
 import * as asrtSandbox from "../../permissions/asrt-sandbox.js";
+import * as sandboxWritePolicy from "../../permissions/sandbox-write-policy.js";
 import { getConfiguredSessionReadRoot } from "../../permissions/sensitive-paths.js";
 import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
 import * as chatOrigin from "../../shared/chat-origin.js";
+import * as windowsDriveLocality from "../../shared/windows-drive-locality.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
@@ -316,6 +318,36 @@ describe("builtin shell — Windows MXC containers", () => {
     installationMock.resolve.mockReset();
     vi.mocked(holdHostShellSpawnDirectory).mockReset();
     vi.restoreAllMocks();
+  });
+
+  it.runIf(ORIGINAL_PLATFORM === "win32")("queries each drive once per mandatory write-policy pass", async () => {
+    bootMxcShells();
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-write-policy-")));
+    const compose = sandboxWritePolicy.buildMandatorySandboxWritePolicy;
+    const driveQueries: string[][] = [];
+    vi.spyOn(sandboxWritePolicy, "buildMandatorySandboxWritePolicy").mockImplementation((...args) => {
+      const drives: string[] = [];
+      driveQueries.push(drives);
+      const query = vi.spyOn(windowsDriveLocality, "queryDriveIdentity").mockImplementation((drive) => {
+        drives.push(drive);
+        return { local: true };
+      });
+      try { return compose(...args); }
+      finally { query.mockRestore(); }
+    });
+    try {
+      const result = await executePowerShell({ ...context("write-policy-drive-queries"), cwd: root, extraAllowedDirectories: [root] });
+      expect(result.isError).toBe(false);
+      expect(driveQueries).toHaveLength(2);
+      for (const drives of driveQueries) {
+        expect(drives).toContain(win32.parse(root).root.slice(0, 2).toUpperCase());
+        expect(drives).toHaveLength(new Set(drives).size);
+      }
+      const launch = mxcLaunchMock.prepare.mock.lastCall?.[0] as PrepareMxcShellLaunchInput | undefined;
+      expect(launch?.filesystem.denyWrite.map(path => path.toLowerCase())).toContain(join(root, ".envrc").toLowerCase());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("observes only the approved command container and excludes its internal parser", async () => {

@@ -66,6 +66,11 @@ function StageCapabilities({ stage, setupCommands }: { stage: TemplateStage; set
       </div>
       <CapabilityItems label={t("workflowTemplates.declaredTools")} items={tools} />
       <CapabilityItems label={t("workflowTemplates.networkHosts")} items={networkHosts} />
+      {envelope && <div>
+        <dt className="font-medium">{t("workflowTemplates.unattendedBudget")}</dt>
+        <dd>{t("workflowTemplates.budgetRoundsAndMinutes", { rounds: envelope.budget.rounds, minutes: envelope.budget.minutes })}</dd>
+        <dd>{t("workflowTemplates.budgetCostNotEnforced", { costUsd: envelope.budget.costUsd })}</dd>
+      </div>}
     </dl>
   );
 }

@@ -23,6 +23,13 @@ export function WorkflowStageEvidence({ stage, stageName, retry }: {
 }) {
   const { t } = useTranslation();
   const gate = stage.gate;
+  const repeatedCalls = new Map<string, number>();
+  const deniedCalls = stage.deniedCalls?.map(({ toolName, code }) => {
+    const call = `${toolName}:${code}`;
+    const occurrence = (repeatedCalls.get(call) ?? 0) + 1;
+    repeatedCalls.set(call, occurrence);
+    return <li key={`${call}:${occurrence}`}>{stageDisplayName(toolName)} · <code>{code}</code></li>;
+  });
   return (
     <div className="space-y-3">
       {stage.breaker && <p>
@@ -30,6 +37,10 @@ export function WorkflowStageEvidence({ stage, stageName, retry }: {
           consecutive: stage.breaker.consecutive, total: stage.breaker.total,
         })}
       </p>}
+      {!!deniedCalls?.length && <section className="space-y-1">
+        <h4 className="font-semibold">{t("workflowTemplates.deniedCalls")}</h4>
+        <ul className="list-disc pl-5">{deniedCalls}</ul>
+      </section>}
       {stage.result !== undefined && <details>
         <summary className="cursor-pointer font-semibold">{t("workflowTemplates.stageResult")}</summary>
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{revealHiddenCharacters(stage.result, { lineBreaks: false })}</pre>

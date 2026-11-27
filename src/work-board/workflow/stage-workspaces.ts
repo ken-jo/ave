@@ -321,10 +321,11 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
    * project root never reads can name a driver, so its drivers are read there first; a filter required there alone (`required` are the
    * project root's) cannot be asked about the way `open` asks, and refuses the folder.
    */
-  async function checkOut(at: Held, key: string, folder: OwnedDir, required: readonly string[]): Promise<void> {
+  async function checkOut(at: Held, key: string, folder: OwnedDir, required: readonly string[], isCurrent?: () => boolean): Promise<void> {
     await assertRepository(at);
     const drivers = await driversIn(at, key, folder);
     if (drivers.requiredFilters.some(name => !required.includes(name))) throw new Error("a filter is required in the worktree alone");
+    if (isCurrent?.() === false) throw new Error("the stage attempt is no longer current");
     answered(["reset"], await gitIn(at, key, folder)(["reset", "--hard", "-q"], { drivers: drivers.config }));
   }
 
@@ -632,7 +633,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     writeRunFile(at, file);
   }
 
-  async function prepareGit(at: Held, stage: TemplateStage, held: OwnedDir): Promise<Refusal | null> {
+  async function prepareGit(at: Held, stage: TemplateStage, held: OwnedDir, isCurrent: () => boolean): Promise<Refusal | null> {
     const { file } = at;
     const root = at.live?.root;
     if (root === undefined || file.branch === undefined) return "workspace-unavailable";
@@ -641,20 +642,25 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const head = (await gitOut(root, ["rev-parse", "--verify", END_OF_OPTIONS, `refs/heads/${file.branch}^{commit}`])).trim();
       // The stage folder is the host's own before git fills it, and still that folder each time something is removed from it.
       await assertRepository(at);
+      if (!isCurrent()) return "workspace-unavailable";
       held.check();
       const added = await git.run(root, ["worktree", "add", "--detach", "--no-checkout", END_OF_OPTIONS, held.path, head], { drivers: [...drivers.config, ...ABSOLUTE_LINKS], requiresFloor: true }).catch(() => undefined);
       if (await recordRegistration(at, stage.id, at.run.child(stageDirName(stage.id), held.id)) === undefined || added?.code !== 0) throw new Error("the stage worktree was not made");
+      if (!isCurrent()) return "workspace-unavailable";
       held.check();
-      await checkOut(at, stage.id, held, drivers.requiredFilters);
+      await checkOut(at, stage.id, held, drivers.requiredFilters, isCurrent);
+      if (!isCurrent()) return "workspace-unavailable";
       held.check();
       // A tracked secret file is not handed to a stage. It is found, and then removed, by its name: one that is no text is neither.
       const tracked = nul(answered(["ls-files"], await gitIn(at, stage.id, held)(["ls-files", "-z"], { exact: true })));
       held.check();
       for (const path of tracked) {
+        if (!isCurrent()) return "workspace-unavailable";
         if (!sensitive(join(held.path, path))) continue;
         const segments = path.split("/");
         await held.walk(segments.slice(0, -1))?.remove(segments.at(-1) as string);
       }
+      if (!isCurrent()) return "workspace-unavailable";
       const link = exactText(held.readFile(".git"));
       if (link === undefined) throw new Error("the stage folder has no worktree link");
       const entry = file.stages[stage.id];
@@ -667,7 +673,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
   }
 
-  async function prepareFolder(at: Held, stage: TemplateStage, target: OwnedDir): Promise<Refusal | null> {
+  async function prepareFolder(at: Held, stage: TemplateStage, target: OwnedDir, isCurrent: () => boolean): Promise<Refusal | null> {
     const { runRoot, file } = at;
     const inputs = stage.inputFiles ?? [];
     if (file.project === undefined && inputs.some(input => input.from === "project")) return "inputs-need-project";
@@ -679,6 +685,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const plain = root !== undefined && file.ignoreRules !== true ? plainFolderIgnore(git, runRoot, root, { check: () => at.run.check(), makeTemp: () => at.run.makeTemp(IGNORE_PREFIX), remove: scratch => at.run.remove(basename(scratch.path), scratch.id) }, options.nameReader) : undefined;
     try {
       for (const input of inputs) {
+        if (!isCurrent()) return "workspace-unavailable";
         let source: SourceRoot;
         let paths: string[];
         let expect: Map<string, string> | undefined;
@@ -704,6 +711,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
           bytes += paths.reduce((sum, path) => sum + (file.out[path]?.size ?? 0), 0);
         }
         if (files > limits.files || bytes > limits.bytes) return "seed-too-large";
+        if (!isCurrent()) return "workspace-unavailable";
         for (const copied of await copySeedFiles(source, target, paths, expect, input.from === "project")) seeded[copied.path] = copied.sha256;
       }
     } catch {
@@ -711,6 +719,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     } finally {
       await plain?.done();
     }
+    if (!isCurrent()) return "workspace-unavailable";
     if (root !== undefined && inputs.some(input => input.from === "project") && !isHostWorkspaceConsumable(root)) return "seed-unreadable";
     const entry = file.stages[stage.id];
     if (entry) Object.assign(entry, { ready: true, seeded, outputs: stage.outputs ?? ["**"] });
@@ -718,9 +727,10 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return null;
   }
 
-  function prepare(run: RunRef, stage: TemplateStage, attempt: number): ReturnType<StageWorkspaceProvider["prepare"]> {
+  function prepare(run: RunRef, stage: TemplateStage, attempt: number, isCurrent: () => boolean = () => true): ReturnType<StageWorkspaceProvider["prepare"]> {
     return serial(run.runId, async () => {
       const unavailable = { ok: false as const, code: "workspace-unavailable" as const };
+      if (!isCurrent()) return unavailable;
       const found = locate(run);
       // `_join`, `_out` and the run record are the host's; nothing but a stage id names a stage folder.
       if (!found || !isStageId(stage.id)) return unavailable;
@@ -752,6 +762,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       let held: OwnedDir;
       try {
         if (existing !== undefined) await removeStage(found, stage.id);
+        if (!isCurrent()) return unavailable;
         entry = { ready: false, attempt };
         file.stages[stage.id] = entry;
         writeRunFile(found, file);
@@ -766,10 +777,10 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         }
         return unavailable;
       }
-      const refused = file.kind === "git" ? await prepareGit(found, stage, held) : await prepareFolder(found, stage, held);
-      if (refused !== null) {
+      const refused = file.kind === "git" ? await prepareGit(found, stage, held, isCurrent) : await prepareFolder(found, stage, held, isCurrent);
+      if (refused !== null || !isCurrent()) {
         if (file.stages[stage.id] !== undefined) await removeStage(found, stage.id).catch(() => undefined);
-        return { ok: false as const, code: refused };
+        return { ok: false, code: refused ?? unavailable.code };
       }
       return ready(held, file.stages[stage.id]?.base);
     });
@@ -1230,8 +1241,9 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return false;
   }
 
-  function release(run: RunRef, stageIds: readonly string[] | "all"): Promise<void> {
+  function release(run: RunRef, stageIds: readonly string[] | "all", isCurrent?: () => boolean): Promise<void> {
     return serial(run.runId, async () => {
+      if (isCurrent?.() === false) return;
       const found = locate(run);
       if (!found) return;
       await releaseIn(found, stageIds, "keep", run.provisional === true);

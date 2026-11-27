@@ -8,7 +8,7 @@ import type {
   RunAuthoritySource, StageJoin, TemplateScope, TemplateStage, TemplateVersion, TemplateVersionPin, WorkItemStageRun,
 } from "../../../shared/workflow-template-types.js";
 import { type WorkBoardRunEvent, type WorkItemResolved, workBoardOriginSessionId } from "../../../shared/work-board-types.js";
-import type { SubAgentActivityUpdate, SubAgentRunner, SubAgentSpawnInput, SubAgentSpawnResult } from "../../../engine/subagent-runner.js";
+import type { SubAgentActivityUpdate, SubAgentRunner, SubAgentRunSnapshot, SubAgentSpawnInput, SubAgentSpawnResult } from "../../../engine/subagent-runner.js";
 import { WorkBoardStore } from "../../../main/work-board-store.js";
 import { WorkflowTemplateStore } from "../../../main/workflow-template-store.js";
 import { mintHostDecisionProof } from "../../../main/workflow-template-decision.js";
@@ -88,8 +88,11 @@ function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>, onScheduled
 export async function stageRunHarness(opts: {
   /** Returns a result to end the child at once; undefined leaves it live until the test finishes it. */
   script?: (input: SubAgentSpawnInput) => Partial<SubAgentSpawnResult> | undefined;
+  /** Override when a child's interruption settles. */
+  interruptChild?: (child: FakeChild) => void;
   /** Use a real runner for tests that need child-loop behavior. */
   runner?: (dir: string) => SubAgentRunner;
+  descendants?: (originSessionId: string) => Pick<SubAgentRunSnapshot, "childSessionId" | "turnCount">[];
   workflow?: Partial<WorkflowDeps>;
   /** Parts chosen for the board store the engine runs on (the production wiring is chosen this way); they replace the harness's own. */
   wiring?: (store: WorkBoardStore, harness: { workspace: StageWorkspaceProvider; templates: WorkflowTemplateStore; waking: WakingWorkspaceCall }) => Partial<WorkflowDeps>;
@@ -229,6 +232,11 @@ export async function stageRunHarness(opts: {
       finish: (result = {}) => {
         if (child.ended) return;
         child.ended = true;
+        if (input.claimRound && result.stopReason !== "interrupted") {
+          for (let round = 0; round < (result.turnCount ?? 1); round++) {
+            if (!input.claimRound()) break;
+          }
+        }
         launch?.resume();
         end({ summary: `output of ${sessionId}`, toolCallCount: 0, turnCount: 1, childSessionId: sessionId, entries: [], ok: true, endTrustOrigin: "llm-tool-arg", ...result });
         if (liveChildren.delete(child)) notify();
@@ -258,7 +266,10 @@ export async function stageRunHarness(opts: {
     interruptRun(id: string) {
       interrupts.push(id);
       const child = children.find(candidate => candidate.sessionId === id && !candidate.ended);
-      child?.finish({ ok: false, summary: "interrupted", error: "interrupted", stopReason: "interrupted" });
+      if (child) {
+        if (opts.interruptChild) opts.interruptChild(child);
+        else child.finish({ ok: false, summary: "interrupted", error: "interrupted", stopReason: "interrupted" });
+      }
       return { ok: child !== undefined, message: "" };
     },
     queueHostDirectiveToWorkBoardChild(_origin: string, id: string, text: string) {
@@ -268,6 +279,7 @@ export async function stageRunHarness(opts: {
       return { ok: true, messageId: `m-${child.steers.length}` };
     },
     getRunStatus: (id: string) => activities.get(id) ?? null,
+    listRunStatuses: (originSessionId: string) => opts.descendants?.(originSessionId) ?? [],
     parentToolRegistry: () => registry,
   } as unknown as SubAgentRunner;
 

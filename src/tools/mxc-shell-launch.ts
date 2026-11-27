@@ -81,6 +81,8 @@ export function shellPolicyModel(lists: MxcShellPolicyLists, literalAndPatternFl
   });
 }
 
+export type MxcShellPreparationStage = "sandbox-prep" | "egress-prep" | "inline-policy-ready" | "policy-pipe-ready";
+
 export interface PrepareMxcShellLaunchInput {
   /** The invocation's egress token (`egress-invocations.ts`): the identity its listener stamps. */
   readonly egressToken: string;
@@ -95,6 +97,7 @@ export interface PrepareMxcShellLaunchInput {
   readonly timeoutMs: number;
   readonly directoryHeld?: boolean;
   readonly exists: (path: string) => boolean;
+  readonly markTiming?: (stage: MxcShellPreparationStage) => void;
 }
 
 /** Margin MXC's own timeout keeps behind the host's lifetime watch. */
@@ -195,6 +198,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     };
   }, JSON.stringify);
   assertAdmission();
+  input.markTiming?.("sandbox-prep");
   const relay = await openHostEgressListener(token, admission);
   assertAdmission();
   const listener = await openInvocationProxyListener({
@@ -206,6 +210,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   });
   assertAdmission();
   relay.registerPort(listener.port);
+  input.markTiming?.("egress-prep");
   seal.verify();
   const systemRoot = windowsSystemRoot();
   const env: Record<string, string> = { ...input.env };
@@ -221,6 +226,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   const transport = await openMxcRequestTransport(request, wxcExec, input.directoryHeld);
   lifecycle.defer(() => transport.release());
   assertAdmission();
+  input.markTiming?.(transport.args[0] === "--config" ? "policy-pipe-ready" : "inline-policy-ready");
   let watchedNotice: string | undefined;
   const claim = grants.watched === undefined ? undefined : claimMxcWatchedRows(grants.watched, { commandId: token });
   // Command end is a detection point: this launch's own names first, then every watched name and the receipts no result carried yet.

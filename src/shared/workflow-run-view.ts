@@ -31,6 +31,7 @@ export interface WorkflowStageInputView {
 }
 
 export interface WorkflowStageView extends Pick<WorkItemStageRun, "stageId" | "attempt" | "status" | "childSessionId" | "startedAt" | "endedAt" | "failure" | "gate" | "outputExecutions"> {
+  deniedCalls?: WorkItemStageRun["deniedCalls"];
   result?: string;
   resultHash?: string;
   outputRetry?: { hash: string; ids: string[] };

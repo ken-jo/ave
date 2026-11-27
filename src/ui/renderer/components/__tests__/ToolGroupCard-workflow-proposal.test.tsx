@@ -142,6 +142,9 @@ it("shows stage capabilities as visible text in the confirmation dialog", async 
     if (!field) throw new Error(`Missing capability field ${key}`);
     expect(within(field).getByText(value)).toBeVisible();
   }
+  const { rounds, minutes, costUsd } = reportEnvelope.budget;
+  expect(dialog.getByText(t("workflowTemplates.budgetRoundsAndMinutes", { rounds, minutes }))).toBeVisible();
+  expect(dialog.getByText(t("workflowTemplates.budgetCostNotEnforced", { costUsd }))).toBeVisible();
 });
 
 it("shows the data-sending flag per tool and names the sending service", async () => {

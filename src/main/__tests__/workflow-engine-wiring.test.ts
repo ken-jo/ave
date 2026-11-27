@@ -26,10 +26,10 @@ const readEnvelope: StageEnvelope = {
 it("refuses a qualified non-read-only schedule at spawn with lane-unavailable", async () => {
   const h = await stageRunHarness({
     script: () => ({ summary: "started" }),
-    workflow: { unattendedAllowed: () => ({ ok: true }) },
     wiring: (store, harness) => ({
       ...workflowEngineExtensions(store, harness.templates, runScopePermissions(), unavailableOutputAdapter),
       workspace: harness.workspace, workspaceBinding: undefined,
+      unattendedAllowed: () => ({ ok: true }),
     }),
   });
   await h.runThenEnd(async () => {
@@ -55,7 +55,7 @@ it("runs a read-only schedule with an envelope under the interim permission poli
   manager.setMode("allow");
   const h = await stageRunHarness({
     wiring: (store, harness) => ({
-      ...workflowEngineExtensions(store, harness.templates, manager, unavailableOutputAdapter),
+      ...workflowEngineExtensions(store, harness.templates, manager, unavailableOutputAdapter, { effectOf: () => "safe" }),
       workspace: harness.workspace, workspaceBinding: undefined,
     }),
   });
