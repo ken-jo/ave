@@ -1,7 +1,13 @@
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { MxcIntegrityError } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
 import { createPosixSupervisorHarness, stageSeatbeltWire } from "../../__tests__/support/mxc-posix-supervisor-harness.js";
 import { SEATBELT_CLEANUP_WARNINGS, seatbeltCleanupUnverified } from "../mxc-native-process.js";
 import { _lostShellOutcomeForTest, _shellOutcomeForTest } from "../mxc-shell-supervisor-client.js";
+import PINS from "../mxc-launcher-pins.json" with { type: "json" };
+import { mxcShellLibraryCheck } from "../mxc-shell-supervisor-bootstrap.js";
 import { serveMxcShellSupervisor } from "../mxc-shell-supervisor-service.js";
 
 let harness: ReturnType<typeof createPosixSupervisorHarness> | undefined;
@@ -56,5 +62,40 @@ describe("macOS shell outcome wording", () => {
     expect(_shellOutcomeForTest(contract, false)).toMatchObject({ rejected: true, cleanupUnverified: false });
     expect(_shellOutcomeForTest(contract, false)).not.toHaveProperty("transportFailed");
     expect(_shellOutcomeForTest({ type: "error", code: "integrity", message: "x" }, true)).toMatchObject({ cleanupUnverified: true });
+  });
+});
+
+describe("macOS shell supervisor library check before spawn", () => {
+  it("refuses with integrity and never calls the SDK when the verified library changed since bootstrap", async () => {
+    harness = createPosixSupervisorHarness();
+    const h = harness;
+    const served = serveMxcShellSupervisor(h.supervisor, h.liveness, h.stdout, h.stderr, h.bootstrap, h.onFatal);
+    h.replaceLibrary();
+    await h.host.send({ type: "shell-start", ...stageSeatbeltWire(h.directory) });
+    await served;
+    expect(h.frames.at(-1)).toMatchObject({ type: "error", code: "integrity" });
+    expect(h.spawned).toEqual([]);
+  });
+
+  it("accepts only the pinned library at its path with no source-build fallback beside the installation", () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-mxc-lib-"));
+    try {
+      const nodeModules = join(root, "node_modules");
+      const sdkRoot = join(nodeModules, "@microsoft", "mxc-sdk");
+      const member = PINS.targets["darwin-arm64"].library.member;
+      mkdirSync(dirname(join(sdkRoot, member)), { recursive: true });
+      copyFileSync(join("node_modules", PINS.package, member), join(sdkRoot, member));
+      const check = mxcShellLibraryCheck(nodeModules, sdkRoot);
+      expect(check).not.toThrow();
+      mkdirSync(join(nodeModules, "src", "target"), { recursive: true });
+      expect(check).toThrow(MxcIntegrityError);
+      rmSync(join(nodeModules, "src"), { recursive: true });
+      writeFileSync(join(sdkRoot, member), "replaced");
+      expect(check).toThrow(MxcIntegrityError);
+      rmSync(join(sdkRoot, member));
+      expect(check).toThrow(MxcIntegrityError);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

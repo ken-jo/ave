@@ -16,7 +16,10 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { createContainedShellLifecycle } from "../../tools/contained-shell-lifecycle.js";
 import { prepareMxcPosixShellLaunch } from "../../tools/mxc-posix-shell-launch.js";
 import { quoteSandboxWrappedWord as quote } from "../sandbox-wrapped-command.js";
-import { openEgressInvocation } from "../egress-invocations.js";
+import { t } from "../../i18n/index.js";
+import { reserveTailnetListenerPort } from "../../shared/tailnet-listener-port.js";
+import { BashTool } from "../../tools/shell-tools.js";
+import { liveEgressInvocationCount, openEgressInvocation } from "../egress-invocations.js";
 import { startEgressRelayService, stopEgressRelayService, type EgressRelayServiceOptions } from "../egress-relay/relay.js";
 import { currentMxcRuntimeHost, establishMxcRuntimeRoot, _forgetMxcRuntimeRootForTest } from "../mxc-runtime-root.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability,
@@ -24,7 +27,7 @@ import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootFor
 import pins from "../mxc-launcher-pins.json" with { type: "json" };
 import { _runSeatbeltCanaryForTest, buildSeatbeltShellRequest, detectHostMxcMacShellSupport } from "../mxc-macos.js";
 import { posixPolicyLookups } from "../mxc-posix.js";
-import { _mxcShellStandbyPidForTest, mxcShellSupervisorLocation, stageMxcShellRequest, startMxcShellSupervisor } from "../mxc-shell-supervisor-client.js";
+import { _mxcShellStandbyPidForTest, dropMxcShellStandbys, mxcShellSupervisorLocation, stageMxcShellRequest, startMxcShellSupervisor } from "../mxc-shell-supervisor-client.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../policy-model.js";
 
 const NATIVE = process.platform === "darwin" && process.arch === "arm64";
@@ -557,6 +560,101 @@ req.end();
     expect((await otherRun.completion).cancelled).toBe(true);
   }, 20_000);
 
+  it("refuses a reserved Tailnet listener port directly, by loopback name and by any name, while another port still relays", async () => {
+    const hits: string[] = [];
+    let tailnetConnections = 0;
+    const tailnet = await listen(createServer(socket => { tailnetConnections++; socket.destroy(); }));
+    const release = reserveTailnetListenerPort(tailnet);
+    try {
+      const upstream = createHttpServer((req, res) => { hits.push(req.url ?? ""); res.end("relay-control"); });
+      const upstreamPort = await listen(upstream);
+      const asked: number[] = [];
+      startEgressRelayService({
+        ask: async (request) => { asked.push(request.port); return true; },
+        resolve: async () => [{ address: "93.184.215.14" }],
+        router: async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: upstreamPort, resolvesNames: true }] }),
+      });
+      const result = await run(await prepare([
+        "set -u",
+        `if /usr/bin/nc -z -w 1 127.0.0.1 ${tailnet}; then exit 41; fi`,
+        `if curl -fsS --max-time 3 http://127.0.0.1:${tailnet}/; then exit 42; fi`,
+        `if curl -fsS --max-time 3 http://tailnet-check.example:${tailnet}/; then exit 43; fi`,
+        `test "$(curl -fsS --max-time 3 http://tailnet-check.example:${upstreamPort + 1}/)" = relay-control || exit 44`,
+        "printf '%s' tailnet-control",
+      ].join("\n")));
+      expect(result.code, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain("tailnet-control");
+      // The control went through the relay; the reserved port reached nothing and was never asked about.
+      expect(hits).toEqual([`http://tailnet-check.example:${upstreamPort + 1}/`]);
+      expect(tailnetConnections).toBe(0);
+      expect(asked).not.toContain(tailnet);
+    } finally {
+      release();
+    }
+  }, 20_000);
+
+  it("holds protected and ordinary controls when workspace and deny names carry quotes, parentheses, backslashes and regex metacharacters", async () => {
+    startEgressRelayService({ ask: async () => false });
+    // Glob characters (`*?[]{}`) in a granted name are refused as a pattern grant before any profile is written, and the
+    // SDK refuses a double quote in any path; both are asserted at the end. The rest must reach the profile and hold.
+    const odd = `it's (a) \\ dir .+^$|`;
+    const workspace = join(project, odd);
+    const denied = join(home, `${odd} vault`);
+    const deniedPrefixSibling = join(home, `${odd} vault-open`);
+    mkdirSync(join(workspace, ".git", "hooks"), { recursive: true });
+    mkdirSync(denied, { recursive: true });
+    mkdirSync(deniedPrefixSibling, { recursive: true });
+    writeFileSync(join(denied, "secret"), "private fixture");
+    writeFileSync(join(deniedPrefixSibling, "open"), "open-control");
+    const result = await run(await prepare([
+      `cd ${quote(workspace)} || exit 50`,
+      "printf ordinary > ordinary.txt || exit 51",
+      "if (printf x > .git/hooks/pre-commit); then exit 52; fi",
+      `if /bin/cat ${quote(join(denied, "secret"))}; then exit 53; fi`,
+      `test "$(/bin/cat ${quote(join(deniedPrefixSibling, "open"))})" = open-control || exit 54`,
+      "printf '%s' escape-control",
+    ].join("\n"), { cwd: workspace, allowWrite: [workspace], denyRead: [denied], allowRead: [home] }));
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout).toContain("escape-control");
+    expect(readFileSync(join(workspace, "ordinary.txt"), "utf8")).toBe("ordinary");
+    expect(existsSync(join(workspace, ".git", "hooks", "pre-commit"))).toBe(false);
+
+    const globbed = join(project, "glob [x]{1}*?");
+    mkdirSync(globbed);
+    await expect(prepare("printf never", { cwd: globbed, allowWrite: [globbed] }))
+      .rejects.toMatchObject({ code: "pattern-row" });
+    const quoted = join(project, 'say "hi"');
+    mkdirSync(quoted);
+    expect(await run(await prepare(`printf never > ${quote(join(quoted, "ran"))}`, { cwd: quoted, allowWrite: [quoted] })))
+      .toMatchObject({ rejected: true, failure: { code: "start-refused", sdkCode: "malformed_request" } });
+    expect(existsSync(join(quoted, "ran"))).toBe(false);
+  });
+
+  it("cancels a real BashTool call on the container route: its invocation is revoked and nothing survives", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const invocationsBefore = liveEgressInvocationCount();
+    const controller = new AbortController();
+    // The same five kinds by bare program name: the tool's own path gate refuses absolute paths outside the workspace.
+    const workload = DETACH_WORKLOAD.replaceAll("/usr/bin/perl", "perl").replaceAll("/usr/bin/nohup", "nohup")
+      .replaceAll("/bin/sleep", "sleep").replaceAll("/bin/sh", "sh");
+    const pending = new BashTool().execute({ command: workload, timeoutSeconds: 60 }, {
+      cwd: project, extraAllowedDirectories: [], metadata: { toolUseId: "native-bash-cancel" }, abortSignal: controller.signal,
+    });
+    const pids = await recordedPids(project, DETACH_KINDS);
+    try {
+      await vi.waitFor(() => expect(tickSizes(project, DETACH_TICKS).every(size => size > 0)).toBe(true));
+      expect(liveEgressInvocationCount()).toBe(invocationsBefore + 1);
+      controller.abort();
+      const result = await pending;
+      expect(result).toMatchObject({ isError: true, metadata: { sandboxed: true, aborted: true } });
+      expect(result.output).toContain(t("sandboxPolicy.containerShellCancelled"));
+      await expectReaped(project, pids, DETACH_TICKS);
+      expect(liveEgressInvocationCount()).toBe(invocationsBefore);
+    } finally {
+      reapRecorded(pids);
+    }
+  }, 30_000);
+
   /** A staged request outside the product launch, for supervisor-level cases; the profile admits `project` only. */
   async function stageDirect(
     commandLine: string, timeoutMs: number,
@@ -619,8 +717,10 @@ req.end();
       await new Promise(resolve => setTimeout(resolve, 500));
       lease.revoke();
       expect(await pending).toMatchObject({ cancelled: true, cleanupUnverified: false });
+      // The respawner rewrites its pid file every 5 ms; a stop between the truncate and the write leaves it empty.
+      // That last hop is then covered by its tick file alone.
       const last = Number(readFileSync(join(project, "hop.pid"), "utf8").trim());
-      await expectReaped(project, { ...pids, last }, ["tick-hop"]);
+      await expectReaped(project, { ...pids, ...(last > 1 ? { last } : {}) }, ["tick-hop"]);
     } finally {
       reapRecorded(pids);
     }
@@ -823,6 +923,55 @@ req.end();
       __resetManagedChildProcessesForTest();
     }
   });
+
+  it("refuses with integrity, and runs nothing, when a warm standby's verified library was removed or replaced", async () => {
+    // A private copy of the installation: the real node modules by link, the SDK package as an APFS clone.
+    const modules = join(root, "copy", "node_modules");
+    mkdirSync(modules, { recursive: true });
+    // The pinned packages must be real directories; the verifier refuses a linked package.
+    const pinned = new Set(["@microsoft", "@koromix", "koffi", "node-pty"]);
+    for (const name of readdirSync(resolve("node_modules"))) {
+      if (pinned.has(name)) execFileSync("/bin/cp", ["-cR", resolve("node_modules", name), join(modules, name)]);
+      else symlinkSync(resolve("node_modules", name), join(modules, name));
+    }
+    const location = { ...supervisor.location, nodeModules: modules };
+    const library = join(modules, pins.sdk.packages["@microsoft/mxc-sdk"], pins.targets["darwin-arm64"].library.member);
+    const pristine = readFileSync(library);
+    const marker = join(project, "ran");
+    const start = async (commandLine: string) => {
+      const { staged } = await stageDirect(commandLine, 5_000);
+      return collectShell(startMxcShellSupervisor(staged, 5_000, undefined, () => {}, "test:library-swap", location));
+    };
+    const warmStandby = async () => {
+      const warmed = await start("/usr/bin/true");
+      expect(warmed.code, JSON.stringify(warmed)).toBe(0);
+      return vi.waitFor(() => {
+        const pid = _mxcShellStandbyPidForTest(location);
+        if (pid === undefined) throw new Error("No live standby");
+        return pid;
+      }, { timeout: 10_000 });
+    };
+    try {
+      await warmStandby();
+      rmSync(library);
+      expect(await start(`printf ran > ${quote(marker)}`)).toMatchObject({ rejected: true, failure: { code: "integrity" } });
+      expect(existsSync(marker)).toBe(false);
+
+      writeFileSync(library, pristine);
+      await warmStandby();
+      writeFileSync(library, Buffer.concat([pristine, Buffer.from("replaced")]));
+      expect(await start(`printf ran > ${quote(marker)}`)).toMatchObject({ rejected: true, failure: { code: "integrity" } });
+      expect(existsSync(marker)).toBe(false);
+
+      // Control: the same installation with its pinned bytes back runs the command.
+      writeFileSync(library, pristine);
+      await warmStandby();
+      expect(await start(`printf ran > ${quote(marker)}`)).toMatchObject({ code: 0 });
+      expect(readFileSync(marker, "utf8")).toBe("ran");
+    } finally {
+      dropMxcShellStandbys();
+    }
+  }, 60_000);
 
   it("records one-start latency across twenty-one product shell commands", async () => {
     startEgressRelayService({ ask: async () => false });

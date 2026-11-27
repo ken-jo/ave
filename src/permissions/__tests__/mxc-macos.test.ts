@@ -112,8 +112,20 @@ describe("macOS container shell request", () => {
     const sdk = dirname(createRequire(import.meta.url).resolve("@microsoft/mxc-sdk/package.json"));
     const { prepareContainerRequest } = await import(pathToFileURL(join(sdk, "dist/v1/container.js")).href);
     const { containerId, lifecycle, ...wire } = JSON.parse(JSON.stringify(prepareContainerRequest(mapSeatbeltShellRequest(request))));
-    return { request, wire };
+    return { request, wire, containerId, lifecycle };
   }
+
+  it("lets the SDK name a fresh container per run and destroy it with its policy on exit", async () => {
+    const first = await preparedMapping();
+    const second = await preparedMapping();
+    // Ave sends no container name, so each run gets its own random id; nothing outlives the run.
+    expect(first.containerId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(second.containerId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(first.containerId).not.toBe(second.containerId);
+    expect(first.lifecycle).toStrictEqual({ destroyOnExit: true, preservePolicy: false });
+    expect(first.request).not.toHaveProperty("containerId");
+    expect(first.request).not.toHaveProperty("lifecycle");
+  });
 
   it("maps every wire field, accepting only documented omitted process defaults", async () => {
     const { request, wire } = await preparedMapping();

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { MxcExtensionChannel, type MxcFramePayload } from "../../permissions/mxc-extension-channel.js";
-import type { MxcShellSdk } from "../../permissions/mxc-shell-supervisor-bootstrap.js";
+import type { MxcShellRuntime, MxcShellSdk } from "../../permissions/mxc-shell-supervisor-bootstrap.js";
 import { createMxcNativeProcess } from "./mxc-supervisor.js";
 
 const GENERATION = "b".repeat(64);
@@ -63,9 +63,13 @@ export function createPosixSupervisorHarness() {
     }
   })().catch(() => {});
   let fatal = 0;
+  let libraryInPlace = true;
   return {
     directory, host, supervisor, liveness, stdout, stderr, sdk, natives, spawned, frames, received,
-    bootstrap: () => Promise.resolve(sdk),
+    bootstrap: (): Promise<MxcShellRuntime> => Promise.resolve({ sdk, assertLibraryInPlace: () => {
+      if (!libraryInPlace) throw new Error("library replaced");
+    } }),
+    replaceLibrary() { libraryInPlace = false; },
     onFatal: () => { fatal += 1; },
     get fatal() { return fatal; },
     holdSpawn() { spawnGate = new Promise((resolve) => { releaseSpawn = resolve; }); },

@@ -1,13 +1,49 @@
+import { createHash } from "node:crypto";
+import { lstatSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type * as Ffi from "koffi";
 import type * as Sdk from "@microsoft/mxc-sdk/v1";
-import { verifyMxcSdk } from "../../scripts/lib/mxc-sdk-integrity.mjs";
+import { MxcIntegrityError, verifyMxcSdk } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcCapabilityUnavailableError, MxcNativeCallStackError } from "./mxc-extension-errors.js";
 import pins from "./mxc-launcher-pins.json" with { type: "json" };
 
 export type MxcShellSdk = Pick<typeof Sdk, "spawn" | "MxcError">;
+
+/** The verified SDK, and the check a service runs synchronously immediately before each native spawn. */
+export interface MxcShellRuntime {
+  readonly sdk: MxcShellSdk;
+  /** Throws `MxcIntegrityError` unless the pinned library is still at its path with its pinned hash and the SDK's
+   * source-build fallback location is still absent: the SDK resolves the library by path at first use. */
+  assertLibraryInPlace(): void;
+}
+
+/** The pre-spawn library check over one installation. */
+export function mxcShellLibraryCheck(nodeModules: string, sdkRoot: string): () => void {
+  const pin = pins.targets["darwin-arm64"].library;
+  const library = join(sdkRoot, pin.member);
+  const fallback = join(nodeModules, "src", "target");
+  return () => {
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(library);
+    } catch (cause) {
+      throw new MxcIntegrityError("Native shell library is missing after verification", { cause });
+    }
+    if (createHash("sha256").update(bytes).digest("hex") !== pin.sha256) {
+      throw new MxcIntegrityError("Native shell library changed after verification");
+    }
+    let fallbackPresent = true;
+    try {
+      lstatSync(fallback);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new MxcIntegrityError("Native source-build fallback is unreadable", { cause: error });
+      fallbackPresent = false;
+    }
+    if (fallbackPresent) throw new MxcIntegrityError("Native source-build fallback appeared after verification");
+  };
+}
 
 /**
  * The SDK starts a run through koffi's asynchronous call, whose stack is 128 KiB by default. The backend forks on that
@@ -34,7 +70,7 @@ export function assertMxcShellCallStack(sdkKoffi: KoffiConfig, expected: number)
  */
 export async function bootstrapMxcShellSupervisor(
   nodeModules: string, isPackaged: boolean, asyncStackBytes: number | null = MXC_SHELL_ASYNC_STACK_BYTES,
-): Promise<MxcShellSdk> {
+): Promise<MxcShellRuntime> {
   if (process.platform !== "darwin" || process.arch !== "arm64") {
     throw new MxcCapabilityUnavailableError("Shell supervisor requires macOS arm64");
   }
@@ -58,5 +94,5 @@ export async function bootstrapMxcShellSupervisor(
     throw new MxcCapabilityUnavailableError("Cannot load native shell SDK", { cause });
   }
   if (asyncStackBytes !== null) assertMxcShellCallStack(sdkKoffi, asyncStackBytes);
-  return sdk;
+  return { sdk, assertLibraryInPlace: mxcShellLibraryCheck(nodeModules, installed.sdkRoot) };
 }

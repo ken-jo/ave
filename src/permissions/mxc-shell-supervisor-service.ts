@@ -8,7 +8,7 @@ import { MxcExtensionChannel, type MxcFramePayload } from "./mxc-extension-chann
 import { MxcProcessContractError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
 import { mapSeatbeltShellRequest, type buildSeatbeltShellRequest } from "./mxc-macos.js";
 import { MxcNativeProcess, seatbeltCleanupUnverified } from "./mxc-native-process.js";
-import { bootstrapMxcShellSupervisor, MXC_SHELL_ASYNC_STACK_BYTES, type MxcShellSdk } from "./mxc-shell-supervisor-bootstrap.js";
+import { bootstrapMxcShellSupervisor, MXC_SHELL_ASYNC_STACK_BYTES, type MxcShellRuntime, type MxcShellSdk } from "./mxc-shell-supervisor-bootstrap.js";
 import { readMxcSupervisorKey } from "./mxc-supervisor-transport.js";
 
 type ShellStart = Extract<MxcFramePayload, { type: "shell-start" }>;
@@ -38,7 +38,7 @@ async function forward(source: Readable, destination: Writable): Promise<void> {
 
 export async function serveMxcShellSupervisor(
   channel: MxcExtensionChannel, liveness: Readable, stdout: Writable, stderr: Writable,
-  bootstrap: () => Promise<MxcShellSdk>, onFatal: () => void,
+  bootstrap: () => Promise<MxcShellRuntime>, onFatal: () => void,
 ): Promise<void> {
   let owned: MxcNativeProcess | undefined;
   let starting = false;
@@ -90,7 +90,7 @@ export async function serveMxcShellSupervisor(
 
   async function start(frame: ShellStart): Promise<ShellReceipt> {
     // A bootstrap failure is settled by the shared runtime observer.
-    const sdk = await runtime;
+    const { sdk, assertLibraryInPlace } = await runtime;
     if (stopping) return stopped();
     let request: Awaited<ReturnType<typeof loadRequest>>;
     try {
@@ -103,6 +103,13 @@ export async function serveMxcShellSupervisor(
     }
     if (stopping) return stopped();
     let native: Awaited<ReturnType<MxcShellSdk["spawn"]>>;
+    try {
+      // A standby may have waited since its bootstrap: the SDK loads the library by path at first use, so the
+      // verified bytes are re-checked here, synchronously, with nothing between this check and the spawn call.
+      assertLibraryInPlace();
+    } catch {
+      return { type: "error", code: "integrity", message: "Native shell library changed after verification" };
+    }
     try {
       spawnPending = true;
       native = await sdk.spawn(request);
