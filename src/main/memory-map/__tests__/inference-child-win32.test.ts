@@ -15,6 +15,7 @@ import { MemoryMapHostError } from '../errors.js';
 import type { LocalInferenceRoute } from '../local-runtime-win32.js';
 import type { ConfinedChildSpec } from '../../../permissions/confined-child.js';
 import { MxcProcessCleanupError } from '../../../permissions/mxc-extension-errors.js';
+import { TOOL_TIMEOUT_POLICY } from '../../../shared/tool-timeout-policy.js';
 import type { WindowsBackgroundAdmission } from '../../../permissions/windows-background-features.js';
 import { parseChildLaunchArgs } from '../../../plugins/isolation/child-loopback-link.js';
 import { runInferenceChild } from '../inference-child-win32.js';
@@ -261,6 +262,7 @@ describe('inference model stream', () => {
       writing.resolve();
       return release.promise;
     });
+    child.kill.mockImplementationOnce(() => { queueMicrotask(() => child.emit('exit', 0, null)); return true; });
     spawnHost.mockReturnValue(child);
 
     const inference = runInferenceChild(folder, TASK, new AbortController().signal);
@@ -476,6 +478,45 @@ it('keeps the container cleanup refusal when Cancel stops an active inference', 
   controller.abort();
   expect(await outcome).toBe(failure);
   expect(release).toHaveBeenCalledOnce();
+});
+
+it.each([true, false])('waits for direct child exit after Cancel (confirmed: %s)', async confirmed => {
+  route.mockReturnValue('unconfined');
+  const stopped = deferred<void>();
+  const { child } = serveReply(() => new Promise(() => {}));
+  const cleanup = vi.fn();
+  const onExitConfirmed = vi.fn();
+  createHome.mockReturnValue({ env: {}, cleanup });
+  child.kill.mockImplementation(() => { stopped.resolve(); return true; });
+  spawnHost.mockReturnValue(Object.assign(child, { pid: 123 }));
+  const controller = new AbortController();
+  const reply = vi.fn();
+  const result = runInferenceChild(folder, TASK, controller.signal, undefined, undefined, undefined, onExitConfirmed).catch(reply);
+  await vi.waitFor(() => expect(spawnHost).toHaveBeenCalledOnce());
+  vi.useFakeTimers();
+  try {
+    controller.abort();
+    await stopped.promise;
+    await vi.advanceTimersByTimeAsync(0);
+    expect.soft(reply).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
+    if (!confirmed) {
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsInferenceTargetExitMs);
+      await result;
+      expect(reply).toHaveBeenCalledWith(expect.objectContaining({ name: 'ManagedExitUnconfirmedError' }));
+      expect(onExitConfirmed).not.toHaveBeenCalled();
+      expect(cleanup).not.toHaveBeenCalled();
+    }
+    child.emit('exit', 0, null);
+    await result;
+    await vi.advanceTimersByTimeAsync(0);
+    if (confirmed) expect(reply).toHaveBeenCalledWith(expect.objectContaining({ message: 'Memory worker cancelled' }));
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(onExitConfirmed).toHaveBeenCalledOnce();
+  } finally {
+    child.emit('exit', 0, null);
+    vi.useRealTimers();
+  }
 });
 
 it('streams verified bytes to a managed host child only for the unconfined route', async () => {

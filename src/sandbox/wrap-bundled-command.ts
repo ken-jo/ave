@@ -153,12 +153,13 @@ export async function wrapManagedBundledCommand(input: Omit<BundledWrapInput, "s
 }
 
 /** Own a private HOME and command wrap for a Windows launch with no lifetime ACL grants. */
-export function prepareManagedWindowsProcessHome(label: string, treeReceiptLine?: string) {
+export function prepareManagedWindowsProcessHome(label: string, treeReceiptLine?: string, onExitConfirmed?: () => void) {
   if (process.platform !== "win32") throw new Error("Managed Windows process HOME requires Windows");
   const home = treeReceiptLine === undefined ? createSandboxProcessHome() : createSandboxProcessHome("win32", undefined, null);
   const resources = treeReceiptLine === undefined ? createManagedRelayResources() : createManagedResources();
   let child: ChildProcess | undefined;
   let treeExit: ReturnType<typeof observeManagedWindowsRelayTreeExit> | undefined;
+  let directExit: Promise<void> | undefined;
   let wrapped = false;
   recordManagedCleanup(resources, home.cleanup, () => wrapped ? cleanupAsrtSandboxAfterCommand() : undefined);
   return {
@@ -170,15 +171,19 @@ export function prepareManagedWindowsProcessHome(label: string, treeReceiptLine?
         treeExit = observeManagedWindowsRelayTreeExit(running, resources, treeReceiptLine);
         return;
       }
-      void observeManagedWindowsRelayExit(running, resources)
-        .then(receipt => releaseManagedResources(resources, receipt))
-        .catch((error: unknown) => log.warn(`[${label}] sandbox home release failed: ${errorMessage(error)}`));
+      directExit = observeManagedWindowsRelayExit(running, resources).then(receipt => {
+        onExitConfirmed?.();
+        void releaseManagedResources(resources, receipt)
+          .catch((error: unknown) => log.warn(`[${label}] sandbox home release failed: ${errorMessage(error)}`));
+      });
     },
     async stop() {
       if (child === undefined) return abandonManagedLaunch(resources);
       if (treeExit === undefined) {
         terminateChildBestEffort(child);
-        return;
+        if (directExit === undefined) throw new ManagedExitUnconfirmedError();
+        return raceWithTimeout(directExit, TOOL_TIMEOUT_POLICY.windowsInferenceTargetExitMs,
+          () => new ManagedExitUnconfirmedError());
       }
       try {
         const receipt = await raceWithTimeout(treeExit, TOOL_TIMEOUT_POLICY.windowsInferenceRelayStopMs,

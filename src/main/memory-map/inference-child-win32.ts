@@ -84,16 +84,16 @@ async function writeRequest(output: Writable, folder: string, taskJson: string, 
   } finally { await Promise.all(handles.map(handle => handle.close())); }
 }
 
-function sandboxHomeOrRefusal(requireTreeExit: boolean): ReturnType<typeof prepareManagedWindowsProcessHome> {
+function sandboxHomeOrRefusal(requireTreeExit: boolean, onExitConfirmed?: () => void): ReturnType<typeof prepareManagedWindowsProcessHome> {
   try {
-    return prepareManagedWindowsProcessHome(INFERENCE_CHILD_LABEL, requireTreeExit ? INFERENCE_ACCOUNT_EXIT_RECEIPT : undefined);
+    return prepareManagedWindowsProcessHome(INFERENCE_CHILD_LABEL, requireTreeExit ? INFERENCE_ACCOUNT_EXIT_RECEIPT : undefined, onExitConfirmed);
   } catch (error) {
     if (isSandboxHomeUnavailable(error)) throw new MemoryMapHostError('sandbox-home-unavailable');
     throw error;
   }
 }
 
-async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal: AbortSignal): Promise<{
+async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal: AbortSignal, onExitConfirmed?: () => void): Promise<{
   input: Readable; output: Writable; stop: () => void | Promise<void>; assertStillValid: () => void;
 }> {
   signal.throwIfAborted();
@@ -129,7 +129,7 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
     return { input: holder.process.stdout, output: holder.process.stdin, stop: holder.release, assertStillValid };
   }
 
-  const home = sandboxHomeOrRefusal(route === 'offline-sandbox');
+  const home = sandboxHomeOrRefusal(route === 'offline-sandbox', onExitConfirmed);
   try {
     let running: ChildProcess;
     const cwd = win32SystemBinary('');
@@ -177,7 +177,7 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
 
 export async function runInferenceChild<T>(folder: string, task: MemoryInferenceTask, signal: AbortSignal,
   onProgress?: (progress: MemoryMapProgress) => void, readLocalInferencePreference?: () => boolean,
-  onAdmission?: OnInferenceAdmission): Promise<T> {
+  onAdmission?: OnInferenceAdmission, onExitConfirmed?: () => void): Promise<T> {
   signal.throwIfAborted();
   const admission = await refreshLocalInferenceAdmission();
   const readRoute = () => assertLocalEmbeddingRuntime(readLocalInferencePreference?.(), admission);
@@ -185,7 +185,7 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
   const taskJson = JSON.stringify(task);
   const lengths = [Buffer.byteLength(taskJson, 'utf8'), ...INFERENCE_FILES.map(file => file.bytes)];
   checkedInferenceFrameBytes(lengths);
-  const { input, output, stop, assertStillValid } = await spawnInferenceChild(readRoute, signal);
+  const { input, output, stop, assertStillValid } = await spawnInferenceChild(readRoute, signal, onExitConfirmed);
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const lines = createInterface({ input });
