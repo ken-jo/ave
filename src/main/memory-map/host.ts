@@ -8,7 +8,6 @@ import { openFeatureNamespace, writeFileAtomicAtPathIf, type FeatureNamespaceHan
 import { catalogRevision, LOCAL_NAMESPACE, vectorKey, type VectorCache } from './graph.js';
 import { runMemoryWorker, type MemoryWorkerRunner } from './worker-client.js';
 import type { MemoryMapCatalog, ReadMemoryMapCatalog } from './catalog.js';
-import { commitUnderAdmission } from '../../shared/admission-commit.js';
 import { MemoryMapHostError } from './errors.js';
 import { MAX_INFERENCE_TASK_BYTES } from './inference-request.js';
 import { registerModelBuild } from './model-manager.js';
@@ -17,8 +16,7 @@ import type { ProviderEmbeddings } from './provider-embeddings.js';
 const sameNamespace = (a: EmbeddingNamespace, b: EmbeddingNamespace) => a.source === b.source && a.providerId === b.providerId && a.modelId === b.modelId && a.modelRevision === b.modelRevision && a.preprocessingRevision === b.preprocessingRevision && (!b.dimensions || a.dimensions === b.dimensions);
 interface HostOptions {
   provider?: ProviderEmbeddings;
-  validatedModelPath: (signal: AbortSignal, onAdmission?: (assertStillValid: () => void) => void) => Promise<string>;
-  refreshLocalAdmission: () => Promise<() => void>;
+  validatedModelPath: () => Promise<string>;
   namespace?: FeatureNamespaceHandle;
   runWorker?: MemoryWorkerRunner;
   watchAuthority?: (cancel: () => void) => () => void;
@@ -45,18 +43,8 @@ export class MemoryMapHost {
   async invalidate(): Promise<void> {
     this.cancel(); this.snapshot = null; this.cache = {}; this.hydrated = true;
     const generation = this.generation;
-    await this.clearSaved(() => {
-      if (this.generation !== generation) throw new MemoryMapHostError('request-stale');
-    });
-  }
-  private async clearSaved(assertCurrent: () => void): Promise<void> {
-    await this.namespace.childDir('', { assertStillValid: assertCurrent });
-    const cleared = await writeFileAtomicAtPathIf(join(this.namespace.dir, 'snapshot.json'), JSON.stringify({ cache: {}, snapshot: null }), () => {
-      assertCurrent();
-      return true;
-    });
-    if (!cleared) throw new MemoryMapHostError('request-stale');
-    assertCurrent();
+    await this.namespace.childDir('');
+    await writeFileAtomicAtPathIf(join(this.namespace.dir, 'snapshot.json'), JSON.stringify({ cache: {}, snapshot: null }), () => generation === this.generation);
   }
   private selectedNamespace(): EmbeddingNamespace { return this.options.provider?.namespace() ?? LOCAL_NAMESPACE; }
   protected activate(catalog: MemoryMapCatalog): void {
@@ -94,33 +82,23 @@ export class MemoryMapHost {
   }
   async get(readCatalog: ReadMemoryMapCatalog): Promise<GraphSnapshot | null> {
     const catalog = readCatalog(); this.activate(catalog);
-    const revision = catalogRevision(catalog.records);
-    const selected = this.selectedNamespace();
-    const assertCurrent = (generation: number) => {
-      if (generation !== this.generation || !sameNamespace(selected, this.selectedNamespace())) throw new MemoryMapHostError('request-stale');
-      const latest = readCatalog();
-      if (latest.authorizationScopeId !== catalog.authorizationScopeId || catalogRevision(latest.records) !== revision) throw new MemoryMapHostError('request-stale');
-    };
-    const matchesCatalog = (snapshot: GraphSnapshot) => snapshot.authorizationScopeId === catalog.authorizationScopeId
-      && snapshot.catalogRevision === revision && sameNamespace(snapshot.model.namespace, selected);
     if (!this.hydrated) {
       const generation = this.generation;
       const saved = await this.readSaved();
-      commitUnderAdmission(() => assertCurrent(generation), () => {
-        this.hydrated = true;
-        if (saved.snapshot) { this.snapshot = saved.snapshot; this.cache = saved.cache; }
-      });
+      if (generation !== this.generation) throw new MemoryMapHostError('request-stale');
+      this.hydrated = true;
+      if (saved.snapshot) { this.snapshot = saved.snapshot; this.cache = saved.cache; }
     }
-    if ((this.snapshot && !matchesCatalog(this.snapshot)) || (this.pending && !matchesCatalog(this.pending))) {
+    if ((this.snapshot && (this.snapshot.catalogRevision !== catalogRevision(catalog.records) || this.snapshot.authorizationScopeId !== catalog.authorizationScopeId || !sameNamespace(this.snapshot.model.namespace, this.selectedNamespace()))) || (this.pending && (this.pending.catalogRevision !== catalogRevision(catalog.records) || !sameNamespace(this.pending.model.namespace, this.selectedNamespace())))) {
       this.cancel(); this.snapshot = null; this.cache = {};
-      const clearGeneration = this.generation;
-      await this.clearSaved(() => assertCurrent(clearGeneration));
-      assertCurrent(clearGeneration);
+      await this.namespace.childDir('');
+      await writeFileAtomicAtPathIf(join(this.namespace.dir, 'snapshot.json'), JSON.stringify({ cache: {}, snapshot: null }), () => this.snapshot === null);
     }
     if (this.snapshot) this.validateSnapshot(this.snapshot, catalog);
     return this.pending ?? this.snapshot;
   }
-  private async embedLocal(catalog: MemoryMapCatalog, folder: string, savedCache: VectorCache, signal: AbortSignal, jobId: string, report: (progress: MemoryMapProgress) => void, assertCurrent: () => void, assertModelAdmission: () => void): Promise<VectorCache> {
+  private async buildLocal(catalog: MemoryMapCatalog, folder: string, savedCache: VectorCache, signal: AbortSignal, report: (progress: MemoryMapProgress) => void, assertCurrent: () => void): Promise<GraphBuildResult> {
+    const jobId = randomUUID();
     const total = catalog.records.length;
     const cache: VectorCache = {};
     const missing: { record: MemoryMapRecord; key: string }[] = [];
@@ -131,15 +109,7 @@ export class MemoryMapHost {
       else missing.push({ record, key });
     }
     const cached = total - missing.length;
-    const windows = process.platform === 'win32';
-    const progressStride = windows ? Math.max(1, Math.ceil(total / 64)) : 1;
-    if (cached) {
-      const progress: MemoryMapProgress = { jobId, phase: 'embedding', completed: cached, total };
-      if (windows) {
-        assertCurrent();
-        commitUnderAdmission(assertModelAdmission, () => report(progress));
-      } else report(progress);
-    }
+    if (cached) report({ jobId, phase: 'embedding', completed: cached, total });
     for (let offset = 0; offset < missing.length;) {
       const start = offset;
       const texts: string[] = [];
@@ -158,23 +128,21 @@ export class MemoryMapHost {
       assertCurrent();
       const vectors = await this.runWorker<number[][]>(folder, task, signal, progress => {
         const completed = progress.completed;
-        const overall = cached + start + completed;
-        if (progress.phase === 'embedding' && texts[completed - 1] !== undefined
-          && (overall === cached + 1 || overall === total || overall % progressStride === 0)) {
+        if (progress.phase === 'embedding' && texts[completed - 1] !== undefined) {
           const { record } = missing[start + completed - 1];
-          const update: MemoryMapProgress = { jobId, phase: 'embedding', completed: overall, total, memoryId: record.memoryId };
-          if (windows) {
-            try { report(update); } catch { /* Refused. */ }
-          } else report(update);
+          report({ jobId, phase: 'embedding', completed: cached + start + completed, total, memoryId: record.memoryId });
         }
       });
       if (vectors.length !== texts.length) throw new Error('Memory and vector counts differ');
       vectors.forEach((vector, index) => { cache[missing[start + index].key] = vector; });
       offset += texts.length;
     }
-    return cache;
+    assertCurrent();
+    return this.runWorker<GraphBuildResult>('', { kind: 'project', input: { ...catalog, cache, namespace: LOCAL_NAMESPACE, jobId } }, signal, progress => {
+      if (progress.phase !== 'embedding') report(progress);
+    });
   }
-  async build(readCatalog: ReadMemoryMapCatalog, onAdmission?: (assertLive: () => void) => void): Promise<GraphSnapshot> {
+  async build(readCatalog: ReadMemoryMapCatalog): Promise<GraphSnapshot> {
     const catalog = readCatalog(); this.activate(catalog); this.cancel(); this.hydrated = true;
     const selected = this.selectedNamespace();
     const generation = this.generation; const controller = new AbortController(); this.controller = controller;
@@ -194,9 +162,6 @@ export class MemoryMapHost {
         throw new MemoryMapHostError('request-stale');
       }
     };
-    const assertCurrent = () => {
-      if (!current()) throw new MemoryMapHostError('request-stale');
-    };
     let stopWatching: (() => void) | undefined;
     let releaseModel: (() => void) | undefined;
     this.pending = {
@@ -206,74 +171,32 @@ export class MemoryMapHost {
       status: 'building', coverage: { eligible: catalog.records.length, embedded: 0, pending: catalog.records.length, excluded: catalog.excluded }, points: [], edges: [],
     };
     try {
-      let folder = '';
-      let assertModelAdmission: (() => void) | undefined;
-      if (selected.source === 'local') {
-        folder = await this.options.validatedModelPath(controller.signal, (assertStillValid) => { assertModelAdmission = assertStillValid; });
-        releaseModel = registerModelBuild(folder);
-      }
-      assertCurrent();
-      const saved = await this.readSaved();
-      const cache: VectorCache = {};
-      for (const [key, vector] of Object.entries(saved.cache)) {
-        if (!/^[a-f0-9]{64}$/.test(key) || !Array.isArray(vector) || vector.length !== saved.snapshot?.model.namespace.dimensions || vector.some(n => typeof n !== 'number' || !Number.isFinite(n))) throw new Error('Invalid stored vector cache');
-        cache[key] = vector;
-      }
-      const windows = process.platform === 'win32';
-      const publishProgress = (progress: MemoryMapProgress) => {
-        if (this.pending && progress.phase === 'embedding') this.pending.coverage = { ...this.pending.coverage, embedded: progress.completed, pending: progress.total - progress.completed };
-        this.options.onProgress?.(progress);
-      };
-      const report = (progress: MemoryMapProgress) => {
-        if (windows) commitUnderAdmission(assertCurrent, () => publishProgress(progress));
-        else if (generation === this.generation) publishProgress(progress);
-      };
-      let assertBuildAdmission: (() => void) | undefined;
-      let result: GraphBuildResult;
-      if (selected.source === 'provider') {
-        stopWatching = this.options.watchAuthority?.(() => { if (active()) this.cancel(); });
-        const provider = this.options.provider as ProviderEmbeddings;
-        assertBuildAdmission = provider.bindConsent(selected, controller.signal);
-        result = await provider.build(catalog, selected, saved, controller.signal, report, assertAuthority, assertCurrent);
-      } else {
-        if (assertModelAdmission === undefined) throw new MemoryMapHostError('local-runtime-unavailable');
-        const jobId = randomUUID();
-        const vectors = await this.embedLocal(catalog, folder, cache, controller.signal, jobId, report, assertCurrent, assertModelAdmission);
-        assertCurrent();
-        assertBuildAdmission = await this.options.refreshLocalAdmission();
-        assertCurrent();
-        const assertProjection = assertBuildAdmission;
-        let projecting!: Promise<GraphBuildResult>;
-        commitUnderAdmission(assertProjection, () => { projecting = this.runWorker<GraphBuildResult>('', {
-          kind: 'project', input: { ...catalog, cache: vectors, namespace: LOCAL_NAMESPACE, jobId },
-        }, controller.signal, progress => {
-          if (progress.phase === 'embedding') return;
-          if (windows) {
-            try { commitUnderAdmission(assertProjection, () => report(progress)); } catch { /* Refused. */ }
-          } else report(progress);
-        }); });
-        result = await projecting;
-        assertCurrent();
-        assertBuildAdmission();
-        assertBuildAdmission = await this.options.refreshLocalAdmission();
-      }
-      const assertCanPublish = () => {
-        assertCurrent();
-        assertBuildAdmission?.();
-      };
-      assertCanPublish();
-      this.validateSnapshot(result.snapshot, catalog);
-      await this.namespace.childDir('', { assertStillValid: assertCanPublish });
-      const canPublish = () => { assertCanPublish(); return true; };
-      // The ready state is published in the step that replaces the file, under the same check.
-      const committed = await writeFileAtomicAtPathIf(join(this.namespace.dir, 'snapshot.json'), JSON.stringify(result), canPublish, () => {
-        this.cache = result.cache; this.snapshot = result.snapshot; this.pending = null;
+    let folder = '';
+    if (selected.source === 'local') {
+      folder = await this.options.validatedModelPath();
+      releaseModel = registerModelBuild(folder);
+    }
+    if (!current()) throw new MemoryMapHostError('request-stale');
+    const saved = await this.readSaved();
+    const cache: VectorCache = {};
+    for (const [key, vector] of Object.entries(saved?.cache ?? {})) {
+      if (!/^[a-f0-9]{64}$/.test(key) || !Array.isArray(vector) || vector.length !== saved.snapshot?.model.namespace.dimensions || vector.some(n => typeof n !== 'number' || !Number.isFinite(n))) throw new Error('Invalid stored vector cache');
+      cache[key] = vector;
+    }
+    const report = (progress: MemoryMapProgress) => { if (generation === this.generation) { if (this.pending && progress.phase === 'embedding') this.pending.coverage = { ...this.pending.coverage, embedded: progress.completed, pending: progress.total - progress.completed }; this.options.onProgress?.(progress); } };
+    if (selected.source === 'provider') stopWatching = this.options.watchAuthority?.(() => { if (active()) this.cancel(); });
+    const result = selected.source === 'provider'
+      ? await (this.options.provider as ProviderEmbeddings).build(catalog, selected, saved, controller.signal, report, assertAuthority)
+      : await this.buildLocal(catalog, folder, cache, controller.signal, report, () => {
+        if (!current()) throw new MemoryMapHostError('request-stale');
       });
-      if (!committed) throw new MemoryMapHostError('request-stale');
-      return commitUnderAdmission(assertCanPublish, () => {
-        onAdmission?.(assertCanPublish);
-        return result.snapshot;
-      });
+    if (!current()) throw new MemoryMapHostError('request-stale');
+    this.validateSnapshot(result.snapshot, catalog);
+    await this.namespace.childDir('');
+    const committed = await writeFileAtomicAtPathIf(join(this.namespace.dir, 'snapshot.json'), JSON.stringify(result), current);
+    if (!committed || !current()) throw new MemoryMapHostError('request-stale');
+    this.cache = result.cache; this.snapshot = result.snapshot; this.pending = null;
+    return result.snapshot;
     } catch (error) {
       if (generation !== this.generation || controller.signal.aborted) throw new MemoryMapHostError('request-stale');
       if (this.pending) this.pending = { ...this.pending, status: error instanceof MemoryMapHostError && error.code === 'model-unconfigured' ? 'unconfigured' : 'failed' };
@@ -283,7 +206,7 @@ export class MemoryMapHost {
       stopWatching?.();
     }
   }
-  async retrieve(readCatalog: ReadMemoryMapCatalog, request: { question: string; filters: MemoryMapFilters; snapshotId: string; queryId: string }, onAdmission?: (assertLive: () => void) => void): Promise<RetrievalAnswer> {
+  async retrieve(readCatalog: ReadMemoryMapCatalog, request: { question: string; filters: MemoryMapFilters; snapshotId: string; queryId: string }): Promise<RetrievalAnswer> {
     const catalog = readCatalog(); this.activate(catalog);
     this.queryController?.abort();
     const queryGeneration = ++this.queryGeneration;
@@ -291,38 +214,20 @@ export class MemoryMapHost {
     const snapshot = await this.get(readCatalog);
     if (snapshot?.status !== 'ready' || snapshot.snapshotId !== request.snapshotId) throw new MemoryMapHostError('graph-stale');
     const selected = snapshot.model.namespace;
-    const folder = selected.source === 'local' ? await this.options.validatedModelPath(controller.signal) : '';
+    const folder = selected.source === 'local' ? await this.options.validatedModelPath() : '';
     if (queryGeneration !== this.queryGeneration) throw new MemoryMapHostError('request-stale');
     const assertAuthority = () => {
       if (controller.signal.aborted || queryGeneration !== this.queryGeneration || !(readCatalog.recordsAreCurrent
         ? readCatalog.recordsAreCurrent(catalog.authorizationScopeId, [])
         : catalog.authorizationScopeId === readCatalog().authorizationScopeId)) throw new MemoryMapHostError('request-stale');
     };
-    const provider = selected.source === 'provider' ? this.options.provider : undefined;
-    const assertConsent = provider?.bindConsent(selected, controller.signal);
     const stopWatching = selected.source === 'provider' ? this.options.watchAuthority?.(() => controller.abort()) : undefined;
     let vector: number[];
-    let assertInference: (() => void) | undefined;
-    try {
-      vector = provider
-        ? (await provider.embed(selected, [request.question], controller.signal, () => { assertAuthority(); assertConsent?.(); }))[0]
-        : await this.runWorker<number[]>(folder, { kind: 'embed', text: request.question }, controller.signal, undefined,
-          (assertStillValid) => { assertInference = assertStillValid; });
-    }
+    try { vector = selected.source === 'provider' ? (await (this.options.provider as ProviderEmbeddings).embed(selected, [request.question], controller.signal, assertAuthority))[0] : await this.runWorker<number[]>(folder, { kind: 'embed', text: request.question }, controller.signal); }
     catch (error) { if (controller.signal.aborted || queryGeneration !== this.queryGeneration) throw new MemoryMapHostError('request-stale'); throw error; }
     finally { stopWatching?.(); }
-    const assertAdmission = assertConsent ?? assertInference;
-    if (!assertAdmission) throw new MemoryMapHostError('local-runtime-unavailable');
-    const assertReply = () => {
-      assertAuthority();
-      const latest = readCatalog();
-      if (snapshot !== this.snapshot || catalogRevision(catalog.records) !== catalogRevision(latest.records) || catalog.authorizationScopeId !== latest.authorizationScopeId) throw new MemoryMapHostError('request-stale');
-      assertAdmission();
-    };
-    return commitUnderAdmission(assertReply, () => {
-      onAdmission?.(assertReply);
-      return retrieveMatches(catalog.records, this.cache, vector, request.filters, { snapshotId: snapshot.snapshotId, catalogRevision: snapshot.catalogRevision, queryId: request.queryId }, selected);
-    });
+    if (controller.signal.aborted || queryGeneration !== this.queryGeneration || snapshot !== this.snapshot || catalogRevision(catalog.records) !== catalogRevision(readCatalog().records) || catalog.authorizationScopeId !== readCatalog().authorizationScopeId) throw new MemoryMapHostError('request-stale');
+    return retrieveMatches(catalog.records, this.cache, vector, request.filters, { snapshotId: snapshot.snapshotId, catalogRevision: snapshot.catalogRevision, queryId: request.queryId }, selected);
   }
 
 }

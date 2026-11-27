@@ -2,10 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { lstat, readdir, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { commitUnderAdmission } from '../../shared/admission-commit.js';
 import { renameDirectoryOnce } from '../../lib/transient-fs-lock-retry.js';
 import { openFeatureNamespace, type FeatureNamespaceHandle } from '../storage/feature-namespace.js';
-import { MemoryMapHostError } from './errors.js';
 import { MODEL_FILES, LOCAL_MODEL_REVISION, modelFileUrl, type ModelFile } from './model-manifest.js';
 import type { MemoryModelStatus, MemoryModelError as ModelErrorCode } from '../../shared/memory-model.js';
 
@@ -63,10 +61,8 @@ interface ModelManagerOptions {
   namespace?: FeatureNamespaceHandle;
   files?: readonly ModelFile[];
   downloadFile?: (name: string, signal: AbortSignal) => Promise<Response>;
-  refreshAdmission?: () => Promise<() => void>;
   readPath: () => string | undefined;
-  /** `assertStillValid` is the admission the path is saved under; it holds at the step that writes the setting. */
-  savePath: (path: string, assertStillValid: () => void) => void | Promise<void>;
+  savePath: (path: string) => void | Promise<void>;
   onProgress?: (status: MemoryModelStatus) => void;
 }
 export class LocalModelManager {
@@ -83,12 +79,8 @@ export class LocalModelManager {
   private empty(): MemoryModelStatus {
     return { status: 'unconfigured', receivedBytes: 0, totalBytes: 0, completedFiles: 0, totalFiles: 4 };
   }
-  private publish(state: MemoryModelStatus, onProgress = this.options.onProgress): MemoryModelStatus {
-    this.state = state;
-    onProgress?.({ ...state });
-    return { ...state };
-  }
-  cancel(): void { this.controller?.abort(); }
+  private publish(state: MemoryModelStatus): MemoryModelStatus { this.state = state; this.options.onProgress?.({ ...state }); return { ...state }; }
+  cancel(): void { this.generation++; this.controller?.abort(); }
   private async checkedDirectory(path: string): Promise<string | undefined> {
     try {
       if (!(await lstat(path)).isDirectory()) throw new MemoryModelError('model-integrity-failed');
@@ -113,136 +105,97 @@ export class LocalModelManager {
     if (!(await this.isManagedPath(folder)) || this.options.readPath() !== path) throw new MemoryModelError('model-integrity-failed');
     return folder;
   }
-  async status(assertStillValid?: () => void, onAdmission?: (assertLive: () => void) => void): Promise<MemoryModelStatus> {
-    assertStillValid?.();
+  async status(): Promise<MemoryModelStatus> {
+    if (this.state.status === 'downloading' || this.state.status === 'failed') return { ...this.state };
     const path = this.options.readPath();
-    const generation = this.generation;
-    const assertReply = () => {
-      assertStillValid?.();
-      if (generation !== this.generation || this.options.readPath() !== path) throw new MemoryModelError('model-cancelled');
-    };
-    onAdmission?.(assertReply);
-    if (this.state.status === 'downloading' || this.state.status === 'failed' || !path) return { ...this.state };
-    let status: MemoryModelStatus['status'];
-    let error: MemoryModelStatus['error'];
+    if (!path) return { ...this.state };
     try {
       const folder = await verifyModelFolder(path, this.files);
-      status = await this.isManagedPath(folder) ? 'ready' : 'legacy-location';
-    } catch {
-      status = 'failed';
-      error = 'model-integrity-failed';
+      const status = await this.isManagedPath(folder) ? 'ready' : 'legacy-location';
+      return this.publish({ ...this.state, status, error: undefined });
     }
-    return commitUnderAdmission(assertReply, () => this.publish({ ...this.state, status, error }));
+    catch { return this.publish({ ...this.state, status: 'failed', error: 'model-integrity-failed' }); }
   }
-  private run(
-    action: (signal: AbortSignal, assertStillValid: () => void, publish: (state: MemoryModelStatus) => MemoryModelStatus) => Promise<void>,
-    onProgress?: (status: MemoryModelStatus) => void,
-    sourceFolder?: string,
-    onAdmission?: (assertLive: () => void) => void,
-  ): Promise<MemoryModelStatus> {
+  private run(action: (signal: AbortSignal) => Promise<void>, sourceFolder?: string): Promise<MemoryModelStatus> {
     this.cancel();
-    const generation = ++this.generation;
-    const publish = (state: MemoryModelStatus): MemoryModelStatus =>
-      generation === this.generation ? this.publish(state, onProgress) : state;
-    const cancelled = (): MemoryModelStatus => ({ ...this.empty(), status: 'failed', error: 'model-cancelled' });
+    const generation = this.generation;
     const previous = this.task;
     const controller = new AbortController();
     this.controller = controller;
-    const operation = (async () => {
+    this.task = (async () => {
       await previous;
-      if (generation !== this.generation) return cancelled();
+      if (generation !== this.generation) return { ...this.state };
       try {
-        const admit = await this.options.refreshAdmission?.();
-        const assertStillValid = () => {
-          controller.signal.throwIfAborted();
-          admit?.();
-        };
-        assertStillValid();
-        await this.sweepModelSlots([RECOVERY_SLOT_NAME, STAGING_SLOT_NAME], sourceFolder, assertStillValid);
-        assertStillValid();
-        await action(controller.signal, assertStillValid, publish);
-        assertStillValid();
-        onAdmission?.(assertStillValid);
-        return publish({ ...this.state, status: 'ready', error: undefined });
+        await this.sweepModelSlots([RECOVERY_SLOT_NAME, STAGING_SLOT_NAME], sourceFolder);
+        controller.signal.throwIfAborted();
+        await action(controller.signal);
+        controller.signal.throwIfAborted();
+        return this.publish({ ...this.state, status: 'ready', error: undefined });
       } catch (error) {
-        if (generation !== this.generation) return cancelled();
-        if (!controller.signal.aborted && error instanceof MemoryMapHostError) throw error;
         const code = controller.signal.aborted ? 'model-cancelled' : error instanceof MemoryModelError ? error.code : 'model-download-failed';
-        return publish({ ...this.state, status: 'failed', error: code });
+        return this.publish({ ...this.state, status: 'failed', error: code });
       }
     })();
-    this.task = operation.catch(() => ({ ...this.state }));
-    return operation;
+    return this.task;
   }
-  adoptExistingFolder(folder: string, onProgress?: (status: MemoryModelStatus) => void, onAdmission?: (assertLive: () => void) => void): Promise<MemoryModelStatus> {
-    return this.run(async (signal, assertStillValid) => {
+  adoptExistingFolder(folder: string): Promise<MemoryModelStatus> {
+    return this.run(async signal => {
       if (!folder) throw new MemoryModelError('model-folder-invalid');
       const path = await verifyModelFolder(folder, this.files, signal);
       if (await this.isManagedPath(path)) {
-        await this.saveManagedPath(path, assertStillValid);
+        signal.throwIfAborted();
+        await this.saveManagedPath(path);
         return;
       }
-      await this.install(signal, assertStillValid, async (name, staging) => {
+      await this.install(signal, async (name, staging) => {
         for (const file of this.files) {
-          assertStillValid();
-          const handle = await this.namespace.createFile(`${name}/${file.name}`, assertStillValid);
+          signal.throwIfAborted();
+          const handle = await this.namespace.createFile(`${name}/${file.name}`);
           try {
-            assertStillValid();
             let received = 0;
             for await (const chunk of createReadStream(join(path, file.name), { signal })) {
               const bytes = chunk as Buffer;
               received += bytes.length;
               if (received > file.bytes) throw new MemoryModelError('model-integrity-failed');
-              assertStillValid();
               await handle.writeFile(bytes);
             }
-            assertStillValid();
             await handle.sync();
           } finally { await handle.close(); }
         }
-        assertStillValid();
         await verifyModelFolder(staging, this.files, signal);
       });
-    }, onProgress, folder, onAdmission);
+    }, folder);
   }
-  download(onProgress?: (status: MemoryModelStatus) => void, onAdmission?: (assertLive: () => void) => void): Promise<MemoryModelStatus> {
-    return this.run((signal, assertStillValid, publish) => this.install(signal, assertStillValid, async name => {
-      publish({ status: 'downloading', receivedBytes: 0, totalBytes: this.files.reduce((n, f) => n + f.bytes, 0), completedFiles: 0, totalFiles: this.files.length });
+  download(): Promise<MemoryModelStatus> {
+    return this.run(signal => this.install(signal, async name => {
+      this.publish({ status: 'downloading', receivedBytes: 0, totalBytes: this.files.reduce((n, f) => n + f.bytes, 0), completedFiles: 0, totalFiles: this.files.length });
       for (const file of this.files) {
-        assertStillValid();
+        signal.throwIfAborted();
         const response = await (this.options.downloadFile
           ? this.options.downloadFile(file.name, signal)
           : fetch(modelFileUrl(file.name), { signal, redirect: 'follow' }));
         if (!response.ok || !response.body) throw new MemoryModelError('model-download-failed');
+        const handle = await this.namespace.createFile(`${name}/${file.name}`);
+        const hash = createHash('sha256');
+        let received = 0;
         const reader = response.body.getReader();
         try {
-          assertStillValid();
-          const handle = await this.namespace.createFile(`${name}/${file.name}`, assertStillValid);
-          try {
-            const hash = createHash('sha256');
-            let received = 0;
-            while (true) {
-              assertStillValid();
-              const chunk = await reader.read();
-              if (chunk.done) break;
-              assertStillValid();
-              received += chunk.value.byteLength;
-              if (received > file.bytes) throw new MemoryModelError('model-integrity-failed');
-              hash.update(chunk.value);
-              await handle.writeFile(chunk.value);
-              commitUnderAdmission(assertStillValid, () => {
-                publish({ ...this.state, receivedBytes: this.state.receivedBytes + chunk.value.byteLength });
-              });
-            }
-            if (received !== file.bytes || hash.digest('hex') !== file.sha256) throw new MemoryModelError('model-integrity-failed');
-            assertStillValid();
-            await handle.sync();
-          } finally { await handle.close(); }
-        } finally { await reader.cancel().catch(() => {}); }
-        assertStillValid();
-        publish({ ...this.state, completedFiles: this.state.completedFiles + 1 });
+          while (true) {
+            signal.throwIfAborted();
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            received += chunk.value.byteLength;
+            if (received > file.bytes) throw new MemoryModelError('model-integrity-failed');
+            hash.update(chunk.value);
+            await handle.writeFile(chunk.value);
+            this.publish({ ...this.state, receivedBytes: this.state.receivedBytes + chunk.value.byteLength });
+          }
+          if (received !== file.bytes || hash.digest('hex') !== file.sha256) throw new MemoryModelError('model-integrity-failed');
+          await handle.sync();
+        } finally { await reader.cancel().catch(() => {}); await handle.close(); }
+        this.publish({ ...this.state, completedFiles: this.state.completedFiles + 1 });
       }
-    }), onProgress, undefined, onAdmission);
+    }));
   }
   private async verifyManagedSlot(path: string, signal: AbortSignal): Promise<string> {
     const directory = await this.checkedDirectory(path);
@@ -253,7 +206,7 @@ export class LocalModelManager {
     return folder;
   }
 
-  private async removeModelSlot(parent: string, name: string, assertStillValid?: () => void): Promise<void> {
+  private async removeModelSlot(parent: string, name: string): Promise<void> {
     if (!RECOVERY_SLOT_NAME.test(name) && !STAGING_SLOT_NAME.test(name)) return;
     try {
       const managedParent = await this.recoveryParent();
@@ -263,7 +216,6 @@ export class LocalModelManager {
       for (const folder of buildsByModelPath.keys()) {
         if (isWithinDirectory(path, folder)) return;
       }
-      assertStillValid?.();
       await rm(path, { recursive: true, force: true });
     } catch (error) {
       if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== 'ENOENT') logModelCleanupError(error);
@@ -275,7 +227,7 @@ export class LocalModelManager {
     return root === undefined ? undefined : this.checkedDirectory(join(root, MODEL_SLOT_PARENT));
   }
 
-  private async sweepModelSlots(patterns: readonly RegExp[], preservePath?: string, assertStillValid?: () => void): Promise<void> {
+  private async sweepModelSlots(patterns: readonly RegExp[], preservePath?: string): Promise<void> {
     try {
       const parent = await this.recoveryParent();
       if (parent === undefined) return;
@@ -293,30 +245,27 @@ export class LocalModelManager {
         const slot = join(parent, name);
         const namespaceSlot = join(namespaceParent, name);
         if (protectedPaths.some(path => isWithinDirectory(slot, path) || isWithinDirectory(namespaceSlot, path))) continue;
-        assertStillValid?.();
-        await this.removeModelSlot(parent, name, assertStillValid);
+        await this.removeModelSlot(parent, name);
       }
     } catch (error) { logModelCleanupError(error); }
   }
 
-  private async saveManagedPath(path: string, assertStillValid: () => void): Promise<void> {
-    assertStillValid();
-    try { await this.options.savePath(path, assertStillValid); }
+  private async saveManagedPath(path: string): Promise<void> {
+    try { await this.options.savePath(path); }
     finally {
       try {
         const saved = this.options.readPath();
         if (saved && relative(path, saved) === '') {
-          await this.sweepModelSlots([RECOVERY_SLOT_NAME], path, assertStillValid);
+          await this.sweepModelSlots([RECOVERY_SLOT_NAME], path);
         }
       } catch (error) { logModelCleanupError(error); }
     }
   }
 
-  private async install(signal: AbortSignal, assertStillValid: () => void, stage: (name: string, folder: string) => Promise<void>): Promise<void> {
+  private async install(signal: AbortSignal, stage: (name: string, folder: string) => Promise<void>): Promise<void> {
     await this.checkedDirectory(this.namespace.dir);
     await this.checkedDirectory(join(this.namespace.dir, MODEL_SLOT_PARENT));
-    assertStillValid();
-    await this.namespace.childDir(MODEL_SLOT_PARENT, { assertStillValid });
+    await this.namespace.childDir(MODEL_SLOT_PARENT);
     const parent = await this.recoveryParent();
     if (parent === undefined) throw new MemoryModelError('model-integrity-failed');
     const previousRecovery = recoverySlotName(parent, this.options.readPath());
@@ -324,28 +273,27 @@ export class LocalModelManager {
       let validated: string | undefined;
       try { validated = await this.verifyManagedSlot(join(parent, previousRecovery), signal); }
       catch (error) { if (!(error instanceof MemoryModelError)) throw error; }
+      signal.throwIfAborted();
       if (validated !== undefined) {
-        await this.saveManagedPath(validated, assertStillValid);
+        await this.saveManagedPath(validated);
         return;
       }
     }
     const id = randomUUID();
     const name = `${MODEL_SLOT_PARENT}/${LOCAL_MODEL_REVISION}.tmp-${id}`;
-    assertStillValid();
-    const staging = await this.namespace.childDir(name, { exclusive: true, assertStillValid });
+    const staging = await this.namespace.childDir(name, { exclusive: true });
     let final = join(parent, LOCAL_MODEL_REVISION);
     let createdRecovery: string | undefined;
     try {
-      assertStillValid();
       await stage(name, staging);
-      assertStillValid();
+      signal.throwIfAborted();
       let validated: string | undefined;
       try { await renameDirectoryOnce(staging, final); }
       catch (error) {
         if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'ENOTDIR', 'EISDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
         try { validated = await this.verifyManagedSlot(final, signal); }
         catch (validationError) {
-          assertStillValid();
+          signal.throwIfAborted();
           if (!(validationError instanceof MemoryModelError)) throw validationError;
           const recovery = `${LOCAL_MODEL_REVISION}-${id}`;
           final = join(parent, recovery);
@@ -353,9 +301,9 @@ export class LocalModelManager {
           createdRecovery = recovery;
         }
       }
-      assertStillValid();
       validated ??= await this.verifyManagedSlot(final, signal);
-      await this.saveManagedPath(validated, assertStillValid);
+      signal.throwIfAborted();
+      await this.saveManagedPath(validated);
     } finally {
       await this.removeModelSlot(parent, basename(name));
       try {

@@ -1,68 +1,12 @@
-import {
-  getWindowsAccountConfinementHelperIdentity,
-  getWindowsConfinementRoute,
-  isOfflineProcessConfinementActive,
-} from "../../permissions/asrt-sandbox.js";
-import { getMxcReleaseGateGeneration } from "../../permissions/mxc-extension-admission.js";
+import { isOfflineProcessConfinementActive } from "../../permissions/asrt-sandbox.js";
 import { getWindowsExtensionBackendPlan } from "../../permissions/sandbox-capability.js";
-import {
-  isWindowsBackgroundFeatureReleaseEnabled,
-  refreshWindowsBackgroundAdmission,
-  type WindowsBackgroundAdmission,
-} from "../../permissions/windows-background-features.js";
-import { getWindowsContainerBackendLossEpoch } from "../../permissions/windows-confinement-evidence.js";
-import { isAveHomePrivacyVerifiedAtBoot } from "../../shared/ave-home.js";
-import { DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX } from "../../shared/memory-embedding-config.js";
 import { MemoryMapHostError } from "./errors.js";
 
-export type LocalInferenceRoute = "offline-sandbox" | "mxc" | "unconfined";
-
-function confinedLocalInferenceRoute(): Exclude<LocalInferenceRoute, "unconfined"> | undefined {
+// Local inference runs only in a child the OS sandbox keeps off the network, on every platform; without that sandbox it is unavailable.
+// It is on by default and no extension-start ask applies to it. The ruled Settings switch (OQ-14) that would run it
+// unconfined with no backend is not built; it ships with the Windows release-gate flip, which also has to route it under MXC.
+export function assertLocalEmbeddingRuntime(): void {
   const plan = process.platform === "win32" ? getWindowsExtensionBackendPlan() : undefined;
-  if (isWindowsBackgroundFeatureReleaseEnabled() && plan?.selectedBackend === "mxc" && plan.readiness === "ready" && isAveHomePrivacyVerifiedAtBoot()) return "mxc";
   const planRefuses = plan !== undefined && (plan.readiness === "checking" || plan.readiness === "rejected" || plan.selectedBackend === "mxc");
-  if (!planRefuses && isOfflineProcessConfinementActive()) return "offline-sandbox";
-  return undefined;
-}
-
-export function refreshLocalInferenceAdmission(scope?: "switches"): Promise<WindowsBackgroundAdmission> {
-  if (scope === "switches" || process.platform !== "win32") return refreshWindowsBackgroundAdmission("switches");
-  const route = confinedLocalInferenceRoute();
-  return refreshWindowsBackgroundAdmission(route === "mxc" ? "extension" : route === "offline-sandbox" ? "account" : "switches");
-}
-
-/** Select the currently permitted route using the caller's exact admission. */
-export function assertLocalEmbeddingRuntime(preference = DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX,
-  admission: WindowsBackgroundAdmission): LocalInferenceRoute {
-  const route = confinedLocalInferenceRoute();
-  if (route !== undefined) {
-    if (process.platform !== "win32" || admission.isBackendOperational(route === "mxc" ? "container" : "account")) return route;
-    throw new MemoryMapHostError("local-runtime-unavailable");
-  }
-
-  if (admission.areSwitchesAvailable()) {
-    if (!preference) throw new MemoryMapHostError("local-inference-disabled");
-    return "unconfined";
-  }
-  throw new MemoryMapHostError("local-runtime-unavailable");
-}
-
-export function bindLocalEmbeddingRuntime(readRoute: () => LocalInferenceRoute) {
-  const route = readRoute();
-  const readIdentity = (): readonly unknown[] => {
-    if (route === "mxc") return [getWindowsExtensionBackendPlan(), getMxcReleaseGateGeneration(), getWindowsContainerBackendLossEpoch()];
-    if (route === "offline-sandbox" && process.platform === "win32") {
-      return [...getWindowsConfinementRoute(), getWindowsAccountConfinementHelperIdentity()];
-    }
-    return [];
-  };
-  const identity = readIdentity();
-  const assertStillValid = () => {
-    if (readRoute() !== route) throw new MemoryMapHostError("local-runtime-unavailable");
-    const current = readIdentity();
-    if (current.length !== identity.length || !identity.every((value, index) => Object.is(value, current[index]))) {
-      throw new MemoryMapHostError("local-runtime-unavailable");
-    }
-  };
-  return { route, assertStillValid };
+  if (!isOfflineProcessConfinementActive() || planRefuses) throw new MemoryMapHostError("local-runtime-unavailable");
 }
