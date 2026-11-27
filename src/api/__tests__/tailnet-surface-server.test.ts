@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Agent as HttpAgent, request as httpRequest } from "node:http";
 import { createServer as createNetServer } from "node:net";
+import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,7 +27,8 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
 import { openEgressRelay, startEgressRelayService, stopEgressRelayService } from "../../permissions/egress-relay/relay.js";
 import { openEgressInvocation } from "../../permissions/egress-invocations.js";
-import type { TailnetWorkDecisionRequest, TailnetWorkReviewSnapshot } from "../../shared/tailnet-work-decisions.js";
+import type { TailnetWorkDecisionRequest, TailnetWorkDecisionResponse, TailnetWorkReview, TailnetWorkReviewSnapshot } from "../../shared/tailnet-work-decisions.js";
+import type { TemplateGraph } from "../../shared/workflow-template-types.js";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 import * as tailnetListenerPolicy from "../../permissions/tailnet-listener-policy.js";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
@@ -2611,4 +2613,257 @@ it.runIf((process.platform === "darwin" || process.platform === "linux") && !sho
     await sandbox.resetAsrtSandbox();
     await cleanupTmpDir(cwd);
   }
+});
+
+describe("phone work reviews", () => {
+  const pin = { templateId: "review-template", version: 2, graphHash: "b".repeat(64) };
+  const runId = "review-run";
+  const stageBinding = { runId, stageId: "review-stage", attempt: 2, resultHash: "c".repeat(64), outputHash: "d".repeat(64) };
+  const joinBinding = { runId, joinId: "join-review", generation: 2, conflictHash: "e".repeat(64) };
+  const templateScope = { kind: "all" } as const;
+  const graph: TemplateGraph = {
+    stages: [{ id: "review-stage", name: "Collect", goal: "Read the report", inputs: [], toolScope: "read", allowSubAgents: false, gate: { type: "human" } }],
+    edges: [], setupCommands: ["prepare report"],
+  };
+  const schedule = { at: "2099-01-01T09:00:00.000Z", repeat: { kind: "daily" as const } };
+  const views = [
+    {
+      kind: "plan", deny: "reject", binding: { itemId: 1, input: { runId, planHash: "a".repeat(64) } },
+      review: {
+        kind: "plan", key: "plan:1", scope: { type: "unscoped" }, title: "Review plan", itemId: 1, runId, planHash: "a".repeat(64),
+        arrivedAt: "2026-11-27T00:00:00Z", plan: '<img src="review-content">\nA complete plan', phase: "pending",
+        revision: 0, planNumber: 1, stale: false,
+      },
+    },
+    {
+      kind: "stage", deny: "reject", binding: { itemId: 2, input: stageBinding },
+      review: {
+        kind: "stage-gate", key: "stage:2", itemId: 2, binding: stageBinding, title: "Stage review",
+        result: "The stage result", outputs: [{ id: "output", summary: "Send the report" }],
+        scope: { type: "unscoped" }, arrivedAt: null,
+      },
+    },
+    {
+      kind: "join", deny: "reject", binding: { itemId: 3, input: joinBinding },
+      review: {
+        kind: "join-conflict", key: "join:3", itemId: 3, binding: joinBinding, title: "Join review",
+        evidence: { reason: "same-path", files: [{ path: "reports/join.txt", stageIds: ["one", "two"] }], excerpt: "Conflict excerpt" },
+        scope: { type: "unscoped" }, arrivedAt: null,
+      },
+    },
+    {
+      kind: "template-confirmation", deny: "dismiss",
+      binding: { templateId: pin.templateId, input: { expectedDraftRevision: "draft-revision", expectedGraphHash: pin.graphHash } },
+      review: { name: "Workflow draft", scope: templateScope, description: "Draft description", ...graph },
+    },
+    {
+      kind: "create-and-run", deny: "dismiss",
+      binding: { input: { ...pin, title: "Workflow run", detail: "Run details" } },
+      review: { name: "Workflow run", scope: templateScope, graph, projects: [] },
+    },
+    {
+      kind: "schedule-attachment", deny: "dismiss", binding: { input: { ...pin, expectedScope: templateScope, scheduleId: "routine-one" } },
+      review: {
+        name: "Workflow run", existingPin: { ...pin, version: 1, graphHash: "f".repeat(64) },
+        routine: { schedule, title: "Existing schedule", lastTemplateSkip: { code: "run-unsettled" } },
+      },
+    },
+    {
+      kind: "requested-output", deny: "reject",
+      binding: { input: { itemId: 2, runId, stageId: stageBinding.stageId, attempt: stageBinding.attempt, outputHash: stageBinding.outputHash } },
+      review: { outputs: [{
+        id: "output", decl: { kind: "send-message", owner: "server", ownerId: "reports", toolName: "send_report" },
+        summary: "Send the report", args: '{"to":"report-review"}', files: [{ path: "reports/output.txt", sha256: "b".repeat(64), size: 43 }],
+      }] },
+    },
+  ] satisfies [TailnetWorkReview, ...TailnetWorkReview[]];
+  const roles = ["observer", "controller", "work-decision"] as const;
+  type PhoneReviewBrowser = { window: Window & typeof globalThis };
+  const { JSDOM } = createRequire(import.meta.url)("jsdom") as {
+    JSDOM: new (html: string, options: { url: string; runScripts: "outside-only" }) => PhoneReviewBrowser;
+  };
+
+  async function openPhoneReviews(
+    reviews: readonly TailnetWorkReview[],
+    response: (decision: TailnetWorkDecisionRequest) => TailnetWorkDecisionResponse,
+    language = "en-US",
+    grantedRoles: readonly ("observer" | "controller" | "work-decision")[] = roles,
+  ) {
+    const sharing = pairedSharing({ observe: true, control: true });
+    const received: TailnetWorkDecisionRequest[] = [];
+    const requests: Array<{ path: string; method: string; csrf: string | null; credentials?: RequestCredentials }> = [];
+    const { server } = await fixture({
+      pairedSharing: sharing.authorizer,
+      web: { origin: WEB_ORIGIN, workDecisions: {
+        decide: async decision => { received.push(decision); return response(decision); },
+        list: async () => reviews,
+        verifyServeTarget: async () => true,
+        receipts: createReceiptStore(),
+      } },
+    });
+    const session = await openWebSession(server, { ...tailnetRoleHeaders(grantedRoles), "Accept-Language": language });
+    const browser = new JSDOM(session.html, { url: WEB_ORIGIN, runScripts: "outside-only" });
+    try {
+      const headers = webSessionHeaders(session.cookieToken, session.csrfToken, grantedRoles);
+      delete headers["X-Ave-Tailnet-Csrf"];
+      Object.assign(browser.window, {
+        Headers,
+        fetch: (path: string, init?: RequestInit) => {
+          const supplied = new Headers(init?.headers);
+          requests.push({
+            path, method: init?.method ?? "GET", csrf: supplied.get("x-ave-tailnet-csrf"), credentials: init?.credentials,
+          });
+          if (path.includes("/events?")) return new Response(new ReadableStream());
+          return fetch(url(server, path), { ...init, headers: { ...headers, ...Object.fromEntries(supplied) } });
+        },
+      });
+      for (const script of browser.window.document.scripts) browser.window.eval(script.textContent ?? "");
+      await vi.waitFor(() => {
+        expect(requests.some(request => request.path.includes("/events?")), browser.window.document.getElementById("status")?.textContent).toBe(true);
+      });
+      return { browser, session, received, requests };
+    } catch (error) {
+      browser.window.close();
+      throw error;
+    }
+  }
+
+  it.each([["en-US", "en", "Work approvals"], ["ko-KR", "ko", "업무 승인"]])(
+    "renders complete phone reviews inside the nonce document for %s",
+    async (language, locale, heading) => {
+      const { browser, session } = await openPhoneReviews(views, () => ({ ok: true, kind: "join" }), language);
+      try {
+        const document = browser.window.document;
+        const section = document.getElementById("work-reviews");
+        expect(document.documentElement.lang).toBe(locale);
+        expect(section?.hidden).toBe(false);
+        expect(section?.querySelector("h2")?.textContent).toBe(heading);
+        expect(document.querySelector('meta[name="viewport"]')?.getAttribute("content")).toContain("width=device-width");
+        const style = document.querySelector("style");
+        expect(style?.textContent).toContain("color-scheme: light dark");
+        for (const element of [style, ...document.scripts]) expect(session.csp).toContain(`'nonce-${element?.nonce}'`);
+        for (const view of views) expect(section?.querySelector(`[data-work-kind="${view.kind}"]`)).not.toBeNull();
+        for (const evidence of [
+          '<img src="review-content">', "A complete plan", "The stage result", stageBinding.resultHash, stageBinding.outputHash,
+          "reports/join.txt", "Conflict excerpt", joinBinding.conflictHash, "draft-revision", "Draft description", "prepare report",
+          pin.graphHash, "Existing schedule", "f".repeat(64), "send_report", "report-review", "reports/output.txt",
+        ]) expect(section?.textContent).toContain(evidence);
+        expect(section?.querySelector("textarea[maxlength=\"16384\"]")).toHaveProperty("value", "Run details");
+        expect(section?.querySelector("img")).toBeNull();
+      } finally {
+        browser.window.close();
+      }
+    },
+  );
+
+  it("keeps review data and actions hidden on a share without work decision capability", async () => {
+    const { browser, requests } = await openPhoneReviews(views, () => ({ ok: true, kind: "join" }), "en", ["observer", "controller"]);
+    try {
+      expect(browser.window.document.getElementById("work-reviews")?.hidden).toBe(true);
+      expect(browser.window.document.querySelector("[data-work-kind]")).toBeNull();
+      expect(requests.filter(request => request.method === "POST")).toHaveLength(0);
+    } finally {
+      browser.window.close();
+    }
+  });
+
+  function phoneAction(browser: PhoneReviewBrowser, kind: TailnetWorkReview["kind"], action: string): HTMLButtonElement {
+    const card = browser.window.document.querySelector(`[data-work-kind="${kind}"]`);
+    const button = card?.querySelector<HTMLButtonElement>(`button[data-work-action="${action}"]`);
+    if (!button) throw new Error("Phone action is missing");
+    return button;
+  }
+
+  it.each([
+    [0, "approve", { decision: "approve" }], [0, "reject", { decision: "reject" }],
+    [1, "approve", { decision: "approve" }], [1, "reject", { decision: "reject" }],
+    [2, "approve", { decision: "retry_merge" }], [2, "reject", { decision: "reject" }],
+    [3, "approve", {}], [4, "approve", {}], [5, "approve", {}],
+    [6, "approve", { decision: "approve" }], [6, "reject", { decision: "reject" }],
+  ] as const)("submits review %i action %s once with the exact POST binding", async (index, action, extraInput) => {
+    const view = views[index];
+    const { browser, session, received, requests } = await openPhoneReviews(index === 1 ? [view, views[6]] : [view], decision => {
+      switch (decision.kind) {
+        case "plan":
+        case "stage": return { ok: true, kind: decision.kind, status: action === "reject" ? "rejected" : "approved" };
+        case "join":
+        case "requested-output": return { ok: true, kind: decision.kind };
+        case "template-confirmation": return { ok: true, kind: decision.kind, pin };
+        case "create-and-run": return { ok: true, kind: decision.kind, itemId: 5, runId };
+        case "schedule-attachment": return { ok: true, kind: decision.kind, attachmentId: "attachment", scheduleId: "routine-one" };
+      }
+    });
+    try {
+      const button = phoneAction(browser, view.kind, action);
+      button.click();
+      button.click();
+      await vi.waitFor(() => expect(received).toHaveLength(1));
+      const streamRequest = requests.find(request => request.path.includes("/events?"));
+      if (!streamRequest) throw new Error("Phone did not subscribe to the scoped stream");
+      const snapshotScope = new URL(streamRequest.path, WEB_ORIGIN).searchParams.get("scope");
+      expect(received[0]).toEqual({
+        id: expect.stringMatching(/^[a-f0-9-]{36}$/), scope: snapshotScope, kind: view.kind,
+        ...view.binding, input: { ...view.binding.input, ...extraInput },
+      });
+      expect(requests.filter(request => request.method === "POST")).toEqual([{
+        path: "/tailnet/v2/web/work-decisions", method: "POST", csrf: session.csrfToken, credentials: "same-origin",
+      }]);
+      await vi.waitFor(() => expect(browser.window.document.getElementById("work-review-feedback")?.textContent).toBe("Decision submitted."));
+      expect(button.disabled).toBe(true);
+      if (index === 1) expect(phoneAction(browser, "requested-output", "approve").disabled).toBe(true);
+    } finally {
+      browser.window.close();
+    }
+  });
+
+  it("builds a new schedule from a reviewed template pin and scope without a schedule ID", async () => {
+    const { browser, received } = await openPhoneReviews([views[4]], () => ({
+      ok: true, kind: "schedule-attachment", attachmentId: "attachment", scheduleId: "new-schedule",
+    }));
+    try {
+      const date = browser.window.document.querySelector<HTMLInputElement>('input[type="datetime-local"]');
+      if (!date) throw new Error("Phone schedule field is missing");
+      date.value = "2099-01-01T09:00";
+      date.dispatchEvent(new browser.window.Event("input", { bubbles: true }));
+      phoneAction(browser, "schedule-attachment", "approve").click();
+      await vi.waitFor(() => expect(received).toHaveLength(1));
+      expect(received[0]).toMatchObject({
+        kind: "schedule-attachment",
+        input: { ...pin, expectedScope: templateScope, schedule: { at: new Date(date.value).toISOString(), repeat: { kind: "none" } } },
+      });
+      expect(received[0]?.input).not.toHaveProperty("scheduleId");
+    } finally {
+      browser.window.close();
+    }
+  });
+
+  it.each([3, 4, 5] as const)("dismisses review %i locally", async index => {
+    const view = views[index];
+    const { browser, requests } = await openPhoneReviews([view], () => ({ ok: true, kind: "join" }));
+    try {
+      phoneAction(browser, view.kind, "dismiss").click();
+      expect(browser.window.document.querySelector(`[data-work-kind="${view.kind}"]`)).toBeNull();
+      expect(requests.filter(request => request.method === "POST")).toHaveLength(0);
+    } finally {
+      browser.window.close();
+    }
+  });
+
+  it.each([
+    ["plan_stale", "The work item changed after this plan was made."],
+    ["remote-controller-authority-revoked", "Remote control expired or was revoked."],
+    ["work-decision-replayed", "This work decision was already submitted."],
+  ])("shows %s without repeating a submitted decision", async (error, message) => {
+    const { browser, requests } = await openPhoneReviews([views[0]], () => ({ ok: false, error }));
+    try {
+      const button = phoneAction(browser, "plan", "approve");
+      button.click();
+      await vi.waitFor(() => expect(browser.window.document.getElementById("work-review-feedback")?.textContent).toContain(message));
+      button.click();
+      expect(button.disabled).toBe(true);
+      expect(requests.filter(request => request.method === "POST")).toHaveLength(1);
+    } finally {
+      browser.window.close();
+    }
+  });
 });
