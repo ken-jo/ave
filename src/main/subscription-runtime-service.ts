@@ -894,9 +894,9 @@ class CodexSubscriptionTextSession implements SubscriptionTextSession {
           // App Server invokes onServerRequest before its dedicated dynamic callback. Native and future reverse RPC remain deny-only.
           if (request.kind === "dynamic-tool") return;
           unsafeRequest = true;
+          this.onUnsafeRequest(request.kind);
           queue.fail(new SubscriptionRuntimeServiceError("subscription-operation-failed",
             subscriptionTransportFailure({ phase: "native-request", kind: "protocol" })));
-          this.onUnsafeRequest(request.kind);
           this.runtime.stop();
         },
         onDynamicToolCall: (call) => this.bridge.invoke(call.tool, call.arguments),
@@ -1967,7 +1967,23 @@ export class SubscriptionRuntimeService {
   private evidenceSink(provider: CliProvider, auxiliary = false, safetyEpoch?: number): SubscriptionEvidenceSink {
     return (evidence) => {
       if (safetyEpoch !== undefined && !this.safetyEpochIsCurrent(provider, safetyEpoch)) return undefined;
-      return this.reduceConnection(provider, evidence, auxiliary);
+      const report = this.reduceConnection(provider, evidence, auxiliary);
+      if (safetyEpoch === undefined) return report;
+      const auditLoss = () => {
+        if (!this.safetyEpochIsCurrent(provider, safetyEpoch) && evidence.kind !== "retired") {
+          this.emitAudit({ provider, outcome: "session-failed" });
+        }
+      };
+      if (!report) {
+        auditLoss();
+        return undefined;
+      }
+      return (verdict) => {
+        if (!this.safetyEpochIsCurrent(provider, safetyEpoch)) return false;
+        const accepted = report(verdict);
+        auditLoss();
+        return accepted;
+      };
     };
   }
 
