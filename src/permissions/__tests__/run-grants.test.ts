@@ -89,6 +89,19 @@ describe("a stage session's sub-agent", () => {
     expect(await lookup("chat-helper", "plan")).toBeNull();
   });
 
+  it("a grandchild shares the run grant and has its own breaker count", async () => {
+    link(RUN, "plan-session", "plan");
+    hooks.sessionLinked(RUN, "plan-helper", { stageId: "plan", stageName: "plan", lane: "attended", agentTitle: "Extract" });
+    await allowForRun("plan-session");
+    expect(await lookup("plan-helper")).toMatchObject({ scope: "run", decision: "allow" });
+    for (const invocation of ["one", "two", "three"]) manager.resolveReviewerChoice("plan-helper", invocation, "deny");
+    expect(manager.getAutomatedApprovalPauseReason("plan-helper")).toBe("consecutive");
+    expect(manager.getAutomatedApprovalPauseReason("plan-session")).toBeUndefined();
+    hooks.sessionEnded("plan-helper");
+    expect(manager.getAutomatedApprovalPauseReason("plan-helper")).toBeUndefined();
+    expect(await lookup("plan-session")).toMatchObject({ scope: "run", decision: "allow" });
+  });
+
   it("has no membership once its stage ended, under a schedule-started stage makes no grant, and a cyclic record fails clearly", async () => {
     link(RUN, "plan-session", "plan");
     hooks.sessionEnded("plan-session");

@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, existsSync, readdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { t } from "../../i18n/index.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
@@ -3420,7 +3421,7 @@ describe("agent_spawn tool — resume surface + routing (PR-C)", () => {
   it("allows a resume from the parent loop but a sub-agent cannot resume (spawnDepth >= 1 refused)", async () => {
     const resumeSpy = vi.fn();
     const tool = createAgentSpawnTool({
-      getRunner: () => ({ resume: resumeSpy, spawn: vi.fn() }) as never,
+      getRunner: () => ({ resume: resumeSpy }) as never,
       emit: () => undefined,
     });
     // Subagent depth must refuse agent_spawn before routing to resume.
@@ -3433,9 +3434,7 @@ describe("agent_spawn tool — resume surface + routing (PR-C)", () => {
       },
     );
     expect(r.isError).toBe(true);
-    expect(JSON.parse(r.output).error).toContain(
-      "cannot be invoked from a sub-agent",
-    );
+    expect(JSON.parse(r.output).error).toBe(t("be_agentSpawn.depthLimit"));
     expect(resumeSpy).not.toHaveBeenCalled();
   });
 });
