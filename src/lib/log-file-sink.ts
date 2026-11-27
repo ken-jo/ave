@@ -274,34 +274,13 @@ export function createLogFileSink(options: LogFileSinkOptions = {}): LogFileSink
   let seq = resolveActiveSeq(dir, dateStr, maxBytes);
   let currentFile = join(dir, seqFileName(dateStr, seq));
 
-  /** Seed byte accounting from existing content and count buffered writes in process; disk size lags async flushes. */
   let activeBytes = 0;
-
-  let droppedWrites = 0;
+  try { activeBytes = statSync(currentFile).size; } catch { /* New or unavailable file. */ }
   let closed = false;
-  let closingFile: SonicBoomInstance | undefined;
-
-  const openBoom = (filePath: string): SonicBoomInstance => {
-    // Set mode during async open, never with a racing chmod; Windows relies on inherited ACLs. Flush buffered output at shutdown.
-    const boom = new SonicBoomCtor({ dest: filePath, mkdir: false, sync: false, mode: PRIVATE_FILE_MODE, maxLength: LOG_MAX_BYTES });
-    // Handle asynchronous error events explicitly; synchronous try/catch cannot catch them and an unhandled event would crash the process.
-    boom.on("error", () => {
-      /* Destination errors must not crash the process or damage console logging. */
-    });
-    boom.on("drop", () => { droppedWrites += 1; });
-    return boom;
-  };
-
-  const seedActiveBytes = (): void => {
-    try {
-      activeBytes = existsSync(currentFile) ? statSync(currentFile).size : 0;
-    } catch {
-      activeBytes = 0;
-    }
-  };
-
-  let boom = openBoom(currentFile);
-  seedActiveBytes();
+  let nextFile: string | undefined;
+  const boom = new SonicBoomCtor({
+    dest: currentFile, sync: false, mode: PRIVATE_FILE_MODE, maxLength: LOG_MAX_BYTES,
+  });
 
   let pruning = false;
   let pruneRequested = false;
@@ -321,24 +300,22 @@ export function createLogFileSink(options: LogFileSinkOptions = {}): LogFileSink
     })().catch(() => {});
   };
 
-  const roll = (): void => {
+  boom.on("write", (bytes: number) => {
+    activeBytes += bytes;
+    if (closed || nextFile || activeBytes < maxBytes) return;
+    // Reopen waits for the in-flight write before sending buffered lines to the new file.
+    nextFile = join(dir, seqFileName(dateStr, seq + 1));
+    try { boom.reopen(nextFile); } catch { nextFile = undefined; }
+  });
+  boom.on("ready", () => {
+    if (!nextFile) return;
+    currentFile = nextFile;
+    nextFile = undefined;
     seq += 1;
-    const next = join(dir, seqFileName(dateStr, seq));
-    const old = boom;
-    currentFile = next;
-    boom = openBoom(next);
     activeBytes = 0;
-    // Keep at most one draining file while the current file handles new messages.
-    closingFile = old;
-    const releaseOld = (): void => {
-      if (closingFile !== old) return;
-      closingFile = undefined;
-      if (!closed && activeBytes >= maxBytes) roll();
-    };
-    old.once("close", releaseOld);
-    try { old.end(); } catch { releaseOld(); }
     requestCap();
-  };
+  });
+  boom.on("error", () => { nextFile = undefined; });
 
   return {
     get currentFile(): string {
@@ -346,21 +323,11 @@ export function createLogFileSink(options: LogFileSinkOptions = {}): LogFileSink
     },
     write(chunk: string): void {
       if (closed) return;
-      if (closingFile && activeBytes >= maxBytes) {
-        droppedWrites += 1;
-        return;
-      }
-      const dropsBeforeWrite = droppedWrites;
       try {
         boom.write(chunk);
       } catch {
         // File-write failures must not propagate to log callers.
         return;
-      }
-      if (droppedWrites !== dropsBeforeWrite) return;
-      activeBytes += Buffer.byteLength(chunk, "utf-8");
-      if (!closingFile && activeBytes >= maxBytes) {
-        roll();
       }
     },
     destroy(): void {

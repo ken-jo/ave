@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import fs from "node:fs";
 import {
   existsSync,
   mkdtempSync,
@@ -158,6 +159,41 @@ describe("createLogFileSink — file creation + mode", () => {
 });
 
 describe("createLogFileSink — size-based sequence rolling", () => {
+  it("does not write a later record while the write at the rolling boundary is held", async () => {
+    const sink = createLogFileSink({ dir: logDir, maxBytes: 4 });
+    const write = fs.write;
+    let release: (() => void) | undefined;
+    const held = Promise.withResolvers<void>();
+    const later = Promise.withResolvers<void>();
+    const spy = vi.spyOn(fs, "write").mockImplementation((...args: Parameters<typeof write>) => {
+      const text = String(args[1]);
+      if (text.includes("ask\n") && !release) {
+        release = () => { Reflect.apply(write, fs, args); };
+        held.resolve();
+        return;
+      }
+      if (text.includes("deny\n")) later.resolve();
+      Reflect.apply(write, fs, args);
+    });
+    try {
+      sink.write("ask\n");
+      await held.promise;
+      sink.write("deny\n");
+      const overtook = await Promise.race([
+        later.promise.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 100)),
+      ]);
+      expect(overtook).toBe(false);
+      release?.();
+      release = undefined;
+      await later.promise;
+    } finally {
+      release?.();
+      spy.mockRestore();
+      sink.destroy();
+    }
+  });
+
   it("rolls to a .seq file once the active file crosses maxBytes", async () => {
     const sink = createLogFileSink({ dir: logDir, retentionDays: 7, maxBytes: 64 });
     try {
@@ -165,8 +201,8 @@ describe("createLogFileSink — size-based sequence rolling", () => {
       // Stay below the per-day file cap so byte-roll assertions retain their base file.
       const line = "x".repeat(20) + "\n";
       for (let i = 0; i < 8; i++) sink.write(line);
+      await vi.waitFor(() => expect(sink.currentFile).not.toBe(base));
       const finalFile = sink.currentFile;
-      expect(finalFile).not.toBe(base);
       // Wait for every asynchronous destination open before destroy or cleanup to avoid delayed ENOENT errors.
       await waitForFile(base);
       await waitForFile(finalFile);
@@ -202,9 +238,8 @@ describe("createLogFileSink — size-based sequence rolling", () => {
     const sink = createLogFileSink({ dir: logDir, retentionDays: 7, maxBytes: 100 });
     try {
       expect(sink.currentFile).toBe(base);
-      // Assert the synchronous currentFile transition; the rolled inode appears asynchronously.
       for (let i = 0; i < 6; i++) sink.write("b".repeat(9) + "\n"); // 10 bytes each
-      expect(sink.currentFile).not.toBe(base);
+      await vi.waitFor(() => expect(sink.currentFile).not.toBe(base));
       expect(/\.\d+\.log$/.test(sink.currentFile)).toBe(true);
       // Wait for the rolled file before destroy so no open outlives the fixture.
       const rolledPath = sink.currentFile;

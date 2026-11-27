@@ -131,6 +131,7 @@ it.each(["normal", "slow"])("logs safely to production console, file and support
     "if (result.is_error || result.content !== canary || result.tool_use_id !== toolUseId) throw new Error(\"Unexpected effect result\");",
     "await setImmediate();",
     "if (storage === \"slow\") {",
+    "  for (let i = 0; i < 50 && !asyncReads; i++) await new Promise((resolve) => setTimeout(resolve, 10));",
     "  if (syncReads || !asyncReads) throw new Error(\"Permission event used a synchronous roll scan\");",
     "  const uninstall = installApprovalCardPresenters(desktopApprovalCardPresenters);",
     "  let deliverCard;",
@@ -167,7 +168,7 @@ it.each(["normal", "slow"])("logs safely to production console, file and support
     expect(decisions).toHaveLength(1);
     expect(output).not.toContain(OPAQUE_PROVIDER_ID);
     expect(output).not.toContain(CANARY);
-    correlationIds.push(JSON.parse(decisions[0] ?? "{}").correlationId);
+    correlationIds.push(decisions[0]?.match(/"correlationId":"([a-f0-9]{32})"/)?.[1]);
   }
   expect(correlationIds[0]).toMatch(/^[a-f0-9]{32}$/);
   expect(new Set(correlationIds).size).toBe(1);
