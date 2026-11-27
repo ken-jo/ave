@@ -17,6 +17,11 @@ vi.mock("../sensitive-paths.js", async original => {
   const actual = await original<typeof import("../sensitive-paths.js")>();
   const resolveNative = (path: string): string => observations.targets.get(path) ?? path;
   const fold = (path: string): string => actual.foldCanonicalPathSeparators(path, "win32").toLowerCase();
+  const inspect = (path: string, effect: string) => {
+    observations.inspections.push({ path, effect });
+    return effect === "read" && path.toLowerCase().endsWith(".pem") &&
+      observations.sensitiveReads.get(path) !== false ? "**/*.pem" : null;
+  };
   return {
     ...actual,
     canonicalizePathForMatch: (path: string) => fold(resolveNative(path)),
@@ -25,11 +30,8 @@ vi.mock("../sensitive-paths.js", async original => {
       observations.resolutions.push(path);
       return resolveNative(path);
     },
-    isSensitivePath: (path: string, effect: string) => {
-      observations.inspections.push({ path, effect });
-      return effect === "read" && path.toLowerCase().endsWith(".pem") &&
-        observations.sensitiveReads.get(path) !== false ? "**/*.pem" : null;
-    },
+    isSensitivePath: inspect,
+    createSensitivePathMatcher: (effect: string) => (path: string) => inspect(path, effect),
   };
 });
 
