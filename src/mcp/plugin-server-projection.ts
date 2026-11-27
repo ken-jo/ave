@@ -64,11 +64,12 @@ function toWireTool(tool: McpTool): McpToolProjection {
   if (operationPolicy !== undefined) {
     meta["ai.agent-connector.ave/operationPolicy"] = operationPolicy;
   }
+  const { readOnlyHint, openWorldHint } = tool.annotations ?? {};
   return {
     name: tool.name,
-    ...(tool.annotations !== undefined ? { annotations: {
-      ...(tool.annotations.readOnlyHint === undefined ? {} : { readOnlyHint: tool.annotations.readOnlyHint }),
-      ...(tool.annotations.openWorldHint === undefined ? {} : { openWorldHint: tool.annotations.openWorldHint }),
+    ...(readOnlyHint !== undefined || openWorldHint !== undefined ? { annotations: {
+      ...(readOnlyHint === undefined ? {} : { readOnlyHint }),
+      ...(openWorldHint === undefined ? {} : { openWorldHint }),
     } } : {}),
     ...(tool.title !== undefined ? { title: tool.title } : {}),
     description: tool.description ?? tool.name,

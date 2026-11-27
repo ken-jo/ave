@@ -1670,8 +1670,11 @@ async function runToolInvocationAttempt(
           directoryScope, [] as string[], invocationPermissionContext,
           makeDirectoryEvaluationContext({ pathFields: reviewerPathFields, targetFilePaths: [outOfAllowedTarget.filePath] }),
           {}, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, auditInput, sessionId, directoryPermission] as const;
-        if (headless || directoryPermission.reviewer.route === "headless") directoryPermission = (await dispatchReviewerForHeadless(...reviewerArgs)).permissionResult;
-        else directoryPermission = await dispatchReviewerForInteractiveAuto(...reviewerArgs) ?? directoryPermission;
+        if (headless || (memoryRequest?.unattended && directoryPermission.reviewer.route === "headless")) {
+          directoryPermission = (await dispatchReviewerForHeadless(...reviewerArgs)).permissionResult;
+        } else {
+          directoryPermission = await dispatchReviewerForInteractiveAuto(...reviewerArgs) ?? directoryPermission;
+        }
       }
       if (directoryPermission.decision === "allow") return { allowed: true, approvedDirectory: outOfAllowedTarget.realPath, scope: "turn", permissionResult: directoryPermission,
         ...(rationaleResumeContext === undefined ? {} : { pendingRationale: true as const }) };
