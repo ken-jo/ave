@@ -17,6 +17,8 @@ export type MxcShellSdk = Pick<typeof Sdk, "spawn" | "MxcError">;
 export const MXC_SHELL_ASYNC_STACK_BYTES = 8 * 1024 * 1024;
 
 type KoffiConfig = Pick<typeof Ffi, "config">;
+// Never unloaded: the process exits after its one run.
+const retainedLibraries: ReturnType<typeof Ffi.load>[] = [];
 
 /** Refuse startup unless the koffi instance the SDK resolved carries the configured asynchronous call stack. */
 export function assertMxcShellCallStack(sdkKoffi: KoffiConfig, expected: number): void {
@@ -42,9 +44,11 @@ export async function bootstrapMxcShellSupervisor(
   let sdkKoffi: KoffiConfig;
   try {
     const ffi = createRequire(import.meta.url)(installed.addonPath) as typeof Ffi;
-    // koffi refuses configuration changes once any library is loaded, so this precedes the library check.
+    // koffi refuses configuration changes once any library is loaded, so this precedes the library load.
     if (asyncStackBytes !== null) ffi.config({ async_stack_size: asyncStackBytes });
-    ffi.load(library).unload();
+    // Keep the verified library mapped for the life of this one-run process. A warm standby waits between this check
+    // and its first spawn, and the SDK's own load by the same path then reuses this image instead of re-reading disk.
+    retainedLibraries.push(ffi.load(library));
     sdk = await import(pathToFileURL(join(installed.sdkRoot, "dist", "v1", "index.js")).href) as MxcShellSdk;
     // The SDK imports koffi's ESM entry; read the setting back through that instance, not the addon handle above.
     const sdkRequire = createRequire(join(installed.sdkRoot, "dist", "native-library.js"));

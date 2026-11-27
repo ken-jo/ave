@@ -12,6 +12,7 @@ import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { MxcExtensionChannel, type MxcFramePayload } from "./mxc-extension-channel.js";
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
 import { isMxcSupervisorLoaderOverride } from "./mxc-supervisor-transport.js";
+import { onSandboxStatusChanged } from "./sandbox-capability.js";
 
 type ShellStart = Extract<MxcFramePayload, { type: "shell-start" }>;
 type ShellReceipt = Extract<MxcFramePayload, { type: "exit" | "stopped" | "error" }>;
@@ -56,11 +57,25 @@ function shellOutcome(receipt: ShellReceipt, ready: boolean): ShellOutcome {
   return { ...LOST, code: receipt.exitCode, timedOut: receipt.timedOut, cleanupUnverified: false };
 }
 
-export function startMxcShellSupervisor(
-  request: ShellStart, timeoutMs: number, signal: AbortSignal | undefined, revoke: () => void,
-  label: string, location = mxcShellSupervisorLocation(),
-) {
-  signal?.throwIfAborted();
+type ShellSupervisorLocation = ReturnType<typeof mxcShellSupervisorLocation>;
+
+/** A spawned, authenticated supervisor that has not been handed a request. It holds no authority. */
+interface ShellSupervisorProcess {
+  readonly child: ChildProcessByStdio<null, Readable, Readable>;
+  readonly owner: Writable;
+  readonly control: Duplex;
+  readonly channel: MxcExtensionChannel;
+  readonly exited: Promise<void>;
+  /** What the quit sweep does instead of a kill. Idle: close fds 3 and 4, so the supervisor stops and exits. */
+  cooperativeStop: () => void;
+  /** Transport failure on the owner pipe or the raw streams. Idle: the same close. */
+  transportFailed: () => void;
+  failed: boolean;
+}
+
+const STANDBY_LABEL = "mxc-shell-standby";
+
+function spawnShellSupervisor(location: ShellSupervisorLocation, label: string): ShellSupervisorProcess {
   assertManagedChildProcessAdmissionOpen(label);
   const key = randomBytes(32);
   const generation = randomBytes(32).toString("hex");
@@ -71,7 +86,103 @@ export function startMxcShellSupervisor(
   }) as ChildProcessByStdio<null, Readable, Readable>;
   const owner = child.stdio[3] as Writable;
   const control = child.stdio[4] as Duplex;
-  const channel = new MxcExtensionChannel(control, control, generation, key, "host");
+  const close = (): void => {
+    owner.destroy();
+    control.destroy();
+  };
+  const exited = new Promise<void>((resolve) => {
+    child.once("exit", () => resolve());
+    child.on("error", () => {
+      if (child.pid === undefined) resolve();
+    });
+  });
+  const supervisor: ShellSupervisorProcess = {
+    child, owner, control, exited,
+    channel: new MxcExtensionChannel(control, control, generation, key, "host"),
+    cooperativeStop: close,
+    transportFailed: close,
+    failed: false,
+  };
+  const failed = (): void => {
+    supervisor.failed = true;
+    supervisor.transportFailed();
+  };
+  owner.on("error", failed);
+  child.stdout.on("error", failed);
+  child.stderr.on("error", failed);
+  trackManagedChildProcess(child, { label, cooperativeStop: () => supervisor.cooperativeStop() });
+  owner.write(key, (error) => { if (error) failed(); });
+  return supervisor;
+}
+
+// One warm standby per supervisor bundle: spawned, authenticated and verifying its SDK, with no request and no authority.
+const standbys = new Map<string, ShellSupervisorProcess>();
+let observingSandboxStatus = false;
+
+function standbyKey(location: ShellSupervisorLocation): string {
+  return JSON.stringify([location.entry, location.nodeModules, location.isPackaged]);
+}
+
+function isLive(supervisor: ShellSupervisorProcess): boolean {
+  return !supervisor.failed && supervisor.child.exitCode === null && supervisor.child.signalCode === null;
+}
+
+/** Stop and forget every standby: on a sandbox status change, and from test teardown. */
+export function dropMxcShellStandbys(): void {
+  const idle = [...standbys.values()];
+  standbys.clear();
+  for (const supervisor of idle) supervisor.cooperativeStop();
+}
+
+/** The pid of the live standby for a bundle, if any. @internal — tests only. */
+export function _mxcShellStandbyPidForTest(location: ShellSupervisorLocation): number | undefined {
+  const supervisor = standbys.get(standbyKey(location));
+  return supervisor !== undefined && isLive(supervisor) ? supervisor.child.pid : undefined;
+}
+
+function refillStandby(location: ShellSupervisorLocation): void {
+  const key = standbyKey(location);
+  if (standbys.has(key)) return;
+  let supervisor: ShellSupervisorProcess;
+  try {
+    supervisor = spawnShellSupervisor(location, STANDBY_LABEL);
+  } catch {
+    // Admission is sealed for shutdown, or the spawn failed: the next command starts a supervisor of its own.
+    return;
+  }
+  if (!observingSandboxStatus) {
+    observingSandboxStatus = true;
+    onSandboxStatusChanged(dropMxcShellStandbys);
+  }
+  standbys.set(key, supervisor);
+  void supervisor.exited.then(() => {
+    if (standbys.get(key) === supervisor) standbys.delete(key);
+  });
+}
+
+function takeShellSupervisor(location: ShellSupervisorLocation, label: string): ShellSupervisorProcess {
+  assertManagedChildProcessAdmissionOpen(label);
+  const key = standbyKey(location);
+  const warm = standbys.get(key);
+  standbys.delete(key);
+  let supervisor: ShellSupervisorProcess;
+  if (warm !== undefined && isLive(warm)) {
+    supervisor = warm;
+  } else {
+    warm?.cooperativeStop();
+    supervisor = spawnShellSupervisor(location, label);
+  }
+  setImmediate(() => refillStandby(location));
+  return supervisor;
+}
+
+export function startMxcShellSupervisor(
+  request: ShellStart, timeoutMs: number, signal: AbortSignal | undefined, revoke: () => void,
+  label: string, location = mxcShellSupervisorLocation(),
+) {
+  signal?.throwIfAborted();
+  const supervisor = takeShellSupervisor(location, label);
+  const { child, owner, control, channel, exited } = supervisor;
   let ready = false;
   let receipt: ShellReceipt | undefined;
   let stopping: Promise<void> | undefined;
@@ -97,15 +208,12 @@ export function startMxcShellSupervisor(
     void stop();
   };
   const handleAbort = (): void => { void stop(); };
-  owner.on("error", handleFailure);
-  child.stdout.on("error", handleFailure);
-  child.stderr.on("error", handleFailure);
-  const exited = new Promise<void>((resolve) => {
-    child.once("exit", () => resolve());
-    child.on("error", () => {
-      if (child.pid === undefined) resolve();
-    });
-  });
+  supervisor.transportFailed = handleFailure;
+  supervisor.cooperativeStop = () => {
+    quitting = true;
+    handleFailure();
+    closeControl();
+  };
   const readReceipts = (async () => {
     for await (const frame of channel.frames()) {
       if (receipt !== undefined) throw new MxcProcessContractError("Frame after shell terminal receipt");
@@ -143,12 +251,7 @@ export function startMxcShellSupervisor(
     });
     return result;
   })();
-  trackManagedChildProcess(child, { label, cooperativeStop() {
-    quitting = true;
-    handleFailure();
-    closeControl();
-  } });
-  owner.write(key, (error) => { if (error) handleFailure(); });
+  if (supervisor.failed) handleFailure();
   void channel.send(request).catch(handleFailure);
   return { child, completion };
 }

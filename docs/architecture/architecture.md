@@ -3355,7 +3355,10 @@ shell supervisor: the Electron binary run as Node with a safe host environment
 and no loader overrides. It verifies the SDK and `libmxc_ffi.dylib` against
 their pins, runs koffi's asynchronous native calls on an 8 MiB stack (the
 main-thread stack the CLI forks on, needed for carved profiles), and owns
-exactly one run. The command, its environment and `profileOverride` travel in a private request
+exactly one run. One verified supervisor per bundle waits as a warm standby
+with no request and no authority; a command takes it and a replacement
+starts at once. Standbys are dropped on any sandbox status change and are
+not replaced once shutdown seals child admission. The command, its environment and `profileOverride` travel in a private request
 file under the container runtime root; the authenticated control channel
 carries only its path and SHA-256, and the supervisor refuses altered bytes.
 Each invocation keeps the isolated HOME and temp allocation used by the wrap.
