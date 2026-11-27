@@ -1,7 +1,7 @@
+import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { deferred } from "../../__tests__/support/deferred.js";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../approval-gate.js";
 
 it("audits every parked request cancelled by shutdown before it resolves", async () => {
@@ -14,10 +14,10 @@ it("audits every parked request cancelled by shutdown before it resolves", async
     pendingIds.add(request.id);
     if (pendingIds.size === 2) parked.resolve();
   });
-  const audit = { log: vi.fn(({ output }: { output?: string }) => {
-    if (output?.startsWith("[approval:cancelled]")) order.push(output);
-  }) };
-  const gate = new ApprovalGate(webContents as never, undefined, undefined, audit as unknown as AuditLogger);
+  const capture = watchPermissionEvents((entry) => {
+    if (entry.event === "approval_cancelled") order.push(`cancelled:${entry.requestId}`);
+  });
+  const gate = new ApprovalGate(webContents as never);
   const decisions = ["first", "second"].map(async (id) => {
     const decision = await gate.requestAndWait({
       id, category: "tool", toolName: "write_probe", toolCategory: "write", args: {},
@@ -33,10 +33,11 @@ it("audits every parked request cancelled by shutdown before it resolves", async
     { requestId: "second", choice: "deny-once" },
   ]);
   expect(order).toEqual([
-    expect.stringMatching(/^\[approval:cancelled\] first .*reason=host-shutdown → deny-once$/),
-    expect.stringMatching(/^\[approval:cancelled\] second .*reason=host-shutdown → deny-once$/),
+    "cancelled:first",
+    "cancelled:second",
     "resolved:first",
     "resolved:second",
   ]);
   expect(gate.pendingCount).toBe(0);
+  capture.mockRestore();
 });

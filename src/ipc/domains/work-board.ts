@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { exactRecord, parseDecidePlanInput, parseDecideStageInput, parseJoinBinding, parseTemplateRunTuple, PLAN_HASH_PATTERN, RUN_ID_PATTERN } from "../../work-board/work-decision-input.js";
 import { maskWorkflowText, withoutWorkflowProjection } from "../../work-board/workflow/run-read-projection.js";
 import { isStageId, isTemplateId, WorkflowTemplateError } from "../../work-board/template-graph.js";
@@ -572,19 +573,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
         { approvalSurface: e.sender },
       );
       if (!outcome.result.ok) return outcome.result;
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: `work-board:${id}`,
-        type: "approval",
-        // The decision only; the note body stays on the item.
-        output: JSON.stringify({
-          event: "work-approval:decided",
-          runId: parsed.runId,
-          plan: parsed.planHash.slice(0, 8),
-          decision: outcome.result.status,
-          note: note !== undefined,
-        }),
-      });
+      logPermissionEvent("work_board_decision", { sessionId: permissionLogId(`work-board:${id}`) });
       broadcastItemChanged(id, "updated");
       if (outcome.continuation) {
         broadcastToAppWindows(deps, WORK_BOARD.runStarted, { itemId: id, at: new Date().toISOString(), resumed: true });
@@ -620,13 +609,8 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     onProof?.(proof);
     return null;
   };
-  const auditStageDecision = (id: number, detail: Record<string, unknown>): void => {
-    auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: `work-board:${id}`,
-      type: "approval",
-      output: JSON.stringify({ event: "work-approval:stage-decided", origin: "local-desktop", ...detail }),
-    });
+  const auditStageDecision = (id: number, _detail: Record<string, unknown>): void => {
+    logPermissionEvent("work_board_cancelled", { sessionId: permissionLogId(`work-board:${id}`) });
   };
 
   // The user's decision at a stage gate of a template run: the same boundary as decide-plan. The renderer names the run, the stage, the

@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { pickNativeFiles, pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
 import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
@@ -916,7 +917,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
     if (!hasUserKeyboardIntent(intent)
       || !securitySettingsGestures.consume(event.sender, { channel: CHANNELS.mcp.startServer, payload: { serverId, approvedFingerprint } })) {
-      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "mcp", type: "approval", input: JSON.stringify({ action: "mcp_server_start_refused", reason: "user-keyboard-required" }) });
+      logPermissionEvent("mcp_server_start_refused", { sessionId: permissionLogId("mcp"), action: permissionLogId("mcp_server_start_refused") }, "warn");
       throw new Error("user-keyboard-required: A native user gesture is required");
     }
     if (!isUsableMcpServerId(serverId) || approvedFingerprint !== undefined && (typeof approvedFingerprint !== "string" || !/^[a-f0-9]{64}$/u.test(approvedFingerprint))) {
@@ -1003,12 +1004,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     // The bound server must own the requested tool.
     const owner = backend.resolveToolOwner(name);
     if (owner !== serverId) {
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "mcp-app",
-        type: "error",
-        input: `[mcp-app:${serverId}] cross-server call denied: tool='${name}' owner='${owner ?? "unknown"}'`,
-      });
+      logPermissionEvent("mcp_app_cross_server_denied", { sessionId: permissionLogId("mcp-app"), serverId: permissionLogId(serverId) }, "warn");
       return {
         ok: false,
         error: "cross-server-call-denied",
@@ -1042,12 +1038,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     } catch (err) {
       // Map visibility, permission, and execution failures to one error outcome for the app bridge.
       const message = errMessage(err);
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "mcp-app",
-        type: "error",
-        input: `[mcp-app:${serverId}] tools/call denied or failed: tool='${name}' reason='${message}'`,
-      });
+      logPermissionEvent("mcp_app_tool_denied", { sessionId: permissionLogId("mcp-app"), serverId: permissionLogId(serverId) }, "warn");
       return { ok: false, error: "tool-call-failed", message } satisfies McpUiToolCallOutcome;
     }
   });
@@ -1059,13 +1050,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, CHANNELS.mcp.uiMessage, e);
       return UNAUTHORIZED_FRAME;
     }
-    const auditMcpApp = (type: "info" | "error", input: string) => {
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "mcp-app",
-        type,
-        input,
-      });
+    const auditMcpApp = (_type: "info" | "error", _input: string) => {
+      logPermissionEvent("mcp_app_tool_decision", { sessionId: permissionLogId("mcp-app") });
     };
     if (typeof serverId !== "string" || !isAppMessageOrigin(appMessageSource(serverId))) {
       return { ok: false, error: "invalid-server-id", message: "serverId must be a valid MCP server id" } satisfies McpUiMessageOutcome;
@@ -1158,13 +1144,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, CHANNELS.mcp.getPrompt, e);
       return UNAUTHORIZED_FRAME;
     }
-    const auditPrompt = (type: "info" | "error", input: string) => {
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "mcp-prompt",
-        type,
-        input,
-      });
+    const auditPrompt = (_type: "info" | "error", _input: string) => {
+      logPermissionEvent("mcp_prompt_decision", { sessionId: permissionLogId("mcp-prompt") });
     };
     // Bound prompt names before audit and server requests using the shared discovery predicate.
     if (typeof serverId !== "string" || !isUsablePromptName(name, MCP_PROMPT_NAME_MAX_CHARS)) {
@@ -1239,13 +1220,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, CHANNELS.mcp.attachResource, e);
       return UNAUTHORIZED_FRAME;
     }
-    const auditAttach = (type: "info" | "error", input: string) => {
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "mcp-resource",
-        type,
-        input,
-      });
+    const auditAttach = (_type: "info" | "error", _input: string) => {
+      logPermissionEvent("mcp_resource_decision", { sessionId: permissionLogId("mcp-resource") });
     };
     if (typeof serverId !== "string" || !isUsableResourceUri(uri)) {
       return { ok: false, error: "invalid-request" };
@@ -1308,13 +1284,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         auditUnauthorized(auditLogger, CHANNELS.mcp.attachResourceTemplate, e);
         return UNAUTHORIZED_FRAME;
       }
-      const auditAttach = (type: "info" | "error", input: string) => {
-        auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "mcp-resource",
-          type,
-          input,
-        });
+      const auditAttach = (_type: "info" | "error", _input: string) => {
+        logPermissionEvent("mcp_resource_subscription_decision", { sessionId: permissionLogId("mcp-resource") });
       };
       // Validate template syntax before audit and rate limiting; legal braces differ from URI syntax.
       if (typeof serverId !== "string" || !isUsableResourceUriTemplate(uriTemplate)) {
@@ -1389,8 +1360,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, CHANNELS.mcp.uiDownloadFile, e);
       return UNAUTHORIZED_FRAME;
     }
-    const auditDownload = (type: "info" | "error", input: string) => {
-      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "mcp-app", type, input });
+    const auditDownload = (_type: "info" | "error", _input: string) => {
+      logPermissionEvent("mcp_app_permission_event", { sessionId: permissionLogId("mcp-app") });
     };
     if (typeof serverId !== "string" || !serverId.trim()) {
       return { ok: false, error: "invalid-server-id", message: "serverId must be a non-empty string" } satisfies McpUiDownloadOutcome;
@@ -1440,8 +1411,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         auditUnauthorized(auditLogger, CHANNELS.mcp.uiModelContext, e);
         return UNAUTHORIZED_FRAME;
       }
-      const auditContext = (type: "info" | "error", input: string) => {
-        auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "mcp-app", type, input });
+      const auditContext = (_type: "info" | "error", _input: string) => {
+        logPermissionEvent("mcp_app_permission_recheck", { sessionId: permissionLogId("mcp-app") });
       };
       if (typeof serverId !== "string" || typeof cardId !== "string") {
         return { ok: false, error: "invalid-binding", message: "serverId and cardId must be strings" } satisfies McpUiModelContextOutcome;
@@ -1602,16 +1573,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
     const kind = (payload as { kind?: unknown } | null | undefined)?.kind;
     if (typeof kind !== "string" || !NOTIFICATION_KINDS.has(kind as never)) {
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "ipc-bridge",
-        type: "warn",
-        input: JSON.stringify({
-          event: "notification.clicked.invalid-payload",
-          receivedKind: typeof kind === "string" ? kind.slice(0, 32) : typeof kind,
-          hasContextRef: typeof (payload as Record<string, unknown> | null | undefined)?.contextRef === "object",
-        }),
-      });
+      logPermissionEvent("notification_clear_refused", { sessionId: permissionLogId("ipc-bridge") }, "warn");
       return { ok: false, error: "invalid-payload" };
     }
     const clickPayload: { kind: NotificationKind; contextRef?: NotificationContextRef } = {

@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { BrowserSitePermissions } from "./browser-site-permissions.js";
 import { inspectShellPermissionPaths } from "./rules/literal-shell-inspection.js";
 import { isReadOnlyCommand } from "./reviewer/host-risk-inspector.js";
@@ -92,8 +93,6 @@ import {
   canonicalStringify,
   captureApprovalWorkingDirectory,
 } from "./user-approval-store.js";
-import { buildSandboxAuditEntry } from "../audit/sandbox-audit.js";
-import { emitSandboxAudit } from "../audit/sandbox-audit-sink.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
 import {
   isAdmissionDeniedPath,
@@ -2419,50 +2418,12 @@ export class PermissionManager {
     // Verdict reason redaction The classifier grades RAW input (see ReviewerDispatchInput.finalInput), so a classifier reason may echo argument text — and `reason` is display data: it is broadcast to the renderer as a permission-review event, recorded in the sandbox audit. The host does not trust a classifier to have redacted its own prose. Mask HERE, on the one path every sink downstream of this point shares. The verdict LEVEL, which is the only field any decision reads, is untouched.
     verdict = redactVerdictReason(verdict);
 
-    // Reviewer-dispatch audit emit Emit a sandbox audit entry for every dispatchReviewer call so the audit log captures reviewer composition signals + user-approval provenance. Failures are swallowed so audit never blocks tool execution. Record the SUBSTRATE-aware capability used for the final reviewer verdict (not the process-global) so the audit honestly reflects this call's execution substrate.
-    const sandboxCap = sandboxStateForAudit.capability;
-    const auditEntry = buildSandboxAuditEntry({
-      tool: {
-        name: toolName,
-        // emitSandboxAudit's sink trusts callers to pass DLP-redacted fields.
-        args: maskSensitiveData(
-          JSON.stringify(input.auditInput ?? input.finalInput),
-        ).masked,
-        source: input.source,
-        trustOrigin: input.trustOrigin,
-        ...(input.approvalCacheKey ? { approvalCacheKey: input.approvalCacheKey } : {}),
-      },
-      sandbox: {
-        kind: sandboxCap.kind,
-        confidence: sandboxCap.confidence,
-        events: [],
-        spawnLatencyMs: 0,
-        overheadPercent: 0,
-      },
-      reviewer: {
-        ruleVerdict: ruleVerdictForAudit ?? verdict.level,
-        llmVerdict: llmVerdictForAudit,
-        finalVerdict: verdict.level,
-        // A host-determined verdict deliberately skipped the LLM layer; record it here so an auditor can tell "review skipped by host policy" apart from "cache hit" and "non-LLM classifier", which also leave llmVerdict null.
-        compositionRulesTriggered: outcome === "host-determined"
-          ? [{
-              rule: "host-determined",
-              reason: "LLM review skipped by host policy — rule verdict is final by construction",
-            }]
-          : [],
-        userApprovalUsed: userApprovalUsed
-          ? {
-              ...userApprovalUsed,
-              nlJustification:
-                userApprovalUsed.nlJustification === null
-                  ? null
-                  : maskSensitiveData(userApprovalUsed.nlJustification).masked,
-            }
-          : null,
-      },
-    });
-    emitSandboxAudit(auditEntry).catch(() => {
-      // intentionally swallowed — audit failure must not block tool execution
+    logPermissionEvent("permission_reviewer_decision", {
+      tool: permissionLogId(toolName), source: input.source, trustOrigin: input.trustOrigin,
+      outcome, reviewerRisk: verdict.level, ruleRisk: ruleVerdictForAudit ?? verdict.level,
+      modelRisk: llmVerdictForAudit ?? undefined, cacheReason: cacheResult.reason,
+      approvalMemoryHit: userApprovalUsed?.memoryHit,
+      sandboxKind: sandboxStateForAudit.capability.kind,
     });
 
     return {

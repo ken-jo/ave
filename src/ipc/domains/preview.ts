@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 /**
  * Preview file-read domain IPC handlers.
  * Covers: ave:preview:read-file, ave:preview:read-document
@@ -19,7 +20,7 @@ import { promises as fs } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { auditUnauthorized } from "../gated.js";
 import { validateAppWindowMainFrameSender } from "../app-window-sender.js";
-import { redactFsPath } from "../../audit/dlp-filter.js";
+
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import {
@@ -270,16 +271,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
           // — a file left the sandbox boundary for display. The path is redacted
           // (username stripped) via the shared DLP filter, consistent with the
           // frame-guard audit above.
-          auditLogger.log({
-            timestamp: new Date().toISOString(),
-            sessionId: "preview-read",
-            type: "info",
-            input: JSON.stringify({
-              channel: CHANNELS.preview.readFile,
-              path: redactFsPath(resolved),
-              bytes: input?.length ?? stat.size,
-            }),
-          });
+          logPermissionEvent("preview_read_allowed", { sessionId: permissionLogId("preview-read"), channel: permissionLogId(CHANNELS.preview.readFile) });
           if (request && (request.controller.signal.aborted || textRequests.get(ownerKey!) !== request)) {
             return { ok: false, error: "read-failed", message: "Preview read was superseded." };
           }
@@ -375,17 +367,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
               auditUnauthorized(auditLogger, CHANNELS.preview.readDocument, e);
               return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
             }
-            auditLogger.log({
-              timestamp: new Date().toISOString(),
-              sessionId: "preview-read",
-              type: "info",
-              input: JSON.stringify({
-                channel: CHANNELS.preview.readDocument,
-                path: redactFsPath(resolved),
-                bytes: bytes.length,
-                sheetIndex,
-              }),
-            });
+            logPermissionEvent("preview_read_allowed", { sessionId: permissionLogId("preview-read"), channel: permissionLogId(CHANNELS.preview.readDocument) });
             const judge = (): PreviewReadDocumentResult | (() => ObservationBinding | undefined) => {
               const currentVerdict = checkPreviewReadPath(resolved);
               if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {

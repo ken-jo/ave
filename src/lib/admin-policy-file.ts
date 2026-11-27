@@ -1,17 +1,12 @@
+import { logPermissionEvent, permissionLogId } from "./permission-log.js";
 import { lstat, readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { readWindowsAdminPolicy } from "../shared/windows-admin-policy.js";
 import { checkAdminPolicyPath } from "../shared/ave-home-test-guard.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 
-let policyAuditLogger: Pick<AuditLogger, "log"> | undefined;
 
-export function initAdminPolicyAudit(logger: Pick<AuditLogger, "log">): void {
-  policyAuditLogger = logger;
-}
-
-export function auditAdminPolicyFailure(reason: string): void {
-  policyAuditLogger?.log({ timestamp: new Date().toISOString(), sessionId: "policy", type: "error", output: reason });
+export function auditAdminPolicyFailure(_reason: string): void {
+  logPermissionEvent("admin_policy_refused", { sessionId: permissionLogId("policy") }, "warn");
 }
 
 export async function readAdminPolicyFile(filePath: string): Promise<Buffer> {

@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { isSecuritySettingsPatch } from "../../shared/security-settings.js";
 import { broadcastSettingsSnapshot, rendererSettingsSnapshot } from "./settings.js";
@@ -12,7 +13,7 @@ import type { ApprovalPersistenceGuard } from "../../permissions/approval-persis
 import { RunGrantError, runGrantKeyOfSession } from "../../permissions/run-grants.js";
 import { loadPolicy, savePolicy, validatePolicyPatch, PolicyWriteError } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
-import { admitApprovalAnswer, UNATTRIBUTED_APPROVAL_SESSION_ID, type AnsweredRecord, type ApprovalDecision } from "../../permissions/approval-gate.js";
+import { admitApprovalAnswer, type AnsweredRecord, type ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
 import {
   UPSTREAM_PROXY_CREDENTIALS_SECRET,
@@ -136,7 +137,7 @@ function requireUserKeyboardIntent(payload: unknown): { ok: true } | { ok: false
 
 /** Run one review action; its known refusals reach the card as their own message, and every success is audited. */
 function homeTrustAction<T extends { ok: true; detail: Record<string, unknown> }>(
-  auditLogger: AuditLogger,
+  _auditLogger: AuditLogger,
   action: string,
   run: () => T,
 ): Omit<T, "detail"> | { ok: false; error: string; message: string } {
@@ -149,8 +150,7 @@ function homeTrustAction<T extends { ok: true; detail: Record<string, unknown> }
     throw error;
   }
   const { detail, ...reply } = result;
-  auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
-    output: JSON.stringify({ action, who: "user-ui", ...detail }) });
+  logPermissionEvent("home_trust_action", { action: permissionLogId(action) });
   return reply;
 }
 
@@ -241,14 +241,7 @@ function createPermissionReviewSuggestionTracker() {
       if (reason === null) return;
 
       lastSuggestedAt = now;
-      deps.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "permissions",
-        type: "approval",
-        output:
-          `[permission-review:suggest] reason=${reason} allowCount=${samples.length} ` +
-          `allowAlwaysCount=${allowAlwaysCount} windowMs=${REVIEW_SUGGESTION_WINDOW_MS}`,
-      });
+      logPermissionEvent("permission_review_suggestion", {  });
       broadcastPermissionReviewSuggestion(deps, {
         reason,
         allowCount: samples.length,
@@ -355,12 +348,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       // that depends on it; the rest of this snapshot (and every Settings section loaded beside it) still describes what the host does observe.
       const message = errorMessage(error);
       log.error("sandboxCapability: shell sandbox status contract violated: %s", message);
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "permissions",
-        type: "error",
-        output: `[sandbox-status:contract-violation] ${message}`,
-      });
+      logPermissionEvent("sandbox_status_contract_violation", {  }, "warn");
       shell = { state: "error", setting: storedShellSetting, envForced, causes: [] };
     }
     const privacyFailure = getAveHomePrivacyFailure();
@@ -455,12 +443,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         : scope === "project" ? { scope, origin: "shell", projectRoot: projectRoot as string, ...destination }
         : { scope, origin: origin as "shell" | "terminal", ...destination },
       );
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "settings",
-        type: "approval",
-        output: `[egress-grant:revoke] scope=${scope}${persistent ? ` origin=${String(origin)}` : ""} host=${host} port=${port} removed=${removed} closedConnections=${closed}${durabilitySyncFailed ? " durabilitySyncFailed=true" : ""}`,
-      });
+      logPermissionEvent("egress_grant_revoked", { scope, removed, closed, durabilitySyncFailed });
       // A removal that landed is a completed revoke; the failed sync is reported beside it, not as a failure.
       if (!removed) return { ok: false, error: "not-found", message: "revoke: no such grant" };
       return durabilitySyncFailed ? { ok: true, durabilitySyncFailed } : { ok: true };
@@ -503,7 +486,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const { restoreWatchedQuarantine } = await import("../../permissions/windows-watched-rows.js");
     try {
       const { restored } = await restoreWatchedQuarantine(slot, index);
-      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "settings", type: "approval", output: `[watched-quarantine:restore] slot=${slot} index=${index} restored=${JSON.stringify(restored)}` });
+      logPermissionEvent("watched_quarantine_restored", { slot: permissionLogId(slot), index });
       return { ok: true as const, restored };
     } catch (error) {
       return { ok: false as const, error: "watched-quarantine-restore-failed", message: errorMessage(error) };
@@ -587,15 +570,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     // `set` notifies the boot router, which drops its cached routes.
     const stored = normalizeUpstreamProxy(next);
     await deps.settingsService.set("upstreamProxy", stored);
-    auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "settings",
-      type: "approval",
-      output: `[upstream-proxy:set] mode=${stored.mode} manual=${stored.manualUrl === "" ? "-" : stored.manualUrl}`
-        + ` credentials=${credentialsChange}`
-        + ` bypassEntries=${stored.bypass === "" ? 0 : stored.bypass.split(",").filter((entry) => entry.trim() !== "").length}`
-        + ` resolvesNames=${stored.resolvesNames}`,
-    });
+    logPermissionEvent("upstream_proxy_changed", { mode: permissionLogId(stored.mode) });
     return {
       ok: true as const,
       view: await upstreamProxyView(),
@@ -666,41 +641,20 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       ? securitySettingsGestures.consume(event.sender, { channel: PERMISSIONS.updateSecuritySettings, payload: body.patch })
       : null;
     if (!gesture) {
-      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
-        input: JSON.stringify({ action: "security_settings_refused", reason: "user-keyboard-required" }) });
+      logPermissionEvent("security_settings_refused", { reasonCode: "user-keyboard-required" });
       return { ok: false, error: "user-keyboard-required" };
     }
     if (!isSecuritySettingsPatch(body.patch)) return { ok: false, error: "invalid-security-settings" };
     const patch = body.patch;
     const write = securitySettingsWrite.then(async () => {
-      const previous = deps.settingsService.getAll();
-      const changes = Object.entries(patch).flatMap(([group, fields]) => Object.entries(fields).map(([key, value]) => ({
-        path: `${group}.${key}`, previous: (previous[group as "features" | "system"] as unknown as Record<string, unknown>)[key], value,
-      })));
-      const record = (phase: string) => auditLogger.append({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
-        input: JSON.stringify({ action: "security_settings_changed", phase, changes, gestureSequence: gesture.sequence, gesturePayloadDigest: gesture.payloadDigest }) });
-      try { await record("requested"); } catch (error) {
-        log.warn({ err: error }, "Security settings audit is unavailable");
-        return { ok: false, error: "security-settings-audit-unavailable" };
-      }
+      logPermissionEvent("security_settings_changed", { phase: "requested", groupCount: Object.keys(patch).length });
       const updated = await deps.settingsService.patch(patch.system === undefined
         ? { features: patch.features }
         : { features: patch.features, system: {
           closeBehavior: deps.settingsService.getAll().system.closeBehavior,
           ...patch.system,
         } });
-      try { await record("committed"); } catch (error) {
-        const rollback = Object.fromEntries(Object.entries(patch).map(([group, fields]) => [group,
-          Object.fromEntries(Object.keys(fields).map((key) => [key, (previous[group as "features" | "system"] as unknown as Record<string, unknown>)[key]])),
-        ]));
-        try { await deps.settingsService.patch(rollback); } catch (rollbackError) {
-          log.error({ err: rollbackError, auditError: error }, "Security settings rollback failed");
-          return { ok: false, error: "security-settings-rollback-failed" };
-        }
-        await deps.refreshSandboxNetworkConfig?.();
-        await broadcastSettingsSnapshot(deps);
-        return { ok: false, error: "security-settings-audit-unavailable" };
-      }
+      logPermissionEvent("security_settings_changed", { phase: "committed", groupCount: Object.keys(patch).length });
       await deps.refreshSandboxNetworkConfig?.();
       await broadcastSettingsSnapshot(deps);
       return rendererSettingsSnapshot(deps.settingsService, updated);
@@ -1043,8 +997,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const history = conversationLoop.permissionManager?.getRecentlyDenied();
     if (!history) return { ok: false, error: "rerun-unavailable" };
     const result = await history.rerun(body.id);
-    auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
-      output: JSON.stringify({ action: "recently_denied_rerun", id: body.id, ok: result.ok }) });
+    logPermissionEvent("recently_denied_rerun", { requestId: permissionLogId(body.id) });
     return result;
   });
 
@@ -1091,9 +1044,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         return { ok: false, error: error === "hook-review-stale" || error === "managed-hook-policy"
           ? error : "hook-review-failed" };
       }
-      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
-        output: JSON.stringify({ action: "hook_trust_reviewed", sourceId: body.sourceId,
-          fileName: body.fileName, sha256: body.expectedSha256, decision: body.action }) });
+      logPermissionEvent("hook_trust_reviewed", {  });
       return { ok: true };
     } catch {
       return { ok: false, error: "hook-review-failed" };
@@ -1202,11 +1153,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       }
       const manager = conversationLoop.permissionManager;
       const auditRuleSave: NonNullable<Parameters<typeof saveApprovalCardRule>[5]> = async (rule) => {
-        await auditLogger.append({
-          timestamp: new Date().toISOString(),
-          sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:remembered] store=rules decision=${rule.action} scope=${rule.scope} rule=${JSON.stringify(rule.pattern)} edited=${rule.edited} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
+        logPermissionEvent("approval_remembered", {
+          sessionId: permissionLogId(snapshot.sessionId), requestId: permissionLogId(requestId),
+          tool: permissionLogId(snapshot.toolName), source: snapshot.source, decision: rule.action,
+          scope: rule.scope, store: "rules", edited: rule.edited,
         });
       };
       if (defersAllowSave && manager !== undefined) {
@@ -1299,11 +1249,9 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       // contribution is reduced to decision metadata; the exact tool/input identity remains host-owned.
       const store = async (guard: ApprovalPersistenceGuard, audited?: () => void): Promise<void> => {
         if (readjudicate) {
-          await auditLogger.append({
-            timestamp: new Date().toISOString(),
-            sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-            type: "approval",
-            output: `[approval:readjudication] scope=${scope} rawVerdict=high effectiveVerdict=medium evidence=${JSON.stringify(snapshot.readjudication)}`,
+          logPermissionEvent("approval_readjudication", {
+            sessionId: permissionLogId(snapshot.sessionId), requestId: permissionLogId(requestId),
+            tool: permissionLogId(snapshot.toolName), scope, rawVerdict: "high", effectiveVerdict: "medium",
           });
         }
         audited?.();
@@ -1326,12 +1274,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         }, guard);
       };
       const remembered = (): void => {
-        if (!readjudicate) auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:remembered] store=exact decision=${decision} scope=${scope} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
-        });
+        if (!readjudicate) logPermissionEvent("approval_remembered", { sessionId: permissionLogId(snapshot.sessionId), requestId: permissionLogId(requestId), tool: permissionLogId(snapshot.toolName), source: snapshot.source, decision, scope, store: "exact" });
         // User-approval store mutation; outside PermissionManager, so emit the broadcast explicitly to keep the Active Approvals view in multi-window PermissionsTab fresh.
         broadcastPermissionConfigChanged(deps);
       };

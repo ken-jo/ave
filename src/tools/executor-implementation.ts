@@ -1,4 +1,4 @@
-import { admitToolInvocationWhileAuditOpen, claimAtToolInvocationSeal, toolInvocationsSealed } from "./invocation-ledger.js";
+import { admitToolInvocationWhileOpen, claimAtToolInvocationSeal, toolInvocationsSealed } from "./invocation-ledger.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { t } from "../i18n/index.js";
 import { randomUUID } from "node:crypto";
@@ -39,7 +39,6 @@ import type {
 } from "./executor-contract.js";
 import type { ToolCategory, ToolSource } from "./types.js";
 import { runToolInvocation, type HostTerminalReapproval } from "./invocation-runner.js";
-import { createLogger } from "../lib/logger.js";
 import {
   resolvePluginOperation,
 } from "./plugin-operation-governance.js";
@@ -52,14 +51,12 @@ import type { PluginRuntimeGenerationAccess } from "../plugins/plugin-host-gener
 import type { PluginOperationIdentityProvider } from "./invocation-services.js";
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 
-const log = createLogger("executor");
 /**
  * One-time guard for the shadow-sink construction warning. Process-wide so the
  * observed-effect dataset's deliverability is flagged at most
  * once even when many ToolExecutors are constructed (boot wires one production
  * executor; tests construct many). See {@link ToolExecutor.warnIfShadowSinkUnwired}.
  */
-let shadowSinkWarningEmitted = false;
 
 interface RationaleBatchExecutionContext {
   runtime: RationaleHostRuntime;
@@ -107,7 +104,6 @@ export class ToolExecutor {
   private readonly permissionManager?: PermissionManager;
   private readonly approvalGate?: ApprovalGate;
   private readonly auditLogger: AuditLogger;
-  private readonly requirePermissionAuditChain: boolean;
   private readonly rateLimiter = new RateLimiter();
   private readonly bashAstValidator?: BashAstValidator;
   private readonly scriptHookManager?: ScriptHookManager;
@@ -145,36 +141,11 @@ export class ToolExecutor {
     this.pluginGenerationAccessProvider = pluginGenerationAccessProvider ?? (() => undefined);
     this.pluginOperationIdentityProvider =
       pluginOperationIdentityProvider ?? (() => undefined);
-    this.requirePermissionAuditChain = auditLogger?.isPermissionAuditChainReady() === true;
     this.auditWriter = new AuditWriter(
       this.auditLogger,
       this.toolRegistry,
       this.scriptHookManager,
-      this.requirePermissionAuditChain,
     );
-    this.warnIfShadowSinkUnwired(auditLogger === undefined);
-  }
-
-  private warnIfShadowSinkUnwired(unwired: boolean): void {
-    if (shadowSinkWarningEmitted) return;
-    try {
-      if (unwired) {
-        shadowSinkWarningEmitted = true;
-        log.warn(
-          "[permission-shadow] ToolExecutor constructed without an AuditLogger — the host-effect reconciliation dataset is routed to a fresh fallback channel; verify the production executor wires the shared AuditLogger.",
-        );
-        return;
-      }
-      if (!this.auditLogger.isShadowChannelWritable()) {
-        shadowSinkWarningEmitted = true;
-        log.warn(
-          "[permission-shadow] observed-effect channel is unwritable (%s) — effect records will be silently dropped.",
-          this.auditLogger.getPermissionShadowLogFile(),
-        );
-      }
-    } catch {
-      // A detectability probe must never break ToolExecutor construction.
-    }
   }
 
   getHookRunner(): HookRunner {
@@ -728,7 +699,7 @@ export class ToolExecutor {
     // Sealed-but-open work is admitted and writes its host-shutdown row; only a closed audit refuses without one.
     // A sealed start takes back the attempt its rationale card held.
     const signals = [opts.abortSignal, turnExtensionPolicyContext.getStore()?.abortSignal];
-    const admission = admitToolInvocationWhileAuditOpen(toolUse.name, AbortSignal.any(signals.filter((signal) => signal !== undefined)),
+    const admission = admitToolInvocationWhileOpen(toolUse.name, AbortSignal.any(signals.filter((signal) => signal !== undefined)),
       rationaleResumeContext ? toolUse.id : undefined);
     if (!admission) {
       return { result: {
@@ -750,7 +721,6 @@ export class ToolExecutor {
           permissionManager: this.permissionManager,
           approvalGate: this.approvalGate,
           auditLogger: this.auditLogger,
-          requirePermissionAuditChain: this.requirePermissionAuditChain,
           rateLimiter: this.rateLimiter,
           bashAstValidator: this.bashAstValidator,
           scriptHookManager: this.scriptHookManager,

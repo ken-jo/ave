@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 
 
 
@@ -38,7 +39,7 @@ let runtimeRootFailure: string | undefined;
 
 export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSignal): Promise<void> {
   startupSignal?.throwIfAborted();
-  const { settingsService, bootAuditLogger, buildWorkerEgressAllowlists } = ctx;
+  const { settingsService, buildWorkerEgressAllowlists } = ctx;
   // Sandbox HOMEs are made whether or not the gate activates, so their parent is established here, on every Windows start,
   // before anything can ask for a HOME; a root that cannot be proved private leaves every HOME refused.
   // The sweep is not awaited: the in-use set and live owner markers keep this process's HOMEs, and a slow probe must not hold boot.
@@ -61,8 +62,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
   }
   setAveHomePrivacyRefusalReporter((message) => {
     log.warn(message);
-    bootAuditLogger.log({ timestamp: new Date().toISOString(), sessionId: "extensions", type: "error",
-      output: `[ave_home_privacy_refused] ${message}` });
+    logPermissionEvent("ave_home_privacy_refused", { sessionId: permissionLogId("extensions") }, "warn");
   });
 
   // On macOS/Linux, failed explicit activation aborts; failed settings activation warns and continues without isolation.
@@ -137,12 +137,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
       dependencyErrors: readonly string[] = [],
       causes: readonly SandboxStartFailureCause[] = [],
     ): void => {
-      bootAuditLogger.logSandboxGate({
-        platform: process.platform,
-        onSignal: sandboxGateOnSignal,
-        outcome,
-        reason,
-      });
+      logPermissionEvent("sandbox_gate", { platform: process.platform, onSignal: sandboxGateOnSignal, outcome, reason }, outcome === "abort" || outcome === "degrade" ? "warn" : "info");
       setSandboxBootOutcome({
         action: outcome,
         reason,
@@ -241,7 +236,6 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
           `Missing: ${deps.errors.join("; ")}`;
         log.error(message);
         recordGate("abort", decision.reason, deps.errors, dependencyCauses);
-        await bootAuditLogger.flush();
         throw new Error(message);
       } else if (decision.action === "degrade") {
         // Failed settings activation warns and leaves isolation inactive; never publish a capability that did not initialize.
@@ -511,7 +505,6 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
                   `Cause: ${cause}`,
               );
               recordGate("abort", failureReason, [cause], failureCauses);
-              await bootAuditLogger.flush();
               throw initErr;
             }
             // Settings activation and Windows errors warn and continue without isolation.

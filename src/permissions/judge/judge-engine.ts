@@ -1,6 +1,7 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 // Judges cannot decide strict mode or capability grants and cannot override earlier floors/rules/matrix decisions. Run stages in order; ask, missing/low confidence and failures escalate.
 // Only a confident final allow/deny applies; unresolved or failed chains ask foreground and deny headless, never allow by fallback. Count final denials only; shadow mode audits without changing permission or writing rules.
-import { randomUUID } from "node:crypto";
+
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -19,7 +20,7 @@ import {
   type RedactedJudgeRequest,
 } from "./judge-contract.js";
 import type { JudgeCircuitBreaker } from "./judge-breaker.js";
-import { judgeArgsHash, redactJudgeRequest, redactJudgeText } from "./judge-redaction.js";
+import { redactJudgeRequest, redactJudgeText } from "./judge-redaction.js";
 import { formatJudgeModel, type JudgeMode, type JudgeSettings, type JudgeStageSettings } from "./judge-settings.js";
 
 type PriorRuleDecision = "allow" | "ask" | "deny" | "undecided";
@@ -339,29 +340,6 @@ async function runChain(
   };
 }
 
-async function writeAudit(deps: JudgeEngineDeps, request: JudgeRequest, record: JudgeAuditRecord): Promise<void> {
-  if (!record.applied) {
-    deps.audit.logShadow({
-      timestamp: record.ts,
-      sessionId: record.session,
-      type: "info",
-      input: `permission-judge ${record.tool} decision=${record.decision} applied=false`,
-      output: JSON.stringify(record),
-    });
-    return;
-  }
-  await deps.audit.appendPermissionAuditEntry({
-    decision: "judge",
-    ts: record.ts,
-    auditId: randomUUID(),
-    trustOrigin: request.invocation.trustOrigin,
-    tool: request.invocation.toolName,
-    source: request.invocation.source,
-    category: request.invocation.category,
-    judgeRecord: record,
-  });
-}
-
 // Decide what the judge contributes to one tool call. Returns `judged: false` when the judge must not run; the caller then continues exactly as without a judge. Throws only for internal contract violations or a caller abort.
 export async function resolveJudge(
   gate: JudgeGate,
@@ -467,37 +445,20 @@ export async function resolveJudge(
   }
   const deniedWithoutApprover = applied && headless && decision !== "allow";
 
-  // The audit always describes the call that executes, not the judge's view.
   const redacted = redactJudgeRequest(request);
   const safeRationale = redactJudgeText(rationale, 2_000);
-  await writeAudit(deps, request, {
-    event: "permission-judge",
-    ts: new Date(started).toISOString(),
-    session: request.sessionId,
-    invocationId: request.invocationId,
-    lane: request.lane,
-    mode,
-    tool: request.invocation.toolName,
+  logPermissionEvent("permission_judge", {
+    sessionId: permissionLogId(request.sessionId),
+    invocationId: permissionLogId(request.invocationId),
+    tool: permissionLogId(request.invocation.toolName),
     category: request.invocation.category,
-    argsHash: judgeArgsHash(redacted),
-    redactedRequest: redacted,
-    judge: decidedBy ? { id: decidedBy.settings.id, version: decidedBy.judge?.version ?? "unknown" } : null,
-    verdictDecision: verdict?.decision ?? null,
-    stages,
-    decision,
-    applied,
-    source,
-    rationale: safeRationale,
+    lane: request.lane, mode, decision, applied, source, fallback, breakerTripped,
     latencyMs: Math.max(0, now() - started),
-    fallback: fallback ?? null,
-    breakerTripped,
-    ...(pause ? { pause } : {}),
-    ...(redactedKeys.length > 0 ? { policyRedactedKeys: [...redactedKeys] } : {}),
-  });
+    trustOrigin: request.invocation.trustOrigin,
+  }, fallback ? "warn" : "info");
   if (signal?.aborted) throw signal.reason;
 
-  // A sibling review can trip the shared breaker while this call awaits its
-  // audit write. Publish a recorded pause instead of a stale automatic allow.
+  // A sibling review can trip the shared breaker while evaluation is pending.
   if (applied && source === "judge" && deps.breaker.isOpen(request.sessionId)) {
     return resolveJudge(gate, request, deps, signal);
   }

@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 /** Create signed artifact stores only when verified downloads are available. */
 import { McpGovernance } from "../../mcp/mcp-governance.js";
 import { McpManager } from "../../mcp/mcp-manager.js";
@@ -18,10 +19,7 @@ export async function setupMcp(ctx: BootContext): Promise<void> {
   // Route server elicitation through the host approval gate.
   const mcpInputResolverFactory = createElicitationResolverFactory({
     approvalGate,
-    onApprovalFailure: (requestId, outcome) => bootAuditLogger.log({
-      timestamp: new Date().toISOString(), sessionId: "mcp-elicitation", type: "approval",
-      input: `[mcp-elicitation] request=${requestId}`, output: `approval=${outcome}`,
-    }),
+    onApprovalFailure: (requestId, outcome) => logPermissionEvent("mcp_elicitation_refused", { sessionId: permissionLogId("mcp-elicitation"), requestId: permissionLogId(requestId), outcome: permissionLogId(outcome) }, "warn"),
   });
   const mcpManager = new McpManager(
     mcpGovernance,

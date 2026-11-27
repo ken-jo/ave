@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 
 
 
@@ -26,18 +27,6 @@ export interface RedactResult {
   totalCount: number;
 }
 
-let _auditLogger: { log: (e: { timestamp: string; sessionId: string; type: "dlp"; dlp: { byKind: Record<string, number>; totalRedactions: number; turnId: string } }) => void } | null = null;
-type DlpAuditSessionSource = string | (() => string);
-let _sessionId: DlpAuditSessionSource = "unknown";
-
-export function initDlpAudit(
-  auditLogger: typeof _auditLogger,
-  sessionId: DlpAuditSessionSource,
-): void {
-  _auditLogger = auditLogger;
-  _sessionId = sessionId;
-}
-
 export function redactForLLM(text: string, turnId?: string): RedactResult {
   const counts: Record<string, number> = {};
   const bump = (k: string) => (counts[k] = (counts[k] ?? 0) + 1);
@@ -55,18 +44,8 @@ export function redactForLLM(text: string, turnId?: string): RedactResult {
   }
 
   const totalCount = Object.values(counts).reduce((a, b) => a + b, 0);
-  if (totalCount > 0 && _auditLogger) {
-    _auditLogger.log({
-      timestamp: new Date().toISOString(),
-      // Resolve session getters at each hit so new or resumed sessions receive correct attribution.
-      sessionId: typeof _sessionId === "function" ? _sessionId() : _sessionId,
-      type: "dlp",
-      dlp: {
-        byKind: counts,
-        totalRedactions: totalCount,
-        turnId: turnId ?? `turn-${Date.now()}`,
-      },
-    });
+  if (totalCount > 0) {
+    logPermissionEvent("dlp_redaction", { turnId: permissionLogId(turnId), totalRedactions: totalCount });
   }
   return { redacted: out, counts, totalCount };
 }

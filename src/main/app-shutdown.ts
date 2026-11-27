@@ -1,4 +1,4 @@
-import { beginToolInvocationAuditShutdown, drainToolInvocationAuditForExit, pendingToolInvocationCount, sealToolInvocations, unsettledTerminalTools } from "../tools/invocation-ledger.js";
+import { beginToolInvocationShutdown, drainToolInvocationsForExit, pendingToolInvocationCount, sealToolInvocations, unsettledTerminalTools } from "../tools/invocation-ledger.js";
 import type { BootHost } from "../boot/host-runtime.js";
 import { browserTabRegistry } from "./browser/browser-tab-registry.js";
 // Ordered teardown runs under a hard deadline so a wedged subsystem cannot hang app.quit(). Unordered cleanup belongs in registerShutdownHook instead of
@@ -268,7 +268,7 @@ export async function runAppShutdownCleanup(options: {
   if (appShutdownCleanupPromise) return appShutdownCleanupPromise;
 
   setAppShutdownStarted(true);
-  beginToolInvocationAuditShutdown();
+  beginToolInvocationShutdown();
   sealMxcHolderLifetimeAdmission(options.reason);
   sealManagedChildProcessAdmission(options.reason);
   const cleanupTimeoutMs = resolveShutdownCleanupTimeoutMs(
@@ -406,9 +406,8 @@ export async function runAppShutdownCleanup(options: {
     if (result.status !== "completed") heldStop.abort();
     if (!svc) return finishIncompleteBootShutdown(result);
 
-    const auditLogger = svc.auditLogger;
     const cardGates = [svc.approvalGate, svc.askUserQuestionGate];
-    const closeAuditAfterForceKill = async (): Promise<void> => {
+    const drainAfterForceKill = async (): Promise<void> => {
       // The graceful deadline also bounds audit draining. Claimed queued tools start inside the seal and queue their
       // host-shutdown rows before the close below, which drains them; dropping the claims would lose those rows.
       try { sealToolInvocations(); } catch (error) {
@@ -422,12 +421,11 @@ export async function runAppShutdownCleanup(options: {
       }
       // Executors still parked cannot resume: the host enqueues their terminal rows, the sink closes after every enqueued
       // append, and a commit the reserve cannot cover is logged as its own audit failure before exit.
-      const outcome = await drainToolInvocationAuditForExit(
-        () => auditLogger.close(),
+      const outcome = await drainToolInvocationsForExit(
         options.auditCommitReserveMs ?? FORCED_AUDIT_COMMIT_RESERVE_MS,
       );
       if (outcome !== "committed") {
-        log.error({ outcome, ...unsettledTerminalTools() }, "permission audit terminal rows did not commit before exit");
+        log.error({ outcome, ...unsettledTerminalTools() }, "permission terminal rows did not settle before exit");
       }
     };
 
@@ -435,7 +433,7 @@ export async function runAppShutdownCleanup(options: {
       const pendingToolInvocations = pendingToolInvocationCount();
       // Force-kill BEFORE the log line so killedChildCount reflects what actually happened, not an optimistic pre-kill count.
       const killedChildCount = forceKillManagedChildProcesses(`${options.reason} cleanup timeout`);
-      await closeAuditAfterForceKill();
+      await drainAfterForceKill();
       await releaseOsSandboxAfterIncompleteShutdown(`${options.reason} cleanup timeout`);
       await shutdownHost?.close();
       log.error({
@@ -461,7 +459,7 @@ export async function runAppShutdownCleanup(options: {
       // A failed lifecycle stage may have prevented a runtime-owned child from acknowledging its graceful stop. The normal stop ran in the cleanup finally
       // block; this is only the last-resort descendant-safe backstop.
       const killedChildCount = forceKillManagedChildProcesses(`${options.reason} cleanup failed`);
-      await closeAuditAfterForceKill();
+      await drainAfterForceKill();
       await releaseOsSandboxAfterIncompleteShutdown(`${options.reason} cleanup failed`);
       await shutdownHost?.close();
       log.error(

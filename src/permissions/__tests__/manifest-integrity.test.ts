@@ -4,7 +4,7 @@ import * as nodeFs from "node:fs";
 import {
   ManifestIntegrityError,
   ManifestIntegrityState,
-  bindManifestIntegrityAudit,
+  bindManifestIntegrityLogging,
   createReadOnlyFsProxy,
   createReadOnlyFsPromisesProxy,
   manifestIntegrityState,
@@ -112,68 +112,33 @@ describe("Permission policy P4 ManifestIntegrityState", () => {
   });
 });
 
-describe("Permission policy P4 bindManifestIntegrityAudit", () => {
-  it("fails closed when the permission audit chain is not ready", async () => {
+describe("manifest quarantine logging", () => {
+  it("logs the operation and disables the plugin", async () => {
     const state = new ManifestIntegrityState();
-    const audit = {
-      log: vi.fn(),
-      isPermissionAuditChainReady: vi.fn(() => false),
-      appendPermissionAuditEntry: vi.fn(async () => {
-        throw new Error("permission audit chain not initialized");
-      }),
-    } as unknown as import("../../audit/audit-logger.js").AuditLogger;
-    bindManifestIntegrityAudit(audit, state);
-    await expect(state.recordViolation("p", "tool_x", "writeFileSync")).rejects.toThrow(
-      "permission audit chain not initialized",
-    );
-    expect(audit.log).toHaveBeenCalledOnce();
-    const entry = (audit.log as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(entry.type).toBe("error");
-    expect(entry.input).toContain("manifest_integrity_violation");
-    expect(entry.input).toContain("tool_x");
-    expect(audit.appendPermissionAuditEntry).toHaveBeenCalledOnce();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      bindManifestIntegrityLogging(state);
+      await state.recordViolation("p", "tool_x", "writeFileSync");
+      expect(state.isDisabled("p")).toBe(true);
+      expect(warning).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+        event: "manifest_integrity_violation", pluginId: "p", tool: "tool_x",
+        operation: "writeFileSync", trustOrigin: "plugin-emitted",
+      }));
+    } finally {
+      warning.mockRestore();
+    }
   });
 
-  it("appends manifest_violation to the permission audit chain when ready", async () => {
+  it("keeps the plugin quarantined when its log sink throws", async () => {
     const state = new ManifestIntegrityState();
-    const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
-      ...entry,
-      prevHash: "h",
-    }));
-    const audit = {
-      log: vi.fn(),
-      isPermissionAuditChainReady: vi.fn(() => true),
-      appendPermissionAuditEntry,
-    } as unknown as import("../../audit/audit-logger.js").AuditLogger;
-
-    bindManifestIntegrityAudit(audit, state);
-    await state.recordViolation("p", "tool_x", "writeFileSync");
-    expect(appendPermissionAuditEntry).toHaveBeenCalledOnce();
-    expect(appendPermissionAuditEntry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        decision: "manifest_violation",
-        pluginId: "p",
-        toolName: "tool_x",
-        attemptedOperation: "writeFileSync",
-        trustOrigin: "plugin-emitted",
-      }),
-    );
-  });
-
-  it("surfaces permission audit append failures to the violation caller", async () => {
-    const state = new ManifestIntegrityState();
-    const audit = {
-      log: vi.fn(),
-      isPermissionAuditChainReady: vi.fn(() => true),
-      appendPermissionAuditEntry: vi.fn(async () => {
-        throw new Error("append failed");
-      }),
-    } as unknown as import("../../audit/audit-logger.js").AuditLogger;
-
-    bindManifestIntegrityAudit(audit, state);
-
-    await expect(state.recordViolation("p", "tool_x", "writeFileSync")).rejects.toThrow("append failed");
-    expect(state.isDisabled("p")).toBe(true);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => { throw new Error("sink unavailable"); });
+    try {
+      bindManifestIntegrityLogging(state);
+      await state.recordViolation("p", "tool_x", "writeFileSync");
+      expect(state.isDisabled("p")).toBe(true);
+    } finally {
+      warning.mockRestore();
+    }
   });
 });
 

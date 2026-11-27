@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 // Use the shared secret gate; check static grants before active-vendor state to avoid leaking it through denial reasons. Normalize public vendor aliases
 // at entry and release resolved bearers in finally or on cancellation.
 import type { SettingsService } from "../../data/settings-store.js";
@@ -75,14 +76,9 @@ export function normalizeVendor(v: string): string {
   return VENDOR_ALIAS_MAP[v] ?? v;
 }
 
-function audit(deps: ResolveApiKeyDeps, level: "info" | "warn", message: string): void {
+function audit(deps: ResolveApiKeyDeps, _level: "info" | "warn", _message: string): void {
   try {
-    deps.auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "plugin",
-      type: level,
-      input: `[plugin:${deps.pluginId}] ${message}`,
-    });
+    logPermissionEvent("plugin_secret_access", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(deps.pluginId) });
   } catch {
     // audit must not break host
   }

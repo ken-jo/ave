@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import type { AppServices } from "../boot.js";
@@ -196,17 +197,12 @@ function buildBinding(
 }
 
 function writeAudit(
-  services: CreateA2ALoopbackRuntimeOptions["services"],
-  input: string,
+  _services: CreateA2ALoopbackRuntimeOptions["services"],
+  _input: string,
   sessionId = "a2a-loopback",
 ): void {
   try {
-    services.auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId,
-      type: "warn",
-      input,
-    });
+    logPermissionEvent("local_agent_delivery_refused", { sessionId: permissionLogId(sessionId) }, "warn");
   } catch {
     // Audit failure must not alter the fail-closed wire decision.
   }

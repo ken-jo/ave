@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 // Side chat owns independent loops and streams; never mutate the main conversation.
 import { ipcMain } from "electron";
 import { controlShellTask, listShellTasks } from "../../tools/shell-tools.js";
@@ -57,7 +58,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     const sessionId = shellTaskSession(e.sender, expectedSessionId);
     if (sessionId === null) return { ok: false, error: "session-changed" };
     const result = controlShellTask(sessionId, action, shellId as string | undefined);
-    auditLogger.log({ timestamp: new Date().toISOString(), sessionId, type: "info", input: JSON.stringify({ event: "shell_task_control", action, ok: result.ok }) });
+    logPermissionEvent("shell_task_control", { sessionId: permissionLogId(sessionId), action: permissionLogId(action), ok: result.ok });
     return result;
   });
 

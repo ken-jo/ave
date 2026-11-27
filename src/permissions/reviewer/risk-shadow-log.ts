@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 // Observed-effect records use the dedicated non-HMAC shadow channel; emission never changes permission.
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { EffectSummary } from "../effect-ledger.js";
@@ -14,31 +15,16 @@ type EffectShadowRecord = ({ toolName: string; source: ToolSource; pluginId?: st
 // Record host-observed effects for later read recognition; unobservable empty ledgers cannot prove a read.
 export function emitEffectShadowLog(
   record: EffectShadowRecord,
-  auditLogger: Pick<AuditLogger, "logShadow">,
+  _auditLogger: Pick<AuditLogger, "logShadow">,
 ): void {
-  const { correlationId, hasMutatingEffect, effects, observationIncomplete } = record.hostObservedEffect;
-  const subject = "toolName" in record ? { toolName: record.toolName } : { hostApiPath: record.hostApiPath };
-  const label = "toolName" in subject ? subject.toolName : `unattributed ${subject.hostApiPath}`;
-  const fields = {
-    event: "effect-shadow",
-    ...subject,
+  const { hasMutatingEffect, effects, observationIncomplete } = record.hostObservedEffect;
+  logPermissionEvent("permission_effect_observed", {
+    tool: "toolName" in record ? permissionLogId(record.toolName) : undefined,
     source: record.source,
-    ...(record.pluginId ? { pluginId: record.pluginId } : {}),
+    pluginId: permissionLogId(record.pluginId),
     hostObservable: record.hostObservable,
     hasMutatingEffect,
-    effects,
-    correlationId,
-    ...(observationIncomplete ? { observationIncomplete } : {}),
-  };
-  try {
-    auditLogger.logShadow({
-      timestamp: new Date().toISOString(),
-      sessionId: "permission-shadow",
-      type: "info",
-      input: `effect-shadow ${label} source=${record.source} hostObservable=${record.hostObservable} hasMutatingEffect=${hasMutatingEffect}`,
-      output: JSON.stringify(fields),
-    });
-  } catch {
-    // Shadow logging must never break a tool invocation.
-  }
+    effectCount: effects.length,
+    observationIncomplete,
+  });
 }

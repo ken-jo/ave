@@ -1,16 +1,14 @@
-import { appendDirectoryGrantRecord, appendToolInvocationAudit, recordToolInvocationAuditFailure, type DirectoryGrantRecord, type KindedTerminalRowWriter, type TerminalDenial, type TerminalDenyKind, type TerminalLifecycleEvent } from "../invocation-ledger.js";
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
+import { type KindedTerminalRowWriter, type TerminalDenial, type TerminalLifecycleEvent } from "../invocation-ledger.js";
 import type { ToolAuditTerminationReason } from "../../audit/audit-logger.js";
-import { approvalCancellationMessage } from "./approval-outcome.js";
 // Tool terminal rows go through auditToolCall with a row writer only the ledger hands out and the kind its writer named;
 // the ledger fires one PermissionDenied per permission-denial row, except for a governed tool, and none for a cancellation.
-import { randomUUID } from "node:crypto";
 import type { ToolRegistry } from "../registry.js";
 import type { ToolSource, ToolCategory, TrustLevel } from "../types.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import { answeredProvenanceRecord, answeredRecordForAction, provenanceTrustOrigin, type DecisionProvenance } from "../../permissions/approval-gate.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
-import { isPiiRedactionEnabled, maskSensitiveData } from "../../audit/dlp-filter.js";
 import type {
   ScriptHookManager,
   HookDispatchResult,
@@ -18,16 +16,12 @@ import type {
 import type { HookTrustOrigin, LifecycleEventPayload } from "../../hooks/script-hook-types.js";
 import { recordHookContext, recordHookExecutionAudit } from "../../hooks/hook-influence.js";
 import { currentToolExecutionCwd } from "../execution-context.js";
-import { createLogger } from "../../lib/logger.js";
 import type { ToolPermissionContext } from "../executor.js";
 import {
   auditTrustOrigin,
-  permissionAuditAskEntryFromToolCall,
   permissionAuditEntryFromToolCall,
 } from "./audit-entries.js";
-import { errorMessage } from "../../shared/error-message.js";
 
-const log = createLogger("executor");
 
 export function auditSafeToolInput(
   input: Record<string, unknown>,
@@ -49,7 +43,6 @@ export class AuditWriter {
     private readonly auditLogger: AuditLogger,
     private readonly toolRegistry: ToolRegistry,
     private readonly scriptHookManager: ScriptHookManager | undefined,
-    private readonly requirePermissionAuditChain: boolean,
   ) {}
 
   // Lifecycle hooks are observe-only: audit decisions but never alter tool control flow or propagate errors.
@@ -122,91 +115,32 @@ export class AuditWriter {
   }): Promise<void> {
     // A grant records only the answer that allowed this action.
     if (args.provenance.kind === "answered") answeredRecordForAction(args.provenance, "allow", args.toolName, args.audit?.toolUseId);
-    if (!this.auditLogger.isPermissionAuditChainReady()) {
-      if (this.requirePermissionAuditChain) {
-        const error = new Error("permission audit chain is not initialized");
-        recordToolInvocationAuditFailure(error);
-        throw error;
-      }
-      return;
-    }
-    const entry: DirectoryGrantRecord = {
-      decision: "allow",
-      ts: new Date().toISOString(),
-      auditId: randomUUID(),
-      tool: args.toolName,
-      source: args.source,
-      category: args.category,
-      directory: args.directory,
-      directoryAllowed: true,
-      ...(args.grantLifetime !== undefined ? { grantLifetime: args.grantLifetime } : {}),
-      ...(args.policyRule !== undefined ? { policyRule: args.policyRule } : {}),
-      ...(args.audit?.toolUseId !== undefined ? { toolUseId: args.audit.toolUseId } : {}),
-      ...(args.audit?.executionPlan !== undefined ? { executionPlan: args.audit.executionPlan } : {}),
-      ...(args.audit?.executionRoute !== undefined ? { executionRoute: args.audit.executionRoute } : {}),
+    logPermissionEvent("permission_directory_grant", {
+      tool: permissionLogId(args.toolName), source: args.source, category: args.category,
+      toolUseId: permissionLogId(args.audit?.toolUseId), grantLifetime: args.grantLifetime,
+      policyRule: permissionLogId(args.policyRule),
       trustOrigin: provenanceTrustOrigin(args.provenance, "allow", auditTrustOrigin(args.permissionContext)),
-    };
-    try {
-      await appendDirectoryGrantRecord(this.auditLogger, entry);
-    } catch (err) {
-      if (this.requirePermissionAuditChain) {
-        throw err;
-      }
-      log.warn(
-        "permission grant audit append failed for %s (%s): %s",
-        args.toolName,
-        args.grantLifetime ?? args.policyRule,
-        errorMessage(err),
-      );
-    }
+    });
   }
 
   async auditPermissionAsk(
     toolName: string,
     source: ToolSource,
     category: ToolCategory,
-    input: Record<string, unknown>,
+    _input: Record<string, unknown>,
     permission: PermissionCheckResult,
-    cwd: string,
+    _cwd: string,
     permissionContext?: ToolPermissionContext,
-    auditDirectory?: string,
+    _auditDirectory?: string,
     audit?: ToolExecutionAuditMetadata,
   ): Promise<void> {
-    // Governed-operation audit is metadata-only; never serialize presence, identity, reservation payloads, bearer, or account hash.
-    const auditSafeInput = auditSafeToolInput(input, audit);
-    const tool = this.toolRegistry.findByName(toolName);
-    const entry = permissionAuditAskEntryFromToolCall({
-      toolName,
-      tool,
-      source,
-      category,
-      input: auditSafeInput,
-      permission,
+    logPermissionEvent("permission_decision", {
+      tool: permissionLogId(toolName), toolUseId: permissionLogId(audit?.toolUseId),
+      attempt: audit?.attempt, source, category, decision: "ask",
       trustOrigin: auditTrustOrigin(permissionContext),
-      cwd,
-      auditDirectory,
-      audit,
+      provenance: permission.provenance?.kind,
+      sandboxRoute: audit?.executionRoute?.route ?? audit?.executionPlan?.substrate,
     });
-    if (!this.auditLogger.isPermissionAuditChainReady()) {
-      if (this.requirePermissionAuditChain) {
-        const error = new Error("permission audit chain is not initialized");
-        recordToolInvocationAuditFailure(error);
-        throw error;
-      }
-      return;
-    }
-    try {
-      await appendToolInvocationAudit(this.auditLogger, entry);
-    } catch (err) {
-      if (this.requirePermissionAuditChain) {
-        throw err;
-      }
-      log.warn(
-        "permission ask audit append failed for %s: %s",
-        toolName,
-        errorMessage(err),
-      );
-    }
   }
 
   async auditToolCall(
@@ -215,7 +149,7 @@ export class AuditWriter {
     source: ToolSource,
     trust: TrustLevel,
     input: Record<string, unknown>,
-    output: string,
+    _output: string,
     isError: boolean,
     startTime: number,
     permission: PermissionCheckResult,
@@ -230,41 +164,6 @@ export class AuditWriter {
     terminal?: KindedTerminalRowWriter,
   ): Promise<void> {
     if (!terminal) throw new Error(`terminal row of ${toolName} has no ledger writer`);
-    const governedTool = audit?.governedOperation !== undefined;
-    const auditSafeInput = auditSafeToolInput(input, audit);
-    const auditSafeOutput = governedTool
-      ? (isError ? "governed operation failed" : "governed operation completed")
-      : output;
-    const writeToolAudit = (denyKind: TerminalDenyKind | undefined, chainUnavailable: boolean) => {
-      const cancelled = denyKind === "cancelled";
-      // The privacy toggle governs audit PII masking; credentials are always scrubbed.
-      const auditInput = maskSensitiveData(JSON.stringify(auditSafeInput), {
-        pii: isPiiRedactionEnabled(),
-      }).masked;
-      return this.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: sessionId ?? "unknown",
-        type: "tool_call",
-        input: auditInput.slice(0, 500),
-        output: cancelled
-          ? approvalCancellationMessage(permission?.reasonCode === "approval-cancelled" ? permission.reason : undefined)
-          : auditSafeOutput.slice(0, 1024),
-        toolCalls: [{
-          name: toolName,
-          isError,
-          source,
-          trust,
-          executionTimeMs: Date.now() - startTime,
-          ...(audit?.toolUseId !== undefined ? { toolUseId: audit.toolUseId } : {}),
-          ...(audit?.executionPlan !== undefined ? { executionPlan: audit.executionPlan } : {}),
-          permissionDecision: denyKind === undefined ? permission?.decision ?? "allow" : cancelled ? "cancelled" : "deny",
-          permissionReason: permission?.reason,
-          ...(chainUnavailable ? { permissionAuditChainUnavailable: true } : {}),
-          rateLimitRemaining,
-          ...(terminationReason ? { terminationReason } : {}),
-        }],
-      });
-    };
     // Every terminal row is written; what the host could not resolve is recorded as unknown.
     const tool = this.toolRegistry.findByName(toolName);
     const entry = permissionAuditEntryFromToolCall({
@@ -272,7 +171,7 @@ export class AuditWriter {
       tool,
       source,
       category: category ?? "unknown",
-      input: auditSafeInput,
+      input,
       permission,
       rateLimitRemaining,
       trustOrigin: auditTrustOrigin(permissionContext),
@@ -281,37 +180,19 @@ export class AuditWriter {
       ...(hookChain ? { hookChain } : {}),
       audit,
     });
-    let generalWrite: Promise<void> | undefined;
-    const prepareAudit = (denyKind: TerminalDenyKind | undefined, writeGeneral: boolean) => {
-      const ready = this.auditLogger.isPermissionAuditChainReady();
-      const chainUnavailable = !ready && this.requirePermissionAuditChain;
-      if (writeGeneral) {
-        generalWrite = Promise.resolve(writeToolAudit(denyKind, chainUnavailable));
-        void generalWrite.catch(recordToolInvocationAuditFailure);
-      }
-      if (chainUnavailable) {
-        const error = new Error("permission audit chain is not initialized");
-        recordToolInvocationAuditFailure(error);
-        throw error;
-      }
-      return { logger: ready ? this.auditLogger : undefined, generalWrite };
+    const fields = {
+      sessionId: permissionLogId(sessionId),
+      isError,
+      trust,
+      elapsedMs: Date.now() - startTime,
+      provenance: permission.provenance?.kind,
+      reasonCode: permission.decision === "deny" ? permission.reasonCode : undefined,
+      terminationReason,
+      operation: permissionLogId(audit?.governedOperation),
     };
-    const appended = entry.decision === "deny"
-      ? terminal.row({ entry, kind: terminal.kind, prepareAudit, ...(permission?.decision === "deny" ? { reason: permission.reason } : {}),
-        humanAnswered: permission?.provenance.kind === "answered" && answeredProvenanceRecord(permission.provenance).trustOrigin !== "unknown" })
-      : terminal.row({ entry, prepareAudit });
-    try {
-      await appended;
-    } catch (err) {
-      if (this.requirePermissionAuditChain) {
-        throw err;
-      }
-      await generalWrite;
-      log.warn(
-        "permission audit append failed for %s: %s",
-        toolName,
-        errorMessage(err),
-      );
-    }
+    await (entry.decision === "deny"
+      ? terminal.row({ entry, kind: terminal.kind, fields, ...(permission.decision === "deny" ? { reason: permission.reason } : {}),
+        humanAnswered: permission.provenance?.kind === "answered" && answeredProvenanceRecord(permission.provenance).trustOrigin !== "unknown" })
+      : terminal.row({ entry, fields }));
   }
 }

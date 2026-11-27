@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { randomUUID } from "node:crypto";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import type { SettingsService } from "../data/settings-store.js";
@@ -12,7 +13,6 @@ import {
 import {
   canonicalizeAgentMessage,
   isSafeA2AMessageId,
-  sanitizeA2ALabel,
   wrapChildReportForParentJudgment,
 } from "./a2a-subagent-message-codec.js";
 
@@ -487,24 +487,11 @@ export class A2ASubAgentMessageBus {
   }
 
   private audit(type: "info" | "warn", input: DeliveryAuditInput, outcome: string): void {
-    const rawMessage = (input as { message?: unknown }).message;
-    const rawMessageId = rawMessage !== null
-      && typeof rawMessage === "object"
-      && !Array.isArray(rawMessage)
-      ? (rawMessage as { messageId?: unknown }).messageId
-      : undefined;
-    const messageId = isSafeA2AMessageId(rawMessageId) ? rawMessageId : "invalid";
-    const parentSessionId = typeof input.parentSessionId === "string"
-      ? input.parentSessionId
-      : "unknown";
-    const childSessionId = typeof input.childSessionId === "string"
-      ? sanitizeA2ALabel(input.childSessionId)
-      : "invalid";
-    this.deps.auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: parentSessionId || "unknown",
-      type,
-      input: `a2a:parent-delivery:${outcome}:child=${childSessionId}:message=${messageId}`,
-    });
+    logPermissionEvent("subagent_message_delivery", {
+      sessionId: permissionLogId(input.parentSessionId),
+      childSessionId: permissionLogId(input.childSessionId),
+      outcome: permissionLogId(outcome),
+    }, type);
   }
+
 }

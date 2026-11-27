@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 /** Wire loop-dependent services late; retain the event-bridge disposer for refresh and shutdown. */
 import { openOAuthLogin, type OpenOAuthLogin } from "../../main/oauth-login.js";
 import { createRoutineEngine } from "../routine.js";
@@ -82,7 +83,7 @@ export interface SubscriptionChatLoopBindings {
 }
 
 /** Accept normalized settings only; the shared runtime owns credentials and transport. */
-export function createSubscriptionChatLoopBindings(input: {
+export function createSubscriptionChatLoopBindings(_input: {
   readonly auditLogger: Pick<AuditLogger, "log">;
 }): SubscriptionChatLoopBindings {
   const openAuthorizationUrl: OpenOAuthLogin = async (url, options) => {
@@ -93,21 +94,8 @@ export function createSubscriptionChatLoopBindings(input: {
     await openOAuthLogin(validated.url, options);
   };
   const audit: SubscriptionRuntimeAuditSink = (event) => {
-    const requestKind = typeof event.requestKind === "string"
-      && /^[a-z-]{1,80}$/.test(event.requestKind)
-      ? event.requestKind
-      : undefined;
     try {
-      input.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "subscription-runtime",
-        type: "warn",
-        input: JSON.stringify({
-          provider: event.provider,
-          outcome: event.outcome,
-          ...(requestKind ? { requestKind } : {}),
-        }),
-      });
+      logPermissionEvent("subscription_runtime_warning", { sessionId: permissionLogId("subscription-runtime"), provider: permissionLogId(event.provider), outcome: permissionLogId(event.outcome) }, "warn");
     } catch {
       // Audit availability must not make the provider usable or unusable.
     }
@@ -656,12 +644,7 @@ export async function wireConversation(
           { itemId, change: "updated", changedAt: new Date().toISOString() } satisfies WorkItemChangedEventPayload, { logger: log });
         fanOutToAllWindows(windows, WORK_APPROVALS.changed, undefined, { logger: log });
       },
-      audit: ({ itemId, ...detail }) => bootAuditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: `work-board:${itemId}`,
-        type: "approval",
-        output: JSON.stringify(detail),
-      }),
+      audit: ({ itemId }) => logPermissionEvent("work_board_decision", { sessionId: permissionLogId(`work-board:${itemId}`) }),
     },
   });
   // Template runs after a restart: rows are shown as the run file says and unsettled runs are taken over. Nothing starts here.

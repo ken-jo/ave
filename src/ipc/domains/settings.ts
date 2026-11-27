@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { showNativeMessage, pickNativeFiles } from "../../main/desktop-approval-presentation.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { hasUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
@@ -377,14 +378,9 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     action: string,
     provider: SubscriptionRuntimeId | "api" | "invalid",
     outcome: "succeeded" | "failed" | "cancelled" | "rejected",
-    error?: SubscriptionRuntimeErrorCode,
+    _error?: SubscriptionRuntimeErrorCode,
   ): void => {
-    auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "subscription-runtime",
-      type: outcome === "succeeded" || outcome === "cancelled" ? "info" : "warn",
-      input: JSON.stringify({ action, provider, outcome, ...(error ? { error } : {}) }),
-    });
+    logPermissionEvent("subscription_runtime_outcome", { sessionId: permissionLogId("subscription-runtime"), action: permissionLogId(action), provider: permissionLogId(provider), outcome: permissionLogId(outcome) });
   };
   const openSubscriptionLogin: OpenOAuthLogin = async (url, options) => {
     const validated = validateExternalUrl(url);
@@ -409,16 +405,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   const resolveSubscriptionRuntime = (): Promise<SubscriptionRuntimeService> =>
     getSubscriptionRuntimeService(openSubscriptionLogin, {
       audit: (event) => {
-        auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "subscription-runtime",
-          type: "warn",
-          input: JSON.stringify({
-            provider: event.provider,
-            outcome: event.outcome,
-            ...(event.requestKind ? { requestKind: event.requestKind } : {}),
-          }),
-        });
+        logPermissionEvent("subscription_runtime_warning", { sessionId: permissionLogId("subscription-runtime"), provider: permissionLogId(event.provider), outcome: permissionLogId(event.outcome) }, "warn");
       },
     });
   const runSubscriptionAction = async (

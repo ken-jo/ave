@@ -15,7 +15,7 @@ import { formatJudgeModel, type JudgeModelRef } from "../../permissions/judge/ju
 import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
 import { wireJudgeAgent } from "./judge-wiring.js";
 import {
-  bindManifestIntegrityAudit,
+  bindManifestIntegrityLogging,
   manifestIntegrityState,
 } from "../../permissions/manifest-integrity.js";
 import { createLogger } from "../../lib/logger.js";
@@ -230,7 +230,7 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
   });
 
   // Audit integrity violations and notify through the live window getter so reloads do not strand events.
-  bindManifestIntegrityAudit(bootAuditLogger);
+  bindManifestIntegrityLogging();
   manifestIntegrityState.onViolation((pluginId, toolName, attempted) => {
     try {
       getMainWindow()?.webContents.send(PERMISSIONS.manifestViolation, {

@@ -1,6 +1,7 @@
+import { logPermissionEvent } from "../lib/permission-log.js";
 import type { IpcMainInvokeEvent } from "electron";
 import type { AuditLogger } from "../audit/audit-logger.js";
-import { redactFsPath } from "../audit/dlp-filter.js";
+
 
 // Accept only trusted packaged or local-dev frames; missing frames fail closed after navigation or destruction.
 export function validateSender(event: IpcMainInvokeEvent | null | undefined): boolean {
@@ -25,19 +26,11 @@ export function validateHostRendererSender(event: IpcMainInvokeEvent | null | un
 
 export const UNAUTHORIZED_FRAME = { ok: false, error: "unauthorized-frame" as const };
 
-// Redact filesystem identity from rejected-frame URLs before writing the shared audit entry.
+// Only log the channel for a rejected frame.
 export function auditUnauthorized(
-  auditLogger: AuditLogger,
+  _auditLogger: AuditLogger,
   channel: string,
-  event: IpcMainInvokeEvent,
+  _event: IpcMainInvokeEvent,
 ): void {
-  auditLogger.log({
-    timestamp: new Date().toISOString(),
-    sessionId: "ipc-guard",
-    type: "warn",
-    input: JSON.stringify({
-      channel,
-      frameUrl: redactFsPath(event?.senderFrame?.url ?? ""),
-    }),
-  });
+  logPermissionEvent("ipc_sender_refused", { channel }, "warn");
 }

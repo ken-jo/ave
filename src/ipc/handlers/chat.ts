@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 // Shared chat handlers remain transport-independent; wrappers own sender and gesture validation.
 import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { MAIN_CHAT_GROUP_ID } from "../../contract/app-contract.js";
@@ -89,12 +90,7 @@ export async function prepareParentMailboxTurn(deps: IpcDeps): Promise<ParentMai
   try {
     entries = await runner.peekParentMailbox(parentSessionId);
   } catch (err) {
-    deps.auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: parentSessionId,
-      type: "error",
-      input: `subagent-mailbox-peek-failed:${(err as Error).message}`,
-    });
+    logPermissionEvent("subagent_mailbox_peek_failed", { sessionId: permissionLogId(parentSessionId) }, "warn");
     return null;
   }
   if (
@@ -140,12 +136,7 @@ export async function acknowledgeParentMailboxAfterTurn(
   try {
     await runner.acknowledgeParentMailbox(mailboxTurn.parentSessionId, mailboxTurn.entryIds);
   } catch (err) {
-    deps.auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: mailboxTurn.parentSessionId,
-      type: "error",
-      input: `subagent-mailbox-ack-failed:${(err as Error).message}`,
-    });
+    logPermissionEvent("subagent_mailbox_ack_failed", { sessionId: permissionLogId(mailboxTurn.parentSessionId) }, "warn");
   }
 }
 
@@ -442,7 +433,7 @@ export async function handleChatSend(
   payload: unknown,
   ctx: ChatSendContext,
 ): Promise<ChatSendResult> {
-  const { conversationLoop, settingsService, auditLogger, personaPromptStore } = deps;
+  const { conversationLoop, settingsService, personaPromptStore } = deps;
   if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
     return { ok: false, error: "remote-controller-revoked" };
   }
@@ -474,12 +465,7 @@ export async function handleChatSend(
       if (!personaPrompt.ok) return { ok: false, error: personaPrompt.error };
       // Automatic queue intake has no live keyboard gesture; audit it separately from keyboard sends.
       if (inputOrigin === "queue-auto") {
-        auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: conversationLoop.getSessionId(),
-          type: "info",
-          input: `chat:utterance:queue-auto:start:len=${input.length}`,
-        });
+        logPermissionEvent("chat_utterance_queued", { sessionId: permissionLogId(conversationLoop.getSessionId()) });
       }
       abortSignal?.throwIfAborted();
       // Check revoked remote authority inside the lease's deferred effect-entry factory.

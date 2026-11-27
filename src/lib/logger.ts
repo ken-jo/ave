@@ -1,4 +1,4 @@
-/** Use AuditLogger for security events; attach ordinary file logging at boot through a mutable stream target. */
+/** Attach file logging at boot through a mutable stream target. */
 import pino from "pino";
 import prettyStream from "pino-pretty";
 import { createLogFileSink, type LogFileSink, type LogFileSinkOptions } from "./log-file-sink.js";
@@ -46,7 +46,7 @@ export const transport = !isTest && !useJsonFormat
 
 const fileStream = {
   write(chunk: string): void {
-    fileSink?.write(chunk);
+    try { fileSink?.write(chunk); } catch { /* Logging cannot affect the caller. */ }
   },
 };
 
@@ -94,10 +94,9 @@ export function initFileLogSink(options: LogFileSinkOptions = {}): LogFileSink |
 }
 
 export function closeFileLogSink(): void {
-  if (fileSink) {
-    fileSink.destroy();
-    fileSink = null;
-  }
+  const sink = fileSink;
+  fileSink = null;
+  try { sink?.destroy(); } catch { /* Logging cannot affect shutdown. */ }
 }
 
 /** Use console proxies only in unpackaged tests; packaged runs retain structured production logging. */

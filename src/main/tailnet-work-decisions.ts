@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { redactForLLM } from "../audit/dlp-filter.js";
 import { hasUnsafeDirectiveControlChars } from "../engine/parent-directive.js";
@@ -302,11 +303,9 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
     },
     async decide(request, evidence) {
       let result: TailnetWorkDecisionResponse;
-      let auditId: string | undefined;
       try {
         result = await applyDecision(request, evidence, scoped => {
           const proof = mintHostDecisionProof("tailnet-surface", scoped);
-          auditId = proof.auditId;
           return proof;
         });
       } catch (error) {
@@ -315,27 +314,14 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
       }
       if (result.ok) {
         const binding = auditBindingOf(request);
-        auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: result.kind === "create-and-run" ? workBoardOriginSessionId(result.itemId)
-            : binding.itemId !== undefined ? workBoardOriginSessionId(binding.itemId) : `work-board:${binding.templateId}`,
-          type: "approval",
-          output: JSON.stringify({
-            event: workDecisionAuditEvent(request.kind), origin: "tailnet-surface", login: evidence.login, kind: request.kind, auditId,
-            ...binding, ...("status" in result ? { decision: result.status } : {}), result,
-          }),
-        });
+        logPermissionEvent("remote_work_decision", { sessionId: permissionLogId(result.kind === "create-and-run" ? workBoardOriginSessionId(result.itemId)
+            : binding.itemId !== undefined ? workBoardOriginSessionId(binding.itemId) : `work-board:${binding.templateId}`), kind: permissionLogId(request.kind) });
       }
       return result;
     },
   };
 }
 
-function workDecisionAuditEvent(kind: TailnetWorkDecisionRequest["kind"]): string {
-  if (kind === "stage" || kind === "join") return "work-approval:stage-decided";
-  if (kind === "plan") return "work-approval:decided";
-  return "work_approval_decided";
-}
 
 function auditBindingOf(request: TailnetWorkDecisionRequest) {
   switch (request.kind) {

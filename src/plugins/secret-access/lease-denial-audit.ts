@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 
 interface Bucket { count: number; timer: ReturnType<typeof setTimeout> | null }
@@ -6,7 +7,7 @@ interface Bucket { count: number; timer: ReturnType<typeof setTimeout> | null }
 export class LeaseDenialAudit {
   private readonly buckets = new Map<string, Bucket>();
 
-  constructor(private readonly audit: Pick<AuditLogger, "log">) {}
+  constructor(_audit: Pick<AuditLogger, "log">) {}
 
   record(pluginId: string, method: string, error: {
     code: "lease-unavailable" | "lease-audience-denied" | "credential-conflict";
@@ -30,9 +31,9 @@ export class LeaseDenialAudit {
 
   private write(
     pluginId: string,
-    method: string,
+    _method: string,
     code: string,
-    count: number,
+    _count: number,
     detail?: Record<string, string | number>,
   ): void {
     const safe: string[] = [];
@@ -50,10 +51,7 @@ export class LeaseDenialAudit {
       safe.push(`header=${detail.header}`);
     }
     try {
-      this.audit.log({
-        timestamp: new Date().toISOString(), sessionId: "plugin", type: "plugin_hostapi_denied",
-        input: `plugin=${pluginId} method=${method} code=${code} count=${count}${safe.length > 0 ? ` ${safe.join(" ")}` : ""}`,
-      });
+      logPermissionEvent("plugin_secret_lease_denied", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
     } catch { /* audit failure cannot change the refusal */ }
   }
 }

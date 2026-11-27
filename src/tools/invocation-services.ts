@@ -42,7 +42,6 @@ export interface InvocationRunnerServices {
   readonly permissionManager?: PermissionManager;
   readonly approvalGate?: ApprovalGate;
   readonly auditLogger: AuditLogger;
-  readonly requirePermissionAuditChain: boolean;
   readonly rateLimiter: RateLimiter;
   readonly bashAstValidator?: BashAstValidator;
   readonly scriptHookManager?: ScriptHookManager;

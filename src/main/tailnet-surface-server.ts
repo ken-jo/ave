@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { resolveTailnetObserverApply } from "./tailnet-observer-apply.js";
 import { runTailscaleCommand, tailscaleCliPath, type TailscaleCommandRunner } from "./tailnet-cli.js";
 export type { TailscaleCommandResult, TailscaleCommandRunner } from "./tailnet-cli.js";
@@ -603,15 +604,10 @@ export async function isTailnetOwnDeviceAdmissionEnabled(
 // Write automatic grants and revocations to the same audit log the IPC layer uses, so a grant nobody clicked for is not the one event with no record.
 // The account appears only as the store's own opaque fingerprint — never a login.
 function ownDeviceAdmissionAudit(
-  auditLogger: AuditLogger | undefined,
+  _auditLogger: AuditLogger | undefined,
 ): TailnetOwnDeviceAdmissionAudit {
-  return (action, actorFingerprint, pairingId) => {
-    auditLogger?.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "tailnet-own-device-admission",
-      type: "approval",
-      input: JSON.stringify({ action, actorFingerprint, pairingId }),
-    });
+  return (action, _actorFingerprint, _pairingId) => {
+    logPermissionEvent("remote_device_admission", { sessionId: permissionLogId("tailnet-own-device-admission"), action: permissionLogId(action) });
   };
 }
 

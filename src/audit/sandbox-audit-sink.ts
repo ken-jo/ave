@@ -1,7 +1,8 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 /** Sandbox telemetry sink (docs/research/sandbox-isolation.md).
  * Callers must DLP-mask arguments and justifications; files use 0o600 and directories 0o700. */
-import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { resolve, dirname } from "node:path";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { utcDateKey } from "../shared/local-date.js";
 import type {
@@ -29,26 +30,44 @@ export async function emitSandboxAudit(
     | SandboxEgressRouteAuditEntry
     | SandboxEgressGrantMigrationAuditEntry,
 ): Promise<void> {
-  // Stay async: a path that cannot be resolved must reach the caller's
-  // `.catch` as a rejection, never as a synchronous throw. The tracking below
-  // still runs synchronously, before the first await.
-  const write = appendSandboxAudit(sinkPath(), entry);
-  // Call sites fire this without awaiting so a slow disk never delays a tool.
-  // Track the write anyway, so whoever retires the audit directory can wait
-  // for it instead of racing a late mkdir/append.
-  const tracked: Promise<void> = write.then(() => undefined, () => undefined).finally(() => {
-    pendingSandboxAuditWrites.delete(tracked);
-  });
-  pendingSandboxAuditWrites.add(tracked);
-  await write;
+  if (!("entryKind" in entry)) {
+    logPermissionEvent("sandbox_execution", {
+      tool: permissionLogId(entry.tool.name), source: permissionLogId(entry.tool.source),
+      trustOrigin: entry.tool.trustOrigin, sandboxKind: entry.sandbox.kind,
+      confidence: entry.sandbox.confidence, eventCount: entry.sandbox.events.length,
+      spawnLatencyMs: entry.sandbox.spawnLatencyMs, reviewerRisk: entry.reviewer.finalVerdict,
+      approvalCacheHit: entry.reviewer.userApprovalUsed?.memoryHit,
+    });
+    return;
+  }
+  switch (entry.entryKind) {
+    case "egress-deny":
+      logPermissionEvent("sandbox_egress_denied", { sandboxKind: entry.sandbox.kind, attribution: entry.invocation.kind });
+      break;
+    case "egress-decision":
+      logPermissionEvent("sandbox_egress_decision", {
+        decision: entry.decision, basis: entry.basis, scope: entry.scope ?? undefined,
+        attribution: entry.invocation.kind,
+      });
+      break;
+    case "egress-failure":
+      logPermissionEvent("sandbox_egress_failed", {
+        failure: entry.failure.kind, status: entry.failure.httpStatus, attribution: entry.invocation.kind,
+      }, "warn");
+      break;
+    case "egress-grant-migration":
+      logPermissionEvent("sandbox_egress_grant_migrated", { action: entry.action });
+      break;
+    case "egress-route":
+      logPermissionEvent("sandbox_egress_route_skipped", {
+        source: permissionLogId(entry.source), skippedCount: entry.skipped.length,
+      }, "warn");
+      break;
+  }
 }
 
 const pendingSandboxAuditWrites = new Set<Promise<void>>();
 
-async function appendSandboxAudit(path: string, entry: object): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await appendFile(path, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
-}
 
 /**
  * Wait until every sandbox audit write started before or during this call has

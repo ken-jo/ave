@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import type { MainWindow } from "./main-window-host.js";
 // Start no listener or discovery write unless an independently opted-in route family has a handler. A fresh per-boot bearer is never logged; discovery
 // uses openFeatureNamespace and the local OS user boundary.
@@ -134,16 +135,11 @@ export function isA2ALoopbackEnabled(
 }
 
 function auditA2ARouteDisabled(
-  services: AppServices,
-  reason: "initialization-failed" | "no-routable-handler",
+  _services: AppServices,
+  _reason: "initialization-failed" | "no-routable-handler",
 ): void {
   try {
-    services.auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "a2a-loopback",
-      type: "warn",
-      input: "a2a:loopback:" + reason,
-    });
+    logPermissionEvent("local_agent_request_refused", { sessionId: permissionLogId("a2a-loopback") }, "warn");
   } catch {
     // Audit persistence must not brick the independently enabled local API.
   }

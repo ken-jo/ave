@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { approvalPresentationDenial, presentApproval, requireApprovalCardPresenters, UnattendedApprovalPresentationError } from "./approval-presentation.js";
 import { HostExitAbortError, isHostExitAbort } from "../shared/host-exit-abort.js";
 import { browserOrigin } from "../shared/browser-tools.js";
@@ -25,7 +26,7 @@ import {
 import type { PermissionEvaluationContext } from "./evaluation-context.js";
 import { matchesReviewerApprovalBasis, type ReviewerApprovalBasis, type ReviewerDispatchOutcome } from "./permission-manager.js";
 import { matchesApprovalRuleBasis, type ApprovalRuleBasis } from "./approval-rule-evidence.js";
-import { describePermissionQuestion, pendingAnswerDefersAllowSaves, spendStandingAnswer, type PermissionQuestion, type StaleAnswerOutcome, type StandingAnswer } from "./pending-answer-policy.js";
+import { pendingAnswerDefersAllowSaves, spendStandingAnswer, type PermissionQuestion, type StaleAnswerOutcome, type StandingAnswer } from "./pending-answer-policy.js";
 import { NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { isIssuedToolApprovalWait, withToolApprovalWait, type ToolApprovalWait } from "../tools/executor-ceiling.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
@@ -61,7 +62,7 @@ import {
 } from "./host-shell-execution-plan.js";
 import { isCurrentIssuedHostShellExecutionPlan } from "./host-shell-execution-plan-issuance.js";
 import type { FloorSessionGrant } from "./permission-manager.js";
-import { errorMessage } from "../shared/error-message.js";
+
 import { resolve as pathResolve } from "node:path";
 import { caseFoldForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { isEgressGrantScope, type EgressGrantNetwork, type EgressGrantScope } from "../shared/egress-grant-scopes.js";
@@ -367,8 +368,12 @@ interface ChildAgentProvenance {
   background?: boolean;
 }
 
-export type ApprovalChoice =
-  "allow-once" | "allow-session" | "allow-always" | "deny-once" | "deny-always";
+const APPROVAL_CHOICES = ["allow-once", "allow-session", "allow-always", "deny-once", "deny-always"] as const;
+export type ApprovalChoice = typeof APPROVAL_CHOICES[number];
+
+function approvalLogChoice(value: unknown): ApprovalChoice | undefined {
+  return APPROVAL_CHOICES.find(choice => choice === value);
+}
 
 export interface ApprovalDecision {
   browserSiteChoice?: BrowserSiteChoice;
@@ -1189,14 +1194,14 @@ export class ApprovalGate {
   }
 
   /** Audit the owner's verdict that a person's Allow answered a question the call no longer asks (pending-answer-policy.ts). No authority follows it. */
-  recordStaleAnswer(decision: ApprovalDecision, outcome: StaleAnswerOutcome, from: PermissionQuestion, to: PermissionQuestion): void {
+  recordStaleAnswer(decision: ApprovalDecision, outcome: StaleAnswerOutcome, _from: PermissionQuestion, _to: PermissionQuestion): void {
     const card = this.decidedCards.get(decision);
     if (!card) return;
-    this.auditLogger?.log({
-      timestamp: new Date().toISOString(),
-      sessionId: card.sessionId,
-      type: "approval",
-      output: `[approval:answer-stale] ${card.requestId} ${card.fields} choice=${decision.choice} outcome=${outcome} authority=none question=${describePermissionQuestion(from)} -> ${describePermissionQuestion(to)}`,
+    logPermissionEvent("approval_answer_stale", {
+      requestId: permissionLogId(card.requestId),
+      sessionId: permissionLogId(card.sessionId),
+      choice: approvalLogChoice(decision.choice),
+      reasonCode: permissionLogId(outcome),
     });
   }
 
@@ -1216,7 +1221,6 @@ export class ApprovalGate {
   // Active policy, replaceable at runtime via setPolicy.
   private currentPolicy: PolicyFile;
   // Audit logger for scenario S8; silent when not provided.
-  private readonly auditLogger?: AuditLogger;
   // optional NotificationService — when supplied, the gate fires an `approval` system notification at the entry of `requestAndWait` so the user sees the prompt even if the window is backgrounded.
   private readonly notificationService?: NotificationService;
   private conversationTitleResolver?: (sessionId: string) => string;
@@ -1234,7 +1238,7 @@ export class ApprovalGate {
     webContents: WebContents | ApprovalSurfaceResolver | null,
     initialPolicy?: PolicyFile,
     timeoutMs = TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs,
-    auditLogger?: AuditLogger,
+    _auditLogger?: AuditLogger,
     notificationService?: NotificationService,
     headlessExec?: { onDenied: (requestId: string, toolName: string) => void },
   ) {
@@ -1249,7 +1253,6 @@ export class ApprovalGate {
       this.resolveSurface = () => fixed;
     }
     this.timeoutMs = timeoutMs;
-    this.auditLogger = auditLogger;
     this.notificationService = notificationService;
     this.currentPolicy = initialPolicy ?? {
       version: 1,
@@ -1400,13 +1403,12 @@ export class ApprovalGate {
     requestId: string,
     fields: ApprovalAuditFields & { sessionId?: string | undefined },
     reasonCode: NonNullable<ApprovalDecision["reasonCode"]>,
-    executionPlan?: HostShellExecutionPlanAuditProjection,
+    _executionPlan?: HostShellExecutionPlanAuditProjection,
   ): ApprovalDecision {
-    this.auditLogger?.log({
-      timestamp: new Date().toISOString(),
-      sessionId: fields.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-      type: "approval",
-      output: `[approval:${reasonCode}] ${requestId} ${formatApprovalAuditFields(fields, executionPlan)} → deny-once`,
+    logPermissionEvent("approval_response_refused", {
+      requestId: permissionLogId(requestId),
+      sessionId: permissionLogId(fields.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+      reasonCode: permissionLogId(reasonCode),
     });
     return markHostApprovalRejectedDecision({ requestId, choice: "deny-once", reasonCode, rememberPattern: t("reasonCodes.unattended-approval-denied") });
   }
@@ -1423,19 +1425,16 @@ export class ApprovalGate {
   // Send an approval request to the renderer and wait for the response. ConversationLoop.executeOne awaits this and blocks the turn. The requireExplicit field controls renderer dismiss behavior.
   async requestAndWait(req: ApprovalRequestInput): Promise<ApprovalDecision> {
     const defersAllowSaves = pendingAnswerDefersAllowSaves(req, this);
-    const auditFieldsFor = (fields: ApprovalAuditFields, executionPlan?: HostShellExecutionPlanAuditProjection): string =>
-      formatApprovalAuditFields({ ...fields, remoteControllerOrigin: req.remoteControllerOrigin }, executionPlan);
     const isAborted = () => this.lifetime.signal.aborted || req.abortSignal?.aborted === true;
     // Cancellation is a host outcome even before a card has an owner or a pending entry.
-    const denyForAbortedTurn = (fields: ApprovalAuditFields = req, plan?: HostShellExecutionPlanAuditProjection): ApprovalDecision => {
+    const denyForAbortedTurn = (_fields: ApprovalAuditFields = req, _plan?: HostShellExecutionPlanAuditProjection): ApprovalDecision => {
       const reason: unknown = this.lifetime.signal.aborted ? this.lifetime.signal.reason : req.abortSignal?.reason;
-      const cause = reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "unspecified";
-      const cancellation = isHostExitAbort(reason) ? "host-shutdown" : `turn-abort cause=${JSON.stringify(cause)}`;
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: req.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:cancelled] ${req.id} ${auditFieldsFor(fields, plan)} reason=${cancellation} → deny-once`,
+      logPermissionEvent("approval_cancelled", {
+        reasonCode: isHostExitAbort(reason) ? "host-shutdown" : "turn-abort",
+        requestId: permissionLogId(req.id),
+        sessionId: permissionLogId(req.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+        tool: permissionLogId(req.toolName),
+        trustOrigin: req.trustOrigin,
       });
       return hostCancellationDecision(req.id);
     };
@@ -1513,12 +1512,12 @@ export class ApprovalGate {
         : undefined;
     if (requestedExecutionPlan !== undefined && suppliedExecutionPlan === undefined) {
       // Never copy a structural lookalike into an IPC payload or an audit row: even additional fields on an otherwise plausible object could leak the private Plan-B binding/action context.
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: req.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:execution-plan-invalid] ${req.id} ${auditFieldsFor(request)} -> deny-once`,
-      });
+      logPermissionEvent("approval_execution_plan_invalid", {
+        requestId: permissionLogId(req.id),
+        sessionId: permissionLogId(req.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+        tool: permissionLogId(req.toolName),
+        trustOrigin: req.trustOrigin,
+      }, "warn");
       return rejectBeforeAnswer("execution plan projection was not issued by the host");
     }
 
@@ -1571,12 +1570,12 @@ export class ApprovalGate {
       )
     ) {
       // Do not expose the host-only binding to the renderer, and do not retain it in pending state. A UI request that differs from the bound plain spawn must never mint a receipt, even after an authenticated response.
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: req.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:host-shell-binding-mismatch] ${req.id} ${auditFieldsFor(request)} -> deny-once`,
-      });
+      logPermissionEvent("approval_host_shell_binding_mismatch", {
+        requestId: permissionLogId(req.id),
+        sessionId: permissionLogId(req.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+        tool: permissionLogId(req.toolName),
+        trustOrigin: req.trustOrigin,
+      }, "warn");
       return rejectBeforeAnswer("host shell approval binding did not match displayed request");
     }
     const oneShotPermitBinding =
@@ -1596,12 +1595,12 @@ export class ApprovalGate {
       suppliedExecutionPlan !== boundExecutionPlan
     ) {
       // A Plan-B display must describe the exact host-sealed plan behind the hidden permit. Do not allow a second, even host-issued, projection to make the user approve a different substrate.
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: req.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:execution-plan-mismatch] ${req.id} ${auditFieldsFor(request, boundExecutionPlan)} -> deny-once`,
-      });
+      logPermissionEvent("approval_execution_plan_mismatch", {
+        requestId: permissionLogId(req.id),
+        sessionId: permissionLogId(req.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+        tool: permissionLogId(req.toolName),
+        trustOrigin: req.trustOrigin,
+      }, "warn");
       return rejectBeforeAnswer("execution plan did not match the host shell binding", request, boundExecutionPlan);
     }
     const executionPlanAudit = boundExecutionPlan ?? suppliedExecutionPlan;
@@ -1758,25 +1757,23 @@ export class ApprovalGate {
     if (deliveryProject === undefined && this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId) === null) {
       if (isAborted()) return denyForAbortedTurn(fullReq, executionPlanAudit);
       const headless = this.headlessDenied !== undefined;
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: headless
-          ? `[approval:decided] ${fullReq.id} ${auditFieldsFor({ ...fullReq, answeredBy: "headless-exec" }, executionPlanAudit)} choice=deny-once rememberPattern=no approval surface`
-          : `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} — no approval surface → deny-once`,
+      logPermissionEvent("approval_surface_unavailable", {
+        headless,
+        requestId: permissionLogId(fullReq.id),
+        sessionId: permissionLogId(fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+        tool: permissionLogId(fullReq.toolName),
+        trustOrigin: fullReq.trustOrigin,
       });
       try { this.headlessDenied?.(fullReq.id, fullReq.toolName); } catch { /* Notification cannot change a deny. */ }
       return rejectBeforeAnswer(NO_APPROVER_MESSAGE, fullReq, executionPlanAudit);
     }
 
     // phase: requested
-    this.auditLogger?.log({
-      timestamp: new Date().toISOString(),
-      sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-      type: "approval",
-      // Emit provenance fields needed to distinguish a host tool ask from a plugin-origin agent-action request during incident replay.
-      input: `[approval:requested] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)}`,
+    logPermissionEvent("approval_requested", {
+      requestId: permissionLogId(fullReq.id),
+      sessionId: permissionLogId(fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+      tool: permissionLogId(fullReq.toolName),
+      trustOrigin: fullReq.trustOrigin,
     });
 
     // Above the away answer, the OS notification and the renderer send, all for one reason: none of them should happen on behalf of a turn that is already over. An away grant in particular has a finite budget, and spending a unit of it to answer a dead turn spends it on nothing.
@@ -1789,12 +1786,12 @@ export class ApprovalGate {
           maskSensitiveData(cwd).masked !== cwd) {
         // Exact host consent cannot authorize bytes hidden by display masking. Preserve masking and reject before signing or parking the request.
         const reason = "Host execution cannot be approved because sensitive-data masking would hide part of the command, working directory, or justification.";
-        this.auditLogger?.log({
-          timestamp: new Date().toISOString(),
-          sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:host-display-inexact] ${fullReq.id} toolName=${fullReq.toolName} -> deny-once`,
-        });
+        logPermissionEvent("approval_host_display_inexact", {
+          requestId: permissionLogId(fullReq.id),
+          sessionId: permissionLogId(fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+          tool: permissionLogId(fullReq.toolName),
+          trustOrigin: fullReq.trustOrigin,
+        }, "warn");
         return rejectBeforeAnswer(reason, fullReq, executionPlanAudit);
       }
     }
@@ -1874,12 +1871,12 @@ export class ApprovalGate {
             this.announceSettledToRenderer(fullReq.id, [currentOwner]);
           }
         } catch (error) {
-          this.auditLogger?.log({
-            timestamp: new Date().toISOString(),
-            sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-            type: "approval",
-            output: `[approval:notification-owner-failed] ${fullReq.id} error=${errorMessage(error)}`,
-          });
+          logPermissionEvent("approval_notification_owner_failed", {
+            requestId: permissionLogId(fullReq.id),
+            sessionId: permissionLogId(fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+            tool: permissionLogId(fullReq.toolName),
+            trustOrigin: fullReq.trustOrigin,
+          }, "warn");
         }
       };
       const waitMs = ownerUnattended
@@ -1897,11 +1894,11 @@ export class ApprovalGate {
         }
         this.pending.delete(fullReq.id);
         // Timeout denies once without persisting authority.
-        this.auditLogger?.log({
-          timestamp: new Date().toISOString(),
-          sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:timeout] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} → deny-once`,
+        logPermissionEvent("approval_timeout", {
+          requestId: permissionLogId(fullReq.id),
+          sessionId: permissionLogId(fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+          tool: permissionLogId(fullReq.toolName),
+          trustOrigin: fullReq.trustOrigin,
         });
         const timeoutDecision: ApprovalDecision = {
           requestId: fullReq.id,
@@ -2047,21 +2044,21 @@ export class ApprovalGate {
       } catch (sealErr) {
         if (!this.pending.delete(fullReq.id)) return;
         clearTimeout(timer);
-        this.auditLogger?.log({
-          timestamp: new Date().toISOString(),
-          sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:seal-failed] ${fullReq.id} toolName=${fullReq.toolName} error=${errorMessage(sealErr)} → deny-once`,
-        });
+        logPermissionEvent("approval_seal_failed", {
+          requestId: permissionLogId(fullReq.id),
+          sessionId: permissionLogId(fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+          tool: permissionLogId(fullReq.toolName),
+          trustOrigin: fullReq.trustOrigin,
+        }, "warn");
         settle(rejectBeforeAnswer(undefined, fullReq, executionPlanAudit));
         return;
       }
       if (dlpHits.size > 0) {
-        this.auditLogger?.log({
-          timestamp: new Date().toISOString(),
-          sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:args-dlp-masked] ${fullReq.id} toolName=${fullReq.toolName} trustOrigin=${fullReq.trustOrigin ?? "unknown"} detections=${[...dlpHits].join(",")}`,
+        logPermissionEvent("approval_args_dlp_masked", {
+          requestId: permissionLogId(fullReq.id),
+          sessionId: permissionLogId(fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+          tool: permissionLogId(fullReq.toolName),
+          trustOrigin: fullReq.trustOrigin,
         });
       }
       // Keep what the renderer is about to receive, so a renderer that loads after this send can be handed the same card (see listPendingRendererRequests).
@@ -2072,12 +2069,12 @@ export class ApprovalGate {
         if (this.settleUnattendedPresentationFailure(fullReq.id, parked, error)) return;
         if (this.pending.get(fullReq.id) !== parked || !this.pending.delete(fullReq.id)) return;
         clearTimeout(timer);
-        this.auditLogger?.log({
-          timestamp: new Date().toISOString(),
-          sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} error=${errorMessage(error)} → deny-once`,
-        });
+        logPermissionEvent("approval_send_failed", {
+          requestId: permissionLogId(fullReq.id),
+          sessionId: permissionLogId(fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+          tool: permissionLogId(fullReq.toolName),
+          trustOrigin: fullReq.trustOrigin,
+        }, "warn");
         settle(rejectBeforeAnswer(surfaceUnavailable ? NO_APPROVER_MESSAGE : undefined, fullReq, executionPlanAudit));
       };
       if (projectDelivery) {
@@ -2225,17 +2222,16 @@ export class ApprovalGate {
   canAccessRendererRequest(
     requestId: string,
     contents: WebContents | undefined,
-    answeredBy: ApprovalAnswerer,
+    _answeredBy: ApprovalAnswerer,
   ): boolean {
     const entry = this.pending.get(requestId);
     if (!entry) return false;
     if (this.isRendererOwner(entry, contents)) return true;
     const reason = entry.egressTerminalTabId === undefined ? "surface-owner-required" : "terminal-owner-required";
-    this.auditLogger?.log({
-      timestamp: new Date().toISOString(),
-      sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-      type: "approval",
-      output: `[approval:${reason}] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} -> response-rejected`,
+    logPermissionEvent("approval_response_rejected", {
+      requestId: permissionLogId(requestId),
+      sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+      reasonCode: permissionLogId(reason),
     });
     return false;
   }
@@ -2278,11 +2274,9 @@ export class ApprovalGate {
     }
     if ((entry.browserSite !== undefined || entry.userOwnedSurface !== undefined || entry.hostShellExecutionPermitBinding?.executionMode === "host" || entry.hostTerminal !== undefined) && !nativeRenderer) {
       // Signed card contents authenticate a request, not the answering surface. Reject plugin/platform answers while keeping the desktop request pending.
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:native-desktop-required] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} -> response-rejected`,
+      logPermissionEvent("approval_native_desktop_required", {
+        requestId: permissionLogId(requestId),
+        sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
       });
       return null;
     }
@@ -2291,12 +2285,11 @@ export class ApprovalGate {
     if (!verifyApprovalIntegrity(entry, decision)) {
       clearTimeout(entry.timer);
       this.pending.delete(requestId);
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:nonce-mismatch] ${requestId} ${formatApprovalAuditFields(entry, entry.executionPlan)} choice=${decision.choice} nonceProvided=${decision.nonce ? "yes" : "no"} hmacProvided=${decision.hmac ? "yes" : "no"} → deny-once (forced)`,
-      });
+      logPermissionEvent("approval_nonce_mismatch", {
+        requestId: permissionLogId(requestId),
+        sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+        choice: approvalLogChoice(decision.choice),
+      }, "warn");
       const forcedDecision: ApprovalDecision = {
         requestId,
         choice: "deny-once",
@@ -2330,11 +2323,10 @@ export class ApprovalGate {
     ) {
       clearTimeout(entry.timer);
       this.pending.delete(requestId);
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:choice-not-allowed] ${requestId} ${formatApprovalAuditFields(entry, entry.executionPlan)} choice=${decision.choice} allowed=${entry.allowedChoices.join(",")} → deny-once (forced)`,
+      logPermissionEvent("approval_choice_not_allowed", {
+        requestId: permissionLogId(requestId),
+        sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+        choice: approvalLogChoice(decision.choice),
       });
       const forcedDecision: ApprovalDecision = {
         requestId,
@@ -2348,11 +2340,9 @@ export class ApprovalGate {
     // An egress-host allow names how long it lasts. Only the desktop window may answer one (a grant can outlive the conversation), and the scope must be one the card offered: anything else is a deny, never a guess.
     if (entry.kind === "egress-host" && !nativeRenderer) {
       // A grant can outlive the conversation, so only the desktop window may answer an egress ask, allow or deny: the person at the desktop is the one asked. Any other surface's answer is ignored and the request stays pending for the desktop, as for a host-shell execution permit.
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:native-desktop-required] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} -> response-rejected`,
+      logPermissionEvent("approval_native_desktop_required", {
+        requestId: permissionLogId(requestId),
+        sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
       });
       return null;
     }
@@ -2366,11 +2356,10 @@ export class ApprovalGate {
       if (problem !== undefined) {
         clearTimeout(entry.timer);
         this.pending.delete(requestId);
-        this.auditLogger?.log({
-          timestamp: new Date().toISOString(),
-          sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:egress-scope-rejected] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${decision.choice} scope=${decision.egressScope ?? "none"} → deny-once (forced)`,
+        logPermissionEvent("approval_egress_scope_rejected", {
+          requestId: permissionLogId(requestId),
+          sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+          choice: approvalLogChoice(decision.choice),
         });
         const forcedDecision: ApprovalDecision = { requestId, choice: "deny-once", rememberPattern: problem };
         hostRejectedApprovalDecisions.add(forcedDecision);
@@ -2388,21 +2377,18 @@ export class ApprovalGate {
         : answered.has(row) ? "row-already-answered"
           : decision.extensionStartChoices !== undefined ? "row-with-card-answers" : undefined;
       if (refusal !== undefined) {
-        this.auditLogger?.log({
-          timestamp: new Date().toISOString(),
-          sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:extension-start-row-rejected] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} reason=${refusal} -> response-rejected`,
+        logPermissionEvent("approval_extension_start_row_rejected", {
+          requestId: permissionLogId(requestId),
+          sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
         });
         return null;
       }
       answered.set(row, decision.choice === "allow-once" ? "yes" : "no");
       entry.extensionStartRowAnswers = answered;
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:extension-start-row] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} row=${offered.indexOf(row) + 1}/${offered.length} choice=${decision.choice}`,
+      logPermissionEvent("approval_extension_start_row", {
+        requestId: permissionLogId(requestId),
+        sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+        choice: approvalLogChoice(decision.choice),
       });
       // Still waiting on other rows: this row is answered, the card is not. The desk card is sent again so it shows the row answered.
       if (answered.size < offered.length) {
@@ -2426,22 +2412,19 @@ export class ApprovalGate {
         ? extensionStartAnswerProblem(entry.extensionStartIds ?? [], decision, nativeRenderer, entry.extensionStartRowAnswers?.size ?? 0)
         : "extension start answers on another request";
       if (problem === "desktop-only") {
-        this.auditLogger?.log({
-          timestamp: new Date().toISOString(),
-          sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:native-desktop-required] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} -> response-rejected`,
+        logPermissionEvent("approval_native_desktop_required", {
+          requestId: permissionLogId(requestId),
+          sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
         });
         return null;
       }
       if (problem !== undefined) {
         clearTimeout(entry.timer);
         this.pending.delete(requestId);
-        this.auditLogger?.log({
-          timestamp: new Date().toISOString(),
-          sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:extension-start-answers-rejected] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${decision.choice} → deny-once (forced)`,
+        logPermissionEvent("approval_extension_start_answers_rejected", {
+          requestId: permissionLogId(requestId),
+          sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+          choice: approvalLogChoice(decision.choice),
         });
         const forcedDecision: ApprovalDecision = { requestId, choice: "deny-once", rememberPattern: problem };
         hostRejectedApprovalDecisions.add(forcedDecision);
@@ -2456,16 +2439,14 @@ export class ApprovalGate {
       const offered = entry.extensionStartIds ?? [];
       const late = decision.extensionStartChoices;
       const choices: Record<string, ExtensionStartChoice> = {};
-      for (const [index, id] of offered.entries()) {
+      for (const id of offered) {
         const earlier = first.get(id);
         const later: ExtensionStartChoice = late !== undefined && Object.hasOwn(late, id) && late[id] === "yes" ? "yes" : "no";
         choices[id] = earlier ?? later;
         if (earlier !== undefined && late !== undefined && earlier !== later) {
-          this.auditLogger?.log({
-            timestamp: new Date().toISOString(),
-            sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-            type: "approval",
-            output: `[approval:extension-start-row-late] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} row=${index + 1}/${offered.length} kept=${earlier} -> response-rejected`,
+          logPermissionEvent("approval_extension_start_row_late", {
+            requestId: permissionLogId(requestId),
+            sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
           });
         }
       }
@@ -2533,11 +2514,10 @@ export class ApprovalGate {
     this.decidedCards.set(resolvedDecision, { requestId, sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
       fields: formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan) });
     // Derive answeredBy from the host caller, never response fields; renderer/plugin responses cannot forge the audit answerer.
-    this.auditLogger?.log({
-      timestamp: new Date().toISOString(),
-      sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-      type: "approval",
-      output: `[approval:decided] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${resolvedDecision.choice} rememberPattern=${resolvedDecision.rememberPattern ?? "none"}${entry.kind === "egress-host" ? ` egressScope=${resolvedDecision.egressScope ?? "none"}` : ""}`,
+    logPermissionEvent("approval_decided", {
+      requestId: permissionLogId(requestId),
+      sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
+      choice: approvalLogChoice(resolvedDecision.choice),
     });
     if (Object.hasOwn(APPROVAL_ANSWERER_TRUST_ORIGINS, answeredBy)) mintAnsweredProvenance(resolvedDecision, answeredBy, entry.toolName, entry.invocationToolUseId);
     entry.resolve(resolvedDecision);
@@ -2555,11 +2535,9 @@ export class ApprovalGate {
 
     clearTimeout(entry.timer);
     this.pending.delete(requestId);
-    this.auditLogger?.log({
-      timestamp: new Date().toISOString(),
-      sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-      type: "approval",
-      output: `[approval:cancelled] ${requestId} ${formatApprovalAuditFields(entry, entry.executionPlan)} reason=${reason} → deny-once`,
+    logPermissionEvent("approval_cancelled", {
+      requestId: permissionLogId(requestId),
+      sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
     });
     entry.resolve(hostCancellationDecision(requestId, reason));
     return true;
@@ -2685,11 +2663,9 @@ export class ApprovalGate {
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer);
       this.pending.delete(id);
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:cancelled] ${id} ${formatApprovalAuditFields(entry, entry.executionPlan)} reason=host-shutdown → deny-once`,
+      logPermissionEvent("approval_cancelled", {
+        requestId: permissionLogId(id),
+        sessionId: permissionLogId(entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
       });
       entry.resolve(hostCancellationDecision(id));
     }

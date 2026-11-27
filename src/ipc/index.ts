@@ -40,7 +40,6 @@ import type { MainWindow } from "../main/main-window-host.js";
  *   telegram-connection ave:telegram-connection:*
  *   dev           ave:dev:*  (registered only when `getIsPackaged()` is false)
  */
-import { initDlpAudit } from "../audit/dlp-filter.js";
 import { getIsPackaged } from "../boot/dev-flags.js";
 import { registerSettingsHandlers } from "./domains/settings.js";
 import { registerTourHandlers } from "./domains/tour.js";
@@ -123,7 +122,6 @@ export function registerIpcHandlers(
 
   // Resolve the session at each DLP hit: chat new/resume/fork can change the
   // loop's session after handlers have been registered.
-  initDlpAudit(deps.auditLogger, () => deps.conversationLoop.getSessionId());
 
   // The git marketplace registers below; a settings write reaches it only once IPC is live.
   let gitMarketplaceRegistration: GitMarketplaceRegistration | null = null;

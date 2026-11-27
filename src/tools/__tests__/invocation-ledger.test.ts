@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { TerminalDenial, TerminalRowWriter } from "../invocation-ledger.js";
 
-const { logError } = vi.hoisted(() => ({ logError: vi.fn() }));
-vi.mock("../../lib/logger.js", () => ({ createLogger: () => ({ error: logError }) }));
-const close = vi.fn(async () => {});
+const { logError, logInfo } = vi.hoisted(() => ({ logError: vi.fn(), logInfo: vi.fn() }));
+vi.mock("../../lib/logger.js", () => ({ createLogger: () => ({ error: logError, info: logInfo }) }));
+const events = () => logInfo.mock.calls.map(([entry]) => entry);
 const ENTRY = { decision: "deny", ts: "2026-11-24T00:00:00.000Z", auditId: "row", tool: "probe", source: "builtin",
   category: "meta", trustOrigin: "unknown", toolUseId: "tu-probe", denyReasons: [{ reason: "probe", source: "host" }] } as const;
 // The writer is called before the first await, as the audit writer does.
@@ -15,6 +15,7 @@ beforeEach(() => {
   vi.resetModules();
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   logError.mockClear();
+  logInfo.mockReset();
 });
 
 afterEach(() => {
@@ -40,8 +41,8 @@ it("aborts current and later admissions and joins work admitted during the drain
   ledger.sealToolInvocations();
   expect(tracked.signal.reason).toBe(shutdown);
 
-  const join = ledger.closeToolInvocationAudit(close);
-  expect(ledger.closeToolInvocationAudit(close)).toBe(join);
+  const join = ledger.closeToolInvocations();
+  expect(ledger.closeToolInvocations()).toBe(join);
   const later = ledger.admitToolInvocation("later");
   expect(later.signal.reason).toBe(shutdown);
   first.settle();
@@ -58,7 +59,7 @@ it("settles ordinary rejected invocations without treating them as audit failure
   const admission = ledger.admitToolInvocation("ordinary");
   const failed = Promise.reject(new Error("handler failure")).finally(admission.settle);
   ledger.sealToolInvocations();
-  const joining = ledger.closeToolInvocationAudit(close);
+  const joining = ledger.closeToolInvocations();
   await expect(failed).rejects.toThrow("handler failure");
   expect(await joining).toBe(1);
 });
@@ -69,7 +70,7 @@ it("finishes draining a rejected settlement and surfaces its failure", async () 
   const late = new Promise<void>((_resolve, rejectPromise) => { reject = rejectPromise; });
   ledger.trackToolInvocationSettlement(late);
   ledger.sealToolInvocations();
-  const joining = expect(ledger.closeToolInvocationAudit(close)).rejects.toThrow("shutdown invocation audit failed");
+  const joining = expect(ledger.closeToolInvocations()).rejects.toThrow("shutdown invocation drain failed");
   reject(new Error("audit unavailable"));
   await joining;
   expect(ledger.pendingToolInvocationCount()).toBe(0);
@@ -93,18 +94,12 @@ it("keeps other admissions pending when one settles repeatedly", async () => {
   expect(ledger.pendingToolInvocationCount()).toBe(0);
 });
 
-it("refuses an invocation admitted while the audit logger closes and fails the shutdown", async () => {
+it("fences late admissions after shutdown drains", async () => {
   const ledger = await import("../invocation-ledger.js");
   ledger.sealToolInvocations();
-  let late: ReturnType<typeof ledger.admitToolInvocation> | undefined;
-  const closing = ledger.closeToolInvocationAudit(async () => {
-    late = ledger.admitToolInvocation("late");
-  });
-  await expect(closing).rejects.toThrow("shutdown invocation audit failed");
-  expect(late?.signal.aborted).toBe(true);
+  await expect(ledger.closeToolInvocations()).resolves.toBe(0);
+  expect(ledger.admitToolInvocationWhileOpen("late")).toBeUndefined();
   expect(ledger.pendingToolInvocationCount()).toBe(0);
-  expect(logError).toHaveBeenCalledWith("tool invocation admitted after audit close: %s", "late");
-  late?.settle();
 });
 
 it("commits a detached settlement that lands before the seal and joins it", async () => {
@@ -114,7 +109,7 @@ it("commits a detached settlement that lands before the seal and joins it", asyn
   ledger.trackDetachedToolInvocation(Promise.resolve(), settled, hostShutdown);
   await Promise.resolve();
   ledger.sealToolInvocations();
-  await ledger.closeToolInvocationAudit(close);
+  await ledger.closeToolInvocations();
   expect(settled).toHaveBeenCalledOnce();
   expect(hostShutdown).not.toHaveBeenCalled();
 });
@@ -131,8 +126,7 @@ it.each(["before", "after"] as const)("closes work detached %s the seal once and
   ledger.sealToolInvocations();
   ledger.sealToolInvocations();
   expect(hostShutdown).toHaveBeenCalledOnce();
-  await ledger.closeToolInvocationAudit(close);
-  expect(close).toHaveBeenCalled();
+  await ledger.closeToolInvocations();
   expect(ledger.pendingToolInvocationCount()).toBe(0);
   finish();
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -144,7 +138,7 @@ it("fails the shutdown when the host-shutdown row of detached work cannot be wri
   const ledger = await import("../invocation-ledger.js");
   ledger.trackDetachedToolInvocation(new Promise<void>(() => {}), async () => {}, async () => { throw new Error("audit unavailable"); });
   ledger.sealToolInvocations();
-  await expect(ledger.closeToolInvocationAudit(close)).rejects.toThrow("shutdown invocation audit failed");
+  await expect(ledger.closeToolInvocations()).rejects.toThrow("shutdown invocation drain failed");
   expect(logError).toHaveBeenCalled();
 });
 
@@ -168,12 +162,10 @@ it("claims an attempt's terminal row exactly once and refuses a second claim as 
 it("records a deny committed after the invocation's abort as a cancellation, unless a person answered it", async () => {
   const ledger = await import("../invocation-ledger.js");
   const { HostExitAbortError } = await import("../../shared/host-exit-abort.js");
-  const appended: Array<Record<string, unknown>> = [];
-  const logger = { appendPermissionAuditEntry: vi.fn(async (entry: Record<string, unknown>) => { appended.push(entry); return entry; }) };
   const fired: TerminalDenial[] = [];
   const lifecycle = { governed: () => false, fire: async (denial: TerminalDenial) => { fired.push(denial); } };
   const hostDenial = async (_cause: string, _detail: string, _selected: unknown, row: TerminalRowWriter) => {
-    await row({ logger: logger as never, entry: ENTRY, kind: "denied" });
+    await row({ entry: ENTRY, kind: "denied" });
   };
   // An AbortError the invocation let escape reaches settle(failure), whose host row is the host's denial.
   const stop = new AbortController();
@@ -186,18 +178,18 @@ it("records a deny committed after the invocation's abort as a cancellation, unl
   quitting.terminal.hostTerminal(hostDenial, lifecycle);
   quit.abort(new HostExitAbortError());
   quitting.settle(new DOMException("This operation was aborted", "AbortError"));
-  await vi.waitFor(() => expect(appended).toHaveLength(2));
-  expect(appended[0]).toMatchObject({ denyReasons: [{ reason: "user aborted turn" }, { reason: "probe" }] });
-  expect(appended[1]).toMatchObject({ denyReasons: [{ reason: "host-shutdown" }, { reason: "probe" }] });
+  await vi.waitFor(() => expect(events()).toHaveLength(2));
+  expect(events()[0]).toMatchObject({ terminalKind: "cancelled" });
+  expect(events()[1]).toMatchObject({ terminalKind: "cancelled" });
   expect(fired).toEqual([]);
   // A person's settled deny committed after the abort stays theirs: a denial, and its one event.
   const answered = new AbortController();
   const human = ledger.admitToolInvocation("human", answered.signal);
   human.terminal.hostTerminal(hostDenial, lifecycle);
   answered.abort();
-  await human.terminal.commit(async (row) => { await row({ logger: logger as never, entry: ENTRY, kind: "denied", humanAnswered: true }); });
+  await human.terminal.commit(async (row) => { await row({ entry: ENTRY, kind: "denied", humanAnswered: true }); });
   human.settle();
-  expect(appended[2]).toMatchObject({ denyReasons: [{ reason: "probe" }] });
+  expect(events()[2]).toMatchObject({ terminalKind: "denied" });
   expect(fired.map((denial) => denial.reason)).toEqual(["probe"]);
 });
 
@@ -205,11 +197,9 @@ it.each([
   [undefined, false], ["refused", false], [undefined, true],
 ] as const)("refuses a deny row whose kind is %s (aborted %s) as an integrity failure; the host writes the one denial", async (kind, aborted) => {
   const ledger = await import("../invocation-ledger.js");
-  const appended: Array<Record<string, unknown>> = [];
-  const logger = { appendPermissionAuditEntry: vi.fn(async (entry: Record<string, unknown>) => { appended.push(entry); return entry; }) };
   const fired: TerminalDenial[] = [];
   const write = vi.fn(async (_cause: string, _detail: string, _selected: unknown, row: TerminalRowWriter) => {
-    await row({ logger: logger as never, entry: ENTRY, kind: "denied" });
+    await row({ entry: ENTRY, kind: "denied" });
   });
   // An abort before the refusal leaves the host's integrity row a denial: it is the host's own refusal, not the abort's.
   const stop = new AbortController();
@@ -217,26 +207,25 @@ it.each([
   const admission = ledger.admitToolInvocation("kindless", stop.signal);
   admission.terminal.hostTerminal(write, { governed: () => false, fire: async (denial) => { fired.push(denial); } });
   const written = admission.terminal.commit(async (row) => {
-    await row({ logger: logger as never, entry: ENTRY, kind } as never);
+    await row({ entry: ENTRY, kind } as never);
   });
   await expect(written).rejects.toThrow("deny row of kindless names no terminal kind");
   admission.settle(new Error("late"));
   await vi.waitFor(() => expect(admission.terminal.state).toBe("failed"));
   expect(write).toHaveBeenCalledOnce();
   expect(write).toHaveBeenCalledWith("error", "the terminal row failed its integrity check: deny row of kindless names no terminal kind", undefined, expect.any(Function));
-  expect(appended).toHaveLength(1);
-  expect(appended[0]).toMatchObject({ terminalKind: "denied" });
+  expect(events()).toHaveLength(1);
+  expect(events()[0]).toMatchObject({ terminalKind: "denied" });
   expect(fired).toHaveLength(1);
 });
 
 it("records a pre-enqueue writer failure after Stop as one host integrity denial", async () => {
   const ledger = await import("../invocation-ledger.js");
-  const logger = { appendPermissionAuditEntry: vi.fn(async (entry: unknown) => entry as never) };
   const fire = vi.fn(async (_denial: TerminalDenial) => {});
   const stop = new AbortController();
   const admission = ledger.admitToolInvocation("integrity", stop.signal);
   const write = vi.fn((_cause: string, detail: string, _selected: unknown, row: TerminalRowWriter) =>
-    row({ logger, entry: { ...ENTRY, denyReasons: [{ reason: detail, source: "tool-executor" }] }, kind: "denied" }));
+    row({ entry: { ...ENTRY, denyReasons: [{ reason: detail, source: "tool-executor" }] }, kind: "denied" }));
   admission.terminal.hostTerminal(write, { governed: () => false, fire });
   admission.terminal.select("selected outcome");
   stop.abort();
@@ -247,9 +236,7 @@ it("records a pre-enqueue writer failure after Stop as one host integrity denial
   await vi.waitFor(() => expect(admission.terminal.state).toBe("failed"));
   const reason = "the terminal row failed its integrity check: terminal audit metadata unavailable";
   expect(write).toHaveBeenCalledExactlyOnceWith("error", reason, undefined, expect.any(Function));
-  expect(logger.appendPermissionAuditEntry).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-    terminalKind: "denied", denyReasons: [{ reason, source: "tool-executor" }],
-  }));
+  expect(events()).toEqual([expect.objectContaining({ terminalKind: "denied" })]);
   expect(fire.mock.calls.map(([denial]) => denial.reason)).toEqual([reason]);
 });
 
@@ -299,7 +286,7 @@ it("ends a suspended attempt with the host's row when its card is stopped or the
   quit.settle();
   parent.abort();
   ledger.sealToolInvocations();
-  await expect(ledger.closeToolInvocationAudit(close)).resolves.toBe(0);
+  await expect(ledger.closeToolInvocations()).resolves.toBe(0);
   expect(write.mock.calls.map(([cause]) => cause)).toEqual(["user-abort", "host-shutdown"]);
   // The late sealed start adopts an attempt whose row is already written.
   expect(stopped.terminal.state).toBe("committed");
@@ -317,16 +304,13 @@ it("gives a sandbox retry its own attempt only after the first attempt's row", a
   admission.settle();
 });
 
-it("drains enqueued rows before the sink closes, then fences late claims", async () => {
+it("drains the parked terminal decision and fences late claims", async () => {
   const ledger = await import("../invocation-ledger.js");
-  const order: string[] = [];
   const parked = ledger.admitToolInvocation("parked");
-  parked.terminal.hostTerminal((cause, _detail, _selected, row) => row({ entry: ENTRY, kind: "cancelled",
-    logger: { appendPermissionAuditEntry: async () => { await Promise.resolve(); order.push(`row:${cause}`); return {} as never; } } }), NO_DENIAL);
+  parked.terminal.hostTerminal(hostRow, NO_DENIAL);
   ledger.sealToolInvocations();
-  const outcome = ledger.drainToolInvocationAuditForExit(async () => { await Promise.resolve(); await Promise.resolve(); order.push("close"); }, 50);
-  await expect(outcome).resolves.toBe("committed");
-  expect(order).toEqual(["row:host-shutdown", "close"]);
+  await expect(ledger.drainToolInvocationsForExit(50)).resolves.toBe("committed");
+  expect(events()).toEqual([expect.objectContaining({ event: "permission_decision", terminalKind: "cancelled" })]);
   const late = vi.fn(async () => {});
   await expect(parked.terminal.commit(late)).resolves.toBeUndefined();
   expect(late).not.toHaveBeenCalled();
@@ -335,12 +319,10 @@ it("drains enqueued rows before the sink closes, then fences late claims", async
 
 it("leaves the claim open when a writer fails before its row, so the host writes the one row and the attempt ends failed", async () => {
   const ledger = await import("../invocation-ledger.js");
-  const appended: unknown[] = [];
-  const logger = { appendPermissionAuditEntry: async (entry: unknown) => { appended.push(entry); return {} as never; } };
-  ledger.beginToolInvocationAuditShutdown();
+  ledger.beginToolInvocationShutdown();
   const admission = ledger.admitToolInvocation("integrity");
   const host = vi.fn((_cause: string, detail: string, _selected: unknown, row: TerminalRowWriter) =>
-    row({ logger, entry: { ...ENTRY, auditId: "host", denyReasons: [{ reason: detail, source: "tool-executor" }] }, kind: "denied" }));
+    row({ entry: { ...ENTRY, auditId: "host", denyReasons: [{ reason: detail, source: "tool-executor" }] }, kind: "denied" }));
   admission.terminal.hostTerminal(host, NO_DENIAL);
   const integrity = new Error("answer belongs to another invocation");
   await expect(admission.terminal.commit(async () => { throw integrity; })).rejects.toBe(integrity);
@@ -348,49 +330,29 @@ it("leaves the claim open when a writer fails before its row, so the host writes
   admission.settle(integrity);
   expect(host).toHaveBeenCalledOnce();
   expect(host).toHaveBeenCalledWith("error", "the terminal row failed its integrity check: answer belongs to another invocation", undefined, expect.any(Function));
-  expect(appended).toEqual([expect.objectContaining({ auditId: "host" })]);
+  expect(events()).toEqual([expect.objectContaining({ terminalKind: "denied" })]);
   expect(logError).toHaveBeenCalledWith("terminal row of %s failed before it was enqueued: %s", "integrity", "answer belongs to another invocation");
-  await expect(ledger.drainToolInvocationAuditForExit(close, 50)).resolves.toBe("failed");
+  await expect(ledger.drainToolInvocationsForExit(50)).resolves.toBe("failed");
 });
 
-it("refuses an invocation's outcome row outside its ledger and keeps the records beside it", async () => {
+it("bounds a drain with a pending denial hook", async () => {
   const ledger = await import("../invocation-ledger.js");
-  const appended: unknown[] = [];
-  const logger = { appendPermissionAuditEntry: async (entry: unknown) => { appended.push(entry); return {} as never; } };
-  await expect(ledger.appendToolInvocationAudit(logger, ENTRY)).rejects.toThrow("terminal row of probe must be written through its invocation's ledger");
-  await ledger.appendToolInvocationAudit(logger, { ...ENTRY, decision: "ask", reason: "asked" });
-  // A deny with no tool-use id is still no side record unless it is a plugin operation's.
-  const { toolUseId: _id, ...untracked } = ENTRY;
-  await expect(ledger.appendToolInvocationAudit(logger, untracked)).rejects.toThrow("deny row of probe is no plugin operation record");
-  await ledger.appendToolInvocationAudit(logger, { ...untracked, pluginOperation: { pluginId: "probe-plugin", operation: "status", outcome: "denied" } });
-  // The quit's refusal of a mode change belongs to no invocation and has its own writer.
-  await ledger.appendModeChangeRefusal(logger, untracked);
-  await expect(ledger.appendModeChangeRefusal(logger, ENTRY as never)).rejects.toThrow("mode change refusal of probe must belong to no invocation");
-  const { denyReasons: _reasons, ...base } = ENTRY;
-  const grant = { ...base, decision: "allow", directory: "/home/alice/work", directoryAllowed: true } as const;
-  // An allow naming a folder is still the invocation's outcome unless it goes through the directory grant writer.
-  await expect(ledger.appendToolInvocationAudit(logger, grant)).rejects.toThrow("terminal row of probe must be written through its invocation's ledger");
-  await ledger.appendDirectoryGrantRecord(logger, { ...grant, grantLifetime: "session" });
-  await ledger.appendDirectoryGrantRecord(logger, { ...grant, policyRule: "workspace-root" });
-  await expect(ledger.appendDirectoryGrantRecord(logger, grant)).rejects.toThrow("directory grant of probe must name its folder and exactly one lifetime or policy rule");
-  await expect(ledger.appendDirectoryGrantRecord(logger, { ...grant, grantLifetime: "session", policyRule: "workspace-root" })).rejects.toThrow("exactly one lifetime");
-  await expect(ledger.appendDirectoryGrantRecord(logger, { ...ENTRY, directory: "/home/alice/work", directoryAllowed: true } as never)).rejects.toThrow("exactly one lifetime");
-  expect(appended).toHaveLength(5);
-});
-
-it("reports a drain the sink cannot finish before the deadline", async () => {
-  const ledger = await import("../invocation-ledger.js");
-  const outcome = ledger.drainToolInvocationAuditForExit(() => new Promise<void>(() => {}), 50);
+  const parked = ledger.admitToolInvocation("holding");
+  parked.terminal.hostTerminal(async (_cause, _detail, _selected, row) => {
+    await row({ entry: ENTRY, kind: "denied", humanAnswered: true });
+  }, { governed: () => false, fire: () => new Promise(() => {}) });
+  const outcome = ledger.drainToolInvocationsForExit(50);
   await vi.advanceTimersByTimeAsync(50);
   await expect(outcome).resolves.toBe("timed-out");
+  expect(events()).toEqual([expect.objectContaining({ event: "permission_decision", terminalKind: "denied" })]);
 });
 
 it("reports a drain whose host row failed to commit", async () => {
   const ledger = await import("../invocation-ledger.js");
-  ledger.beginToolInvocationAuditShutdown();
+  ledger.beginToolInvocationShutdown();
   const parked = ledger.admitToolInvocation("failing");
   parked.terminal.hostTerminal(async () => { throw new Error("append refused"); }, NO_DENIAL);
-  await expect(ledger.drainToolInvocationAuditForExit(async () => {}, 50)).resolves.toBe("failed");
+  await expect(ledger.drainToolInvocationsForExit(50)).resolves.toBe("failed");
   parked.settle();
 });
 
@@ -398,33 +360,31 @@ it.each([false, true])("fires one denial for every denied row it commits, from a
   const ledger = await import("../invocation-ledger.js");
   const fired: string[] = [];
   const lifecycle = { governed: () => governed, fire: async (denial: TerminalDenial) => { fired.push(`${denial.event}:${denial.reason}`); } };
-  const appended: string[] = [];
-  const logger = { appendPermissionAuditEntry: async (entry: { auditId: string }) => { appended.push(entry.auditId); return {} as never; } };
   const deny = (auditId: string) => ({ ...ENTRY, auditId, denyReasons: [{ reason: auditId, source: "tool-executor" }] });
   const { denyReasons: _reasons, ...base } = ENTRY;
   const admit = (tool: string) => {
     const admission = ledger.admitToolInvocation(tool);
     // The host's error is its denial; its quit or a user abort is a cancellation.
-    admission.terminal.hostTerminal((cause, _detail, _selected, row) => row({ logger, entry: deny(`host:${cause}`),
+    admission.terminal.hostTerminal((cause, _detail, _selected, row) => row({ entry: deny(`host:${cause}`),
       kind: cause === "error" ? "denied" : "cancelled" }), lifecycle);
     return admission;
   };
   for (const [source, kind] of [["rule", "denied"], ["human", "denied"], ["hook-mutation", "denied"], ["user-abort", "cancelled"]] as const) {
     const admission = admit(source);
-    await admission.terminal.commit(async (row) => { await row({ logger, entry: deny(source), kind }); });
+    await admission.terminal.commit(async (row) => { await row({ entry: deny(source), kind }); });
     admission.settle();
   }
   const allowed = admit("allowed");
-  await allowed.terminal.commit(async (row) => { await row({ logger, entry: { ...base, decision: "allow", auditId: "allow" } }); });
+  await allowed.terminal.commit(async (row) => { await row({ entry: { ...base, decision: "allow", auditId: "allow" } }); });
   allowed.settle();
   admit("host").settle(new Error("boom"));
   const integrity = admit("integrity");
   await integrity.terminal.commit(async () => { throw new Error("record of another invocation"); }).catch(() => undefined);
   integrity.settle();
   const parked = admit("deadline");
-  await expect(ledger.drainToolInvocationAuditForExit(close, 50)).resolves.toBe("committed");
-  await expect(parked.terminal.commit(async (row) => { await row({ logger, entry: deny("late"), kind: "denied" }); })).resolves.toBeUndefined();
+  await expect(ledger.drainToolInvocationsForExit(50)).resolves.toBe("committed");
+  await expect(parked.terminal.commit(async (row) => { await row({ entry: deny("late"), kind: "denied" }); })).resolves.toBeUndefined();
   parked.settle();
-  expect(appended).toEqual(["rule", "human", "hook-mutation", "user-abort", "allow", "host:error", "host:error", "host:host-shutdown"]);
+  expect(events().map((entry) => entry.terminalKind ?? entry.decision)).toEqual(["denied", "denied", "denied", "cancelled", "allow", "denied", "denied", "cancelled"]);
   expect(fired).toEqual(governed ? [] : ["rule", "human", "hook-mutation", "host:error", "host:error"].map((reason) => `PermissionDenied:${reason}`));
 });

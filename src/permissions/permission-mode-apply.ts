@@ -1,4 +1,5 @@
-import { admitToolInvocationWhileAuditOpen, appendModeChangeRefusal, appendToolInvocationAudit } from "../tools/invocation-ledger.js";
+import { logPermissionEvent } from "../lib/permission-log.js";
+import { admitToolInvocationWhileOpen } from "../tools/invocation-ledger.js";
 import { randomUUID } from "node:crypto";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { t } from "../i18n/index.js";
@@ -115,7 +116,7 @@ export async function applyPermissionModeCommand(
   const tail = preceding.then(() => completion);
   modeChanges.set(deps.permissionManager, tail);
   // A closed audit has no row left for the denial; refuse instead of admitting.
-  const admission = admitToolInvocationWhileAuditOpen("/permission mode");
+  const admission = admitToolInvocationWhileOpen("/permission mode");
   await preceding;
   try {
     if (!admission) return hostShutdownCancelled();
@@ -204,34 +205,6 @@ async function applyPermissionModeChange(
     }
   }
 
-  if (deps.auditLogger) {
-    if (!deps.auditLogger.isPermissionAuditChainReady()) {
-      return {
-        ok: false,
-        error: "permission-audit-not-ready",
-        message: t("be_permissionModeApply.auditChainNotReady"),
-      };
-    }
-    try {
-      await appendToolInvocationAudit(deps.auditLogger, {
-        decision: "mode_change",
-        auditId: randomUUID(),
-        ts: new Date().toISOString(),
-        trustOrigin: "user-keyboard",
-        fromMode: previous,
-        toMode: cmd.mode,
-        durable: cmd.durable,
-        confirmationSource: trustedConfirmation?.source,
-      });
-    } catch (err) {
-      return {
-        ok: false,
-        error: "permission-audit-write-failed",
-        message: t("be_permissionModeApply.auditWriteFailed", { message: (err as Error).message }),
-      };
-    }
-  }
-
   const { dispatchPermissionReviewerCommand } = await import("./permission-slash.js");
   const previousReviewer = await dispatchPermissionReviewerCommand(
     { verb: "show", value: "" }, deps.reviewerSettingsPath,
@@ -240,22 +213,16 @@ async function applyPermissionModeChange(
     return { ok: false, error: "reviewer-mode-change-failed", message: "Reviewer settings could not be read" };
   }
   if (signal.aborted) {
-    // The mode_change row is written; record that quit refused it before anything is applied.
-    if (deps.auditLogger) {
-      await appendModeChangeRefusal(deps.auditLogger, {
-        decision: "deny",
-        ts: new Date().toISOString(),
-        auditId: randomUUID(),
-        tool: "/permission mode",
-        source: "builtin",
-        category: "meta",
-        // The host refused the change; the keyboard origin stays on the mode_change row.
-        trustOrigin: "unknown",
-        denyReasons: [{ reason: "host-shutdown", source: "permission-mode" }],
-      }).catch(() => undefined);
-    }
+    logPermissionEvent("permission_mode_cancelled", { fromMode: previous, toMode: cmd.mode });
     return cancelled;
   }
+  const applied = (durable: boolean) => {
+    logPermissionEvent("permission_mode_changed", {
+      fromMode: previous, toMode: cmd.mode, durable,
+      trustOrigin: "user-keyboard", confirmationSource: trustedConfirmation?.source,
+    });
+    return { ok: true as const, previous, mode: cmd.mode, durable };
+  };
   const previousOverride = runtimeReviewerModes.get(deps.permissionManager);
   const restoreOverride = () => {
     if (previousOverride === undefined) runtimeReviewerModes.delete(deps.permissionManager);
@@ -277,7 +244,7 @@ async function applyPermissionModeChange(
   };
 
   if (!cmd.durable) {
-    return await applyForSession() ?? { ok: true, previous, mode: cmd.mode, durable: false };
+    return await applyForSession() ?? applied(false);
   }
 
   const persisted = await persistModePair(cmd.mode, reviewerMode, previousReviewer.settings.mode, deps);
@@ -297,10 +264,10 @@ async function applyPermissionModeChange(
       return { ok: false, error: "reviewer-mode-change-failed", message: (error as Error).message };
     }
     deps.permissionManager.setMode(cmd.mode);
-    return { ok: true, previous, mode: cmd.mode, durable: false, notice: HOME_FOLDER_REFUSED };
+    return { ...applied(false), notice: HOME_FOLDER_REFUSED };
   }
   if (persisted === "mode-refused") {
-    return await applyForSession() ?? { ok: true, previous, mode: cmd.mode, durable: false, notice: HOME_FOLDER_REFUSED };
+    return await applyForSession() ?? { ...applied(false), notice: HOME_FOLDER_REFUSED };
   }
 
   // Both stores hold the new pair and the manager publishes the mode; the reviewer follows from the stored settings.
@@ -314,7 +281,7 @@ async function applyPermissionModeChange(
     await deps.rewireReviewerAgent?.();
     return { ok: false, error: "reviewer-mode-change-failed", message: (error as Error).message };
   }
-  return { ok: true, previous, mode: cmd.mode, durable: true };
+  return applied(true);
 }
 
 /**

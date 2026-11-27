@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { randomUUID } from "node:crypto";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import {
@@ -937,28 +938,15 @@ export class A2AAgentMessageBus {
   }
 
   private audit(
-    type: "info" | "warn",
+    _type: "info" | "warn",
     input: {
       originSessionId: string;
       senderChildSessionId: string;
       recipient: string;
       messageId?: string;
     },
-    outcome: string,
+    _outcome: string,
   ): void {
-    const sender = sanitizeA2ALabel(input.senderChildSessionId);
-    const recipient = sanitizeA2ALabel(input.recipient);
-    const messageId = isSafeA2AMessageId(input.messageId) ? input.messageId : "invalid";
-    this.deps.auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: input.originSessionId || "unknown",
-      type,
-      input: [
-        "a2a:agent-delivery:", outcome,
-        ":sender=", sender,
-        ":recipient=", recipient,
-        ":message=", messageId,
-      ].join(""),
-    });
+    logPermissionEvent("agent_message_delivery", { sessionId: permissionLogId(input.originSessionId || "unknown") });
   }
 }

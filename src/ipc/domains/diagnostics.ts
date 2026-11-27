@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
 // Diagnostics are internal and host-renderer-only; exported logs and bundle content pass through DLP.
 import { ipcMain } from "electron";
@@ -12,7 +13,7 @@ import {
   listCrashDumps,
   type CrashDumpMeta,
 } from "../../audit/diagnostics-bundle.js";
-import { redactForLLM, redactFsPath, scrubSecretsForLLM } from "../../audit/dlp-filter.js";
+import { redactForLLM, scrubSecretsForLLM } from "../../audit/dlp-filter.js";
 import { utcDateKey } from "../../shared/local-date.js";
 import { parseLogFileDate } from "../../lib/log-file-sink.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
@@ -139,19 +140,7 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
         const { writeFile } = await import("node:fs/promises");
         await writeFile(res.filePath, buffer);
         // Audit effective options, date range, byte size, and redacted destination without exposing host paths.
-        auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "diagnostics-export",
-          type: "diagnostics-export",
-          input: JSON.stringify({
-            includeCrashDumps,
-            dateFrom,
-            dateTo,
-            bytes: buffer.length,
-            path: redactFsPath(res.filePath),
-          }),
-        });
-        await auditLogger.flush();
+        logPermissionEvent("diagnostics_bundle_exported", { sessionId: permissionLogId("diagnostics-export") });
         return { ok: true as const, path: res.filePath, bytes: buffer.length };
       } catch (err) {
         log.warn({ err }, "diagnostics export failed");

@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import type { MainWindow } from "./main-window-host.js";
 import { isBackgroundE2eRuntime, showWindowForRuntime } from "./e2e-window-presentation.js";
 // Host lifecycle events enter window notification history; unfocused events additionally use OS delivery. Requests use their cards in-app.
@@ -385,23 +386,10 @@ export class NotificationService {
     }
   }
 
-  private audit(gate: "os" | "in-app", kind: NotificationKind, title: string, surface?: "card"): void {
+  private audit(_gate: "os" | "in-app", kind: NotificationKind, _title: string, _surface?: "card"): void {
     if (!this.auditLogger) return;
     try {
-      this.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "notification-service",
-        type: "info",
-        // Never log notification bodies, which may contain user or assistant text; cap titles again at the audit boundary.
-        input: JSON.stringify({
-          event: surface === "card" ? "notification.handled" : "notification.fired",
-          kind,
-          gate,
-          ...(surface ? { surface } : {}),
-          // reuses body cap as title cap — same 80-char limit applies to audit fields.
-          title: title.slice(0, BODY_MAX_CHARS),
-        }),
-      });
+      logPermissionEvent("notification_created", { sessionId: permissionLogId("notification-service"), kind: permissionLogId(kind) });
     } catch {
       // audit failure must never block the app
     }
@@ -415,17 +403,7 @@ export class NotificationService {
   ): void {
     if (!this.auditLogger) return;
     try {
-      this.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "notification-service",
-        type: "info",
-        input: JSON.stringify({
-          event: "notification.suppressed",
-          kind,
-          reason,
-          elapsedMs,
-        }),
-      });
+      logPermissionEvent("notification_suppressed", { kind, elapsedMs, reasonCode: reason });
     } catch {
       // audit failure must never block the app
     }

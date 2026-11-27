@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "../../shared/local-path-io.js";
 import { pickNativeFiles } from "../../main/desktop-approval-presentation.js";
 import { ipcMain, shell } from "electron";
@@ -434,27 +435,17 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
 
   const auditLifecycleWarning = (
     source: string,
-    root: string,
-    phase:
+    _root: string,
+    _phase:
       | "allow"
       | "revoke-live-scopes"
       | "prune-path-grants"
       | "prune-routine-scopes"
       | "detach-sessions",
-    error: unknown,
+    _error: unknown,
   ): void => {
     try {
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "workspace-root-lifecycle",
-        type: "warn",
-        input: JSON.stringify({
-          channel: source,
-          path: opaqueWorkspaceRootAuditRef(root),
-          lifecyclePhase: phase,
-          errorCode: stableErrorCode(error),
-        }),
-      });
+      logPermissionEvent("workspace_root_change_refused", { sessionId: permissionLogId("workspace-root-lifecycle"), channel: permissionLogId(source) }, "warn");
     } catch {
       // An audit sink failure must not mask the lifecycle decision itself.
     }
@@ -881,16 +872,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       return { ok: false, error: "persist-failed", warnings: verdict.adjacencyWarnings };
     }
     // Audit scope widening with a redacted path and picker/drop gesture provenance.
-    auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "workspace-pick-root",
-      type: "info",
-      input: JSON.stringify({
-        channel: CHANNELS.workspace.pickRoot,
-        path: opaqueWorkspaceRootAuditRef(picked),
-        gesture,
-      }),
-    });
+    logPermissionEvent("workspace_root_picked", { sessionId: permissionLogId("workspace-pick-root"), channel: permissionLogId(CHANNELS.workspace.pickRoot) });
     return {
       ok: true,
       added: canonicalPicked,
@@ -1307,22 +1289,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       // Revoke path-tier grants under removed roots or re-add would silently revive them.
       const prunedGrants = removal.prunedGrants;
       // Audit redacted grant tuples but expose only their count over IPC.
-      const prunedAudit = removal.prunedAudit;
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "workspace-remove-root",
-        type: "info",
-        input: JSON.stringify({
-          channel: CHANNELS.workspace.removeRoot,
-          path: opaqueWorkspaceRootAuditRef(removal.runtimePath),
-          operationId: removal.operationId,
-          cleanupPending: removal.cleanupPending,
-          prunedGrants,
-          detachedSessions: removal.detachedSessions,
-          liveScopesRevoked: removal.liveScopesRevoked,
-          ...(prunedAudit.length > 0 ? { prunedPatterns: prunedAudit } : {}),
-        }),
-      });
+      logPermissionEvent("workspace_root_removed", { channel: CHANNELS.workspace.removeRoot, prunedGrants });
       // Undo re-adds only this main-owned path through the ack flow (same TTL and one-time consumption). None while cleanup is
       // pending: a re-add must not race the deferred revocation.
       let undoToken: string | undefined;
@@ -1404,20 +1371,9 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     };
   }
 
-  function auditProjectFileOpen(channel: string, sessionId: string, rootPath: string, path: string, error: string | null): void {
+  function auditProjectFileOpen(channel: string, sessionId: string, _rootPath: string, _path: string, _error: string | null): void {
     try {
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId,
-        type: error === null ? "info" : "warn",
-        input: JSON.stringify({
-          channel,
-          root: opaqueWorkspaceRootAuditRef(rootPath),
-          path: opaqueWorkspaceRootAuditRef(path),
-          ok: error === null,
-          ...(error === null ? {} : { error }),
-        }),
-      });
+      logPermissionEvent("workspace_root_action", { sessionId: permissionLogId(sessionId), channel: permissionLogId(channel) });
     } catch {
       // An audit sink failure must not change what the user was told.
     }

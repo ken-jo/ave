@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 /** Remembered approval shares finalized-input identity with recorded requests; one-shot choices never persist.
  * Target-wide changes retain risk checks except an explicitly granted external tool whose scope covers every argument. */
 import { matchesMcpToolApprovalMemory } from "../../shared/mcp-tool-approval.js";
@@ -19,9 +20,6 @@ import {
   canonicalStringify,
 } from "../../permissions/user-approval-store.js";
 import type { UserApprovalHitPayload, UserApprovalVerdict } from "../../shared/permissions-events.js";
-import { buildSandboxAuditEntry } from "../../audit/sandbox-audit.js";
-import { emitSandboxAudit } from "../../audit/sandbox-audit-sink.js";
-import { maskSensitiveData } from "../../audit/dlp-filter.js";
 import type { ToolPermissionContext } from "../executor.js";
 import { issueApprovalRuleBasis, type ApprovalRuleBasis } from "../../permissions/approval-rule-evidence.js";
 
@@ -237,52 +235,11 @@ export async function tryUserApprovalMemorySkip(
     freshReviewLevel = rulesOnlyReuse ? null : reviewed!.verdict.level;
   }
 
-  // Memory hit; skip the approval dock. Emit an audit entry recording the skip so forensics can see
-  // the auto-allow + its provenance. Swallow-on-failure: an audit write must never block tool execution.
-  try {
-    const auditEntry = buildSandboxAuditEntry({
-      tool: {
-        name: toolName,
-        // emitSandboxAudit's sink trusts callers to pass DLP-redacted fields (sandbox-audit-sink.ts DLP note); mask before writing.
-        args: maskSensitiveData(
-          JSON.stringify(auditInput ?? finalInput),
-        ).masked,
-        source,
-        trustOrigin: context.trustOrigin,
-        ...(approvalCacheKey ? { approvalCacheKey } : {}),
-      },
-      sandbox: {
-        kind: ctx.sandboxCapability.kind,
-        confidence: ctx.sandboxCapability.confidence,
-        // No sandbox run; this is a memory skip (the tool has not executed yet). The zero telemetry below reflects "not measured", not "0ms".
-        events: [],
-        spawnLatencyMs: 0,
-        overheadPercent: 0,
-      },
-      reviewer: {
-        // ruleVerdict is the fresh deterministic classification of the current args; finalVerdict is the composed max(rule, stored).
-        ruleVerdict: ruleVerdict.level,
-        // Exact hits make no LLM call; record null rather than a composed level so the audit does not imply the classifier ran. A target-wide hit records the fresh review it passed.
-        llmVerdict: freshReviewLevel,
-        finalVerdict: composed.level,
-        compositionRulesTriggered: [],
-        userApprovalUsed: {
-          memoryHit: true,
-          // Stored justification is user/LLM-authored free text; DLP-mask it like every other audit field (the sink does not re-redact).
-          nlJustification:
-            approval.nlJustification === null
-              ? null
-              : maskSensitiveData(approval.nlJustification).masked,
-          verdictAtApproval: approval.verdictAtApproval,
-        },
-      },
-    });
-    emitSandboxAudit(auditEntry).catch(() => {
-      // intentionally swallowed; audit failure must not block execution
-    });
-  } catch {
-    // building the audit entry must never block tool execution
-  }
+  logPermissionEvent("permission_approval_memory_hit", {
+    tool: permissionLogId(toolName), source, trustOrigin: context.trustOrigin,
+    sandboxKind: ctx.sandboxCapability.kind, scope: approval.scope,
+    ruleRisk: ruleVerdict.level, modelRisk: freshReviewLevel ?? undefined, reviewerRisk: composed.level,
+  });
 
   // Disclosure. This lane used to end at a bare `console.info`, so a foreground memory auto-approve was invisible in the UI while the reviewer lane's identical decision raised a
   // toast. Both lanes now go through `PermissionManager.discloseUserApprovalHit`, the single producer; this does NOT get its own broadcast, or the two would drift apart again.

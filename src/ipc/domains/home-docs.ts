@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 // Expose pending packaged-document updates as explicit keep, apply, or merge actions.
 import { ipcMain } from "electron";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
@@ -40,13 +41,8 @@ export interface HomeDocsStatus {
   mergedContent: string | null;
 }
 
-function auditHomeDocs(auditLogger: AuditLogger, detail: Record<string, unknown>): void {
-  auditLogger.log({
-    timestamp: new Date().toISOString(),
-    sessionId: "home-docs",
-    type: "info",
-    input: JSON.stringify(detail),
-  });
+function auditHomeDocs(_auditLogger: AuditLogger, _detail: Record<string, unknown>): void {
+  logPermissionEvent("home_docs_action", { sessionId: permissionLogId("home-docs") });
 }
 
 export function registerHomeDocsHandlers(deps: IpcDeps): void {

@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "./lib/permission-log.js";
 import type { MainWindow } from "./main/main-window-host.js";
 import { readPluginRegistry, vouchedInstalledPluginIds } from "./plugins/registry.js";
 import { requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
@@ -334,31 +335,16 @@ export async function bootstrap(
     approvalGate,
     {
       onConcurrent: () =>
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "a2a-remote",
-          type: "warn",
-          input: "a2a-remote:approval-concurrent-denied",
-        }),
+        logPermissionEvent("remote_approval_concurrent_denied", { sessionId: permissionLogId("a2a-remote") }, "warn"),
       onError: () =>
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "a2a-remote",
-          type: "warn",
-          input: "a2a-remote:approval-error-denied",
-        }),
+        logPermissionEvent("remote_approval_error_denied", { sessionId: permissionLogId("a2a-remote") }, "warn"),
     },
     { allowOnceOnly: true },
   );
   if (!remoteA2AAgentActionApprover)
     throw new Error("a2a-remote-approval-unavailable");
-  const auditRemoteA2A = (code: string) =>
-    ctx.bootAuditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "a2a-remote",
-      type: "warn",
-      input: `a2a-remote:${code}`,
-    });
+  const auditRemoteA2A = (_code: string) =>
+    logPermissionEvent("remote_approval_refused", { sessionId: permissionLogId("a2a-remote") }, "warn");
   // Read once, and handed to the runtime rather than re-read by it, so what
   // the status channel later compares against is exactly what this run used.
   const remoteA2ABootGates = snapshotA2ARemoteGates(settingsService);
@@ -417,13 +403,7 @@ export async function bootstrap(
           removals.cleaned.length,
           removals.unresolved.length,
         );
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "boot",
-          type: removals.unresolved.length > 0 ? "warn" : "info",
-          input: "plugin-removal-recovery",
-          output: JSON.stringify(removals),
-        });
+        logPermissionEvent("plugin_removal_recovery", { sessionId: permissionLogId("boot") });
       }
       if (pendingRecoverySkipped) {
         log.warn(
@@ -438,13 +418,7 @@ export async function bootstrap(
         );
       }
       if (unresolved.length > 0) {
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "boot",
-          type: "warn",
-          input: "plugin-update-recovery-unresolved",
-          output: JSON.stringify(unresolved),
-        });
+        logPermissionEvent("plugin_update_recovery_unresolved", { sessionId: permissionLogId("boot") }, "warn");
       }
     })
     .catch((err) => {
@@ -452,13 +426,7 @@ export async function bootstrap(
         "boot: plugin migration/recovery failed (pending rows remain hidden): %s",
         (err as Error).message,
       );
-      ctx.bootAuditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "boot",
-        type: "warn",
-        input: "plugin-migration-recovery-failed",
-        output: (err as Error).message,
-      });
+      logPermissionEvent("plugin_migration_recovery_failed", { sessionId: permissionLogId("boot") }, "warn");
     });
   // Agent plugins' data directories are tombstoned the same way at runtime.
   await sweepOrphanUninstallDirs(agentPluginDataRoot())
@@ -467,17 +435,11 @@ export async function bootstrap(
   // confined process can run, and plugin start (below) begins that phase
   // (lib/confined-process-phase.ts).
   await sweepOrphanUninstallDirs(sweeperPluginPaths.pluginsRoot, {
-    auditFailures: (failures) => {
+    auditFailures: (_failures) => {
       // Surface persistent rm failures (typically antivirus / corp endpoint
       // protection holding handles past process death) into the audit log
       // so operators see them beyond the info-level summary line.
-      ctx.bootAuditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "boot",
-        type: "warn",
-        input: `plugin-tombstone-sweep-failed root=${sweeperPluginPaths.pluginsRoot}`,
-        output: JSON.stringify(failures),
-      });
+      logPermissionEvent("plugin_tombstone_sweep_failed", { sessionId: permissionLogId("boot") }, "warn");
     },
   })
     .then(({ swept, failed }) => {
@@ -507,27 +469,13 @@ export async function bootstrap(
   // Plugins' HostApi storage moved out of `data/` into the host-only
   // `storage/` beside it. A root whose state predates that gets its storage
   // view copied over once, here, before any confined process can run.
-  const PLUGIN_HOST_STORAGE_AUDIT_SKIPPED_MAX = 50;
   await migratePluginHostStorage(sweeperPluginPaths.pluginsRoot)
     .then(({ migrated, skipped, failed }) => {
       if (migrated.length > 0 || skipped.length > 0) {
         log.info("boot: plugin host storage migration migrated=%d skipped=%d", migrated.length, skipped.length);
       }
       if (failed.length > 0 || skipped.length > 0) {
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "boot",
-          type: failed.length > 0 ? "warn" : "info",
-          input: "plugin-host-storage-migration",
-          // Bounded: a data/ holding a node_modules or a venv skips thousands
-          // of links, and one audit record should not carry them all.
-          output: JSON.stringify({
-            migrated,
-            failed,
-            skippedCount: skipped.length,
-            skipped: skipped.slice(0, PLUGIN_HOST_STORAGE_AUDIT_SKIPPED_MAX),
-          }),
-        });
+        logPermissionEvent("plugin_host_storage_cleanup", { sessionId: permissionLogId("boot") });
       }
     })
     .catch((err) => {
@@ -548,13 +496,7 @@ export async function bootstrap(
         );
       }
       if (failed.length > 0) {
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "boot",
-          type: "warn",
-          input: "diff-cache-sweep-failed",
-          output: JSON.stringify(failed),
-        });
+        logPermissionEvent("diff_cache_sweep_failed", { sessionId: permissionLogId("boot") }, "warn");
       }
     })
     .catch((err) => {
@@ -744,13 +686,7 @@ export async function bootstrap(
       }),
     });
   if (unresolvedUninstallCleanups.length > 0) {
-    ctx.bootAuditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "boot",
-      type: "warn",
-      input: "plugin-uninstall-cleanup-unresolved",
-      output: JSON.stringify(unresolvedUninstallCleanups),
-    });
+    logPermissionEvent("plugin_uninstall_cleanup_unresolved", { sessionId: permissionLogId("boot") }, "warn");
   }
 
   // §4.5.9: SystemPromptBuilder.
@@ -796,15 +732,9 @@ export async function bootstrap(
   configureChatGptPlanRuntime({
     secrets: settingsService,
     networkFetch: host.networkFetch,
-    onEvent: (event) => {
+    onEvent: (_event) => {
       try {
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "subscription-runtime",
-          type: event.failure ? "warn" : "info",
-          // Codes only: the session event carries no token, URL or account detail.
-          input: JSON.stringify({ provider: "chatgpt-plan", event: event.event, ...(event.failure ? { failure: event.failure } : {}) }),
-        });
+        logPermissionEvent("subscription_runtime", { sessionId: permissionLogId("subscription-runtime"), provider: permissionLogId("chatgpt-plan") });
       } catch {
         // Auditing never changes a session outcome.
       }

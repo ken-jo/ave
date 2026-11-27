@@ -1,9 +1,9 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 
 
 import type { RunModelSettings } from "../shared/run-model-settings.js";
 import { detectFromStream, type DetectorResult } from "../engine/checkpoint-detector.js";
-import { isLLMVendor, type GenericMessage, type TokenUsage, type TokenUsageByModel } from "../engine/llm/types.js";
-import { normalizeAiSdkUsageForCost } from "../engine/llm/pricing.js";
+import { type GenericMessage, type TokenUsage, type TokenUsageByModel } from "../engine/llm/types.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import type { IdleSchedulerService } from "../main/idle-scheduler.js";
@@ -161,29 +161,11 @@ export class PostTurnHookChain {
       const model =
         ctx.vendorModel ??
         (llmSettings ? activeLlmRouteModel(llmSettings) : undefined);
-      const auditTokenUsage = provider && isLLMVendor(provider)
-        ? normalizeAiSdkUsageForCost(ctx.tokenUsage, provider)
-        : ctx.tokenUsage;
-      const auditUsageByModel = ctx.usageByModel?.map((segment) => ({
-        ...segment,
-        tokenUsage: normalizeAiSdkUsageForCost(segment.tokenUsage, segment.vendorProvider),
-      }));
       const auditRoute =
         ctx.tokenUsage && provider && model
           ? `${provider}/${model}`
           : ctx.route;
-      this.deps.auditLogger?.logTurn({
-        sessionId: ctx.sessionId,
-        input: ctx.input,
-        output: outputForHooks,
-        toolCalls: ctx.toolCalls,
-        tokenUsage: auditTokenUsage,
-        usageByModel: auditUsageByModel,
-        subscriptionUsage: ctx.subscriptionUsage,
-        toolExposure: ctx.toolExposure,
-        route: auditRoute,
-        ...(ctx.modelSettings ? { modelSettings: ctx.modelSettings } : {}),
-      });
+      logPermissionEvent("post_turn_hook_finished", { sessionId: permissionLogId(ctx.sessionId), route: permissionLogId(auditRoute) });
     } catch (err) {
       log.warn("audit failed: %s", err);
     }

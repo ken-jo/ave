@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 // Use the shared app version; the runtime's version API reports the binary version in unpackaged runs.
 // The host-renderer guard is the disclosure boundary for this unprojected response.
 import { ipcMain } from "electron";
@@ -26,8 +27,7 @@ export function registerAppHandlers(deps: IpcDeps): void {
   };
   ipcMain.handle(CHANNELS.app.relaunch, (event, payload: unknown): AppRelaunchResult => {
     const refuse = (error: AppRelaunchError): AppRelaunchResult => {
-      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "ipc-guard", type: "warn",
-        input: JSON.stringify({ channel: CHANNELS.app.relaunch, error }) });
+      logPermissionEvent("ipc_sender_refused", { sessionId: permissionLogId("ipc-guard"), channel: permissionLogId(CHANNELS.app.relaunch) }, "warn");
       return { ok: false, error };
     };
     const window = deps.getMainWindow();

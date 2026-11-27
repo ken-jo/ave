@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { redactForLLM } from "../audit/dlp-filter.js";
 import { MAX_HOOK_CONTEXT_CHARS, hookInvocationFailureReason, type ScriptHookInvocationResult } from "./script-hook-types.js";
@@ -19,16 +20,18 @@ export function hookContextForControl(control: object): readonly string[] {
   return controlContext.get(control) ?? [];
 }
 
-export function recordHookExecutionAudit(logger: Pick<AuditLogger, "log"> | undefined, sessionId: string, results: readonly ScriptHookInvocationResult[]): void {
+export function recordHookExecutionAudit(_logger: Pick<AuditLogger, "log"> | undefined, sessionId: string, results: readonly ScriptHookInvocationResult[]): void {
   for (const hook of results) {
-    logger?.log({ timestamp: new Date().toISOString(), sessionId, type: hook.decision === "deny" ? "warn" : "info",
-      input: JSON.stringify({ type: "hook_executed", event: hook.hookType, hookSource: hook.hookSource ?? (hook.pluginOwner ? "plugin" : "user"),
-        hookName: redactForLLM(hook.hookPath).redacted,
-        ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
-        ...(hookInvocationFailureReason(hook) === undefined ? {} : { failureReason: hookInvocationFailureReason(hook) }),
-        handlerType: hook.handlerType ?? "command", commandIdentity: hook.commandIdentity, decision: hook.decision, durationMs: hook.durationMs,
-        additionalContextChars: hook.additionalContext?.length ?? 0, inputModified: hook.updatedInput !== undefined }),
-      output: "Hook execution recorded", toolCalls: [] });
+    logPermissionEvent("hook_executed", {
+      sessionId: permissionLogId(sessionId),
+      hookType: hook.hookType,
+      hookSource: hook.hookSource ?? (hook.pluginOwner ? "plugin" : "user"),
+      handlerType: hook.handlerType ?? "command",
+      decision: hook.decision,
+      failureReason: hookInvocationFailureReason(hook),
+      elapsedMs: hook.durationMs,
+      inputModified: hook.updatedInput !== undefined,
+    }, hook.decision === "deny" ? "warn" : "info");
   }
 }
 

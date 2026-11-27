@@ -1,4 +1,5 @@
-import { admitToolInvocation, admitToolInvocationWhileAuditOpen, appendToolInvocationAudit, toolInvocationsSealed } from "../../tools/invocation-ledger.js";
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
+import { admitToolInvocation, admitToolInvocationWhileOpen, appendToolInvocationAudit, toolInvocationsSealed } from "../../tools/invocation-ledger.js";
 import { HostExitAbortError, isHostExitAbort } from "../../shared/host-exit-abort.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
 import { abortSupersedesApprovalDecision } from "../../tools/pipeline/approval-outcome.js";
@@ -69,7 +70,7 @@ const EXTENSION_START_NOTICE_KEYS = {
 
 /** The card, the notice and the audit rows of an extension start that nothing confines. */
 export function bootExtensionStartAsker(ctx: Pick<BootContext, "approvalGate" | "bootAuditLogger" | "notificationService">): ExtensionStartAsker {
-  const { approvalGate, bootAuditLogger } = ctx;
+  const { approvalGate } = ctx;
   return createExtensionStartAsker({
     approvalGate,
     reason: (starts) => {
@@ -83,11 +84,7 @@ export function bootExtensionStartAsker(ctx: Pick<BootContext, "approvalGate" | 
       const body = EXTENSION_START_NOTICE_KEYS[start.cause][why];
       ctx.notificationService.deliver({ kind: "system", title: t("extensionStart.notStartedTitle"), body: t(body, { name: start.label }), bypassFocusGate: true });
     },
-    record: (event, start) => bootAuditLogger.log({
-      timestamp: new Date().toISOString(), sessionId: "extension-start", type: "info",
-      input: JSON.stringify({ event, kind: start.kind, key: start.key, cause: start.cause }),
-      output: `[extension_start_${event}] ${start.label}`,
-    }),
+    record: (_event, start) => logPermissionEvent("extension_start_decision", { sessionId: permissionLogId("extension-start"), kind: permissionLogId(start.kind) }),
   });
 }
 
@@ -107,11 +104,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
     transport: ctx.singleHopNetworkFetch,
     allowedUrls: hookSystem.policy.allowedHttpHookUrls,
     allowedEnvVars: hookSystem.policy.httpHookAllowedEnvVars,
-    auditTarget: (entry) => bootAuditLogger.log({
-      timestamp: new Date().toISOString(), sessionId: "hooks", type: "info",
-      input: JSON.stringify(entry), output: "HTTP hook request target reviewed",
-      toolCalls: [{ name: "hook_http_request", isError: entry.outcome === "denied", trust: "high" }],
-    }),
+    auditTarget: (_entry) => logPermissionEvent("hook_http_target_checked", { sessionId: permissionLogId("hooks") }),
   });
   const pluginOperationGrants = new PluginOperationGrantCoordinator();
   const pluginOperationIdentityProvider: PluginOperationIdentityProvider = (
@@ -638,7 +631,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
     expectedGenerationId,
   }) => {
     // A closed audit has no row left for the denial; refuse instead of admitting.
-    const admission = admitToolInvocationWhileAuditOpen(toolName);
+    const admission = admitToolInvocationWhileOpen(toolName);
     if (!admission) throw new HostExitAbortError();
     try {
       const lifecycle = ctx.pluginBundleLifecycle;

@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import type { SettingsService } from "../data/settings-store.js";
 import type { MemoryManager, PromptMemorySource } from "../memory/memory-manager.js";
 import type { MemoryUsageRecorder } from "../memory/memory-usage-log.js";
@@ -475,7 +476,7 @@ function callLlmWithOptionalOutputLimit(
 
 export function createCallLlmForPlugin(
   conversationLoop: ConversationLoop,
-  auditLogger: AuditLogger,
+  _auditLogger: AuditLogger,
   options: CallLlmRateLimitOptions = {},
 ): (pluginId: string, prompt: string, opts?: { maxTokens?: number; systemPrompt?: string; signal?: AbortSignal },
 ) => Promise<string> {
@@ -489,12 +490,7 @@ export function createCallLlmForPlugin(
     const fresh = arr.filter((t) => now - t < windowMs);
     if (fresh.length >= maxCalls) {
       try {
-        auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "plugin",
-          type: "error",
-          input: `[plugin:${pluginId}] callLlm rate-limit exceeded (${fresh.length}/${maxCalls} in ${windowMs}ms)`,
-        });
+        logPermissionEvent("plugin_llm_rate_limited", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
       } catch {}
       throw new Error(
         `[plugin:${pluginId}] callLlm rate-limit exceeded — ${maxCalls} calls per ${windowMs}ms`,
@@ -504,12 +500,7 @@ export function createCallLlmForPlugin(
     buckets.set(pluginId, fresh);
 
     try {
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "plugin",
-        type: "tool_call",
-        input: `[plugin:${pluginId}] callLlm promptLen=${prompt.length}`,
-      });
+      logPermissionEvent("plugin_llm_called", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) });
     } catch {}
 
     return callLlmWithOptionalOutputLimit(conversationLoop, prompt, opts);

@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 // External dispatch shares renderer handlers but requires the public allowlist and gesture policy.
 // Allowlisted mutations require in-app consent before reaching a handler.
 import {
@@ -147,13 +148,7 @@ export function createLocalApi(deps: LocalApiDeps): LocalApi {
         }
         if (approval.approved !== true) {
           const approvalOutcome = approval.outcome;
-          ipc.auditLogger.log({
-            timestamp: new Date().toISOString(),
-            sessionId: ipc.conversationLoop.getSessionId(),
-            type: "approval",
-            input: `[external-mutation] channel=${channel} origin=${origin}`,
-            output: `approval=${approvalOutcome}`,
-          });
+          logPermissionEvent("external_permission_refused", { sessionId: permissionLogId(ipc.conversationLoop.getSessionId()) }, "warn");
           return { ok: false, error: EXTERNAL_MUTATION_DENIED, approvalOutcome };
         }
         const data = await routeExternalMutation(channel, args, origin);

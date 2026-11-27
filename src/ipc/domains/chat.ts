@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { showNativeMessage, pickNativeFiles, pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
 import { registerMemoryMapHandlers } from './memory-map.js';
 import { readMemoryDetail, readMemorySummaries } from "../../memory/memory-detail.js";
@@ -21,7 +22,6 @@ import {
   MAX_LOCAL_USER_CONTENT_TEXT_PARTS,
   normalizeLocalUserContentParts,
 } from "../../main/subscription-attachment-input.js";
-import type { ChatUtteranceMode } from "../../shared/chat-utterance.js";
 import { formatAppMessageEnvelope, isAppMessageOrigin } from "../../shared/mcp-app-message-source.js";
 import { parseStagedEnvelope, isMissingStagedEnvelopeErrorMessage } from "../../shared/staged-origins.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
@@ -1116,13 +1116,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       ? group.loop.queueUserGuidance(effective) : group.loop.queueGuidance(effective);
     if (queueResult === "queued") {
       // Audit guide acceptance as a mutation, recording metadata without user text.
-      const mode: ChatUtteranceMode = "guide";
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: group.loop.getSessionId(),
-        type: "info",
-        input: `chat:utterance:${mode}:queued:origin=${appIntent ? "app-emitted" : "guidance"}:len=${effective.length}`,
-      });
+      logPermissionEvent("chat_utterance_queued", { sessionId: permissionLogId(group.loop.getSessionId()) });
       return { ok: true };
     }
     return { ok: false, error: queueResult };
@@ -1159,7 +1153,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const sessionId = groupOf(e, chatGroupId, CHANNELS.chat.controlShellTask).loop.getSessionId();
     if (sessionId !== expectedSessionId) return { ok: false, error: "session-changed" };
     const result = controlShellTask(sessionId, action, shellId as string | undefined);
-    auditLogger.log({ timestamp: new Date().toISOString(), sessionId, type: "info", input: JSON.stringify({ event: "shell_task_control", action, ok: result.ok }) });
+    logPermissionEvent("shell_task_control", { sessionId: permissionLogId(sessionId), action: permissionLogId(action), ok: result.ok });
     return result;
   });
 
@@ -1422,10 +1416,10 @@ export function registerChatHandlers(deps: IpcDeps): void {
           extraAllowedDirectories: conversationLoop.getTurnAdditionalDirectories(),
         }));
         if (!restored.ok) {
-          auditLogger.log({ timestamp: new Date().toISOString(), type: "warn", sessionId, input: `code_checkpoint_refused:${messageId}:${mode}`, output: restored.error });
+          logPermissionEvent("code_checkpoint_refused", { sessionId: permissionLogId(sessionId) }, "warn");
           return restored;
         }
-        auditLogger.log({ timestamp: new Date().toISOString(), type: "info", sessionId, input: `code_checkpoint_restored:${messageId}:${mode}` });
+        logPermissionEvent("code_checkpoint_restored", { sessionId: permissionLogId(sessionId) });
         if (mode === "code") return { ok: true, text: "" };
       }
       // Prune boundaries discarded by this rewind, not those absent after earlier compactions.
@@ -1744,12 +1738,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
     const newSessionId = createDlpSafeUuid();
     await memoryManager.sessions.saveImportedSession(newSessionId, validated.messages);
-    auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: newSessionId,
-      type: "info",
-      input: `chat:import:sessionId=${newSessionId}:messageCount=${validated.messages.length}`,
-    });
+    logPermissionEvent("chat_imported", { sessionId: permissionLogId(newSessionId) });
     return { ok: true, sessionId: newSessionId, messageCount: validated.messages.length };
   });
 
@@ -2013,12 +2002,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     ) {
       return { ok: false, error: "invalid-args" };
     }
-    auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId,
-      type: "warn",
-      input: `feedback:${rating}:${sessionId}:${messageIndex}`,
-    });
+    logPermissionEvent("chat_feedback", { sessionId: permissionLogId(sessionId) }, "warn");
     if (rating === "up" && starredStore) {
       const existing = starredStore.list().find(
         (s) => s.sessionId === sessionId && s.messageIndex === messageIndex,

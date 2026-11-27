@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 /** Share one audit writer across plugins, hooks, and approvals; seed auth partitions before uninstall can run. */
 import { NotificationService } from "../../main/notification-service.js";
 import {
@@ -12,7 +13,6 @@ import {
 } from "../../main/plugin-auth-partition-tracker.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
-import { initAdminPolicyAudit } from "../../lib/admin-policy-file.js";
 import type { BootContext } from "../context.js";
 
 const log = createLogger("ave");
@@ -29,7 +29,6 @@ export async function setupAuditAndNotification(ctx: BootContext): Promise<void>
     ensureAuditSecret(permissionAuditSecretStore),
     permissionAuditSecretStore,
   );
-  initAdminPolicyAudit(bootAuditLogger);
 
   // Rotation must drain the runtime writer’s queue, not a separate maintenance logger.
   const runAuditMaintenance = () => {
@@ -83,28 +82,14 @@ export async function setupAuditAndNotification(ctx: BootContext): Promise<void>
       if (persisted !== null) seedPluginAuthPartitions(persisted);
     })
     .catch(async (err) => {
-      const msg = (err as Error).message;
-      bootAuditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "boot",
-        type: "error",
-        input: "plugin-auth-partition-store: load failed at boot",
-        output: msg,
-      });
-      await bootAuditLogger.flush();
+      logPermissionEvent("plugin_auth_partition_load_failed", { sessionId: permissionLogId("boot") }, "warn");
       throw err;
     });
   wirePluginAuthPartitionPersistence({
     write: writePersistedPluginAuthPartitions,
     delete: deletePersistedPluginAuthPartitions,
-    onError: (msg) => {
-      bootAuditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "boot",
-        type: "error",
-        input: "plugin-auth-partition-store: async write/delete failed",
-        output: msg,
-      });
+    onError: (_msg) => {
+      logPermissionEvent("plugin_auth_partition_write_failed", { sessionId: permissionLogId("boot") }, "warn");
     },
   });
 

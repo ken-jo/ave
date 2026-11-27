@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import type { MainWindow } from "../main/main-window-host.js";
 // Reuse safe-send for destroyed windows and send races so one failed delivery cannot block peers.
 
@@ -35,12 +36,7 @@ export function fanOutToAllWindows(
   }
   if (options.auditLogger) {
     try {
-      options.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: options.auditSessionId ?? "ipc",
-        type: "info",
-        input: `[broadcast] channel=${channel} delivered=${delivered}/${windows.length}`,
-      });
+      logPermissionEvent("ipc_broadcast", { sessionId: permissionLogId(options.auditSessionId ?? "ipc") });
     } catch {
     }
   }

@@ -1,3 +1,4 @@
+import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
 import { createMcpServerDisconnectedSink } from "../../mcp/mcp-server-disconnect-sink.js";
 import type { BaseWindow } from "electron";
 import type { MainWindow } from "../../main/main-window-host.js";
@@ -260,13 +261,7 @@ export async function initPluginRuntime(
       if (manifest) emitEvent("plugin.lifecycle.failed", { pluginId: manifest.id, version: manifest.version, errorClass: "PluginRuntimeError" });
     }
     try {
-      bootAuditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "plugin-runtime",
-        type: level === "error" ? "error" : "tool_call",
-        input: `[${level.toUpperCase()}] ${message}`,
-        output: serializeRuntimeAuditData(data),
-      });
+      logPermissionEvent("plugin_worker_log", { sessionId: permissionLogId("plugin-runtime") });
     } catch (error) {
       log.error({ err: error }, "plugin runtime audit sink failed");
     }
@@ -429,4 +424,3 @@ export async function initPluginRuntime(
 }
 
 export type { MainWindow };
-import { serializeRuntimeAuditData } from "../../audit/runtime-audit-json.js";
