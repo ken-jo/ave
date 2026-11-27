@@ -161,7 +161,8 @@ it('refuses the Windows session search reply when its sender navigates during th
   const sessions: WindowsSessionRepository = Object.assign(Object.create(WindowsSessionRepository.prototype), {
     searchSessionsWithCurrentPolicy: async () => result.promise,
   });
-  registerChatHandlers({ ...deps, memoryManager: { ...deps.memoryManager, sessions } });
+  const memoryManager = Object.assign({}, deps.memoryManager, { sessions });
+  registerChatHandlers({ ...deps, memoryManager });
   const pending = invokeNativeChatHandler(state.handles, CHANNELS.memory.sessionsSearch, 'search term');
   const frame = nativeChatFrameEvent().senderFrame as unknown as { url: string };
   frame.url = 'https://example.test';
