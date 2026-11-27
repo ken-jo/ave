@@ -37,25 +37,41 @@ const LOST = {
   code: null, timedOut: false, cancelled: false, rejected: false, cleanupUnverified: true,
 } as const;
 
+// The supervisor ended with no receipt before it reported the run started. Whether the SDK had started anything is
+// not known, so cleanup stays unverified, but the command is reported as a failed start, not as a stopped run.
+const START_LOST = { ...LOST, startFailed: true } as const;
+
 interface ShellOutcome {
   readonly code: number | null;
   readonly timedOut: boolean;
   readonly cancelled: boolean;
   readonly rejected: boolean;
   readonly cleanupUnverified: boolean;
+  /** No receipt and no ready frame: the container start failed before the run. */
+  readonly startFailed?: true;
+  /** The run was stopped because its control channel failed; the stop itself was confirmed. */
+  readonly transportFailed?: true;
   readonly failure?: Extract<ShellReceipt, { type: "error" }>;
 }
 
 function shellOutcome(receipt: ShellReceipt, ready: boolean): ShellOutcome {
   if (receipt.type === "error") {
     if (receipt.code === "cleanup-unverified" || receipt.code === "supervisor-lost") return LOST;
-    if (ready && receipt.code !== "contract") return LOST;
-    return { ...LOST, cleanupUnverified: false, rejected: !ready, failure: receipt };
+    // After the run began, a contract receipt follows a confirmed stop: the channel failed, the container did not refuse.
+    if (ready && receipt.code === "contract") return { ...LOST, cleanupUnverified: false, transportFailed: true, failure: receipt };
+    if (ready) return LOST;
+    return { ...LOST, cleanupUnverified: false, rejected: true, failure: receipt };
   }
   if (receipt.type === "stopped") return { ...LOST, cancelled: true, cleanupUnverified: false };
   if (!ready) return LOST;
   return { ...LOST, code: receipt.exitCode, timedOut: receipt.timedOut, cleanupUnverified: false };
 }
+
+function lostOutcome(ready: boolean): ShellOutcome {
+  return ready ? LOST : START_LOST;
+}
+
+export { lostOutcome as _lostShellOutcomeForTest, shellOutcome as _shellOutcomeForTest };
 
 type ShellSupervisorLocation = ReturnType<typeof mxcShellSupervisorLocation>;
 
@@ -228,8 +244,8 @@ export function startMxcShellSupervisor(
   const watchdog = setTimeout(handleFailure, timeoutMs + STOP_MS);
   const completion = (async (): Promise<ShellOutcome> => {
     const result = await Promise.race([
-      Promise.all([exited, readReceipts]).then(() => receipt === undefined ? LOST : shellOutcome(receipt, ready)),
-      lost.then(() => LOST),
+      Promise.all([exited, readReceipts]).then(() => receipt === undefined ? lostOutcome(ready) : shellOutcome(receipt, ready)),
+      lost.then(() => lostOutcome(ready)),
     ]);
     settled = true;
     clearTimeout(watchdog);

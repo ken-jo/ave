@@ -7,11 +7,9 @@ import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { MxcExtensionChannel, type MxcFramePayload } from "./mxc-extension-channel.js";
 import { MxcProcessContractError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
 import { mapSeatbeltShellRequest, type buildSeatbeltShellRequest } from "./mxc-macos.js";
-import { MxcNativeProcess } from "./mxc-native-process.js";
+import { MxcNativeProcess, seatbeltCleanupUnverified } from "./mxc-native-process.js";
 import { bootstrapMxcShellSupervisor, MXC_SHELL_ASYNC_STACK_BYTES, type MxcShellSdk } from "./mxc-shell-supervisor-bootstrap.js";
 import { readMxcSupervisorKey } from "./mxc-supervisor-transport.js";
-
-export const SEATBELT_CLEANUP_WARNING = "Seatbelt: the process exited, but processes it started could not be terminated";
 
 type ShellStart = Extract<MxcFramePayload, { type: "shell-start" }>;
 type ShellReceipt = Extract<MxcFramePayload, { type: "exit" | "stopped" | "error" }>;
@@ -38,7 +36,7 @@ async function forward(source: Readable, destination: Writable): Promise<void> {
   }
 }
 
-async function serveMxcShellSupervisor(
+export async function serveMxcShellSupervisor(
   channel: MxcExtensionChannel, liveness: Readable, stdout: Writable, stderr: Writable,
   bootstrap: () => Promise<MxcShellSdk>, onFatal: () => void,
 ): Promise<void> {
@@ -133,7 +131,7 @@ async function serveMxcShellSupervisor(
       const result = await owned.completion;
       await owned.dispose({ drainOutput: false });
       await streams;
-      if (owned.state !== "terminated" || owned.warnings.some((warning) => warning.startsWith(SEATBELT_CLEANUP_WARNING))) {
+      if (owned.state !== "terminated" || seatbeltCleanupUnverified(owned.warnings)) {
         return CLEANUP_UNVERIFIED;
       }
       return stopping ? stopped() : { type: "exit", exitCode: result.exitCode, timedOut: result.timedOut };

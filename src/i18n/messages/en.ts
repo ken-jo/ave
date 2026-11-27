@@ -5197,6 +5197,8 @@ export const en = {
   "sandboxPolicy.containerStartRefused": "The macOS sandbox container refused to start the shell command.",
   "sandboxPolicy.containerShellCleanupUnverified": "The shell command was stopped, but its processes could not be confirmed gone.",
   "sandboxPolicy.containerShellRefused": "The macOS sandbox container refused the shell command: {reason}",
+  "sandboxPolicy.containerShellStartFailed": "The macOS sandbox container failed to start the shell command, and Ave could not confirm that nothing started.",
+  "sandboxPolicy.containerShellTransportFailed": "The shell command was stopped because Ave lost its control channel to the macOS sandbox container.",
   "sandboxPolicy.scanNarrowed": "{reason}; write access narrowed to {roots}. Unscanned or withheld roots: {removed}.",
   "sandboxPolicy.scanEntryBudget": "Project too large to scan for nested repositories within the directory-entry budget",
   "sandboxPolicy.scanPathBudget": "Project has too many repository control paths to scan within the policy budget",

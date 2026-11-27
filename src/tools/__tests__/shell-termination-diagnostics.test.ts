@@ -31,7 +31,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
 const containerLaunch = vi.hoisted(() => ({
   settle: undefined as undefined | ((outcome: {
     code: number | null; timedOut: boolean; cancelled: boolean; rejected: boolean; cleanupUnverified: boolean;
-    failure?: { type: "error"; code: string; message: string };
+    startFailed?: true; transportFailed?: true; failure?: { type: "error"; code: string; message: string };
   }) => void),
   child: undefined as undefined | import("node:child_process").ChildProcess & { stdout: import("node:stream").PassThrough; stderr: import("node:stream").PassThrough },
   // Runs once the launch is prepared: after the permit is consumed, before the supervisor starts.
@@ -394,6 +394,9 @@ describe("macOS container shell completion", () => {
     ["cancelled", { code: null, cancelled: true }, "sandboxPolicy.containerShellCancelled"],
     ["timed out", { code: null, timedOut: true }, "sandboxPolicy.containerShellTimedOut"],
     ["cleanup unverified", { code: null, cleanupUnverified: true }, "sandboxPolicy.containerShellCleanupUnverified"],
+    ["failed start", { code: null, cleanupUnverified: true, startFailed: true }, "sandboxPolicy.containerShellStartFailed"],
+    ["lost control channel", { code: null, transportFailed: true, failure: { type: "error", code: "contract", message: "x" } },
+      "sandboxPolicy.containerShellTransportFailed"],
   ] as const)("reports a %s stop as an error with its own ending", async (_name, outcome, key) => {
     const result = await run(outcome, "partial\n");
     expect(result.isError).toBe(true);
@@ -449,8 +452,10 @@ describe.runIf(HOST_PLATFORM !== "win32")("macOS container shell spawn directory
       mkdirSync(approved);
     };
     const result = await new BashTool().execute(input, context);
-    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } });
-    expect(result.output).toContain(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, sandboxAttempted: true } });
+    // Revoked, as the wrap route words it: not a container refusal, and no isolation claim for a run that never started.
+    expect(result.output).toBe(`spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`);
+    expect(result.metadata).not.toHaveProperty("isolation");
     expect(vi.mocked(assertHostShellSpawnDirectory)).toHaveBeenCalledOnce();
     expect(vi.mocked(assertHostShellSpawnDirectory).mock.calls[0]?.[0]).toMatchObject({ cwdIdentity: { realpath: approved } });
     expect(containerLaunch.child).toBeUndefined();
