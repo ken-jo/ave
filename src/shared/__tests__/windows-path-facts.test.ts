@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { closeSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -255,6 +255,20 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     expect(protectedDacl.aclHex).not.toBe(inherited.aclHex);
     expect(() => readWindowsFileDacls([file, join(fixture, "missing")])).toThrow(/helper failed/);
     expect(() => readWindowsFileDacls([join(fixture, "junction")])).toThrow(/helper failed/);
+  });
+
+  it("refuses a file DACL batch when a file has a second hard link", () => {
+    const file = join(fixture, "directory", "linked file");
+    const alias = join(fixture, "directory", "hard link");
+    writeFileSync(file, "file data");
+    linkSync(file, alias);
+    const paths = [join(fixture, "directory", "file"), file];
+    try {
+      expect(() => readWindowsFileDacls(paths)).toThrow(expect.objectContaining({ status: 4 }));
+    } finally {
+      unlinkSync(alias);
+    }
+    expect(readWindowsFileDacls(paths)).toHaveLength(2);
   });
 
   it("rejects incomplete or malformed file DACL replies", () => {

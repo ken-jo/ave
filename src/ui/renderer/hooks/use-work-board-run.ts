@@ -1,8 +1,10 @@
+import type { WorkflowRunView, WorkflowStageActivityUpdate } from "../../../shared/workflow-run-view.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AveApi } from "../types.js";
 import type {
   RunProgressEventPayload,
   RunTranscriptEvent,
+  TemplateRunRequest,
   WorkBoardCancelIpcResult,
   WorkBoardRunToolStep,
   WorkBoardStagePhase,
@@ -12,7 +14,6 @@ import type {
   WorkItemRunResult,
   WorkItemRunStatus,
 } from "../../../shared/work-board-types.js";
-import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { t } from "../../../i18n/runtime.js";
 
@@ -76,7 +77,18 @@ export interface WorkItemRunState {
   plan?: { text: string; at: string };
   /** When each phase began, from the first event this board saw in it. */
   phaseAt: Partial<Record<RunPhase, string>>;
+  stageUpdates?: Record<string, WorkflowStageUpdate>;
+  workflowRun?: WorkflowRunView;
+  workflowRunAt?: string;
+  stageActivity?: Record<string, WorkflowStageActivityUpdate>;
 }
+
+export type WorkflowStageUpdate = Pick<RunProgressEventPayload, "judgedBy" | "at"> & {
+  stageId: string;
+  attempt: number;
+  phase: WorkBoardStagePhase | "executing";
+  sessionId?: string;
+};
 
 export type RunStateMap = Record<number, WorkItemRunState | undefined>;
 
@@ -366,12 +378,11 @@ export function useWorkBoardRun(
   onPhaseEntered?: () => void,
 ): {
   runState: RunStateMap;
-  runItem: (id: number) => void;
+  runItem: (id: number, template?: TemplateRunRequest) => void;
   /** Send a steer to the item's execute child. A queued steer is recorded as `sent`; a refusal records nothing. */
   steer: (
     id: number,
     text: string,
-    userIntent: UserKeyboardIntentSnapshot | undefined,
   ) => Promise<WorkBoardSteerIpcResult | { ok: false; error: string }>;
   /** Ask the host to stop the item's execution. An accepted stop holds `stopping` until the run settles. */
   stop: (id: number) => Promise<WorkBoardCancelIpcResult | { ok: false; error: string }>;
@@ -432,9 +443,37 @@ export function useWorkBoardRun(
             }
             return;
           }
-          // A stage event of a template run is not the run's phase; the host sends an item change beside it and the board re-lists.
-          if (ev.phase === "stage_gate" || ev.phase === "stage_passed" || ev.phase === "stage_failed") return;
-          const runPhase = ev.phase;
+          if (ev.workflowRun) {
+            const workflowRun = ev.workflowRun;
+            update(ev.itemId, cur => ({ ...cur, workflowRun, workflowRunAt: ev.at }));
+            return;
+          }
+          if (ev.stageActivity) {
+            const activity = ev.stageActivity;
+            update(ev.itemId, cur => ({ ...cur, stageActivity: { ...cur.stageActivity, [activity.stageId]: activity } }));
+            return;
+          }
+          if (ev.subAgentSessionId !== undefined) {
+            update(ev.itemId, cur => ({ ...cur, sessionIds: withSession(cur.sessionIds, ev.subAgentSessionId) }));
+            return;
+          }
+          const { stageId, attempt, phase } = ev;
+          if (stageId !== undefined && attempt !== undefined
+            && (phase === "executing" || phase === "stage_gate" || phase === "stage_passed" || phase === "stage_failed")) {
+            update(ev.itemId, cur => {
+              const prior = cur.stageUpdates?.[stageId];
+              if (prior && (prior.attempt > attempt || (prior.attempt === attempt && (phase === "executing" || prior.at > ev.at)))) return cur;
+              const sessionId = ev.runSessionId ?? (prior?.attempt === attempt ? prior.sessionId : undefined);
+              return {
+                ...cur,
+                stageUpdates: { ...cur.stageUpdates, [stageId]: { stageId, attempt, phase, at: ev.at, judgedBy: ev.judgedBy, sessionId } },
+                sessionIds: withSession(cur.sessionIds, ev.runSessionId),
+              };
+            });
+            return;
+          }
+          if (phase === "stage_gate" || phase === "stage_passed" || phase === "stage_failed") return;
+          const runPhase = phase;
           // A tool step update is not a phase entry either; it only revises that phase's steps.
           const tools = ev.tools;
           if (tools !== undefined) {
@@ -472,7 +511,7 @@ export function useWorkBoardRun(
             };
           });
           // A child's link event (it carries the session and no turn) is not a phase entry: the phase's own entry event already re-listed.
-          if (ev.turn === undefined && ev.runSessionId === undefined && (isActivePhase(ev.phase) || ev.phase === "awaiting_approval")) {
+          if (ev.turn === undefined && ev.runSessionId === undefined && (isActivePhase(runPhase) || runPhase === "awaiting_approval")) {
             onPhaseEnteredRef.current?.();
           }
         }),
@@ -545,26 +584,33 @@ export function useWorkBoardRun(
   }, [api, items, update]);
 
   const runItem = useCallback(
-    (id: number) => {
+    (id: number, template?: TemplateRunRequest) => {
       if (typeof api.runWorkBoardItem !== "function") return;
       // Optimistic: show a starting indicator before runStarted lands.
       resetRun(id, { busy: true });
-      void api.runWorkBoardItem(id).then((result) => {
+      const request = template ? api.runWorkBoardItem(id, { template }) : api.runWorkBoardItem(id);
+      const templateError = (code?: string) => {
+        const key = `reasonCodes.${code}`;
+        const translated = t(key);
+        return translated === key ? t("workflowTemplates.runFailed") : translated;
+      };
+      void request.then((result) => {
         if (!mountedRef.current) return;
         if (result && "ok" in result && result.ok === false) {
-          patch(id, { busy: false, phase: "error", reason: reasonText(result.error), heldNotice: undefined });
+          patch(id, { busy: false, phase: "error", reason: template ? templateError(result.error) : reasonText(result.error), heldNotice: undefined });
           return;
         }
         if (result && "status" in result) {
           update(id, (cur) => {
-            const phase = phaseForRunResult(result.status);
+            const phase = template && result.status === "already_running" ? "error" : phaseForRunResult(result.status);
             // A result that names no reason keeps the text its event already showed for the same end.
             const kept = result.reason === undefined && phase === cur.phase && (phase === "error" || phase === "denied") ? cur.reason : undefined;
             return {
               ...cur,
               busy: false,
               phase,
-              reason: reasonText(result.reason) ?? kept,
+              reason: template && (result.status === "error" || result.status === "not_found" || result.status === "already_running")
+                ? templateError(result.reasonCode) : reasonText(result.reason) ?? kept,
               heldNotice: phase !== undefined && isTerminalPhase(phase) ? undefined : cur.heldNotice,
               endUnconfirmed: phase === "cancelled" && result.reasonCode === END_UNCONFIRMED,
               runSessionId: result.runSessionId ?? cur.runSessionId,
@@ -573,21 +619,21 @@ export function useWorkBoardRun(
         }
       }).catch((err: unknown) => {
         if (!mountedRef.current) return;
-        patch(id, { busy: false, phase: "error", reason: errorMessage(err), heldNotice: undefined });
+        patch(id, { busy: false, phase: "error", reason: template ? templateError() : errorMessage(err), heldNotice: undefined });
       });
     },
     [api, patch, resetRun, update],
   );
 
   const steer = useCallback(
-    async (id: number, text: string, userIntent: UserKeyboardIntentSnapshot | undefined) => {
+    async (id: number, text: string) => {
       if (typeof api.steerWorkBoardRun !== "function") throw new Error("steerWorkBoardRun is not exposed to this window");
       const sentAt = new Date().toISOString();
       const book = steerBookRef.current;
       const generation = generationRef.current.get(id) ?? 0;
       book.beginSend(id);
       try {
-        const result = await api.steerWorkBoardRun(id, text, userIntent);
+        const result = await api.steerWorkBoardRun(id, text);
         // The item's next run started while this steer was in flight: the steer belonged to the run that ended, whose steers are no longer
         // drawn and whose held acks were forgotten. Listed on the new run it would stay "sent" forever.
         if (result.ok && (generationRef.current.get(id) ?? 0) === generation) {

@@ -1,3 +1,4 @@
+import { withoutWorkflowProjection } from "../work-board/workflow/run-read-projection.js";
 /** Sequence isolated plan and execution children around the user's work approval of each plan; persist their output and execution session
  * id on the board. The approval is a decision stored on the item (permission-decision-tree.md "Work approvals"), not a tool-approval card. */
 import { randomUUID } from "node:crypto";
@@ -29,12 +30,13 @@ import type {
   StageGateDecideResult,
   StageJoinDecideInput,
   StageJoinDecideResult,
+  OpenJoinResult,
   StageRetryInput,
   StageRetryResult,
   WorkItemUpdateResult,
 } from "../shared/work-board-types.js";
-import type { EnvelopeToolRef, RunAuthoritySource } from "../shared/workflow-template-types.js";
-import { createStageRunEngine, type StageRunEngineDeps } from "../work-board/workflow/stage-run-engine.js";
+import type { EnvelopeToolRef, RemoteProvisionalStart, RunAuthoritySource } from "../shared/workflow-template-types.js";
+import { createStageRunEngine, type StageRunEngineDeps, type ScheduledTemplateSource, type ScheduledTemplateStart } from "../work-board/workflow/stage-run-engine.js";
 import {
   MAX_PLAN_NOTE_LENGTH,
   BRIEFING_PROPOSAL_KINDS,
@@ -120,7 +122,7 @@ export interface WorkBoardEngineDeps {
   getRunner: () => SubAgentRunner | undefined;
   /** A named profile's model applies to both child phases. */
   getAgentProfile?: (name: string) => Promise<LoadedAgentProfile | null>;
-  emitProgress: (event: WorkBoardRunEvent) => void;
+  emitProgress: (event: WorkBoardRunEvent, project?: { projectRoot?: string }) => void;
   /** Optional transcript storage retains context across restarts and reruns; absence skips persistence. */
   transcriptStorage?: TranscriptStorage;
   /** Invoke learning only after successful persistence; hook failures must not fail a completed run. */
@@ -129,7 +131,13 @@ export interface WorkBoardEngineDeps {
   workflow?: Omit<StageRunEngineDeps, "store" | "getRunner" | "getAgentProfile" | "emit" | "holdItem" | "releaseItem">;
 }
 
+import type { WorkDecisionAuthority } from "../work-board/work-decision-authority.js";
+
 interface RunItemOptions {
+  authority?: WorkDecisionAuthority;
+  remoteProvisional?: RemoteProvisionalStart;
+  onTemplateRunAllocated?: (runId: string) => void;
+  onTemplateStarted?: (runId: string) => void;
   agentName?: string;
   /** Set by the host entrypoint, never copied from a renderer payload. */
   approvalSurface?: WebContents | null;
@@ -160,6 +168,7 @@ interface DecidePlanInput {
 }
 
 interface DecidePlanOptions {
+  authority?: WorkDecisionAuthority;
   /** Set by the host entrypoint: the window the execute (or re-plan) child's tool cards appear in. */
   approvalSurface?: WebContents | null;
 }
@@ -171,6 +180,7 @@ interface DecidePlanOutcome {
 }
 
 export interface WorkBoardEngine {
+  startScheduledTemplate(source: ScheduledTemplateSource, title: string): Promise<ScheduledTemplateStart>;
   /** Combine in-process and persisted active-status guards per item; finished reruns start clean while preserving history. Returns
    * awaiting_approval once the plan is stored; nothing waits for the user here. */
   runItem(itemId: number, opts?: RunItemOptions): Promise<RunItemResult>;
@@ -193,16 +203,18 @@ export interface WorkBoardEngine {
 
   /** Template runs. The user's decision at a stage gate or on a join that could not be collected, a retry of a failed stage, and
    * continuing a run that a restart left with only ready stages. Each is refused and changes nothing unless it matches the stored run. */
-  decideStageGate(itemId: number, input: StageGateDecideInput, opts?: DecidePlanOptions): Promise<StageGateDecideResult>;
-  decideStageJoin(itemId: number, input: StageJoinDecideInput, opts?: DecidePlanOptions): Promise<StageJoinDecideResult>;
-  retryStage(itemId: number, input: StageRetryInput, opts?: DecidePlanOptions): Promise<StageRetryResult>;
-  continueRun(itemId: number, input: { runId: string }, opts?: DecidePlanOptions): Promise<StageRetryResult>;
+  decideStageGate(itemId: number, input: StageGateDecideInput, authority?: WorkDecisionAuthority): Promise<StageGateDecideResult>;
+  decideStageJoin(itemId: number, input: StageJoinDecideInput, authority?: WorkDecisionAuthority): Promise<StageJoinDecideResult>;
+  openStageJoin(itemId: number, input: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
+  retryStage(itemId: number, input: StageRetryInput): Promise<StageRetryResult>;
+  continueRun(itemId: number, input: { runId: string }): Promise<StageRetryResult>;
   /** Called beside the workspace revocation fan-out: stops every live stage child of template runs on that project. */
   projectRootRevoked(canonicalRoot: string): void;
   /** Boot, after the store reconciled: show rows as the run file says and take over unsettled template runs. Spawns nothing. */
   adoptParkedTemplateRuns(): Promise<void>;
   /** Adds what a board reader is told about each row's template run; drops whatever a row says about it itself. */
-  projectTemplateRuns<T extends WorkItemResolved>(items: readonly T[]): Promise<T[]>;
+  readTemplateRuns<T extends WorkItemResolved>(items: readonly T[]): Promise<T[]>;
+  projectTemplateRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }): Promise<T[]>;
   /** The user's clear of a row shown `template-run-not-found`, while it is as its card showed it: the row ends error. Starts and stops
    * nothing. */
   clearMissingRun(itemId: number, input: { revision: string; runId: string }): Promise<WorkItemUpdateResult>;
@@ -475,8 +487,8 @@ export function createWorkBoardEngine(
   /** Allow one survey per window so duplicate clicks cannot incur duplicate child runs. */
   const briefingInFlight = new Set<WorkBoardBriefingKind>();
 
-  const emit = (event: Omit<WorkBoardRunEvent, "at">): void => {
-    emitProgress({ ...event, at: new Date().toISOString() });
+  const emit = (event: Omit<WorkBoardRunEvent, "at">, project?: { projectRoot?: string }): void => {
+    emitProgress({ ...event, at: new Date().toISOString() }, project);
   };
 
   const stageRuns = deps.workflow
@@ -547,6 +559,7 @@ export function createWorkBoardEngine(
     const got = await store.get(itemId);
     if (got.status !== "found") return refuse({ status: "not_found" });
     const item = got.item;
+    if (item.remoteProvisional && !opts.remoteProvisional) return { status: "not_found" };
     if (item.status === "completed") return refuse({ status: "error", reason: "work-item-completed" });
 
     // A template run is busy as its run record says, read once boot adoption has run; its row's runStatus only shows it.
@@ -565,7 +578,10 @@ export function createWorkBoardEngine(
         inFlight.delete(itemId);
         return { status: "error", reason: "template-run-unavailable", reasonCode: "template-run-unavailable" };
       }
-      return stageRuns.start(itemId, { source: opts.templateSource, approvalSurface: opts.approvalSurface ?? null });
+      return stageRuns.start(itemId, {
+        source: opts.templateSource, authority: opts.authority, remoteProvisional: opts.remoteProvisional,
+        onRunAllocated: opts.onTemplateRunAllocated, onStarted: opts.onTemplateStarted,
+      });
     }
     return guarded(itemId, opts.approvalSurface, () => runItemGuarded(itemId, item, opts));
   }
@@ -868,7 +884,7 @@ export function createWorkBoardEngine(
         planHash: input.planHash,
         status,
         ...(note !== undefined ? { note } : {}),
-      });
+      }, opts.authority);
     } catch (err) {
       // The decision was not stored, so nothing runs.
       inFlight.delete(itemId);
@@ -1054,19 +1070,25 @@ export function createWorkBoardEngine(
   return {
     runItem,
     decidePlan,
+    startScheduledTemplate: async (source, title) => {
+      await recover();
+      return stageRuns?.startScheduled(source, title) ?? { ok: false, code: "template-run-unavailable" };
+    },
     runBriefing,
     executingChildSessionId: (itemId) => executingChildByItem.get(itemId),
     steerRun,
     cancelRun,
-    decideStageGate: async (itemId, input, opts) => { await recover(); return stageRuns?.decideGate(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" }; },
-    decideStageJoin: async (itemId, input, opts) => { await recover(); return stageRuns?.decideJoin(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" }; },
-    retryStage: async (itemId, input, opts) => { await recover(); return stageRuns?.retryStage(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" }; },
-    continueRun: async (itemId, input, opts) => { await recover(); return stageRuns?.continueRun(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" }; },
+    decideStageGate: async (itemId, input, authority) => { await recover(); return stageRuns?.decideGate(itemId, input, authority) ?? { ok: false, reason: "not_found" }; },
+    decideStageJoin: async (itemId, input, authority) => { await recover(); return stageRuns?.decideJoin(itemId, input, authority) ?? { ok: false, reason: "not_found" }; },
+    openStageJoin: async (itemId, input, open) => stageRuns?.openJoin(itemId, input, open) ?? { ok: false, reason: "not_found" },
+    retryStage: async (itemId, input) => { await recover(); return stageRuns?.retryStage(itemId, input) ?? { ok: false, reason: "not_found" }; },
+    continueRun: async (itemId, input) => { await recover(); return stageRuns?.continueRun(itemId, input) ?? { ok: false, reason: "not_found" }; },
     projectRootRevoked: (canonicalRoot) => stageRuns?.projectRootRevoked(canonicalRoot),
     adoptParkedTemplateRuns: async () => { await recover(); await stageRuns?.adoptParkedRuns(); },
-    projectTemplateRuns: async (items) => {
+    readTemplateRuns: async (items) => stageRuns ? stageRuns.readRuns(items) : items.map(withoutWorkflowProjection),
+    projectTemplateRuns: async (items, detail) => {
       await recover();
-      return stageRuns ? stageRuns.projectRuns(items) : items.map((item) => { const clean = { ...item }; delete clean.templateRunState; return clean; });
+      return stageRuns ? stageRuns.projectRuns(items, detail) : items.map(withoutWorkflowProjection);
     },
     clearMissingRun: async (itemId, input) => { await recover(); return stageRuns?.clearMissingRun(itemId, input) ?? { status: "not_found", itemId }; },
   };

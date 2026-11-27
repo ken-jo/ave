@@ -1,5 +1,6 @@
 // Blocking hooks fail closed on command failures; successful commands may be silent or return decisions, and exit 2 uses stderr as denial feedback. Shell admission, sandbox policy, safe env and caller-side DLP apply; hook allows never upgrade upstream denies (docs/guides/user-hooks.md).
 // Generic argv never passes through an implicit shell; legacy scripts keep the resolved interpreter path.
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import type { ChildProcess } from "node:child_process";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { resolveHostProgram } from "../shared/host-program-path.js";
@@ -113,7 +114,7 @@ function hashCommandArgv(command: string[]): string {
 
 function isHookShellPlanCurrent(plan: HostShellExecutionPlan): boolean {
   if (!isIssuedHostShellExecutionPlan(plan)) return false;
-  const current = getHostShellExecutionPlan(plan.executionRequest);
+  const current = getHostShellExecutionPlan(plan.executionRequest, "hook");
   return getHostShellExecutionPlanCacheIdentity(getHostShellExecutionPlanAuditProjection(plan))
     === getHostShellExecutionPlanCacheIdentity(getHostShellExecutionPlanAuditProjection(current));
 }
@@ -248,13 +249,22 @@ export async function runOneHookScript(
   let admittedPlan: HostShellExecutionPlan | undefined;
   let refreshCommandAllowed: (() => Promise<void>) | undefined;
   let assertCommandAllowed: (() => void) | undefined;
+  let disposeCommandWorkingDirectory: (() => void) | undefined;
+  try {
   if (!confinement && options.authorizeCommand) {
     try {
       const admission = await raceWithAbort(turnExtensionPolicyContext.run({
         ...inherited, allowExternalHooks: inherited?.allowExternalHooks !== false, abortSignal,
-      }, () => options.authorizeCommand!(runnable, payload, cwd, projectDir)), abortSignal);
+      }, () => options.authorizeCommand!(runnable, payload, cwd, projectDir, (physicalCwd, dispose) => {
+        if (abortSignal?.aborted) { dispose(); return; }
+        cwd = physicalCwd;
+        disposeCommandWorkingDirectory = dispose;
+      })), abortSignal);
       if (abortSignal?.aborted) return deny("Hook execution cancelled");
-      if (admission.decision !== "allow") return deny(`hook command denied: ${admission.reason}`);
+      if (admission.decision !== "allow") {
+        return deny(`hook command denied: ${admission.reason}`, admission.commandAdmissionFailure === undefined
+          ? undefined : { commandAdmissionFailure: admission.commandAdmissionFailure });
+      }
       admittedPlan = admission.plan;
       assertCommandAllowed = admission.assertAllowed;
       refreshCommandAllowed = admission.refreshAllowed;
@@ -332,6 +342,7 @@ export async function runOneHookScript(
         const identity = extensionStartIdentity({ pluginId: confinement.pluginId, hookId: runnable.id, command: spawnCmd, args: spawnArgs, cwd });
         const authority = await requestExtensionStartConsent({ key, identity, kind: "plugin-hook",
           label: `${confinement.pluginId} (${runnable.id})`, cause: error.unconfinedCause }, turnExtensionStartSession(payload.sessionId));
+        if (typeof authority === "string") return deny(`sandbox unavailable: ${error.message} [approval=${authority}]`);
         assertExtensionStartAllowed({ start: { key, identity, authority, spend: true } });
       }
     } catch (error) {
@@ -348,11 +359,11 @@ export async function runOneHookScript(
   // Bundled hooks require the worker-confinement gate; user hooks use the host-shell plan under which they were admitted, or its live plan.
   const sandboxEnabled = confinement
     ? isPluginWorkerConfinementActive()
-    : (admittedPlan ?? getHostShellExecutionPlan()).mode === "asrt";
+    : (admittedPlan ?? getHostShellExecutionPlan("default", "hook")).mode === "asrt";
   // Only host-recorded, reviewed file dependencies inside this hook directory can pierce its read floor.
-  const userScriptReads = (runnable.fileDependencies ?? [])
+  const userScriptReads = withLocalityDecision(() => (runnable.fileDependencies ?? [])
     .map((file) => resolve(canonicalizePathForMatch(resolve(cwd, file))))
-    .filter((file) => isPathWithin(caseFoldForMatch(resolve(defaultHooksDir())), caseFoldForMatch(file)));
+    .filter((file) => isPathWithin(caseFoldForMatch(resolve(defaultHooksDir())), caseFoldForMatch(file))));
   // A user hook has no plugin, so its egress gets no extension allowlist.
   const hookEgressOwner: WorkerEgressOwner = confinement
     ? { kind: "worker", role: "hook", pluginId: confinement.pluginId }
@@ -472,7 +483,7 @@ export async function runOneHookScript(
   }
 
   if (contained) {
-    return runContainedHook({ holder: contained, stdinJson, timeoutMs, abortSignal, hookId: runnable.id, deny,
+    return await runContainedHook({ holder: contained, stdinJson, timeoutMs, abortSignal, hookId: runnable.id, deny,
       outcome: (observed) => hookOutcome(forensics, deny, { ...observed, timeoutMs, hookId: runnable.id,
         hookType: runnable.hookType, durationMs: Date.now() - start }) });
   }
@@ -487,14 +498,14 @@ export async function runOneHookScript(
     return child;
   };
   if (hookResources) {
-    return runPosixHook({ start: startHook, stdinJson, timeoutMs, abortSignal, hookId: runnable.id, deny,
+    return await runPosixHook({ start: startHook, stdinJson, timeoutMs, abortSignal, hookId: runnable.id, deny,
       noteProcessGroup: (pid) => noteProcessGroup?.(pid),
       resources: hookResources,
       outcome: (observed) => hookOutcome(forensics, deny, { ...observed, timeoutMs, hookId: runnable.id,
         hookType: runnable.hookType, durationMs: Date.now() - start }) });
   }
 
-  return new Promise<ScriptHookInvocationResult>((resolve) => {
+  return await new Promise<ScriptHookInvocationResult>((resolve) => {
     let child: ChildProcess;
     let settled = false;
     let timedOut = false;
@@ -633,6 +644,7 @@ export async function runOneHookScript(
       });
     }
   });
+  } finally { disposeCommandWorkingDirectory?.(); }
 }
 
 function stopPreparedHolder(holder: MxcBundledHolder, hookId: string): void {

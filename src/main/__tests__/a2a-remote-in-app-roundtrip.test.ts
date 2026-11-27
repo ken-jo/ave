@@ -276,7 +276,7 @@ async function startReceiver(state: {
   };
   const agentActionApprover = async (request: { toolName: string }) => {
     approvals.push(request.toolName);
-    return { decisionId: `receiver-approval-${approvals.length}`, decidedAt: new Date().toISOString() };
+    return { approved: true as const, decisionId: `receiver-approval-${approvals.length}`, decidedAt: new Date().toISOString() };
   };
   const remote = await createA2ARemoteRuntime({
     settings: settingsService as never,

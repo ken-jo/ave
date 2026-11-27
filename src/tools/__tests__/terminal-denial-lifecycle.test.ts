@@ -29,6 +29,7 @@ type Source =
 /** Each probe loads a fresh module graph, so a sealed or drained ledger never leaks into another case. */
 async function setup(source: Source, { disarmChain = false } = {}) {
   vi.resetModules();
+  await import("../../__tests__/vitest-approval-presentation.js");
   (await import("../../main/host-resources.js")).configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
   const ledger = await import("../invocation-ledger.js");
   const { ToolExecutor } = await import("../executor.js");
@@ -209,7 +210,7 @@ async function settledRow(probe: Probe, id = "denied-call"): Promise<Record<stri
   return probe.rows(id)[0] as Record<string, unknown>;
 }
 
-async function expectOneDenial(probe: Probe, reason: string | RegExp, invocationOrigin = "user-keyboard"): Promise<void> {
+async function expectOneDenial(probe: Probe, reason: string | RegExp, invocationOrigin = "user-keyboard"): Promise<Record<string, unknown>> {
   const row = await settledRow(probe);
   await vi.waitFor(() => expect(probe.denials()).toHaveLength(1));
   expect(row).toMatchObject({ decision: "deny", terminalKind: "denied" });
@@ -217,6 +218,7 @@ async function expectOneDenial(probe: Probe, reason: string | RegExp, invocation
   expect(firstReason(row)).toMatch(reason);
   expect(probe.denials()).toEqual([["PermissionDenied", "denial-session", invocationOrigin,
     expect.objectContaining({ toolName: expect.stringMatching(/_probe$/), denyReason: expect.objectContaining({ source: "tool-executor" }) }), expect.anything()]]);
+  return row;
 }
 
 async function expectNoDenial(probe: Probe, reason: string | RegExp): Promise<void> {
@@ -253,11 +255,11 @@ describe("terminal tool telemetry", () => {
     const probe = await setup(source, { disarmChain: true });
     try {
       probe.ledger.beginToolInvocationAuditShutdown();
-      const error = source === "rule" ? "permission audit chain is not initialized" : /does not settle this deny/;
-      await expect(probe.run()).rejects.toThrow(error);
+      const sealLost = "permission audit chain is not initialized";
+      await expect(probe.run()).rejects.toThrow(source === "rule" ? sealLost : /does not settle this deny/);
       await expect(probe.ledger.closeToolInvocationAudit(() => probe.audit.close())).rejects.toMatchObject({
         message: "shutdown invocation audit failed",
-        cause: expect.objectContaining({ message: expect.stringMatching(error) }),
+        cause: expect.objectContaining({ message: sealLost }),
       });
       expect(probe.rows()).toEqual([]);
       expect(probe.denials()).toEqual([]);
@@ -265,7 +267,7 @@ describe("terminal tool telemetry", () => {
       const calls = existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean)
         .map((line) => JSON.parse(line) as AuditEntry).filter((entry) => entry.type === "tool_call") : [];
       expect(calls).toEqual([expect.objectContaining({
-        output: expect.stringMatching(source === "rule" ? /denial_probe/ : /the terminal row failed its integrity check/),
+        output: expect.stringMatching(source === "rule" ? /denial_probe/ : /does not settle this deny/),
         toolCalls: [expect.objectContaining({ toolUseId: "denied-call", isError: true, permissionDecision: "deny", permissionAuditChainUnavailable: true })],
       })]);
     } finally {
@@ -289,7 +291,7 @@ describe("terminal tool telemetry", () => {
       });
       if (source === "rule") await expect(probe.run()).resolves.toMatchObject([{ is_error: true }]);
       else await expect(probe.run()).rejects.toThrow(/does not settle this deny/);
-      await expectOneDenial(probe, source === "rule" ? TOOL : /the terminal row failed its integrity check/);
+      await expectOneDenial(probe, source === "rule" ? TOOL : /does not settle this deny/);
       expect(order).toEqual(["general", "permission"]);
     } finally {
       await probe.audit.close();
@@ -318,9 +320,9 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
     ["human", "user denied approval request"],
     ["hook-mutation", "Hook input mutation could not safely restart permission classification"],
     ["host", /^the invocation failed: approval: the answer to .* does not settle this allow of denial_probe$/],
-    ["integrity", /^the terminal row failed its integrity check: approval: the answer to .* does not settle this deny of denial_probe$/],
+    ["integrity", /^the invocation failed: approval: the answer to .* does not settle this deny of denial_probe$/],
   ] as const)("deny source %s: one row, one event", async (source, reason) => {
-    await run(source, (probe) => expectOneDenial(probe, reason));
+    await run(source, async (probe) => { await expectOneDenial(probe, reason); });
   });
 
   it("cancels a directory hook when only the inherited signal stops", async () => {
@@ -469,11 +471,11 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
     });
   });
 
-  it("an automatic headless refusal committed after Stop is cancelled without an event", async () => {
+  it("keeps a settled headless refusal when Stop lands before its row", async () => {
     await run("headless-then-abort", async (probe) => {
       expect(probe.controller.signal.aborted).toBe(true);
-      await expectNoDenial(probe, "user aborted turn");
-      expect(reasons(await settledRow(probe))[1]).toBe("user denied approval request");
+      const row = await expectOneDenial(probe, /^approval rejected by host$/);
+      expect(row).toMatchObject({ trustOrigin: "unknown" });
     });
   });
 
@@ -486,11 +488,12 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
     });
   });
 
-  it("cancels a non-human directory denial when Stop lands before its row", async () => {
+  it("keeps a settled host directory refusal when Stop lands before its row", async () => {
     await run("dir-host-deny-then-abort", async (probe) => {
       expect(probe.requestAndWait).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: "out-of-allowed-dir" }));
       expect(probe.controller.signal.aborted).toBe(true);
-      await expectNoDenial(probe, "user aborted turn");
+      const row = await expectOneDenial(probe, /^approval rejected by host$/, "llm-tool-arg");
+      expect(row).toMatchObject({ trustOrigin: "unknown" });
     });
   });
 

@@ -1,9 +1,12 @@
+import type { WorkDecisionAuthority } from "../work-decision-authority.js";
 import type { RunClass } from "../../main/run-classification.js";
 import type { WorkBoardStore } from "../../main/work-board-store.js";
 import type { DeleteIntent, HeldEvent, HeldIdentity, RunEnd, RunRemovalCause } from "../../main/workflow-run-store.js";
-import type { WorkItemResolved, WorkItemUpdateResult } from "../../shared/work-board-types.js";
+import type { WorkItem, WorkItemResolved, WorkItemUpdateResult } from "../../shared/work-board-types.js";
+import type { RemovedRunProject } from "./stage-workspace.js";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
 import type { StageJoin, TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkItemStageRun } from "../../shared/workflow-template-types.js";
+import { issueJoinConflict } from "./stage-machine.js";
 import { WorkflowTemplateError } from "../template-graph.js";
 
 /** Everything a template run is decided from. It lives in the covered run file, keyed by `runId`; a board row names a run only by that id
@@ -22,6 +25,8 @@ type RunAdoption = {
   ok: true;
   /** Every board row that names a template run, with that run: null when the run file holds no readable run of that row under that id. */
   named: { item: WorkItemResolved; run: RunRecord | null }[];
+  provisional: readonly WorkItem[];
+  provisionalWorkspaces: ReadonlyMap<string, RemovedRunProject>;
   /** Workspace identities that must survive sweeping; undefined defers the sweep. */
   keepWorkspaces: readonly string[] | undefined;
   /** Every readable run of the run file, over or not. */
@@ -37,7 +42,7 @@ type RunAdoption = {
 /** The one reader and writer of run state the stage scheduler uses. */
 export interface WorkflowRunState {
   /** Stores the new run in the run file, then names it on the board row, under the board lock. */
-  begin(itemId: number, runId: string, startedAt: string, start: TemplateRunStart): Promise<WorkItemUpdateResult>;
+  begin(itemId: number, runId: string, startedAt: string, start: TemplateRunStart, authority?: WorkDecisionAuthority): Promise<WorkItemUpdateResult>;
   /** The stored run of that row, read by run id whether or not the row still exists. Null when it is missing, unreadable, awaits review or
    * belongs to another row. */
   get(itemId: number, runId: string): Promise<RunRecord | null>;
@@ -46,7 +51,7 @@ export interface WorkflowRunState {
   /** One atomic read-modify-write, under the board lock; `mutate` may end the run (a RunEnd). Without `removedAs` it runs only for the run
    * the row names, and ends it only by the row's causes; with it, by run id alone, for a run whose row was removed or lost, and ends it
    * only as that cause while its class allows it. */
-  update(itemId: number, runId: string, mutate: (run: RunRecord) => RunRecord | RunEnd | null, removedAs?: RunRemovalCause): Promise<RunWrite>;
+  update(itemId: number, runId: string, mutate: (run: RunRecord) => RunRecord | RunEnd | null, removedAs?: RunRemovalCause, authority?: WorkDecisionAuthority): Promise<RunWrite>;
   /** Ends a run whose start failed before its row write was known to land: `settled` once the run is over (or the file no longer holds
    * it), `named` when the board on disk shows the row naming it after all, so it ends as any stored run does. */
   settleUnstarted(itemId: number, runId: string): Promise<"settled" | "named" | RunWriteFailure>;
@@ -80,17 +85,18 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
     };
   };
   return {
-    begin: (itemId, runId, startedAt, start) => store.beginRun(itemId, runId, startedAt, start),
+    begin: (itemId, runId, startedAt, start, authority) => store.beginRun(itemId, runId, startedAt, start, authority),
     get: async (itemId, runId) => (await view())({ id: itemId, runId }),
     read: async (itemId, runId) => {
       const read = (await store.runs.view()).get(runId);
       return read.status === "found" && read.run.itemId !== itemId ? { status: "invalid" } : read;
     },
-    update: async (itemId, runId, mutate, removedAs) => {
+    update: async (itemId, runId, mutate, removedAs, authority) => {
+      if (removedAs && authority) return { ok: false, reason: "row-lost" };
       try {
         const result = removedAs
           ? await store.settleRemovedRun(itemId, runId, removedAs, mutate)
-          : await store.updateRun(itemId, runId, mutate);
+          : await store.updateRun(itemId, runId, mutate, authority);
         if (result.status === "stored") return { ok: true, run: result.run };
         if (result.status === "not-found") return { ok: false, reason: removedAs ? "unavailable" : "row-gone" };
         return { ok: false, reason: result.status };
@@ -130,7 +136,8 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       const adopted = new Set(named.flatMap(({ run }) => run ? [run.runId] : []));
       const rest = stored.runs.filter(run => !adopted.has(run.runId) && run.settled === undefined);
       const of = (...allowed: RunClass[]) => rest.filter(run => allowed.includes(classes.get(run.runId) as RunClass));
-      return { ok: true, named, keepWorkspaces, runs: stored.runs, orphans: of("orphan"), lost: of("lost"), kept: of("waiting-delete", "unreadable", "live"), removed: of("due-delete") };
+      return { ok: true, named, provisional: snapshot.board.items.filter(item => item.remoteProvisional !== undefined), provisionalWorkspaces: snapshot.provisionalWorkspaces,
+        keepWorkspaces, runs: stored.runs, orphans: of("orphan"), lost: of("lost"), kept: of("waiting-delete", "unreadable", "live"), removed: of("due-delete") };
     },
     deleted: () => store.deleteIntentsOnDisk(),
     pruneSettled: () => store.pruneSettledRuns(),
@@ -172,7 +179,7 @@ export async function reconcileRunRecord(run: RunRecord, now: string, folderExis
   const stageJoins = joins.map((join): StageJoin => {
     if (join.status !== "integrating" || join.stageIds.every(id => stageRuns.some(stage => stage.stageId === id && stage.status === "passed"))) return join;
     changed = true;
-    return { ...join, status: "conflict", conflict: { conflictHash: resultHashOf(`${run.runId}:${join.joinId}:interrupted`), reason: "interrupted", files: [] } };
+    return issueJoinConflict(join, { conflictHash: resultHashOf(`${run.runId}:${join.joinId}:interrupted`), reason: "interrupted", files: [] });
   });
   return changed ? { ...run, stageRuns, stageJoins } : null;
 }

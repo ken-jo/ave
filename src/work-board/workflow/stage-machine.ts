@@ -4,6 +4,17 @@ import type { StageJoin, TemplateGraph, WorkItemStageRun } from "../../shared/wo
 import type { JoinConflict, StageFailure } from "./shipped-shapes.js";
 import { currentStepOf, joinIdOfStep, readyStages, stepsOf } from "./stage-graph.js";
 
+/** A reissued conflict is a new decision even when the sealed inputs and diagnostics are identical. */
+export function issueJoinConflict(join: StageJoin, conflict: JoinConflict): StageJoin {
+  const conflictGeneration = (join.conflictGeneration ?? 0) + 1;
+  return {
+    ...join,
+    status: "conflict",
+    conflictGeneration,
+    conflict: { ...conflict, conflictHash: resultHashOf(JSON.stringify([conflict.conflictHash, conflictGeneration])) },
+  };
+}
+
 export const MAX_PARALLEL_STAGES = 3;
 export const MAX_STAGE_ATTEMPTS = 3;
 
@@ -175,8 +186,7 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
     case "join_conflict": {
       const join = joins.find(candidate => candidate.joinId === event.joinId);
       if (join?.status !== "integrating") break;
-      join.status = "conflict";
-      join.conflict = event.conflict;
+      Object.assign(join, issueJoinConflict(join, event.conflict));
       break;
     }
     case "join_decided": {

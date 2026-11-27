@@ -6,14 +6,16 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { withFileLock } from "../../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync, isMissingPathError, PRIVATE_DIR_MODE } from "../../lib/atomic-file.js";
 import { captureApprovalWorkingDirectory } from "../user-approval-store.js";
+import { captureShellWorkingDirectoryIdentity, sameShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "../shell-working-directory-identity.js";
 import { caseFoldForMatch } from "../sensitive-paths.js";
 import type { ScopedPermissionRuleError } from "../../shared/permissions-events.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, unverifiedDenyRules, validateRuleList } from "./rule-files.js";
 import { assertAveHomeInputWritable, readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { withShellPolicyMutation } from "../shell-policy-handoff.js";
+import { admitLocalPath, admitLocalRoute, localFs, rethrowLocalityFailure, withLocalityDecision } from "../../shared/local-path-io.js";
 
-import { commitApprovalFile, type ApprovalPersistenceGuard } from "../approval-persistence-guard.js";
+import { assertApprovalPersistenceCurrent, commitApprovalFile, type ApprovalPersistenceGuard } from "../approval-persistence-guard.js";
 
 export interface ProjectRulesFile {
   version: 1;
@@ -31,11 +33,24 @@ export interface ProjectRulesLocation {
 
 const MAX_REPOSITORY_METADATA_BYTES = 65_536;
 
+function repositoryEntry(path: string) {
+  if (process.platform === "win32") {
+    admitLocalPath(path);
+    admitLocalRoute(dirname(path));
+  }
+  return lstatSync(path);
+}
+
+function isRepositoryDirectory(path: string): boolean {
+  return (process.platform === "win32" ? localFs.stat(admitLocalRoute(path).verdict) : statSync(path)).isDirectory();
+}
+
 // Bound reads on the opened regular file, including concurrent growth.
 function readRepositoryMetadata(path: string): string {
-  const entry = lstatSync(path);
+  const entry = repositoryEntry(path);
   if (!entry.isFile()) throw new Error("Invalid repository metadata");
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
+  const flags = constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0);
+  const fd = process.platform === "win32" ? localFs.open(admitLocalRoute(path).verdict, flags) : openSync(path, flags);
   try {
     const opened = fstatSync(fd);
     if (!opened.isFile() || opened.size > MAX_REPOSITORY_METADATA_BYTES) throw new Error("Invalid repository metadata");
@@ -49,7 +64,7 @@ function readRepositoryMetadata(path: string): string {
 }
 
 function isRepositoryMarker(marker: string): boolean {
-  const entry = lstatSync(marker);
+  const entry = repositoryEntry(marker);
   let gitDir = marker;
   if (entry.isFile()) {
     const match = /^gitdir: ([^\r\n\0]+)$/.exec(readRepositoryMetadata(marker));
@@ -58,7 +73,7 @@ function isRepositoryMarker(marker: string): boolean {
   } else if (!entry.isDirectory()) {
     return false;
   }
-  if (!statSync(gitDir).isDirectory()) return false;
+  if (!isRepositoryDirectory(gitDir)) return false;
   const head = readRepositoryMetadata(join(gitDir, "HEAD"));
   if (!/^(?:ref: refs\/[^\s\0]+|[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/.test(head)) return false;
   let commonDir = gitDir;
@@ -66,6 +81,7 @@ function isRepositoryMarker(marker: string): boolean {
   try {
     commonPath = readRepositoryMetadata(join(gitDir, "commondir"));
   } catch (error) {
+    rethrowLocalityFailure(error);
     if (!isMissingPathError(error)) throw error;
   }
   if (commonPath !== undefined) {
@@ -75,51 +91,91 @@ function isRepositoryMarker(marker: string): boolean {
     const backlink = resolve(gitDir, readRepositoryMetadata(join(gitDir, "gitdir")));
     if (captureApprovalWorkingDirectory(backlink).identity !== captureApprovalWorkingDirectory(marker).identity) return false;
   }
-  return statSync(join(commonDir, "objects")).isDirectory() && statSync(join(commonDir, "refs")).isDirectory();
+  return isRepositoryDirectory(join(commonDir, "objects")) && isRepositoryDirectory(join(commonDir, "refs"));
+}
+
+interface ProjectRoot {
+  readonly path: string;
+  readonly markerPath: string | null;
+}
+
+export interface ProjectRuleRootBinding extends ProjectRoot {
+  readonly directory: ShellWorkingDirectoryIdentity;
+}
+
+export class ProjectRuleScopeChangedError extends Error {
+  constructor() {
+    super("Project scope changed. Request a fresh approval.");
+    this.name = "ProjectRuleScopeChangedError";
+  }
 }
 
 // Nearest verified marker below home; uncertain discovery stays at cwd.
-export function projectRootFor(projectCwd: string): string {
+function discoverProjectRoot(projectCwd: string): ProjectRoot {
   const start = captureApprovalWorkingDirectory(projectCwd).path;
+  const fallback = { path: start, markerPath: null };
   let home: string;
   try {
     const homePath = homedir();
-    if (!isAbsolute(homePath)) return start;
+    if (!isAbsolute(homePath)) return fallback;
     home = captureApprovalWorkingDirectory(homePath).path;
-    if (dirname(home) === home) return start;
-  } catch {
+    if (dirname(home) === home) return fallback;
+  } catch (error) {
+    rethrowLocalityFailure(error);
     // Without a trustworthy home boundary, project rules stay at cwd.
-    return start;
+    return fallback;
   }
   const homeKey = caseFoldForMatch(home);
   for (let dir = start, guard = 0; guard < 256; guard += 1) {
     const dirKey = caseFoldForMatch(dir);
     // Home and every ancestor of home may identify only an exact-cwd session.
     if (dir !== start && (homeKey === dirKey || homeKey.startsWith(`${dirKey.replace(/\/$/, "")}/`))) break;
+    const markerPath = join(dir, ".git");
     try {
-      if (isRepositoryMarker(join(dir, ".git"))) return dir;
+      if (isRepositoryMarker(markerPath)) return { path: dir, markerPath };
       // An invalid inner marker must not inherit an outer repository's allows.
-      return start;
+      return fallback;
     } catch (error) {
-      if (!isMissingPathError(error)) return start;
+      rethrowLocalityFailure(error);
+      if (!isMissingPathError(error)) return fallback;
       // A present but incomplete marker is a boundary too.
       try {
-        lstatSync(join(dir, ".git"));
-        return start;
+        repositoryEntry(markerPath);
+        return fallback;
       } catch (markerError) {
-        if (!isMissingPathError(markerError)) return start;
+        rethrowLocalityFailure(markerError);
+        if (!isMissingPathError(markerError)) return fallback;
       }
     }
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  return start;
+  return fallback;
+}
+
+export function projectRootFor(projectCwd: string): string {
+  return withLocalityDecision(() => discoverProjectRoot(projectCwd).path);
+}
+
+export function captureProjectRuleRootBinding(projectCwd: string): ProjectRuleRootBinding | undefined {
+  return withLocalityDecision(() => {
+    const root = discoverProjectRoot(projectCwd);
+    const directory = captureShellWorkingDirectoryIdentity(root.path);
+    if (directory === undefined) return undefined;
+    return Object.freeze({ ...root, path: captureApprovalWorkingDirectory(directory.realpath).path, directory });
+  });
+}
+
+export function matchesProjectRuleRootBinding(projectCwd: string, expected: ProjectRuleRootBinding): boolean {
+  const actual = captureProjectRuleRootBinding(projectCwd);
+  return actual !== undefined && actual.path === expected.path && actual.markerPath === expected.markerPath &&
+    sameShellWorkingDirectoryIdentity(actual.directory, expected.directory);
 }
 
 // The directory a project rule saved from `projectCwd` applies to; shown in the dock before saving.
 export function projectRuleRoot(projectCwd: string): string {
-  return captureApprovalWorkingDirectory(projectRootFor(projectCwd)).path;
+  return withLocalityDecision(() => captureApprovalWorkingDirectory(projectRootFor(projectCwd)).path);
 }
 
 // Canonical directory shared by rule persistence and sandbox write protection.
@@ -128,7 +184,7 @@ export function projectRulesDirectory(baseDir: string): string {
 }
 
 export function projectRulesLocation(baseDir: string, projectCwd: string): ProjectRulesLocation {
-  const { path, identity } = captureApprovalWorkingDirectory(projectRootFor(projectCwd));
+  const { path, identity } = withLocalityDecision(() => captureApprovalWorkingDirectory(projectRootFor(projectCwd)));
   return {
     filePath: resolve(projectRulesDirectory(baseDir), `${identity}.json`),
     projectRoot: path,
@@ -191,6 +247,7 @@ export async function updateProjectRulesFile(
   // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
   assertAveHomeInputWritable(location.filePath);
   return withShellPolicyMutation(async () => {
+    assertApprovalPersistenceCurrent(authority);
     await mkdir(dirname(location.filePath), { recursive: true, mode: PRIVATE_DIR_MODE });
     return withFileLock(location.filePath, async () => {
       const existing = await readProjectRulesFile(location);
@@ -210,7 +267,7 @@ export async function updateProjectRulesFile(
         writeUtf8FileAtomicSync(location.filePath, `${JSON.stringify(file, null, 2)}\n`, 0o600);
       }
       return file;
-    });
+    }, { createTarget: authority === undefined });
   });
 }
 

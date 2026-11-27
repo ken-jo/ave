@@ -80,7 +80,7 @@ describe("useCostEstimate", () => {
     });
 
     expect(result.current.costEstimate.inputTokens).toBeGreaterThan(0);
-    expect(result.current.costEstimate.total).toBe(0);
+    expect(result.current.costEstimate.total).toBeUndefined();
     expect(result.current.costEstimate.pricingKnown).toBe(false);
     expect(result.current.costBadgeClass).toBe("text-muted-foreground");
   });
@@ -117,6 +117,7 @@ describe("useCostEstimate — the output limit is the range's upper end, not the
     ["openai", "gpt-5.4-mini", 0.1455, "text-warning"],
   ] as const)("%s %s: shows up to $%f, and tiers on the input before any turn has completed", (vendor, model, most, before) => {
     const { costEstimate, costBadgeClass } = estimate(vendor, model, []);
+    if (costEstimate.pricingKnown === false) throw new Error("Expected a priced estimate");
     expect(costEstimate.total).toBeCloseTo(most, 3);
     // The tier the maximum alone would give, which colored every draft.
     expect(costTierClassFor(costEstimate.total)).toBe(before);
@@ -131,6 +132,7 @@ describe("useCostEstimate — the output limit is the range's upper end, not the
     ["openai", "gpt-5.4-mini", 0.0082, "text-muted-foreground"],
   ] as const)("%s %s: tiers on the output this conversation's turns produced", (vendor, model, expectedTotal, tier) => {
     const { costEstimate, costBadgeClass } = estimate(vendor, model, [1_000, 2_000]);
+    if (costEstimate.pricingKnown === false) throw new Error("Expected a priced estimate");
     expect(costEstimate.expected).toMatchObject({ tokens: 1_500, basis: "recent-turns" });
     expect(costEstimate.expected!.total).toBeCloseTo(expectedTotal, 3);
     expect(costBadgeClass).toBe(tier);
@@ -180,10 +182,19 @@ describe("useCostEstimate — prices through the catalog, with provenance", () =
   it("prices from the route's own price report where the catalog cannot", () => {
     const { result } = renderHook(() => useCostEstimate({
       entries: atPrompt(1_000_000), draft: { text: "" }, llmVendor: "openrouter", llmModel: "lab/unlisted-reasoner", maxOutputTokens: 1_000_000,
-      pricingRoute: { reported: { prompt: "0.000001", completion: "0.000002" } },
+      pricingRoute: { reported: { prompt: "0.000001", completion: "0.000002" }, reportedAt: "https://openrouter.ai/api/v1/models" },
     }));
     expect(result.current.costEstimate).toMatchObject({ pricingKnown: true, pricingSource: "endpoint-report" });
     expect(result.current.costEstimate.outputCost).toBeCloseTo(2, 9);
+  });
+
+  it("shows no price from a model list read at another address than the route it is filed under", () => {
+    const { result } = renderHook(() => useCostEstimate({
+      entries: atPrompt(1_000_000), draft: { text: "" }, llmVendor: "openrouter", llmModel: "lab/unlisted-reasoner", maxOutputTokens: 1_000_000,
+      pricingRoute: { reported: { prompt: "0.000001", completion: "0.000002" }, reportedAt: "https://proxy.invalid/v1/models" },
+    }));
+    expect(result.current.costEstimate).toMatchObject({ pricingKnown: false });
+    expect(result.current.costEstimate.pricingSource).toBeUndefined();
   });
 
   it("says the catalog listed a zero instead of showing $0", () => {

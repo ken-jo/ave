@@ -1,7 +1,8 @@
 // Derive update-feed, versioned installer and stable-alias paths from the single publish URL.
 // Keep feeds and referenced files under the same prefix.
 
-export const FEED_FILES = Object.freeze(["latest.yml", "latest-mac.yml", "latest-linux.yml"]);
+export const MAC_FEED_FILE = "latest-mac.yml";
+export const FEED_FILES = Object.freeze(["latest.yml", MAC_FEED_FILE, "latest-linux.yml"]);
 const LATEST_PREFIX = "latest/";
 const REQUIRED_SECRETS = Object.freeze(["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]);
 
@@ -83,6 +84,21 @@ export function feedReferences(text) {
   return { version: version === undefined ? undefined : unquote(version), files: [...files].sort() };
 }
 
+function macFeedWithSystemFloor(text, version) {
+  // Update eligibility uses the Darwin kernel release. Only major-release
+  // floors with a known mapping can be published.
+  const major = typeof version === "string" ? /^(1[1-5])\.0$/u.exec(version)?.[1] : undefined;
+  if (major === undefined) fail("package.json build.mac.minimumSystemVersion has no Darwin release mapping");
+
+  const fields = text.match(/^minimumSystemVersion:.*$/gmu);
+  const field = `minimumSystemVersion: ${Number(major) + 9}.0.0`;
+  if (fields === null) return `${text}${text.endsWith("\n") ? "" : "\n"}${field}\n`;
+  if (fields.length !== 1 || fields[0].trimEnd() !== field) {
+    fail(`${MAC_FEED_FILE} must contain one ${field} field`);
+  }
+  return text;
+}
+
 /**
  * The ordered upload plan.
  *
@@ -91,7 +107,7 @@ export function feedReferences(text) {
  * @param {string} input.tag          the pushed tag, `v<version>`
  * @param {string[]} input.files      file names in the staging directory
  * @param {(name: string) => string} input.readFeed  reads a staged feed file
- * @returns {{ channel: object, version: string, operations: object[] }}
+ * @returns {{ channel: object, version: string, operations: object[], macFeed: string }}
  *
  * Order: versioned installers and blockmaps, then the `latest/` alias copies,
  * then the three feed files. A client that reads a new feed therefore only
@@ -136,8 +152,9 @@ export function planR2Upload({ packageJson, tag, files, readFeed }) {
   }
   const missingFeeds = FEED_FILES.filter((name) => !feeds.includes(name));
   if (missingFeeds.length > 0) fail(`staging is missing ${missingFeeds.join(", ")}`);
+  const macFeed = macFeedWithSystemFloor(readFeed(MAC_FEED_FILE), packageJson.build.mac?.minimumSystemVersion);
   for (const name of FEED_FILES) {
-    const { version: feedVersion, files: referenced } = feedReferences(readFeed(name));
+    const { version: feedVersion, files: referenced } = feedReferences(name === MAC_FEED_FILE ? macFeed : readFeed(name));
     if (feedVersion !== version) fail(`${name} is for version ${JSON.stringify(feedVersion)}, not ${version}`);
     if (referenced.length === 0) fail(`${name} names no files`);
     const absent = referenced.filter((file) => !installerNames.has(file));
@@ -164,7 +181,7 @@ export function planR2Upload({ packageJson, tag, files, readFeed }) {
   for (const name of FEED_FILES) {
     operations.push({ action: "put", source: name, key: `${channel.feedPrefix}${name}`, contentType: FEED_TYPE, cacheControl: REVALIDATE_CACHE, immutable: false });
   }
-  return { channel, version, operations };
+  return { channel, version, operations, macFeed };
 }
 
 // Empty secrets count as missing.

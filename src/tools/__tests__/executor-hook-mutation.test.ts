@@ -36,7 +36,7 @@ function setup(event: "PreToolUse" | "PermissionRequest", mode = "mutate", audit
   const entries = parseHookConfig({ hooks: { [event]: [{ hooks: [{ type: "command", command: ["node", COMMAND, mode] }] }] } }).entries;
   bindHookConfigPaths(entries, dirname(COMMAND));
   manager.setTrustedRegistry([], entries);
-  const requestAndWait = answeringRequestAndWait<{ id: string; args?: Record<string, unknown> }>(() => ({ requestId: "target", choice: "deny-once" as const }));
+  const requestAndWait = answeringRequestAndWait<{ id: string; args?: Record<string, unknown> }>(() => ({ choice: "deny-once" as const }));
   const executor = new ToolExecutor(registry, undefined, permissions, undefined, { requestAndWait } as unknown as ApprovalGate, manager, audit);
   const pre = vi.spyOn(manager, "runPreToolUse");
   const permission = vi.spyOn(manager, "runPermissionRequest");

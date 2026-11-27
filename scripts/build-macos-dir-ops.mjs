@@ -1,7 +1,7 @@
 // Builds the macOS helper that moves, copies and removes staged browser downloads relative to held directory descriptors
 // (native/macos-dir-ops/README.md), with the installed command-line tools; it downloads nothing.
 //
-//   node scripts/build-macos-dir-ops.mjs [--arch arm64|x64] [--if-stale] [--test-builds]
+//   node scripts/build-macos-dir-ops.mjs [--arch arm64] [--if-stale] [--test-builds]
 //
 // `--if-stale` rebuilds only a missing helper or one older than its sources, and does nothing on another platform, so the app
 // build and the test preparation can run it everywhere. `--test-builds` also builds the test-only variants that inject a fault (see
@@ -33,11 +33,13 @@ export const MACOS_DIR_OPS_TEST_BUILDS = Object.freeze([
 ]);
 
 export function macosDirOpsOutput(root, arch, executable = MACOS_DIR_OPS_EXECUTABLE) {
+  if (arch !== "arm64") throw new Error(`unsupported macOS helper architecture: ${arch}`);
   return path.join(root, "resources", "macos-dir-ops", arch, executable);
 }
 
 function sources(root) {
   return [
+    path.join(root, "package.json"),
     path.join(root, "scripts", "build-macos-dir-ops.mjs"),
     ...readdirSync(path.join(root, SOURCE_DIRECTORY)).map((name) => path.join(root, SOURCE_DIRECTORY, name)),
   ];
@@ -56,11 +58,11 @@ function minimumSystemVersion(root) {
   return version;
 }
 
-function compile(root, arch, output, defines, spawn) {
+function compile(root, output, defines, spawn) {
   mkdirSync(path.dirname(output), { recursive: true });
   const args = [
     "--sdk", "macosx", "clang", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
-    `-mmacosx-version-min=${minimumSystemVersion(root)}`, "-arch", arch === "x64" ? "x86_64" : "arm64",
+    `-mmacosx-version-min=${minimumSystemVersion(root)}`, "-arch", "arm64",
     ...defines.map((define) => `-D${define}`), "-o", output, path.join(root, SOURCE),
   ];
   const result = spawn("xcrun", args, { stdio: "inherit", shell: false });
@@ -76,7 +78,6 @@ export function buildMacosDirOps({
     if (ifStale) return [];
     throw new Error("the macOS download file helper builds on macOS only");
   }
-  if (arch !== "arm64" && arch !== "x64") throw new Error(`unsupported macOS helper architecture: ${arch}`);
   const builds = [{ executable: MACOS_DIR_OPS_EXECUTABLE, defines: [] }, ...(testBuilds ? MACOS_DIR_OPS_TEST_BUILDS : [])];
   const built = [];
   for (const { executable, defines } of builds) {
@@ -86,7 +87,7 @@ export function buildMacosDirOps({
       continue;
     }
     log(`[macos-dir-ops] building ${path.relative(root, output)}`);
-    compile(root, arch, output, defines, spawn);
+    compile(root, output, defines, spawn);
     built.push(output);
   }
   return built;

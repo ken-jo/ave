@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
 import type { AgentObservationEvent } from "../shared/agent-observation.js";
+import { WORK_BOARD } from "../shared/ipc-channels.js";
 import type { AveApi, AvePreviewApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
@@ -797,6 +798,31 @@ describe("preload — plugin webview asset URLs", () => {
       input: "second",
       userActivation: false,
     }), "main");
+  });
+
+  it("forwards workflow starts and confirmations without sampled activation when no action was captured", async () => {
+    const api = await loadAveApi();
+    const run = api.runWorkBoardItem as AveApi["runWorkBoardItem"];
+    const confirmTemplate = api.confirmWorkflowTemplate as AveApi["confirmWorkflowTemplate"];
+    const options = { template: { templateId: "report", version: 2, graphHash: "a".repeat(64) } };
+    const review = { expectedGraphHash: options.template.graphHash, expectedDraftRevision: "draft" };
+    mockUserActivation.isActive = true;
+    try {
+      await run(8, options);
+      expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.run, 8, options);
+      await confirmTemplate("report", review);
+      expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "report", review);
+    } finally {
+      mockUserActivation.isActive = false;
+    }
+  });
+
+  it("forwards live steer without requiring browser activation or a preload token", async () => {
+    const api = await loadAveApi();
+    const steer = api.steerWorkBoardRun as AveApi["steerWorkBoardRun"];
+    mockUserActivation.isActive = false;
+    await steer?.(8, "review the edge cases");
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.steerRun, 8, "review the edge cases");
   });
 
   it("consumes an explicit app interrupt gesture without changing its provenance", async () => {

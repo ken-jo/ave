@@ -3,11 +3,12 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
 import { buildHostGitArgs, holdSandboxGitWrites, isHostGitWorkspaceAvailable } from "../host-git.js";
+import * as hostWorkspaceGate from "../host-workspace-gate.js";
 
 describe("host Git configuration floor", () => {
   it("applies the mandatory floor after caller configuration without changing command arguments", () => {
@@ -51,6 +52,19 @@ describe("host Git workspace ordering", () => {
     releases.push(release);
     return release;
   }
+
+  it("refuses a workspace the host workspace gate refuses, with no hold on it", () => {
+    const project = join(root, "project");
+    mkdirSync(project);
+    const gate = vi.spyOn(hostWorkspaceGate, "isHostWorkspaceConsumable").mockImplementation(workspace => workspace !== project);
+    try {
+      expect(isHostGitWorkspaceAvailable(project)).toBe(false);
+      expect(isHostGitWorkspaceAvailable(join(root, "sibling"))).toBe(true);
+    } finally {
+      gate.mockRestore();
+    }
+    expect(isHostGitWorkspaceAvailable(project)).toBe(true);
+  });
 
   it("blocks exact, ancestor and descendant workspaces while preserving independent siblings", () => {
     const project = join(root, "project");
@@ -258,7 +272,7 @@ describe("host git starts only where the hold is asked", () => {
     if ((sources.get("shared/host-git.ts") ?? "").match(/\bspawn\(/gu)?.length !== 1) found.push("shared/host-git.ts: starts git other than in the one start");
     const shellTools = sources.get("tools/shell-tools.ts") ?? "";
     const hostBash = shellTools.slice(shellTools.indexOf("async function spawnWithTimeout("), shellTools.indexOf("function reportedHostCwd("));
-    if (!/const launch = \(\)[\s\S]*?assertPreparedShellAvailable\(prepared\);\s*child = spawn\(shell\.cmd,/u.test(hostBash)) {
+    if (!/const launch = \(\)[\s\S]*?assertPreparedShellAvailable\(prepared\);\s*const target = launchHold\?\.command\(shell\.cmd, argv\) \?\? \{ executable: shell\.cmd, args: \[\.\.\.argv\] \};\s*child = spawn\(target\.executable, target\.args,/u.test(hostBash)) {
       found.push("tools/shell-tools.ts: starts verified Bash without checking the hold at launch");
     }
     return found;

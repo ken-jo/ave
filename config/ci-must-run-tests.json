@@ -7,9 +7,10 @@
     "sandbox": [
       "src/sandbox/",
       "src/plugins/isolation/",
-      "src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts",
       "src/tools/__tests__/bash-sandbox-home-integration.test.ts",
-      "src/tools/__tests__/shell-asrt-source.test.ts",
+      "src/tools/__tests__/session-read-shell.test.ts",
+      "src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts",
+      "src/tools/__tests__/mxc-shell-source.test.ts",
       "src/mcp/__tests__/mcp-stdio-sandbox-wrap.test.ts"
     ],
     "security": [
@@ -65,6 +66,8 @@
       "src/main/__tests__/codex-conversation-runtime.test.ts",
       "src/main/__tests__/process-group-reaper.test.ts",
       "src/main/__tests__/windows-program-lookup.test.ts",
+      "src/main/browser/__tests__/browser-actions.test.ts",
+      "src/main/browser/__tests__/browser-capture-stitch-process.test.ts",
       "src/main/memory-map/__tests__/inference-child-native.test.ts",
       "src/mcp/__tests__/tasks-extension.test.ts",
       "src/plugins/__tests__/registry-atomicity.test.ts",
@@ -73,6 +76,7 @@
       "src/tools/__tests__/archive-entry-reader-bundle.test.ts",
       "src/tools/__tests__/document-tools-runtime.test.ts",
       "src/tools/__tests__/file-tools.test.ts",
+      "src/main/__tests__/headless-image-qualification.test.ts",
       "src/tools/__tests__/image-preparation.test.ts",
       "src/tools/__tests__/preview-document-process.test.ts",
       "src/tools/__tests__/xlsx-edit-journal-open.test.ts",

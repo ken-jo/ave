@@ -8,10 +8,10 @@ import { SKILL_SELECTOR_ALLOWLIST } from "../main/skill-store.js";
 import { parsePluginSkillSelector } from "../shared/plugin-skill-selector.js";
 import { renderSkillReadResult, type SkillOverlay } from "../main/skill-overlay.js";
 import type { SkillApprovalsStore } from "../main/skill-approvals-store.js";
-import { isHostApprovalRejectedDecision, type ApprovalGate } from "../permissions/approval-gate.js";
+import { admitApprovalAnswer, hostApprovalDenialReason, type AnsweredRecord, type ApprovalGate } from "../permissions/approval-gate.js";
 import { ApprovalPersistenceError } from "../permissions/approval-persistence-guard.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
-import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
+import { turnExtensionPolicyContext, unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { mcpSkillSelector, parseMcpSkillSelector } from "../shared/mcp-skill-selector.js";
 import { errorMessage } from "../shared/error-message.js";
 import { createLogger } from "../lib/logger.js";
@@ -107,6 +107,8 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       }
       const skillName = typeof a.serverId === "string" && typeof a.uri === "string" ? mcpSkillSelector(a.serverId, a.uri)
         : typeof a.skillName === "string" ? a.skillName.trim() : "";
+      const unattended = unattendedApprovalDenial();
+      if (unattended) return { output: JSON.stringify({ reasonCode: unattended, error: t("reasonCodes.unattended-approval-denied") }), isError: true };
       if (parseMcpSkillSelector(skillName) && (ctx.headless === true || turnExtensionPolicyContext.getStore()?.headless === true)) {
         return { output: JSON.stringify({ error: "MCP skills require an interactive conversation" }), isError: true };
       }
@@ -168,8 +170,9 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       );
       if (!alreadyApproved) {
         if (!invocationCurrent()) return interrupted();
+        const requestId = randomUUID();
         const decision = await deps.approvalGate.requestAndWait({
-          id: randomUUID(),
+          id: requestId,
           category: "tool",
           toolName: "skill_load",
           // Remote activation is an explicit code-execution opt-in; local loads keep their existing choices.
@@ -185,16 +188,18 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           source: "builtin",
           createdAt: Date.now(),
         });
-        if (!invocationCurrent()) return interrupted();
-        const rejected = Boolean(isHostApprovalRejectedDecision(decision));
-        if (rejected || decision.choice.startsWith("deny") || (skill.mcpOwner && decision.choice !== "allow-once")) {
-          return {
-            output: JSON.stringify({
-              error: `user denied skill load: ${skill.name}`,
-            }),
-            isError: true,
-          };
+        let admitted: AnsweredRecord | undefined;
+        try {
+          admitted = admitApprovalAnswer(decision, { requestId, toolName: "skill_load", toolUseId: undefined });
+        } catch (error) {
+          return { output: JSON.stringify({ error: errorMessage(error) }), isError: true };
         }
+        if (admitted?.decision !== "allow" || (skill.mcpOwner && admitted.choice !== "allow-once")) {
+          const reason = hostApprovalDenialReason(decision)
+            ?? (admitted?.decision === "deny" ? "user denied skill load" : "approval rejected by host");
+          return { output: JSON.stringify({ error: `${reason}: ${skill.name}` }), isError: true };
+        }
+        if (!invocationCurrent()) return interrupted();
       }
 
       // Refuse missing session identity; a shared synthetic bucket would leak skill attribution across calls.

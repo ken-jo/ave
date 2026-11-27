@@ -1,4 +1,4 @@
-import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -11,8 +11,11 @@ import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js"
 import { quotePowerShell } from "../../__tests__/support/powershell-literal.js";
 import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
-  getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../permissions/sandbox-capability.js";
+  getHostShellExecutionPlan, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../permissions/sandbox-capability.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { buildNativeShellSupervisor } from "../../__tests__/support/mxc-shell-supervisor-native.js";
+import { detectHostMxcMacShellSupport } from "../../permissions/mxc-macos.js";
+import { establishMxcRuntimeRoot } from "../../permissions/mxc-runtime-root.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { hostScriptRuntimePaths } from "../../main/host-script-runtime.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
@@ -27,7 +30,20 @@ describe("native governed XLSX command", () => {
     const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-xlsx-sandbox-")));
     const path = join(directory, "budget.xlsx");
     const request = join(directory, "edits.json");
-    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    // macOS shells run in the container, started by a supervisor bundled from this source (never a stale dist) whose
+    // development layout also holds the host scripts the command runs.
+    const mac = process.platform === "darwin";
+    if (mac && process.arch !== "arm64") testContext.skip("The macOS shell container requires arm64");
+    const supervisors: Array<Awaited<ReturnType<typeof buildNativeShellSupervisor>>> = [];
+    const macResources = async () => {
+      const supervisor = await buildNativeShellSupervisor();
+      supervisors.push(supervisor);
+      return supervisor.resources;
+    };
+    const developmentScripts = join(resolve("dist"), "skill-scripts");
+    const hostResources = mac ? await macResources() : { resourcePath: resolve("resources"), isPackaged: false };
+    if (mac) cpSync(developmentScripts, join(hostResources.resourcePath, "..", "dist", "skill-scripts"), { recursive: true });
+    configureHostResources(hostResources);
     const runtime = hostScriptRuntimePaths()!;
     const script = join(runtime.bundledScriptsDirectory, "edit-xlsx.cjs");
     const originalScript = readFileSync(script);
@@ -49,11 +65,21 @@ describe("native governed XLSX command", () => {
         setWindowsSandboxSubstrate(substrate, mxcShellCapability());
         setActiveSandboxCapability(windowsProxyOnlyCapability(substrate));
       } else {
-        await initializeAsrtSandbox({ allowedDomains: [] });
+        // A container route takes its egress from the relay, which starts only with an ask callback; this command asks for none.
+        await initializeAsrtSandbox({ allowedDomains: [] }, async () => false);
         setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
           reason: "Native startup workload succeeded", confines: { filesystem: true, process: true, network: true } });
       }
       setShellSandboxRequestedAtBoot(true);
+      const proveMacContainer = async () => {
+        establishMxcRuntimeRoot();
+        const support = await detectHostMxcMacShellSupport(hostResourcesNow());
+        expect(support).toEqual({ state: "available" });
+        setContainerShellSubstrate(support);
+      };
+      let currentResources = hostResources;
+      const hostResourcesNow = () => currentResources;
+      if (mac) await proveMacContainer();
       const windows = process.platform === "win32";
       const tool = windows ? new PowerShellTool() : new BashTool();
       const commandFor = (target: string) => windows
@@ -61,7 +87,7 @@ describe("native governed XLSX command", () => {
         : `ELECTRON_RUN_AS_NODE=1 ${[runtime.javascriptRuntime, script, target, request].map(shellQuote).join(" ")}`;
       const context = { cwd: directory, extraAllowedDirectories: [], metadata: {}, blockReadsOutsideWorkingDirectories: true,
         hostShellExecutionPlan: getHostShellExecutionPlan() };
-      expect(context.hostShellExecutionPlan.mode).toBe("asrt");
+      expect(context.hostShellExecutionPlan).toMatchObject({ mode: "asrt", ...(windows ? {} : { substrate: mac ? "mxc" : "asrt" }) });
       const timeoutSeconds = TOOL_TIMEOUT_POLICY.shellDefaultMs / 1000;
       const records: DocumentEditJournalRecord[] = [];
       const leases: Array<{ finish(): Promise<void> }> = [];
@@ -120,8 +146,9 @@ describe("native governed XLSX command", () => {
       expect(readFileSync(script)).toEqual(originalScript);
       expect(readFileSync(runtime.javascriptRuntime).equals(originalRuntime)).toBe(true);
 
-      const fixtureResources = join(directory, "host");
-      const protectedDirectory = join(fixtureResources, "skill-scripts");
+      // A packaged root keeps its scripts beside the resources; the macOS supervisor's development root beside its dist.
+      const fixtureResources = mac ? (await macResources()).resourcePath : join(directory, "host");
+      const protectedDirectory = mac ? join(fixtureResources, "..", "dist", "skill-scripts") : join(fixtureResources, "skill-scripts");
       mkdirSync(protectedDirectory, { recursive: true });
       const probe = join(protectedDirectory, "write-probe.cjs");
       // The escaped probe keeps the script ASCII; only its output is non-ASCII.
@@ -136,7 +163,9 @@ describe("native governed XLSX command", () => {
           copyFileSync(resolve("resources", binary), join(fixtureResources, binary));
         }
       }
-      configureHostResources({ resourcePath: fixtureResources, isPackaged: true });
+      currentResources = { resourcePath: fixtureResources, isPackaged: !mac };
+      configureHostResources(currentResources);
+      if (mac) await proveMacContainer();
       const probeCommand = windows
         ? `$env:ELECTRON_RUN_AS_NODE='1'; & ${[runtime.javascriptRuntime, probe].map(quotePowerShell).join(" ")}`
         : `ELECTRON_RUN_AS_NODE=1 ${[runtime.javascriptRuntime, probe].map(shellQuote).join(" ")}`;
@@ -153,6 +182,8 @@ describe("native governed XLSX command", () => {
       __resetActiveSandboxCapabilityForTest();
       __resetSandboxRequestedAtBootForTest();
       __resetWindowsSandboxSubstrateForTest();
+      if (mac) setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+      for (const supervisor of supervisors) supervisor.dispose();
       rmSync(directory, { recursive: true, force: true });
     }
   }, TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);

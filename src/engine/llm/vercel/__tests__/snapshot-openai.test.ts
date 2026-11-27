@@ -6,6 +6,7 @@ import { resolveReasoningSupport } from "../../../../shared/context-budget.js";
 import { MAX_BACKGROUND_OUTPUT_TOKEN_LIMIT } from "../../output-token-limit.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../../../../tools/registry.js";
 import { unusedNetworkFetch } from "../../../../__tests__/support/network-fetch-stubs.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 
 describe("VercelUnifiedProvider openai — reasoning_effort mapping", () => {
 
@@ -59,7 +60,7 @@ describe("VercelUnifiedProvider — reasoning_effort 'none' clamp (#1574)", () =
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("openai", "test-key");
+    const provider = new VercelUnifiedProvider("openai", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
     await collect(
       provider.streamTurn({
         model,
@@ -115,7 +116,7 @@ describe("provider protocol for a reasoning model on a tool turn", () => {
     }));
     try {
       const { VercelUnifiedProvider } = await import("../adapter.js");
-      const provider = new VercelUnifiedProvider("openai", "test-key");
+      const provider = new VercelUnifiedProvider("openai", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
       await collect(provider.streamTurn({
         model: "gpt-6.1-sol",
         systemPrompt: "sys",
@@ -175,7 +176,7 @@ describe("VercelUnifiedProvider — stream idle ceiling (#1574)", () => {
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("openai", "test-key");
+    const provider = new VercelUnifiedProvider("openai", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     const events: StreamEvent[] = [];
     const drain = (async () => {
@@ -233,7 +234,7 @@ describe("VercelUnifiedProvider openai — L1/L2/L3 (mocked streamText)", () => 
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("openai", "test-key");
+    const provider = new VercelUnifiedProvider("openai", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     const events = await collect(
       provider.streamTurn({
@@ -296,7 +297,7 @@ describe("VercelUnifiedProvider openai — L1/L2/L3 (mocked streamText)", () => 
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("openai", "test-key");
+    const provider = new VercelUnifiedProvider("openai", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     const events = await collect(
       provider.streamTurn({
@@ -380,7 +381,7 @@ describe("VercelUnifiedProvider openai — L1/L2/L3 (mocked streamText)", () => 
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("openai", "test-key");
+    const provider = new VercelUnifiedProvider("openai", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     const events = await collect(
       provider.streamTurn({
@@ -541,7 +542,7 @@ describe("VercelUnifiedProvider openai — L1/L2/L3 (mocked streamText)", () => 
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("openai", "test-key");
+    const provider = new VercelUnifiedProvider("openai", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     await collect(
       provider.streamTurn({
@@ -590,7 +591,7 @@ describe("VercelUnifiedProvider openai — L1/L2/L3 (mocked streamText)", () => 
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("openai", "test-key");
+    const provider = new VercelUnifiedProvider("openai", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     await collect(
       provider.streamTurn({
@@ -649,7 +650,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
     const provider = new VercelUnifiedProvider(
       "openai-compatible",
       "k",
-      "https://example.test/v1",
+      "https://example.test/v1", undefined, { getRetiredModelId: noRetirementEvidence },
     );
 
     const events = await collect(
@@ -714,7 +715,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
       "",
       "https://stale.example/v1",
       undefined,
-      {},
+      { getRetiredModelId: noRetirementEvidence },
       providerMetadata,
     );
 
@@ -769,7 +770,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
     const provider = new VercelUnifiedProvider(
       "openrouter",
       "or-key",
-      "https://openrouter.ai/api/v1",
+      "https://openrouter.ai/api/v1", undefined, { getRetiredModelId: noRetirementEvidence },
     );
 
     await collect(
@@ -818,7 +819,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
     const provider = new VercelUnifiedProvider(
       "openai-compatible",
       "k",
-      "https://example.test/v1",
+      "https://example.test/v1", undefined, { getRetiredModelId: noRetirementEvidence },
     );
 
     // Per-request toggles isolate concurrent users with opposite settings.
@@ -878,7 +879,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
     const provider = new VercelUnifiedProvider(
       "openai-compatible",
       "k",
-      "https://example.test/v1",
+      "https://example.test/v1", undefined, { getRetiredModelId: noRetirementEvidence },
     );
 
     for (const thinkingBudgetTokens of [1024, 32_000]) {
@@ -933,7 +934,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
     const provider = new VercelUnifiedProvider(
       "openai-compatible",
       "k",
-      "https://example.test/v1",
+      "https://example.test/v1", undefined, { getRetiredModelId: noRetirementEvidence },
     );
     await collect(
       provider.streamTurn({
@@ -981,7 +982,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
       const provider = new VercelUnifiedProvider(
         vendor,
         "k",
-        "https://gateway.example/v1",
+        "https://gateway.example/v1", undefined, { getRetiredModelId: noRetirementEvidence },
       );
 
       await collect(
@@ -1025,7 +1026,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
     const provider = new VercelUnifiedProvider(
       "openai-compatible",
       "k",
-      "https://example.test/v1",
+      "https://example.test/v1", undefined, { getRetiredModelId: noRetirementEvidence },
     );
 
     await collect(
@@ -1078,7 +1079,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
     const provider = new VercelUnifiedProvider(
       "openai-compatible",
       "k",
-      "https://example.test/v1",
+      "https://example.test/v1", undefined, { getRetiredModelId: noRetirementEvidence },
     );
 
     await collect(
@@ -1110,7 +1111,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
     const provider = new VercelUnifiedProvider(
       "openai-compatible",
       "k",
-      "http://router.example/v1",
+      "http://router.example/v1", undefined, { getRetiredModelId: noRetirementEvidence },
     );
 
     const events = await collect(
@@ -1151,7 +1152,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
       "openai-compatible",
       "internal-key",
       "http://10.10.2.100:30000/v1",
-      trustedFetch,
+      trustedFetch, { getRetiredModelId: noRetirementEvidence },
     );
 
     await collect(
@@ -1205,7 +1206,7 @@ describe("custom endpoint request protocol", () => {
     const provider = new VercelUnifiedProvider(
       "openai",
       "test-key",
-      "https://proxy.example/v1",
+      "https://proxy.example/v1", undefined, { getRetiredModelId: noRetirementEvidence },
     );
 
     await collect(
@@ -1266,7 +1267,7 @@ describe("VercelUnifiedProvider — sampling params removed (CTRL simplification
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider(vendor, "test-key");
+    const provider = new VercelUnifiedProvider(vendor, "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     await collect(
       provider.streamTurn({

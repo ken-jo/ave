@@ -369,6 +369,10 @@ function resolveBetterSqlitePrebuildTarget() {
           : process.platform === "win32"
             ? "win32"
             : "linux";
+  if (platformPrefix === "darwin") {
+    if (basename(dirname(dirname(appOutDir))) !== "mac-arm64") fail("macOS package output must identify the arm64 target");
+    return "darwin-arm64";
+  }
   const arch = /(?:^|[/\\-])arm64(?:$|[/\\-])/.test(appOutDir) ? "arm64" : "x64";
   return `${platformPrefix}-${arch}`;
 }

@@ -143,6 +143,7 @@ function resultError(reason: string): ToolExecutionResult {
 export function createAgentSendTool(deps: AgentSendToolDeps): Tool {
   return createDynamicTool({
     name: "agent_send",
+    unattendedEffect: "outward",
     description: "Send an A2A message from inside a sub-agent to its parent or a sibling sub-agent by childSessionId. Set waitForReply only when asking the parent a question.",
     source: "builtin",
     category: "meta",

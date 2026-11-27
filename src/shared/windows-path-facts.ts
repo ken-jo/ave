@@ -1,7 +1,10 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { isAbsolute, win32 } from "node:path";
+import type { Duplex } from "node:stream";
 import { toUSVString } from "node:util";
-import { isWindowsPathKindHelperTimeout, resolveWindowsPathKindHelper, windowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
+import { resolveWindowsJobLauncher } from "../main/windows-job-launcher.js";
+import { isWindowsPathKindHelperTimeout, windowsPathKindHelperUnavailable, withWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, windowsCommandLineLength } from "./windows-command-line.js";
 import { decodeWindowsNativeReply, runWindowsNative } from "./windows-native-host.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
@@ -168,9 +171,8 @@ function helperLaunchFailureCode(error: unknown): string | undefined {
 function requestNative(mode: "--pin" | "--dacl", flags: readonly string[], paths: readonly string[], input?: Buffer): string {
   let output: Buffer;
   try {
-    output = runWindowsNative(() => {
-      const helper = resolveWindowsPathKindHelper();
-      const args = [mode, ...flags, ...(input ? ["--stdin"] : paths)];
+    output = runWindowsNative(() => withWindowsPathKindHelper(helper => {
+      const args = [mode, ...flags, ...(input === undefined ? paths : ["--stdin"])];
       if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
         throw Object.assign(new Error("Windows path facts command line exceeds the process limit"), { code: "E2BIG" });
       }
@@ -178,7 +180,7 @@ function requestNative(mode: "--pin" | "--dacl", flags: readonly string[], paths
         windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
         maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
       });
-    });
+    }));
   } catch (error) {
     // Spawn and timeout errors name the helper's install path; only their code is kept.
     if (isWindowsPathKindHelperTimeout(error)) {
@@ -239,6 +241,283 @@ export function decodeWindowsPathFacts(output: string, expectedRows: number, mod
 
 export function pinWindowsPaths(paths: readonly string[]): readonly WindowsPathFacts[] {
   return request(paths, "--pin");
+}
+
+/** The job launcher's own record of a held run. "ok": its job was proven empty and the helper confirmed the held directory
+ * (`stopped`: processes were still running when the command exited). "lost": the hold refused the launch or the directory
+ * changed. "unconfirmed": everything else, including a launcher that ended without a record. */
+export type WindowsHoldVerdict = { readonly kind: "ok"; readonly stopped: boolean } | { readonly kind: "lost" | "unconfirmed" };
+
+export interface HeldWindowsRun {
+  /** Settles once, with the launcher's record after it has exited and its output has drained, or "unconfirmed"
+   * `windowsHoldStopMs` after `stop`. The hold is released at settlement, which stops anything still in its job. */
+  readonly verdict: Promise<WindowsHoldVerdict>;
+  /** Ask the launcher to end the run and start the deadline. Idempotent; returns `verdict`. */
+  stop(): Promise<WindowsHoldVerdict>;
+}
+
+export interface HeldWindowsPolicy {
+  bindReader(pid: number, onFailure: () => void): Promise<void>;
+  onFailure(): void;
+}
+
+export interface HeldWindowsDirectory {
+  readonly facts: WindowsPathFacts;
+  /** Job launcher arguments for a held command. */
+  readonly launcherArgs: readonly string[];
+  /** The job launcher invocation that starts `executable` with `launcherArgs`. */
+  command(executable: string, args: readonly string[], heldPolicy?: boolean): { executable: string; args: string[] };
+  /** The standard handles a held launcher is started with: owner, output, error, hold channel, verdict. */
+  readonly stdio: "pipe"[];
+  /** Connect the started launcher to the helper and return its run. One launcher per hold. */
+  bind(launcher: ChildProcess, policy?: HeldWindowsPolicy): HeldWindowsRun;
+  /** False once the helper that owns the handles has exited or failed, or after `release`. */
+  isHeld(): boolean;
+  /** Idempotent. Resolves once the helper has closed its handles. */
+  release(): Promise<void>;
+}
+
+const HOLD_VERDICT_LIMIT = 64;
+const HOLD_DRAIN_MS = 2_000;
+const HOLD_REQUEST_BYTES = 8;
+const HOLD_REPLY_BYTES = 9;
+const HELD_POLICY_FRAME_BYTES = 8;
+const HELD_POLICY_REPORT_BYTES = 16;
+
+/** Hold a directory and every ancestor against rename and delete until `release`; undefined when the helper did not hold it.
+ * The handles and the kill-on-close job live in the helper, so its exit stops the launcher and everything it started. */
+export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory | undefined> {
+  if (!isAbsolute(path)) return Promise.resolve(undefined);
+  let child: ChildProcess;
+  try {
+    child = runWindowsNative(() => withWindowsPathKindHelper((helper) =>
+      spawn(helper, ["--hold", path], { windowsHide: true, stdio: ["pipe", "pipe", "ignore", "pipe"] })));
+  } catch {
+    return Promise.resolve(undefined);
+  }
+  const channel = child.stdio[3] as Duplex;
+  const closed = new Promise<void>(resolve => child.once("close", () => resolve()));
+  let settled = false;
+  let released = false;
+  let lost = false;
+  let run: HeldWindowsRun | undefined;
+  let onLost: (() => void) | undefined;
+  const release = (): Promise<void> => {
+    if (released) return closed;
+    released = true;
+    child.stdin?.destroy();
+    channel.destroy();
+    child.kill();
+    onLost?.();
+    return closed;
+  };
+  const bind = (launcher: ChildProcess, policy?: HeldWindowsPolicy): HeldWindowsRun => {
+    if (run !== undefined) throw new Error("The working directory hold already has a launcher");
+    let finish!: (verdict: WindowsHoldVerdict) => void;
+    let done = false;
+    let deadline: NodeJS.Timeout | undefined;
+    let record = "";
+    const [, , , relay, report, control, readerReport] = launcher.stdio as readonly (Duplex | null | undefined)[];
+    let admissionProof: Buffer | undefined;
+    let resumeAuthorized = false;
+    const verdict = new Promise<WindowsHoldVerdict>((resolve) => {
+      finish = (result) => {
+        if (done) return;
+        done = true;
+        clearTimeout(deadline);
+        for (const stream of launcher.stdio) stream?.destroy();
+        void release().then(() => resolve(result));
+      };
+    });
+    const stopRun = (closeControl: boolean): Promise<WindowsHoldVerdict> => {
+      if (!done && deadline === undefined) {
+        deadline = setTimeout(() => finish({ kind: "unconfirmed" }), TOOL_TIMEOUT_POLICY.windowsHoldStopMs);
+        launcher.stdin?.destroy();
+        if (policy !== undefined) {
+          if (closeControl) control?.destroy();
+          // A held policy stop revokes the invocation at once instead of at the verdict.
+          queueMicrotask(policy.onFailure);
+        }
+      }
+      return verdict;
+    };
+    const stop = (): Promise<WindowsHoldVerdict> => stopRun(true);
+    run = { verdict, stop };
+    const failPolicy = (): void => {
+      if (done || deadline !== undefined) return;
+      void stop();
+    };
+    // A lost hold leaves the control pipe open so the launcher reaches admission and reports the loss;
+    // the deadline already withholds the resume reply.
+    const holdLost = (): void => { void stopRun(false); };
+    onLost = policy === undefined ? stop : holdLost;
+    for (const stream of [launcher.stdin, relay, report, channel]) stream?.on("error", () => {});
+    launcher.on("error", () => {
+      // A start without a process has nothing to wait for; a failed operation on a live one is a stop request.
+      if (launcher.pid === undefined) finish({ kind: "unconfirmed" });
+      else if (policy === undefined) void stop();
+      else failPolicy();
+    });
+    const launcherPid = launcher.pid;
+    if (launcherPid === undefined || relay == null || report == null) {
+      if (policy === undefined) void stop();
+      else {
+        failPolicy();
+        launcher.once("exit", () => finish({ kind: "unconfirmed" }));
+      }
+      return run;
+    }
+    const stopAdmission = (): void => {
+      relay.destroy();
+      if (policy === undefined) void stop();
+      else holdLost();
+    };
+    let challenged = false;
+    const relayPolicyAdmission = (): void => {
+      while (admissionProof === undefined && !done && deadline === undefined) {
+        const reply = channel.read(HOLD_REPLY_BYTES) as Buffer | null;
+        if (reply === null) return;
+        if (!challenged && reply[0] === 0x43 && reply.length === HOLD_REPLY_BYTES) {
+          challenged = true;
+          relay.write(reply);
+          continue;
+        }
+        channel.off("readable", relayPolicyAdmission);
+        if (!challenged || reply[0] !== 0x41 || reply.length !== HOLD_REPLY_BYTES) {
+          relay.end(reply);
+          return;
+        }
+        // The report must echo a proof first sent with the relayed admission.
+        admissionProof = randomBytes(HOLD_REPLY_BYTES - 1);
+        admissionProof.copy(reply, 1);
+        relay.write(reply);
+        channel.pipe(relay);
+      }
+    };
+    const admitRelay = (): void => {
+      const frame = relay.read(HOLD_REQUEST_BYTES) as Buffer | null;
+      if (frame === null) return;
+      relay.off("readable", admitRelay);
+      relay.off("end", stopAdmission);
+      if (frame.length !== HOLD_REQUEST_BYTES || frame.readUInt32LE(4) !== launcherPid) {
+        stopAdmission();
+        return;
+      }
+      relay.pipe(channel);
+      if (policy === undefined) channel.pipe(relay);
+      else channel.on("readable", relayPolicyAdmission);
+      channel.write(frame);
+    };
+    relay.on("readable", admitRelay);
+    relay.once("end", stopAdmission);
+    // A closed helper channel ends the launcher's read at once instead of at its admission deadline.
+    channel.once("close", () => relay.destroy());
+    report.on("data", (chunk: Buffer) => { if (record.length <= HOLD_VERDICT_LIMIT) record += chunk.toString("latin1"); });
+    launcher.once("exit", (code) => {
+      if (policy !== undefined && !resumeAuthorized) failPolicy();
+      const read = (): void => {
+        clearTimeout(drain);
+        const ok = /^AVJ1 ok (\d{1,10}) ([01])\n$/.exec(record);
+        finish(ok !== null && code !== null && code >>> 0 === Number(ok[1]) ? { kind: "ok", stopped: ok[2] === "1" }
+          : record === "AVJ1 lost\n" && code === 125 ? { kind: "lost" } : { kind: "unconfirmed" });
+      };
+      const drain = setTimeout(read, HOLD_DRAIN_MS);
+      launcher.once("close", read);
+    });
+    if (policy !== undefined) {
+      launcher.stdin?.on("error", failPolicy);
+      relay.once("close", () => { if (!resumeAuthorized) holdLost(); });
+      if (control == null || readerReport == null) failPolicy();
+      else {
+        let frame = Buffer.alloc(0);
+        control.on("error", failPolicy);
+        control.on("data", failPolicy);
+        const controlEnded = (): void => { if (!resumeAuthorized) failPolicy(); };
+        control.once("end", controlEnded);
+        control.once("close", controlEnded);
+        readerReport.on("error", failPolicy);
+        readerReport.once("close", () => { if (!readerReport.readableEnded) failPolicy(); });
+        readerReport.on("data", (chunk: Buffer) => {
+          if (done || deadline !== undefined) return;
+          if (admissionProof === undefined || frame.length + chunk.length > HELD_POLICY_REPORT_BYTES) { failPolicy(); return; }
+          frame = Buffer.concat([frame, chunk]);
+        });
+        readerReport.once("end", () => {
+          if (done || deadline !== undefined) return;
+          if (frame.length !== HELD_POLICY_REPORT_BYTES || !admissionProof?.equals(frame.subarray(HELD_POLICY_FRAME_BYTES))) {
+            failPolicy();
+            return;
+          }
+          const pid = frame.readUInt32LE(4);
+          if (frame.toString("latin1", 0, 4) !== "AVP1" || pid === 0 || pid === launcherPid) { failPolicy(); return; }
+          const acknowledge = async (): Promise<void> => {
+            await policy.bindReader(pid, failPolicy);
+            if (done || deadline !== undefined || control.destroyed) return;
+            const reply = Buffer.from(frame.subarray(0, HELD_POLICY_FRAME_BYTES));
+            reply.write("AVR1");
+            resumeAuthorized = true;
+            control.end(reply, () => control.destroy());
+          };
+          void acknowledge().catch(failPolicy);
+        });
+      }
+    }
+    if (lost || released) onLost();
+    return run;
+  };
+  const held = (facts: WindowsPathFacts): HeldWindowsDirectory => ({
+    facts,
+    launcherArgs: ["--hold"],
+    command: (executable, args, heldPolicy) => ({ executable: resolveWindowsJobLauncher(), args: [heldPolicy ? "--hold-policy-v1" : "--hold", executable, ...args] }),
+    stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
+    bind,
+    isHeld: () => !released && !lost,
+    release,
+  });
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let received = 0;
+    const settle = (result: HeldWindowsDirectory | undefined): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (result === undefined) {
+        child.stdout?.destroy();
+        void release().then(() => resolve(undefined));
+      } else {
+        resolve(result);
+      }
+    };
+    const failed = (): void => {
+      if (!settled) { settle(undefined); return; }
+      lost = true;
+      onLost?.();
+    };
+    const timer = setTimeout(() => settle(undefined), TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs);
+    child.on("error", failed);
+    child.once("exit", failed);
+    child.stdin?.on("error", failed);
+    channel.on("error", () => {});
+    child.stdout?.on("error", () => settle(undefined));
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      const newline = chunk.indexOf(0x0a);
+      const frameBytes = newline < 0 ? chunk.length : newline + 1;
+      if (received + frameBytes > MAX_PATH_FACTS_OUTPUT_BYTES) {
+        settle(undefined);
+        return;
+      }
+      received += frameBytes;
+      chunks.push(newline < 0 ? chunk : chunk.subarray(0, frameBytes));
+      if (newline < 0) return;
+      try {
+        const [facts] = decodeWindowsPathFacts(decodeWindowsNativeReply(Buffer.concat(chunks, received)), 1, "--pin");
+        settle(facts === undefined || child.pid === undefined ? undefined : held(facts));
+      } catch {
+        settle(undefined);
+      }
+    });
+  });
 }
 
 /** Content is read on the descriptor's pinned handle, bounded to one MiB. */

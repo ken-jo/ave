@@ -14,6 +14,7 @@ vi.mock("electron", () => ({
   BrowserWindow: { fromWebContents: () => null },
   screen: { getPrimaryDisplay: () => display },
 }));
+vi.mock("../browser-capture-stitch-process.js", () => import("./in-process-capture-stitcher.js"));
 
 const TARGET = { tabId: "browser:capture", documentGeneration: 1 };
 function fixture() {

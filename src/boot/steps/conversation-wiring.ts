@@ -32,9 +32,12 @@ import { createWorkBoardReporter, type WorkBoardReporter,
 } from "../../work-board/work-report.js";
 import { appendMemory } from "../../work-board/work-memory.js";
 import { workflowEngineExtensions } from "./workflow-engine-extensions.js";
+import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
 import { isAuthorizedWorkspaceProjectRoot, resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
-import { WORK_BOARD } from "../../shared/ipc-channels.js";
+import { WORK_APPROVALS, WORK_BOARD } from "../../shared/ipc-channels.js";
 import type { WorkItemChangedEventPayload } from "../../shared/work-board-types.js";
+import { errorMessage } from "../../shared/error-message.js";
+import { deliverWorkBoardProgress } from "../../ipc/work-board-project-scope.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 import { emitEvent } from "../types.js";
 import { createLogger } from "../../lib/logger.js";
@@ -613,16 +616,18 @@ export async function wireConversation(
   // Skill bodies are tool results; skill_load records authorization for later skill_read calls.
 
   // Create the Work Board engine after its runner dependency exists.
+  permissionManager.setUnattendedToolEffectResolver(createToolEffectResolver(ctx.toolRegistry));
   const workBoardEngine: WorkBoardEngine = createWorkBoardEngine({
     store: workBoardStore,
     getRunner: () => subAgentRunnerRef.fn,
     getAgentProfile: (name) => agentProfileStore.load(name),
-    emitProgress: (event) => {
-      // Broadcast run progress to every open window so detached panels stay current.
-      fanOutToAllWindows(ctx.host.desktop?.getAppWindows() ?? [], WORK_BOARD.runProgress, event, {
-        logger: log,
-      },
-      );
+    emitProgress: (event, project) => {
+      const deliver = (root: string | undefined) =>
+        deliverWorkBoardProgress(ctx.host.desktop?.getAppWindows() ?? [], event, root, { logger: log });
+      if (project) deliver(project.projectRoot);
+      else void workBoardStore.get(event.itemId).then(result => {
+        if (result.status === "found") deliver(result.item.projectRoot);
+      }).catch((error: unknown) => log.warn("Work board progress scope could not be read: %s", errorMessage(error)));
     },
     // Append bounded project learnings best-effort; memory failures must not fail a run.
     onRunComplete: ({ itemId, title, projectRoot }) =>
@@ -639,11 +644,16 @@ export async function wireConversation(
         const resolved = resolveAuthorizedWorkspaceProject(projectRoot);
         return resolved.authorized && resolved.project ? resolved.project.projectRoot : null;
       },
+      readBreaker: (sessionId) => permissionManager.getJudgeBreaker().snapshot(sessionId),
       templates: ctx.workflowTemplateStore,
       attachments: ctx.workflowTemplateStore,
       scopeAuthorised: (scope) => scope.kind === "all" || isAuthorizedWorkspaceProjectRoot(scope.projectRoot),
-      itemChanged: (itemId) => fanOutToAllWindows(ctx.host.desktop?.getAppWindows() ?? [], WORK_BOARD.itemChanged,
-        { itemId, change: "updated", changedAt: new Date().toISOString() } satisfies WorkItemChangedEventPayload, { logger: log }),
+      itemChanged: (itemId) => {
+        const windows = ctx.host.desktop?.getAppWindows() ?? [];
+        fanOutToAllWindows(windows, WORK_BOARD.itemChanged,
+          { itemId, change: "updated", changedAt: new Date().toISOString() } satisfies WorkItemChangedEventPayload, { logger: log });
+        fanOutToAllWindows(windows, WORK_APPROVALS.changed, undefined, { logger: log });
+      },
       audit: ({ itemId, ...detail }) => bootAuditLogger?.log({
         timestamp: new Date().toISOString(),
         sessionId: `work-board:${itemId}`,

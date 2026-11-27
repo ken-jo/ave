@@ -2,14 +2,15 @@ import "../../__tests__/support/trusted-powershell.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
+import { analysisLimitAnswer } from "../../__tests__/support/permission-lane.js";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { configureHostResources } from "../../main/host-resources.js";
+import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
-import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
 import { approvalCacheKeyIdentity, canonicalStringify, captureApprovalWorkingDirectory, lookupApproval, recordApproval, __resetSessionStoreForTest } from "../user-approval-store.js";
 import { runWithToolExecutionCwd } from "../../tools/execution-context.js";
 import { ToolExecutor } from "../../tools/executor.js";
@@ -25,6 +26,8 @@ import { mxcShellCapability, windowsProxyOnlyCapability } from "../../boot/steps
 import { definitelyTraversesPowerShellRecursively, mayTraversePowerShellRecursively } from "../rules/powershell-exfiltration.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
+
+withSourceHostResources();
 
 
 let root: string;
@@ -46,6 +49,8 @@ beforeEach(() => {
   manager.setMode("default");
   setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform, reason: "fixture full shell containment", confines: { filesystem: true, process: true, network: true } });
+  // Full shell containment on macOS is the published container shell; the wrap alone leaves shells on the no-confinement floor.
+  if (process.platform === "darwin") setContainerShellSubstrate({ state: "available" });
 });
 afterEach(async () => {
   await Promise.all(auditLoggers.splice(0).map((logger) => logger.close()));
@@ -66,7 +71,6 @@ function check(command: string, runsSandboxed: boolean, extra: { headless?: bool
 }
 
 // Windows host shell cwds are pinned through the shipped path-kind helper; boot configures its resources first.
-beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("shell confinement and escape rules", () => {
   it("auto-allows a confined call and asks for the same plain call", () => {
@@ -389,7 +393,11 @@ describe("shell confinement and escape rules", () => {
   });
 });
 
-function executorWithDock(options: { executionMode?: "host" | "sandbox"; headless?: boolean } = {}) {
+function executorWithDock(options: {
+  executionMode?: "host" | "sandbox";
+  headless?: boolean;
+  answer?: () => "allow-once" | "deny-once";
+} = {}) {
   const registry = new ToolRegistry();
   registry.register(new BashTool());
   const requests: ApprovalRequest[] = [];
@@ -397,7 +405,7 @@ function executorWithDock(options: { executionMode?: "host" | "sandbox"; headles
   const send = vi.fn((channel: string, request: ApprovalRequest) => {
     if (channel !== "ave:approval:request") return;
     requests.push(request);
-    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, nativeWebContents as never);
+    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: options.answer?.() ?? "allow-once", nonce: request.nonce, hmac: request.hmac }, nativeWebContents as never);
   });
   const nativeWebContents = { isDestroyed: () => false, send };
   gate = new ApprovalGate(nativeWebContents as never);
@@ -506,6 +514,23 @@ describe("plain-shell invocation authorization", () => {
     expect((await run())[0]).toMatchObject({ content: "ready" });
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ allowedChoices: ["allow-once", "deny-once"] });
+    rmSync(dir, { recursive: true });
+  });
+
+  it.each(["host", "sandbox"] as const)("leaves the cwd removable while asking and after denial (%s)", async (executionMode) => {
+    __resetActiveSandboxCapabilityForTest();
+    const answer = vi.fn(() => {
+      const moved = join(root, "moved-project");
+      renameSync(dir, moved);
+      renameSync(moved, dir);
+      return "deny-once" as const;
+    });
+    const { run, requests } = executorWithDock({ executionMode, answer });
+    expect((await run())[0]).toMatchObject({ is_error: true });
+    expect(requests).toHaveLength(1);
+    expect(answer).toHaveBeenCalledOnce();
+    expect(answer).toHaveReturnedWith("deny-once");
+    rmSync(dir, { recursive: true });
   });
 
   function lowReviewer() {
@@ -529,6 +554,7 @@ describe("plain-shell invocation authorization", () => {
       expect(requests[0]).toMatchObject({ allowedChoices: ["allow-once", "deny-once"],
         executionPlan: { mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true } });
     } finally { await cache.flush(); }
+    rmSync(dir, { recursive: true });
   });
 
   it("allows a low reviewer verdict to authorize an explicit host request", async () => {
@@ -572,14 +598,12 @@ describe("plain-shell invocation authorization", () => {
 });
 
 describe("protected write evidence budget", () => {
-  it.each(["strict", "default", "auto", "allow"] as const)("denies actual evidence parser exhaustion before mode or a card in %s", (mode) => {
+  it.each(["strict", "default", "auto", "allow"] as const)("asks a person for contained evidence parser exhaustion in %s", (mode) => {
     manager.setMode(mode);
     const command = " ".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1) + "git config core.hooksPath /tmp";
     for (const headless of [false, true]) {
       const result = check(command, true, { headless });
-      expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
-      expect(result.forceModal).toBeUndefined();
-      expect(result.reviewer).toBeUndefined();
+      expect(result).toMatchObject({ ...analysisLimitAnswer(headless), pipelineRequest: { shell: { unproven: true }, floor: { code: "shell-analysis-limit" } } });
     }
   });
 });

@@ -8,6 +8,53 @@ const initialization = readRepoFile("build/uninstaller-init.nsh");
 const templateRoot = resolve("node_modules/app-builder-lib/templates/nsis");
 const readTemplate = (name: string) => readFileSync(resolve(templateRoot, name), "utf8");
 
+function allProfileToastGate() {
+  return readRepoFile("docs/references/production-release-checklist.md")
+    .split("### All-profile toast cleanup\n")[1]?.split("\n##")[0]
+    ?.replace(/\s+/g, " ");
+}
+
+const cleanupFunction = "un.aveCleanupCurrentUserNotificationArtifacts";
+const skipLabel = "ave_skip_genuine_uninstall:";
+const cleanupDispatch = [
+  `  \${if} \${UAC_IsInnerInstance}`,
+  `    !insertmacro UAC_AsUser_Call Function ${cleanupFunction} \${UAC_SYNCREGISTERS}`,
+  `  \${else}`,
+  `    Call ${cleanupFunction}`,
+  `  \${endif}`,
+].join("\n");
+
+function expectGuardedToastCleanup(source: string) {
+  const uninstall = source.split("!macro customUnInstall\n")[1].split("!macroend")[0];
+  const updaterGuards = [
+    /\$\{if\} \$\{isUpdated\}\s+Goto ave_skip_genuine_uninstall\s+\$\{endif\}/,
+    /\$\{GetOptions\} \$R0 "--updated" \$R2\s+\$\{ifNot\} \$\{Errors\}\s+Goto ave_skip_genuine_uninstall\s+\$\{endif\}/,
+  ];
+  const dispatchIndex = uninstall.indexOf(cleanupDispatch);
+  expect(dispatchIndex, "the guarded two-branch cleanup dispatch must exist").toBeGreaterThan(-1);
+  for (const guard of updaterGuards) {
+    const match = uninstall.match(guard);
+    expect(match).not.toBeNull();
+    expect((match?.index ?? Infinity) + (match?.[0].length ?? 0)).toBeLessThan(dispatchIndex);
+  }
+  expect(uninstall.split(skipLabel)).toHaveLength(2);
+  const skipIndex = uninstall.indexOf(skipLabel);
+  const failureCheck = uninstall.match(
+    /DetailPrint "\$R5"\s+\$\{if\} \$R4 != 0\s+SetErrorLevel 1\s+Abort "[^"\n]+"\s+\$\{endif\}/,
+  );
+  expect(failureCheck).not.toBeNull();
+  const failureIndex = failureCheck?.index ?? -1;
+  expect(failureIndex).toBeGreaterThan(dispatchIndex);
+  expect(skipIndex, "the updater jump must clear the entire cleanup block").toBeGreaterThan(
+    failureIndex + (failureCheck?.[0].length ?? 0),
+  );
+  expect(
+    uninstall.replace(cleanupDispatch, ""),
+    "notification cleanup calls must stay inside the guarded dispatch",
+  ).not.toContain(cleanupFunction);
+  expect(uninstall.slice(skipIndex)).toMatch(/^ave_skip_genuine_uninstall:(?:\s+Pop \$R[0-9]){10}\s*$/);
+}
+
 describe("machine uninstaller removal", () => {
   it("moves both instances out of the install directory before the elevation wait", () => {
     const template = readTemplate("uninstaller.nsh");
@@ -60,6 +107,64 @@ describe("machine uninstaller removal", () => {
     expect(initialization).toMatch(/\$\{StdUtils\.ParameterStr\} \$R2 \$R1/);
     expect(initialization).toContain('StrCmpS $R2 "/S" ave_uninstall_arguments_silent');
     expect(initialization).toContain('StrCmpS $R3 "_?=" ave_uninstall_arguments_done');
+  });
+
+  it("documents the all-profile toast gap in the Windows release gate", () => {
+    const gate = allProfileToastGate();
+    expect(gate).toContain("retained initiating user's profile after normal alternate-credential UAC");
+    expect(gate).toContain("An already-elevated launch uses the process account's profile");
+    expect(gate).toContain("both the per-user Start Menu notification shortcut and the HKCU toast activator CLSID");
+    expect(gate).toContain("Keep the all-profile cleanup gate open for signed candidates and unsigned exceptions");
+    expect(gate).toContain("Document the supported migration and rollback");
+    expect(gate).toContain("both a clean per-machine install and a supported migration from an existing install, run genuine uninstall with the second user signed in and again from a fresh fixture with that user signed out");
+    expect(gate).toContain("initiating standard user's session and supply a distinct administrator's credentials");
+    expect(gate).toContain("capture both users' owned shortcuts and registration values before uninstall and verify their absence after uninstall before either user relaunches Ave");
+    expect(gate).toContain("foreign shortcuts, registry values, and subkeys are unchanged");
+    expect(gate).toContain("Empty registry keys may remain after the owned values are removed");
+    expect(gate).toContain("capture the shortcut and registration values in both profiles before updater uninstall and again after it completes, before either profile relaunches Ave");
+    expect(gate).toContain("Prevent automatic relaunch or capture the post-uninstall state before it occurs");
+    expect(gate).toContain("Verify both artifacts survived unchanged in each profile, then verify toast activation for both users");
+  });
+
+  it("records per-profile registration as a release limit of the pinned runtime", () => {
+    const gate = allProfileToastGate();
+    expect(gate).toContain("Release limit — per-profile toast registration");
+    expect(gate).toMatch(/v45\.3\.4.*windows_toast_activator\.cc:310–321/);
+    expect(gate).toMatch(/`EnsureShortcut\(\);` and `EnsureCLSIDRegistry\(\);` under\s+`if \(!is_packaged\)`/);
+    expect(gate).toMatch(/condition uses\s+OS package identity/);
+  });
+
+  it("keeps notification cleanup behind the update guards and in the invoking profile", () => {
+    expectGuardedToastCleanup(hook);
+  });
+
+  it("continues only on the cleanup exit that reports an unattributable quarantine entry", () => {
+    const uninstall = hook.split("!macro customUnInstall\n")[1].split("!macroend")[0];
+    const outcome = uninstall.slice(uninstall.indexOf(cleanupDispatch) + cleanupDispatch.length);
+    expect(outcome).toMatch(
+      /^(?:\s*;[^\n]*)+\s+\$\{if\} \$R4 == 2\s+DetailPrint "[^"\n]+unattributable quarantine entry[^"\n]+"\s+StrCpy \$R4 "0"\s+\$\{endif\}\s+DetailPrint "\$R5"\s+\$\{if\} \$R4 != 0\s+SetErrorLevel 1\s+Abort /,
+    );
+    expect(uninstall.match(/StrCpy \$R4 "0"/g)).toHaveLength(1);
+    const cleanup = readRepoFile("build/uninstall-windows-notification-artifacts.ps1");
+    expect(cleanup.match(/^\s*exit \d+$/gm)?.map((line) => line.trim())).toEqual(["exit 2", "exit 0", "exit 1"]);
+    expect(cleanup).toMatch(/if \(\$unattributedQuarantine\) \{\s+#[^\n]+\s+exit 2\s+\}\s+exit 0\s+\}\s+catch \{/);
+  });
+
+  it("rejects an updater jump target before notification dispatch", () => {
+    const earlySkip = hook.replace(`  ${skipLabel}\n`, "").replace(
+      cleanupDispatch,
+      `  ${skipLabel}\n${cleanupDispatch}`,
+    );
+    expect(earlySkip).not.toBe(hook);
+    expect(() => expectGuardedToastCleanup(earlySkip)).toThrow("the updater jump must clear the entire cleanup block");
+  });
+
+  it("rejects a notification cleanup call after the updater jump target", () => {
+    const extraCall = hook.replace(skipLabel, `${skipLabel}\n  Call ${cleanupFunction}`);
+    expect(extraCall).not.toBe(hook);
+    expect(() => expectGuardedToastCleanup(extraCall)).toThrow(
+      "notification cleanup calls must stay inside the guarded dispatch",
+    );
   });
 
   it("retains data even when the legacy deletion flag is supplied", () => {

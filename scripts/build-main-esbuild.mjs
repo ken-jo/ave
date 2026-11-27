@@ -8,9 +8,9 @@
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { build, context } from "esbuild";
-import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   MAIN_BUNDLE_BUDGETS,
@@ -26,6 +26,8 @@ import { readBuildSourceIdentity } from "./lib/build-source-identity.mjs";
 import { MAIN_BUNDLE_EXTERNALS } from "./lib/main-bundle-externals.mjs";
 import { mxcVerificationBuild, mxcVerificationEntries } from "./lib/mxc-verification-build.mjs";
 import { buildSkillScripts } from "./build-skill-scripts.mjs";
+import { buildWindowsPathKind } from "./build-windows-path-kind.mjs";
+import { WINDOWS_PATH_KIND_BUNDLE_PIN, windowsPathKindBundlePinDeclaration } from "./lib/windows-path-kind-package.mjs";
 import { assertBundledDocumentInputs, assertPackagedDocumentInputs } from "./lib/document-consumer-guard.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -37,7 +39,9 @@ const manifestPath = resolve(outdir, "bundle-manifest.json");
 const watchMode = process.argv.includes("--watch");
 const require = createRequire(import.meta.url);
 require("./prepare-srt-win-receipts.cjs").prepareSrtWinReceipts();
+let pathKindSha256 = null;
 if (process.platform === "win32") {
+  pathKindSha256 = buildWindowsPathKind({ root: repoRoot }).imageSha256;
   execFileSync(process.execPath, [resolve(repoRoot, "scripts/build-srt-win.mjs")], { stdio: "inherit" });
 }
 await buildSkillScripts();
@@ -63,6 +67,7 @@ const buildOptions = {
   preserveSymlinks: true,
   platform: "node",
   target: ["node22"],
+  define: { __AVE_WINDOWS_PATH_KIND_SHA256__: pathKindSha256 === null ? "null" : WINDOWS_PATH_KIND_BUNDLE_PIN },
   legalComments: "none",
   // Keep function/class names stable for runtime diagnostics while allowing
   // esbuild to shorten private local bindings as well as fold equivalent
@@ -85,6 +90,7 @@ const buildOptions = {
   // `__dirname` / `__filename` locally, so a banner shim is not needed.
   banner: {
     js:
+      (pathKindSha256 === null ? "" : `${windowsPathKindBundlePinDeclaration(pathKindSha256)}\n`) +
       `import { createRequire as __aveCreateRequire } from "node:module";\n` +
       `const require = __aveCreateRequire(import.meta.url);\n`,
   },
@@ -107,7 +113,7 @@ if (watchMode) {
 } else {
   assertPackagedDocumentInputs(JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8")), repoRoot);
   const sourceBeforeBuild = readBuildSourceIdentity(repoRoot);
-  const result = await build(buildOptions);
+  const result = await build({ ...buildOptions, write: pathKindSha256 === null });
   assertBundledDocumentInputs(Object.keys(result.metafile.inputs), repoRoot);
 
   if (result.errors.length > 0) {
@@ -125,6 +131,15 @@ if (watchMode) {
       );
       process.exit(1);
     }
+  }
+
+  // Hash the producer's output buffers before publishing them to the staging tree.
+  const bundleSha256 = result.outputFiles && Object.fromEntries(result.outputFiles.map(({ path, contents }) => [
+    relative(outdir, path).split(sep).join("/"), createHash("sha256").update(contents).digest("hex"),
+  ]));
+  for (const { path, contents } of result.outputFiles ?? []) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, contents);
   }
 
   const headlessManifest = assertHeadlessBundleBoundary(result.metafile, "src/headless.ts", Object.values(HEADLESS_CHILD_ENTRY_POINTS));
@@ -158,6 +173,10 @@ if (watchMode) {
   bundleManifest.mxcVerificationBuild = mxcVerificationBuild();
   bundleManifest.srtWinReceiptsSha256 = require("./lib/srt-win-integrity.cjs").assertSrtWinReceiptModule();
   writeFileSync(manifestPath, `${JSON.stringify(bundleManifest, null, 2)}\n`, "utf8");
+  const receipt = process.env.AVE_WINDOWS_PATH_KIND_BUNDLE_RECEIPT;
+  if (receipt && pathKindSha256 !== null) {
+    writeFileSync(receipt, JSON.stringify({ arch: process.arch, imageSha256: pathKindSha256, bundleSha256 }), { flag: "wx", mode: 0o600 });
+  }
   process.stdout.write(`${formatMainBundleBudget(bundleMeasurement)}\n`);
 
   process.stdout.write(`[esbuild-main] OK -> ${outfile}\n`);

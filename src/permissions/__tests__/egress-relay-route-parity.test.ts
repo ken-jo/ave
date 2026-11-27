@@ -211,7 +211,7 @@ describe.skipIf(process.platform !== "win32").each(["shell", "extension"] as con
     answer = () => { throw new Error("prompt broke"); };
     expect(await refusal(opened.port)).toBe("HTTP/1.1 403 permission prompt failed");
     answer = () => "yes" as unknown as boolean;
-    expect(await refusal(opened.port)).toBe("HTTP/1.1 403 user denied");
+    expect(await refusal(opened.port)).toBe("HTTP/1.1 403 permission prompt refused");
     expect(upstream.connects).toEqual([]);
   });
 

@@ -1,3 +1,4 @@
+import { unknownToolEffects } from "../../__tests__/support/tool-effect-resolver.js";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -20,7 +21,7 @@ beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), "template-authority-
 afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
 async function confirmVersion(store: WorkflowTemplateStore, value = input(), id: string | null = null) {
   const record = await store.draft(id, value); const draft = requiredValue(record.draft);
-  return store.confirmDraft(record.template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision }, actor);
+  return store.confirmDraft(record.template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision }, actor, unknownToolEffects).then(({ version }) => version);
 }
 it("refuses setup commands when no all-tools stage exists", () => {
   const value = input(); value.setupCommands = ["prepare"];
@@ -135,7 +136,7 @@ it("refuses all-tools setup commands outside the stage envelope before writing",
   value.stages[0].envelope = { tools: ["write_file"], writePaths: [], readRoots: [], network: [], commands: [], mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [], outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 } };
   const file = join(dir, "templates.json"); const store = new WorkflowTemplateStore(file);
   const record = await store.draft(null, value); const before = await readFile(file, "utf8"); const draft = requiredValue(record.draft);
-  await expect(store.confirmDraft(record.template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision }, actor)).rejects.toMatchObject({ code: "envelope-refused", refusals: ["setup-outside-commands"] });
+  await expect(store.confirmDraft(record.template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision }, actor, unknownToolEffects)).rejects.toMatchObject({ code: "envelope-refused", refusals: ["setup-outside-commands"] });
   expect(await readFile(file, "utf8")).toBe(before);
 });
 it("compares registry snapshots exactly without normalizing root aliases", () => {

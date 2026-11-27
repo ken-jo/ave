@@ -108,7 +108,7 @@ describe("A2A remote exact initial replay", () => {
       authorizer: { authorize: () => true },
       approver: {
         approve: async () => {
-          if (mode === "deny") return null;
+          if (mode === "deny") return { outcome: "denied" };
           throw new Error(raw);
         },
       },
@@ -130,13 +130,14 @@ describe("A2A remote exact initial replay", () => {
       request: { id: 1, method: A2AJsonRpcMethod.SEND_MESSAGE, params: { message: { messageId: `message-${mode}`, role: "ROLE_USER", parts: [{ text: "hello" }] } } },
       messageId: `message-${mode}`,
     });
-    expect(result).toEqual({ ok: false, outcome: "not-sent" });
+    const approvalOutcome = mode === "deny" ? "denied" : "rejected";
+    expect(result).toEqual({ ok: false, outcome: "not-sent", approvalOutcome });
     expect(JSON.stringify(result)).not.toContain(raw);
     expect(disk).toBeUndefined();
     expect(prepareSecret).not.toHaveBeenCalled();
     expect(resolve).not.toHaveBeenCalled();
     expect(invoke).not.toHaveBeenCalled();
-    expect(audit).toHaveBeenCalledWith({ type: "a2a-remote-operation", operation: "initial-send", outcome: "approval-denied", code: "foreground-approval-failed" });
+    expect(audit).toHaveBeenCalledWith({ type: "a2a-remote-operation", operation: "initial-send", outcome: "approval-denied", code: `foreground-approval-${approvalOutcome}` });
   });
 
   it("reuses the encrypted original byte sequence and original JSON-RPC ID", async () => {

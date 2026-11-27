@@ -353,17 +353,37 @@ describe("VerdictCache persistence", () => {
 
   it("caps stored entries to the newest cache window", async () => {
     const path = tmpCachePath();
+    const lookupAt = (index: number) => ({ ...LOOKUP, toolName: `tool_${index}` });
+    const expiresAt = Date.now() + 60 * 60 * 1_000;
+    const invalidationKey = computeInvalidationKey(CTX);
+    // Start at the eviction boundary to exercise the real rewrite without filling the
+    // cache through hundreds of unrelated whole-file writes.
+    const initial = Array.from({ length: MAX_VERDICT_CACHE_ENTRIES }, (_, index) => JSON.stringify({
+      key: computeCacheKey(lookupAt(index)),
+      verdict: { level: "low", reason: String(index) },
+      expiresAt,
+      invalidationKey,
+    }));
+    writeFileSync(path, `${initial.join("\n")}\n`);
     const cache = resources.makeVerdictCache(path);
-    for (let i = 0; i < MAX_VERDICT_CACHE_ENTRIES + 3; i += 1) {
-      await cache.store({ ...LOOKUP, toolName: `tool_${i}` }, CTX, {
+    expect(cache.lookup(lookupAt(0), CTX).hit).toBe(true);
+    expect(cache.lookup(lookupAt(MAX_VERDICT_CACHE_ENTRIES - 1), CTX).hit).toBe(true);
+    for (let i = MAX_VERDICT_CACHE_ENTRIES; i < MAX_VERDICT_CACHE_ENTRIES + 3; i += 1) {
+      await cache.store(lookupAt(i), CTX, {
         level: "low",
         reason: String(i),
       });
     }
     const lines = readFileSync(path, "utf-8").trim().split("\n");
-    expect(lines).toHaveLength(MAX_VERDICT_CACHE_ENTRIES);
-    expect(cache.lookup({ ...LOOKUP, toolName: "tool_0" }, CTX).hit).toBe(false);
-    expect(cache.lookup({ ...LOOKUP, toolName: `tool_${MAX_VERDICT_CACHE_ENTRIES + 2}` }, CTX).hit).toBe(true);
+    expect(lines.map((line) => JSON.parse(line).key)).toEqual(
+      Array.from({ length: MAX_VERDICT_CACHE_ENTRIES }, (_, index) => computeCacheKey(lookupAt(index + 3))),
+    );
+    const reloaded = resources.makeVerdictCache(path);
+    for (const instance of [cache, reloaded]) {
+      expect(instance.lookup(lookupAt(2), CTX).hit).toBe(false);
+      expect(instance.lookup(lookupAt(3), CTX).hit).toBe(true);
+      expect(instance.lookup(lookupAt(MAX_VERDICT_CACHE_ENTRIES + 2), CTX).hit).toBe(true);
+    }
   });
 });
 

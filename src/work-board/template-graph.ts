@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
 import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
 import type { StageEnvelope, StageGenerationTool, RequestedOutputKind, RequestedOutputDecl, TemplateScope, TemplateGraph, TemplateStage, WorkflowTemplateDraftInput, WorkflowTemplateErrorCode, EnvelopeRefusal, StageInputDecl } from "../shared/workflow-template-types.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { isSensitivePath, protectedControlEntryFor } from "../permissions/sensitive-paths.js";
 import { hasOnlyKeys, isPlainRecord, isRecord } from "../shared/is-record.js";
+
+import type { EnvelopeToolRef, UnattendedQualification } from "../shared/workflow-template-types.js";
+import type { ToolEffectResolver } from "../permissions/tool-effect-evidence.js";
 
 export class WorkflowTemplateError extends Error {
   constructor(readonly code: WorkflowTemplateErrorCode, message: string = code, readonly refusals?: EnvelopeRefusal[], readonly field?: string) { super(message); this.name = "WorkflowTemplateError"; }
@@ -95,6 +99,34 @@ function canonicalEnvelope(raw: unknown): StageEnvelope {
 // Lift this interim restriction when unattended evaluation and isolation are available.
 export function isAllReadOnlyVersion(graph: TemplateGraph): boolean {
   return !graph.setupCommands?.length && graph.stages.every(stage => stage.toolScope === "read" && !stage.allowSubAgents && !stage.requestedOutputs?.length && (!stage.envelope || (stage.envelope.mcpReadOnlyTools.length === 0 && stage.envelope.outputs.length === 0 && stage.envelope.network.length === 0 && stage.envelope.writePaths.length === 0 && stage.envelope.commands.length === 0 && stage.envelope.mcpGenerationTools.length === 0 && stage.envelope.pluginGenerationTools.length === 0)));
+}
+
+function everyStageHasEnvelope(graph: TemplateGraph): boolean {
+  return graph.stages.every(stage => stage.envelope !== undefined);
+}
+
+export function qualifyUnattended(graph: TemplateGraph, effects: ToolEffectResolver | null): UnattendedQualification {
+  for (const { id: stageId, envelope } of graph.stages) {
+    if (!envelope) continue;
+    const collections: [EnvelopeToolRef["collection"], readonly (string | StageGenerationTool)[]][] = [
+      ["tools", envelope.tools],
+      ["mcpReadOnlyTools", envelope.mcpReadOnlyTools],
+      ["mcpGenerationTools", envelope.mcpGenerationTools],
+      ["pluginGenerationTools", envelope.pluginGenerationTools],
+    ];
+    for (const [collection, entries] of collections) {
+      for (const entry of entries) {
+        const name = typeof entry === "string" ? entry : entry.name;
+        const evidence = effects?.effectOf({ collection, name });
+        if (evidence !== "safe") return {
+          ok: false,
+          code: evidence === "outward" ? "outward-effect-tool" : "tool-effect-unknown",
+          tool: { stageId, collection, name },
+        };
+      }
+    }
+  }
+  return everyStageHasEnvelope(graph) ? { ok: true } : { ok: false, code: "unattended-not-read-only" };
 }
 
 // Absent or empty optional collections are omitted; required members retain their canonical defaults.
@@ -195,9 +227,11 @@ export function validateStageForConfirm(stage: TemplateStage, template: Template
   if (stage.toolScope === "read" && (envelope.tools.some(tool => !READ_ENVELOPE_TOOLS.has(tool)) || envelope.mcpGenerationTools.length > 0 || envelope.pluginGenerationTools.length > 0)) refusals.push("tools-broader-than-scope");
   if (envelope.tools.some(tool => ["host_shell", "host_bash", "host_powershell"].includes(tool))) refusals.push("host-shell");
   if (envelope.tools.some(tool => tool.startsWith("browser_") || tool.startsWith("terminal_"))) refusals.push("user-owned-surface");
-  for (const path of [...envelope.writePaths, ...envelope.readRoots]) {
-    if (protectedControlEntryFor(path)) refusals.push("floor-target");
-    if (isSensitivePath(path, "read")) refusals.push("secret-path");
-  }
-  return [...new Set(refusals)];
+  return withLocalityDecision(() => {
+    for (const path of [...envelope.writePaths, ...envelope.readRoots]) {
+      if (protectedControlEntryFor(path)) refusals.push("floor-target");
+      if (isSensitivePath(path, "read")) refusals.push("secret-path");
+    }
+    return [...new Set(refusals)];
+  });
 }

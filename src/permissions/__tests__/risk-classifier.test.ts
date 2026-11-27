@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { inspectShellCommand } from "../rules/literal-shell-inspection.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
+import { RetiredModelError } from "../../engine/llm/retired-model-error.js";
 
 describe("unconfigured reviewer model", () => {
   it.each([undefined, "", "   "])("requires a selected model before constructing the classifier: %j", (model) => {
@@ -1149,6 +1150,19 @@ describe("LlmRiskClassifier — fallbackOnError", () => {
     },
   );
 
+  it.skipIf(process.platform === "win32")("applies the POSIX reviewer fallback when prompt serialization throws", async () => {
+    const complete = vi.fn<LlmReviewerProvider["complete"]>();
+    const classifier = new LlmRiskClassifier({ complete }, "reviewer", "rule");
+    const extra: { self?: unknown } = {};
+    extra.self = extra;
+    const input = ctx({ category: "read", toolName: "read_file", finalInput: { path: "/Users/example/work/notes.txt", extra } });
+
+    const trace = await classifier.classifyWithTrace(input);
+    expect(trace).toMatchObject({ outcome: "error", llmVerdict: null });
+    expect(trace.finalVerdict).toEqual(trace.ruleVerdict);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
   it("provider throws + fallbackOnError='rule' → returns rule verdict", async () => {
     const provider: LlmReviewerProvider = {
       complete: vi.fn(async () => {
@@ -1633,6 +1647,18 @@ describe("LlmRiskClassifier — retry policy (#865)", () => {
     });
     const v = await c.classify(ctx({ category: "read", finalInput: { path: "/Users/example/work/x.md" } }));
     // Terminal error → fallbackOnError=deny → high
+    expect(v.level).toBe("high");
+    expect(provider.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT retry a model the wire refused as retired", async () => {
+    const provider: LlmReviewerProvider = { complete: vi.fn(async () => { throw new RetiredModelError("gpt-4o-mini"); }) };
+    const onCall = vi.fn();
+    const c = new LlmRiskClassifier(provider, "gpt-4o-mini", "deny", { onCall }, {
+      maxAttempts: 5, baseDelayMs: 1, jitterPct: 0,
+    });
+    const v = await c.classify(ctx({ category: "read", finalInput: { path: "/Users/example/work/x.md" } }));
+    // Terminal error → fallbackOnError=deny → high, after a single call.
     expect(v.level).toBe("high");
     expect(provider.complete).toHaveBeenCalledTimes(1);
   });

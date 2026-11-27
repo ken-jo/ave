@@ -1,0 +1,461 @@
+import { useState } from "react";
+// @vitest-environment jsdom
+import "../../../../../test/renderer/setup.js";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
+import { afterEach, expect, it, vi } from "vitest";
+import { approvalRequest, approvalSurfaceStub, withApprovalSurface } from "../../../../../test/renderer/helpers.js";
+import { setLocale, t } from "../../../../i18n/runtime.js";
+import { loadLocaleMessages, messages } from "../../../../i18n/messages/index.js";
+import { TEST_IDS } from "../../../../shared/test-ids.js";
+import type { RunProgressEventPayload, WorkItemResolved } from "../../../../shared/work-board-types.js";
+import type { TemplateVersion, WorkflowTemplate, WorkflowTemplateDraftInput } from "../../../../shared/workflow-template-types.js";
+import { WorkBoardPanel } from "../WorkBoardPanel.js";
+import type { ApprovalRequest, AveApi } from "../../types.js";
+
+const at = "2026-11-26T05:00:00.000Z";
+const graphHash = "a".repeat(64);
+const template: WorkflowTemplate = {
+  id: "daily", name: "Daily report", scope: { kind: "all" }, currentVersion: 2, createdAt: at, updatedAt: at,
+};
+const draft: WorkflowTemplateDraftInput = {
+  name: template.name, scope: template.scope,
+  stages: [
+    { id: "gather", name: "Gather sources", goal: "Read reports", inputs: [], toolScope: "read", allowSubAgents: false, gate: { type: "auto", pass: { kind: "stage_ok" } } },
+    { id: "summarize", name: "Summarize", goal: "Summarize the sources", inputs: ["gather"], toolScope: "read", allowSubAgents: false, gate: { type: "auto", pass: { kind: "model_verdict" } } },
+  ],
+  edges: [{ from: "gather", to: "summarize" }],
+};
+const pin = { templateId: template.id, version: 2, graphHash };
+const version: TemplateVersion = {
+  stages: draft.stages, edges: draft.edges, ...pin, confirmedAt: at, confirmation: { ...pin, who: "user", at, origin: "local-desktop" },
+};
+const older = { ...version, version: 1, stages: draft.stages.slice(0, 1), edges: [] };
+const item: WorkItemResolved = {
+  id: 8, title: "Wednesday report", templateId: template.id, status: "in_progress", status_resolved: "in_progress",
+  priority: "medium", created_at: at, updated_at: at, runId: "run-a", runStatus: "executing", templateRunState: "awaiting_review",
+};
+
+const project = { projectRoot: "/workspace/report", projectName: "Report workspace" };
+
+function SwitchableBoard({ api, projects, onOpened, initiallyAll, opened }: {
+  api: AveApi; projects: readonly typeof project[]; onOpened: (root: string) => void; initiallyAll: boolean; opened: { all: boolean };
+}) {
+  const [current, setCurrent] = useState(project);
+  const [all, setAll] = useState(initiallyAll);
+  return <WorkBoardPanel api={api} project={current} allProjects={all} projects={projects} onOpenProject={root => {
+    const next = projects.find(entry => entry.projectRoot === root);
+    if (!next) return false;
+    onOpened(root);
+    opened.all = false;
+    setAll(false);
+    setCurrent(next);
+    return true;
+  }} />;
+}
+
+function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [template], queue: ApprovalRequest[] = [], projects = [project], initiallyAll = false) {
+  const opened = { all: initiallyAll };
+  let progress: (event: RunProgressEventPayload) => void = () => {};
+  const api = {
+    listWorkBoard: vi.fn(async (_filter?: { projectRoot?: string }) => ({ status: "ok", items })),
+    getWorkBoardRunTranscript: vi.fn(async () => ({ events: [] })),
+    getSettings: vi.fn(async () => ({ workBoard: { toolApprovalSurface: "chat" } })),
+    getWorkBoardItem: vi.fn(async () => ({ status: "found", item: { ...(items[0] ?? item), ...project } })),
+    listAgentProfiles: vi.fn(async () => ({ agents: [] })),
+    listWorkflowTemplates: vi.fn(async () => ({ ok: true, value: templates })),
+    getWorkflowTemplate: vi.fn(async () => ({ ok: true, value: { template, versions: [older, version] } })),
+    onWorkflowTemplatesChanged: () => () => {},
+    draftWorkflowTemplate: vi.fn(async (_id: string, input: WorkflowTemplateDraftInput) => ({
+      ok: true, value: { template, versions: [older, version], draft: { ...input, graphHash, revision: "draft-a", updatedAt: at } },
+    })),
+    confirmWorkflowTemplate: vi.fn<AveApi["confirmWorkflowTemplate"]>(async () => ({
+      ok: true, value: { version: { ...version, version: 3 }, unattended: { ok: true } },
+    })),
+    addWorkBoardItem: vi.fn(async (_input: unknown, _launch?: unknown) => ({ status: "created", itemId: 8, item: { ...item, ...project } })),
+    completeWorkBoardItem: vi.fn(async () => ({ status: "completed", itemId: 8, item: { ...item, status: "completed" } })),
+    runWorkBoardItem: vi.fn(async () => ({ status: "completed" })),
+    decideWorkStage: vi.fn(async () => ({ ok: true, status: "approved" })),
+    decideWorkJoin: vi.fn(async () => ({ ok: true })),
+    openWorkBoardJoin: vi.fn(async () => ({ ok: true })),
+    retryWorkStage: vi.fn(async () => ({ ok: true })),
+    onWorkBoardItemChanged: () => () => {},
+    onWorkBoardRunFinished: () => () => {},
+    onWorkBoardRunProgress: (callback: typeof progress) => { progress = callback; return () => {}; },
+  };
+  const surface = { ...approvalSurfaceStub(), queue };
+  const openProject = vi.fn();
+  render(withApprovalSurface(<SwitchableBoard api={api as unknown as AveApi} projects={projects} onOpened={openProject} initiallyAll={initiallyAll} opened={opened} />, surface));
+  return { api, surface, openProject, opened, emit: (event: RunProgressEventPayload) => act(() => progress(event)) };
+}
+
+async function templates() {
+  fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.library") }));
+  return within(await screen.findByRole("dialog", { name: t("workflowTemplates.library") }));
+}
+
+afterEach(() => { cleanup(); setLocale("en"); });
+
+it("opens the empty template library by keyboard and returns focus on Escape", async () => {
+  mount([], []);
+  const user = userEvent.setup();
+  const button = screen.getByRole("button", { name: t("workflowTemplates.library") });
+  button.focus();
+  await user.keyboard("{Enter}");
+  expect(await screen.findByText(t("workflowTemplates.empty"))).toBeVisible();
+  expect(screen.getByRole("button", { name: t("workflowTemplates.newTemplate") })).toHaveFocus();
+  await user.keyboard("{Escape}");
+  await vi.waitFor(() => expect(button).toHaveFocus());
+});
+
+it("confirms an edited graph at its saved revision and starts the marked current version attended", async () => {
+  const { api } = mount();
+  const library = await templates();
+  fireEvent.click(await library.findByRole("button", { name: template.name }));
+  const history = await library.findByLabelText(t("workflowTemplates.versions"));
+  fireEvent.change(history, { target: { value: "1" } });
+  expect(library.queryByText("Summarize")).toBeNull();
+  fireEvent.change(history, { target: { value: "2" } });
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.editVersion") }));
+  expect(library.getByLabelText(t("workflowTemplates.templateName"))).toHaveFocus();
+  fireEvent.click(library.getByRole("button", { name: /Summarize/ }));
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.gate")), { target: { value: "human" } });
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.reviewVersion") }));
+  expect(await library.findByText(graphHash)).toBeVisible();
+  expect(api.draftWorkflowTemplate).toHaveBeenCalledWith(template.id, expect.objectContaining({
+    basedOn: 2,
+    stages: expect.arrayContaining([expect.objectContaining({ id: "summarize", gate: { type: "human" } })]),
+  }));
+  expect(api.confirmWorkflowTemplate).not.toHaveBeenCalled();
+  const updated = { ...version, version: 3 };
+  api.getWorkflowTemplate.mockResolvedValue({ ok: true, value: { template: { ...template, currentVersion: 3 }, versions: [older, version, updated] } });
+  api.confirmWorkflowTemplate.mockResolvedValue({
+    ok: true, value: { version: updated, unattended: { ok: false, code: "outward-effect-tool", tool: {
+      stageId: "summarize", collection: "mcpGenerationTools", name: "report_delivery",
+    } } },
+  });
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.confirmVersion", { version: 3 }) }));
+  expect(api.confirmWorkflowTemplate).toHaveBeenCalledExactlyOnceWith(template.id, { expectedGraphHash: graphHash, expectedDraftRevision: "draft-a" });
+  expect(await library.findByText(t("workflowTemplates.unattendedMark", {
+    tool: "report_delivery", reason: t("reasonCodes.outward-effect-tool"),
+  }))).toBeVisible();
+  fireEvent.click(await library.findByRole("button", { name: t("workflowTemplates.startRun") }));
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.workTitle")), { target: { value: "Wednesday report" } });
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.createAndRun") }));
+  await vi.waitFor(() => expect(api.addWorkBoardItem).toHaveBeenCalledExactlyOnceWith(
+    { templateId: template.id, title: "Wednesday report", ...project }, { ...pin, version: 3, projectRoot: project.projectRoot },
+  ));
+});
+
+it("creates and launches a board item in one request with the displayed template pin", async () => {
+  const { api } = mount();
+  const library = await templates();
+  fireEvent.click(await library.findByRole("button", { name: template.name }));
+  fireEvent.click(await library.findByRole("button", { name: t("workflowTemplates.startRun") }));
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.workTitle")), { target: { value: "Wednesday report" } });
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.createAndRun") }));
+  await vi.waitFor(() => expect(api.addWorkBoardItem).toHaveBeenCalledExactlyOnceWith(
+    { templateId: template.id, title: "Wednesday report", ...project }, { ...pin, projectRoot: project.projectRoot },
+  ));
+  expect(api.runWorkBoardItem).not.toHaveBeenCalled();
+  const run = within(await screen.findByRole("dialog", { name: "Wednesday report" }));
+  expect(run.getByText(t("workflowTemplates.requestedVersion", { version: 2 }))).toBeVisible();
+  expect(run.getByRole("list", { name: t("workflowTemplates.stageGraph") })).toHaveTextContent("Gather sources");
+});
+
+it("asks to open the target project before attaching a cross-project launch", async () => {
+  const target = { projectRoot: "/workspace/other", projectName: "Other workspace" };
+  const { api, openProject } = mount([], [template], [], [project, target]);
+  api.addWorkBoardItem.mockResolvedValue({ status: "created", itemId: 8, item: { ...item, ...target } });
+  const library = await templates();
+  fireEvent.click(await library.findByRole("button", { name: template.name }));
+  fireEvent.click(await library.findByRole("button", { name: t("workflowTemplates.startRun") }));
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.workTitle")), { target: { value: item.title } });
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.scope")), { target: { value: target.projectRoot } });
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.createAndRun") }));
+  const open = await screen.findByRole("button", { name: t("workflowTemplates.openInProject", { project: target.projectName }) });
+  expect(screen.queryByRole("dialog", { name: item.title })).toBeNull();
+  expect(openProject).not.toHaveBeenCalled();
+  expect(api.getWorkBoardItem).not.toHaveBeenCalled();
+  fireEvent.click(open);
+  expect(openProject).toHaveBeenCalledExactlyOnceWith(target.projectRoot);
+  await screen.findByRole("dialog", { name: item.title });
+  await vi.waitFor(() => expect(api.listWorkBoard).toHaveBeenLastCalledWith(expect.objectContaining({ projectRoot: target.projectRoot })));
+});
+
+it("shows parked work and labels only the model decisions reported by the live host", async () => {
+  const { api, emit } = mount([item]);
+  await screen.findByText(item.title);
+  emit({ itemId: item.id, stageId: "gather", attempt: 1, phase: "executing", runSessionId: "gather-session", at });
+  emit({ itemId: item.id, stageId: "gather", attempt: 1, phase: "stage_passed", at });
+  emit({ itemId: item.id, stageId: "summarize", attempt: 1, phase: "stage_gate", judgedBy: "model", at });
+  fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.openRun") }));
+  const view = await screen.findByRole("dialog", { name: item.title });
+  expect(within(view).getByText(t("workflowTemplates.parked"))).toBeVisible();
+  expect(within(view).getByText(t("workflowTemplates.modelGate"))).toBeVisible();
+  expect(within(view).getByText(t("workflowTemplates.stageSession", { session: "gather-session" }))).toBeVisible();
+  expect(within(view).getByText(t("workflowTemplates.stagePassed"))).toBeVisible();
+  expect(within(view).getByText(t("workflowTemplates.noPendingDecision"))).toBeVisible();
+  expect(api.decideWorkStage).not.toHaveBeenCalled();
+});
+
+it("retries only the failed stage observed for the displayed run", async () => {
+  const { api, emit } = mount([{
+    ...item, templateRunState: "running", runHistory: [{ runId: "run-a", startedAt: at, status: "executing" }],
+  }]);
+  await screen.findByText(item.title);
+  const failed: RunProgressEventPayload = { itemId: item.id, stageId: "summarize", attempt: 1, phase: "stage_failed", at };
+  emit({ ...failed, at: "2026-11-26T04:00:00.000Z" });
+  fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.openRun") }));
+  expect(screen.queryByRole("button", { name: t("workflowTemplates.retryStage") })).toBeNull();
+  emit(failed);
+  const retry = screen.getByRole("button", { name: t("workflowTemplates.retryStage") });
+  fireEvent.click(retry);
+  expect(api.retryWorkStage).toHaveBeenCalledExactlyOnceWith(item.id, { runId: "run-a", stageId: "summarize", attempt: 1 });
+  await vi.waitFor(() => expect(retry).toBeDisabled());
+  emit({ ...failed, attempt: 2, phase: "executing", runSessionId: "second-attempt" });
+  expect(screen.queryByRole("button", { name: t("workflowTemplates.retryStage") })).toBeNull();
+});
+
+it("shows the host's completed output and marks the item complete only on user action", async () => {
+  const revision = "d".repeat(64);
+  const output = "The source digest is ready.";
+  const { api } = mount([{ ...item, templateRunState: undefined, runStatus: "completed", output, mutationRevision: revision }]);
+  await screen.findByText(item.title);
+  fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.openRun") }));
+  const run = within(screen.getByRole("dialog", { name: item.title }));
+  expect(run.getByText(output)).toBeVisible();
+  expect(api.completeWorkBoardItem).not.toHaveBeenCalled();
+  await act(async () => { fireEvent.click(run.getByRole("button", { name: t("workBoard.completeButton") })); });
+  expect(api.completeWorkBoardItem).toHaveBeenCalledExactlyOnceWith(item.id, revision);
+});
+
+it("shows separate stage approval lanes in the run view and answers through the shared approval surface", async () => {
+  const queue = [
+    { stageId: "gather", stageName: "Gather", sessionId: "gather-session" },
+    { stageId: "summarize", stageName: "Summarize", sessionId: "summary-session" },
+  ].map(({ stageId, stageName, sessionId }) => approvalRequest({
+    id: stageId, sessionId, toolName: "read_file", runStage: { stageId, stageName, runAllowOffered: false },
+  }) as unknown as ApprovalRequest);
+  const { emit, surface } = mount([item], [template], queue);
+  await screen.findByText(item.title);
+  for (const { runStage, sessionId } of queue) {
+    emit({ itemId: item.id, stageId: runStage?.stageId, attempt: 1, phase: "executing", runSessionId: sessionId, at });
+  }
+  fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.openRun") }));
+  const dialog = within(screen.getByRole("dialog", { name: item.title }));
+  const lanes = dialog.getAllByTestId("work-board-approval-lane");
+  expect(lanes.map(lane => lane.dataset.stageId)).toEqual(["gather", "summarize"]);
+  fireEvent.click(within(lanes[1]).getByTestId(TEST_IDS.approveButton));
+  expect(vi.mocked(surface.decide).mock.calls.map(call => call[0])).toEqual(["summarize"]);
+});
+
+it("reviews the result and conflict shown on the desktop before sending their exact bindings", async () => {
+  const stage = { runId: "run-a", stageId: "summarize", attempt: 2, resultHash: "c".repeat(64) };
+  const join = { runId: "run-a", joinId: "step-1", generation: 1, conflictHash: "e".repeat(64) };
+  const row = {
+    ...item, runPin: pin, pendingWorkflowDecisions: [
+      { kind: "stage-gate", binding: stage, result: "Review this exact result", arrivedAt: at },
+      { kind: "join-conflict", binding: join, canOpenFolder: true, evidence: { reason: "merge-conflict", files: [{ path: "shared.md", stageIds: ["gather", "summarize"] }] }, arrivedAt: null },
+    ],
+  } as WorkItemResolved;
+  const { api } = mount([row]);
+  await screen.findByText(item.title);
+  fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.openRun") }));
+  const view = within(await screen.findByRole("dialog", { name: item.title }));
+  expect(await view.findByText("Review this exact result")).toBeVisible();
+  expect(view.getByText(/shared\.md/)).toBeVisible();
+  expect(api.decideWorkStage).not.toHaveBeenCalled();
+  fireEvent.click(view.getByRole("button", { name: t("workflowTemplates.approveStage") }));
+  expect(api.decideWorkStage).toHaveBeenCalledExactlyOnceWith(item.id, { ...stage, decision: "approve" });
+  fireEvent.click(view.getByRole("button", { name: t("workflowTemplates.openJoinFolder") }));
+  expect(api.openWorkBoardJoin).toHaveBeenCalledExactlyOnceWith(item.id, join);
+  const retry = view.getByRole("button", { name: t("workflowTemplates.retryJoin") });
+  await vi.waitFor(() => expect(retry).toBeEnabled());
+  fireEvent.click(retry);
+  expect(api.decideWorkJoin).toHaveBeenCalledExactlyOnceWith(item.id, { ...join, decision: "retry_merge" });
+});
+
+it("reopens a pinned graph with recorded handoffs, verdict, activity, and breaker state", async () => {
+  const row = {
+    ...item, runPin: pin, workflowRun: {
+      runId: "run-a", startedAt: at, pin, stages: [{
+        stageId: "summarize", attempt: 1, status: "running", childSessionId: "summary-session",
+        receivedInputs: [{ stageId: "gather", text: "Actual source handoff", truncated: false }],
+        gate: { type: "auto", passed: true, evidence: "Evidence recorded by the model", judgedBy: "model", evaluatedAt: at },
+        activity: { turns: [{ turn: 1, text: "A recorded turn" }], tools: [{ toolUseId: "tool", name: "read_file", label: "sources.md", kind: "read", status: "done", turn: 1 }] },
+        breaker: { open: true, consecutive: 3, total: 3 },
+      }], joins: [], decisions: [],
+    },
+  } as WorkItemResolved;
+  const { api } = mount([row]);
+  api.getWorkBoardItem.mockResolvedValue({ status: "found", item: { ...row, ...project } });
+  await screen.findByText(item.title);
+  fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.openRun") }));
+  const view = within(await screen.findByRole("dialog", { name: item.title }));
+  expect(await view.findByText(t("workflowTemplates.pinnedVersion", { version: 2 }))).toBeVisible();
+  await userEvent.click(view.getByRole("button", { name: /Summarize/ }));
+  fireEvent.click(view.getByText("Gather sources", { selector: "summary" }));
+  for (const text of ["Actual source handoff", "Evidence recorded by the model", "A recorded turn", /sources\.md/]) {
+    expect(view.getByText(text)).toBeVisible();
+  }
+  expect(view.getByText(t("workflowTemplates.breakerOpen", { consecutive: 3, total: 3 }))).toBeVisible();
+});
+
+it("lists only the runs pinned to the selected immutable version", async () => {
+  const row = { ...item, workflowRunPins: [{ runId: "run-a", pin, startedAt: at }] } as WorkItemResolved;
+  const { api } = mount([row]);
+  api.listWorkBoard.mockImplementation(async (filter?: { projectRoot?: string }) => ({ status: "ok", items: filter?.projectRoot === project.projectRoot ? [row] : [] }));
+  const library = await templates();
+  fireEvent.click(await library.findByRole("button", { name: template.name }));
+  expect(await library.findByRole("list", { name: t("workflowTemplates.pinnedRuns") })).toHaveTextContent(item.title);
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.versions")), { target: { value: "1" } });
+  expect(library.getByRole("list", { name: t("workflowTemplates.pinnedRuns") })).not.toHaveTextContent(item.title);
+});
+
+it("previews three first-visit examples without reading or saving template records", async () => {
+  const { api } = mount([], []);
+  const library = await templates();
+  expect(await library.findByRole("button", { name: t("workflowTemplates.examples.builtin") })).toBeVisible();
+  expect(library.getByRole("button", { name: t("workflowTemplates.examples.feature") })).toBeVisible();
+  expect(library.getByRole("button", { name: t("workflowTemplates.examples.bugfix") })).toBeVisible();
+  expect(library.getByText(t("workflowTemplates.exampleStage.backend"))).toBeVisible();
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.examples.bugfix") }));
+  expect(library.getByText(t("workflowTemplates.exampleStage.reproduce"))).toBeVisible();
+  expect(library.getByText(t("workflowTemplates.exampleStage.verify"))).toBeVisible();
+  expect(api.getWorkflowTemplate).not.toHaveBeenCalled();
+  expect(api.draftWorkflowTemplate).not.toHaveBeenCalled();
+  expect(api.runWorkBoardItem).not.toHaveBeenCalled();
+});
+
+it("moves focus to the run heading when the keyboard decision removes its card", async () => {
+  const binding = { runId: "run-a", stageId: "summarize", attempt: 1, resultHash: graphHash };
+  const row: WorkItemResolved = { ...item, runPin: pin, pendingWorkflowDecisions: [
+    { kind: "stage-gate", binding, result: "A result awaiting review", arrivedAt: at },
+  ] };
+  const { api } = mount([row]);
+  api.decideWorkStage.mockImplementation(async () => {
+    api.getWorkBoardItem.mockResolvedValue({ status: "found", item: { ...row, ...project, pendingWorkflowDecisions: [] } });
+    return { ok: true, status: "approved" };
+  });
+  fireEvent.click(await screen.findByRole("button", { name: t("workflowTemplates.openRun") }));
+  const view = within(await screen.findByRole("dialog", { name: item.title }));
+  const approve = await view.findByRole("button", { name: t("workflowTemplates.approveStage") });
+  approve.focus();
+  await userEvent.keyboard("{Enter}");
+  await vi.waitFor(() => expect(approve).not.toBeInTheDocument());
+  expect(view.getByRole("heading", { name: item.title })).toHaveFocus();
+});
+
+it("presents enabled controls for a reissued join conflict of the same files", async () => {
+  const first = { runId: "run-a", joinId: "step-1", generation: 1, conflictHash: graphHash };
+  const next = { ...first, generation: 2, conflictHash: "e".repeat(64) };
+  const pending: Extract<import("../../../../shared/workflow-run-view.js").PendingWorkflowDecision, { kind: "join-conflict" }> = { kind: "join-conflict", binding: first, arrivedAt: null,
+    evidence: { reason: "same-path", files: [{ path: "report.md", stageIds: ["gather", "summarize"] }] } };
+  const row: WorkItemResolved = { ...item, runPin: pin, pendingWorkflowDecisions: [pending] };
+  const { api } = mount([row]);
+  api.decideWorkJoin.mockImplementation(async () => {
+    api.getWorkBoardItem.mockResolvedValue({ status: "found", item: { ...row, ...project, pendingWorkflowDecisions: [
+      { ...pending, binding: next },
+    ] } });
+    return { ok: true };
+  });
+  fireEvent.click(await screen.findByRole("button", { name: t("workflowTemplates.openRun") }));
+  const view = within(await screen.findByRole("dialog", { name: item.title }));
+  const retry = await view.findByRole("button", { name: t("workflowTemplates.retryJoin") });
+  fireEvent.click(retry);
+  await vi.waitFor(() => expect(retry).not.toBeInTheDocument());
+  expect(view.getByRole("button", { name: t("workflowTemplates.retryJoin") })).toBeEnabled();
+});
+
+it.each(["en", "ko"] as const)("shows translated project launch navigation in %s", async (locale) => {
+  await loadLocaleMessages(locale);
+  setLocale(locale);
+  const target = { projectRoot: "/workspace/other", projectName: "Other workspace" };
+  const { api } = mount([], [template], [], [project, target]);
+  api.addWorkBoardItem.mockResolvedValue({ status: "created", itemId: item.id, item: { ...item, ...target } });
+  const library = await templates();
+  fireEvent.click(await library.findByRole("button", { name: template.name }));
+  fireEvent.click(await library.findByRole("button", { name: t("workflowTemplates.startRun") }));
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.workTitle")), { target: { value: item.title } });
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.scope")), { target: { value: target.projectRoot } });
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.createAndRun") }));
+  expect(await screen.findByText(t("workflowTemplates.workItemCreatedInProject", { project: target.projectName }))).toHaveTextContent(target.projectName);
+  expect(screen.getByRole("button", { name: t("workflowTemplates.openInProject", { project: target.projectName }) })).toHaveTextContent(target.projectName);
+  for (const key of ["workItemCreatedInProject", "openInProject", "openProjectRunDescription", "projectUnavailable"]) {
+    const catalogKey = `workflowTemplates.${key}`;
+    expect(messages[locale]).toHaveProperty([catalogKey]);
+    expect(screen.queryByText(catalogKey)).toBeNull();
+  }
+});
+
+it("opens a parked gate when All Projects already displays the target project", async () => {
+  const { api, opened, openProject } = mount([], [template], [], [project], true);
+  const { runId: _runId, runStatus: _runStatus, templateRunState: _templateRunState, ...navigation } = item;
+  const gate = {
+    kind: "stage-gate" as const, binding: { runId: "run-a", stageId: "summarize", attempt: 1, resultHash: graphHash },
+    result: "Parked result for this project", arrivedAt: at,
+  };
+  const row = { ...item, ...project, runPin: pin, pendingWorkflowDecisions: [gate] };
+  api.addWorkBoardItem.mockResolvedValue({ status: "created", itemId: item.id, item: { ...navigation, ...project } });
+  api.listWorkBoard.mockImplementation(async () => ({ status: "ok", items: opened.all ? [navigation] : [row] }));
+  api.getWorkBoardItem.mockImplementation(async () => ({ status: "found", item: row }));
+  const library = await templates();
+  fireEvent.click(await library.findByRole("button", { name: template.name }));
+  fireEvent.click(await library.findByRole("button", { name: t("workflowTemplates.startRun") }));
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.workTitle")), { target: { value: item.title } });
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.createAndRun") }));
+  const open = await screen.findByRole("button", { name: t("workflowTemplates.openInProject", { project: project.projectName }) });
+  expect(screen.queryByText(gate.result)).toBeNull();
+  fireEvent.click(open);
+  expect(openProject).toHaveBeenCalledExactlyOnceWith(project.projectRoot);
+  const run = within(await screen.findByRole("dialog", { name: item.title }));
+  expect(await run.findByText(gate.result)).toBeVisible();
+  expect(run.getByRole("button", { name: t("workflowTemplates.approveStage") })).toBeEnabled();
+});
+
+it("draws a parked stage tool request in the selected project's Work Approvals queue", async () => {
+  const parked = approvalRequest({
+    id: "parked-tool", sessionId: "stage-child", toolName: "read_file",
+    runStage: { stageId: "gather", stageName: "Gather reports", runAllowOffered: false },
+    workBoardProjectApproval: { projectRoot: project.projectRoot, itemId: item.id, parked: true },
+  }) as unknown as ApprovalRequest;
+  const { surface } = mount([item], [template], [parked]);
+  const queue = within(await screen.findByRole("region", { name: t("workApprovals.stageToolApprovals") }));
+  expect(queue.getAllByText(t("toolApprovalDialog.runStage", { stage: "Gather reports" })).length).toBeGreaterThan(0);
+  fireEvent.click(queue.getByTestId(TEST_IDS.approveButton));
+  expect(vi.mocked(surface.decide).mock.calls.map(call => call[0])).toEqual(["parked-tool"]);
+});
+
+it("focuses the parked stage tool approval inside the run opened in another project", async () => {
+  const target = { projectRoot: "/workspace/other", projectName: "Other workspace" };
+  const row = { ...item, ...target, runPin: pin };
+  const parked = approvalRequest({
+    id: "parked-tool", sessionId: "stage-child", toolName: "read_file",
+    runStage: { stageId: "gather", stageName: "Gather reports", runAllowOffered: false },
+    workBoardProjectApproval: { projectRoot: target.projectRoot, itemId: item.id, parked: true },
+  }) as unknown as ApprovalRequest;
+  const { api, surface, openProject } = mount([], [template], [parked], [project, target]);
+  api.addWorkBoardItem.mockResolvedValue({ status: "created", itemId: item.id, item: row });
+  api.listWorkBoard.mockImplementation(async filter => ({
+    status: "ok", items: filter?.projectRoot === target.projectRoot ? [row] : [],
+  }));
+  api.getWorkBoardItem.mockResolvedValue({ status: "found", item: row });
+
+  const library = await templates();
+  fireEvent.click(await library.findByRole("button", { name: template.name }));
+  fireEvent.click(await library.findByRole("button", { name: t("workflowTemplates.startRun") }));
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.workTitle")), { target: { value: item.title } });
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.scope")), { target: { value: target.projectRoot } });
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.createAndRun") }));
+  fireEvent.click(await screen.findByRole("button", { name: t("workflowTemplates.openInProject", { project: target.projectName }) }));
+
+  expect(openProject).toHaveBeenCalledExactlyOnceWith(target.projectRoot);
+  const run = within(await screen.findByRole("dialog", { name: item.title }));
+  const approval = run.getByRole("region", { name: t("workApprovals.stageToolApprovals") });
+  await waitFor(() => expect(approval).toHaveFocus());
+  const approve = within(approval).getByTestId(TEST_IDS.approveButton);
+  expect(approve).toBeEnabled();
+  fireEvent.click(approve);
+  expect(vi.mocked(surface.decide).mock.calls.map(call => call[0])).toEqual(["parked-tool"]);
+});

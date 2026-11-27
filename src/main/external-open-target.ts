@@ -5,6 +5,7 @@ import { promises as fs } from "node:fs";
 import { basename, parse, resolve } from "node:path";
 import { DENY_EXTENSIONS as DENY_LIST } from "../shared/attachments-deny-list.js";
 import { isSensitivePath, type KeyMaterialAudience } from "../permissions/sensitive-paths.js";
+import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
 import { canOpenInDefaultApp } from "../shared/preview-external-open.js";
 
@@ -48,11 +49,32 @@ export async function resolveExternalOpenTarget(
   // A text editor reads a script as text, so only its hand-off passes "any"; every hand-off to the OS refuses runnable types.
   types: "refuse-runnable" | "any" = "refuse-runnable",
 ): Promise<{ ok: true; real: string } | { ok: false; error: ExternalOpenRefusal }> {
+  if (process.platform === "win32") {
+    return withLocalityDecision(() => resolveWindowsExternalOpenTarget(requested, audience, types));
+  }
   let real: string;
   try {
     real = await fs.realpath(requested);
   } catch {
     return { ok: false, error: "not-found" };
+  }
+  if (sensitiveForRead(real, audience)) return { ok: false, error: "sensitive-path" };
+  if (types === "refuse-runnable" && isDeniedExternalOpenExtension(real)) return { ok: false, error: "denied_extension" };
+  return { ok: true, real };
+}
+
+type TargetReply = { ok: true; real: string } | { ok: false; error: ExternalOpenRefusal };
+
+function resolveWindowsExternalOpenTarget(
+  requested: string,
+  audience: KeyMaterialAudience,
+  types: "refuse-runnable" | "any",
+): TargetReply {
+  let real: string;
+  try {
+    real = localFs.realpath(admitLocalRoute(requested).verdict);
+  } catch (error) {
+    return { ok: false, error: (error as NodeJS.ErrnoException).code === "ENETWORKSHAREPATH" ? "network-target" : "not-found" };
   }
   if (sensitiveForRead(real, audience)) return { ok: false, error: "sensitive-path" };
   if (types === "refuse-runnable" && isDeniedExternalOpenExtension(real)) return { ok: false, error: "denied_extension" };
@@ -80,6 +102,7 @@ function climbs(path: string): boolean {
  * would make Windows authenticate to that host) or the chain is too long; "missing" when a component does not exist.
  */
 export async function linkChainVerdict(path: string): Promise<"local" | "network" | "missing"> {
+  if (process.platform === "win32") return withLocalityDecision(() => windowsLinkChainVerdict(path));
   if (isNetworkOrDevice(path)) return "network";
   // Callers refuse a requested path with a `.` or `..` segment before this walk, so `resolve` folds nothing here.
   const start = resolve(path);
@@ -108,6 +131,35 @@ export async function linkChainVerdict(path: string): Promise<"local" | "network
     if (isNetworkOrDevice(target) || isNetworkOrDevice(followed)) return "network";
     current = parse(followed).root;
     rest.unshift(...followed.slice(current.length).split(/[\\/]+/u).filter(Boolean));
+  }
+  return "local";
+}
+
+function windowsLinkChainVerdict(path: string): "local" | "network" | "missing" {
+  if (isNetworkOrDevice(path)) return "network";
+  const start = resolve(path);
+  let current = parse(start).root;
+  const rest = start.slice(current.length).split(/[\\/]+/u).filter(Boolean);
+  let hops = 0;
+  for (let component = rest.shift(); component !== undefined; component = rest.shift()) {
+    const next = resolve(current, component);
+    try {
+      const verdict = admitLocalPath(next);
+      const entry = localFs.lstat(verdict);
+      if (entry === undefined) return "missing";
+      if (!entry.isSymbolicLink()) {
+        current = next;
+        continue;
+      }
+      if (++hops > MAX_LINK_HOPS) return "network";
+      const target = localFs.readlink(verdict);
+      const followed = resolve(current, target);
+      if (climbs(target) || isNetworkOrDevice(target) || isNetworkOrDevice(followed)) return "network";
+      current = parse(followed).root;
+      rest.unshift(...followed.slice(current.length).split(/[\\/]+/u).filter(Boolean));
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENETWORKSHAREPATH" ? "network" : "missing";
+    }
   }
   return "local";
 }
@@ -161,6 +213,31 @@ async function judgeOpenTarget(
   return target;
 }
 
+function judgeWindowsOpenTarget<A extends string>(
+  requested: string,
+  formats: ExternalOpenHandoff["formats"],
+  authorize: (real: string, pass: ExternalOpenPass) => A | null,
+  pass: ExternalOpenPass,
+): { ok: true; real: string } | { ok: false; error: ExternalOpenRefusal | A } {
+  return withLocalityDecision(() => {
+    const byType = formats === "default-app";
+    if (byType && !isOpenAllowed(requested)) return { ok: false, error: "type-not-allowed" };
+    const chain = windowsLinkChainVerdict(requested);
+    if (chain === "network") return { ok: false, error: "network-target" };
+    if (chain === "missing") return { ok: false, error: "not-found" };
+    const target = resolveWindowsExternalOpenTarget(requested, "person", byType ? "refuse-runnable" : "any");
+    if (!target.ok) return target.error === "denied_extension" ? { ok: false, error: "type-not-allowed" } : target;
+    if (byType && !isOpenAllowed(target.real)) return { ok: false, error: "type-not-allowed" };
+    try {
+      if (!localFs.stat(admitLocalRoute(target.real).verdict).isFile()) return { ok: false, error: "not-a-file" };
+    } catch {
+      return { ok: false, error: "not-found" };
+    }
+    const refusal = authorize(target.real, pass);
+    return refusal === null ? target : { ok: false, error: refusal };
+  });
+}
+
 /**
  * Hand one regular file to the OS default app. The whole judgement (allow list on both names, a local link chain, sensitive
  * floor, regular non-executable file) runs on the first resolution and again on a fresh resolution immediately before the
@@ -173,6 +250,14 @@ export async function openVerifiedExternalFile<A extends string>(
   authorize: (real: string, pass: ExternalOpenPass) => A | null,
   handoff: ExternalOpenHandoff = DEFAULT_APP_HANDOFF,
 ): Promise<{ ok: true; real: string } | { ok: false; error: ExternalOpenRefusal | A }> {
+  if (process.platform === "win32") {
+    const first = judgeWindowsOpenTarget(requested, handoff.formats, authorize, "first");
+    if (!first.ok) return first;
+    const final = judgeWindowsOpenTarget(requested, handoff.formats, authorize, "final");
+    if (!final.ok) return final;
+    if (final.real !== first.real) return { ok: false, error: "changed" };
+    return await handoff.launch(final.real) ? final : { ok: false, error: "open-failed" };
+  }
   const target = await judgeOpenTarget(requested, handoff.formats);
   if (!target.ok) return target;
   const first = authorize(target.real, "first");

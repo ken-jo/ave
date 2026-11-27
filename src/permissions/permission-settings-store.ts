@@ -1,4 +1,5 @@
 // Absent additionalDirectories means host defaults only, never silent allow; callers compose through buildAllowedScope (docs/architecture/permission-policy-design.md).
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve as pathResolve } from "node:path";
@@ -261,22 +262,25 @@ export function normalizePermissionSettings(
       );
     }),
   ];
-  const pendingKeys = new Set(
-    pendingPaths.flatMap((path) => {
-      const key = allowedDirectoryKey(path);
-      return key === null ? [] : [key];
-    }),
-  );
-  const additional = perm.additionalDirectories;
-  let dirs: string[] = [];
-  if (Array.isArray(additional)) {
-    dirs = additional.filter((s): s is string => {
-      if (typeof s !== "string" || s.length === 0) return false;
-      const key = allowedDirectoryKey(s);
-      // Pending wins over a conflicting list entry, however it got there.
-      return key === null || !pendingKeys.has(key);
-    });
-  }
+  const dirs = withLocalityDecision(() => {
+    const pendingKeys = new Set(
+      pendingPaths.flatMap((path) => {
+        const key = allowedDirectoryKey(path);
+        return key === null ? [] : [key];
+      }),
+    );
+    const additional = perm.additionalDirectories;
+    let directories: string[] = [];
+    if (Array.isArray(additional)) {
+      directories = additional.filter((s): s is string => {
+        if (typeof s !== "string" || s.length === 0) return false;
+        const key = allowedDirectoryKey(s);
+        // Pending wins over a conflicting list entry, however it got there.
+        return key === null || !pendingKeys.has(key);
+      });
+    }
+    return directories;
+  });
   const pendingModeChange = parsePendingModeChange(perm.pendingModeChange);
   if (pendingModeChange === "malformed") {
     log.error("permissions.pendingModeChange in %s could not be interpreted — kept on disk, not applied", filePath);
@@ -736,7 +740,7 @@ async function mutateAllowedDirectoriesPersist(
     const journal = partitionPendingWorkspaceRootRemovals(
       existingPerm.pendingWorkspaceRootRemovals,
     );
-    const next = mutation(current, journal.intents);
+    const next = withLocalityDecision(() => mutation(current, journal.intents));
     result = [...next];
     if (
       next.length === current.length &&
@@ -814,7 +818,7 @@ export async function beginWorkspaceRootRemovalPersist(
 ): Promise<BeginWorkspaceRootRemovalResult | null> {
   const filePath = pathOverride ?? permissionSettingsPath();
   let result: BeginWorkspaceRootRemovalResult | null = null;
-  await withPermissionSettingsWrite(filePath, async (filePath) => {
+  await withPermissionSettingsWrite(filePath, async (filePath) => withLocalityDecision(() => {
     const existing = readSettingsObjectForUpdate(filePath);
     const existingPerm = { ...((existing.permissions ?? {}) as Record<string, unknown>) };
     const current = Array.isArray(existingPerm.additionalDirectories)
@@ -878,7 +882,7 @@ export async function beginWorkspaceRootRemovalPersist(
       if (!intentCommitted || !rootInactive) throw error;
     }
     result = { intent, activeDirectories, created: !existingIntent };
-  });
+  }));
   return result;
 }
 
@@ -889,7 +893,7 @@ export async function completeWorkspaceRootRemovalPersist(
 ): Promise<boolean> {
   const filePath = pathOverride ?? permissionSettingsPath();
   let completed = false;
-  await withPermissionSettingsWrite(filePath, async (filePath) => {
+  await withPermissionSettingsWrite(filePath, async (filePath) => withLocalityDecision(() => {
     const existing = readSettingsObjectForUpdate(filePath);
     const existingPerm = { ...((existing.permissions ?? {}) as Record<string, unknown>) };
     const journal = partitionPendingWorkspaceRootRemovals(
@@ -935,6 +939,6 @@ export async function completeWorkspaceRootRemovalPersist(
       if (!intentGone || !rootInactive) throw error;
     }
     completed = true;
-  });
+  }));
   return completed;
 }

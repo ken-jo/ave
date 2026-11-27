@@ -55,11 +55,17 @@ afterEach(() => {
 });
 
 describe("package footprint CLI native target validation", () => {
+  it("refuses macOS output without an arm64 target directory", () => {
+    const { appAsar } = fixture("mac/Client.app/Contents", true);
+    const result = audit(appAsar);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("macOS package output must identify the arm64 target");
+  });
+
   it.each([
     ["linux-unpacked", "linux-x64", false],
     ["linux-arm64-unpacked", "linux-arm64", false],
     ["win-unpacked", "win32-x64", false],
-    ["mac/Client.app/Contents", "darwin-x64", true],
     ["mac-arm64/Client.app/Contents", "darwin-arm64", true],
   ] as const)("checks %s SQLite independently of the test host", (output, target, mac) => {
     const { appAsar, resources } = fixture(output, mac);

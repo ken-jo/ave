@@ -14,7 +14,7 @@ import {
   transientFsLockDelayMs,
 } from "../../lib/transient-fs-lock-retry.js";
 import { sleep } from "../../shared/abortable-deadline.js";
-import { committedDirectorySyncError, guardAtomicWrite, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, replaceUtf8FileAtomicSyncIf } from "../../lib/atomic-file.js";
+import { committedDirectorySyncError, guardAtomicWrite, isCommittedAtomicWriteError, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, replaceUtf8FileAtomicSyncIf } from "../../lib/atomic-file.js";
 
 const log = createLogger("feature-namespace");
 
@@ -101,6 +101,7 @@ export async function readJsonFileOrEmpty<T>(
   filePath: string,
   empty: () => T,
   hydrate: (parsed: unknown) => T,
+  options?: { quarantineCorrupt?: boolean },
 ): Promise<T> {
   // One verified buffer: a covered input pending review in the home content trust manifest reads as empty and is left in place
   // (never quarantined), and a later write over it is refused.
@@ -111,7 +112,7 @@ export async function readJsonFileOrEmpty<T>(
   try {
     parsed = JSON.parse(raw);
   } catch {
-    await quarantineCorruptJson(filePath);
+    if (options?.quarantineCorrupt !== false) await quarantineCorruptJson(filePath);
     return empty();
   }
   return hydrate(parsed);
@@ -207,10 +208,18 @@ export function preparePrivateFileDirectory(filePath: string): Promise<void> {
   return ensureDir(dirname(filePath));
 }
 
-/** Finish directory preparation, then check authority and commit without yielding. */
-export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean): Promise<boolean> {
+/** Finish directory preparation, then check authority, commit and deliver the commit receipt without yielding. */
+export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean, didCommit?: () => void): Promise<boolean> {
   await preparePrivateFileDirectory(filePath);
-  return replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
+  let committed: boolean;
+  try {
+    committed = replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
+  } catch (error) {
+    if (isCommittedAtomicWriteError(error)) didCommit?.();
+    throw error;
+  }
+  if (committed) didCommit?.();
+  return committed;
 }
 
 export interface FeatureNamespaceHandle {

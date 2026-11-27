@@ -138,32 +138,37 @@ export function resolveModelRetirement(params: {
   const hit = catalogModelFor(params.vendor, model, undefined, params.baseUrl);
   if (hit?.match === "exact" && listing?.complete === true
     && listingJudgesRetirement(params.vendor, params.baseUrl)
-    && !listingPredatesRelease(listing, hit.model.releaseDate)) {
+    && listingCanProveRetirement(listing, hit.model.releaseDate)) {
     const wanted = model.toLowerCase();
     if (!listing.models.some((id) => id.toLowerCase() === wanted)) return "unlisted";
   }
   return hit?.model.status === "deprecated" ? "catalog-deprecated" : undefined;
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-/** Listings must postdate the entire stated release period; unknown times cannot prove a model gone. */
-function listingPredatesRelease(listing: LlmModelListCacheEntry, releaseDate: string | undefined): boolean {
+/** A listing can prove absence only with a known fetch time after a valid, stated release period. */
+function listingCanProveRetirement(listing: LlmModelListCacheEntry, releaseDate: string | undefined): boolean {
   if (releaseDate === undefined) return false;
   const releasedBy = releasePeriodEnd(releaseDate);
   if (releasedBy === undefined) return false;
-  const fetched = Date.parse(listing.fetchedAt);
-  return !Number.isFinite(fetched) || fetched < releasedBy;
+  const fetched = new Date(listing.fetchedAt);
+  if (!Number.isFinite(fetched.getTime())) return false;
+  // Round-trip the stored UTC timestamp so date-only input and rolled-over calendar days cannot become evidence.
+  const iso = fetched.toISOString();
+  if (listing.fetchedAt !== iso && listing.fetchedAt !== iso.replace(/\.000Z$/, "Z")) return false;
+  return fetched.getTime() >= releasedBy;
 }
 
 /** The first instant after the period a catalog release date names, in UTC. */
 function releasePeriodEnd(releaseDate: string): number | undefined {
-  const month = /^(\d{4})-(\d{2})$/.exec(releaseDate);
-  if (month) return Date.UTC(Number(month[1]), Number(month[2]), 1);
-  const year = /^(\d{4})$/.exec(releaseDate);
-  if (year) return Date.UTC(Number(year[1]) + 1, 0, 1);
-  const released = Date.parse(releaseDate);
-  return Number.isFinite(released) ? released + DAY_MS : undefined;
+  const period = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.exec(releaseDate);
+  if (!period) return undefined;
+  const [, year, month, day] = period;
+  const startDate = `${year}-${month ?? "01"}-${day ?? "01"}`;
+  const start = new Date(`${startDate}T00:00:00.000Z`);
+  if (!Number.isFinite(start.getTime()) || start.toISOString().slice(0, 10) !== startDate) return undefined;
+  if (day !== undefined) return start.setUTCDate(start.getUTCDate() + 1);
+  if (month !== undefined) return start.setUTCMonth(start.getUTCMonth() + 1);
+  return start.setUTCFullYear(start.getUTCFullYear() + 1);
 }
 
 export function resolveRouteModelRetirement(
@@ -383,6 +388,8 @@ export interface RouteContextWindow extends ResolvedContextWindow, RouteModelCap
   /** Carry output ceiling separately; context budget math does not use it. */
   readonly maxOutputTokens?: number;
   readonly reportedPricing?: LlmModelListPricing;
+  /** The address the model list holding `reportedPricing` was read from. */
+  readonly reportedPricingEndpoint?: string;
   readonly output: ResolvedOutputTokenLimit;
   /** Report missing named entries once so configuration typos cannot silently become fallback budgets. */
   readonly unresolvedCatalogModel?: string;
@@ -427,6 +434,9 @@ export function resolveContextWindowForRoute(
   const entry = llm.provider === "vertex-ai"
     ? undefined
     : cachedModelListEntry(llm.modelListCache, { ...address, model });
+  const listedAt = entry === undefined
+    ? undefined
+    : llm.modelListCache?.[llmModelListCacheKey(address.vendor, address.baseUrl, address.credentialScope)]?.endpoint;
   // A named entry describes only the configured block model, not presets or different child models.
   const catalogModel = address.credentialScope === undefined && model === block.model.trim()
     ? block.catalogModel
@@ -478,6 +488,7 @@ export function resolveContextWindowForRoute(
     ...(catalogModel !== undefined ? { catalogModel } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     ...(entry?.pricing !== undefined ? { reportedPricing: entry.pricing } : {}),
+    ...(entry?.pricing !== undefined && listedAt !== undefined ? { reportedPricingEndpoint: listedAt } : {}),
     output,
     ...(unresolved ? { unresolvedCatalogModel: catalogModel } : {}),
     ...(inputModalities !== undefined ? { inputModalities } : {}),

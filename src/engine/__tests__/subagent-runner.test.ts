@@ -16,6 +16,10 @@ import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { createReadToolResultChunkTool } from "../../tools/tool-result-chunk.js";
+import { ReadFileTool } from "../../tools/file-tools.js";
+import { sessionAuthorityWithheld } from "../../shared/turn-extension-policy.js";
+import { BROWSER_TOOL } from "../../shared/browser-tools.js";
+import { workBoardOriginSessionId } from "../../shared/work-board-types.js";
 import { makeSubagentLoopDeps as buildLoopDeps, patchLoopProvider } from "./support/subagent-loop-fixtures.js";
 import {
   SubAgentRunner,
@@ -62,12 +66,15 @@ import type { PromptMemorySource } from "../../memory/memory-manager.js";
 import { makePromptMemorySource } from "../../prompts/__tests__/test-helpers.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
+import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
+import { endUnattendedStage, registerUnattendedStage, unattendedStageOf, type UnattendedStageEntry } from "../../permissions/unattended-lane-registry.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
 import { SkillOverlay } from "../../main/skill-overlay.js";
 import { checkpointFileMutation, restoreCodeCheckpoint, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import type { LoadedSkill } from "../../main/skill-store.js";
+import { t } from "../../i18n/index.js";
 
 const SUBSCRIPTION_SELECTION = { kind: "subscription", provider: "codex" } as const;
 
@@ -304,7 +311,223 @@ describe("SubAgentRunner checkpoint child lifetime", () => {
   });
 });
 
+describe("unattended sub-agent lifetime", () => {
+  const stageSessionId = "3204871a-e8b0-4b44-8274-edbdcf1fa25f";
+  const title = "Read the staged report";
+  const input = { title, instructions: title, originSessionId: stageSessionId, toolScope: exactToolScope(["read_file"]) };
+  const entry: UnattendedStageEntry = {
+    runKey: "run", stageId: "stage", workspaceRoot: resolve("stage-workspace"), isolation: { proven: true },
+    envelope: {
+      tools: ["read_file"], readRoots: [], writePaths: [], commands: [], network: [],
+      mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+      outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+    },
+  };
+
+  afterEach(() => {
+    endUnattendedStage(stageSessionId);
+    vi.restoreAllMocks();
+  });
+
+  it("revokes every descendant of the ended stage even if the stage id is reused", async () => {
+    const registry = new ToolRegistry();
+    registry.register(new ReadFileTool());
+    const manager = new PermissionManager();
+    manager.setMode("allow");
+    manager.setUnattendedToolEffectResolver(createToolEffectResolver(registry));
+    const runner = makeRunner(registry);
+    registerUnattendedStage(stageSessionId, entry);
+    vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
+    vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockResolvedValue(undefined);
+    let grandchildId: string | undefined;
+    let descendantId: string | undefined;
+    let inherited: UnattendedStageEntry | undefined;
+    let issued: ReturnType<PermissionManager["checkDetailed"]> | undefined;
+    let revoked: Array<UnattendedStageEntry | undefined> = [];
+    let decisions: Array<string | undefined> = [];
+    const check = (id: string | undefined) => manager.checkDetailed("read_file", "builtin", "read", null, { sessionId: id });
+    vi.spyOn(ConversationLoop.prototype, "runTurn").mockImplementation(async function (this: ConversationLoop) {
+      if (this.sessionId === grandchildId) {
+        await runner.spawn({ ...input, originSessionId: grandchildId }, {
+          onLinked: ({ childSessionId }) => { descendantId = childSessionId; },
+        });
+      } else if (this.sessionId === descendantId) {
+        inherited = unattendedStageOf(this.sessionId);
+        issued = check(this.sessionId);
+        endUnattendedStage(stageSessionId);
+        registerUnattendedStage(stageSessionId, entry);
+        revoked = [unattendedStageOf(grandchildId), unattendedStageOf(this.sessionId)];
+        decisions = [check(grandchildId).reasonCode, check(this.sessionId).reasonCode, manager.recheckPermission(issued).reasonCode];
+      }
+      return { text: "done", toolCalls: [], route: "default", stopReason: "end_turn" };
+    });
+    await runner.spawn(input, { onLinked: ({ childSessionId }) => { grandchildId = childSessionId; } });
+    expect(inherited).toBe(entry);
+    expect(issued).toMatchObject({ decision: "allow", reasonCode: "unattended-envelope" });
+    expect(revoked).toEqual([undefined, undefined]);
+    expect(decisions).toEqual(Array(3).fill("unattended-session-ended"));
+  });
+
+  it.each(["finished", "turn-error", "cancelled", "link-error", "setup-error", "metadata-error", "provider-missing", "suspended"] as const)(
+    "releases a grandchild registration after %s", async exit => {
+      const registry = new ToolRegistry();
+      registry.register(new ReadFileTool());
+      const memory = fakeSubAgentMemoryManager();
+      if (exit === "metadata-error") vi.spyOn(memory.sessions, "saveSessionMetadata").mockRejectedValue(new Error("fixture metadata error"));
+      const runner = new SubAgentRunner({ parentDeps: buildLoopDeps(registry), toolRegistry: registry, subAgentMemoryManager: memory });
+      registerUnattendedStage(stageSessionId, entry);
+      vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(exit !== "provider-missing");
+      vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockResolvedValue(undefined);
+      if (exit === "setup-error") vi.spyOn(ConversationLoop.prototype, "initializeConversation").mockImplementation(() => { throw new Error("fixture setup error"); });
+      vi.spyOn(ConversationLoop.prototype, "runTurn").mockImplementation(async () => {
+        if (exit === "turn-error") throw new Error("fixture turn error");
+        return { text: "done", toolCalls: [], route: "default", stopReason: exit === "suspended" ? "round-cap" : "end_turn" };
+      });
+      let childId = "";
+      let inherited: UnattendedStageEntry | undefined;
+      const pending = runner.spawn(input, {
+        onLinked: ({ childSessionId }) => {
+          childId = childSessionId;
+          inherited = unattendedStageOf(childId);
+          if (exit === "link-error") throw new Error("fixture link error");
+          if (exit === "cancelled") runner.interruptRun(childId, stageSessionId);
+        },
+      });
+      if (exit === "link-error") await expect(pending).rejects.toThrow("fixture link error");
+      else {
+        const result = await pending;
+        expect(result.ok).toBe(exit === "finished" || exit === "suspended");
+        if (exit === "cancelled") expect(result.stopReason).toBe("interrupted");
+        if (exit === "suspended") expect(result.suspension?.reason).toBe("budget");
+      }
+      expect(inherited).toBe(entry);
+      expect(unattendedStageOf(childId)).toBeUndefined();
+      expect(unattendedStageOf(stageSessionId)).toBe(entry);
+      registerUnattendedStage(childId, entry);
+      endUnattendedStage(childId);
+    },
+  );
+
+  it("refuses to resume an unattended grandchild after release and an attended child from a live stage", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-unattended-resume-"));
+    const registry = new ToolRegistry();
+    registry.register(new ReadFileTool());
+    const makeStoredRunner = () => new SubAgentRunner({
+      parentDeps: buildLoopDeps(registry), toolRegistry: registry, subAgentMemoryManager: new MemoryManager({ aveDir: dir }),
+    });
+    vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
+    vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockResolvedValue(undefined);
+    vi.spyOn(ConversationLoop.prototype, "loadSession").mockResolvedValue(true);
+    const runTurn = vi.spyOn(ConversationLoop.prototype, "runTurn")
+      .mockResolvedValue({ text: "paused", toolCalls: [], route: "default", stopReason: "round-cap" });
+    try {
+      const attended = await makeStoredRunner().spawn(input);
+      registerUnattendedStage(stageSessionId, entry);
+      const unattended = await makeStoredRunner().spawn(input);
+      expect(attended.suspension?.reason).toBe("budget");
+      expect(unattended.suspension?.reason).toBe("budget");
+      expect(unattendedStageOf(unattended.childSessionId)).toBeUndefined();
+      const attemptedFromStage = await makeStoredRunner().resume(attended.childSessionId, "continue", title, undefined, stageSessionId);
+      endUnattendedStage(stageSessionId);
+      const attemptedAfterEnd = await makeStoredRunner().resume(unattended.childSessionId, "continue", title, undefined, stageSessionId);
+      expect([attemptedFromStage, attemptedAfterEnd]).toEqual([
+        expect.objectContaining({ ok: false, resumeRefusal: "invalid", error: expect.stringContaining("unattended") }),
+        expect.objectContaining({ ok: false, resumeRefusal: "invalid", error: expect.stringContaining("unattended") }),
+      ]);
+      expect(runTurn).toHaveBeenCalledTimes(2);
+      const attendedResume = await makeStoredRunner().resume(attended.childSessionId, "continue", title, undefined, stageSessionId);
+      expect(attendedResume.ok).toBe(true);
+      expect(runTurn).toHaveBeenCalledTimes(3);
+    } finally {
+      await cleanupTmpDir(dir);
+    }
+  });
+});
+
 describe("SubAgentRunner — authorization terminal propagation", () => {
+  it.each([
+    { name: "web_search", flags: { arbitraryEgress: true }, input: { query: "fixture" } },
+    { name: "mcp_resource_read", flags: { requiresMcpScope: true }, input: { serverId: "fixture", uri: "fixture://entry" } },
+    { name: "agent_send", flags: {}, input: { message: "fixture" } },
+    ...Object.values(BROWSER_TOOL).map(name => ({ name, flags: {}, input: {} })),
+  ])("a scheduled stage refuses an unadvertised $name call by name", async ({ name, flags, input }) => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-unattended-scope-"));
+    const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+    const registry = new ToolRegistry();
+    registry.register(new ReadFileTool());
+    const execute = vi.fn(async () => ({ output: "unexpected execution", isError: false }));
+    registry.register(createDynamicTool({
+      name, ...flags, description: "Instrumented effect", source: "builtin",
+      category: name === "agent_send" ? "meta" : "read",
+      ...(name === "agent_send" ? { decisionOverride: "always-allow-with-audit" as const } : {}),
+      jsonSchema: { type: "object" }, execute,
+    }));
+    const provider = new ScriptedProvider([
+      [{ type: "tool_call", id: "outside-scope", name, input }, { type: "message_complete", stopReason: "tool_use" }],
+      ...endTurnScript("Finished"),
+    ]);
+    const runner = new SubAgentRunner({
+      parentDeps: buildLoopDeps(registry, { permissionManager }), toolRegistry: registry, subAgentMemoryManager: fakeSubAgentMemoryManager(),
+    });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
+    try {
+      await runner.spawn({
+        title: "Scheduled report", instructions: "Read report input", toolScope: exactToolScope(["read_file", name]),
+        projectRoot: dir, originSessionId: workBoardOriginSessionId(97), unattendedStage: { runKey: "report-run", stageId: "read" },
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(provider.observedToolNames[0]).toEqual(["read_file", "read_tool_result_chunk"]);
+      expect(provider.observedMessages[1]).toContainEqual(expect.objectContaining({
+        role: "tool_result", toolUseId: "outside-scope", content: t("be_executor.toolNotFound", { name }), isError: true,
+      }));
+    } finally {
+      hasProviderSpy.mockRestore();
+      refreshProviderSpy.mockRestore();
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it("a scheduled stage denies a secret read without a card when its work item has an open local surface", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-unattended-stage-"));
+    const contents = makeMockWebContents();
+    const gate = new ApprovalGate(contents as never);
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    manager.setMode("allow");
+    const check = vi.spyOn(manager, "checkDetailed");
+    const registry = new ToolRegistry();
+    registry.register(new ReadFileTool());
+    const provider = new ScriptedProvider([
+      [{ type: "tool_call", id: "stage-read", name: "read_file", input: { path: ".env" } }, { type: "message_complete", stopReason: "tool_use" }],
+      ...endTurnScript("Finished"),
+    ]);
+    const runner = new SubAgentRunner({
+      parentDeps: buildLoopDeps(registry, { approvalGate: gate, permissionManager: manager }),
+      toolRegistry: registry, subAgentMemoryManager: fakeSubAgentMemoryManager(),
+    });
+    const origin = workBoardOriginSessionId(97);
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
+    try {
+      await writeFile(join(dir, ".env"), "FIXTURE_VALUE=fixture-private-value");
+      updateApprovalSurface({ kind: "attach", sessionId: origin, surface: contents as never });
+      const result = await runner.spawn({
+        title: "Scheduled report", instructions: "Read report input", toolScope: exactToolScope(["read_file"]),
+        projectRoot: dir, originSessionId: origin, unattendedStage: { runKey: "report-run", stageId: "read" },
+      });
+      expect(check.mock.results.map(call => call.value)).toContainEqual(expect.objectContaining({
+        decision: "deny", pipelineRequest: expect.objectContaining({ mode: "strict", headless: true }),
+      }));
+      expect(sessionAuthorityWithheld(result.childSessionId)).toBe(true);
+      expect(gate.pendingCount).toBe(0);
+      expect(contents.send).not.toHaveBeenCalledWith(IPC_APPROVAL_REQUEST, expect.anything());
+      expect(JSON.stringify(result.entries)).not.toContain("fixture-private-value");
+    } finally {
+      updateApprovalSurface({ kind: "release", sessionId: origin });
+      hasProviderSpy.mockRestore();
+      refreshProviderSpy.mockRestore();
+      await cleanupTmpDir(dir);
+    }
+  });
+
   it("lifts a live child authorization terminal into the spawn result", async () => {
     const toolRegistry = new ToolRegistry();
     const execute = vi.fn(async () => ({ output: "unexpected execution", isError: false }));
@@ -1839,7 +2062,7 @@ describe("SubAgentRunner — the child's agent context", () => {
 describe("agent_spawn — recursive call refusal", () => {
   it("returns an error when invoked from a sub-agent (spawnDepth >= 1)", async () => {
     const tool = createAgentSpawnTool({
-      getRunner: () => ({ spawn: async () => ({}) }) as never,
+      getRunner: () => ({}) as never,
       emit: () => undefined,
     });
     const ctxAsSubAgent = {
@@ -1853,7 +2076,7 @@ describe("agent_spawn — recursive call refusal", () => {
     );
     expect(r.isError).toBe(true);
     const parsed = JSON.parse(r.output);
-    expect(parsed.error).toContain("cannot be invoked from a sub-agent");
+    expect(parsed.error).toBe(t("be_agentSpawn.depthLimit"));
   });
 
   it("allows agent_spawn from the parent loop (spawnDepth=0)", async () => {
@@ -2636,15 +2859,15 @@ describe("SubAgentRunner A2A bus facade", () => {
 
 describe("SubAgentRunner workspace lifecycle", () => {
   it("revokes every active child and surfaces an aggregate child failure", () => {
-    const first = vi.fn(() => ({
+    const first = vi.fn((_root: string, _options: unknown) => ({
       sessionDirectoriesRemoved: 2,
       turnDirectoriesRemoved: 1,
       projectRebound: false,
     }));
-    const failing = vi.fn(() => {
+    const failing = vi.fn((_root: string, _options: unknown) => {
       throw new Error("isolated child failure");
     });
-    const last = vi.fn(() => ({
+    const last = vi.fn((_root: string, _options: unknown) => ({
       sessionDirectoriesRemoved: 0,
       turnDirectoriesRemoved: 4,
       projectRebound: true,
@@ -2657,13 +2880,13 @@ describe("SubAgentRunner workspace lifecycle", () => {
     ).activeChildren;
     const child = (
       childSessionId: string,
-      revokeWorkspaceRoot: ReturnType<typeof vi.fn>,
+      revokeWorkspaceRoot: typeof first | typeof failing | typeof last,
     ) => ({
       lease: Symbol(childSessionId),
       childSessionId,
       title: childSessionId,
       background: true,
-      loop: { revokeWorkspaceRoot },
+      loop: { revokeWorkspaceRoot, planWorkspaceRootRevocation: (root: string, options: unknown) => () => revokeWorkspaceRoot(root, options) },
     });
     activeChildren.set("child-one", child("child-one", first));
     activeChildren.set("child-failing", child("child-failing", failing));
@@ -2816,6 +3039,18 @@ describe("SubAgentRunner workspace lifecycle", () => {
       hasProviderSpy.mockRestore();
       runTurnSpy.mockRestore();
     }
+  });
+
+  it.skipIf(process.platform === "win32")("returns the durable POSIX detach count when child cancellation throws", async () => {
+    const detachSessionsFromProject = vi.fn(async () => 2);
+    const runner = new SubAgentRunner({ subAgentMemoryManager: { sessions: { detachSessionsFromProject } } } as never);
+    const root = join(tmpdir(), "removed-subagent-workspace");
+    const activeChildren = (runner as unknown as { activeChildren: Map<string, unknown> }).activeChildren;
+    const abortCurrentTurn = vi.fn(() => { throw new Error("child cancellation failed"); });
+    activeChildren.set("wire-child", { childSessionId: "wire-child", wireProjectRoot: root, loop: { abortCurrentTurn } });
+
+    await expect(runner.detachSessionsFromProject(root)).resolves.toBe(2);
+    expect(abortCurrentTurn).toHaveBeenCalledOnce();
   });
 
   it("delegates project detach and re-add to the isolated metadata store", async () => {

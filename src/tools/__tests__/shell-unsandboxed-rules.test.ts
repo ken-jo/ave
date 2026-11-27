@@ -1,7 +1,7 @@
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 /** Host shells use ordinary rules and modes; mandatory floors and deny rules retain precedence. */
-import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { configureHostResources } from "../../main/host-resources.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
   setActiveSandboxCapability,
+  setContainerShellSubstrate,
   setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -25,10 +26,16 @@ import { ToolRegistry } from "../registry.js";
 import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 
+withSourceHostResources();
+
 type Substrate = "sandbox-active" | "sandbox-unavailable" | "sandbox-off";
 
 function arrangeSubstrate(substrate: Substrate): void {
   __resetActiveSandboxCapabilityForTest();
+  // On macOS the shell backend is the container route: an active sandbox is a published container shell, never the wrap alone.
+  if (process.platform === "darwin") {
+    setContainerShellSubstrate(substrate === "sandbox-active" ? { state: "available" } : { state: "unavailable", reason: "shell-start-failed" });
+  }
   if (substrate === "sandbox-active") {
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
@@ -117,8 +124,6 @@ async function run(input: {
 const PRINTF_DENY: PermissionRule[] = [{ pattern: "Bash(printf *)", action: "deny" }];
 const CURL_ALLOW: PermissionRule[] = [{ pattern: "Bash(curl *)", action: "allow" }];
 
-// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
-beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("explicit unsandboxed retry (executionMode host)", () => {
   it("runs without a prompt when a matching allow rule covers the command", async () => {

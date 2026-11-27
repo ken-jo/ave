@@ -42,6 +42,7 @@ async function freshExecutor(
   } = {},
 ) {
   vi.resetModules();
+  await import("../../__tests__/vitest-approval-presentation.js");
   const ledger = await import("../invocation-ledger.js");
   // The gate's host-decision markers live in its module, so it comes from the same fresh graph as the executor.
   const { ApprovalGate, IPC_APPROVAL_REQUEST } = await import("../../permissions/approval-gate.js");

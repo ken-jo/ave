@@ -113,6 +113,7 @@ vi.mock("../conversation.js", () => ({
     h.rec("permissionManager");
     return {
       getVisibilityDenyRules: vi.fn(() => []),
+      setUnattendedToolEffectResolver: vi.fn(),
       setBroadcastUserApprovalHit: vi.fn(),
       setBroadcastConfigChanged: vi.fn(),
       // Every reviewer rewire must apply the settings read fence.
@@ -356,28 +357,30 @@ vi.mock("../../main/link-window-service.js", () => ({ openLinkWindow: vi.fn(),
 }));
 vi.mock("../../main/auth-partition-viewer-service.js", () => ({ openAuthPartitionViewer: vi.fn(),
 }));
-vi.mock("../../main/routines-store.js", () => ({
-  RoutinesStore: class {
-    constructor() {
-      h.rec("routinesStore");
-    }
-    load = vi.fn(async () => {});
-    update = vi.fn(async () => true);
-    list = vi.fn(() => []);
-    changed = { subscribe: vi.fn(() => () => {}) };
-  },
-}));
-vi.mock("../../main/routines-scheduler.js", () => ({
-  RoutinesScheduler: class {
-    constructor(_store: unknown, getInstalledPluginIds: () => Promise<readonly string[]>) {
-      h.captured["routineInstalledPluginIds"] = getInstalledPluginIds;
-    }
-    onLlmSession = vi.fn();
-    onNotification = vi.fn();
-    start = vi.fn();
-    stop = vi.fn();
-  },
-}));
+vi.mock("../../main/routines-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../main/routines-store.js")>();
+  return {
+    ...actual,
+    RoutinesStore: class extends actual.RoutinesStore {
+      constructor() {
+        super(`${h.root}/routines.json`);
+        h.rec("routinesStore");
+      }
+    },
+  };
+});
+vi.mock("../../main/routines-scheduler.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../main/routines-scheduler.js")>();
+  return {
+    ...actual,
+    RoutinesScheduler: class extends actual.RoutinesScheduler {
+      constructor(...args: ConstructorParameters<typeof actual.RoutinesScheduler>) {
+        super(...args);
+        h.captured["routineInstalledPluginIds"] = args[1];
+      }
+    },
+  };
+});
 vi.mock("../../plugins/registry.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../plugins/registry.js")>(),
   readPluginRegistry: vi.fn(async () => ({ plugins: [
@@ -903,6 +906,7 @@ describe("bootstrap() integration lock", () => {
         "startRoutinesScheduler",
         "startWorkBoardDueSoon",
         "systemPromptBuilder",
+        "tailnetWorkDecisions",
         "telemetry",
         "toolRegistry",
         "workBoardEngine",

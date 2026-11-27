@@ -1,13 +1,16 @@
 import { hasRationaleUserQuote } from "../../shared/rationale-user-quote.js";
 import {
+  admitApprovalAnswer,
+  approvalFailureKind,
   answeredApprovalProvenance,
-  isHostApprovalRejectedDecision,
-  isHostApprovalTimeoutDecision,
+  ApprovalReceiptError,
+  type ApprovalFailureKind,
   RULE_PROVENANCE,
   type ApprovalDecision,
   type DecisionProvenance,
   type ApprovalGate,
 } from "../../permissions/approval-gate.js";
+import { approvalFailureOutcome } from "./approval-outcome.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -171,7 +174,7 @@ export function deriveConservativeRationaleActionSummary(input: {
   });
 }
 
-type RationaleApprovalGate = Pick<ApprovalGate, "cancelPendingRequest">;
+type RationaleApprovalGate = Pick<ApprovalGate, "cancelPendingRequest"> & Partial<Pick<ApprovalGate, "observePendingApprovals">>;
 
 export interface RationaleHostCoordinatorOptions {
   readonly onReviewerChoiceResolved?: (sessionId: string, requestId: string, decision: "allow" | "deny") => void;
@@ -248,6 +251,7 @@ export type RationaleApprovalResolution =
   | {
       readonly outcome: "denied" | "cancelled" | "timed-out";
       readonly reason?: string;
+      readonly approvalOutcome?: ApprovalFailureKind;
       readonly ticket: RationaleTicketStateRecord;
       readonly projection: RationaleUiAuditProjection;
     };
@@ -1032,8 +1036,9 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
     const abortWait = new Promise<ApprovalAbortOutcome>((resolve) => {
       settleAbort = resolve;
     });
+    let settledRefusal: Promise<RationaleApprovalResolution | null> | undefined;
     const abortPending = (): void => {
-      if (abortState.current !== null) return;
+      if (abortState.current !== null || settledRefusal !== undefined) return;
       let failure: ApprovalAbortOutcome["failure"] = null;
       try {
         this.abort(ticketId, Math.max(requestedAt, this.#now()));
@@ -1060,6 +1065,21 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       return null;
     }
 
+    let settleRefusal!: (resolution: Promise<RationaleApprovalResolution | null>) => void;
+    const refusalWait = new Promise<RationaleApprovalResolution | null>((resolve) => { settleRefusal = resolve; });
+    const stopObserving = this.#approvalGate.observePendingApprovals?.({
+      onPending: () => {},
+      onSettled: (requestId, answer) => {
+        if (requestId !== ticketId || input.abortSignal?.aborted || this.#contexts.get(ticketId) !== context) return;
+        admitApprovalAnswer(answer, { requestId: ticketId, toolName: context.control.sealedAction.toolName,
+          toolUseId: context.control.sealedAction.toolUseId });
+        const outcome = approvalFailureKind(answer);
+        if (outcome !== undefined) {
+          settledRefusal = this.#finishApprovalRefusal(context, answer, outcome, input.now ?? this.#now());
+          settleRefusal(settledRefusal);
+        }
+      },
+    });
     let approvalResult: Promise<ApprovalDecision>;
     try {
       approvalResult = Promise.resolve(requestHumanApproval({ requestId: ticketId, ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}) }));
@@ -1068,10 +1088,11 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       approvalResult = Promise.reject(error);
     }
     const approvalWait = approvalResult.then((decision) => ({ kind: "decision" as const, decision }));
-    let waitOutcome: Awaited<typeof approvalWait> | ApprovalAbortOutcome;
+    let waitOutcome: Awaited<typeof approvalWait> | ApprovalAbortOutcome | { kind: "refusal"; resolution: RationaleApprovalResolution | null };
     try {
-      waitOutcome = await Promise.race([approvalWait, abortWait]);
+      waitOutcome = await Promise.race([approvalWait, abortWait, refusalWait.then((resolution) => ({ kind: "refusal" as const, resolution }))]);
     } catch (error) {
+      if (settledRefusal !== undefined) return await settledRefusal;
       if (input.abortSignal?.aborted || abortState.current !== null) {
         if (abortState.current?.failure) throw abortState.current.failure.error;
         return null;
@@ -1091,7 +1112,10 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       return { outcome: "denied", reason: error.reason, ticket: denied.ticket, projection };
     } finally {
       input.abortSignal?.removeEventListener("abort", abortPending);
+      stopObserving?.();
     }
+    if (waitOutcome.kind === "refusal") return waitOutcome.resolution;
+    if (settledRefusal !== undefined) return await settledRefusal;
     const observedAbort = abortState.current;
     if (observedAbort !== null) {
       if (observedAbort.failure !== null) throw observedAbort.failure.error;
@@ -1112,11 +1136,17 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
     }
     const expectation = createRationaleTicketCasExpectation(context.snapshot);
 
-    if (
-      decision?.requestId === ticketId &&
-      (decision.choice === "allow-once" || decision.choice === "allow-session" || decision.choice === "allow-always") &&
-      !isHostApprovalRejectedDecision(decision)
-    ) {
+    let approvalOutcome: ApprovalFailureKind | undefined = decision === null ? "cancelled" : "rejected";
+    if (decision !== null) {
+      try {
+        admitApprovalAnswer(decision, { requestId: ticketId, toolName: context.control.sealedAction.toolName,
+          toolUseId: context.control.sealedAction.toolUseId });
+        approvalOutcome = approvalFailureKind(decision);
+      } catch (error) {
+        if (!(error instanceof ApprovalReceiptError)) throw error;
+      }
+    }
+    if (decision !== null && approvalOutcome === undefined) {
       const provenance = answeredApprovalProvenance(decision);
       const afterPolicy = this.#getRationalePolicySnapshot?.();
       if (beforePolicy && afterPolicy && beforePolicy.epoch !== afterPolicy.epoch) {
@@ -1173,16 +1203,27 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       };
     }
 
-    const requestedDeny = decision?.requestId === ticketId &&
-      (decision.choice === "deny-once" || decision.choice === "deny-always");
-    const timedOut = isHostApprovalTimeoutDecision(decision);
-    const hostRejected = isHostApprovalRejectedDecision(decision);
-    const denied = !timedOut && !hostRejected && requestedDeny;
+    return this.#finishApprovalRefusal(context, decision, approvalOutcome ?? "rejected", decidedAt);
+  }
+
+  async #finishApprovalRefusal(
+    context: TicketContext, decision: ApprovalDecision | null, approvalOutcome: ApprovalFailureKind, decidedAt: number,
+  ): Promise<RationaleApprovalResolution | null> {
+    const expectation = createRationaleTicketCasExpectation(context.snapshot);
+    const denied = approvalOutcome === "denied";
+    const timedOut = approvalOutcome === "expired" || approvalOutcome === "unavailable";
+    const cancelled = approvalOutcome === "cancelled";
+    const hostCancelled = decision !== null && cancelled;
+    const cancellationDetail = hostCancelled && decision.rememberPattern !== undefined
+      ? approvalFailureOutcome(decision, context.control.sealedAction.toolName) : null;
+    const hostReason = approvalOutcome === "unavailable" ? NO_APPROVER_MESSAGE : "approval rejected by host";
     const terminal = timedOut
       ? this.#ticketStore.modalTimeout(expectation, decidedAt)
       : denied
         ? this.#ticketStore.deny(expectation, decidedAt)
-        : this.#ticketStore.cancel(expectation, decidedAt);
+        : hostCancelled ? this.#ticketStore.abort(expectation, decidedAt)
+          : cancelled ? this.#ticketStore.cancel(expectation, decidedAt)
+            : this.#ticketStore.denyByPolicy(expectation, decidedAt);
     if (!terminal) return null;
     const projection = createRationaleUiAuditProjection({
       control: context.control,
@@ -1192,16 +1233,19 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       now: decidedAt,
     });
     this.#commitProjectionAudit(context.sessionId, projection, decidedAt);
-    await this.#recordTerminalDenial(context,
-      context.control.eligibilityContext.headless || (timedOut && decision?.rememberPattern === NO_APPROVER_MESSAGE)
+    const recording = this.#recordTerminalDenial(context,
+      context.control.eligibilityContext.headless || approvalOutcome === "unavailable"
         ? NO_APPROVER_MESSAGE
         : timedOut ? "Permission approval timed out; the action was not executed."
-          : denied ? "The user denied this permission request." : RATIONALE_CARD_STOPPED,
-      !denied && !timedOut);
-    this.#deleteContext(ticketId);
+          : denied ? "The user denied this permission request." : cancelled ? cancellationDetail?.permission.reason ?? RATIONALE_CARD_STOPPED : hostReason,
+      cancelled);
+    this.#deleteContext(terminal.ticket.ticketId);
+    await recording;
     return {
-      outcome: timedOut ? "timed-out" : denied ? "denied" : "cancelled",
-      ...(timedOut && decision?.rememberPattern === NO_APPROVER_MESSAGE ? { reason: NO_APPROVER_MESSAGE } : {}),
+      outcome: timedOut ? "timed-out" : cancelled ? "cancelled" : "denied",
+      approvalOutcome,
+      ...(cancellationDetail ? { reason: cancellationDetail.content } : {}),
+      ...(hostReason === NO_APPROVER_MESSAGE || (!timedOut && !denied && !cancelled) ? { reason: hostReason } : {}),
       ticket: terminal.ticket,
       projection,
     };

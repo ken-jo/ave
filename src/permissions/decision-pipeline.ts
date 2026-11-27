@@ -1,13 +1,21 @@
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type { UserOwnedSurface, UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
+import type { ToolEffectEvidence } from "./tool-effect-evidence.js";
+import type { UnattendedStageEntry } from "./unattended-lane-registry.js";
+import { decideUnattended } from "./unattended-lane.js";
 
 export type PermissionPipelineOutcome = "allow" | "sandbox-auto" | "ask" | "ask-forced" | "deny";
-export type PermissionFloorCode = "protected-path" | "critical-delete" | "project-escape" | "other-principal" | "sandbox-unavailable";
+export type PermissionFloorCode = "protected-path" | "critical-delete" | "project-escape" | "other-principal" | "sandbox-unavailable" | "shell-analysis-limit";
 
 export interface PermissionDecisionRequest {
   tool: { name: string; source: ToolSource; kind: ToolCategory | "mcp" | "file-write"; readOnlyHint?: boolean };
   mode: "strict" | "default" | "auto" | "allow";
   headless: boolean;
+  unattended?: UnattendedStageEntry;
+  unattendedEffect?: ToolEffectEvidence;
+  unattendedInputSummary?: string;
+  unattendedCommand?: readonly string[];
+  unattendedNetwork?: { host: string; port: number; sandboxed: boolean; connection?: true };
   rationaleAvailable?: boolean;
   sessionId?: string;
   ownerAway?: boolean;
@@ -15,8 +23,11 @@ export interface PermissionDecisionRequest {
   paths?: readonly { lexical: string; canonical: string; effect: "read" | "write" }[];
   admissionDenial?: { code: string; reason: string };
   floor?: { code: PermissionFloorCode; reason: string };
+  shellAnalysisLimited?: true;
   // The floor is sandbox-unavailable with no other floor behind it, so its card may offer "This session".
   floorSessionEligible?: true;
+  // The floor the sandbox-unavailable floor stands in front of; it keeps the card from offering "This session".
+  competingFloor?: { code: PermissionFloorCode; reason: string };
   exfiltration?: { reason: string };
   // `floorSession`: a "This session" allow approved on this floor's own card in this conversation; ordinary rules never pass a floor.
   // `exactHostRule`: the saved exact rule (its pattern) that matches this whole command when shell containment is unavailable and boot home privacy is verified.
@@ -50,6 +61,8 @@ export function offersFloorSessionAllow(result: { readonly pipelineRequest?: Per
 export const EXACT_HOST_RULE_REASON_CODE = "exact-host-rule";
 
 export const NO_APPROVER_MESSAGE = "Nobody can approve this request; do not retry.";
+
+export const SHELL_ANALYSIS_LIMIT_REASON = "Shell path analysis ran out of budget, so nothing is proven about where this command reads or writes; it needs your approval.";
 
 function askHuman(request: PermissionDecisionRequest, reasonCode: string, reason: string): PermissionPipelineDecision {
   return request.headless
@@ -87,6 +100,7 @@ export function decidePermission(request: PermissionDecisionRequest): Permission
   if (!["read", "write", "file-write", "shell", "network", "mcp"].includes(request.tool.kind)) {
     return { outcome: "deny", reasonCode: "unsupported-tool-kind", reason: "The tool kind is not supported by the permission contract." };
   }
+  if (request.unattended) return decideUnattended(request);
   if (request.floor) {
     if (request.headless) return { outcome: "deny", reasonCode: "no-approver", reason: NO_APPROVER_MESSAGE };
     if (request.floor.code === "sandbox-unavailable" && request.floorSessionEligible && request.rules?.exactHostRule !== undefined &&

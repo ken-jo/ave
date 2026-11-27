@@ -1,4 +1,8 @@
+import { presentApproval } from "../../permissions/approval-presentation.js";
 import { BROWSER_PAGE_PROMPT_LIMIT, type BrowserPagePrompt, type BrowserPromptAnswer } from "../../shared/browser-workspace.js";
+
+import { createLogger } from "../../lib/logger.js";
+const log = createLogger("browser-page-prompts");
 
 type PromptOf<K extends BrowserPagePrompt["kind"]> = Extract<BrowserPagePrompt, { kind: K }>;
 type AnswerOf<K extends BrowserPagePrompt["kind"]> = Extract<BrowserPromptAnswer, { kind: K }>;
@@ -19,14 +23,16 @@ export class BrowserPagePrompts {
   ask<K extends BrowserPagePrompt["kind"]>(guestId: number, kind: K, details: Omit<PromptOf<K>, "id" | "kind">): Promise<AnswerOf<K> | null> {
     const queue = this.pending.get(guestId) ?? [];
     if (queue.length >= BROWSER_PAGE_PROMPT_LIMIT) return Promise.resolve(null);
-    return new Promise((resolve) => {
+    const result = presentApproval(() => new Promise<AnswerOf<K> | null>((resolve) => {
       const entry: Pending = {
         prompt: { ...details, kind, id: `prompt-${this.next++}` } as unknown as BrowserPagePrompt,
         settle: (answer) => resolve(answer as AnswerOf<K> | null),
       };
       this.pending.set(guestId, [...queue, entry]);
       this.changed();
-    });
+    }));
+    if (result === undefined) log.info("Browser page prompt denied (%s)", kind);
+    return result ?? Promise.resolve(null);
   }
 
   list(guestId: number): readonly BrowserPagePrompt[] {

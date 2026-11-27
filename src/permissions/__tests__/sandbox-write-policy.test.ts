@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, findNonRepositoryWriteRoots, isGrantPathWithin, isSandboxGitMetadataEntry, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
+import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, buildSeatbeltSandboxWritePolicy, compactSandboxWriteDenies, findNonRepositoryWriteRoots, isGrantPathWithin, isSandboxGitMetadataEntry, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
 import { getLocale, setLocale, t } from "../../i18n/index.js";
 import { PROTECTED_ROOT_ENTRIES } from "../sensitive-paths.js";
 import { buildPerCommandSandboxCustomConfig, buildSandboxConfig, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
@@ -80,6 +80,24 @@ describe("mandatory sandbox control-file writes", () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it("projects the mandatory macOS floor as literal names and recursive patterns", () => {
+    const project = join(root, "project");
+    mkdirSync(project);
+    const policy = withPlatform("darwin", () => buildSeatbeltSandboxWritePolicy([project]));
+    const names = policy.literalRows.map(row => row.path);
+    for (const entry of [".vscode", ".idea", ".husky", ".cargo", ".devcontainer", ".yarn", ".mvn", ".config/git",
+      ".bashrc", ".zshrc", ".zprofile", ".profile", ".envrc", ".gitconfig", ".npmrc", ".mcp.json",
+      ".agents", ".ave/commands", ".ave/hooks"]) {
+      expect(names).toContain(join(project, entry).replaceAll(sep, "/"));
+    }
+    expect(names).not.toContain(join(project, ".claude").replaceAll(sep, "/"));
+    expect(policy.patternRows).toEqual(expect.arrayContaining([
+      { path: "/**/.[gG][iI][tT]/[hH][oO][oO][kK][sS]", access: "ro", reason: "protected-name", literal: false },
+    ]));
+    expect(policy.literalRows.every(row => row.literal)).toBe(true);
+    expect(policy.patternRows.every(row => !row.literal)).toBe(true);
   });
 
   const loaderEntries = [".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml", ".idea/workspace.xml", ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky"];
@@ -459,7 +477,7 @@ describe("mandatory sandbox control-file writes", () => {
   });
 
   // The shared floor's own list, so a new entry cannot fall off the sandbox floor unnoticed; `.git/*` controls are covered by the Git tests below.
-  // `.agents` is a row per root on Linux only; the macOS wrap carries it as an appended rule (see the named-entry case below).
+  // The named-entry cases below cover the platform-specific `.agents` row.
   it.each([".git", ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry) && entry !== ".agents")])("protects missing %s in every writable root", (entry) => {
     const roots = [join(root, "project"), join(root, "temp")];
     const denies = buildMandatorySandboxWritePolicy(roots).denyWrite;
@@ -471,7 +489,7 @@ describe("mandatory sandbox control-file writes", () => {
 
   // `.agents`, and the commands and hooks Ave loads from the project. Linux carries a row per root.
   // macOS carries none: a row per root does not fit its policy budget, so its wrap denies the names in the profile
-  // (macos-sandbox-wrap.ts). The Windows floor is not changed here.
+  // (macos-sandbox-wrap.ts).
   it("denies .agents and the project command and hook names in write roots on Linux, and leaves the macOS policy without rows for them", () => {
     const roots = [join(root, "project"), join(root, "temp")];
     const names = [".agents", ".ave/commands", ".ave/hooks"];
@@ -489,6 +507,71 @@ describe("mandatory sandbox control-file writes", () => {
       for (const name of names) expect(rowsNaming(denies, name)).toEqual(roots.map(base => join(base, name)));
       // The `.ave` directory is not a row itself, and `.codex` and a project `.aws` are not named.
       for (const base of roots) for (const unnamed of [".ave", ".codex", ".aws"]) expect(holding(denies, join(base, unnamed)).filter(path => !path.includes(join(sep, ".ave", sep)))).toEqual([]);
+    });
+  });
+
+  describe("Windows protected write-root names", () => {
+    const names = [".agents", ".ave/commands", ".ave/hooks"];
+
+    it.each(["present", "absent"] as const)("projects whole-entry rows for %s names at each write root", state => {
+      const roots = [join(root, "project"), join(root, "temp")];
+      for (const base of roots) mkdirSync(base);
+      const targets = roots.flatMap(base => names.map(name => join(base, name)));
+      if (state === "present") for (const target of targets) mkdirSync(target, { recursive: true });
+
+      const policy = withPlatform("win32", () => buildMandatorySandboxWritePolicy(roots));
+      expect(policy.allowWrite).toEqual(roots);
+      expect(nativeDenyRows(policy.denyWrite)).toEqual(expect.arrayContaining(targets));
+    });
+
+    it("keeps the junction spellings and their physical targets", () => {
+      const project = join(root, "project");
+      mkdirSync(join(project, ".ave"), { recursive: true });
+      const targets = names.flatMap((name, index) => {
+        const link = join(project, name);
+        const target = join(root, "target", String(index));
+        mkdirSync(target, { recursive: true });
+        symlinkSync(target, link, "junction");
+        return [link, target];
+      });
+
+      const policy = withPlatform("win32", () => buildMandatorySandboxWritePolicy([project]));
+      expect(nativeDenyRows(policy.denyWrite)).toEqual(expect.arrayContaining(targets));
+    });
+
+    it.each(["carrier", "own root", "other root", "root ancestor"] as const)("refuses a protected junction to the %s before building denies", destination => {
+      const project = join(root, "project");
+      const carrier = join(project, ".ave");
+      const other = join(root, "other");
+      mkdirSync(carrier, { recursive: true });
+      mkdirSync(other);
+      const targets = { carrier, "own root": project, "other root": other, "root ancestor": root };
+      const link = join(carrier, "commands");
+      symlinkSync(targets[destination], link, "junction");
+      try {
+        expect(() => withPlatform("win32", () => buildMandatorySandboxWritePolicy([project, other])))
+          .toThrow(".ave/commands");
+      } finally { unlinkSync(link); }
+    });
+
+    it("limits the named rows to admitted roots and leaves neighbouring names writable", () => {
+      const project = join(root, "project");
+      const nested = join(project, "nested");
+      const unprotectedDirectories = [
+        ...names.map(name => join(nested, name)),
+        ...[".codex", ".claude", ".aws", ".ave/unrelated"].map(name => join(project, name)),
+      ];
+      for (const directory of unprotectedDirectories) mkdirSync(directory, { recursive: true });
+      const claudeConfig = join(project, ".claude.json");
+      writeFileSync(claudeConfig, "{}");
+
+      const policy = withPlatform("win32", () => buildMandatorySandboxWritePolicy([project]));
+      const paths = nativeDenyRows(policy.denyWrite)?.map(entry => typeof entry === "string" ? entry : entry.path) ?? [];
+      expect(paths).not.toContain(join(project, ".ave"));
+      expect(paths).not.toContain(claudeConfig);
+      for (const directory of unprotectedDirectories) {
+        expect(paths.filter(path => path === directory || path.startsWith(directory + sep))).toEqual([]);
+      }
     });
   });
 

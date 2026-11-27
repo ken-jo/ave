@@ -32,14 +32,17 @@ export function SandboxStatusBadge({
   const plan = capability?.shellExecutionPlan;
   const extensionKey = statusQueryFailed ? null : extensionBadgeKey(capability);
   // No host snapshot means status is still unknown; platform potential and desired settings cannot stand in for the actual execution route.
-  const shellBadge = statusQueryFailed || (plan !== undefined && !plan.sandboxed);
+  const macContainerUnavailable = capability?.platform === "darwin" && capability.containerShell?.state === "unavailable";
+  const shellBadge = statusQueryFailed || macContainerUnavailable || (plan !== undefined && !plan.sandboxed);
   if (!shellBadge && extensionKey === null) return null;
   // While the Windows MXC start probe runs, shells take the interim route and the plan reads as unsandboxed. That is a phase, not the
   // outcome: say so, and let the settle hint from main replace it with the real plan.
   const checking = !statusQueryFailed && plan !== undefined && !plan.sandboxed && plan.requestedSandbox
     && capability?.windowsSubstrate?.mxc.state === "checking";
   const reasonText =
-    plan?.fallbackReason === "platform-unsupported"
+    macContainerUnavailable
+      ? t("sandboxStatus.shellUnavailable")
+      : plan?.fallbackReason === "platform-unsupported"
       ? t("sandboxStatus.unsupported")
       : plan?.fallbackReason === "disabled-by-setting"
         ? t("sandboxStatus.disabled")

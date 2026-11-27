@@ -1261,10 +1261,11 @@ listing on its native host no longer names it (never for local, self-hosted, gat
 custom-`baseUrl` or Azure routes; a failed or partial listing proves nothing). Only an
 id the active catalog knows exactly under the vendor's mapped provider can be judged;
 a fine-tune, an account-scoped deployment or a model newer than the snapshot never is. A saved
-selection at one sets the `llm.retiredProvider` marker at settings load
-(`{ vendor, model, reason: "unlisted" }` beside the removed-vendor string), which
-withholds API-key chat and credentials until the user picks — the same flow as a removed
-vendor. **Deprecated:** the active catalog marks it `deprecated` where the route
+selection sets the `llm.retiredProvider` marker when a listing proves it retired,
+including mid-session. The marker withholds API-key chat and credentials until the
+selection or listing resolves the retirement. Every model transport rereads its route's
+retirement evidence at the wire, immediately before each network attempt, so a transport's
+own retry cannot reach a model proven retired. **Deprecated:** the active catalog marks it `deprecated` where the route
 establishes its identity; no marker, chat and credentials keep working, and the window
 shows a non-blocking notice. The listing outranks the catalog. Both tiers are hidden from
 every picker; the host keeps no retired-name list. See [retired models](../design/model-capability-catalog.md#61-retired-models-slice-7-follow-up-owner-direction-2026-10-13).
@@ -1996,6 +1997,10 @@ Preparation, readback and cleanup share one cancellation signal and capture
 deadline. Cleanup attempts to restore the original scroll position and clear any
 temporary viewport override even on cancellation; a still-pending cleanup retains
 guest capture ownership until it settles.
+Each tiled capture composes its tiles in its own supervised child process
+(`browser-capture-stitch-child.js`). A capture that ends with tile work still
+outstanding ends that process, and the guest accepts another screenshot only
+after every outstanding job has settled or the process exit is confirmed.
 Selection verifies the final native value and rejects unsupported controls.
 Native single-select uses a fixed function in an isolated action world on one
 host-resolved main-document object, with only the requested option value as data.
@@ -2946,7 +2951,7 @@ Composed denies retain the deny projection's spelling and identity rules.
 On Windows, grant lists are expanded once before runtime handoff; a new glob match created afterward receives no allow ACE from this wrap. Grant junctions and symlinks are followed, and the resolved target must pass every grant check (owner decision 2026-10-26, #253). By design, a grant target's own ACL is not checked: owner and DACL rules apply to policy evidence and private homes, not to arbitrary grant targets. Evidence refuses links and fails closed. Every pinned grant literal and canonical target must be a plain drive path: `X:\` followed by components that are not empty, `.` or `..`, do not end in a dot or space, and contain no control character, none of `<>:"/|?*%~`, and no reserved device name. UNC, device and `\\?\` grant forms are refused. The runtime normalizes each grant entry again, so its result must exactly match a checked spelling, with no case folding, before any existence check. A missing grant is dropped. A swap before pinning is resolved and checked like any other link; a replacement between pinning, policy checks and native handoff is refused by the retained identities. After the final identity validation, the native string API can still follow a later swap. Closing that native residual requires calls that consume held handles.
 
 On Windows, only each deny target's own DACL is checked, so a child with its own broad allow beneath a private directory is not detected, as for write denies. Preceding deny ACEs are ignored, so a target can conservatively be classified as readable even when it is not. Evidence is tied to object identity and re-proven by a no-follow stat at each use; in-place ACL changes on the same object are not detected.
-On Windows, an absent deny target outside every write grant is not stamped, while one a write grant can reach is still materialized and stamped so the sandbox cannot create it; machine-root rows retained by the policy filter remain eligible for stamping regardless of absence. Before adding a worker write grant, raw session and earlier-wrap denies plus the pending policy identify every overlapping obligation, including machine read rows and targets created after omission. An overlapping deny glob refuses the grant because a DACL cannot protect future matches. Native target DACLs determine existing deny strength; stamping unions that strength with the obligations so reusing the session holder cannot downgrade its earlier read protection. After stamping, even if it throws, native DACLs must show the sandbox SID's expected deny mask, subtree inheritance for directories, and parent delete-child protection. A missing or unverifiable target refuses the grant, as does any stamp failure; successful stamping alone proves nothing. Grant failures revoke only the grant holder. Worker release leaves session denies until teardown; placeholders remain. These are point-in-time checks: concurrent path or DACL changes and protected descendant DACLs remain limitations. An omitted target created outside write grants while a command is running is not denied until the next wrap or worker/session re-initialization.
+On Windows, absent deny targets stay out of the native stamp. Reachable protected names use the [protected-name check](#ave-home-boundary-and-protected-name-mechanics). Before adding a worker write grant, raw session and earlier-wrap denies plus the pending policy identify every overlapping obligation, including machine read rows and targets created after omission. An overlapping deny glob refuses the grant because a DACL cannot protect future matches. The stamp unions existing native deny strength with the obligations so reusing the session holder preserves its earlier read protection. After stamping, even if it throws, native DACLs must show the sandbox SID's expected deny mask, subtree inheritance for directories, and parent delete-child protection. A required name whose presence changes after projection, an unverifiable watch, an unverifiable stamp target, or a stamp failure refuses the grant. Grant failures revoke only the grant holder. Worker release sweeps watched names and leaves session denies until teardown. Concurrent path or DACL changes and protected descendant DACLs remain limitations of these point-in-time checks. A target created outside write grants while a command is running can be denied at the next wrap or worker or session initialization.
 
 Grant proof uses the shipped path helper's synchronous handle-based DACL mode.
 It pins non-reparse path components and reads target and parent descriptors
@@ -3297,17 +3302,104 @@ The [decision tree](permission-decision-tree.md) states the policy: what is priv
 
 **Windows container runtime root.** Sandbox start-up establishes the private root at `<local application data>\<app id>\mxc-runtime` before the first wrap. If start-up cannot prove the root is private, every container start is refused until the next sandbox start-up. The Windows shell policy's sole read and write exception inside the root is the invocation's own live `HOME`, a direct child of `<root>\homes`. It refuses a working directory inside the root. A container holder gets only its own `<root>\staging\<opaque-id>` staging tree. The former Ave-home child `mxc-staging` has no read re-allow and is denied like any unlisted child. The [runtime root contract](../design/windows-extension-policy-contract.md#runtime-root) specifies how Windows proves the root's ownership, privacy and identity.
 
-**Root deny.** Windows stamps an inheritable deny on the root, and the explicit allow on a granted child ranks above it. Linux masks the root with tmpfs and binds the granted children back. macOS denies the subpath and allows the granted children inside it. Host features (preview, document observation) and the write floor keep the per-file rows.
+**Root deny.** The Windows ACL route stamps an inheritable deny on the root, and the explicit allow on a granted child ranks above it. Linux masks the root with tmpfs and binds the granted children back. macOS denies the subpath and allows the granted children inside it. Host features (preview, document observation) and the write floor keep the per-file rows.
 
-**Windows home directly under the OS profile.** An Ave home directly under the OS profile (the default `%USERPROFILE%\.ave`) gets no root deny, because a stamp also denies `FILE_DELETE_CHILD` inheritably on the target's parent, and on the profile root that propagates through the whole profile and exceeds the init timeout. Instead each existing top-level child directory that is not wholly re-allowed is denied as its own directory row, so the parent stamp lands on the Ave home. File rows inside those children are dropped; `sessions` and `certs` keep their floor rows; granted grandchildren (a plugin or MCP server directory) are re-opened by their explicit allow exactly as under the relocated root. Each composition (one shell command, one extension or worker child spawn) takes one boundary snapshot: it reads the home's top-level entries once (one readdir, no recursion) and pins the home and each entry that is not wholly re-allowed through the shared non-following path facts, and the floor, session policy, masks, evidence, read/write projections and deny targets of that composition all use it. Nothing is cached across commands or spawns; the next invocation takes a fresh snapshot, and a refusal holds for the rest of its composition. Only a home the native walk reports absent projects no child: a home that is, or lies beneath, a link or any other reparse point (dangling or not), a home that cannot be listed or pinned, and an entry that is a link or any other reparse point or vanishes between listing and pinning all refuse confinement instead of launching with fewer denies. The readdir may list a linked home's target before the refusal, but no linked projection is ever accepted or stamped. Residual set: top-level files of the Ave home stay file rows (see the file-row limit below), and a top-level child created after enumeration is not covered by that projection; the next projection denies it. Entry names are case-folded, so case-distinct siblings in a case-sensitive directory are not supported and no coverage is claimed for them. A relocated Ave home gets the root deny.
+**Windows ACL route for a home directly under the OS profile.** On the ACL route, an Ave home directly under the OS profile (the default `%USERPROFILE%\.ave`) gets no root deny, because a stamp also denies `FILE_DELETE_CHILD` inheritably on the target's parent, and on the profile root that propagates through the whole profile and exceeds the init timeout. Instead each existing top-level child directory that is not wholly re-allowed is denied as its own directory row, so the parent stamp lands on the Ave home. File rows inside those children are dropped; `sessions` and `certs` keep their floor rows; granted grandchildren (a plugin or MCP server directory) are re-opened by their explicit allow exactly as under the relocated root. Each composition (one shell command, one extension or worker child spawn) takes one boundary snapshot: it reads the home's top-level entries once (one readdir, no recursion) and pins the home and each entry that is not wholly re-allowed through the shared non-following path facts, and the floor, session policy, masks, evidence, read/write projections and deny targets of that composition all use it. Nothing is cached across commands or spawns; the next invocation takes a fresh snapshot, and a refusal holds for the rest of its composition. Only a home the native walk reports absent projects no child: a home that is, or lies beneath, a link or any other reparse point (dangling or not), a home that cannot be listed or pinned, and an entry that is a link or any other reparse point or vanishes between listing and pinning all refuse confinement instead of launching with fewer denies. The readdir may list a linked home's target before the refusal, but no linked projection is ever accepted or stamped. Residual set: top-level files of the Ave home stay file rows (see the file-row limit below), and a top-level child created after enumeration is not covered by that projection; the next projection denies it. Entry names are case-folded, so case-distinct siblings in a case-sensitive directory are not supported and no coverage is claimed for them. A relocated Ave home gets the root deny. The [Windows container route](#windows-agent-shells-in-microsoft-execution-containers) declares the full Ave home read boundary at its roots.
 
-Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home): Linux bind masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a file the host replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path handling, which this boundary does not change. macOS seatbelt rules are path-based, so neither case reopens a denied path there. Per-exec shells re-apply masks and stamps on every spawn.
+Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home on the ACL route): Linux bind masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a file the host replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path handling, which this boundary does not change. macOS seatbelt rules are path-based, so neither case reopens a denied path there. Per-exec shells re-apply masks and stamps on every spawn.
 
-Absent protected names on Windows (owner decision 2026-11-24): an ACL can only deny an existing object, and Ave never creates a placeholder in the user's workspace or home to carry a deny. A protected name (for example `.vscode`, `.idea`, `.git/hooks`) that is absent at launch is watched instead: when a sandboxed command ends, a worker is released, or a host-side consumer (host git, host hooks) is about to act on that workspace while a sandboxed process is still live, a watched name that now exists is moved to quarantine under the Ave home, the command result carries a named violation, and the user is told and may restore it. A failed move refuses host-side consumers of that workspace. macOS seatbelt rules are patterns and cover absent names without this.
+Absent protected names on Windows (owner decision 2026-11-24): an ACL can
+only deny an existing object, and Ave never creates a placeholder in the
+user's workspace or home to carry a deny. A protected name (for example
+`.vscode`, `.idea`, `.git/hooks`) that is absent at launch can have a watched
+outcome. At sandboxed command end, worker or holder release, and before a
+host-side consumer acts, Ave checks the name afresh beneath the recorded
+folder and verifies that folder's identity. Ave moves a found entry to
+quarantine under the Ave home and reports the original and quarantine
+paths. Host Git, project commands, project hooks and stage-folder seeding
+share `isHostWorkspaceConsumable`. An unverifiable location or failed move
+makes the gate refuse the affected operations.
+
+A shell result can include the notice when its job exits before the result
+is returned. Receipts from holder release, host consumer checks and shell
+jobs whose results have already returned can be delivered in a later
+Windows sandboxed command result when that command runs the sweep. Deferred
+receipts remain queued until such a result can carry them.
+
+To restore an inspected entry, move it from the shown quarantine path to
+its original path after the sandboxed runs using the workspace have ended.
+The host also exposes list and restore handlers through IPC, with user
+keyboard intent required for restore. The restore handler preserves any
+remaining holder claim. While that holder is active, the gate refuses
+consumers of the restored name and the holder checks the name again at
+release. macOS seatbelt patterns cover absent names directly.
 
 **Local memory inference.** Local memory inference uses the Windows system directory for its working directory. The sandbox account already has read access there, so inference needs no ACL grant for its fresh process HOME. The active model is under the denied Ave home models directory and the host streams its verified bytes.
 
 **Privacy helper.** The boot category helper-unavailable means the Windows path-kind or ACL helper did not answer.
+
+### macOS agent shells in containers
+
+The container route table selects shell tools and holders independently.
+
+| Platform | Shell tools | Holders |
+| --- | --- | --- |
+| macOS | On | Off |
+| Windows | On | On |
+| Linux | Off | Off |
+
+On macOS, Bash and PowerShell run through the pinned SDK's streaming handle
+with pipes and one invocation-specific profile. Hooks, extensions and the
+workspace terminal continue to use the existing wrap. Each command has its own
+shell supervisor: the Electron binary run as Node with a safe host environment
+and no loader overrides. It verifies the SDK and `libmxc_ffi.dylib` against
+their pins, runs koffi's asynchronous native calls on an 8 MiB stack (the
+main-thread stack the CLI forks on, needed for carved profiles), and owns
+exactly one run. One verified supervisor per bundle waits as a warm standby
+with no request and no authority; a command takes it and a replacement
+starts at once. Standbys are dropped on any sandbox status change and are
+not replaced once shutdown seals child admission. The command, its environment and `profileOverride` travel in a private request
+file under the container runtime root; the authenticated control channel
+carries only its path and SHA-256, and the supervisor refuses altered bytes.
+Each invocation keeps the isolated HOME and temp allocation used by the wrap.
+The host removes request staging after the supervisor exits.
+
+Ave owns the entire Seatbelt profile. Its baseline denies by default and
+allows process creation, same-sandbox signals, sysctl reads, selected
+system services, file metadata, and fixed system paths and devices. The
+ranker carves the broad read into existing children around the Ave home
+and other denied roots. It keeps a readable child when a deny is nested
+inside it and records that deny explicitly. A carved folder can serve as
+the working directory without a grant to list it. Enumeration is bounded
+at 2,000 entries and the final grant list at 400 rows. A folder withheld
+by that budget is named in the result.
+
+The profile orders the fixed baseline, ranked grants, socket allowances
+and the invocation's proxy allow before any access deny. The deny block
+restates read-only write floors and each read deny, including paths the
+baseline could otherwise expose through metadata and system reads.
+A carved deny exempts only admitted descendants and metadata for exact
+chain folders. Protected names, linked targets, access-time patterns and
+ancestor create and unlink pins preserve the write floor after start,
+including names created during the command. Shells ship with an empty
+Unix-socket allowlist. Direct IP and DNS are blocked and the proxy
+resolves names. Egress retains shared identity for approval scopes.
+
+Boot checks architecture, library presence and the private runtime root
+in order. It then runs one canary through the same supervisor and profile
+generator; the supervisor's pin check, and the SDK's typed refusal of a
+malformed request, decide the reason. A passing start requires
+admitted reads and writes alongside denied reads, metadata, writes,
+protected names, renames and network routes. macOS publishes the
+container shell plan on success and takes the permission tree's
+no-confinement floor on unavailability. Settings names the failed
+prerequisite. Ave never signals the workload. Cancel, the host watchdog,
+owner loss and quit send one stop to the supervisor, whose handle kill runs
+the backend's child kill and run-marker scan, which reaps descendants in
+other sessions; the request timeout is the SDK's own deadline with the same
+kill. A stop the backend did not confirm, or a supervisor that exits without
+a terminal receipt, is reported as an error that the command was stopped
+but its processes could not be confirmed gone, never as cancelled.
 
 ### Windows agent shells in Microsoft Execution Containers
 
@@ -3340,7 +3432,7 @@ The shell path uses the MIT-licensed
 `wxc-exec.exe` launcher from `@microsoft/mxc-sdk` 1.1.0 at
 `<resources>/mxc/<arch>/wxc-exec.exe` (x64, arm64), staged at build time by
 `scripts/fetch-mxc.mjs` against `src/permissions/mxc-launcher-pins.json` (the
-npm tarball's sha512, each launcher's sha256). The extension process primitive
+npm tarball's SHA-512 and launcher SHA-256 under `targets.win32-x64` and `targets.win32-arm64`). The extension process primitive
 runs SDK operations in a dedicated supervisor under the packaged executable's
 Node mode with `ELECTRON_RUN_AS_NODE=1`; the Electron RunAsNode fuse must remain
 explicitly enabled in packaging configuration. The pinned packager reads this fuse
@@ -3363,7 +3455,11 @@ Package manifests use the required semantic pins for `name`, `version`, `main`, 
 
 Empty `node-pty/.bun-tag-<16 lowercase hex digits>` patch-install markers are declared package-manager bookkeeping and are removed before packaged inventory verification. Nonempty or malformed markers remain unexpected payloads and fail verification.
 
-Before-pack source verification also requires the original package-manifest byte hashes; semantic verification applies to normalized packaged manifests. `bun run update:mxc-pins` regenerates file hashes, semantic manifest fields and both native architectures deterministically from installed sources. `bun run check:mxc-pins` (`node scripts/update-mxc-pins.mjs --check`) fails on drift without rewriting pins. Missing optional target addons are staged from their separately verified archives into temporary sources and cleaned up; `--no-download` requires all sources locally. Archive, launcher and license trust anchors remain explicit review inputs. The required `build-and-test` CI job checks the generated pins and runs `check:mxc-packaging` for x64 and arm64, sharing a lock-keyed Windows runtime ZIP cache. The Windows permission job also runs both packaging targets with a cached runtime download, so the native-host collector path is covered. Successful packaging checks delete their owned temporary trees, failures retain and report the exact path. Strict packaged inventory checks include the FFI, PTY and nested semver trees; unknown scripts, manifests, binaries and redirects fail closed. Retained source/declaration/license allowances are scoped by path and extension. Unused PTY local build/source directories and non-target prebuilds are declared packaging exclusions; unknown selected-target files remain available for rejection.
+Before-pack source verification also requires the original package-manifest byte hashes; semantic verification applies to normalized packaged manifests. `bun run update:mxc-pins` regenerates file hashes, semantic manifest fields and both native architectures deterministically from installed sources. `bun run check:mxc-pins` (`node scripts/update-mxc-pins.mjs --check`) fails on drift without rewriting pins. Missing optional target addons are staged from their separately verified archives into temporary sources and cleaned up; `--no-download` requires all sources locally. Archive, launcher and license trust anchors remain explicit review inputs. The required CI aggregate includes generated pin checks and packages both Windows and both Linux launcher targets using lock-keyed runtime archive caches. The Windows native payload packaging job runs both targets under the containment launcher with a cached runtime download to cover the native-host collector path. Successful packaging checks delete their owned temporary trees, failures retain and report the exact path. Strict packaged inventory checks include the FFI, PTY and nested semver trees; unknown scripts, manifests, binaries and redirects fail closed. Retained source/declaration/license allowances are scoped by path and extension. Unused PTY local build/source directories and non-target prebuilds are declared packaging exclusions; unknown selected-target files remain available for rejection.
+
+**POSIX native packaging.** macOS arm64 ships no launcher. It ships the SDK's `libmxc_ffi.dylib` in `app.asar.unpacked`, excluded from signing so it keeps its Microsoft signature; the after-pack and after-sign hooks check its bytes against `targets.darwin-arm64.library`, and every shell supervisor checks it again at start. koffi's darwin addon is unpacked and signed by the app, so its upstream hash is pinned before signing and verified at packaging. The `targets.darwin-arm64.launcher` pin remains a record of the tarball. Linux ships `<resources>/mxc/<arch>/lxc-exec` for x64 and arm64; packaging stages it from the installed SDK when available and verifies the SHA-256 in its `targets` entry. The POSIX library pins can be regenerated with `bun run update:mxc-pins --launchers-only --no-download` alongside the launcher pins. Launcher packaging checks default to the host targets and accept `--target <platform-arch>` for explicit checks. The [macOS shell route](#macos-agent-shells-in-containers) uses its pinned library when boot proves containment. Linux keeps its existing routes.
+
+Windows x64 preparation runs the launcher ownership and path-classification proofs and the sandbox helper checks. It publishes checked helpers and the interpreter mirror for the regular and tier shards, which also consume the build job's exact-tree plan. The eight regular shards use two workers each. Payload packaging, script tests, and the development build and boot smoke run in separate contained jobs alongside the matrices when preparation is selected. All three results feed the required `build-and-test` aggregate.
 
 The packaging regression uses the production dependency declarations and installed dependency graph, with production build configuration and the same locked dependency collector. A reduced graph with added root dependencies is insufficient: hoisting can keep a nested build dependency in that graph while moving it to the root in the application graph. The installed collector reproduces this relocation on macOS too; it is not established as an operating-system-specific omission. The check requires an installed nested PTY header tree before collection and its absence, including the hoisted root copy, in the assembled payload. Diagnostic-only entry/output, unsigned packaging and the focused SDK finalizer do not replace the full application hook or execute native code.
 
@@ -3523,6 +3619,27 @@ in its directory.
   grants fails closed. The shell cannot create that missing directory during
   this spawn. Denies are recomputed each spawn, restoring precise entries once
   it exists; an approved file tool can still create the directory.
+  The three [required Windows write denies](permission-policy-design.md#os-shell-sandbox-policy)
+  are exact and never raised to a parent. One whose parent is missing ends
+  `watched`: the write grant proceeds, and the result records the name with
+  its nearest existing folder and that folder's volume and file identity. The
+  outcome check accepts a watched row only at the deny's own path, under the
+  deny's own anchor object, with every covering write grant's object in the
+  deny's pinned ancestor chain. An independent deny under the same missing
+  parent refuses the launch unless the policy already denies the parent at
+  its own path. The container composers state the Ave home read boundary at
+  each of its roots, including the legacy profile `.ave` when the active
+  home is elsewhere. That boundary covers the absent legacy home and its
+  sensitive children. An ordinary project's missing `.ave` remains writable
+  while its required children are watched.
+  Admission does not depend on a live watch. The launch's last synchronous
+  check (shell activation, the holder's check before native creation) confirms
+  the folder is still the ranked object and the first missing component is
+  still missing, then claims every watched row or none; a refusal names the
+  protected path. Only a started launch fences host consumers and is checked
+  at its release. Once the parent exists, the next launch denies the name
+  exactly; a running launch keeps its claim until it ends, since its grants
+  are fixed.
   Literal denies apply throughout the command.
   Pattern denies are enumerated at launch; a file another process creates during a command's lifetime that first matches the pattern is not covered until the next command.
   In the six installed x64 runs observed on 2026-11-11, node opens of the Ave
@@ -3934,8 +4051,12 @@ with its own owner rule:
   their counts per step, without paths. A mismatched object's ACE is left as
   it was, so a deny there stays fail-closed, and the next boot's ACL recovery
   handles leftovers.
-  A plugin or worker grant release is judged by the same status sets and exit
-  code. An unconfirmed one seals the session against further confinement until
+  Plugin and worker grant release and rollback require a successful native exit
+  and a cleanup result for every admitted volume serial and file ID. The
+  revoker uses the holder's ledger and locates moved grants by file ID. It
+  reports the identity only after verifying it on the ACL handle, including
+  after relocation. Missing, contradictory, or unverified results seal
+  the session against further confinement until
   the quit reset (in practice, until restart); confined children already
   running are not stopped.
   At the first helper preparation, the Windows sweep also reclaims partial copies

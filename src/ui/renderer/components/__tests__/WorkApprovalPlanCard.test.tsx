@@ -1,8 +1,12 @@
+import { setLocale, t } from "../../../../i18n/runtime.js";
+import { loadLocaleMessages, messages } from "../../../../i18n/messages/index.js";
+
 // @vitest-environment jsdom
 /** 확인 필요 plan approvals: the stored plan as a real card (the agent's plan beside the host's facts), decided only by a button press that
  * sends the run id and stored hash; queued plans expand before they can be decided; a re-planning plan is listed but not counted; and the
  * all-projects mode groups every authorized project. */
 import "../../../../../test/renderer/setup.js";
+import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { WorkApprovalStack, type WorkApprovalActions } from "../work-approvals/WorkApprovalStack.js";
@@ -87,7 +91,10 @@ function stubApi(result: WorkApprovalListResult | ((request: unknown) => WorkApp
     listWorkApprovals: list,
     onWorkApprovalsChanged: (handler: () => void) => { changed = handler; return () => { changed = null; }; },
     decideWorkPlan,
-  } as unknown as Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged" | "decideWorkPlan">;
+    decideWorkStage: vi.fn<AveApi["decideWorkStage"]>(),
+    decideWorkJoin: vi.fn<AveApi["decideWorkJoin"]>(),
+    openWorkBoardJoin: vi.fn<AveApi["openWorkBoardJoin"]>(),
+  };
   return { api, list, decideWorkPlan, fireChanged: () => changed?.() };
 }
 
@@ -396,8 +403,11 @@ describe("확인 필요 — all projects", () => {
     const api = {
       listWorkApprovals: list,
       onWorkApprovalsChanged: () => () => {},
-      decideWorkPlan: vi.fn(),
-    } as unknown as Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged" | "decideWorkPlan">;
+      decideWorkPlan: vi.fn<AveApi["decideWorkPlan"]>(),
+      decideWorkStage: vi.fn<AveApi["decideWorkStage"]>(),
+      decideWorkJoin: vi.fn<AveApi["decideWorkJoin"]>(),
+    openWorkBoardJoin: vi.fn<AveApi["openWorkBoardJoin"]>(),
+    };
     const onFocusConsumed = vi.fn();
     const view = render(<WorkApprovalStack api={api} project={CHECKOUT} actions={actions()} now={() => NOW} onFocusConsumed={onFocusConsumed} />);
     await screen.findByTestId("work-approval-head");
@@ -409,4 +419,135 @@ describe("확인 필요 — all projects", () => {
     await waitFor(() => expect(onFocusConsumed).toHaveBeenCalledTimes(1));
     expect(within(screen.getByTestId("work-approval-head")).getByTestId("work-approval-title").textContent).toBe("Handbook plan");
   });
+});
+
+
+it("decides a workflow gate shown in the work approval stack using its displayed binding", async () => {
+  const binding = { runId: "run-a", stageId: "report", attempt: 2, resultHash: HASH, outputHash: "e".repeat(64) };
+  const { api } = stubApi(okList([{
+    kind: "stage-gate", key: "stage:4", itemId: 4, title: "Report", scope: { type: "unscoped" },
+    arrivedAt: "2026-06-15T12:00:00.000Z", result: "Parked stage result", binding,
+  }]));
+  api.decideWorkStage.mockResolvedValue({ ok: false, reason: "result_mismatch" });
+  render(<WorkApprovalStack api={api} project={CHECKOUT} actions={actions()} now={() => NOW} />);
+  expect(await screen.findByText("Parked stage result")).toBeVisible();
+  expect(api.decideWorkStage).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.approveStage") }));
+  await waitFor(() => expect(api.decideWorkStage).toHaveBeenCalledExactlyOnceWith(4, { ...binding, decision: "approve" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(t("reasonCodes.result-mismatch"));
+});
+
+it("restores focus to the approval heading after a plan decision removes its card", async () => {
+  let pending = true;
+  const { api } = stubApi(() => okList(pending ? [plan()] : []));
+  api.decideWorkPlan.mockImplementation(async () => {
+    pending = false;
+    return { ok: true, status: "approved", redactedCount: 0 };
+  });
+  renderStack(api);
+  const approve = await screen.findByTestId("work-approval-plan-approve");
+  approve.focus();
+  await userEvent.keyboard("{Enter}");
+  await waitFor(() => expect(approve).not.toBeInTheDocument());
+  expect(screen.getByRole("heading", { name: t("workApprovals.title") })).toHaveFocus();
+});
+
+it("focuses the same plan's replanning row after requesting changes with another plan pending", async () => {
+  const first = plan();
+  const next = plan({ key: "plan:5", itemId: 5, runId: "run-5", title: "Review refund handling", arrivedAt: "2026-06-15T12:05:00.000Z" });
+  const note = "Cover refunds too";
+  let current = first;
+  const { api, decideWorkPlan } = stubApi(() => okList([current, next]), async () => {
+    current = { ...first, phase: "replanning", planNumber: 2, changeRequest: note };
+    return { ok: true, status: "changes_requested", redactedCount: 0 };
+  });
+  renderStack(api);
+
+  const requestChanges = await screen.findByTestId("work-approval-plan-request-changes");
+  await userEvent.type(screen.getByTestId("work-approval-plan-note"), note);
+  requestChanges.focus();
+  await userEvent.keyboard("{Enter}");
+
+  expect(decideWorkPlan).toHaveBeenCalledExactlyOnceWith(first.itemId, {
+    runId: first.runId, planHash: first.planHash, decision: "request_changes", note,
+  });
+  const row = within(await screen.findByTestId("work-approvals-replanning")).getByRole("listitem");
+  expect(requestChanges).not.toBeInTheDocument();
+  expect(row).toHaveAttribute("data-approval-key", first.key);
+  expect(screen.getByTestId("work-approval-head")).toHaveAttribute("data-approval-key", next.key);
+  expect(screen.getByTestId("work-approvals-count")).toHaveTextContent("1");
+  expect(row).toHaveFocus();
+});
+
+it("navigates from an all-projects summary without exposing plan controls", async () => {
+  const { key, scope, title } = plan();
+  const { api } = stubApi(okList([{ kind: "navigation", targetKind: "plan", key, scope, title, phase: "pending" }]));
+  const onOpenApproval = vi.fn();
+  renderStack(api, { showAllProjects: true, onOpenApproval });
+  const open = await screen.findByRole("button", { name: t("workApprovals.openApproval") });
+  expect(screen.queryByText("Retry failed payment webhooks.")).toBeNull();
+  fireEvent.click(open);
+  expect(onOpenApproval).toHaveBeenCalledExactlyOnceWith(key, CHECKOUT.projectRoot);
+  expect(api.decideWorkPlan).not.toHaveBeenCalled();
+});
+
+it.each(["en", "ko"] as const)("uses the catalog for the approval navigation action in %s", async (locale) => {
+  await loadLocaleMessages(locale);
+  setLocale(locale);
+  try {
+    const { key, scope, title } = plan();
+    const { api } = stubApi(okList([{ kind: "navigation", targetKind: "plan", key, scope, title, phase: "pending" }]));
+    renderStack(api, { showAllProjects: true });
+    const open = await screen.findByRole("button", { name: t("workApprovals.openApproval") });
+    expect(open).not.toHaveTextContent("workApprovals.openApproval");
+    expect(messages[locale]).toHaveProperty(["workApprovals.openApproval"]);
+  } finally {
+    cleanup();
+    setLocale("en");
+  }
+});
+
+it("keeps a navigation-only replanning row in the replanning section and out of the count", async () => {
+  const { key, scope, title } = plan();
+  const { api } = stubApi(okList([{ kind: "navigation", targetKind: "plan", key, scope, title, phase: "replanning" }], 0));
+  const onOpenApproval = vi.fn();
+  const onCountChange = vi.fn();
+  try {
+    renderStack(api, { showAllProjects: true, onOpenApproval, onCountChange });
+    const waiting = within(await screen.findByTestId("work-approvals-replanning"));
+    expect(waiting.getByText(title)).toBeVisible();
+    expect(screen.queryByTestId("work-approvals-empty")).toBeNull();
+    expect(onCountChange).toHaveBeenLastCalledWith(0);
+    fireEvent.click(waiting.getByRole("button", { name: t("workApprovals.openApproval") }));
+    expect(onOpenApproval).toHaveBeenCalledExactlyOnceWith(key, CHECKOUT.projectRoot);
+  } finally {
+    cleanup();
+  }
+});
+
+it("focuses the replanning row in the destination project alongside a pending approval", async () => {
+  const replanning = plan({ key: "plan:5", itemId: 5, title: "Revise refund handling", phase: "replanning" });
+  const { key, scope, title } = replanning;
+  const { api, list } = stubApi(request => (
+    request && typeof request === "object" && "allProjects" in request
+      ? okList([{ kind: "navigation", targetKind: "plan", key, scope, title, phase: "replanning" }], 0)
+      : okList([plan(), replanning])
+  ));
+  const onCountChange = vi.fn();
+  const onOpenApproval = vi.fn();
+  const { rerender } = renderStack(api, {
+    project: PROJECTS[2], showAllProjects: true, onOpenApproval, onCountChange,
+  });
+
+  const waiting = within(await screen.findByTestId("work-approvals-replanning"));
+  fireEvent.click(waiting.getByRole("button", { name: t("workApprovals.openApproval") }));
+  expect(onOpenApproval).toHaveBeenCalledExactlyOnceWith(key, CHECKOUT.projectRoot);
+  rerender(<WorkApprovalStack api={api} actions={actions()} project={CHECKOUT} focusKey={key} onCountChange={onCountChange} />);
+  expect(await screen.findByText("Retry failed payment webhooks.", { exact: false })).toBeVisible();
+  expect(list).toHaveBeenLastCalledWith({ projectRoot: CHECKOUT.projectRoot });
+  const row = within(screen.getByTestId("work-approvals-replanning")).getByRole("listitem");
+  expect(row).toHaveTextContent(title);
+  expect(row).toHaveTextContent(t("workApprovals.replanningFooter"));
+  expect(onCountChange).toHaveBeenLastCalledWith(1);
+  await waitFor(() => expect(row).toHaveFocus());
 });

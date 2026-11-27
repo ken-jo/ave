@@ -42,6 +42,7 @@ import {
   egressProtocolCoverageFor,
   type EgressProtocolCoverage,
   type SandboxCapabilityInfo,
+  type SandboxMacContainerShellUnavailableReason,
   type SandboxMxcUnavailableReason,
   type SandboxWindowsExtensionReason,
   type SandboxWindowsStatusInfo,
@@ -196,6 +197,15 @@ const MXC_UNAVAILABLE_REASON_KEY = {
   "unverified-session": "permissionsTab.osSandboxWindowsMxcReasonUnverifiedSession",
   "runtime-root-unproved": "permissionsTab.osSandboxWindowsMxcReasonRuntimeRootUnproved",
 } as const satisfies Record<SandboxMxcUnavailableReason, string>;
+
+const MAC_CONTAINER_REASON_KEY = {
+  "unsupported-arch": "permissionsTab.osSandboxMacContainerReasonUnsupportedArch",
+  "binary-missing": "permissionsTab.osSandboxMacContainerReasonBinaryMissing",
+  "launcher-mismatch": "permissionsTab.osSandboxMacContainerReasonLauncherMismatch",
+  "runtime-root-unproved": "permissionsTab.osSandboxMacContainerReasonRuntimeRootUnproved",
+  "request-rejected": "permissionsTab.osSandboxMacContainerReasonRequestRejected",
+  "shell-start-failed": "permissionsTab.osSandboxMacContainerReasonShellStartFailed",
+} as const satisfies Record<SandboxMacContainerShellUnavailableReason, string>;
 
 /** Every reason the shared extension plan can carry, so no reason renders as a raw key. */
 const WINDOWS_EXTENSION_REASON_KEY = {
@@ -1209,6 +1219,7 @@ export function PermissionsTab({
     (settingsRead && (sandboxEnabled || workerConfinementEffective)) || bootReportsWindowsHelperFailure(sandboxBoot);
   // Windows: which substrate carries shells and extensions this session. Shown whenever boot recorded one, so an unavailable MXC is never silent.
   const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
+  const macContainer = sandboxCapability?.platform === "darwin" ? sandboxCapability.containerShell : undefined;
 
   // The OS sandbox disclosure reads its own host snapshot and never waits on the panel reads; only the two rows that state stored settings do.
   const settingsNotice = panelLoadNotice("os-sandbox-settings", ["settings"]);
@@ -1357,6 +1368,16 @@ export function PermissionsTab({
                 {t("permissionsTab.osSandboxBootDegradedReason", { reason: ipcErrorCode(sandboxBoot.reason) ?? "unknown" })}
               </p>
             </div>
+          ) : null}
+          {macContainer ? (
+            <p
+              data-testid="os-sandbox-mac-container"
+              data-state={macContainer.state}
+              className="rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-dense text-muted-foreground"
+            >
+              {macContainer.state === "available" ? t("permissionsTab.osSandboxMacContainerAvailable")
+                : t("permissionsTab.osSandboxMacContainerUnavailable", { reason: t(MAC_CONTAINER_REASON_KEY[macContainer.reason]) })}
+            </p>
           ) : null}
           {windowsSubstrate ? (
             <div

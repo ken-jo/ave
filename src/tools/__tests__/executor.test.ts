@@ -1,11 +1,12 @@
+import * as persistenceGuards from "../../permissions/approval-persistence-guard.js";
 import type { ApprovalPersistenceGuard } from "../../permissions/approval-persistence-guard.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Admission denials and forced approvals must precede tool execution.
-import { beforeAll, afterEach, describe, it, expect, vi } from "vitest";
-import { configureHostResources } from "../../main/host-resources.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
 import childProcess, { ChildProcess } from "node:child_process";
@@ -72,6 +73,8 @@ import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { approvalCacheKeyFor } from "../pipeline/display-mask.js";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+
+withSourceHostResources();
 
 async function waitForApprovalPayload<T>(
   wc: ReturnType<typeof makeMockWebContents>,
@@ -154,8 +157,6 @@ function denyingApprovalGate() {
   return { wc, gate };
 }
 
-// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
-beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("ToolExecutor — A2A parent delivery capability provenance", () => {
   it.each([
@@ -619,18 +620,8 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     throw new Error("Missing native AST fixture");
   };
 
-  it.each([
-    ["sensitive env-home operand", "Get-Content $HOME/.ssh/id_rsa"],
-    ["sensitive quoted operand", "Get-Content '~/.ssh/id_rsa'"],
-  ])("checks parsed shell paths before execution or durable approval: %s", async (_label, command) => {
-    const registry = new ToolRegistry();
-    registry.register(new PowerShellTool());
-    const dir = mkdtempSync(join(tmpdir(), "ave-powershell-path-policy-"));
-    const startup = vi.spyOn(powerShellStartupPolicy, "isPowerShellStartupPinned").mockReturnValue(true);
-    const installation = vi.spyOn(powerShellExecutable, "resolveTrustedPowerShellExecutable").mockReturnValue({ executable: "/protected-fixture/pwsh", kind: "pwsh" });
-    const preflight = vi.spyOn(shellTools, "findPowerShellCommandPathViolation");
-    const parserInputs: string[] = [];
-    const spawn = vi.spyOn(childProcess, "spawn").mockImplementation((_executable, argv) => {
+  function installPathPolicyParser(parserInputs: string[]) {
+    return vi.spyOn(childProcess, "spawn").mockImplementation((_executable, argv) => {
       const args = Array.isArray(argv) ? argv : [];
       const encodedIndex = args.indexOf("-EncodedCommand");
       const script = encodedIndex >= 0 ? Buffer.from(args[encodedIndex + 1]!, "base64").toString("utf16le") : args.join(" ");
@@ -644,6 +635,12 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       stdin.on("finish", () => queueMicrotask(() => {
         const source = Buffer.concat(chunks).toString("utf8");
         parserInputs.push(source);
+        if (source === "Write-Output later") {
+          Object.defineProperty(child, "exitCode", { value: 1, configurable: true });
+          stderr.emit("data", Buffer.from("fixture parser failure"));
+          child.emit("close", 1);
+          return;
+        }
         stdout.emit("data", Buffer.from(JSON.stringify(pathPolicyAst(source))));
         Object.defineProperty(child, "exitCode", { value: 0, configurable: true });
         child.emit("close", 0);
@@ -651,6 +648,41 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       Object.assign(child, { stdin, stdout, stderr });
       return child;
     });
+  }
+
+  it.skipIf(process.platform === "win32")("stops POSIX PowerShell preflight before parsing a later field", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "powershell-field-order-"));
+    const startup = vi.spyOn(powerShellStartupPolicy, "isPowerShellStartupPinned").mockReturnValue(true);
+    const installation = vi.spyOn(powerShellExecutable, "resolveTrustedPowerShellExecutable").mockReturnValue({ executable: "/protected-fixture/pwsh", kind: "pwsh" });
+    const parserInputs: string[] = [];
+    const spawn = installPathPolicyParser(parserInputs);
+    syncBuiltinESMExports();
+    try {
+      const first = "Get-Content $HOME/.ssh/id_rsa";
+      const result = await shellTools.findPowerShellCommandPathViolation([first, "Write-Output later"], directory, directory, [], true);
+      expect(result).not.toBeNull();
+      expect(parserInputs).toEqual([first]);
+    } finally {
+      startup.mockRestore();
+      installation.mockRestore();
+      spawn.mockRestore();
+      syncBuiltinESMExports();
+      await cleanupTmpDir(directory);
+    }
+  });
+
+  it.each([
+    ["sensitive env-home operand", "Get-Content $HOME/.ssh/id_rsa"],
+    ["sensitive quoted operand", "Get-Content '~/.ssh/id_rsa'"],
+  ])("checks parsed shell paths before execution or durable approval: %s", async (_label, command) => {
+    const registry = new ToolRegistry();
+    registry.register(new PowerShellTool());
+    const dir = mkdtempSync(join(tmpdir(), "ave-powershell-path-policy-"));
+    const startup = vi.spyOn(powerShellStartupPolicy, "isPowerShellStartupPinned").mockReturnValue(true);
+    const installation = vi.spyOn(powerShellExecutable, "resolveTrustedPowerShellExecutable").mockReturnValue({ executable: "/protected-fixture/pwsh", kind: "pwsh" });
+    const preflight = vi.spyOn(shellTools, "findPowerShellCommandPathViolation");
+    const parserInputs: string[] = [];
+    const spawn = installPathPolicyParser(parserInputs);
     syncBuiltinESMExports();
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
@@ -1773,7 +1805,8 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
 
     expect(results[0].is_error).toBeUndefined();
     expect(executeSpy).toHaveBeenCalledOnce();
-    expect(checkDetailed).toHaveBeenCalledOnce();
+    // Once to decide, once as the card's bound check when the answer is judged.
+    expect(checkDetailed).toHaveBeenCalledTimes(2);
     expect(approvalGate.requestAndWait).toHaveBeenCalledWith(
       expect.objectContaining({
         toolName: "a2a_always_allow_meta_probe",
@@ -2241,20 +2274,17 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     const turn = new AbortController();
     let signalGivenToGate: AbortSignal | undefined;
     let abortedAtRequest: boolean | undefined;
-    const approvalGate = {
-      requestAndWait: vi.fn((req: { id: string; abortSignal?: AbortSignal }) => {
-        signalGivenToGate = req.abortSignal;
-        abortedAtRequest = req.abortSignal?.aborted;
-        queueMicrotask(() => turn.abort(new Error("user cancelled turn")));
-        return new Promise<{ requestId: string; choice: "deny-once" }>((resolve) => {
-          const denyOnce = () => resolve({ requestId: req.id, choice: "deny-once" });
-          // Model gate timeout denial when abort wiring is absent so a regression fails assertions instead of hanging.
-          if (req.abortSignal === undefined) denyOnce();
-          else req.abortSignal.addEventListener("abort", denyOnce, { once: true });
-        });
-      }),
-    };
-    const executor = new ToolExecutor(registry, undefined, permMgr, undefined, approvalGate as never);
+    const surface = makeMockWebContents();
+    const approvalGate = new ApprovalGate(surface as never);
+    const requestAndWait = approvalGate.requestAndWait.bind(approvalGate);
+    vi.spyOn(approvalGate, "requestAndWait").mockImplementation((req) => {
+      signalGivenToGate = req.abortSignal;
+      abortedAtRequest = req.abortSignal?.aborted;
+      if (!req.abortSignal) throw new Error("Missing approval abort signal");
+      queueMicrotask(() => turn.abort(new Error("user cancelled turn")));
+      return requestAndWait(req);
+    });
+    const executor = new ToolExecutor(registry, undefined, permMgr, undefined, approvalGate);
 
     const results = await executor.executeAll(
       [{ id: "tu-stop-probe", name: "tool_stop_probe", input: { value: "a" } }],
@@ -2429,7 +2459,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
       const gate = new ApprovalGate(wc as never);
       const requestSpy = vi
         .spyOn(gate, "requestAndWait")
-        .mockImplementation((request) => answeredApprovalDecision({ requestId: "req-test", choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
+        .mockImplementation((request) => answeredApprovalDecision({ requestId: request.id, choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
 
       const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
 
@@ -2464,7 +2494,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
     const gate = new ApprovalGate(wc as never);
     const requestSpy = vi
       .spyOn(gate, "requestAndWait")
-      .mockImplementation((request) => answeredApprovalDecision({ requestId: "req-persist", choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
+      .mockImplementation((request) => answeredApprovalDecision({ requestId: request.id, choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
 
     const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
 
@@ -2811,13 +2841,14 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     expect(results[0].is_error).toBeUndefined();
   });
 
-  it("allow-always resolves the central workspace lifecycle lazily and persists through it", async () => {
+  async function exerciseFolderPersistence(expectedGuard?: ApprovalPersistenceGuard): Promise<void> {
     const executeSpy = vi.fn(async () => "ok");
     const registry = new ToolRegistry();
     registry.register(makeWriteFileTool(executeSpy));
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
     const allowDirectory = vi.fn(async (root: string, _source: "permission-slash", authority?: ApprovalPersistenceGuard) => {
+      if (expectedGuard !== undefined) expect(authority).toBe(expectedGuard);
       expect(await authority?.refresh()).toBe(true);
       expect(authority?.isCurrent()).toBe(true);
       return [root];
@@ -2876,6 +2907,18 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       "permission-slash",
       expect.anything(),
     );
+  }
+
+  it("allow-always resolves the central workspace lifecycle lazily and persists through it", () => exerciseFolderPersistence());
+
+  it.skipIf(process.platform === "win32")("passes the original POSIX always-folder persistence guard to the lifecycle", async () => {
+    const guard: ApprovalPersistenceGuard = { refresh: async () => true, isCurrent: () => true };
+    const createGuard = vi.spyOn(persistenceGuards, "invocationApprovalPersistenceGuard").mockReturnValue(guard);
+    try {
+      await exerciseFolderPersistence(guard);
+    } finally {
+      createGuard.mockRestore();
+    }
   });
 
   it("applies a folder allow-always once to the exact target while boot refuses the home folder", async () => {
@@ -3107,7 +3150,9 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       const results = await callPromise;
       expect(executeSpy).toHaveBeenCalledOnce();
       expect(sentApprovalCards(wc)).toHaveLength(1);
-      expect(checkDetailed).toHaveBeenCalledOnce();
+      // The card's bound check judges the answer on the same captured context.
+      expect(checkDetailed).toHaveBeenCalledTimes(2);
+      expect(checkDetailed.mock.calls[1]).toEqual(checkDetailed.mock.calls[0]);
       expect(checkDetailed.mock.calls[0]?.[4]?.paths).toEqual(expect.arrayContaining([expect.objectContaining({ canonical: caseFoldForMatch(canonicalizePathForMatch(target)), lexical: target, effect: "write" })]));
       expect(results[0].is_error).toBeUndefined();
     } finally {
@@ -3174,6 +3219,31 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       expect(sentApprovalCards(wc)).toHaveLength(0);
     } finally {
       await cleanupTmpDir(outside);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("propagates a POSIX saved Edit permission observation error", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "posix-edit-permission-"));
+    const registry = new ToolRegistry();
+    registry.register(new WriteFileTool());
+    const manager = new PermissionManager(join(directory, "permissions.json"));
+    manager.setMode("allow");
+    const check = manager.checkDetailed.bind(manager);
+    const failure = new Error("saved Edit permission lookup failed");
+    const evaluate = vi.spyOn(manager, "checkDetailed").mockImplementation((...args) => {
+      if (args[4]?.ruleSubject?.kind === "edit") throw failure;
+      return check(...args);
+    });
+    const executor = new ToolExecutor(registry, undefined, manager);
+    try {
+      await expect(executor.executeAll(
+        [{ id: "posix-edit-error", name: "write_file", input: { path: "new.txt", content: "notes" } }],
+        { executionCwd: directory, sessionId: "session-edit-error", permissionContext: userPermissionContext() },
+      )).rejects.toBe(failure);
+      expect(existsSync(join(directory, "new.txt"))).toBe(false);
+    } finally {
+      evaluate.mockRestore();
+      await cleanupTmpDir(directory);
     }
   });
 
@@ -3775,8 +3845,10 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       );
 
       expect(overlayResult[0].is_error).toBe(true);
-      expect(checked.mock.calls[1]?.[4]?.ruleSubject).toEqual({ kind: "mcp", server: "generic-mcp", tool: "mcp_network", nonDestructive: false });
-      expect(checked.mock.results[1]?.value).toMatchObject({ decision: "deny", reasonCode: "no-approver", pipelineRequest: { rules: { ask: "Mcp(generic-mcp:mcp_network)" } } });
+      // The overlay card's Deny is judged by its bound check too, so the MCP call's check is the last.
+      expect(checked).toHaveBeenCalledTimes(3);
+      expect(checked.mock.calls[2]?.[4]?.ruleSubject).toEqual({ kind: "mcp", server: "generic-mcp", tool: "mcp_network", nonDestructive: false });
+      expect(checked.mock.results[2]?.value).toMatchObject({ decision: "deny", reasonCode: "no-approver", pipelineRequest: { rules: { ask: "Mcp(generic-mcp:mcp_network)" } } });
       expect(mcpHeadlessResult[0].is_error).toBe(true);
       expect(mcpHeadlessResult[0].content).toContain("do not retry");
       expect(executeSpy).not.toHaveBeenCalled();
@@ -4907,7 +4979,7 @@ describe("ToolExecutor remote controller session authority", () => {
     let current = true;
     const sessionId = "controller-revoked-after-card";
     const context = remoteContext(sessionId, { pairedShare, pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current } });
-    requestAndWait.mockImplementation(async request => { current = false; return answeredApprovalDecision({ requestId: request.id, choice: "allow-once" }); });
+    requestAndWait.mockImplementation(async request => { current = false; return answeredApprovalDecision({ requestId: request.id, choice: "allow-once" }, "desk", request.toolName, request.invocationToolUseId); });
     const result = await executor.executeAll([{ id: sessionId, name: "controller_probe", input: {} }], { sessionId, permissionContext: context });
     expect(requestAndWait).toHaveBeenCalledOnce();
     expect(executed).not.toHaveBeenCalled();

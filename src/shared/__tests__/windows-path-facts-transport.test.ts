@@ -13,7 +13,7 @@ const { execute, helper } = vi.hoisted(() => ({
   helper: "C:\\path kind\\helper.exe",
 }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFileSync: execute }));
-vi.mock("../../main/windows-path-kind-launcher.js", async original => ({ ...await original<typeof import("../../main/windows-path-kind-launcher.js")>(), resolveWindowsPathKindHelper: () => helper }));
+vi.mock("../../main/windows-path-kind-launcher.js", async original => ({ ...await original<typeof import("../../main/windows-path-kind-launcher.js")>(), withWindowsPathKindHelper: <T>(launch: (path: string) => T) => launch(helper) }));
 vi.mock("../tool-timeout-policy.js", async original => {
   const actual = await original<typeof import("../tool-timeout-policy.js")>();
   return { ...actual, TOOL_TIMEOUT_POLICY: { ...actual.TOOL_TIMEOUT_POLICY, windowsAclRequestMs: 300 } };

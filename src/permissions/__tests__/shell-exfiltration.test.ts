@@ -1,5 +1,6 @@
 // Exfiltration floors cover every sender and compound-command path; ordinary downloads, local copies and repository pushes remain negative controls.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { analysisLimitAnswer } from "../../__tests__/support/permission-lane.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as shellAnalysis from "../../shared/shell-analysis.js";
 
@@ -389,7 +390,7 @@ describe("bounded sensitive-path inspection", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it("denies exhausted inspection before rules and remembered grants", async () => {
+  it("asks a human for exhausted inspection before rules and remembered grants", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-scan-budget-"));
     try {
       const manager = new PermissionManager(join(dir, "permissions.json"));
@@ -401,12 +402,10 @@ describe("bounded sensitive-path inspection", () => {
         approvalCacheKey: `bash-action:${text}`,
       });
       const pending = check(command);
-      expect(pending).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
-      expect(pending.forceModal).not.toBe(true);
+      expect(pending).toMatchObject(analysisLimitAnswer(false));
       await manager.addAlwaysAllowedPersist(`bash-action:${command}`);
-      expect(check(command)).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
-      expect(check(`${command} .env`)).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
-      expect(check(`${command} .env`).forceModal).toBeUndefined();
+      expect(check(command)).toMatchObject(analysisLimitAnswer(false));
+      expect(check(`${command} .env`)).toMatchObject(analysisLimitAnswer(false));
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

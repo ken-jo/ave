@@ -1,3 +1,4 @@
+import type { AuditLogger } from "../../audit/audit-logger.js";
 /** Owns plugin admission, generation publication, dispatch, and retirement for one runtime lifetime. */
 
 import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension, PluginRegistryTrust } from "../types.js";
@@ -224,6 +225,7 @@ export interface PluginRuntimeOptions {
   deploymentGuard?: PluginDeploymentGuard;
   installReceiptCacheRoot?: string;
   auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
+  effectAudit?: Pick<AuditLogger, "logShadow">;
   onMalformedCredentialSelector?: (pluginId: string) => void;
   /** Teardown callbacks must be idempotent because failed startup can invoke them after an earlier stop. */
   onDisable?: (pluginId: string) => void;
@@ -1330,6 +1332,7 @@ abstract class PluginRuntimeState {
   ) => PluginHostApi;
   protected readonly deploymentGuard?: PluginDeploymentGuard;
   protected readonly installReceiptCacheRoot?: string;
+  protected readonly effectAudit?: Pick<AuditLogger, "logShadow">;
   protected readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
   protected readonly onMalformedCredentialSelector?: (pluginId: string) => void;
   protected readonly onDisable?: (pluginId: string) => void;
@@ -1658,6 +1661,7 @@ abstract class PluginRuntimeState {
       ? resolve(options.installReceiptCacheRoot)
       : undefined;
     this.auditLog = options.auditLog;
+    this.effectAudit = options.effectAudit;
     this.onMalformedCredentialSelector = options.onMalformedCredentialSelector;
     this.onDisable = options.onDisable;
     this.onPluginUiRevisionChange = options.onPluginUiRevisionChange;
@@ -5049,6 +5053,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     const outOfProcess = {
       manifest,
       auditLog: this.auditLog,
+      effectAudit: this.effectAudit,
       childEntryPath: this.childEntryPath,
       registerSandboxEnvelope: (grants: readonly ChosenSandboxGrant[], pluginRoot: string, pluginDataDir: string) =>
         this.registerSandboxEnvelope(manifest.id, grants, pluginRoot, pluginDataDir),

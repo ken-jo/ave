@@ -156,7 +156,12 @@ describe("permission path facts", () => {
     const collectNext = createPermissionPathEvidence(project);
     expect(collectNext(path(nextKey)).admissionDenial).not.toBeNull();
     expect(collectNext(path(firstKey)).admissionDenial).toBeNull();
-    expect(collectFirst(path(firstKey)).admissionDenial).not.toBeNull();
+    if (process.platform === "win32") {
+      expect(collectFirst(path(firstKey))).toMatchObject({ ...path(firstKey), admissionDenial: null });
+      expect(collectFirst(path(nextKey))).toMatchObject({ ...path(nextKey), admissionDenial: expect.any(String) });
+    } else {
+      expect(collectFirst(path(firstKey)).admissionDenial).not.toBeNull();
+    }
   });
 
   it.each([".env.example", ".env.sample", ".env.template", ".env.dist"])("retains the environment template exclusion for %s", (name) => {

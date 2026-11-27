@@ -17,6 +17,9 @@ import type {
 } from "../llm/types.js";
 import { makeConversationPermissionDeps } from "./support/conversation-loop-fixtures.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { gateCrossAgentInterceptedMetaTools } from "../turn/query-loop.js";
 
 class ScriptedProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -93,6 +96,36 @@ const questionControl = {
 };
 
 describe("A2A question control and causal propagation", () => {
+  it.each(["denied", "rejected", "expired", "unavailable", "cancelled", "replayed"] as const)(
+    "preserves %s at the intercepted approval result and audit", async (outcome) => {
+      const controller = new AbortController();
+      const sessionId = "recipient";
+      const toolUse = { id: "meta-call", name: "tool_search", input: {} };
+      const surface = { isDestroyed: () => false, send: (channel: string, card: ApprovalRequest) => {
+        if (outcome === "cancelled" && channel === IPC_APPROVAL_REQUEST) {
+          queueMicrotask(() => gate.cancelPendingRequest(card.id, sessionId, "project-scope-changed"));
+        }
+      } };
+      const gate = new ApprovalGate(surface as never, undefined, 10);
+      if (outcome === "denied" || outcome === "replayed") {
+        vi.spyOn(gate, "requestAndWait").mockImplementation(answeringRequestAndWait(() => outcome === "denied"
+          ? { choice: "deny-once" } : { choice: "allow-once", requestId: "another-request" }));
+      } else if (outcome === "rejected") {
+        vi.spyOn(gate, "requestAndWait").mockImplementation(async ({ id }) => ({ requestId: id, choice: "deny-once" }));
+      }
+      const log = vi.fn();
+      const self = { deps: { approvalGate: outcome === "unavailable" ? undefined : gate },
+        auditLogger: { log }, currentAbortController: controller };
+      const status = outcome === "replayed" ? "rejected" : outcome;
+      const result = await gateCrossAgentInterceptedMetaTools(self as never, [toolUse as never], "[Sub-Agent]", "agent-message", sessionId);
+      expect.soft(result).toEqual({ approved: [], denied: [expect.objectContaining({
+        toolUseId: toolUse.id, content: expect.stringContaining(`cross-agent-approval-${status}`),
+      })] });
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({ input: `cross-agent-meta-approval-${status}:tool_search` }));
+      expect(controller.signal.aborted).toBe(false);
+    },
+  );
+
   it("accepts one exact builtin agent_send control, commits initial guidance, and stops before another provider round", async () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(createDynamicTool({

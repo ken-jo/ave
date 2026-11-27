@@ -76,10 +76,6 @@ function localRoute(path: string): LocalPathVerdict | "share" | "unproven" {
  * different folder.
  */
 function runtimeRootSpelling(raw: string, canonical: string): string | null {
-  return withLocalityDecision(() => runtimeRootSpellingInDecision(raw, canonical));
-}
-
-function runtimeRootSpellingInDecision(raw: string, canonical: string): string | null {
   const resolved = localRoute(pathResolve(raw));
   // A share, device or mapped root keeps its lexical matching form: nothing is opened to spell it.
   if (resolved === "share") return canonical;
@@ -116,24 +112,26 @@ function runtimeRootSpellingInDecision(raw: string, canonical: string): string |
 }
 
 function computeDefaultAllowedDirectoryEntries(cwd: string, foldCase: boolean): string[] {
-  const scratch = verifyAveScratchDir();
-  const candidates = [cwd, aveHome(), ...(scratch.ok ? [scratch.path] : [])];
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of candidates) {
-    const canonical = canonicalizePathForMatch(raw);
-    const folded = caseFoldForMatch(canonical);
-    const key = directoryKey(raw, folded);
-    const value = foldCase ? key : runtimeRootSpelling(raw, canonical);
-    if (value === null) continue;
-    if (isFilesystemRootPath(folded) || isFilesystemRootPath(key)) continue;
-    // Layer 0 always wins — if a default candidate is itself sensitive, skip it (the more-specific deny patterns inside still hard-block any leaf access, so excluding the default is mostly hygiene).
-    if (isAdmissionDeniedPath(folded) || isAdmissionDeniedPath(key)) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(value);
-  }
-  return out;
+  return withLocalityDecision(() => {
+    const scratch = verifyAveScratchDir();
+    const candidates = [cwd, aveHome(), ...(scratch.ok ? [scratch.path] : [])];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of candidates) {
+      const canonical = canonicalizePathForMatch(raw);
+      const folded = caseFoldForMatch(canonical);
+      const key = directoryKey(raw, folded);
+      const value = foldCase ? key : runtimeRootSpelling(raw, canonical);
+      if (value === null) continue;
+      if (isFilesystemRootPath(folded) || isFilesystemRootPath(key)) continue;
+      // Layer 0 always wins — if a default candidate is itself sensitive, skip it (the more-specific deny patterns inside still hard-block any leaf access, so excluding the default is mostly hygiene).
+      if (isAdmissionDeniedPath(folded) || isAdmissionDeniedPath(key)) continue;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(value);
+    }
+    return out;
+  });
 }
 
 /** The Layer 1 key of a directory or target: a share or device spelling keeps its own, so the drive it names lends no authority. */
@@ -156,24 +154,26 @@ function sanitizeAllowedDirectoryEntries(
   foldCase: boolean,
 ): string[] {
   if (!input || input.length === 0) return [];
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of input) {
-    if (typeof raw !== "string" || raw.length === 0) continue;
-    const expanded = expandLeadingTilde(raw);
-    if (isFilesystemRootPath(expanded)) continue;
-    const canonical = canonicalizePathForMatch(expanded);
-    const folded = caseFoldForMatch(canonical);
-    const key = directoryKey(expanded, folded);
-    const value = foldCase ? key : runtimeRootSpelling(expanded, canonical);
-    if (value === null) continue;
-    if (isFilesystemRootPath(folded) || isFilesystemRootPath(key)) continue;
-    if (isAdmissionDeniedPath(folded) || isAdmissionDeniedPath(key)) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(value);
-  }
-  return out;
+  return withLocalityDecision(() => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of input) {
+      if (typeof raw !== "string" || raw.length === 0) continue;
+      const expanded = expandLeadingTilde(raw);
+      if (isFilesystemRootPath(expanded)) continue;
+      const canonical = canonicalizePathForMatch(expanded);
+      const folded = caseFoldForMatch(canonical);
+      const key = directoryKey(expanded, folded);
+      const value = foldCase ? key : runtimeRootSpelling(expanded, canonical);
+      if (value === null) continue;
+      if (isFilesystemRootPath(folded) || isFilesystemRootPath(key)) continue;
+      if (isAdmissionDeniedPath(folded) || isAdmissionDeniedPath(key)) continue;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(value);
+    }
+    return out;
+  });
 }
 
 // Layer 1 prefix check. `canonicalPath` MUST already be canonicalized + case-folded by the caller (frozen-canonical contract). `scope.directories` MUST come from sanitizeAllowedDirectories or computeDefaultAllowedDirectories. Returns `true` iff `canonicalPath === dir` OR `canonicalPath` starts with `dir + "/"` (segment-aligned). Pure string compare — no realpath. ALWAYS returns `false` for empty input (deny-by-default).
@@ -257,44 +257,46 @@ export function validateDirectoryAddition(rawPath: string): ValidateDirectoryRes
   if (isFilesystemRootPath(expanded)) {
     return { ok: false, reason: "filesystem root is not allowed", adjacencyWarnings };
   }
-  const canonical = canonicalizePathForMatch(expanded);
-  const folded = caseFoldForMatch(canonical);
+  return withLocalityDecision(() => {
+    const canonical = canonicalizePathForMatch(expanded);
+    const folded = caseFoldForMatch(canonical);
 
-  // Reject filesystem root.
-  if (isFilesystemRootPath(folded)) {
-    return { ok: false, reason: "filesystem root is not allowed", adjacencyWarnings };
-  }
-  // Reject Layer 0 sensitive paths.
-  const sensitive = isAdmissionDeniedPath(folded);
-  if (sensitive) {
-    return {
-      ok: false,
-      reason: `path matches sensitive pattern '${sensitive}'`,
-      adjacencyWarnings,
-    };
-  }
-
-  // Adjacency hints — pure string heuristics on the basename / path segments. We don't `readdir` the target; that is a renderer concern (preview) and would also be a TOCTOU surface.
-  const lowerFolded = normalizePolicySeparators(folded).toLowerCase();
-  for (const basename of ADJACENCY_WARNING_BASENAMES) {
-    if (
-      lowerFolded.endsWith("/" + basename) ||
-      lowerFolded.includes("/" + basename + "/")
-    ) {
-      adjacencyWarnings.push(
-        `path contains '${basename}' segment — secrets may be exposed if added`,
-      );
+    // Reject filesystem root.
+    if (isFilesystemRootPath(folded)) {
+      return { ok: false, reason: "filesystem root is not allowed", adjacencyWarnings };
     }
-  }
-  for (const nested of ADJACENCY_WARNING_NESTED) {
-    if (lowerFolded.includes("/" + nested.toLowerCase())) {
-      adjacencyWarnings.push(
-        `path contains '${nested}' — large cache directory, may impact performance`,
-      );
+    // Reject Layer 0 sensitive paths.
+    const sensitive = isAdmissionDeniedPath(folded);
+    if (sensitive) {
+      return {
+        ok: false,
+        reason: `path matches sensitive pattern '${sensitive}'`,
+        adjacencyWarnings,
+      };
     }
-  }
 
-  return { ok: true, canonicalPath: folded, adjacencyWarnings };
+    // Adjacency hints — pure string heuristics on the basename / path segments. We don't `readdir` the target; that is a renderer concern (preview) and would also be a TOCTOU surface.
+    const lowerFolded = normalizePolicySeparators(folded).toLowerCase();
+    for (const basename of ADJACENCY_WARNING_BASENAMES) {
+      if (
+        lowerFolded.endsWith("/" + basename) ||
+        lowerFolded.includes("/" + basename + "/")
+      ) {
+        adjacencyWarnings.push(
+          `path contains '${basename}' segment — secrets may be exposed if added`,
+        );
+      }
+    }
+    for (const nested of ADJACENCY_WARNING_NESTED) {
+      if (lowerFolded.includes("/" + nested.toLowerCase())) {
+        adjacencyWarnings.push(
+          `path contains '${nested}' — large cache directory, may impact performance`,
+        );
+      }
+    }
+
+    return { ok: true, canonicalPath: folded, adjacencyWarnings };
+  });
 }
 
 export function isFilesystemRootPath(foldedPath: string): boolean {
@@ -315,16 +317,18 @@ export function buildAllowedScope(
   userAdditions: readonly string[] | undefined,
   cwd: string = process.cwd(),
 ): { directories: string[] } {
-  const defaults = computeDefaultAllowedDirectories(cwd);
-  const sanitized = sanitizeAllowedDirectories(userAdditions);
-  const seen = new Set<string>();
-  const directories: string[] = [];
-  for (const dir of [...defaults, ...sanitized]) {
-    if (seen.has(dir)) continue;
-    seen.add(dir);
-    directories.push(dir);
-  }
-  return { directories };
+  return withLocalityDecision(() => {
+    const defaults = computeDefaultAllowedDirectories(cwd);
+    const sanitized = sanitizeAllowedDirectories(userAdditions);
+    const seen = new Set<string>();
+    const directories: string[] = [];
+    for (const dir of [...defaults, ...sanitized]) {
+      if (seen.has(dir)) continue;
+      seen.add(dir);
+      directories.push(dir);
+    }
+    return { directories };
+  });
 }
 
 // Assemble runtime filesystem roots for native tool sandbox checks. This is intentionally separate from buildAllowedScope: Layer 1 matching uses case-folded strings, while native tools need canonical OS paths.
@@ -332,15 +336,17 @@ export function buildRuntimeAllowedDirectories(
   userAdditions: readonly string[] | undefined,
   cwd: string = process.cwd(),
 ): string[] {
-  const defaults = computeDefaultRuntimeAllowedDirectories(cwd);
-  const sanitized = sanitizeRuntimeAllowedDirectories(userAdditions);
-  const seen = new Set<string>();
-  const directories: string[] = [];
-  for (const dir of [...defaults, ...sanitized]) {
-    const folded = caseFoldForMatch(canonicalizePathForMatch(dir));
-    if (seen.has(folded)) continue;
-    seen.add(folded);
-    directories.push(dir);
-  }
-  return directories;
+  return withLocalityDecision(() => {
+    const defaults = computeDefaultRuntimeAllowedDirectories(cwd);
+    const sanitized = sanitizeRuntimeAllowedDirectories(userAdditions);
+    const seen = new Set<string>();
+    const directories: string[] = [];
+    for (const dir of [...defaults, ...sanitized]) {
+      const folded = caseFoldForMatch(canonicalizePathForMatch(dir));
+      if (seen.has(folded)) continue;
+      seen.add(folded);
+      directories.push(dir);
+    }
+    return directories;
+  });
 }

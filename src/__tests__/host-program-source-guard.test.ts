@@ -35,6 +35,7 @@ const LAUNCH_FILES = [
   "main/acp-subscription-runtime-client.ts",
   "main/acp-subscription-session-client.ts",
   "main/auto-updater.ts",
+  "main/browser/browser-capture-stitch-process.ts", // capture stitch child: fixed entry, Node runtime, safe env, managed kill tree
   "main/browser/browser-download-files.ts",
   "main/claude-code-authenticity.ts",
   "main/claude-code-conversation-runtime.ts",
@@ -67,6 +68,7 @@ const LAUNCH_FILES = [
   "permissions/mxc-extension-process.ts",
   "permissions/mxc-policy-pipe.ts",
   "permissions/mxc-runtime-root.ts",
+  "permissions/mxc-shell-supervisor-client.ts", // macOS shell supervisor: process.execPath as Node, safe env without loader overrides
   "permissions/mxc-windows.ts",
   "permissions/offline-process-sandbox.ts",
   "permissions/srt-win-integrity.ts",

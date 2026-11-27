@@ -1,8 +1,9 @@
+import { showNativeMessage, pickNativeFiles, pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
 import { registerMemoryMapHandlers } from './memory-map.js';
 import { readMemoryDetail, readMemorySummaries } from "../../memory/memory-detail.js";
 import { decideTurnChange, getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { parseTurnReviewDecision, type TurnReviewError, type TurnReviewResult } from "../../shared/turn-change-review.js";
-import { controlShellTask, listShellTasks } from "../../tools/shell-tools.js";
+import { controlShellTask, endShellSession, listShellTasks, ShellSessionCleanupError } from "../../tools/shell-tools.js";
 import { isRewindMode } from "../../shared/code-rewind.js";
 import {
   BRANCH_CONTINUATION_REFUSED, hasUserKeyboardIntent, mintUserKeyboardIntent, USER_KEYBOARD_REQUIRED, type VerifiedUserKeyboardIntent,
@@ -29,7 +30,7 @@ import { isValidSessionId } from "../../shared/session-id.js";
 import type { SessionListQuery } from "../../shared/session-lookup.js";
 import { MAX_SESSION_FILE_BYTES } from "../../memory/session-repository.js";
 import { sessionMemoryProject } from "../../memory/memory-consolidation-service.js";
-import { CHANNELS } from "../../contract/app-contract.js";
+import { ASK_USER_QUESTION_PENDING_CHANNEL, ASK_USER_QUESTION_RESPOND_CHANNEL, CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { sendToWebContents } from "../safe-send.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
@@ -1549,7 +1550,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     targetSessionId?: unknown,
   ) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.export, e); return UNAUTHORIZED_FRAME; }
-    const { dialog } = await import("electron");
     const { writeFile } = await import("node:fs/promises");
     const win = mainWindowForContents(e.sender) ?? getMainWindow();
     if (format !== "markdown" && format !== "json") return { ok: false, error: "invalid-format" };
@@ -1578,8 +1578,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
         : [{ name: "JSON", extensions: ["json"] }],
     };
     const res = win
-      ? await dialog.showSaveDialog(win, dialogOptions)
-      : await dialog.showSaveDialog(dialogOptions);
+      ? await pickNativeSavePath(win, dialogOptions)
+      : await pickNativeSavePath(dialogOptions);
     if (res.canceled || !res.filePath) return { ok: false, canceled: true };
 
     let body: string;
@@ -1655,7 +1655,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const sessionId = (payload as { sessionId?: unknown } | null)?.sessionId;
     if (!isValidSessionId(sessionId)) return { ok: false, error: "invalid-session" };
     // Confirm in main so callers cannot bypass a renderer-only dialog.
-    const { dialog } = await import("electron");
     const win = mainWindowForContents(e.sender) ?? getMainWindow();
     const confirmOptions = {
       type: "warning" as const,
@@ -1666,12 +1665,18 @@ export function registerChatHandlers(deps: IpcDeps): void {
       detail: t("mainDialog.deleteConversationDetail"),
     };
     const confirmation = win
-      ? await dialog.showMessageBox(win, confirmOptions)
-      : await dialog.showMessageBox(confirmOptions);
-    if (confirmation.response !== 1) return { ok: false, canceled: true };
+      ? await showNativeMessage(win, confirmOptions)
+      : await showNativeMessage(confirmOptions);
+    if (confirmation?.response !== 1) return { ok: false, canceled: true };
 
     // Guard deletion only against the loop holding that conversation; unrelated sessions need no turn lease.
-    const deleteConversation = async (): Promise<void> => {
+    const deleteConversation = async (wasLoaded: boolean) => {
+      try {
+        await endShellSession(sessionId, { forDeletion: true });
+      } catch (error) {
+        if (error instanceof ShellSessionCleanupError) return { ok: false as const, error: error.code };
+        throw error;
+      }
       await memoryManager.sessions.deleteSession(sessionId);
       // Schedules connected to it become 대화 없음: they never run until the user relinks, unlinks or deletes them. The chat is already
       // deleted, so a failure here is not a delete failure; a fire still finds the chat gone and marks the item then.
@@ -1684,23 +1689,17 @@ export function registerChatHandlers(deps: IpcDeps): void {
       const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
       endSessionScopedPermissions(sessionId, conversationLoop.permissionManager);
       if (isSuggestionsSession(sessionId)) ensureSuggestionsSession(memoryManager);
+      return { ok: true as const, wasLoaded };
     };
     const holder = groupHolding(sessionId);
-    if (!holder) {
-      await deleteConversation();
-      return { ok: true, wasLoaded: false };
-    }
-    const mutation = holder.turns.trackSessionMutation(async () => {
-      await deleteConversation();
-      return { ok: true as const, wasLoaded: true };
-    });
+    if (!holder) return await deleteConversation(false);
+    const mutation = holder.turns.trackSessionMutation(() => deleteConversation(true));
     return (await mutation) ?? { ok: false, error: STREAMING_ACTIVE };
   });
 
   // Import is internal and always creates a fresh DLP-safe session id.
   ipcMain.handle(CHANNELS.chat.import, async (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.import, e); return UNAUTHORIZED_FRAME; }
-    const { dialog } = await import("electron");
     const { open } = await import("node:fs/promises");
     const win = mainWindowForContents(e.sender) ?? getMainWindow();
     const dialogOptions = {
@@ -1709,8 +1708,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
       properties: ["openFile"] as Array<"openFile">,
     };
     const res = win
-      ? await dialog.showOpenDialog(win, dialogOptions)
-      : await dialog.showOpenDialog(dialogOptions);
+      ? await pickNativeFiles(win, dialogOptions)
+      : await pickNativeFiles(dialogOptions);
     if (res.canceled || res.filePaths.length === 0) return { ok: false, canceled: true };
     const filePath = res.filePaths[0];
 
@@ -2126,17 +2125,17 @@ export function registerChatHandlers(deps: IpcDeps): void {
   );
 
   // Reload pending questions only into the window holding their session.
-  ipcMain.handle(CHANNELS.askUserQuestion.pending, (e) => {
+  ipcMain.handle(ASK_USER_QUESTION_PENDING_CHANNEL, (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.askUserQuestion.pending, e);
+      auditUnauthorized(auditLogger, ASK_USER_QUESTION_PENDING_CHANNEL, e);
       return UNAUTHORIZED_FRAME;
     }
     return askUserQuestionGate ? askUserQuestionGate.listPending(e.sender) : [];
   });
 
-  ipcMain.handle(CHANNELS.askUserQuestion.respond, (e, response: unknown) => {
+  ipcMain.handle(ASK_USER_QUESTION_RESPOND_CHANNEL, (e, response: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.askUserQuestion.respond, e);
+      auditUnauthorized(auditLogger, ASK_USER_QUESTION_RESPOND_CHANNEL, e);
       return UNAUTHORIZED_FRAME;
     }
     if (!askUserQuestionGate) {

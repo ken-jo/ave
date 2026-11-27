@@ -1,3 +1,5 @@
+import { withLocalityDecision } from "../../shared/local-path-io.js";
+import type { AuditLogger } from "../../audit/audit-logger.js";
 /** Isolated factories preserve the runtime contract (docs/blueprints/plugin-process-isolation.md).
  * Worker confinement is independent of shell confinement: disabled children receive no isolation relaxation; enabled wrapping is mandatory and failure prevents loading. */
 import { mkdirSync, statSync } from "node:fs";
@@ -228,64 +230,66 @@ function resolveUserChosenDirectory(
         + `enter an approved absolute directory for '${grant.configKey}', or clear the setting`,
     );
   }
-  const target = resolvePath(raw);
-  const folded = caseFoldForMatch(canonicalizePathForMatch(target));
-  // The read half of this grant re-allows inside the deny floor exactly as a `hostDirectory` grant does, and unlike a `hostDirectory` grant the value is reachable by anything that can write the plugin's config.
-  // Without this the user approving `~/.ave` as a workspace root; which the approval flow permits, since `~/.ave` is not itself a sensitive path; would let a config value point the grant at `~/.ave/secrets` and re-open it.
-  const sensitive = isSensitivePath(target);
-  if (sensitive) {
-    rejectEnvelopeGrant(
-      inputs.pluginId,
-      grant.configKey,
-      `'${target}' matches the sensitive-path rule '${sensitive}'`,
-    );
-  }
-  // The host guard above pins only the per-platform DEFAULT user data locations. The sandbox floor denies the exact one the host runs with (`--user-data-dir`, XDG_CONFIG_HOME) and
-  // any trusted custom deny, and a grant under either would re-open it: the read half everywhere, the write half too on Linux, where bubblewrap binds the root over the deny's mask.
-  // The Ave home is read-denied as a whole outside its re-allowed children, and a grant there would re-open it the same way.
-  // The confined processes' private roots are on the floor too, wherever they live: every other process's HOME and temp, and the container runtime root outside the Ave home.
-  const floorDeny = protectedReadDenyCovering(target) ?? aveHomeReadBoundaryCovering(target)
-    ?? protectedReadDenyCovering(target, appOwnedSandboxPrivateRoots());
-  if (floorDeny !== undefined) {
-    rejectEnvelopeGrant(
-      inputs.pluginId,
-      grant.configKey,
-      `'${target}' lies under the sandbox read-deny floor entry '${floorDeny}'`,
-    );
-  }
-  const ownWritableRoot = caseFoldForMatch(canonicalizePathForMatch(inputs.pluginDataDir));
-  // Inside the plugin's own data directory: the grant adds nothing, so it is answered with the data directory itself rather than with the spelling the config holds. That spelling; `…\DATA\work`, an 8.3 `IKCHA~1` form; was decided "inside" by this folded comparison and then carried into the envelope
-  // verbatim, where a case-sensitive containment check took it for an independent root; on Windows a grant on a root below `data\` is a grant on whatever the plugin later swaps in there (decision 66). It also keeps the spawn from creating a directory under `data\` along a path the plugin controls.
-  if (isPathAllowed(folded, { directories: [ownWritableRoot] })) return inputs.pluginDataDir;
-  for (const excluded of ceilingSubtractions(inputs)) {
-    const root = caseFoldForMatch(canonicalizePathForMatch(excluded.root));
-    if (!isPathAllowed(folded, { directories: [root] })) continue;
-    rejectEnvelopeGrant(
-      inputs.pluginId,
-      grant.configKey,
-      `'${target}' ${excluded.detail} — no approval can open it to write`,
-    );
-  }
-  const approved = sanitizeAllowedDirectories(
-    readPermissionSettings().permissions.additionalDirectories,
-  );
-  if (!isPathAllowed(folded, { directories: approved })) {
-    rejectEnvelopeGrant(
-      inputs.pluginId,
-      grant.configKey,
-      `'${target}' resolves outside the plugin's own data directory and no workspace root `
-        + `the user approved covers it — approve the directory in the host first`,
-    );
-  }
-  // A write is refused before a backend is chosen and before the launch creates the directory; a read stays on the read floor above.
-  if (access === "write") {
-    try { assertWriteGrantsOutsideConfinementState([target], declaredConfinementStatePaths()); }
-    catch (error) {
-      if (error instanceof ConfinementStateWriteGrantError) rejectEnvelopeGrant(inputs.pluginId, grant.configKey, error.message);
-      throw error;
+  return withLocalityDecision(() => {
+    const target = resolvePath(raw);
+    const folded = caseFoldForMatch(canonicalizePathForMatch(target));
+    // The read half of this grant re-allows inside the deny floor exactly as a `hostDirectory` grant does, and unlike a `hostDirectory` grant the value is reachable by anything that can write the plugin's config.
+    // Without this the user approving `~/.ave` as a workspace root; which the approval flow permits, since `~/.ave` is not itself a sensitive path; would let a config value point the grant at `~/.ave/secrets` and re-open it.
+    const sensitive = isSensitivePath(target);
+    if (sensitive) {
+      rejectEnvelopeGrant(
+        inputs.pluginId,
+        grant.configKey,
+        `'${target}' matches the sensitive-path rule '${sensitive}'`,
+      );
     }
-  }
-  return target;
+    // The host guard above pins only the per-platform DEFAULT user data locations. The sandbox floor denies the exact one the host runs with (`--user-data-dir`, XDG_CONFIG_HOME) and
+    // any trusted custom deny, and a grant under either would re-open it: the read half everywhere, the write half too on Linux, where bubblewrap binds the root over the deny's mask.
+    // The Ave home is read-denied as a whole outside its re-allowed children, and a grant there would re-open it the same way.
+    // The confined processes' private roots are on the floor too, wherever they live: every other process's HOME and temp, and the container runtime root outside the Ave home.
+    const floorDeny = protectedReadDenyCovering(target) ?? aveHomeReadBoundaryCovering(target)
+      ?? protectedReadDenyCovering(target, appOwnedSandboxPrivateRoots());
+    if (floorDeny !== undefined) {
+      rejectEnvelopeGrant(
+        inputs.pluginId,
+        grant.configKey,
+        `'${target}' lies under the sandbox read-deny floor entry '${floorDeny}'`,
+      );
+    }
+    const ownWritableRoot = caseFoldForMatch(canonicalizePathForMatch(inputs.pluginDataDir));
+    // Inside the plugin's own data directory: the grant adds nothing, so it is answered with the data directory itself rather than with the spelling the config holds. That spelling; `…\DATA\work`, an 8.3 `IKCHA~1` form; was decided "inside" by this folded comparison and then carried into the envelope
+    // verbatim, where a case-sensitive containment check took it for an independent root; on Windows a grant on a root below `data\` is a grant on whatever the plugin later swaps in there (decision 66). It also keeps the spawn from creating a directory under `data\` along a path the plugin controls.
+    if (isPathAllowed(folded, { directories: [ownWritableRoot] })) return inputs.pluginDataDir;
+    for (const excluded of ceilingSubtractions(inputs)) {
+      const root = caseFoldForMatch(canonicalizePathForMatch(excluded.root));
+      if (!isPathAllowed(folded, { directories: [root] })) continue;
+      rejectEnvelopeGrant(
+        inputs.pluginId,
+        grant.configKey,
+        `'${target}' ${excluded.detail} — no approval can open it to write`,
+      );
+    }
+    const approved = sanitizeAllowedDirectories(
+      readPermissionSettings().permissions.additionalDirectories,
+    );
+    if (!isPathAllowed(folded, { directories: approved })) {
+      rejectEnvelopeGrant(
+        inputs.pluginId,
+        grant.configKey,
+        `'${target}' resolves outside the plugin's own data directory and no workspace root `
+          + `the user approved covers it — approve the directory in the host first`,
+      );
+    }
+    // A write is refused before a backend is chosen and before the launch creates the directory; a read stays on the read floor above.
+    if (access === "write") {
+      try { assertWriteGrantsOutsideConfinementState([target], declaredConfinementStatePaths()); }
+      catch (error) {
+        if (error instanceof ConfinementStateWriteGrantError) rejectEnvelopeGrant(inputs.pluginId, grant.configKey, error.message);
+        throw error;
+      }
+    }
+    return target;
+  });
 }
 
 /** Bind a running grant to the path and filesystem object granted at spawn. */
@@ -354,29 +358,31 @@ export function derivePluginChildEnvelope(
     ...(inputs.sandbox?.read ?? []).map((grant) => ({ grant, access: "read" as const })),
     ...(inputs.sandbox?.write ?? []).map((grant) => ({ grant, access: "write" as const })),
   ];
-  for (const { grant, access } of grants) {
-    if (grant.kind === "hostDirectory") {
-      const directories = hostGrantDirectories(grant);
-      read.push(...directories);
-      // Logged, not merely declared: a child running with more reach than the base envelope is an operational fact, and `why`
-      // is the reviewed reason it holds; which is worth having in the log of the run rather than only in the diff that added it.
-      log.info(`[${inputs.pluginId}] envelope widened: read ${directories.join(", ")} — ${grant.why}`);
-      continue;
+  withLocalityDecision(() => {
+    for (const { grant, access } of grants) {
+      if (grant.kind === "hostDirectory") {
+        const directories = hostGrantDirectories(grant);
+        read.push(...directories);
+        // Logged, not merely declared: a child running with more reach than the base envelope is an operational fact, and `why`
+        // is the reviewed reason it holds; which is worth having in the log of the run rather than only in the diff that added it.
+        log.info(`[${inputs.pluginId}] envelope widened: read ${directories.join(", ")} — ${grant.why}`);
+        continue;
+      }
+      const chosen = resolveUserChosenDirectory(inputs, grant, access);
+      if (chosen === undefined) continue;
+      // Folded into the base envelope: nothing to add, nothing to register.
+      if (chosen === inputs.pluginDataDir) continue;
+      inputs.onUserChosenDirectory?.({ path: chosen, access });
+      // Read as well as write: the plugin has to list and re-open what it wrote. This is also the only thing that keeps `read` a
+      // superset of `write`; `DelegatedWorkerConfinement` documents that relation as maintained here rather than enforced anywhere.
+      read.push(chosen);
+      if (access === "write") write.push(chosen);
+      log.info(
+        `[${inputs.pluginId}] envelope widened: ${access} ${chosen} `
+          + `(config '${grant.configKey}') — ${grant.why}`,
+      );
     }
-    const chosen = resolveUserChosenDirectory(inputs, grant, access);
-    if (chosen === undefined) continue;
-    // Folded into the base envelope: nothing to add, nothing to register.
-    if (chosen === inputs.pluginDataDir) continue;
-    inputs.onUserChosenDirectory?.({ path: chosen, access });
-    // Read as well as write: the plugin has to list and re-open what it wrote. This is also the only thing that keeps `read` a
-    // superset of `write`; `DelegatedWorkerConfinement` documents that relation as maintained here rather than enforced anywhere.
-    read.push(chosen);
-    if (access === "write") write.push(chosen);
-    log.info(
-      `[${inputs.pluginId}] envelope widened: ${access} ${chosen} `
-        + `(config '${grant.configKey}') — ${grant.why}`,
-    );
-  }
+  });
   // The host-only storage directory beside `pluginDataDir` is in no child's write envelope (plugin-storage-layout.ts). Nothing above can produce
   // such a grant today; a chosen directory under the plugins root is refused unless it is inside the data directory; and this keeps it that way.
   const reaching = writeGrantsReachingHostStorage(inputs.pluginDataDir, write);
@@ -522,20 +528,23 @@ export async function spawnConfinedPluginChild(
     if (process.platform === "win32" && isPluginWorkerConfinementActive()) {
       // Each grant names the outermost envelope root only: `srt-win` stamps the ACE on what a path resolves to, and a root nested in another; `data/` under a runtime root that holds it, one chosen directory inside another; is a path the
       // inheriting grant on the outer root already covers, and naming it again would hand `srt-win` a spelling to resolve (`outermostContainingRoots`, decision 66). A chosen directory inside `data/` never gets here: derivation folds it into `data/`.
-      const allowRead = [...outermostContainingRoots(spec.envelope.read, spec.envelope.read), sandboxHome.path];
-      const allowWrite = [...outermostContainingRoots(spec.envelope.write, spec.envelope.write), sandboxHome.path];
-      const beyond = [
-        ...pluginGrantPathsBeyondOwnRoots(spec.pluginId, [...allowRead, ...allowWrite]),
-        // An ACL grant inherits: a write grant on the plugin root would cover the host-only storage directory beside the data
-        // directory. The spec carries `socketDir`, a sibling of `data/`, so the storage directory derived beside it is the same one.
-        ...writeGrantsReachingHostStorage(spec.socketDir, allowWrite),
-      ];
-      if (beyond.length > 0) {
-        throw new Error(
-          `[out-of-process-plugin] ${spec.pluginId}: refusing a Windows grant beyond the plugin's own roots: `
-            + `${[...new Set(beyond)].join(", ")}`,
-        );
-      }
+      const { allowRead, allowWrite } = withLocalityDecision(() => {
+        const allowRead = [...outermostContainingRoots(spec.envelope.read, spec.envelope.read), sandboxHome.path];
+        const allowWrite = [...outermostContainingRoots(spec.envelope.write, spec.envelope.write), sandboxHome.path];
+        const beyond = [
+          ...pluginGrantPathsBeyondOwnRoots(spec.pluginId, [...allowRead, ...allowWrite]),
+          // An ACL grant inherits: a write grant on the plugin root would cover the host-only storage directory beside the data
+          // directory. The spec carries `socketDir`, a sibling of `data/`, so the storage directory derived beside it is the same one.
+          ...writeGrantsReachingHostStorage(spec.socketDir, allowWrite),
+        ];
+        if (beyond.length > 0) {
+          throw new Error(
+            `[out-of-process-plugin] ${spec.pluginId}: refusing a Windows grant beyond the plugin's own roots: `
+              + `${[...new Set(beyond)].join(", ")}`,
+          );
+        }
+        return { allowRead, allowWrite };
+      });
       windowsGrant = await holdWindowsFilesystemGrant({
         label: `plugin-child:${spec.pluginId}:asrt-win-acl`,
         allowRead,
@@ -736,6 +745,7 @@ export async function spawnConfinedPluginChild(
 export interface OutOfProcessPluginSpec {
   readonly manifest: PluginManifest;
   readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
+  readonly effectAudit?: Pick<AuditLogger, "logShadow">;
   /** How the plugin's process is produced, and so what construct's `entryPath` says (decision 33): the resolved, real path of the plugin's JS module (not
    * of the child runtime) for an `entry` plugin; for a `process` plugin the launch `resolveProcessLaunch` built, whose command path construct carries. */
   readonly launch:
@@ -963,6 +973,7 @@ export function createOutOfProcessPluginFactory(
         entryPath: spec.launch.kind === "entry" ? spec.launch.entryPath : spec.launch.command,
         table,
         ...(spec.auditLog ? { auditLog: spec.auditLog } : {}),
+        effectAudit: spec.effectAudit,
         onClosed: async () => {
           try {
             await spawned.waitForExit?.();

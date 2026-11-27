@@ -13,7 +13,7 @@ import {
 import * as runtimeRoot from "../../permissions/mxc-runtime-root.js";
 import { assertMxcHolderStaging } from "../../permissions/mxc-filesystem-ownership.js";
 import { isWindowsDrivePath } from "../../permissions/mxc-runtime-root-windows.js";
-import { isPlainWindowsStampPath } from "../../permissions/windows-stamp-targets.js";
+import { isPlainWindowsStampPath } from "../../shared/windows-path-spelling.js";
 import * as pathFacts from "../../shared/windows-path-facts.js";
 import * as configurationHandles from "../../shared/windows-configuration-handles.js";
 import type * as SandboxProcessHome from "../../permissions/sandbox-process-home.js";

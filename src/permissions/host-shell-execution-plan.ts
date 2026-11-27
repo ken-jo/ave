@@ -2,8 +2,9 @@
 
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { en } from "../i18n/messages/en.js";
+import { containerPlatform } from "../shared/container-platform.js";
 import type { DisposableSubstrate, SandboxCapability } from "./sandbox-capability.js";
-import { egressProtocolCoverageFor, type EgressProtocolCoverage, type SandboxConfinement, type SandboxStartFailureCause } from "../shared/sandbox-capability-info.js";
+import { containerEgressProtocolCoverage, egressProtocolCoverageFor, type EgressProtocolCoverage, type SandboxConfinement, type SandboxStartFailureCause } from "../shared/sandbox-capability-info.js";
 import { isRecord } from "../shared/is-record.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
@@ -210,7 +211,7 @@ export function buildHostShellExecutionPlan(input: {
   requestedSandbox: boolean;
   activeCapability: SandboxCapability;
   // What would confine a sandboxed child: `mxc` only when the host's MXC route is live and `activeCapability` is that route's capability. Defaults to the ASRT wrap.
-  shellSubstrate?: "asrt" | "mxc";
+  shellSubstrate?: "asrt" | "mxc" | "none";
   executionMode?: HostShellExecutionRequest;
   // Boot could not establish Ave home privacy (any category but helper-unavailable, which `unconfinedShellDenied` blocks): every plain host shell
   // then needs a human ask for every command.
@@ -242,8 +243,9 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
   const shellSubstrate = input.shellSubstrate ?? "asrt";
-  if (shellSubstrate === "mxc" && input.platform !== "win32") {
-    throw new Error("The MXC shell substrate exists only on Windows");
+  const container = shellSubstrate === "mxc" ? containerPlatform(input.platform) : undefined;
+  if (shellSubstrate === "mxc" && container === undefined) {
+    throw new Error(`No container backend exists on ${input.platform}`);
   }
   const executionRequest = input.executionMode ?? "default";
   if (executionRequest !== "default" && executionRequest !== "host") {
@@ -254,7 +256,7 @@ export function buildHostShellExecutionPlan(input: {
   const noConfinementAskSuffix = (input.homePrivacyVerified === true && !askEveryCommand ? EXACT_RULE_PASS_MARKER : "") + ASK_EVERY_COMMAND_SUFFIX;
 
   if (executionRequest === "host") {
-    const forcedAsk = askEveryCommand || (requestedSandbox && !hasShellContainment(input.activeCapability));
+    const forcedAsk = askEveryCommand || (requestedSandbox && (shellSubstrate === "none" || !hasShellContainment(input.activeCapability)));
     return Object.freeze({
       version: HOST_SHELL_EXECUTION_PLAN_VERSION,
       platform: input.platform,
@@ -292,7 +294,7 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  if (!hasShellContainment(input.activeCapability)) {
+  if (shellSubstrate === "none" || !hasShellContainment(input.activeCapability)) {
     const missing = input.activeCapability.kind === "none";
     const fallbackReason: HostShellFallbackReason = missing
       ? "requested-sandbox-unavailable"
@@ -329,7 +331,8 @@ export function buildHostShellExecutionPlan(input: {
     mode: "asrt" as const,
     sandboxed: true,
     substrate: shellSubstrate,
-    egressProtocolCoverage: egressProtocolCoverageFor(shellSubstrate),
+    egressProtocolCoverage: container === undefined
+      ? egressProtocolCoverageFor(shellSubstrate) : containerEgressProtocolCoverage(container.backend),
     capability,
     fallbackReason: "none" as const,
     requiresExplicitUserApproval: false,
@@ -398,6 +401,8 @@ export function parseHostShellExecutionInput(
 
 // Only the actual host-shell confinement plan establishes proxy-limited egress.
 // A broker guest has its own network policy and cannot inherit this authority.
+export { isWindowsContainerShell } from "../shared/container-platform.js";
+
 export function isConfinedHostShellExecution(
   plan: HostShellExecutionPlan | undefined,
   disposableSubstrate: DisposableSubstrate | undefined,

@@ -1,14 +1,19 @@
 // Serialize read-modify-write operations within this process only; the scheduler owns timers and dispatch.
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isValidCronExpression } from "../routines/cron-evaluator.js";
 import { readJsonFileOrEmpty, writeFileAtomicAtPath } from "./storage/feature-namespace.js";
 import { createLogger } from "../lib/logger.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
+import { errorMessage } from "../shared/error-message.js";
 import { isStringArray } from "../shared/is-record.js";
 import { isValidPluginId } from "../plugins/public-contract.js";
 import { advanceRepeatAt, isMissedWhilePaused, isRoutineScheduleShape, scheduleIdentity } from "../routines/schedule-advance.js";
 import { projectRootEquals } from "../shared/project-identity.js";
+import { assertHostDecisionProof, type HostDecisionProof } from "./workflow-template-decision.js";
+import type { ScheduleAttachment, TemplateScope, WorkflowTemplate } from "../shared/workflow-template-types.js";
+import { isTemplateId, attachmentScopeMatches, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { isValidSessionId } from "../shared/session-id.js";
 const log = createLogger("ave");
 
@@ -72,7 +77,7 @@ export function isRoutineTrigger(value: unknown): value is RoutineRecord["trigge
 }
 
 export function isRoutineExecution(value: unknown): value is RoutineRecord["execution"] {
-  return value === "llm-session" || value === "notification-only";
+  return value === "llm-session" || value === "notification-only" || value === "template-run";
 }
 
 // The plugin-id-bearing fields of one stored routine, by field path.
@@ -108,11 +113,17 @@ function invalidStoredRoutine(record: unknown): StoredInvalidRoutine | null {
   return null;
 }
 // Validate a record loaded from disk. Rejects tampered / corrupted entries so a single bad record cannot infect the scheduler tick.
-function isValidRecord(r: unknown): r is RoutineRecord {
+function isValidRecord(r: unknown): r is StoredRoutine {
   if (!r || typeof r !== "object") return false;
   const x = r as Record<string, unknown>;
   if (typeof x.id !== "string" || x.id.length > 128) return false;
   if (!isRoutineTrigger(x.trigger) || !isRoutineExecution(x.execution)) return false;
+  if (x.pendingTemplateProjectRoot !== undefined && (x.execution !== "template-run" ||
+    (x.pendingTemplateProjectRoot !== null && (typeof x.pendingTemplateProjectRoot !== "string" ||
+      x.pendingTemplateProjectRoot.length === 0 || x.pendingTemplateProjectRoot.length > MAX_PROJECT_ROOT_LENGTH)))) return false;
+  if (x.attachmentId !== undefined || x.templateAttention !== undefined) return false;
+  if (x.execution === "template-run" && (x.trigger !== "schedule" || !x.schedule || !isTemplateId(x.id))) return false;
+  if (x.lastTemplateSkip !== undefined && (x.execution !== "template-run" || !validTemplateSkip(x.lastTemplateSkip))) return false;
   if (x.lastFiredMinuteUTC !== undefined && typeof x.lastFiredMinuteUTC !== "string") return false;
   if (x.lastFiredAt !== undefined && typeof x.lastFiredAt !== "string") return false;
   if (x.lastSkippedReason !== undefined && x.lastSkippedReason !== "plugins-missing" && x.lastSkippedReason !== "chat-busy") return false;
@@ -146,6 +157,18 @@ function isValidRecord(r: unknown): r is RoutineRecord {
 // Only an LLM item on a schedule can enter a chat: a notification has no turn, and a quit-time run has no one to read it.
 function canConnect(targetSessionId: unknown, trigger: unknown, execution: unknown): boolean {
   return isValidSessionId(targetSessionId) && trigger === "schedule" && execution === "llm-session";
+}
+
+function validTemplateSkip(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const skip = value as Record<string, unknown>;
+  if (skip.code === "run-unsettled" || skip.code === "attachment-replaced") return skip.tool === undefined;
+  if (skip.code !== "outward-effect-tool" && skip.code !== "tool-effect-unknown") return false;
+  const tool = skip.tool as Record<string, unknown> | undefined;
+  return tool != null && typeof tool.name === "string" && tool.name.length > 0 && tool.name.length <= 500
+    && typeof tool.stageId === "string" && isTemplateId(tool.stageId)
+    && (tool.collection === "tools" || tool.collection === "mcpReadOnlyTools"
+      || tool.collection === "mcpGenerationTools" || tool.collection === "pluginGenerationTools");
 }
 
 function isValidRoutineFailure(value: unknown): boolean {
@@ -195,7 +218,7 @@ export function isValidRoutineScope(value: unknown): value is RoutineScope {
   );
 }
 
-function isCanonicalRecord(r: unknown): r is RoutineRecord {
+function isCanonicalRecord(r: unknown): r is StoredRoutine {
   if (!isValidRecord(r)) return false;
   if ("allowedPlugins" in r) {
     log.warn(
@@ -223,9 +246,14 @@ interface StoredInvalidRoutine extends InvalidRoutine {
   readonly raw: unknown;
 }
 
+interface StoredRoutine extends RoutineRecord {
+  /** Keep both routes searchable while the attachment write and routine write settle. */
+  pendingTemplateProjectRoot?: string | null;
+}
+
 interface RoutinesFile {
   version: 2;
-  routines: RoutineRecord[];
+  routines: StoredRoutine[];
   // Held-back records, written back unchanged after the valid ones.
   invalid: StoredInvalidRoutine[];
 }
@@ -285,7 +313,7 @@ function readFileOrEmpty(filePath: string): Promise<RoutinesFile> {
   return readJsonFileOrEmpty(filePath, emptyRoutinesFile, (parsed) => {
     const file = parsed as RoutinesFile;
     if (!Array.isArray(file.routines)) return emptyRoutinesFile();
-    const routines: RoutineRecord[] = [];
+    const routines: StoredRoutine[] = [];
     const invalid: StoredInvalidRoutine[] = [];
     for (const record of file.routines as unknown[]) {
       repairStoredFailure(record);
@@ -306,10 +334,11 @@ async function writeFileAtomic(filePath: string, data: RoutinesFile): Promise<vo
 }
 
 // Deep clone a RoutineRecord to prevent callers from mutating shared cache refs.
-function cloneRecord(r: RoutineRecord): RoutineRecord {
+function cloneRecord({ pendingTemplateProjectRoot: _pendingProject, ...r }: StoredRoutine): RoutineRecord {
   return {
     ...r,
     ...(r.runs ? { runs: structuredClone(r.runs) } : {}),
+    ...(r.lastTemplateSkip ? { lastTemplateSkip: structuredClone(r.lastTemplateSkip) } : {}),
     needsAttention: r.needsAttention
       ? { missingPluginIds: [...r.needsAttention.missingPluginIds] }
       : undefined,
@@ -347,19 +376,59 @@ function routineScopeRetention(
       && key !== rootKey
       && isWorkspaceKeyAtOrBelow(rootKey, key),
     );
+  if (process.platform !== "win32") {
+    return (directories) => directories.filter((directory) => {
+      if (!isDirectoryAtOrBelow(rootKey, directory)) return true;
+      return preservedRootKeys.some(
+        (preservedRootKey) => isDirectoryAtOrBelow(preservedRootKey, directory),
+      );
+    });
+  }
   return (directories) => directories.filter((directory) => {
-    if (!isDirectoryAtOrBelow(rootKey, directory)) return true;
-    return preservedRootKeys.some(
-      (preservedRootKey) => isDirectoryAtOrBelow(preservedRootKey, directory),
-    );
+    const key = workspaceRootKey(directory);
+    if (!key || !isWorkspaceKeyAtOrBelow(rootKey, key)) return true;
+    return preservedRootKeys.some((preservedRootKey) => isWorkspaceKeyAtOrBelow(preservedRootKey, key));
   });
 }
 
+export class AttachedTemplateRoutineError extends Error {
+  readonly code = "detach-template-schedule-first";
+
+  constructor() {
+    super("Detach the schedule from its template first.");
+  }
+}
+
+type TemplateRoutineInput = Omit<AddRoutineInput, "execution" | "projectRoot"> & {
+  execution: "template-run";
+  projectRoot?: string;
+};
+
+export interface TemplateRoutineFire {
+  routine: RoutineRecord;
+  attachment: { id: string } | { reason: "attachment-missing" | "attachment-unavailable" };
+}
+
+interface TemplateAttachmentReader {
+  listByRoutine(id: string): Promise<ScheduleAttachment[]>;
+  listActiveScheduleAttachments(scheduleIds: ReadonlySet<string>): Promise<ReadonlyMap<string, { attachment: ScheduleAttachment; template: WorkflowTemplate }>>;
+}
+
 export class RoutinesStore {
-  private cache: RoutineRecord[] = [];
+  private cache: StoredRoutine[] = [];
   private invalidCache: StoredInvalidRoutine[] = [];
   private loaded = false;
   private readonly filePath: string;
+  private templateAttachments?: TemplateAttachmentReader;
+
+  bindTemplateAttachments(store: TemplateAttachmentReader): void {
+    this.templateAttachments = store;
+  }
+
+  /** The same schedule queue orders starts, reattachments, detach and plain removal. */
+  withTemplateSchedule<T>(id: string, work: (remove: () => Promise<boolean>) => Promise<T>): Promise<T> {
+    return withInProcessFileQueue(join(`${this.filePath}.schedules`, `schedule-${encodeURIComponent(id)}`), () => work(() => this.removeLocked(id)));
+  }
 
   // Fires after every successful write so projections (the work-approvals list) re-read instead of polling.
   readonly changed = new ChangeSignal((err) => log.warn("[routines-store] change listener threw: %s", (err as Error).message));
@@ -413,7 +482,92 @@ export class RoutinesStore {
     return { routines: this.listActive(filter), invalid: this.listInvalid() };
   }
 
-  async add(input: AddRoutineInput): Promise<RoutineRecord> {
+  async listScheduleDisplay(filter?: { projectRoot?: string }, options?: { includeDismissed: boolean }): Promise<RoutineListResult> {
+    const projectRoot = filter?.projectRoot;
+    const candidates = this.cache.filter(routine => (options?.includeDismissed || !routine.dismissedAt) &&
+      (inProject(routine, projectRoot) || (routine.pendingTemplateProjectRoot !== undefined &&
+        inProject({ projectRoot: routine.pendingTemplateProjectRoot ?? undefined }, projectRoot))));
+    const templateIds = new Set(candidates.filter(routine => routine.execution === "template-run").map(routine => routine.id));
+    if (templateIds.size === 0) return { routines: candidates.map(cloneRecord), invalid: this.listInvalid() };
+
+    const reader = this.requireTemplateAttachments();
+    let attachments: Awaited<ReturnType<TemplateAttachmentReader["listActiveScheduleAttachments"]>>;
+    try {
+      attachments = await reader.listActiveScheduleAttachments(templateIds);
+    } catch (error) {
+      log.warn("schedule attachments could not be read: %s", errorMessage(error));
+      return {
+        routines: candidates.filter(routine => inProject(routine, projectRoot)).map(routine => ({
+          ...cloneRecord(routine), ...(routine.execution === "template-run" ? { templateAttention: "attachment-unavailable" as const } : {}),
+        })),
+        invalid: this.listInvalid(),
+      };
+    }
+    const routines = candidates.map(cloneRecord).map((routine): RoutineRecord => {
+      if (routine.execution !== "template-run") return routine;
+      const active = attachments.get(routine.id);
+      if (!active) return { ...routine, templateAttention: "attachment-missing" };
+      const { attachment, template } = active;
+      const scope = attachmentScopeMatches(attachment, template);
+      const { projectRoot: _originalProject, ...record } = routine;
+      return {
+        ...record, attachmentId: attachment.id, ...(scope.ok ? {} : { templateAttention: scope.code }),
+        ...(attachment.approvedScope.kind === "project" ? { projectRoot: attachment.approvedScope.projectRoot } : {}),
+      };
+    });
+    return { routines: routines.filter(routine => inProject(routine, filter?.projectRoot)), invalid: this.listInvalid() };
+  }
+
+  /** Called while the schedule queue is held. Until the attachment commits, its previous scope still owns display. */
+  async writeTemplateAttachment(id: string, scope: TemplateScope, writeAttachment: () => Promise<ScheduleAttachment>): Promise<ScheduleAttachment> {
+    const routine = this.cache.find(entry => entry.id === id && entry.execution === "template-run");
+    if (!routine) throw new WorkflowTemplateError("routine-not-found");
+    const target = scope.kind === "project" ? scope.projectRoot : null;
+    const previous = routine.pendingTemplateProjectRoot === undefined
+      ? routine.projectRoot
+      : await this.getActiveTemplateAttachment(id).then(attachment =>
+        attachment ? attachment.approvedScope.kind === "project" ? attachment.approvedScope.projectRoot : undefined : routine.projectRoot);
+    if ((previous ?? null) === target && routine.pendingTemplateProjectRoot === undefined) return writeAttachment();
+
+    const staged = await this.mutate(id, entry => {
+      if (previous === undefined) delete entry.projectRoot;
+      else entry.projectRoot = previous;
+      entry.pendingTemplateProjectRoot = target;
+      return true;
+    });
+    if (!staged) throw new WorkflowTemplateError("routine-not-found");
+    let committed = false;
+    try {
+      const attachment = await writeAttachment();
+      committed = true;
+      return attachment;
+    } finally {
+      try {
+        await this.mutate(id, entry => {
+          if (committed) {
+            if (target === null) delete entry.projectRoot;
+            else entry.projectRoot = target;
+          }
+          delete entry.pendingTemplateProjectRoot;
+          return true;
+        });
+      } catch (error) {
+        // The persisted two-project route still finds the item after a restart. Its attachment selects the visible project.
+        log.warn("template schedule project could not be finalized (id=%s): %s", id, errorMessage(error));
+      }
+    }
+  }
+
+  async getActiveTemplateAttachment(id: string): Promise<ScheduleAttachment | undefined> {
+    return (await this.requireTemplateAttachments().listByRoutine(id)).find(attachment => attachment.detachedAt === undefined);
+  }
+
+  private requireTemplateAttachments(): TemplateAttachmentReader {
+    if (!this.templateAttachments) throw new Error("Template attachment store unavailable");
+    return this.templateAttachments;
+  }
+
+  async add(input: AddRoutineInput | TemplateRoutineInput, proof?: HostDecisionProof): Promise<RoutineRecord> {
     if (!this.loaded) await this.load();
 
     // An unknown trigger or execution would be dropped as a bad record on the next read, so refuse it here.
@@ -421,12 +575,18 @@ export class RoutinesStore {
     if (!isRoutineExecution(input.execution)) {
       throw new Error(`RoutinesStore.add: execution must be 'llm-session' or 'notification-only': ${String(input.execution)}`);
     }
+    if (input.execution === "template-run") {
+      assertHostDecisionProof(proof, { allowTailnet: true });
+      if (input.trigger !== "schedule" || !isRoutineScheduleShape(input.schedule) || (!input.schedule.at && input.schedule.repeat?.kind !== "cron") || input.createdBy !== "user"
+        || input.prePrompt !== undefined || input.notificationTitle !== undefined || input.notificationBody !== undefined
+        || input.scope !== undefined || input.source !== undefined) throw new Error("Invalid template routine");
+    }
     const normalizedSchedule = validateRoutineContent("add", input);
     if (input.targetSessionId !== undefined && !canConnect(input.targetSessionId, input.trigger, input.execution)) {
       throw new Error("RoutinesStore.add: targetSessionId must be a valid chat id on a scheduled llm-session item");
     }
     const normalizedProjectRoot = typeof input.projectRoot === "string" ? input.projectRoot.trim() : "";
-    if (!normalizedProjectRoot || normalizedProjectRoot.length > MAX_PROJECT_ROOT_LENGTH) {
+    if ((!normalizedProjectRoot && input.execution !== "template-run") || normalizedProjectRoot.length > MAX_PROJECT_ROOT_LENGTH) {
       throw new Error(`RoutinesStore.add: projectRoot is required (a non-empty string of at most ${MAX_PROJECT_ROOT_LENGTH} characters)`);
     }
     if (!isActor(input.createdBy)) {
@@ -487,7 +647,7 @@ export class RoutinesStore {
       scope: normalizedScope,
       createdAt: new Date().toISOString(),
       ...(normalizedSource !== undefined ? { source: normalizedSource } : {}),
-      projectRoot: normalizedProjectRoot,
+      ...(normalizedProjectRoot ? { projectRoot: normalizedProjectRoot } : {}),
       createdBy: input.createdBy,
       ...(input.targetSessionId !== undefined ? { targetSessionId: input.targetSessionId } : {}),
     };
@@ -533,9 +693,17 @@ export class RoutinesStore {
   }
 
   async remove(id: string): Promise<boolean> {
+    return this.withTemplateSchedule(id, remove => remove());
+  }
+
+  private async removeLocked(id: string): Promise<boolean> {
     if (!this.loaded) await this.load();
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
+      const record = file.routines.find(r => r.id === id);
+      if (record?.execution === "template-run" && await this.getActiveTemplateAttachment(id)) {
+        throw new AttachedTemplateRoutineError();
+      }
       const before = file.routines.length + file.invalid.length;
       file.routines = file.routines.filter((r) => r.id !== id);
       file.invalid = file.invalid.filter((held) => held.id !== id);
@@ -555,21 +723,27 @@ export class RoutinesStore {
     directoriesRemoved: number;
   }> {
     if (!this.loaded) await this.load();
-    const retainedOf = routineScopeRetention(root, options?.preserveRoots);
-    if (!retainedOf) return { routinesUpdated: 0, directoriesRemoved: 0 };
+    const isWindows = process.platform === "win32";
+    const posixRetention = isWindows ? undefined : routineScopeRetention(root, options?.preserveRoots);
+    if (!isWindows && !posixRetention) return { routinesUpdated: 0, directoriesRemoved: 0 };
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
-      let routinesUpdated = 0;
-      let directoriesRemoved = 0;
-      for (const routine of file.routines) {
-        if (!routine.scope) continue;
-        const retained = retainedOf(routine.scope.directories);
-        const removed = routine.scope.directories.length - retained.length;
-        if (removed === 0) continue;
-        routine.scope.directories = retained;
-        routinesUpdated += 1;
-        directoriesRemoved += removed;
-      }
+      const { routinesUpdated, directoriesRemoved } = withLocalityDecision(() => {
+        const retainedOf = posixRetention ?? routineScopeRetention(root, options?.preserveRoots);
+        if (!retainedOf) return { routinesUpdated: 0, directoriesRemoved: 0 };
+        let routinesUpdated = 0;
+        let directoriesRemoved = 0;
+        for (const routine of file.routines) {
+          if (!routine.scope) continue;
+          const retained = retainedOf(routine.scope.directories);
+          const removed = routine.scope.directories.length - retained.length;
+          if (removed === 0) continue;
+          routine.scope.directories = retained;
+          routinesUpdated += 1;
+          directoriesRemoved += removed;
+        }
+        return { routinesUpdated, directoriesRemoved };
+      });
       if (directoriesRemoved > 0) {
         await this.persist(file);
       }
@@ -585,13 +759,18 @@ export class RoutinesStore {
     options?: { preserveRoots?: readonly string[] },
   ): Promise<number> {
     if (!this.loaded) await this.load();
-    const retainedOf = routineScopeRetention(root, options?.preserveRoots);
-    if (!retainedOf) return 0;
+    const isWindows = process.platform === "win32";
+    const posixRetention = isWindows ? undefined : routineScopeRetention(root, options?.preserveRoots);
+    if (!isWindows && !posixRetention) return 0;
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
-      return file.routines.filter((routine) =>
-        routine.scope ? retainedOf(routine.scope.directories).length !== routine.scope.directories.length : false,
-      ).length;
+      return withLocalityDecision(() => {
+        const retainedOf = posixRetention ?? routineScopeRetention(root, options?.preserveRoots);
+        if (!retainedOf) return 0;
+        return file.routines.filter((routine) =>
+          routine.scope ? retainedOf(routine.scope.directories).length !== routine.scope.directories.length : false,
+        ).length;
+      });
     });
   }
 
@@ -681,6 +860,11 @@ export class RoutinesStore {
         delete r.lastFailure;
         return true;
       }
+      if (outcome.kind === "template-skipped") {
+        if (r.execution !== "template-run" || !validTemplateSkip(outcome.skip)) throw new Error("Invalid template routine skip");
+        r.lastTemplateSkip = outcome.skip;
+        return true;
+      }
       const at = new Date().toISOString();
       const failure: RoutineFailure = outcome.kind === "error"
         ? { kind: "error", firedAt, at, reason: sanitizeRoutineFailureReason(outcome.reason) }
@@ -704,9 +888,13 @@ export class RoutinesStore {
   }
 
   // A user edit from the schedule panel, validated exactly as add validates. Null for an unknown or dismissed item.
-  async edit(id: string, patch: RoutineEditPatch): Promise<RoutineRecord | null> {
+  async edit(id: string, patch: RoutineEditPatch, proof?: HostDecisionProof): Promise<RoutineRecord | null> {
     return this.mutate(id, (r) => {
       if (r.dismissedAt) return false;
+      if ((patch as { execution?: unknown }).execution === "template-run" || r.execution === "template-run") {
+        assertHostDecisionProof(proof);
+        if (Object.keys(patch).some(key => key !== "title" && key !== "schedule")) throw new WorkflowTemplateError("invalid-input");
+      }
       if (patch.schedule !== undefined && r.trigger !== "schedule") {
         throw new Error("RoutinesStore.edit: a shutdown item has no schedule");
       }
@@ -798,7 +986,7 @@ export class RoutinesStore {
   // `apply` returns whether it changed the record; an unchanged record is not rewritten. Null only when the routine does not exist.
   private async mutate(
     id: string,
-    apply: (record: RoutineRecord) => boolean,
+    apply: (record: StoredRoutine) => boolean,
     options?: { skipDismissed?: boolean },
   ): Promise<RoutineRecord | null> {
     if (!this.loaded) await this.load();
@@ -810,6 +998,23 @@ export class RoutinesStore {
       if (!r || (options?.skipDismissed && r.dismissedAt)) return null;
       if (apply(r)) await this.persist(file);
       return cloneRecord(r);
+    });
+  }
+
+  /** A fire and its attachment are registered together against reattach and detach. */
+  registerTemplateFire(id: string, options?: { scheduled?: boolean }): Promise<TemplateRoutineFire | null> {
+    return this.withTemplateSchedule(id, async () => {
+      const routine = await this.markFired(id, [], options);
+      if (!routine) return null;
+      const attachments = this.requireTemplateAttachments();
+      let active: ScheduleAttachment | undefined;
+      try {
+        active = (await attachments.listByRoutine(id)).find(attachment => attachment.detachedAt === undefined);
+      } catch (error) {
+        log.warn("template attachment could not be read for fire (id=%s): %s", id, errorMessage(error));
+        return { routine, attachment: { reason: "attachment-unavailable" } };
+      }
+      return { routine, attachment: active ? { id: active.id } : { reason: "attachment-missing" } };
     });
   }
 
@@ -834,9 +1039,11 @@ export class RoutinesStore {
         this.invalidCache = file.invalid;
         return null;
       }
-      const firedAt = new Date(nowMs).toISOString();
+      const previous = r.execution === "template-run" && r.lastFiredAt ? Date.parse(r.lastFiredAt) : Number.NaN;
+      const firedAt = new Date(previous >= nowMs ? previous + 1 : nowMs).toISOString();
       r.lastFiredAt = firedAt;
       delete r.lastSkippedReason;
+      delete r.lastTemplateSkip;
       delete r.lastSkippedMinuteUTC;
       if (missingPluginIds.length > 0) r.needsAttention = { missingPluginIds: [...missingPluginIds] };
       else delete r.needsAttention;
@@ -844,7 +1051,7 @@ export class RoutinesStore {
       const repeat = r.schedule?.repeat;
       if (!repeat || repeat.kind === "none") {
         // A partial run stays visible for review and removal, but is not due again.
-        if (missingPluginIds.length === 0) r.dismissedAt = firedAt;
+        if (missingPluginIds.length === 0 && r.execution !== "template-run") r.dismissedAt = firedAt;
       } else advanceRepeatingSchedule(r, firedAt);
       // cron routines: next-fire is re-computed by the scheduler each tick — no need to advance `at` here.
       await this.persist(file);
@@ -869,7 +1076,7 @@ export class RoutinesStore {
   }
 }
 
-function inProject(record: RoutineRecord, projectRoot: string | undefined): boolean {
+function inProject(record: Pick<RoutineRecord, "projectRoot">, projectRoot: string | undefined): boolean {
   return projectRoot === undefined || record.projectRoot === undefined || projectRootEquals(record.projectRoot, projectRoot);
 }
 

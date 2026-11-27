@@ -182,7 +182,6 @@ const COMPARED_MODEL_LIST_FIELDS: Record<ModelListStateField, true> = {
   endpoint: true,
   fetchedAt: true,
   source: true,
-  persistError: true,
   options: true,
   entries: true,
 };
@@ -286,7 +285,6 @@ type ModelListState =
       endpoint: string;
       fetchedAt: string;
       source?: "cache" | "network";
-      persistError?: string;
     }
   | {
       status: "error";
@@ -1372,6 +1370,7 @@ function modelSyncLabel(t: I18nContextValue["t"], state: ModelListState): string
     case "loading":
       return t("llmTab.modelSyncing");
     case "error":
+      if (state.error === "model-list-save-failed") return t("useSettingsOrchestration.saveFailed");
       return hasUsableModelListOptions(state)
         ? t("llmTab.modelSyncFailedUsingCache")
         : t("llmTab.modelSyncFailed");
@@ -1392,6 +1391,7 @@ function reconcileModelListStatesWithCache(
   for (const [key, state] of Object.entries(cachedStates)) {
     const currentState = current[key];
     next[key] = currentState && currentState.source !== "cache" && hasUsableModelListOptions(currentState)
+      && !(state.fetchedAt && currentState.fetchedAt && Date.parse(state.fetchedAt) > Date.parse(currentState.fetchedAt))
       ? currentState
       : state;
   }
@@ -1534,7 +1534,6 @@ export const LlmTab = memo(function LlmTab(props: LlmTabProps) {
   /** Keys with a catalogue request out right now. Per instance, not per launch: a request belongs to the
    * component that made it, and the settings tab unmounting mid-request must not leave the next mount unable to ask. */
   const modelListRequestsInFlight = useRef<Set<string> | null>(null);
-  const modelListCacheRef = useRef<LlmModelListCache>(mountView?.modelListCache ?? {});
   const setModelListState = useCallback((key: string, state: ModelListState) => {
     setModelLists((current) => {
       // Writing an identical state must not produce a new map: `connections` is derived from this, and a fresh identity re-runs the launch refresh,
@@ -1617,44 +1616,18 @@ export const LlmTab = memo(function LlmTab(props: LlmTabProps) {
             ...(options.modelDiscoveryPolicy ? { modelDiscoveryPolicy: options.modelDiscoveryPolicy } : {}),
           });
           if (result.ok) {
-            const nextEntry: LlmModelListCacheEntry = {
-              vendor: result.vendor,
-              ...(baseUrl ? { baseUrl } : {}),
-              ...(credentialScope ? { credentialScope } : {}),
-              endpoint: result.endpoint,
-              models: result.models,
-              ...(result.modelEntries ? { modelEntries: result.modelEntries } : {}),
-              ...(result.complete ? { complete: true } : {}),
-              fetchedAt: result.fetchedAt,
-            };
-            const nextCache = {
-              ...modelListCacheRef.current,
-              [key]: nextEntry,
-            };
-            modelListCacheRef.current = nextCache;
-            setModelListState(key, {
-              status: "ready",
+            const latest = modelListsRef.current[key];
+            if (latest?.fetchedAt && Date.parse(latest.fetchedAt) > Date.parse(result.fetchedAt)) return;
+            const listing = {
               options: result.models,
               entries: result.modelEntries,
               endpoint: result.endpoint,
               fetchedAt: result.fetchedAt,
-              source: "network",
-            });
-            const markPersistError = (err: unknown): void => {
-              const latest = modelListsRef.current[key];
-              if (latest?.status !== "ready") return;
-              setModelListState(key, {
-                ...latest,
-                persistError: errorMessage(err),
-              });
+              source: "network" as const,
             };
-            void api.updateSettings({ llm: { modelListCache: nextCache } })
-              .then((persistResult) => {
-                if (isIpcErrorResult(persistResult)) {
-                  markPersistError(persistResult.message ?? persistResult.error);
-                }
-              })
-              .catch(markPersistError);
+            setModelListState(key, result.cacheSaveFailed
+              ? { ...listing, status: "error", error: "model-list-save-failed" }
+              : { ...listing, status: "ready" });
           } else {
             failWith(result.message ?? result.error);
           }
@@ -1796,7 +1769,6 @@ export const LlmTab = memo(function LlmTab(props: LlmTabProps) {
       }
       const cache = settings.llm?.modelListCache ?? {};
       setSavedModelListCache((current) => sameSettingsValue(current, cache) ? current : cache);
-      modelListCacheRef.current = cache;
       const cachedStates = modelListStatesFromCache(cache, marketplaceProviderPresets);
       setModelLists((current) => {
         const next = reconcileModelListStatesWithCache(current, cachedStates);

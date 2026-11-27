@@ -5,7 +5,7 @@ import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 import { MxcProcessContractError, MxcProcessCleanupError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
 
-type NativeProcess = Pick<MxcProcess, "id" | "standardInput" | "standardOutput" | "standardError" | "wait" | "kill" | "dispose">;
+type NativeProcess = Pick<MxcProcess, "id" | "standardInput" | "standardOutput" | "standardError" | "wait" | "kill" | "dispose" | "warnings">;
 type ProcessResult = Awaited<ReturnType<MxcProcess["wait"]>>;
 
 /** Lives only inside the dedicated native supervisor, never in the host process. */
@@ -19,7 +19,7 @@ export class MxcNativeProcess {
   private cleanup: Promise<void> | undefined;
   private disposed = false;
 
-  constructor(private readonly native: NativeProcess) {
+  constructor(private readonly native: NativeProcess, private readonly cleanupTimeoutMs: number = TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs) {
     this.id = native.id;
     // Taking all three endpoints must precede wait, including on startup failure.
     let stdin: Writable, stdout: Readable, stderr: Readable;
@@ -67,6 +67,7 @@ export class MxcNativeProcess {
   }
 
   get state(): string { return this.phase; }
+  get warnings(): readonly string[] { return this.native.warnings; }
 
   /** Resolves only after terminal settlement, output drain and successful disposal. */
   dispose(options: { drainOutput?: boolean } = {}): Promise<void> {
@@ -97,7 +98,7 @@ export class MxcNativeProcess {
         Promise.all([this.completion, drained]),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new MxcProcessCleanupError("Native process cleanup deadline exceeded")),
-            TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
+            this.cleanupTimeoutMs);
         }),
       ]);
     } catch (error) {

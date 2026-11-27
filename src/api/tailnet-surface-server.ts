@@ -1,3 +1,9 @@
+import { reserveTailnetListenerPort } from "../shared/tailnet-listener-port.js";
+import { assertTailnetListenerPortAllowed } from "../permissions/tailnet-listener-policy.js";
+import { TAILNET_WORK_DECISION_CAPABILITY, TAILNET_WORK_DECISION_PATH, type TailnetWorkDecisionRequest, type TailnetWorkDecisionResponse, type TailnetWorkReview, type TailnetWorkReviewSnapshot } from "../shared/tailnet-work-decisions.js";
+import type { RemoteWorkDecisionEvidence } from "../main/workflow-template-decision.js";
+import { parseTailnetWorkDecision } from "./tailnet-work-decision-input.js";
+import { WORK_DECISION_AUTHORITY_REVOKED } from "../work-board/work-decision-authority.js";
 import { TailnetOwnerIdentityError } from "../main/tailnet-owner-identity.js";
 import type { TailnetOwnerIdentityEvidence } from "../main/tailnet-owner-policy.js";
 import type { TailnetOwnerIdentityErrorCode } from "../shared/tailnet-sharing.js";
@@ -58,6 +64,9 @@ import { UUID_PATTERN } from "../shared/uuid.js";
 import { errorMessage } from "../shared/error-message.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { requirePositiveInteger } from "../shared/safe-integer.js";
+import type { Locale } from "../i18n/locale.js";
+import { MAX_PLAN_NOTE_LENGTH } from "../shared/work-board-types.js";
+import { loadTailnetWebMessages, tailnetWebLocale, TAILNET_WORK_REVIEW_SCRIPT, TAILNET_WORK_REVIEW_STYLE } from "./tailnet-web-work-reviews.js";
 
 const LOOPBACK_HOST = "127.0.0.1";
 const DEFAULT_SSE_MAX_LIFETIME_MS = 5 * 60_000;
@@ -102,9 +111,19 @@ export interface TailnetPairingDeviceStatus {
   readonly ownDevice: boolean;
 }
 // Browser access requires paired sharing and same-origin checks; native routes reject browser context.
+export type TailnetWorkDecisionHandler = (request: TailnetWorkDecisionRequest, evidence: RemoteWorkDecisionEvidence) => Promise<TailnetWorkDecisionResponse>;
+
+interface TailnetWebWorkDecisions {
+  readonly decide: TailnetWorkDecisionHandler;
+  readonly list?: (evidence: RemoteWorkDecisionEvidence) => Promise<readonly TailnetWorkReview[]>;
+  readonly verifyServeTarget: () => Promise<boolean>;
+  readonly receipts: TailnetControllerReceiptStore;
+}
+
 export interface TailnetWebOptions {
   readonly origin: string;
   readonly sessions?: TailnetWebSessionStore;
+  readonly workDecisions?: TailnetWebWorkDecisions;
 }
 
 const ownerAdmittedRequests = new WeakSet<IncomingMessage>();
@@ -114,6 +133,7 @@ export interface TailnetSurfaceServerOptions {
   readonly ownerIdentityError: (login: string, evidence: TailnetOwnerIdentityEvidence) => TailnetOwnerIdentityErrorCode | null;
   readonly refreshOwnerIdentity?: () => Promise<boolean>;
   readonly assertOwnerIdentity?: () => void;
+  readonly isControllerCurrent?: () => boolean;
   readonly requestOwnerEvidence?: TailnetOwnerIdentityEvidence;
   /** Must be the literal 127.0.0.1; a Tailnet IP is never a direct bind. */
   readonly host?: string;
@@ -127,7 +147,7 @@ export interface TailnetSurfaceServerOptions {
   readonly maxRequestsPerWindow?: number;
   readonly maxWebReadRequestsPerWindow?: number;
   readonly requestWindowMs?: number;
-  // Remote control accepts only conversation.send; no attachment, session, policy, or approval commands.
+  // Conversation commands and work decisions have separate controller entry points.
   readonly controller?: TailnetControllerOptions;
   // Enabling paired sharing disables unpaired native access.
   readonly pairedSharing?: TailnetPairedShareAuthorizer;
@@ -138,9 +158,17 @@ export interface TailnetSurfaceServerOptions {
 
 }
 
+interface TailnetListenerCapabilities {
+  controllerEnabled: boolean;
+  pairedSharingEnabled: boolean;
+  webEnabled: boolean;
+}
+
 export interface TailnetSurfaceServer {
   readonly host: "127.0.0.1";
   readonly port: number;
+  /** Applies a reduction to this bound listener and invalidates authority issued by removed routes. */
+  reduceCapabilities(next: TailnetListenerCapabilities): void;
   close(): Promise<void>;
 }
 
@@ -152,14 +180,13 @@ interface TailnetObserverEvent {
   readonly scope: string;
 }
 
-interface TailnetObserverSnapshot {
+interface TailnetObserverSnapshot extends TailnetWorkReviewSnapshot {
   readonly version: typeof SHARED_CONVERSATION_PROTOCOL_VERSION;
   readonly cursor: number;
   readonly updatedAt: number | null;
   readonly busy: boolean;
   readonly awaitingLocalApproval: boolean;
   readonly assistantText: string;
-  readonly scope: string;
 }
 
 interface TailnetObserverScope {
@@ -211,6 +238,8 @@ interface TailnetRequestLimiter {
 interface TailnetWebRuntime {
   readonly origin: string;
   readonly sessions: TailnetWebSessionStore;
+  readonly workDecisions?: TailnetWebWorkDecisions;
+  readonly receiptOwnerId: string;
 }
 
 interface TailnetStreamSessionGuard {
@@ -221,16 +250,19 @@ interface TailnetStreamSessionGuard {
 interface TailnetWebRequestAuthorization {
   readonly login: string;
   readonly cookieToken: string;
+  readonly csrfToken: string;
   readonly pairedShare: TailnetPairedShareAuthorization;
   readonly scope: TailnetObserverScope;
   readonly session: TailnetWebSessionAuthorization;
 }
 
-type TailnetWebRequiredRole = "observe" | "control";
+type TailnetWebRequiredRole = "observe" | "control" | typeof TAILNET_WORK_DECISION_CAPABILITY;
 
 interface TailnetWebPageState {
   readonly csrfToken: string;
   readonly canControl: boolean;
+  readonly locale: Locale;
+  readonly messages: Readonly<Record<string, string>>;
 }
 
 export function isAuthorizedTailnetObserver(
@@ -251,11 +283,11 @@ export function isAuthorizedTailnetController(
 function authorizedTailnetLogin(
   headers: IncomingHttpHeaders,
   authorization: TailnetAuthorization,
-  role: "observer" | "controller" | "pairing",
+  role: "observer" | "controller" | "pairing" | typeof TAILNET_WORK_DECISION_CAPABILITY,
 ): string | undefined {
   const login = singleHeader(headers, "tailscale-user-login");
   if (!isSafeLogin(login)) return undefined;
-  if (authorization.kind === "tailnet-identity") return login;
+  if (authorization.kind === "tailnet-identity") return role === TAILNET_WORK_DECISION_CAPABILITY ? undefined : login;
   const expectedAppCapability = authorization.capability;
   const rawCapabilities = singleHeader(headers, "tailscale-app-capabilities");
   if (
@@ -275,9 +307,9 @@ function authorizedTailnetLogin(
     return undefined;
   }
   const grants = parsed[expectedAppCapability];
-  return Array.isArray(grants) && grants.some((grant) => isRecord(grant) && grant.role === role)
-    ? login
-    : undefined;
+  if (!Array.isArray(grants)) return undefined;
+  const hasRole = (required: typeof role) => grants.some(grant => isRecord(grant) && grant.role === required);
+  return hasRole(role) && (role !== TAILNET_WORK_DECISION_CAPABILITY || hasRole("controller")) ? login : undefined;
 }
 // Accept only the boot-configured canonical HTTPS origin; never derive it from request headers.
 export function isTailnetWebOrigin(value: unknown): value is string {
@@ -299,7 +331,7 @@ export function isTailnetWebOrigin(value: unknown): value is string {
   }
 }
 
-export function startTailnetSurfaceServer(
+export async function startTailnetSurfaceServer(
   options: TailnetSurfaceServerOptions,
 ): Promise<TailnetSurfaceServer> {
   const host = options.host ?? LOOPBACK_HOST;
@@ -309,6 +341,7 @@ export function startTailnetSurfaceServer(
   if (!Number.isSafeInteger(options.port) || options.port < 1 || options.port > 65_535) {
     return Promise.reject(new Error("tailnet surface server port must be a nonzero TCP port"));
   }
+  await assertTailnetListenerPortAllowed(options.port);
   if (typeof options.probeOwnerIdentity !== "function" || typeof options.ownerIdentityError !== "function" || (options.pairedSharing !== undefined && typeof options.pairedSharing.ownerIdentityError !== "function")) {
     return Promise.reject(new Error("tailnet-owner-identity-policy-unavailable"));
   }
@@ -350,6 +383,8 @@ export function startTailnetSurfaceServer(
     : Object.freeze({
         origin: options.web.origin,
         sessions: options.web.sessions ?? createTailnetWebSessionStore(),
+        workDecisions: options.web.workDecisions,
+        receiptOwnerId: randomUUID(),
       });
 
   const maxConnections = requirePositiveInteger(options.maxConnections ?? DEFAULT_MAX_CONNECTIONS, `maxConnections must be a positive safe integer.`);
@@ -396,6 +431,23 @@ export function startTailnetSurfaceServer(
     for (const check of [...pairedShareStreamChecks]) check();
   });
 
+  let capabilities: TailnetListenerCapabilities = {
+    controllerEnabled: controllerBroker !== undefined || webRuntime?.workDecisions !== undefined,
+    pairedSharingEnabled: options.pairedSharing !== undefined,
+    webEnabled: webRuntime !== undefined,
+  };
+  function reduceCapabilities(next: TailnetListenerCapabilities): void {
+    const pairedSharingEnabled = capabilities.pairedSharingEnabled && next.pairedSharingEnabled;
+    const controllerEnabled = pairedSharingEnabled && capabilities.controllerEnabled && next.controllerEnabled;
+    const webEnabled = pairedSharingEnabled && capabilities.webEnabled && next.webEnabled;
+    if (pairedSharingEnabled === capabilities.pairedSharingEnabled && controllerEnabled === capabilities.controllerEnabled && webEnabled === capabilities.webEnabled) return;
+    capabilities = { pairedSharingEnabled, controllerEnabled, webEnabled };
+    if (!webEnabled) webRuntime?.sessions.clear();
+    if (!controllerEnabled) attachmentStore?.clear();
+    controllerBroker?.revalidatePairedTurns();
+    for (const check of [...pairedShareStreamChecks]) check();
+  }
+
   const server: Server = createServer((req, res) => {
     void route(
       req,
@@ -412,6 +464,7 @@ export function startTailnetSurfaceServer(
       requestLimiter,
       webReadRequestLimiter,
       webRuntime,
+      () => capabilities,
     ).catch((error) => {
       if (error instanceof TailnetOwnerIdentityError && !res.headersSent) { sendJson(res, 403, { ok: false, error: error.code }); return; }
       options.log?.(`tailnet observer routing error: ${errorMessage(error)}`);
@@ -430,15 +483,26 @@ export function startTailnetSurfaceServer(
   return new Promise<TailnetSurfaceServer>((resolve, reject) => {
     let settled = false;
     let closing: Promise<void> | undefined;
+    let releasePort: (() => void) | undefined;
     const fail = (error: Error) => {
       if (settled) return;
       settled = true;
       server.removeListener("error", onError);
       if (server.listening) server.close();
+      else releasePort?.();
+      unsubscribePairedSharing?.();
+      unsubscribeWebSessions?.();
       reject(error);
     };
     const onError = (error: Error) => fail(error);
     server.on("error", onError);
+    try {
+      releasePort = reserveTailnetListenerPort(options.port);
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error("Tailnet listener port reservation failed"));
+      return;
+    }
+    server.once("close", releasePort);
     server.listen(options.port, host, () => {
       if (settled) return;
       const boundPort = (server.address() as AddressInfo | null)?.port;
@@ -452,8 +516,10 @@ export function startTailnetSurfaceServer(
       resolve({
         host: LOOPBACK_HOST,
         port: boundPort,
+        reduceCapabilities,
         close: () => {
           closing ??= new Promise<void>((resolveClose, rejectClose) => {
+            reduceCapabilities({ controllerEnabled: false, pairedSharingEnabled: false, webEnabled: false });
             for (const endStream of [...liveStreams]) endStream();
             unsubscribePairedSharing?.();
             unsubscribeWebSessions?.();
@@ -488,6 +554,7 @@ async function route(
   requestLimiter: TailnetRequestLimiter,
   webReadRequestLimiter: TailnetRequestLimiter,
   web: TailnetWebRuntime | undefined,
+  capabilities: () => TailnetListenerCapabilities,
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://tailnet-observer.invalid");
   const path = url.pathname;
@@ -498,16 +565,28 @@ async function route(
   const controllerRoute = path === "/tailnet/v1/commands";
   const attachmentRoute = path === "/tailnet/v3/attachments";
   const pairingRoute = path === "/tailnet/v2/pairing/claim";
-  const pairingEnabled = pairingRoute && options.pairing !== undefined && options.pairedSharing !== undefined;
+  const pairingEnabled = pairingRoute && capabilities().pairedSharingEnabled && options.pairing !== undefined && options.pairedSharing !== undefined;
   const webDocumentRoute = path === "/tailnet/v2/web" || path === "/";
   const webSnapshotRoute = path === "/tailnet/v2/web/snapshot";
   const webEventsRoute = path === "/tailnet/v2/web/events";
   const webCommandRoute = path === "/tailnet/v2/web/commands";
+  const webWorkDecisionRoute = path === TAILNET_WORK_DECISION_PATH;
   const webAttachmentRoute = path === "/tailnet/v3/web/attachments";
   const webLogoutRoute = path === "/tailnet/v2/web/logout";
   const webPairingClaimRoute = path === "/tailnet/v2/web/pairing/claim";
   const webRoute = webDocumentRoute || webSnapshotRoute || webEventsRoute || webCommandRoute
-    || webAttachmentRoute || webLogoutRoute || webPairingClaimRoute;
+    || webAttachmentRoute || webLogoutRoute || webPairingClaimRoute || webWorkDecisionRoute;
+  const isControllerCurrent = () => capabilities().controllerEnabled && (!webRoute || capabilities().webEnabled);
+  const controllerRequest = controllerRoute || attachmentRoute || webCommandRoute || webAttachmentRoute || webWorkDecisionRoute;
+  const isCurrent = () => (!webRoute || capabilities().webEnabled)
+    && (!controllerRequest || isControllerCurrent())
+    && (options.pairedSharing === undefined || capabilities().pairedSharingEnabled);
+  if (!capabilities().controllerEnabled) {
+    controllerBroker = undefined;
+    attachmentStore = undefined;
+    if (web?.workDecisions) web = { ...web, workDecisions: undefined };
+  }
+  if (!capabilities().webEnabled) web = undefined;
   if (
     !observerRoute
     && !(controllerRoute && controllerBroker)
@@ -525,8 +604,11 @@ async function route(
     sendJson(res, 403, { ok: false, error: pairingRoute ? "browser-pairing-not-ready" : controllerRoute || attachmentRoute ? "browser-controller-not-ready" : "browser-observer-not-ready" });
     return;
   }
-  const authenticatedLogin = authorizedTailnetLogin(req.headers, options.authorization, controllerRoute || attachmentRoute || webCommandRoute || webAttachmentRoute ? "controller" : pairingRoute || webPairingClaimRoute ? "pairing" : "observer") ?? (webDocumentRoute ? authorizedTailnetLogin(req.headers, options.authorization, "pairing") : undefined);
-  if (authenticatedLogin !== undefined) {
+  const role = webWorkDecisionRoute ? TAILNET_WORK_DECISION_CAPABILITY
+    : controllerRoute || attachmentRoute || webCommandRoute || webAttachmentRoute ? "controller"
+    : pairingRoute || webPairingClaimRoute ? "pairing" : "observer";
+  const authenticatedLogin = authorizedTailnetLogin(req.headers, options.authorization, role) ?? (webDocumentRoute ? authorizedTailnetLogin(req.headers, options.authorization, "pairing") : undefined);
+  if (authenticatedLogin !== undefined && (!controllerRequest || isControllerCurrent())) {
     const admissionLimiter = webSnapshotRoute || webEventsRoute ? webReadRequestLimiter : requestLimiter;
     if (!admissionLimiter.accept(authenticatedLogin, req.socket)) {
       if (method !== "GET") req.resume();
@@ -535,23 +617,36 @@ async function route(
     }
     const policy = options;
     const evidence = await policy.probeOwnerIdentity();
-    const error = policy.ownerIdentityError(authenticatedLogin, evidence);
+    const identityError = (observation: TailnetOwnerIdentityEvidence) => isCurrent()
+      ? policy.ownerIdentityError(authenticatedLogin, observation) : "tailnet-owner-identity-unavailable";
+    const error = identityError(evidence);
     if (error !== null) {
       if (method !== "GET") req.resume();
       sendJson(res, 403, { ok: false, error, message: error === "tailnet-owner-identity-unavailable" ? "This desktop cannot verify its local account. Remote access is suspended." : "Remote access is limited to the account signed in on this desktop." });
       return;
     }
     ownerAdmittedRequests.add(req);
-    const assertIdentity = (): void => { const error = policy.ownerIdentityError(authenticatedLogin, evidence); if (error !== null) throw new TailnetOwnerIdentityError(error); };
+    const assertIdentity = (): void => { const error = identityError(evidence); if (error !== null) throw new TailnetOwnerIdentityError(error); };
     const authorizer = options.pairedSharing;
     const pairing = options.pairing;
-    options = { ...options, assertOwnerIdentity: assertIdentity, requestOwnerEvidence: evidence,
-      ...(authorizer === undefined ? {} : { pairedSharing: { ...authorizer, actorIdFor: login => { assertIdentity(); return authorizer.actorIdFor(login); }, authorize: (login, conversationId, required) => authorizer.authorize(login, conversationId, required, evidence) } }),
+    options = { ...options, assertOwnerIdentity: assertIdentity, requestOwnerEvidence: evidence, isControllerCurrent,
+      ...(authorizer === undefined ? {} : { pairedSharing: {
+        ...authorizer,
+        actorIdFor: login => { assertIdentity(); return authorizer.actorIdFor(login); },
+        authorize: (login, conversationId, required) => {
+          const live = () => isCurrent() && (required !== "control" || isControllerCurrent());
+          const share = live() ? authorizer.authorize(login, conversationId, required, evidence) : null;
+          return share === null ? null : { ...share, pairedShareGuard: {
+            isCurrent: binding => live() && share.pairedShareGuard.isCurrent(binding),
+            refreshCurrent: async binding => live() && await share.pairedShareGuard.refreshCurrent(binding) && live(),
+          } };
+        },
+      } }),
       ...(pairing === undefined ? {} : { pairing: { ...pairing,
         claimInvitation: async (code, actorId) => { assertIdentity(); const result = await pairing.claimInvitation(code, actorId, assertIdentity); assertIdentity(); return result; },
         ...(pairing.deviceStatus === undefined ? {} : { deviceStatus: async (login: string, actorId: TailnetShareActorId) => { assertIdentity(); const result = await pairing.deviceStatus!(login, actorId, assertIdentity); assertIdentity(); return result; } }),
       } }),
-      refreshOwnerIdentity: async () => policy.ownerIdentityError(authenticatedLogin, await policy.probeOwnerIdentity()) === null,
+      refreshOwnerIdentity: async () => isCurrent() && identityError(await policy.probeOwnerIdentity()) === null,
     };
   }
   if (webRoute && web !== undefined) {
@@ -714,7 +809,7 @@ async function routeTailnetWeb(
     return;
   }
   if (path === "/tailnet/v2/web/snapshot") {
-    routeTailnetWebSnapshot(req, res, options, web, currentScope, webReadRequestLimiter);
+    await routeTailnetWebSnapshot(req, res, options, web, currentScope, webReadRequestLimiter);
     return;
   }
   if (path === "/tailnet/v2/web/events") {
@@ -732,6 +827,10 @@ async function routeTailnetWeb(
       maxConnections,
       maxStreamLifetimeMs,
     );
+    return;
+  }
+  if (path === TAILNET_WORK_DECISION_PATH) {
+    await routeTailnetWebWorkDecision(req, res, options, web, currentScope, mutationRequestLimiter);
     return;
   }
   if (path === "/tailnet/v2/web/commands") {
@@ -859,9 +958,13 @@ async function routeTailnetWebDocument(
   const canControl = controllerBroker !== undefined
     && pairedShare.permission === "control"
     && authorizedTailnetLogin(req.headers, options.authorization, "controller") !== undefined;
+  const locale = tailnetWebLocale(singleHeader(req.headers, "accept-language"));
+  const messages = await loadTailnetWebMessages(locale);
   sendTailnetWebDocumentResponse(res, web, issued, (nonce) => renderTailnetWebDocument(nonce, {
     csrfToken: issued.csrfToken,
     canControl,
+    locale,
+    messages,
   }));
 }
 
@@ -933,14 +1036,14 @@ async function resolveTailnetDeviceStatus(
   }
 }
 
-function routeTailnetWebSnapshot(
+async function routeTailnetWebSnapshot(
   req: IncomingMessage,
   res: ServerResponse,
   options: TailnetSurfaceServerOptions,
   web: TailnetWebRuntime,
   currentScope: TailnetObserverScopeReader,
   requestLimiter: TailnetRequestLimiter,
-): void {
+): Promise<void> {
   if ((req.method ?? "GET") !== "GET") {
     req.resume();
     sendTailnetWebJson(res, web, 405, { ok: false, error: "method-not-allowed" });
@@ -963,14 +1066,41 @@ function routeTailnetWebSnapshot(
     true,
   );
   if (authorization === null) return;
+  const work = web.workDecisions;
+  const { login, pairedShare, scope, cookieToken } = authorization;
+  let workReviews: readonly TailnetWorkReview[] | undefined;
+  if (work?.list && pairedShare.permission === "control"
+    && authorizedTailnetLogin(req.headers, options.authorization, TAILNET_WORK_DECISION_CAPABILITY) !== undefined) {
+    const isCurrent = () => {
+      if (options.isControllerCurrent?.() !== true) return false;
+      const session = web.sessions.resolve(cookieToken);
+      return session !== null && sameTailnetWebSessionAuthority(session, pairedShare)
+        && isTailnetShareScopeCurrent(pairedShare, currentScope, scope);
+    };
+    const refreshCurrent = async () => isCurrent()
+      && await pairedShare.pairedShareGuard.refreshCurrent(pairedShare.pairedShare) && isCurrent();
+    if (!await refreshCurrent()) {
+      sendTailnetWebJson(res, web, 401, { ok: false, error: "web-session-revoked" }, true);
+      return;
+    }
+    try {
+      workReviews = await work.list({ login, conversationId: scope.conversationId, authority: { isCurrent, refreshCurrent } });
+    } catch {
+      sendTailnetWebJson(res, web, 503, { ok: false, error: "work-review-unavailable" });
+      return;
+    }
+    if (!isCurrent()) {
+      sendTailnetWebJson(res, web, 401, { ok: false, error: "web-session-revoked" }, true);
+      return;
+    }
+  }
+  const snapshot: TailnetObserverSnapshot = {
+    ...toTailnetObserverSnapshot(options.projectionStore.snapshot(scope.conversationId, { busy: options.isConversationBusy() }), scope.value),
+    ...(workReviews === undefined ? {} : { workReviews }),
+  };
   sendTailnetWebJson(res, web, 200, {
     ok: true,
-    snapshot: toTailnetObserverSnapshot(
-      options.projectionStore.snapshot(authorization.scope.conversationId, {
-        busy: options.isConversationBusy(),
-      }),
-      authorization.scope.value,
-    ),
+    snapshot,
   });
 }
 
@@ -1064,6 +1194,78 @@ function routeTailnetWebEvents(
     },
     "reconnect", options.refreshOwnerIdentity,
   );
+}
+
+async function routeTailnetWebWorkDecision(
+  req: IncomingMessage,
+  res: ServerResponse,
+  options: TailnetSurfaceServerOptions,
+  web: TailnetWebRuntime,
+  currentScope: TailnetObserverScopeReader,
+  requestLimiter: TailnetRequestLimiter,
+): Promise<void> {
+  const fail = (status: number, error: string) => {
+    req.resume();
+    sendTailnetWebJson(res, web, status, { ok: false, error } satisfies TailnetWorkDecisionResponse);
+  };
+  const work = web.workDecisions;
+  if (!work) return fail(404, "work-decisions-disabled");
+  if (req.method !== "POST") return fail(405, "method-not-allowed");
+  if (options.authorization.kind === "tailnet-identity") return fail(403, "work-decision-capability-required");
+  const authorize = (consumeRateLimit: boolean) =>
+    authorizeTailnetWebRequest(req, res, options, web, currentScope, requestLimiter, TAILNET_WORK_DECISION_CAPABILITY, consumeRateLimit);
+  if (authorize(true) === null) return;
+  const body = await readTailnetJsonBody(req, MAX_COMMAND_BODY_BYTES);
+  if (!body.ok) return fail(body.status, "invalid-work-decision");
+  const decision = parseTailnetWorkDecision(body.value);
+  if (!decision) return fail(400, "invalid-work-decision");
+  if (!await work.verifyServeTarget()) return fail(403, "work-decision-serve-required");
+  const authorized = authorize(false);
+  if (authorized === null) return;
+  const { login, pairedShare, scope, cookieToken, csrfToken } = authorized;
+  if (decision.scope !== scope.value) return fail(409, "work-decision-scope-mismatch");
+
+  const isCurrent = () => {
+    const session = web.sessions.resolveMutation(cookieToken, csrfToken);
+    return session !== null && sameTailnetWebSessionAuthority(session, pairedShare)
+      && isTailnetShareScopeCurrent(pairedShare, currentScope, scope);
+  };
+  const evidence: RemoteWorkDecisionEvidence = {
+    login, conversationId: scope.conversationId,
+    authority: {
+      isCurrent,
+      refreshCurrent: async () => isCurrent() && await work.verifyServeTarget()
+        && await pairedShare.pairedShareGuard.refreshCurrent(pairedShare.pairedShare) && isCurrent(),
+    },
+  };
+  if (!isCurrent()) return fail(403, WORK_DECISION_AUTHORITY_REVOKED);
+
+  const keyDigest = sha256Hex(`work-decision\u0000${pairedShare.actorId}\u0000${decision.id}`);
+  const ownerId = web.receiptOwnerId;
+  let reserved = false;
+  try {
+    const receipt = work.receipts.reserve({
+      keyDigest, ownerId,
+      intentDigest: sha256Hex(JSON.stringify(decision)),
+      conversationDigest: privateConversationDigest(scope.conversationId),
+    });
+    if (receipt.kind === "capacity-exhausted") return fail(503, "receipt-unavailable");
+    if (receipt.kind === "conflict") return fail(409, "idempotency-conflict");
+    if (receipt.kind !== "reserved") return fail(409, "work-decision-replayed");
+    reserved = true;
+    const result = await work.decide(decision, evidence);
+    sendTailnetWebJson(res, web, result.ok ? 200 : result.error === WORK_DECISION_AUTHORITY_REVOKED ? 403 : 409, result);
+  } catch {
+    fail(500, reserved ? "work-decision-unavailable" : "receipt-unavailable");
+  } finally {
+    if (reserved) {
+      try {
+        work.receipts.settle({ keyDigest, ownerId });
+      } catch {
+        options.log?.("Work decision receipt settlement failed; replay is blocked");
+      }
+    }
+  }
 }
 
 async function routeTailnetWebCommand(
@@ -1238,7 +1440,8 @@ function authorizeTailnetWebRequest(
     sendTailnetWebJson(res, web, 403, { ok: false, error: "csrf-required" });
     return null;
   }
-  const login = authorizedTailnetLogin(req.headers, options.authorization, required === "control" ? "controller" : "observer");
+  const role = required === "observe" ? "observer" : required === "control" ? "controller" : required;
+  const login = authorizedTailnetLogin(req.headers, options.authorization, role);
   if (login === undefined) {
     req.resume();
     sendTailnetWebJson(res, web, 403, { ok: false, error: "tailnet-role-required" });
@@ -1257,7 +1460,7 @@ function authorizeTailnetWebRequest(
     sendTailnetWebJson(res, web, 503, { ok: false, error: "conversation-unavailable" });
     return null;
   }
-  const pairedShare = resolvePairedShare(options, login, scope.conversationId, required);
+  const pairedShare = resolvePairedShare(options, login, scope.conversationId, required === "observe" ? "observe" : "control");
   if (
     pairedShare === null
     || pairedShare === undefined
@@ -1270,6 +1473,7 @@ function authorizeTailnetWebRequest(
   }
   return {
     cookieToken,
+    csrfToken,
     login,
     pairedShare,
     scope,
@@ -1536,43 +1740,56 @@ function renderTailnetWebPairingClaimScript(csrfToken: string): readonly string[
 
 function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): string {
   const bootstrap = JSON.stringify({
-    csrfToken: state.csrfToken,
-    canControl: state.canControl,
-  });
+    ...state,
+    workDecisionPath: TAILNET_WORK_DECISION_PATH,
+    maxNoteLength: MAX_PLAN_NOTE_LENGTH,
+  }).replaceAll("<", "\\u003c");
   return [
     "<!doctype html>",
-    "<html lang=\"ko\">",
+    `<html lang="${state.locale}">`,
     "<head>",
     "<meta charset=\"utf-8\">",
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
     "<title>Ave Tailnet</title>",
     "<style nonce=\"" + nonce + "\">",
-    ":root { color-scheme: dark; font-family: system-ui, sans-serif; }",
-    "body { margin: 0; background: #101216; color: #f5f7fb; }",
-    "main { max-width: 52rem; margin: 0 auto; padding: 1.5rem; }",
+    ":root { color-scheme: light dark; font-family: system-ui, sans-serif; --surface: #f4f6fa; --panel: #fff; --line: #aeb8c7; --muted: #475569; --accent: #234d9b; --on-accent: #fff; --danger: #9e2524; }",
+    "@media (prefers-color-scheme: dark) { :root { --surface: #101216; --panel: #1a202a; --line: #586477; --muted: #abb4c3; --accent: #a8c7ff; --on-accent: #102647; --danger: #ffb4a8; } }",
+    "body { margin: 0; background: var(--surface); color: CanvasText; }",
+    "main { max-width: 52rem; margin: 0 auto; padding: clamp(.75rem, 4vw, 1.5rem); }",
     "header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }",
-    "button, textarea, input { font: inherit; }",
+    "button, textarea, input, select { font: inherit; }",
     "button { cursor: pointer; }",
     "textarea { box-sizing: border-box; min-height: 6rem; width: 100%; resize: vertical; }",
+    "#attachments { max-inline-size: 100%; }",
     "#assistant { min-height: 8rem; overflow-wrap: anywhere; white-space: pre-wrap; }",
-    ".muted { color: #abb4c3; }",
-    ".row { display: flex; gap: .75rem; align-items: center; }",
+    ".muted { color: var(--muted); }",
+    ".row { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }",
+    "[hidden] { display: none !important; }",
+    TAILNET_WORK_REVIEW_STYLE,
     "</style>",
     "</head>",
     "<body>",
     "<main>",
-    "<header><h1>Ave Tailnet</h1><button id=\"logout\" type=\"button\">연결 해제</button></header>",
-    "<p id=\"status\" class=\"muted\" aria-live=\"polite\">연결 중…</p>",
+    "<header><h1>Ave Tailnet</h1><button id=\"logout\" type=\"button\" data-web-message=\"logout\"></button></header>",
+    "<p id=\"status\" class=\"muted\" aria-live=\"polite\" data-web-message=\"connecting\"></p>",
+    "<section id=\"work-reviews\" aria-labelledby=\"work-review-heading\" hidden>",
+    "<header><h2 id=\"work-review-heading\" data-web-message=\"heading\"></h2><button id=\"work-review-refresh\" type=\"button\" data-web-message=\"refresh\"></button></header>",
+    "<p id=\"work-review-feedback\" role=\"status\" aria-atomic=\"true\"></p>",
+    "<div id=\"work-review-recent\"><h3 id=\"work-review-recent-heading\" data-web-message=\"recentResults\" hidden></h3>",
+    "<div id=\"work-review-recent-results\" role=\"status\" aria-atomic=\"true\"></div></div>",
+    "<p id=\"work-review-empty\" data-web-message=\"empty\" hidden></p>",
+    "<div id=\"work-review-list\"></div>",
+    "</section>",
     "<section aria-labelledby=\"assistant-heading\">",
-    "<h2 id=\"assistant-heading\">Assistant</h2>",
+    "<h2 id=\"assistant-heading\" data-web-message=\"assistant\"></h2>",
     "<pre id=\"assistant\"></pre>",
     "</section>",
     "<form id=\"command\" hidden>",
-    "<label for=\"input\">메시지</label>",
+    "<label for=\"input\" data-web-message=\"message\"></label>",
     "<textarea id=\"input\" autocomplete=\"off\" maxlength=\"24000\"></textarea>",
-    "<label for=\"attachments\">이미지 (PNG, JPEG, GIF, WebP, BMP; 최대 5개)</label>",
+    "<label for=\"attachments\" data-web-message=\"attachments\"></label>",
     "<input id=\"attachments\" type=\"file\" accept=\"image/png,image/jpeg,image/gif,image/webp,image/bmp\" multiple>",
-    "<div class=\"row\"><button id=\"send\" type=\"submit\">보내기</button><button id=\"cancel-turn\" type=\"button\" hidden>내 요청 취소</button><span id=\"command-status\" class=\"muted\" aria-live=\"polite\"></span></div>",
+    "<div class=\"row\"><button id=\"send\" type=\"submit\" data-web-message=\"send\"></button><button id=\"cancel-turn\" type=\"button\" data-web-message=\"cancelTurn\" hidden></button><span id=\"command-status\" class=\"muted\" aria-live=\"polite\"></span></div>",
     "</form>",
     "</main>",
     "<script nonce=\"" + nonce + "\">",
@@ -1597,6 +1814,7 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "  let refreshRestart = false;",
     "  let refreshTimer = null;",
     "  let lastSnapshotRefreshAt = 0;",
+    "  let pageEnded = false;",
     "  const MIN_SNAPSHOT_REFRESH_MS = 1000;",
     "  function setStatus(value) { status.textContent = value; }",
     "  function request(path, init) {",
@@ -1604,6 +1822,8 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "    headers.set(\"x-ave-tailnet-csrf\", boot.csrfToken);",
     "    return fetch(path, Object.assign({ cache: \"no-store\", credentials: \"same-origin\" }, init || {}, { headers }));",
     "  }",
+    TAILNET_WORK_REVIEW_SCRIPT,
+    "  for (const label of document.querySelectorAll(\"[data-web-message]\")) label.textContent = workText(label.dataset.webMessage);",
     "  async function stageSelectedImages(scope) {",
     "    const files = Array.from(attachments.files || []);",
     "    if (files.length > 5) throw new Error(\"too many images\");",
@@ -1632,20 +1852,30 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "    try {",
     "      const response = await request(endpoint + \"/snapshot\");",
     "      const body = await response.json();",
+    "      if (pageEnded) return;",
     "      if (!response.ok || !body.ok) throw new Error(body.error || \"snapshot failed\");",
     "      snapshot = body.snapshot;",
-    "      assistant.textContent = snapshot.assistantText || \"아직 응답이 없습니다.\";",
-    "      setStatus(snapshot.busy ? \"응답 생성 중\" : \"연결됨\");",
+    "      workReviews.update(snapshot);",
+    "      assistant.textContent = snapshot.assistantText || workText(\"noReply\");",
+    "      setStatus(workText(snapshot.busy ? \"busy\" : \"connected\"));",
     "      if (!snapshot.busy) activeTurnId = null;",
     "      cancelTurn.hidden = activeTurnId === null || !snapshot.busy;",
     "      if (boot.canControl) command.hidden = false;",
     "      if (restart || activeScope !== snapshot.scope) startEvents(snapshot.scope, snapshot.cursor);",
     "    } catch (error) {",
+    "      if (pageEnded) return;",
+    "      snapshot = null;",
+    "      command.hidden = true;",
     "      stopStream();",
-    "      setStatus(\"연결을 다시 확인하세요: \" + (error instanceof Error ? error.message : \"요청 실패\"));",
+    "      const code = error instanceof Error ? error.message : \"snapshot failed\";",
+    "      const text = workText(\"snapshotFailed\", { code });",
+    "      if (code === \"web-session-revoked\" || code === \"web-session-required\") workReviews.revoke(message(\"reasonCodes.remote-controller-authority-revoked\"));",
+    "      else workReviews.clear(text);",
+    "      setStatus(text);",
     "    }",
     "  }",
     "  function scheduleRefresh(restart, delay) {",
+    "    if (pageEnded) return;",
     "    refreshRestart = refreshRestart || restart;",
     "    refreshPending = true;",
     "    if (refreshInFlight || refreshTimer !== null) return;",
@@ -1654,7 +1884,7 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "      : delay;",
     "    refreshTimer = window.setTimeout(() => {",
     "      refreshTimer = null;",
-    "      if (!refreshPending) return;",
+    "      if (!refreshPending || pageEnded) return;",
     "      refreshPending = false;",
     "      const restartNow = refreshRestart;",
     "      refreshRestart = false;",
@@ -1697,7 +1927,12 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "          buffer = buffer.slice(boundary + 2);",
     "          const type = eventName(frame);",
     "          if (type === \"reauthorize-required\") {",
-    "            setStatus(\"공유가 만료되었거나 철회되었습니다.\");",
+    "            pageEnded = true;",
+    "            snapshot = null;",
+    "            command.hidden = true;",
+    "            const text = message(\"reasonCodes.remote-controller-authority-revoked\");",
+    "            workReviews.revoke(text);",
+    "            setStatus(text);",
     "            stopStream();",
     "            return;",
     "          }",
@@ -1711,13 +1946,13 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "        }",
     "      }",
     "      if (!controller.signal.aborted) {",
-    "        setStatus(\"스트림을 갱신하는 중…\");",
+    "        setStatus(workText(\"reconnecting\"));",
     "        stopStream();",
     "        scheduleRefresh(true, 0);",
     "      }",
     "    } catch (error) {",
     "      if (!controller.signal.aborted) {",
-    "        setStatus(\"스트림이 끊어졌습니다. 재연결 중…\");",
+    "        setStatus(workText(\"reconnecting\"));",
     "        stopStream(); window.setTimeout(() => scheduleRefresh(true, 0), 1500);",
     "      }",
     "    }",
@@ -1727,7 +1962,7 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "    if (snapshot === null) return;",
     "    const text = input.value.trim();",
     "    if (!text) return;",
-    "    commandStatus.textContent = \"전송 중…\";",
+    "    commandStatus.textContent = workText(\"sending\");",
     "    try {",
     "      const attachmentIds = await stageSelectedImages(snapshot.scope);",
     "      const id = typeof crypto.randomUUID === \"function\"",
@@ -1747,15 +1982,15 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "      cancelTurn.hidden = activeTurnId === null;",
     "      input.value = \"\";",
     "      attachments.value = \"\";",
-    "      commandStatus.textContent = body.duplicate ? \"이미 접수된 요청입니다.\" : \"접수되었습니다.\";",
+    "      commandStatus.textContent = workText(body.duplicate ? \"alreadyReceived\" : \"received\");",
     "      scheduleRefresh(false, 0);",
     "    } catch (error) {",
-    "      commandStatus.textContent = error instanceof Error ? error.message : \"전송 실패\";",
+    "      commandStatus.textContent = error instanceof Error ? error.message : workText(\"sendFailed\");",
     "    }",
     "  });",
     "  cancelTurn.addEventListener(\"click\", async () => {",
     "    if (snapshot === null || activeTurnId === null) return;",
-    "    commandStatus.textContent = \"취소 요청 중…\";",
+    "    commandStatus.textContent = workText(\"cancelling\");",
     "    try {",
     "      const id = typeof crypto.randomUUID === \"function\"",
     "        ? crypto.randomUUID()",
@@ -1769,17 +2004,24 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
     "      if (!response.ok || !body.ok) throw new Error(body.error || \"cancel failed\");",
     "      activeTurnId = null;",
     "      cancelTurn.hidden = true;",
-    "      commandStatus.textContent = \"취소를 요청했습니다.\";",
+    "      commandStatus.textContent = workText(\"cancelled\");",
     "      scheduleRefresh(false, 0);",
     "    } catch (error) {",
-    "      commandStatus.textContent = error instanceof Error ? error.message : \"취소 실패\";",
+    "      commandStatus.textContent = error instanceof Error ? error.message : workText(\"cancelFailed\");",
     "    }",
     "  });",
     "  logout.addEventListener(\"click\", async () => {",
+    "    pageEnded = true;",
+    "    snapshot = null;",
+    "    command.hidden = true;",
+    "    workReviews.revoke(workText(\"disconnected\"));",
     "    try { await request(endpoint + \"/logout\", { method: \"POST\" }); } finally {",
     "      stopStream();",
-    "      document.body.textContent = \"Tailnet 브라우저 세션이 종료되었습니다.\";",
+    "      document.body.textContent = workText(\"disconnected\");",
     "    }",
+    "  });",
+    "  document.addEventListener(\"visibilitychange\", () => {",
+    "    if (document.visibilityState === \"visible\") scheduleRefresh(false);",
     "  });",
     "  scheduleRefresh(true, 0);",
     "})();",
@@ -1995,7 +2237,7 @@ async function routeTailnetAttachmentUpload(
   }
   const staged = attachmentStore.stage({
     ownerKey: pairedAttachmentOwnerKey(latestPairedShare),
-    isCurrent: () => isTailnetAttachmentCurrent(latestPairedShare, currentScope, latestScope),
+    isCurrent: () => isTailnetShareScopeCurrent(latestPairedShare, currentScope, latestScope),
     mimeType,
     bytes: body.bytes,
   });
@@ -2094,7 +2336,7 @@ async function routeTailnetWebAttachmentUpload(
   }
   const staged = attachmentStore.stage({
     ownerKey: pairedAttachmentOwnerKey(reauthorized.pairedShare),
-    isCurrent: () => isTailnetAttachmentCurrent(
+    isCurrent: () => isTailnetShareScopeCurrent(
       reauthorized.pairedShare,
       currentScope,
       reauthorized.scope,
@@ -2116,7 +2358,7 @@ async function routeTailnetWebAttachmentUpload(
   });
 }
 
-function isTailnetAttachmentCurrent(
+function isTailnetShareScopeCurrent(
   pairedShare: TailnetPairedShareAuthorization,
   currentScope: TailnetObserverScopeReader,
   expectedScope: TailnetObserverScope,

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import type { AgentActionApprovalFailure } from "../permissions/agent-action-approver.js";
 import {
   A2AJsonRpcMethod,
   A2A_JSONRPC_VERSION,
@@ -105,6 +106,7 @@ export type A2ARemoteClientResult =
         | "remote-error"
         | "not-sent";
       record?: A2ARemoteAttemptRecord;
+      approvalOutcome?: AgentActionApprovalFailure;
     };
 
 // A bound replay source has validated payload identity and messageId for body recovery.
@@ -461,7 +463,7 @@ export class A2ARemoteClient {
       if (!input.targetLabel || input.targetLabel.length > 80) throw new Error("a2a-remote-target-label-invalid");
       const approvedLineage = Object.freeze(structuredClone(input.lineage));
       const lineageDigestSha256 = a2aRemoteLineageDigestSha256(approvedLineage);
-      let approval;
+      let approval: Awaited<ReturnType<A2ARemoteMutationApprover["approve"]>>;
       try {
         approval = await this.options.approver.approve({
           operation: input.operation,
@@ -474,18 +476,21 @@ export class A2ARemoteClient {
         });
       } catch {
         // Approval denial, timeout, or failure must stop before journal, secret, or network work and never expose gate errors.
-        approval = null;
+        approval = { outcome: "rejected" };
+      }
+      if ("outcome" in approval) {
+        this.audit(input.operation, "approval-denied", `foreground-approval-${approval.outcome}`);
+        return { ok: false, outcome: "not-sent", approvalOutcome: approval.outcome };
       }
       const semanticStillBound = semanticDigest(input) === approvedSemanticDigestSha256;
-      if (!approval
-        || approval.intendedCredentialRevisionId !== input.intendedCredentialRevisionId
+      if (approval.intendedCredentialRevisionId !== input.intendedCredentialRevisionId
         || approval.lineageDigestSha256 !== lineageDigestSha256
         || approval.semanticDigestSha256 !== approvedSemanticDigestSha256
         || !sameA2ARemoteLineage(input.lineage, approvedLineage)
         || a2aRemoteLineageDigestSha256(input.lineage) !== lineageDigestSha256
         || !semanticStillBound) {
         this.audit(input.operation, "approval-denied", "foreground-approval-failed");
-        return { ok: false, outcome: "not-sent" };
+        return { ok: false, outcome: "not-sent", approvalOutcome: "rejected" };
       }
       approvalDecisionId = approval.decisionId;
       approvalDecidedAt = approval.decidedAt;

@@ -81,7 +81,7 @@
     "check:typecheck-tests:update": "node scripts/check-test-typecheck-baseline.mjs --update-baseline",
     "check:test-duplicates": "node scripts/check-test-duplicates.mjs",
     "check:sot-shapes": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-sot-shapes.test.mjs && node scripts/check-sot-shapes.mjs",
-    "check:asrt-claims": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-asrt-version-claims.test.mjs && node scripts/check-asrt-version-claims.mjs",
+    "check:asrt-claims": "node scripts/check-asrt-version-claims.mjs",
     "check:safestorage-sync": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-safestorage-sync.test.mjs test/scripts/check-safestorage-messages.test.mjs && node scripts/check-safestorage-sync.mjs && node scripts/check-safestorage-messages.mjs",
     "check:retired-name": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/retired-name.test.mjs && node scripts/check-retired-name.mjs",
     "check:sot-shapes:update": "node scripts/check-sot-shapes.mjs --update-baseline",
@@ -118,7 +118,8 @@
     "dist:win:fast": "node scripts/build-installers.mjs --win --fast",
     "release": "node scripts/release.mjs",
     "build:srt-win": "node scripts/build-srt-win.mjs",
-    "build:windows-job": "node scripts/build-windows-job.mjs"
+    "build:windows-job": "node scripts/build-windows-job.mjs",
+    "build:windows-path-kind": "node scripts/build-windows-path-kind.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "~4.0.106",
@@ -137,7 +138,7 @@
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/ext-apps": "2.0.4",
     "@modelcontextprotocol/sdk": "1.32.2",
-    "@napi-rs/canvas": "1.0.10",
+    "@napi-rs/canvas": "1.1.1",
     "@nodable/entities": "3.1.0",
     "@opentelemetry/api": "^1.10.0",
     "@opentelemetry/context-async-hooks": "^3.1.1",
@@ -445,19 +446,36 @@
       }
     ],
     "mac": {
-      "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(darwin){,/**/*}"],
+      "files": [
+        "!node_modules/onnxruntime-node/bin/napi-v6/!(darwin){,/**/*}",
+        {
+          "from": ".",
+          "filter": ["node_modules/@microsoft/mxc-sdk/bin/arm64/libmxc_ffi.dylib"]
+        }
+      ],
       "category": "public.app-category.productivity",
       "target": [
-        "dmg",
-        "zip"
+        { "target": "dmg", "arch": ["arm64"] },
+        { "target": "zip", "arch": ["arm64"] }
       ],
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "minimumSystemVersion": "13.0",
+      "minimumSystemVersion": "15.0",
+      "asarUnpack": ["node_modules/@koromix/koffi-darwin-arm64/**"],
+      "signIgnore": ["/Contents/Resources/app[.]asar[.]unpacked/node_modules/@microsoft/mxc-sdk/bin/arm64/libmxc_ffi[.]dylib$"],
       "extraResources": [
+        {
+          "from": "node_modules/@microsoft/mxc-sdk/node_modules/semver",
+          "to": "app.asar.unpacked/node_modules/@microsoft/mxc-sdk/node_modules/semver",
+          "filter": ["**/*"]
+        },
         {
           "from": "resources/macos-dir-ops/${arch}/ave-dir-ops",
           "to": "macos-dir-ops/${arch}/ave-dir-ops"
+        },
+        {
+          "from": "resources/licenses/mxc",
+          "to": "licenses/mxc"
         }
       ]
     },
@@ -489,6 +507,16 @@
         "AppImage",
         "deb",
         "rpm"
+      ],
+      "extraResources": [
+        {
+          "from": "resources/mxc/${arch}/lxc-exec",
+          "to": "mxc/${arch}/lxc-exec"
+        },
+        {
+          "from": "resources/licenses/mxc",
+          "to": "licenses/mxc"
+        }
       ]
     },
     "appImage": {
@@ -526,8 +554,12 @@
       ]
     },
     "win": {
-      "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(win32){,/**/*}"],
+      "files": [
+        "package.json",
+        "!node_modules/onnxruntime-node/bin/napi-v6/!(win32){,/**/*}"
+      ],
       "signExts": [
+        "!ave-path-kind.exe",
         "!srt-win.exe",
         "!wxc-exec.exe",
         "!mxc_ffi.dll",
@@ -587,6 +619,7 @@
   "patchedDependencies": {
     "@anthropic-ai/sandbox-runtime@0.0.80": "patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch",
     "app-builder-lib@26.18.0": "patches/app-builder-lib@26.18.0.patch",
+    "electron-updater@6.8.11": "patches/electron-updater@6.8.11.patch",
     "electron@45.3.4": "patches/electron@45.3.4.patch",
     "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
   }

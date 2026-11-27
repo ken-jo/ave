@@ -453,13 +453,26 @@ describe("useWorkBoardRun — live steps (LS-2)", () => {
     expect(result.current.runState[4]?.sessionIds).toEqual([]);
   });
 
+  it("claims each sub-agent session without replacing its stage session", () => {
+    const { api, emit, start } = harness();
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    const stage = { itemId: 4, phase: "executing" as const, stageId: "scan", attempt: 1, runSessionId: "sub-stage" };
+    emit(stage);
+    emit({ ...stage, subAgentSessionId: "sub-helper" });
+    emit({ ...stage, subAgentSessionId: "sub-helper" });
+    expect(result.current.runState[4]?.sessionIds).toEqual(["sub-stage", "sub-helper"]);
+    expect(result.current.runState[4]?.stageUpdates?.scan?.sessionId).toBe("sub-stage");
+    start(4);
+    expect(result.current.runState[4]?.sessionIds).toEqual([]);
+  });
+
   it("records a sent steer with the renderer's own text, and marks it delivered with the turn that took it", async () => {
     const { api, emit, steer } = steerHarness();
     const { result } = renderHook(() => useWorkBoardRun(api, []));
     emit({ itemId: 4, phase: "executing" });
     let res: unknown;
-    await act(async () => { res = await result.current.steer(4, "also cover refresh", undefined); });
-    expect(steer).toHaveBeenCalledWith(4, "also cover refresh", undefined);
+    await act(async () => { res = await result.current.steer(4, "also cover refresh"); });
+    expect(steer).toHaveBeenCalledWith(4, "also cover refresh");
     expect(res).toEqual({ ok: true, messageId: "m-1" });
     expect(result.current.runState[4]?.steers).toMatchObject([{ messageId: "m-1", text: "also cover refresh", status: "sent" }]);
     emit({ itemId: 4, phase: "executing", steer: { messageId: "m-1", status: "delivered", turn: 3 } });
@@ -473,7 +486,7 @@ describe("useWorkBoardRun — live steps (LS-2)", () => {
     const { result } = renderHook(() => useWorkBoardRun(api, []));
     emit({ itemId: 4, phase: "executing" });
     let pending!: Promise<unknown>;
-    act(() => { pending = result.current.steer(4, "faster", undefined); });
+    act(() => { pending = result.current.steer(4, "faster"); });
     emit({ itemId: 4, phase: "executing", steer: { messageId: "m-1", status: "dropped", reason: "joined-limit" } });
     await act(async () => { resolve({ ok: true, messageId: "m-1" }); await pending; });
     expect(result.current.runState[4]?.steers).toMatchObject([{ messageId: "m-1", status: "dropped", reason: "joined-limit" }]);
@@ -488,7 +501,7 @@ describe("useWorkBoardRun — live steps (LS-2)", () => {
     const { result } = renderHook(() => useWorkBoardRun(api, []));
     emit({ itemId: 4, phase: "executing" });
     let pending!: Promise<unknown>;
-    act(() => { pending = result.current.steer(4, "faster", undefined); });
+    act(() => { pending = result.current.steer(4, "faster"); });
     emit({ itemId: 4, phase: "executing", steer: { messageId: "m-1", status: "dropped", reason: "turn-ended" } });
     start(4);
     let res: unknown;
@@ -508,7 +521,7 @@ describe("useWorkBoardRun — live steps (LS-2)", () => {
     const { result } = renderHook(() => useWorkBoardRun(h.api, []));
     h.emit({ itemId: 4, phase: "executing" });
     let pending!: Promise<unknown>;
-    act(() => { pending = result.current.steer(4, "faster", undefined); });
+    act(() => { pending = result.current.steer(4, "faster"); });
     await act(async () => {
       h.deliver({ itemId: 4, phase: "executing", steer: { messageId: "m-1", status: "dropped", reason: "turn-ended" }, at: "2026-11-04T03:00:01.000Z" });
       resolve({ ok: true, messageId: "m-1" });
@@ -534,7 +547,7 @@ describe("useWorkBoardRun — live steps (LS-2)", () => {
     const { result } = renderHook(() => useWorkBoardRun(api, []));
     emit({ itemId: 4, phase: "executing" });
     let res: unknown;
-    await act(async () => { res = await result.current.steer(4, "x", undefined); });
+    await act(async () => { res = await result.current.steer(4, "x"); });
     expect(res).toEqual({ ok: false, reason: "recipient-unavailable" });
     expect(result.current.runState[4]?.steers).toEqual([]);
   });

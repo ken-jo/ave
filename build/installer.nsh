@@ -561,11 +561,9 @@ FunctionEnd
     Goto ave_skip_genuine_uninstall
   ${endif}
 
-  ; Electron 43 creates a current-user notification shortcut and HKCU toast
-  ; activator registration even for a per-machine app. Genuine uninstall must
-  ; remove only the exact invoking-user artifacts. In the normal alternate-
-  ; admin UAC path, execute synchronously in electron-builder's retained outer
-  ; user process; an already-elevated invocation runs as its current identity.
+  ; The notification shortcut and HKCU toast activator belong to a user.
+  ; Run cleanup in the retained outer process after alternate-credential UAC.
+  ; An already-elevated invocation uses its own process account.
   StrCpy $R0 "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
   StrCpy $R1 "${PRODUCT_NAME}"
   StrCpy $R2 "${APP_ID}"
@@ -578,6 +576,13 @@ FunctionEnd
     !insertmacro UAC_AsUser_Call Function un.aveCleanupCurrentUserNotificationArtifacts ${UAC_SYNCREGISTERS}
   ${else}
     Call un.aveCleanupCurrentUserNotificationArtifacts
+  ${endif}
+  ; Exit 2: every attributable artifact is verified removed, and a
+  ; quarantine-named entry that cleanup could not attribute was left untouched.
+  ; Report it and continue; any other nonzero exit aborts below.
+  ${if} $R4 == 2
+    DetailPrint "Ave: notification cleanup left an unattributable quarantine entry untouched"
+    StrCpy $R4 "0"
   ${endif}
   DetailPrint "$R5"
   ${if} $R4 != 0

@@ -1,15 +1,17 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeImageRuntimePackage } from "../../src/__tests__/support/image-runtime-package.js";
 import { writeCanvasRuntimePackage, writePageRuntimeResources } from "../../src/__tests__/support/page-runtime-package.js";
-import { writeMxcRuntimePackage } from "../../src/__tests__/support/mxc-runtime-package.js";
+import { writeMxcMacRuntimePackage, writeMxcRuntimePackage } from "../../src/__tests__/support/mxc-runtime-package.js";
 import { upstreamSrtWinReceiptFixtures } from "../../src/__tests__/support/srt-win-build-receipts.js";
+import PINS from "../../src/permissions/mxc-launcher-pins.json" with { type: "json" };
 
 const SRT_WIN_BUILD_RECEIPTS = upstreamSrtWinReceiptFixtures();
 const require = createRequire(import.meta.url);
@@ -18,15 +20,51 @@ const BUNDLED_RENDERER_NOTICES = require("../../scripts/lib/bundled-renderer-not
 const { readUpstreamSrtWinInput } = require("../../scripts/lib/srt-win-integrity.cjs") as {
   readUpstreamSrtWinInput: (path: string, arch: string) => Buffer;
 };
+const PATH_KIND_HELPER = "fixture helper";
+const PATH_KIND_SHA256 = createHash("sha256").update(PATH_KIND_HELPER).digest("hex");
+const PATH_KIND_BUNDLE = `const __aveWindowsPathKindPin = "${PATH_KIND_SHA256}";\n`;
 const packageHook = require("../../scripts/electron-after-pack.cjs") as (
   context: Awaited<ReturnType<typeof createPackage>>["context"],
 ) => Promise<void>;
-async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["context"]): Promise<void> {
-  if (context.electronPlatformName !== "win32") return packageHook(context);
+
+function linuxLauncher(appOutDir: string) {
+  const { launcher } = PINS.targets["linux-x64"];
+  return {
+    installed: join("node_modules", PINS.package, launcher.member),
+    packaged: join(appOutDir, "resources", "mxc", basename(dirname(launcher.member)), basename(launcher.member)),
+  };
+}
+
+// macOS packages whose fixture re-pinned an absent darwin addon, keyed by output directory, with that pin file.
+const substitutedMacPins = new Map<string, string>();
+
+async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["context"], copy?: { mapping: "file" | "directory"; substitute: boolean }): Promise<void> {
+  const macPins = substitutedMacPins.get(context.appOutDir);
+  if (context.electronPlatformName === "darwin" && macPins === undefined) return packageHook(context);
+  if (context.electronPlatformName === "linux") {
+    if (process.platform !== "win32") return packageHook(context);
+    // Simulated POSIX packages on Windows need their POSIX file mode represented in the fixture.
+    const { packaged } = linuxLauncher(context.appOutDir);
+    const fs = require("node:fs") as typeof import("node:fs");
+    const lstat = fs.lstatSync;
+    fs.lstatSync = ((file: Parameters<typeof lstat>[0], options: Parameters<typeof lstat>[1]) => {
+      const entry = lstat(file, options);
+      if (file === packaged && typeof entry?.mode === "number") entry.mode |= 0o111;
+      return entry;
+    }) as typeof lstat;
+    syncBuiltinESMExports();
+    try { return await packageHook(context); }
+    finally {
+      fs.lstatSync = lstat;
+      syncBuiltinESMExports();
+    }
+  }
   // The real hook and all verifiers run against this owned unit payload. Only
   // the fixture's architecture-dependent pins are substituted, never checks.
   const script = `
-    import { readFileSync } from 'node:fs';
+    import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+    import { createHash } from 'node:crypto';
+    import { dirname, join } from 'node:path';
     import { registerHooks, createRequire } from 'node:module';
     const context = JSON.parse(process.argv[1]);
     const pins = readFileSync(process.argv[2], 'utf8');
@@ -37,10 +75,50 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
       return nextLoad(url, options);
     }});
     try {
-      const require = createRequire(import.meta.url);
+      const require = createRequire(process.argv[3]);
       const verifier = require(process.argv[4]);
       const verify = verifier.assertSrtWinVendor;
       verifier.assertSrtWinVendor = (vendor, arches) => verify(vendor, arches, JSON.parse(process.env.AVE_TEST_SRT_RECEIPTS));
+      // The before-pack record of the fixture's helper, as the packager process holds it for after-pack.
+      const arch = { 1: 'x64', 3: 'arm64' }[context.arch];
+      const helper = process.argv[6];
+      const helperSha256 = createHash('sha256').update(helper).digest('hex');
+      const build = { binarySha256: helperSha256, imageSha256: helperSha256 };
+      const bundleDir = join(context.appOutDir, 'staging', 'dist', 'main');
+      const bundle = process.argv[8];
+      mkdirSync(bundleDir, { recursive: true });
+      writeFileSync(join(bundleDir, 'main.js'), bundle);
+      const bundleSha256 = { 'main.js': createHash('sha256').update(bundle).digest('hex') };
+      const receiptPath = join(context.appOutDir, 'bundle-receipt.json');
+      writeFileSync(receiptPath, JSON.stringify({ arch, imageSha256: build.imageSha256, bundleSha256 }));
+      (await import(process.argv[5])).recordWindowsPathKindPackageBuild({
+        appOutDir: context.appOutDir, arch, bundleDir, build, receiptPath,
+      });
+      const copy = JSON.parse(process.argv[7]);
+      if (copy) {
+        require('app-builder-lib');
+        const { FileMatcher, copyFiles } = require('app-builder-lib/out/fileMatcher');
+        const { WinPackager } = require('app-builder-lib/out/winPackager');
+        const options = require('../package.json').build.win;
+        const expand = value => value.replaceAll('$' + '{arch}', arch);
+        const mapping = options.extraResources.find(({ from }) => from.endsWith('/ave-path-kind.exe'));
+        const source = join(context.appOutDir, 'staging', expand(mapping.from));
+        const target = join(context.appOutDir, 'resources', expand(mapping.to));
+        mkdirSync(dirname(source), { recursive: true });
+        writeFileSync(source, copy.substitute ? 'substituted helper' : helper);
+        const packager = Object.assign(Object.create(WinPackager.prototype), {
+          platformSpecificBuildOptions: options,
+          signIf(file) { writeFileSync(file + '.signed', 'signer invoked'); writeFileSync(file, 'signed'); },
+        });
+        const matcher = copy.mapping === 'file'
+          ? new FileMatcher(source, target, value => value)
+          : new FileMatcher(dirname(source), dirname(target), value => value, ['ave-path-kind.exe']);
+        await copyFiles([matcher], packager.createTransformerForExtraFiles(context));
+      } else {
+        const target = join(context.appOutDir, 'resources', 'windows-path-kind', arch, 'ave-path-kind.exe');
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, helper);
+      }
       await require(process.argv[3])(context);
       console.log(JSON.stringify({ passed: true }));
     } catch (error) {
@@ -49,8 +127,9 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
     }
   `;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, JSON.stringify(context),
-    join(context.appOutDir, "resources", "fixture-sdk-pins.json"), require.resolve("../../scripts/electron-after-pack.cjs"),
-    require.resolve("../../scripts/lib/srt-win-integrity.cjs")], {
+    macPins ?? join(context.appOutDir, "resources", "fixture-sdk-pins.json"), require.resolve("../../scripts/electron-after-pack.cjs"),
+    require.resolve("../../scripts/lib/srt-win-integrity.cjs"),
+    pathToFileURL(require.resolve("../../scripts/lib/windows-path-kind-package.mjs")).href, PATH_KIND_HELPER, JSON.stringify(copy ?? null), PATH_KIND_BUNDLE], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", AVE_TEST_SRT_RECEIPTS: JSON.stringify(SRT_WIN_BUILD_RECEIPTS) }, encoding: "utf8",
   });
   if (result.error) throw result.error;
@@ -82,7 +161,9 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
     ? join(contents, "Frameworks", "Electron Framework.framework", "Versions", "A", "Libraries")
     : root;
   const modules = join(resources, "app.asar.unpacked", "node_modules");
-  const embeddingRuntime = join(modules, "onnxruntime-node", "bin", "napi-v6", platform, "x64");
+  const arch = platform === "darwin" ? "arm64" : "x64";
+  const target = `${platform}-${arch}`;
+  const embeddingRuntime = join(modules, "onnxruntime-node", "bin", "napi-v6", platform, arch);
   const runtimeLibraries = platform === "win32" ? ["onnxruntime.dll", "DirectML.dll", "dxcompiler.dll"]
     : [platform === "darwin" ? "libonnxruntime.1.dylib" : "libonnxruntime.so.1"];
   for (const file of ["onnxruntime_binding.node", ...runtimeLibraries]) putFile(join(embeddingRuntime, file));
@@ -95,8 +176,8 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
   }
   const uv = Buffer.from("executable");
   const uvName = platform === "win32" ? "uv.exe" : "uv";
-  putFile(join(resources, "uv", `${platform}-x64`, `${uvName}.gz`), gzipSync(uv));
-  putFile(join(resources, "uv", `${platform}-x64`, "uv.meta.json"), JSON.stringify({
+  putFile(join(resources, "uv", target, `${uvName}.gz`), gzipSync(uv));
+  putFile(join(resources, "uv", target, "uv.meta.json"), JSON.stringify({
     binarySha256: createHash("sha256").update(uv).digest("hex"),
   }));
   putFile(join(resources, "licenses", "uv", "LICENSE-MIT"));
@@ -115,14 +196,14 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
   for (const file of platform === "win32"
     ? ["pty.node", "conpty.node", "conpty_console_list.node", "winpty.dll", "winpty-agent.exe"]
     : platform === "darwin" ? ["pty.node", "spawn-helper"] : ["pty.node"]) {
-    putFile(join(modules, "node-pty", "prebuilds", `${platform}-x64`, file));
+    putFile(join(modules, "node-pty", "prebuilds", target, file));
   }
-  putFile(join(modules, "better-sqlite3", "prebuilds", `${platform}-x64.node`));
-  writeImageRuntimePackage(modules, platform);
-  writeCanvasRuntimePackage(modules, platform);
-  writePageRuntimeResources(resources);
-  const ripgrep = join(modules, "@vscode", `ripgrep-${platform}-x64`);
-  putFile(join(ripgrep, "package.json"), JSON.stringify({ name: `@vscode/ripgrep-${platform}-x64` }));
+  putFile(join(modules, "better-sqlite3", "prebuilds", `${target}.node`));
+  writeImageRuntimePackage(modules, platform, arch);
+  writeCanvasRuntimePackage(modules, platform, arch);
+  writePageRuntimeResources(resources, platform === "win32" ? { "dist/src/main/main.js": PATH_KIND_BUNDLE } : {});
+  const ripgrep = join(modules, "@vscode", `ripgrep-${target}`);
+  putFile(join(ripgrep, "package.json"), JSON.stringify({ name: `@vscode/ripgrep-${target}` }));
   putFile(join(ripgrep, "bin", platform === "win32" ? "rg.exe" : "rg"));
   chmodSync(join(ripgrep, "bin", platform === "win32" ? "rg.exe" : "rg"), 0o755);
   for (const notice of ["README.txt", "COPYING", "LICENSE-MIT", "UNLICENSE", "PCRE2-LICENCE.txt", "VSCODE-RIPGREP-LICENSE"]) {
@@ -130,6 +211,15 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
   }
   for (const file of RUNTIME_FILES[platform]) putFile(join(libraryDirectory, file), file);
   if (platform === "win32") writeMxcRuntimePackage(resources, join(root, "Client.exe"));
+  else if (platform === "darwin") {
+    const { pinFile, substituted } = writeMxcMacRuntimePackage(resources);
+    if (substituted) substitutedMacPins.set(root, pinFile);
+  } else {
+    const { installed, packaged } = linuxLauncher(root);
+    mkdirSync(dirname(packaged), { recursive: true });
+    copyFileSync(installed, packaged);
+    chmodSync(packaged, 0o755);
+  }
   return {
     libraryDirectory,
     resources,
@@ -138,13 +228,14 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
     context: {
       appOutDir: root,
       electronPlatformName: platform,
-      arch: 1,
+      arch: arch === "arm64" ? 3 : 1,
       packager: { appInfo: { productFilename: "Client" } },
     },
   };
 }
 
 afterEach(() => {
+  substitutedMacPins.clear();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -188,6 +279,22 @@ describe("packaged graphics runtime", () => {
     rmSync(jar);
     mkdirSync(jar);
     await expect(afterPack(context)).rejects.toThrow("packaged JVM proxy agent missing or invalid");
+  });
+
+  it.each(["file", "directory"] as const)("checks exact helper bytes after the %s copy with signing enabled", async (mapping) => {
+    const { context, resources } = await createPackage("win32");
+    const signature = join(resources, "windows-path-kind", "x64", "ave-path-kind.exe.signed");
+    await expect(afterPack(context, { mapping, substitute: false })).resolves.toBeUndefined();
+    expect(existsSync(signature)).toBe(false);
+  });
+
+  it.each(["file", "directory"] as const)("refuses substituted helper bytes without sending the %s copy to the signer", async (mapping) => {
+    const { context, resources } = await createPackage("win32");
+    const signature = join(resources, "windows-path-kind", "x64", "ave-path-kind.exe.signed");
+    await expect(afterPack(context, { mapping, substitute: true })).rejects.toThrow(
+      "The packaged Windows path helper is not the before-pack build",
+    );
+    expect(existsSync(signature)).toBe(false);
   });
 
   it("rejects a mismatching win32 sandbox helper at package creation", async () => {

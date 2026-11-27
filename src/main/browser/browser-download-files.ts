@@ -5,9 +5,10 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { getSystemErrorName } from "node:util";
+import { errorMessage } from "../../shared/error-message.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../managed-child-processes.js";
-import { windowsPathKindHelperIn } from "../windows-path-kind-launcher.js";
+import { isWindowsPathKindHelperUnavailable, WindowsPathKindHelperMissingError, windowsPathKindHelperIn, withWindowsPathKindHelper } from "../windows-path-kind-launcher.js";
 
 const log = createLogger("browser-download-files");
 
@@ -55,7 +56,8 @@ export class HeldFileHelperUnavailableError extends Error {
   /** For such a copy whose temporary file was left: where it can still be found, or null. */
   partLeftAt: LeftPart | null = null;
   constructor(readonly helper: string, readonly why = "it is missing", message?: string) {
-    super(message ?? `the download file helper ${helper} cannot be used: ${why}. Reinstall Ave; in a development checkout, build it (${HELPER_BUILD[process.platform] ?? "no build for this platform"}).`);
+    const period = why.endsWith(".") ? "" : ".";
+    super(message ?? `the download file helper ${helper} cannot be used: ${why}${period} Reinstall Ave; in a development checkout, build it (${HELPER_BUILD[process.platform] ?? "no build for this platform"}).`);
   }
 }
 
@@ -199,7 +201,7 @@ function recordStamp(file: FileIdentity, bytes: Buffer): RecordStamp {
  * File operations that act inside held directories. Each one opens its directories, checks each is the plain directory with the given
  * identity, and names every file relative to that open directory, so a directory moved or replaced by a link after the check changes
  * nothing it does. Linux reaches files through the open descriptor's /proc/self/fd entry; macOS and Windows have no such path, so a
- * native helper holds the directories and performs the whole operation (native/macos-dir-ops, native/windows-path-kind dir-ops.h).
+ * native helper holds the directories and performs the whole operation (native/macos-dir-ops, native/windows-path-kind).
  */
 export interface HeldFileOperations {
   /**
@@ -240,16 +242,28 @@ type TargetReplacement = FileIdentity | { readonly renamed: FileIdentity } | "re
 
 const HELPER_BUILD: Partial<Record<NodeJS.Platform, string>> = {
   darwin: "node scripts/build-macos-dir-ops.mjs",
-  win32: "scripts/build-windows-job.ps1 -Helper path-kind",
+  win32: "bun run build:windows-path-kind",
 };
 
 /** The held-directory operations for this platform; `resourcePath` is the host resources folder the native helper ships in. */
 export function heldFileOperations(resourcePath: string, platform: NodeJS.Platform = process.platform): HeldFileOperations {
   if (platform === "linux") return descriptorFileOperations();
   if (platform !== "darwin" && platform !== "win32") throw new Error(`held directory file operations are not available on ${platform}`);
-  const helper = platform === "win32" ? windowsPathKindHelperIn(resourcePath) : join(resourcePath, "macos-dir-ops", process.arch, "ave-dir-ops");
+  if (platform === "win32") {
+    const withHelper = <T>(launch: (helper: string) => T): T => {
+      try {
+        return withWindowsPathKindHelper(launch, resourcePath);
+      } catch (error) {
+        if (!isWindowsPathKindHelperUnavailable(error)) throw error;
+        const why = error instanceof WindowsPathKindHelperMissingError ? undefined : errorMessage(error);
+        throw new HeldFileHelperUnavailableError(windowsPathKindHelperIn(resourcePath), why);
+      }
+    };
+    return helperFileOperations(withHelper, true);
+  }
+  const helper = join(resourcePath, "macos-dir-ops", process.arch, "ave-dir-ops");
   if (!existsSync(helper)) throw new HeldFileHelperUnavailableError(helper);
-  return helperFileOperations(helper, platform === "win32");
+  return helperFileOperations(launch => launch(helper), false);
 }
 
 // The answers a directory check can get when the directory is missing, unreadable, not a directory, or a link: it cannot be verified.
@@ -1381,14 +1395,15 @@ function oneOf<T extends string>(helper: string, outcome: string, allowed: reado
  * (scripts/build-macos-dir-ops.mjs) and stand-ins for a helper that hangs.
  */
 export function _helperFileOperationsForTest(helper: string, bounds?: HelperBounds, windowsFileIds = false): HeldFileOperations {
-  return helperFileOperations(helper, windowsFileIds, bounds);
+  return helperFileOperations(launch => launch(helper), windowsFileIds, bounds);
 }
 
-function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: HelperBounds = POLICY_BOUNDS): HeldFileOperations {
+function helperFileOperations(withHelper: <T>(launch: (helper: string) => T) => T, windowsFileIds: boolean, bounds: HelperBounds = POLICY_BOUNDS): HeldFileOperations {
+  const helper = withHelper(path => path);
   const parseInode = windowsFileIds ? parseWindowsInode : parseUnsigned;
-  const run = (args: readonly string[], proceed: Proceed, stop: AbortSignal, onWriting?: (file: FileIdentity) => void,
+  const run = async (args: readonly string[], proceed: Proceed, stop: AbortSignal, onWriting?: (file: FileIdentity) => void,
     journal?: DownloadTargetJournal): Promise<string> =>
-    runHelper(helper, args, proceed, stop, bounds, parseInode, onWriting, journal);
+    withHelper(path => runHelper(path, args, proceed, stop, bounds, parseInode, onWriting, journal));
   const go = (): boolean => true;
   const recover: HeldFileOperations["recover"] = async (folder, name, original, identity) => {
     const left: OwnFileResult = { outcome: "left", at: { name, identity } };
@@ -1503,11 +1518,11 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
     readRecord: async (directory, name, max, sweep) => {
       if (sweep !== undefined) {
         let bytes: Buffer | null = null;
-        const answer = await runHelper(helper, ["--dir-sweep-record", ...directoryArguments(directory), name, String(max)],
+        const answer = await withHelper(path => runHelper(path, ["--dir-sweep-record", ...directoryArguments(directory), name, String(max)],
           go, UNSTOPPED, bounds, parseInode, undefined, undefined, (body, file) => {
             bytes = body;
             return sweep.reject(body, recordStamp(file, body));
-          });
+          }));
         if (answer === "removed") sweep.removed();
         return bytes;
       }

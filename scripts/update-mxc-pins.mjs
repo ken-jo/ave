@@ -49,12 +49,28 @@ export function serializeMxcPins(pins) {
   return JSON.stringify(pins, null, 2) + "\n";
 }
 
-export async function generateMxcPins({ projectRoot = PROJECT_ROOT, pins, allowDownload = true, stageAddon = stageMxcSdkAddon, announce = (message) => process.stderr.write(message + "\n") } = {}) {
+export async function generateMxcPins({ projectRoot = PROJECT_ROOT, pins, allowDownload = true, launchersOnly = false, stageAddon = stageMxcSdkAddon, announce = (message) => process.stderr.write(message + "\n") } = {}) {
   projectRoot = realpathSync(projectRoot);
   const original = pins ?? JSON.parse(readFileSync(path.join(projectRoot, PIN_PATH), "utf8"));
   const result = structuredClone(original);
   // Install the lockfile dependency tree first; nested dependency paths are intentional.
   const modules = path.join(projectRoot, "node_modules");
+  const archiveRoot = path.join(modules, original.package);
+  const license = path.join(projectRoot, "resources/licenses/mxc/LICENSE.md");
+  if (sha256(readFileSync(license)) !== original.licenseSha256) throw new Error("License trust anchor mismatch; review the archive and license pins explicitly");
+  // Check the reviewed launcher anchors before observing new binaries.
+  for (const [target, { launcher }] of Object.entries(original.targets)) {
+    if (target.startsWith("win32-") && sha256(sourceBytes(archiveRoot, launcher.member)) !== launcher.sha256) {
+      throw new Error(`Launcher trust anchor mismatch: ${target}; review the archive and launcher pins explicitly`);
+    }
+  }
+  for (const [target, { launcher, library }] of Object.entries(result.targets)) {
+    if (target.startsWith("win32-")) continue;
+    launcher.sha256 = sha256(sourceBytes(archiveRoot, launcher.member));
+    library.sha256 = sha256(sourceBytes(archiveRoot, library.member));
+  }
+  // Target observations never need optional addons from a foreign platform.
+  if (launchersOnly) return result;
   // Header/build tooling is not loaded by prebuilt native addons. It may be
   // hoisted or omitted by dependency collection and has no runtime pins.
   const paths = new Set(Object.keys(original.sdk.files).filter((relative) => !relative.startsWith("node-pty/node_modules/node-addon-api/")));
@@ -81,7 +97,7 @@ export async function generateMxcPins({ projectRoot = PROJECT_ROOT, pins, allowD
   try {
     // Preserve reviewed archive trust anchors while discovering native observations.
     // The staging helper checks both archive SHA512 and the existing addon byte pins.
-    for (const arch of ["x64", "arm64"]) {
+    for (const arch of ["x64", "arm64", ...Object.hasOwn(original.targets, "darwin-arm64") ? ["darwin-arm64"] : []]) {
       const addon = original.sdk.addons[arch];
       if (!addon || typeof addon.tarballSha512Base64 !== "string" || !addon.tarballSha512Base64) {
         throw new Error(`Missing reviewed addon archive integrity: ${arch}`);
@@ -98,26 +114,23 @@ export async function generateMxcPins({ projectRoot = PROJECT_ROOT, pins, allowD
       }
       entries.add(addonPrefix + "package.json");
       discoverCode(addonModules, addon.package, entries);
+      if (arch === "darwin-arm64") {
+        entries.add(`${addonPrefix}darwin_arm64/koffi.node`);
+        result.sdk.darwinFiles = Object.fromEntries([...entries].sort().map((relative) => [relative, observe(addonModules, relative)]));
+        continue;
+      }
       discoverNativeFiles(addonModules, addonPrefix + `win32_${arch}`, entries, new Set([".node", ".dll"]));
       discoverNativeFiles(modules, `node-pty/prebuilds/win32-${arch}`, entries, new Set([".node", ".dll", ".exe"]));
       if (sdkRoot) {
         discoverNativeFiles(modules, sdkRoot + `/bin/${arch}`, entries, new Set([".dll"]));
       }
       result.sdk.architectures[arch] = Object.fromEntries([...entries].sort().map((relative) => [relative, observe(relative.startsWith(addonPrefix) ? addonModules : modules, relative)]));
-      // A source install normally includes launchers; a reduced install retains the
-      // reviewed anchor and cannot replace it with a newly observed value.
-      const launcher = `@microsoft/mxc-sdk/bin/${arch}/wxc-exec.exe`;
-      if (existsSync(path.join(modules, launcher)) && sha256(sourceBytes(modules, launcher)) !== original.wxcExecSha256[arch]) {
-        throw new Error(`Launcher trust anchor mismatch: ${arch}; review the archive and launcher pins explicitly`);
-      }
     }
     result.sdk.versions = Object.fromEntries(orderedEntries(original.sdk.packages).map(([name, relative]) => {
       const metadata = result.sdk.packageMetadata[relative + "/package.json"];
       if (metadata?.name !== name) throw new Error(`Package identity mismatch: ${name}`);
       return [name, metadata.version];
     }));
-    const license = path.join(projectRoot, "resources/licenses/mxc/LICENSE.md");
-    if (sha256(readFileSync(license)) !== original.licenseSha256) throw new Error("License trust anchor mismatch; review the archive and license pins explicitly");
     result.sdk.notices = Object.fromEntries(orderedEntries(original.sdk.notices).map(([name]) => [name, sha256(readFileSync(path.join(projectRoot, "resources/licenses/mxc", name)))]));
     result.sdk.packageMetadata = Object.fromEntries(orderedEntries(result.sdk.packageMetadata));
     return result;
@@ -140,8 +153,12 @@ export async function updateMxcPins({ projectRoot = PROJECT_ROOT, check = false,
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
   try {
     const args = process.argv.slice(2);
-    if (args.some((arg) => !["--check", "--no-download"].includes(arg))) throw new Error("Usage: update-mxc-pins.mjs [--check] [--no-download]");
-    const changed = await updateMxcPins({ check: args.includes("--check"), allowDownload: !args.includes("--no-download") });
+    if (args.some((arg) => !["--check", "--no-download", "--launchers-only"].includes(arg))) {
+      throw new Error("Usage: update-mxc-pins.mjs [--check] [--no-download] [--launchers-only]");
+    }
+    const changed = await updateMxcPins({
+      check: args.includes("--check"), allowDownload: !args.includes("--no-download"), launchersOnly: args.includes("--launchers-only"),
+    });
     process.stdout.write(`update-mxc-pins: ${changed ? "updated" : "current"}\n`);
   } catch (error) {
     process.stderr.write(`update-mxc-pins: ${error.message}\n`);

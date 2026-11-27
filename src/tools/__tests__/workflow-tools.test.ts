@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { t } from "../../i18n/index.js";
 
 const REPO_ROOT = resolvePath(
   fileURLToPath(new URL(".", import.meta.url)),
@@ -716,7 +717,8 @@ describe("agent_spawn tool", () => {
   });
 
   it("keeps the spawn-depth hard stop ahead of background capability checks", async () => {
-    const getRunner = vi.fn();
+    const spawn = vi.fn();
+    const getRunner = () => ({ spawn }) as never;
     const emit = vi.fn();
     const tool = createAgentSpawnTool({ getRunner, emit });
     const result = await tool.execute(
@@ -729,10 +731,10 @@ describe("agent_spawn tool", () => {
     );
 
     expect(JSON.parse(result.output)).toMatchObject({
-      error: "agent_spawn cannot be invoked from a sub-agent",
+      error: t("be_agentSpawn.depthLimit"),
       taskState: "TASK_STATE_REJECTED",
     });
-    expect(getRunner).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
   });
   it("forwards to runner and emits start/done events", async () => {

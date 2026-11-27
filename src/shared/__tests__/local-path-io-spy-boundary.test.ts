@@ -430,6 +430,8 @@ function withStubbedWindowsLookups(run: (calls: {
         break;
       case "existsSync":
         return true;
+    case "accessSync":
+      return undefined;
       case "readFile": case "readFileSync":
         if (entry.contents !== undefined) return Buffer.from(entry.contents);
         break;

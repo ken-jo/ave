@@ -39,7 +39,7 @@ const refuse = <C extends string>(code: C): { ok: false; code: C } => ({ ok: fal
 /** The one host function that says which sources may create a run's stage children. Called at start and before every spawn. */
 export const authoriseRunSource: AuthoriseRunSource = (a) => {
   const kind: unknown = (a.source as { kind?: unknown } | null)?.kind;
-  if (kind !== "local-create-and-run" && kind !== "schedule-attachment") return refuse("source-not-authorised");
+  if (kind !== "local-create-and-run" && kind !== "tailnet-create-and-run" && kind !== "schedule-attachment") return refuse("source-not-authorised");
   const source = a.source;
   if (!samePin(source.pin, a.runPin)) return refuse("pin-mismatch");
   if (!a.storedHashMatches) return refuse("graph-mismatch");
@@ -48,7 +48,7 @@ export const authoriseRunSource: AuthoriseRunSource = (a) => {
   // At start and at every spawn, whoever started the run: an archived template starts nothing more.
   if (a.template.archivedAt !== undefined) return refuse("template-archived");
 
-  if (source.kind === "local-create-and-run") {
+  if (source.kind !== "schedule-attachment") {
     // Which version Create and run may name is a start rule: a run keeps its pinned version when a newer one is confirmed meanwhile.
     if (a.phase === "start" && a.template.currentVersion !== a.runPin.version) return refuse("not-current-version");
     if (source.projectRoot !== a.runProjectRoot) return refuse("project-mismatch");

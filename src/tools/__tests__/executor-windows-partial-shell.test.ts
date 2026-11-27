@@ -8,11 +8,11 @@ import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { configureHostResources } from "../../main/host-resources.js";
+import { join } from "node:path";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 
 const childProcessMock = vi.hoisted(() => ({
@@ -44,6 +44,7 @@ import {
   type ApprovalRequest,
 } from "../../permissions/approval-gate.js";
 import {
+  HOST_SHELL_AUTHORIZATION_REVOKED_ERROR,
   canonicalizeHostShellAllowedDirectories,
   consumeHostShellExecutionPermit,
   resolveHostShellWorkingDirectory,
@@ -54,6 +55,7 @@ import {
   __resetSandboxRequestedAtBootForTest,
   __resetWindowsSandboxSubstrateForTest,
   setActiveSandboxCapability,
+  setContainerShellSubstrate,
   setShellSandboxRequestedAtBoot,
   setWindowsSandboxSubstrate,
 } from "../../permissions/sandbox-capability.js";
@@ -72,6 +74,8 @@ import { userPermissionContext as permissionContext } from "./tool-context-fixtu
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { makeSubAgentApprovalAdapter } from "../../engine/subagent-runner.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+
+withSourceHostResources();
 
 const ORIGINAL_PLATFORM = process.platform;
 let testRoot: string;
@@ -119,6 +123,8 @@ function fullDarwinAsrt(): void {
     reason: "full ASRT",
     confines: { filesystem: true, process: true, network: true },
   });
+  // macOS shells run on the container route once its shell is published; the wrap alone leaves them on the no-confinement floor.
+  setContainerShellSubstrate({ state: "available" });
 }
 function explicitlySandboxOff(platform: "darwin" | "linux" | "win32"): void {
   setProcessPlatform(platform);
@@ -170,11 +176,12 @@ function recordingAuditLogger(): {
 }
 
 // Windows host shell cwds are pinned through the shipped path-kind helper; boot configures its resources first.
-beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("ToolExecutor — Windows partial shell Plan B", () => {
   beforeEach(() => {
     testRoot = realpathSync(mkdtempSync(join(tmpdir(), "partial-shell-policy-")));
+    // A container shell published by an earlier darwin test must not carry over; fullDarwinAsrt publishes it again.
+    setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
     __resetShellResolverCache();
     // The shipped path-kind helper that pins Windows cwds still runs.
     childProcessMock.execFileSync.mockImplementation((file: string, args: readonly string[], options?: object) =>
@@ -388,7 +395,9 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const context = origin === "headless" ? { headless: true } : { remoteControllerAuthority: { kind: "tailnet-controller" as const, actorId: "tailnet:fixture" as const } };
     const result = await executor.executeAll([{ id: "unavailable-host", name: "bash", input: { command: "echo host", cwd: "/outside-host-request", executionMode: "host", justification: "Use the host environment" } }], { sessionId: "executor-windows-partial-shell-session", permissionContext: permissionContext(context) });
     expect(result[0].is_error).toBe(true);
-    expect(result[0].content.toLowerCase()).toMatch(/host policy authorization|remote controller|remote-controller/);
+    expect(result[0].content.toLowerCase()).toMatch(/one-shot host approval permit|remote controller|remote-controller/);
+    if (origin === "headless") expect(result[0].content).toContain(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
+    else expect(result[0].content.toLowerCase()).toMatch(/remote controller|remote-controller/);
     expect(send).not.toHaveBeenCalled();
     expect(executed).not.toHaveBeenCalled();
   });
@@ -452,6 +461,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       platform: "darwin",
       requestedSandbox: true,
       mode: "asrt",
+      substrate: "mxc",
       fallbackReason: "none",
       capability: { kind: "asrt", confines: { filesystem: true, process: true, network: true } },
     });
@@ -857,7 +867,8 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(requestAndWait).toHaveBeenCalledTimes(1);
     expect(request?.executionPlan).toBeDefined();
     expect(result[0]?.is_error).toBe(true);
-    expect(result[0]?.content).toContain("no host policy authorization or verified approval receipt");
+    expect(result[0]?.content).toContain(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
+    expect(result[0]?.content).toContain("one-shot host approval permit");
     expect(result[0]?.executionPlan).toBe(request!.executionPlan);
     expect(endMetas).toHaveLength(1);
     expect(endMetas[0]?.executionPlan).toBe(request!.executionPlan);

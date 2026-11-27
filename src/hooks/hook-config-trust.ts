@@ -9,6 +9,7 @@ import {
 } from "./hook-config.js";
 import { defaultHooksDir, discoverHooks, type DiscoveredHook } from "./hook-discovery.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { disabledHookOriginalName } from "./hook-disable-state.js";
 import { admitWindowsLookupPaths, windowsObligationsApply } from "../permissions/admitted-obligation.js";
@@ -110,70 +111,74 @@ export function loadHookConfig(
 }
 
 export function hashHookCommandFiles(command: readonly string[], configDir: string): { hash: string; files: string[]; errors: string[] } {
-  const hasher = createHash("sha256");
-  hasher.update(JSON.stringify(command));
-  const errors: string[] = [];
-  const files = new Set<string>();
-  let cwd: string;
-  try {
-    cwd = resolveHookConfigDirectory(configDir);
-  } catch {
-    return { hash: hasher.digest("hex"), files: [], errors: ["configuration directory cannot be resolved"] };
-  }
-  hasher.update("\0cwd\0").update(trustAnchorKey(cwd));
-  const nativeWindows = windowsObligationsApply();
-  const operands = command.flatMap((raw, index) => {
-    if (raw.startsWith("-")) return [];
-    const token = expandLeadingTilde(raw);
-    const executable = index === 0;
-    // A bare executable is PATH-resolved; operands are always resolved against the bound cwd.
-    if (executable && !isAbsolute(token) && !token.includes("/") && !token.includes(sep)) return [];
-    if (nativeWindows && !executable && /^[a-z][a-z0-9+.-]+:\/\//iu.test(token)) return [];
-    return [{ index, candidate: pathResolve(cwd, token), executable }];
-  });
-  const windowsPaths = nativeWindows ? admitWindowsLookupPaths(operands.map(operand => operand.candidate), "preview") : undefined;
-  for (const { index, candidate, executable } of operands) {
+  return withLocalityDecision(() => {
+    const hasher = createHash("sha256");
+    hasher.update(JSON.stringify(command));
+    const errors: string[] = [];
+    const files = new Set<string>();
+    let cwd: string;
     try {
-      const admitted = windowsPaths?.get(candidate);
-      if (windowsPaths !== undefined && admitted === undefined) throw new Error("Hook operand could not be admitted");
-      if (admitted?.kind === "missing" && !executable) continue;
-      const target = admitted?.target ?? realpathSync(candidate);
-      if (admitted === undefined ? !statSync(target).isFile() : admitted.kind !== "file") {
-        if (executable) errors.push("hook executable is not a regular file");
-        continue;
-      }
-      const bytes = readFileSync(target);
-      hasher.update(`\0file:${index}\0`).update(trustAnchorKey(candidate)).update("\0").update(trustAnchorKey(target)).update("\0").update(createHash("sha256").update(bytes).digest());
-      files.add(target);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (!executable && (code === "ENOENT" || code === "ENOTDIR")) continue;
-      errors.push(`file operand ${index} cannot be resolved or read`);
-      hasher.update(`\0unreadable:${index}\0`);
+      cwd = resolveHookConfigDirectory(configDir);
+    } catch {
+      return { hash: hasher.digest("hex"), files: [], errors: ["configuration directory cannot be resolved"] };
     }
-  }
-  if (files.size === 0) errors.push("command has no regular-file trust anchor");
-  return { hash: hasher.digest("hex"), files: [...files], errors };
+    hasher.update("\0cwd\0").update(trustAnchorKey(cwd));
+    const nativeWindows = windowsObligationsApply();
+    const operands = command.flatMap((raw, index) => {
+      if (raw.startsWith("-")) return [];
+      const token = expandLeadingTilde(raw);
+      const executable = index === 0;
+      // A bare executable is PATH-resolved; operands are always resolved against the bound cwd.
+      if (executable && !isAbsolute(token) && !token.includes("/") && !token.includes(sep)) return [];
+      if (nativeWindows && !executable && /^[a-z][a-z0-9+.-]+:\/\//iu.test(token)) return [];
+      return [{ index, candidate: pathResolve(cwd, token), executable }];
+    });
+    const windowsPaths = nativeWindows ? admitWindowsLookupPaths(operands.map(operand => operand.candidate), "preview") : undefined;
+    for (const { index, candidate, executable } of operands) {
+      try {
+        const admitted = windowsPaths?.get(candidate);
+        if (windowsPaths !== undefined && admitted === undefined) throw new Error("Hook operand could not be admitted");
+        if (admitted?.kind === "missing" && !executable) continue;
+        const target = admitted?.target ?? realpathSync(candidate);
+        if (admitted === undefined ? !statSync(target).isFile() : admitted.kind !== "file") {
+          if (executable) errors.push("hook executable is not a regular file");
+          continue;
+        }
+        const bytes = readFileSync(target);
+        hasher.update(`\0file:${index}\0`).update(trustAnchorKey(candidate)).update("\0").update(trustAnchorKey(target)).update("\0").update(createHash("sha256").update(bytes).digest());
+        files.add(target);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (!executable && (code === "ENOENT" || code === "ENOTDIR")) continue;
+        errors.push(`file operand ${index} cannot be resolved or read`);
+        hasher.update(`\0unreadable:${index}\0`);
+      }
+    }
+    if (files.size === 0) errors.push("command has no regular-file trust anchor");
+    return { hash: hasher.digest("hex"), files: [...files], errors };
+  });
 }
 
 export function hashHookConfigDefinition(raw: Buffer, entries: readonly HookConfigEntry[]): {
   trustHash: string; errors: string[]; fileDependencies: ReadonlyMap<string, readonly string[]>;
 } {
-  const hasher = createHash("sha256").update(raw);
-  const errors: string[] = [];
-  const fileDependencies = new Map<string, readonly string[]>();
-  for (const entry of entries) {
-    if (entry.handlerType === "http") continue;
-    if (!entry.configDir) {
-      errors.push(`hooks.json: ${entry.id} configuration directory is missing`);
-      continue;
+  return withLocalityDecision(() => {
+    const hasher = createHash("sha256").update(raw);
+    const errors: string[] = [];
+    const fileDependencies = new Map<string, readonly string[]>();
+    for (const entry of entries) {
+      if (entry.handlerType === "http") continue;
+      if (!entry.configDir) {
+        errors.push(`hooks.json: ${entry.id} configuration directory is missing`);
+        continue;
+      }
+      const result = hashHookCommandFiles(entry.command, entry.configDir);
+      hasher.update("\0").update(entry.id).update("\0").update(result.hash);
+      errors.push(...result.errors.map((error) => `hooks.json: ${entry.id} ${error}`));
+      fileDependencies.set(entry.id, result.files);
     }
-    const result = hashHookCommandFiles(entry.command, entry.configDir);
-    hasher.update("\0").update(entry.id).update("\0").update(result.hash);
-    errors.push(...result.errors.map((error) => `hooks.json: ${entry.id} ${error}`));
-    fileDependencies.set(entry.id, result.files);
-  }
-  return { trustHash: hasher.digest("hex"), errors, fileDependencies };
+    return { trustHash: hasher.digest("hex"), errors, fileDependencies };
+  });
 }
 
 export function bindHookConfigPaths(entries: HookConfigEntry[], baseDirectory: string): void {

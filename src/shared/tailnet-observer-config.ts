@@ -3,6 +3,9 @@
 import { isRecord } from "./is-record.js";
 import { hasControlChars } from "./display-safe-text.js";
 
+export const TAILNET_CONFINED_RANGE_UNVERIFIED = "tailnet-observer-confined-range-unverified";
+export const TAILNET_PORT_CONFINED_WORKER_RANGE = "tailnet-observer-port-confined-worker-range";
+
 type TailnetObserverConfigSourceView = "file" | "env-override" | "unset";
 
 /** Identity authorization requires pairing and a share; app-capability additionally requires administrator policy. Missing authorization is rejected. */

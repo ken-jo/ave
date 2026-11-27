@@ -4,23 +4,23 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aveHome } from "../../../shared/ave-home.js";
-import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
+import { type HostGit, HostGitError } from "../host-git.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { JOIN_DIR, RUN_FILE, runBranch } from "../workspace-layout.js";
 import { removeLink, removeTree, stageOf, writeUnder as write } from "./stage-fixtures.js";
-import { type GitFixture, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
+import { type GitFixture, gitFixture, sealed, stageRoot, seedGitFixtures } from "./stage-git-fixture.js";
 
 let fx: GitFixture;
 let base: string;
 let repo: string;
-let env: NodeJS.ProcessEnv;
+const createFixture = seedGitFixtures();
 const userGit = (cwd: string, ...args: string[]): string => fx.userGit(cwd, ...args);
 const commitAll = (message: string): string => fx.commitAll(message);
 const start = (): ReturnType<GitFixture["start"]> => fx.start();
 
 beforeEach(() => {
-  fx = gitFixture();
-  ({ base, repo, env } = fx);
+  fx = createFixture();
+  ({ base, repo } = fx);
 });
 
 afterEach(() => fx.done());
@@ -60,7 +60,7 @@ describe("git stage workspaces", () => {
     const outside = join(base, "outside");
     write(outside, ".env", "outside\n");
     write(outside, "conf/.env", "outside\n");
-    const real = createHostGit({ env });
+    const real = fx.git;
     let swap: "stage" | "folder" | undefined;
     const run: HostGit["run"] = async (cwd, args, call) => {
       const result = await real.run(cwd, args, call);
@@ -156,9 +156,29 @@ describe("git stage workspaces", () => {
     expect(() => userGit(joinDir, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")).toThrow();
     // Nothing was force-merged: the second stage's answer is not on the run branch.
     expect(userGit(joinDir, "show", "HEAD:a.txt")).toBe("from s1");
-    // The same conflict has the same hash; the gate's decision is bound to it.
+    // The workspace evidence stays stable. The scheduler binds it to each conflict generation.
     const again = await handle.provider.integrate(handle.run, "j1", ["s1", "s2"]);
     expect(again.ok === false && again.conflict.conflictHash).toBe(result.conflict.conflictHash);
+  });
+
+  it("opens the owned join folder and refuses a replacement at the same path", async () => {
+    const handle = start();
+    const open = await handle.provider.open(handle.run, repo);
+    if (!open.ok) throw new Error(open.code);
+    const joinDir = join(open.workspace.runRoot, JOIN_DIR);
+    const openFolder = vi.fn(async () => true);
+    expect(await handle.provider.openJoinFolder(handle.run, openFolder)).toBe(true);
+    expect(openFolder).toHaveBeenCalledExactlyOnceWith(joinDir);
+    const held = join(base, "held-join");
+    renameSync(joinDir, held);
+    try {
+      symlinkSync(held, joinDir, "junction");
+      expect(await handle.provider.openJoinFolder(handle.run, openFolder)).toBe(false);
+      expect(openFolder).toHaveBeenCalledTimes(1);
+    } finally {
+      if (existsSync(joinDir)) removeLink(joinDir, open.workspace.runRoot);
+      renameSync(held, joinDir);
+    }
   });
 
   it("a conflicting name with pattern characters is told of the stages that changed that very file", async () => {
@@ -175,7 +195,7 @@ describe("git stage workspaces", () => {
 
   /** A run with two sealed stages that conflict on `a.txt`, its provider's git failing the calls `fails` picks while `failing` is set. */
   async function conflicting(fails: (args: readonly string[]) => boolean): Promise<{ handle: ReturnType<typeof start>; joinDir: string; record: string; failing: { on: boolean } }> {
-    const real = createHostGit({ env });
+    const real = fx.git;
     const failing = { on: false };
     const git: HostGit = { drivers: real.drivers, floorHolds: real.floorHolds, run: (cwd, args, call) => failing.on && fails(args) ? Promise.resolve({ code: 128, stdout: "", stderr: "fatal: fixture" }) : real.run(cwd, args, call) };
     const handle = fx.start({ git });
@@ -486,7 +506,7 @@ describe("git stage workspaces", () => {
 
   it("a secret path stays out of a seal as the one file it names, whatever its name reads as to git, and every name git tells the host is asked for as text", async () => {
     const calls: { args: readonly string[]; exact: boolean }[] = [];
-    const real = createHostGit({ env });
+    const real = fx.git;
     const git: HostGit = { drivers: real.drivers, floorHolds: real.floorHolds, run: (cwd, args, call) => { calls.push({ args, exact: call?.exact === true }); return real.run(cwd, args, call); } };
     // The secret's name is, read as a pattern, the other file's.
     const handle = fx.start({ git, sensitive: path => basename(path) === "[n]ew.txt" });
@@ -508,7 +528,7 @@ describe("git stage workspaces", () => {
     ["ls-files", "prepare", "git-unavailable"],
     ["--name-only", "seal", "workspace-unavailable"],
   ])("an answer to %s that holds a name that is no text ends the %s as %s: no name is acted on under another", async (kind, step, code) => {
-    const real = createHostGit({ env });
+    const real = fx.git;
     let broken = false;
     // What a name that is no text has git answer, once the answer is asked for as it was written.
     const git: HostGit = { drivers: real.drivers, floorHolds: real.floorHolds, run: (cwd, args, call) => broken && args.includes(kind) && call?.exact === true ? Promise.reject(new HostGitError("not-text", "fixture: a name that is no text")) : real.run(cwd, args, call) };
@@ -558,7 +578,7 @@ describe("git stage workspaces", () => {
     if (!keptOpen.ok || !goneOpen.ok) throw new Error("open refused");
     const root = await stageRoot(kept, "s1");
     await stageRoot(gone, "s1");
-    const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }) });
+    const restarted = createStageWorkspaceProvider({ git: fx.git });
     await restarted.sweep([kept.run.runId]);
     expect(existsSync(join(goneOpen.workspace.runRoot, RUN_FILE))).toBe(true);
     await restarted.release(gone.run, "all");
@@ -579,7 +599,7 @@ describe("git stage workspaces", () => {
     write(copy, "s1/kept.txt", "kept\n");
     writeFileSync(join(copy, RUN_FILE), readFileSync(join(runRoot, RUN_FILE), "utf8"));
     try {
-      const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => () => true });
+      const restarted = createStageWorkspaceProvider({ git: fx.git, removable: async () => () => true });
       await restarted.sweep([handle.run.runId]);
       await restarted.discard(new Map());
       await restarted.release(handle.run, "all");
@@ -599,7 +619,7 @@ describe("git stage workspaces", () => {
     await stageRoot(handle, "s1");
     write(await stageRoot(handle, "s2"), "sentinel.txt", "outside\n");
     const restored = join(base, "restored");
-    const real = createHostGit({ env });
+    const real = fx.git;
     const calls: string[] = [];
     // As a restore of the home does, at the first git call of the release: the folder is moved away and a link stands in its place.
     const run: HostGit["run"] = async (cwd, args, call) => {
@@ -643,7 +663,7 @@ describe("git stage workspaces", () => {
     }
 
     // The worktree is made, branch and all, and the call then counts as failed.
-    const real = createHostGit({ env });
+    const real = fx.git;
     const run: HostGit["run"] = async (cwd, args, call) => {
       const result = await real.run(cwd, args, call);
       return args[0] === "worktree" && args[1] === "add" ? { ...result, code: 128 } : result;
@@ -670,7 +690,7 @@ describe("git stage workspaces", () => {
       expect(await handle.provider.integrate(handle.run, "j1", ["s1"])).toEqual({ ok: true });
       expect(userGit(repo, "show", `${runBranch(handle.run.runId)}:from-s1.txt`)).toBe("s1");
       // Found again by a provider that has only the disk to go by.
-      await createStageWorkspaceProvider({ git: createHostGit({ env }) }).release(handle.run, "all");
+      await createStageWorkspaceProvider({ git: fx.git }).release(handle.run, "all");
       expect(existsSync(open.workspace.runRoot)).toBe(false);
       expect(userGit(repo, "worktree", "list", "--porcelain").match(/^worktree /gmu)).toHaveLength(1);
       expect(readdirSync(join(repo, ".git", "worktrees"))).toEqual([]);
@@ -692,4 +712,22 @@ it("a git fixture that cannot be made leaves nothing of itself in the temp folde
   } finally {
     vi.unstubAllEnvs();
   }
+});
+
+it("fixture teardown attempts every release and removes the repository when releases reject", async () => {
+  const firstError = new Error("first release failed");
+  const secondError = new Error("second release failed");
+  vi.spyOn(start().provider, "release").mockRejectedValueOnce(firstError);
+  vi.spyOn(start().provider, "release").mockRejectedValueOnce(secondError);
+  const last = start();
+  const release = vi.spyOn(last.provider, "release");
+
+  const error: unknown = await fx.done().catch((error: unknown) => error);
+  expect.soft(release).toHaveBeenCalledWith(last.run, "all");
+  expect.soft(existsSync(base)).toBe(false);
+  expect(error).toBeInstanceOf(AggregateError);
+  const errors: unknown[] = (error as AggregateError).errors;
+  expect(errors).toHaveLength(2);
+  expect(errors[0]).toBe(firstError);
+  expect(errors[1]).toBe(secondError);
 });

@@ -16,7 +16,7 @@ import {
 import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { updatePermissionsFile } from "../permissions-store.js";
-import { mkdtempSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -910,6 +910,27 @@ describe("PermissionManager.prunePathGrantsUnderRoot (#1493)", () => {
   afterEach(async () => {
     await cleanupTmpDir(root);
     vi.clearAllMocks();
+  });
+
+  it.skipIf(process.platform === "win32")("retains one POSIX removal snapshot across persisted grant pruning", async () => {
+    const first = join(root, "first");
+    const second = join(root, "second");
+    const alias = join(root, "removed");
+    for (const path of [first, second]) mkdirSync(path);
+    symlinkSync(first, alias);
+    const firstGrant = join(first, "note.md");
+    const secondGrant = join(second, "note.md");
+    for (const path of [firstGrant, secondGrant]) await pm.addAlwaysAllowedPersist(`write_file:path:${path}`, "write");
+
+    const preview = pm.countPathGrantsUnderRoot(alias);
+    const pruned = pm.prunePathGrantsUnderRoot(alias);
+    unlinkSync(alias);
+    symlinkSync(second, alias);
+
+    await expect(preview).resolves.toBe(1);
+    expect((await pruned).map(grant => grant.path)).toEqual([firstGrant]);
+    expect(pm.checkDetailed(`write_file:path:${firstGrant}`, "builtin", "write").decision).toBe("ask");
+    expect(pm.checkDetailed(`write_file:path:${secondGrant}`, "builtin", "write").decision).toBe("allow");
   });
 
   it("prunes an allow grant whose path is strictly under the removed root", async () => {

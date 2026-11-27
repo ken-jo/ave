@@ -12,6 +12,7 @@ import {
 } from "../contract/app-contract.js";
 import { isExternalOrigin, type ExternalOrigin } from "../contract/trust-origin.js";
 import type { IpcDeps } from "../ipc/types.js";
+import type { AgentActionApprovalFailure, AgentActionApprovalResult } from "../permissions/agent-action-approver.js";
 import {
   LOOPBACK_CONVERSATION_ACTOR,
   type ConversationCommandPort,
@@ -46,14 +47,13 @@ export interface LocalApiRequest {
 // Transport clients may extend failure codes; in-process results retain the narrower default union.
 export type LocalApiResult<E extends string = LocalApiErrorCode> =
   | { ok: true; data: unknown }
-  | { ok: false; error: E };
+  | { ok: false; error: E; approvalOutcome?: AgentActionApprovalFailure };
 
-// Only true authorizes an allowlisted mutation; false or rejected approval fails closed.
 export type ExternalMutationApprover = (req: {
   channel: ExternalMutationChannel;
   args: unknown;
   origin: ExternalOrigin;
-}) => Promise<boolean>;
+}) => Promise<{ readonly approved: true } | Extract<AgentActionApprovalResult, { approved: false }>>;
 
 export interface LocalApiDeps {
   ipc: IpcDeps;
@@ -138,16 +138,23 @@ export function createLocalApi(deps: LocalApiDeps): LocalApi {
 
     // Check gesture policy before the public allowlist so callers receive the specific gated rejection.
     if (CHANNEL_GESTURE[channel] === "required") {
-      // Allowlisted mutations require an installed approver and an explicit true result.
       if (isExternalMutationChannel(channel) && externalMutationApprover) {
-        let approved: boolean;
+        let approval: Awaited<ReturnType<ExternalMutationApprover>>;
         try {
-          approved = await externalMutationApprover({ channel, args, origin });
+          approval = await externalMutationApprover({ channel, args, origin });
         } catch {
-          return { ok: false, error: EXTERNAL_MUTATION_DENIED };
+          approval = { approved: false, outcome: "rejected" };
         }
-        if (!approved) {
-          return { ok: false, error: EXTERNAL_MUTATION_DENIED };
+        if (approval.approved !== true) {
+          const approvalOutcome = approval.outcome;
+          ipc.auditLogger.log({
+            timestamp: new Date().toISOString(),
+            sessionId: ipc.conversationLoop.getSessionId(),
+            type: "approval",
+            input: `[external-mutation] channel=${channel} origin=${origin}`,
+            output: `approval=${approvalOutcome}`,
+          });
+          return { ok: false, error: EXTERNAL_MUTATION_DENIED, approvalOutcome };
         }
         const data = await routeExternalMutation(channel, args, origin);
         return { ok: true, data };

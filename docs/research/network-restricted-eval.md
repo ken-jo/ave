@@ -47,7 +47,7 @@ Cases that need a live sandbox call `sandboxCasesRun()` (`src/plugins/isolation/
 - macOS permission path tests (no backend install needed).
 - Linux confinement path tests, which install `bwrap`, `socat` and `ripgrep`, allow unprivileged user namespaces, and prove the backend before running.
 
-Both run `confined-plugin-child.test.ts`, `adversarial-escapes.test.ts` (including the `escape_network` cases, where an out-of-allow-list host is refused and a loopback listener is not reachable) and `src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts`. The general Linux job has no `bwrap`, so these cases pass there without measuring. The Windows job runs sandbox logic tests (`windows-sandbox-logic.test.ts`, `asrt-windows-support.test.ts`) but not live egress cases.
+Both run `confined-plugin-child.test.ts` and `adversarial-escapes.test.ts`, including `escape_network` cases where an out-of-allow-list host is refused and a loopback listener is unreachable. The general Linux job has no `bwrap`, so these cases pass there without measuring. On Windows, `windows-sandbox-logic.test.ts` checks policy configuration. The native tier includes `asrt-mxc-egress.test.ts` and `asrt-sandbox-mxc-proxy.test.ts`, which exercise per-invocation egress and relay teardown with local fixtures.
 
 ### 4.3 Enforced network policy
 

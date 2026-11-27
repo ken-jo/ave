@@ -3,7 +3,7 @@ import { useConfigurationOwner } from "../../../__tests__/support/configuration-
 useConfigurationOwner();
 
 import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
-import { answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { buildChainedEntries } from "../../../audit/hmac-chain.js";
 import { tmpdir } from "node:os";
@@ -16,6 +16,7 @@ import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { UNAUTHORIZED_FRAME } from "../../gated.js";
 import { setWorkspaceRootLifecycle } from "../../../permissions/workspace-root-lifecycle.js";
+import type { ProjectRuleRootBinding } from "../../../permissions/rules/project-rule-files.js";
 import {
   foreignFrameEvent,
   framelessEvent,
@@ -103,6 +104,7 @@ function makeDeps(options: {
   snapshotSource?: string;
   snapshotSessionId?: string | null;
   shellRule?: import("../../../shared/permissions-events.js").ShellRuleApproval;
+  shellRuleProjectRoot?: ProjectRuleRootBinding;
   egress?: { host: string; port: number; network: "public" | "local" | "unverified"; rule: string | null; projectCwd?: string; scopes: readonly ("once" | "session" | "tab" | "project" | "always")[]; terminalTabId?: string };
   mayRecord?: boolean;
   snapshotVerdict?: "low" | "medium" | "high";
@@ -174,8 +176,13 @@ function makeDeps(options: {
       requestAndWait: answeringRequestAndWait(() => ({ choice: options.approvalChoice ?? "allow-once" })),
       resolve: vi.fn((_requestId: string, decision: unknown) => decision),
       resolveFromDesktopRendererWithFreshIdentity: vi.fn((_requestId: string, decision: unknown) => decision),
-      capturePendingRequestIdentityGuard: vi.fn(() => ({ refresh: vi.fn(async () => true), isCurrent: vi.fn(() => true) })),
+      defersAllowSaves: vi.fn(() => false),
+      capturePendingRequestAuthority: vi.fn(() => ({
+        controller: { refresh: vi.fn(async () => true), isCurrent: vi.fn(() => true) },
+        isWorkingDirectoryCurrent: vi.fn(() => true),
+      })),
       mayRecordFrom: vi.fn(() => options.mayRecord ?? true),
+      cancelPendingRequest: vi.fn(),
       beginApprovalRuleSave: vi.fn(() => Object.freeze({})),
       beginExactApprovalSave: vi.fn(() => Object.freeze({})),
       completeExactApprovalSave: vi.fn(),
@@ -188,6 +195,7 @@ function makeDeps(options: {
         sessionId: options.snapshotSessionId === null ? undefined : options.snapshotSessionId ?? "conversation-1",
         projectCwd: "/srv/project",
         shellRule: options.shellRule,
+        shellRuleProjectRoot: options.shellRuleProjectRoot,
         egress: options.egress,
         toolName: options.snapshotToolName ?? "bash_run",
         args: options.snapshotArgs ?? { command: "ls" },
@@ -424,10 +432,12 @@ describe("permissions IPC handlers", () => {
   });
 
   it("suggests LLM permission review after repeated default-mode approvals", async () => {
-    const { appWindows } = await setup({
+    const { deps, appWindows } = await setup({
       mode: "default",
       hasReviewer: false,
     });
+    deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity.mockImplementation((_id, decision) =>
+      answeredApprovalDecision(decision as Parameters<typeof answeredApprovalDecision>[0], "desk", "bash_run"));
 
     await invoke(PERMISSIONS.approvalRespond, { requestId: "approval-1", choice: "allow-once" });
     await invoke(PERMISSIONS.approvalRespond, { requestId: "approval-2", choice: "allow-session" });
@@ -493,10 +503,12 @@ describe("permissions IPC handlers", () => {
   });
 
   it("suggests LLM permission review immediately after allow-always in default mode", async () => {
-    const { appWindows } = await setup({
+    const { deps, appWindows } = await setup({
       mode: "default",
       hasReviewer: false,
     });
+    deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity.mockResolvedValueOnce(
+      await answeredApprovalDecision({ requestId: "approval-always", choice: "allow-always" }, "desk", "bash_run"));
 
     await invoke(PERMISSIONS.approvalRespond, { requestId: "approval-always", choice: "allow-always" });
 
@@ -880,7 +892,10 @@ describe("human plugin re-adjudication records", () => {
 
   it("does not persist when live authority expires before the answer", async () => {
     const { deps } = await setup(eligible);
-    deps.approvalGate.capturePendingRequestIdentityGuard.mockReturnValueOnce({ refresh: vi.fn(async () => false), isCurrent: vi.fn(() => true) });
+    deps.approvalGate.capturePendingRequestAuthority.mockReturnValueOnce({
+      controller: { refresh: vi.fn(async () => false), isCurrent: vi.fn(() => true) },
+      isWorkingDirectoryCurrent: vi.fn(() => true),
+    });
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent" }))
       .toMatchObject({ ok: false, error: "no-such-request" });
     expect(recordApprovalMock).not.toHaveBeenCalled();
@@ -920,7 +935,10 @@ describe("human plugin re-adjudication records", () => {
 describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => {
   it("refuses remembered answers when fresh controller authority is unavailable", async () => {
     const { deps } = await setup();
-    deps.approvalGate.capturePendingRequestIdentityGuard.mockReturnValueOnce({ refresh: vi.fn(async () => false), isCurrent: vi.fn(() => true) });
+    deps.approvalGate.capturePendingRequestAuthority.mockReturnValueOnce({
+      controller: { refresh: vi.fn(async () => false), isCurrent: vi.fn(() => true) },
+      isWorkingDirectoryCurrent: vi.fn(() => true),
+    });
     const result = await invoke(PERMISSIONS.userApprovalRecord, { requestId: "owner-changed", args: '{}', scope: "persistent", verdictAtApproval: "medium", nlJustification: null });
     expect(result).toMatchObject({ ok: false, error: "no-such-request" });
     expect(recordApprovalMock).not.toHaveBeenCalled();
@@ -1342,14 +1360,16 @@ describe("rules recorded from live approval cards", () => {
   const exactRule = "Bash(printf %s ready)";
   const body = { requestId: "live-shell", args: "{}", scope: "persistent", decision: "allow", verdictAtApproval: "medium", nlJustification: null, rule: { action: "allow", scope: "project" } };
   const shellRule = { dialect: "bash" as const, exactRule, denyRule: exactRule, denyAllowed: true, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: true, sessionAllowed: true };
-  const live = { shellRule, snapshotArgs: { command: "printf %s ready" } };
+  const shellRuleProjectRoot = { path: shellRule.projectRoot, markerPath: null, directory: { realpath: shellRule.projectRoot, dev: 1n, ino: 2n } };
+  const live = { shellRule, shellRuleProjectRoot, snapshotArgs: { command: "printf %s ready" } };
+  const projectScope = { kind: "project", projectCwd: shellRule.projectCwd, expectedProjectRoot: shellRuleProjectRoot };
   const pm = (deps: Awaited<ReturnType<typeof setup>>["deps"]) => deps.conversationLoop.permissionManager;
 
   it("writes only the host's exact project rule and never also records an exact decision", async () => {
     const { deps } = await setup(live);
     const result = await invoke(PERMISSIONS.userApprovalRecord, { ...body, projectCwd: "/different/project" });
     expect(result).toEqual({ ok: true });
-    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "project", projectCwd: "/srv/project" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, projectScope, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
     expect(recordApprovalMock).not.toHaveBeenCalled();
     expect(deps.auditLogger.append).toHaveBeenCalledWith({
       timestamp: expect.any(String), sessionId: "conversation-1", type: "approval",
@@ -1391,7 +1411,7 @@ describe("rules recorded from live approval cards", () => {
     const { deps } = await setup(live);
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Bash(printf %s *)" } }))
       .toEqual({ ok: true, warning: "wildcard-allow-broader-scope" });
-    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf %s *)", action: "allow" }, { kind: "project", projectCwd: "/srv/project" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf %s *)", action: "allow" }, projectScope, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
     expect(deps.auditLogger.append).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("edited=true") }));
   });
 

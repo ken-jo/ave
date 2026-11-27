@@ -3,7 +3,7 @@ import { finished } from "node:stream/promises";
 import { encodeMxcFrame, MxcFrameDecoder, type MxcStreamFrame } from "./mxc-extension-protocol.js";
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
 
-type FramePayload = MxcStreamFrame extends infer Frame ? Frame extends MxcStreamFrame ? Omit<Frame, "version" | "generation" | "sequence"> : never : never;
+export type MxcFramePayload = MxcStreamFrame extends infer Frame ? Frame extends MxcStreamFrame ? Omit<Frame, "version" | "generation" | "sequence"> : never : never;
 
 /** A single sequential reader and a bounded, backpressured writer on private inherited pipes. */
 export class MxcExtensionChannel {
@@ -18,7 +18,7 @@ export class MxcExtensionChannel {
     this.decoder = new MxcFrameDecoder(generation, key, role === "host" ? "supervisor" : "host");
   }
 
-  send(payload: FramePayload): Promise<void> {
+  send(payload: MxcFramePayload): Promise<void> {
     if (this.pending >= 4 || this.closed || this.output.destroyed) return Promise.reject(new MxcProcessContractError("Supervisor send is not available"));
     const frame = encodeMxcFrame({ ...payload, version: 1, generation: this.generation, sequence: this.sequence++ } as MxcStreamFrame, this.key, this.role);
     this.pending += 1;

@@ -23,6 +23,7 @@ export interface EffectSummary {
   hasMutatingEffect: boolean;
   // The recorded effects in observation order (defensive copy).
   effects: EffectEntry[];
+  observationIncomplete?: true;
 }
 
 // A request-scoped, in-memory ledger. Not thread-shared; one per invocation.
@@ -31,24 +32,32 @@ export interface EffectLedger {
   readonly correlationId: string;
   // Append one observed effect.
   record(entry: EffectEntry): void;
+  markObservationIncomplete(): void;
   // Compute the aggregate read/write classification.
   summary(): EffectSummary;
 }
 
 // Create a fresh, request-scoped effect ledger. Pure in-memory; no global state. Pass an explicit `correlationId` only in tests that pin the id.
-export function createEffectLedger(correlationId?: string): EffectLedger {
+export function createEffectLedger(correlationId?: string, parent?: EffectLedger): EffectLedger {
   const id = correlationId ?? randomUUID();
   const effects: EffectEntry[] = [];
+  let observationIncomplete = false;
   return {
     correlationId: id,
     record(entry: EffectEntry): void {
       effects.push(entry);
+    },
+    markObservationIncomplete(): void {
+      if (observationIncomplete) return;
+      observationIncomplete = true;
+      parent?.markObservationIncomplete();
     },
     summary(): EffectSummary {
       return {
         correlationId: id,
         hasMutatingEffect: effects.some((e) => e.effect === "write"),
         effects: effects.slice(),
+        ...(observationIncomplete ? { observationIncomplete: true } : {}),
       };
     },
   };
@@ -59,8 +68,8 @@ const storage = new AsyncLocalStorage<EffectLedger>();
 // Run `fn` with `ledger` bound as the ambient invocation ledger. The executor wraps each tool `execute` in this so the in-process plugin hostApi closures (reached through the loopback transport, which preserves the async chain — the same propagation `currentInvocationOrigin` relies on) record onto the right ledger. Nesting is correct: a re-entrant `callTool` opens its own scope with its own ledger, so inner mutations never double-count on the outer.
 export function runWithEffectLedger<T>(
   ledger: EffectLedger,
-  fn: () => Promise<T>,
-): Promise<T> {
+  fn: () => T,
+): T {
   return storage.run(ledger, fn);
 }
 

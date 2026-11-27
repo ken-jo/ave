@@ -1,17 +1,22 @@
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { PermissionManager, type PermissionRule } from "../permission-manager.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
 import { refusedShellPrefix } from "../rules/shell-prefix-values.js";
-import { suggestShellPrefix } from "../rules/shell-prefix-policy.js";
+import { asParsedShellCommand, suggestShellPrefix } from "../rules/shell-prefix-policy.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
-import { evaluateShellRules } from "../rules/shell-rule-matcher.js";
+import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
+import { requestBoundShellCard } from "../../__tests__/support/host-shell-approval.js";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
+import { allowKeyMaterialInspection } from "../sensitive-paths.js";
+
+withSourceHostResources();
 
 // A drive-less "/" is an unresolved-namespace protected path on win32, so the
 // protected-path floor fires before the critical-delete heuristic. Same gate
@@ -31,6 +36,38 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 const plainRoute = { runsSandboxed: false };
 const shellSubject = (command: string) => ({ kind: "shell" as const, dialect: "bash" as const, command, cwd: project });
+
+it.skipIf(process.platform === "win32")("reuses the completed POSIX shell shape after file content changes", () => {
+  const file = join(project, "report.pem");
+  writeFileSync(file, "ordinary report text");
+  const release = allowKeyMaterialInspection(path => path === file);
+  const command = 'cat "$DOC" report.pem';
+  const parsed = asParsedShellCommand(command);
+  try {
+    const before = analyzeShellForRules(parsed, project);
+    expect(before).toMatchObject({ ok: true, ordinaryAsk: expect.any(String) });
+    writeFileSync(file, "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----\n");
+    expect(analyzeShellForRules(parsed, project)).toBe(before);
+  } finally {
+    release();
+  }
+});
+
+it.skipIf(process.platform === "win32")("runs the POSIX shell file scan before returning a matching deny rule", () => {
+  const file = join(project, "report.pem");
+  writeFileSync(file, "ordinary report text");
+  const inspect = vi.fn((path: string) => path === file);
+  const release = allowKeyMaterialInspection(inspect);
+  const pattern = "Bash(cat report.pem)";
+  const spec = parseRuleSpecifier(pattern);
+  if (spec.kind !== "bash") throw new Error("Expected a shell rule");
+  try {
+    expect(evaluateShellRules("cat report.pem", { deny: [{ spec, pattern }], ask: [], allow: [] }, project).decision).toBe("deny");
+    expect(inspect).toHaveBeenCalledWith(file);
+  } finally {
+    release();
+  }
+});
 
 describe("stored broad wildcard compatibility", () => {
   it.each([{ source: "builtin" }, { tier: "invalid" }])("still rejects a malformed stored broad rule: %j", async (invalid) => {
@@ -150,11 +187,11 @@ describe("missing shell route", () => {
       if (channel === "ave:approval:request") displayed = request;
     } };
     const gate = new ApprovalGate(nativeWebContents as never);
-    const pending = gate.requestAndWait({
+    const pending = requestBoundShellCard(gate, {
       id: "missing-route", sessionId: "conversation", category: "tool", toolName: "bash", toolCategory: "shell", source: "builtin",
       args: { command: "printf ready" }, reason: "Approval required", createdAt: Date.now(), trustOrigin: "user-keyboard", ruleVerdict: { level: "medium", reason: "Bounded command" },
       evaluationContext: buildPermissionEvaluationContext({ policyMode: "default", headless: false, source: "builtin", category: "shell", trustOrigin: "user-keyboard", executionCwd: project, allowedDirectories: [project], pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [] }),
-    });
+    }, project);
     expect(displayed?.shellRule).toMatchObject({ exactRule: "Bash(printf ready)", sessionAllowed: true, persistentAllowed: true });
     gate.resolveFromDesktopRenderer("missing-route", { requestId: "missing-route", choice: "deny-once", nonce: displayed!.nonce, hmac: displayed!.hmac }, nativeWebContents as never);
     await pending;

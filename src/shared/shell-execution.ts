@@ -1,4 +1,4 @@
-import { dirname, isAbsolute, posix, relative as pathRelative, resolve as pathResolve, sep } from "node:path";
+import { isAbsolute, posix, relative as pathRelative, resolve as pathResolve, sep } from "node:path";
 import { analyzeShell, literalWord, staticShellWord, validatePreparedShellAnalysis, type PreparedShellAnalysis, type ShellAnalysis, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord, type ShellWordPart } from "./shell-analysis.js";
 import { effectiveShellCommand, stripCommandPath, type EffectiveShellCommand } from "./shell-effective-command.js";
 import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "./local-path-io.js";
@@ -26,6 +26,8 @@ export interface ShellCommandEvent {
   definedFunctions: readonly string[];
   unsetVariables: readonly string[];
   dialect: "bash" | "posix";
+  /** Set on a host fault path continued past its starting directory: only write operands of this command are checked. */
+  faultWritesOnly?: true;
   testExpression?: ShellTestExpression;
   inputRedirect?: ShellRedirect;
   inspectNested(
@@ -94,10 +96,12 @@ export interface ShellExecutionFacts {
   guestCwd?: string;
   /** Set only for an unsandboxed host route: an observed cd may still fail at execution. */
   hostCdFaults?: true;
+  /** With hostCdFaults, only where no ask precedes the command: a fault path that leaves its starting directory continues and checks its writes. */
+  hostCdFaultWrites?: true;
 }
 /** Only the containment gate of an unsandboxed host route models a cd that fails at execution. */
-export function withHostCdFaults(facts: ShellExecutionFacts | undefined, unsandboxedHost: boolean): ShellExecutionFacts | undefined {
-  return unsandboxedHost ? { ...(facts ?? { dialect: "bash", environment: {} }), hostCdFaults: true } : facts;
+export function withHostCdFaults(facts: ShellExecutionFacts | undefined, route: "host" | "host-unasked"): ShellExecutionFacts {
+  return { ...(facts ?? { dialect: "bash", environment: {} }), hostCdFaults: true, ...(route === "host-unasked" ? { hostCdFaultWrites: true as const } : {}) };
 }
 interface ShellState {
   cwd: string | null;
@@ -117,12 +121,14 @@ interface ShellState {
   inputRedirect?: ShellRedirect;
   /** Follows a host cd modeled as failing although its destination was observed; holds the destinations that failed. */
   cdFault?: readonly string[];
+  /** A fault path past its starting directory: reads and directory checks no longer apply, writes still do. */
+  faultWritesOnly?: true;
   errexit?: true;
 }
 type ExitStatus = "success" | "failure" | "unknown";
 interface BreakControl { kind: "break"; levels: number; boundary: number }
 interface StateResult { state: ShellState; status: ExitStatus; control?: BreakControl }
-interface ExecutionContext { boundary: number; loopDepth: number; condition?: true; fallback?: true }
+interface ExecutionContext { boundary: number; loopDepth: number; condition?: true }
 interface WordEvaluation { lastSubstitutionStatus?: ExitStatus; mayFail?: boolean }
 interface CommandRedirectObservation { state?: ShellState; inspected: boolean }
 // Past this many forks without a possible filesystem change, a host cd asks like an exhausted flagged budget.
@@ -138,7 +144,7 @@ export function assertStableShellEnvironmentVariable(
   }
 }
 function stateKey(state: ShellState): string {
-  return JSON.stringify([state.cwd, state.dialect, state.unicodeEscapes, state.prefixAssignmentRhs, state.inputRedirect?.source, [...state.variables].sort(), [...state.arrays].sort(), [...state.exported].sort(), [...state.readonlyVariables].sort(), [...state.unsetVariables].sort(), [...state.functions].map(([name, body]) => [name, body.source]), state.errexit, state.cdFault !== undefined]);
+  return JSON.stringify([state.cwd, state.dialect, state.unicodeEscapes, state.prefixAssignmentRhs, state.inputRedirect?.source, [...state.variables].sort(), [...state.arrays].sort(), [...state.exported].sort(), [...state.readonlyVariables].sort(), [...state.unsetVariables].sort(), [...state.functions].map(([name, body]) => [name, body.source]), state.errexit, state.cdFault !== undefined, state.faultWritesOnly]);
 }
 function decline(reason: string, word?: ShellWord): never {
   throw new ShellExecutionError(reason, word?.source.raw);
@@ -185,6 +191,10 @@ function withoutShadowedFaults(results: readonly StateResult[]): readonly StateR
 
 /** Same original text and prepared child facts are inspected at both gates. */
 export function inspectShellExecution(command: string, cwd: string, facts: ShellExecutionFacts, inspector: ShellExecutionInspector, totalTokenLimit?: number, prepared?: PreparedShellAnalysis): void {
+  withLocalityDecision(() => inspectShellExecutionInDecision(command, cwd, facts, inspector, totalTokenLimit, prepared));
+}
+
+function inspectShellExecutionInDecision(command: string, cwd: string, facts: ShellExecutionFacts, inspector: ShellExecutionInspector, totalTokenLimit?: number, prepared?: PreparedShellAnalysis): void {
   const analysis = prepared === undefined ? analyzeShell(command, "bash", totalTokenLimit === undefined ? undefined : { totalTokens: totalTokenLimit }) : validatePreparedShellAnalysis(command, prepared);
   if (!analysis.ok) throw new ShellExecutionError(analysis.reason);
   let remainingTokens = totalTokenLimit;
@@ -211,16 +221,6 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
     const rest = pathRelative(parent, path);
     return rest === "" || !isAbsolute(rest) && rest !== ".." && !rest.startsWith(`..${sep}`);
   };
-  // For lexical, link-free paths: one removal that failed a cd to missing can fail a cd to target iff it can contain both without containing cwd.
-  const sharesRemoval = (target: string, missing: string, cwd: string): boolean => {
-    let shared = target;
-    while (!within(shared, missing)) {
-      const parent = dirname(shared);
-      if (parent === shared) return false;
-      shared = parent;
-    }
-    return !within(shared, cwd);
-  };
   let steps = 0;
   let nextExecutionBoundary = 0;
   const failedCommandRedirects = new WeakMap<ShellExecutionError, CommandRedirectObservation>();
@@ -236,6 +236,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       : { ...result, control: { ...control, levels: control.levels - 1 } };
   };
   const checkPath = (path: string, raw: string, state: ShellState, effect: "read" | "write", role?: "directory"): void => {
+    if (state.faultWritesOnly && (effect === "read" || role === "directory")) return;
     if (!(guest ? posix.isAbsolute(path) : isAbsolute(path)) && state.cwd === null) {
       const error = new ShellExecutionError("working directory is unresolved", raw);
       if (inspector.unresolvedPath?.(raw, state.cwd, effect, error, role) === true) return;
@@ -392,11 +393,11 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         let path: string | undefined;
         try { path = resolveWord(redirect.target, state, depth); }
         catch (error) {
-          if (error instanceof ShellExecutionError && inspector.unresolvedPath?.(redirect.target.source.raw, state.cwd, redirect.effect, error) === true) continue;
+          if (error instanceof ShellExecutionError && (state.faultWritesOnly && redirect.effect === "read" || inspector.unresolvedPath?.(redirect.target.source.raw, state.cwd, redirect.effect, error) === true)) continue;
           throw error;
         }
         if (path === undefined) {
-          if (inspector.unresolvedPath?.(redirect.target.source.raw, state.cwd, redirect.effect) === true) continue;
+          if (state.faultWritesOnly && redirect.effect === "read" || inspector.unresolvedPath?.(redirect.target.source.raw, state.cwd, redirect.effect) === true) continue;
           decline("unresolved redirect target", redirect.target);
         }
         inspector.resolvedRedirect?.(redirect.target, path, redirect.effect, Object.fromEntries(state.variables));
@@ -494,6 +495,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       definedFunctions: Object.freeze([...state.functions.keys()]),
       unsetVariables: Object.freeze([...commandState.unsetVariables]),
       dialect: state.dialect,
+      ...(commandState.faultWritesOnly ? { faultWritesOnly: true as const } : {}),
       inputRedirect: standardInputRedirect(node.redirects, state.inputRedirect),
       ...(testAnalysis?.ok ? { testExpression: testAnalysis.expression } : {}),
       inspectNested(text, dialect, nestedContext, origin) {
@@ -663,8 +665,11 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
           decline("cannot resolve working-directory destination", targetWord);
         }
       }
-      // A modeled fault path ends where it leaves the starting directory.
-      if (state.cdFault && !within(cwd, destination)) return [];
+      // A modeled fault path ends where it leaves the starting directory, or, where no ask precedes the command, continues checking only writes.
+      if (state.cdFault && !state.faultWritesOnly && !within(cwd, destination)) {
+        if (facts.hostCdFaultWrites !== true) return [];
+        state.faultWritesOnly = true;
+      }
       // Logical cd collapses .., but original components must still be searchable; physical cd follows links.
       checkPath(destination, label, state, "write", "directory");
       const original = process.platform === "win32" ? modeledTarget : isAbsolute(target) ? target : `${state.cwd!}/${target}`;
@@ -692,8 +697,8 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       const ancestor = state.cwd !== null && within(destination, state.cwd)
         && (observedDirectory || process.platform === "win32" && observed === "unknown" && isPlainLocalDrivePath(state.cwd));
       if (ancestor || state.errexit && !context.condition) return [success];
-      // A fault path models one removal: it forks again only after a possible change, for a fallback cd, or where that removal can fail this cd too.
-      if (state.cdFault && observedDirectory && !filesystemMayChange && !context.fallback && !state.cdFault.some((missing) => state.cwd === null || sharesRemoval(destination, missing, state.cwd))) return [success];
+      // Every other cd forks, on a fault path too: a removed working directory keeps resolving relative operands from its old path,
+      // and a directory link or a second removal can fail any later destination.
       if (filesystemMayChange) {
         if (++flaggedCdForks > SHELL_ANALYSIS_LIMITS.states) decline("unresolved working-directory destination", targetWord);
       } else if (observed !== "not-directory" && ++unflaggedCdForks > UNFLAGGED_CD_FORK_LIMIT) decline("unresolved working-directory destination", targetWord);
@@ -742,8 +747,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
           if (left.control) { results.push(left); continue; }
           const desired = node.kind === "and" ? "success" : "failure";
           if (left.status !== desired) results.push({ state: left.state, status: desired === "success" ? "failure" : "success" });
-          const rightContext = node.kind === "or" && left.state.cdFault ? { ...context, fallback: true as const } : context;
-          if (left.status === desired || left.status === "unknown") results.push(...walk(node.right, left.state, depth + 1, rightContext));
+          if (left.status === desired || left.status === "unknown") results.push(...walk(node.right, left.state, depth + 1, context));
         }
         return uniqueResults(results);
       }

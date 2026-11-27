@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { collectStreamEvents as collect, streamFromArray as fromArray } from "./test-helpers.js";
 import type { StreamEvent } from "../../types.js";
 import { fullStreamToStreamEvent, genericToModelMessages } from "../adapter.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 
 describe("VercelUnifiedProvider gemini — L1 structural parity", () => {
   it("maps a canned fullStream to the expected StreamEvent sequence", async () => {
@@ -259,7 +260,7 @@ describe("VercelUnifiedProvider gemini — adapter smoke (mocked ai.streamText)"
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("gemini", "test-key");
+    const provider = new VercelUnifiedProvider("gemini", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     const events: StreamEvent[] = [];
     for await (const ev of provider.streamTurn({
@@ -299,7 +300,7 @@ describe("VercelUnifiedProvider gemini — adapter smoke (mocked ai.streamText)"
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("gemini", "test-key");
+    const provider = new VercelUnifiedProvider("gemini", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
     const ac = new AbortController();
 
     const events: StreamEvent[] = [];
@@ -343,7 +344,7 @@ describe("VercelUnifiedProvider gemini — adapter smoke (mocked ai.streamText)"
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("gemini", "test-key");
+    const provider = new VercelUnifiedProvider("gemini", "test-key", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     const events: StreamEvent[] = [];
     for await (const ev of provider.streamTurn({

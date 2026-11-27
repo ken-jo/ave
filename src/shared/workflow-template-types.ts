@@ -1,4 +1,8 @@
-export type TemplateConfirmationOrigin = "local-desktop" | "tailnet-surface";
+export type TemplateDecisionActor = { who: string } & (
+  | { origin: "local-desktop"; auditId?: never }
+  | { origin: "tailnet-surface"; auditId: string }
+);
+export type TemplateConfirmationOrigin = TemplateDecisionActor["origin"];
 export type TemplateScope = { kind: "all" } | { kind: "project"; projectRoot: string };
 type StageGate = { type: "human" } | {
   type: "auto";
@@ -54,11 +58,7 @@ export interface WorkflowTemplate {
   archivedAt?: string;
 }
 export interface TemplateVersionPin { templateId: string; version: number; graphHash: string }
-interface TemplateConfirmation extends TemplateVersionPin {
-  who: string;
-  at: string;
-  origin: TemplateConfirmationOrigin;
-}
+type TemplateConfirmation = TemplateVersionPin & TemplateDecisionActor & { at: string };
 export interface TemplateVersion extends TemplateGraph, TemplateVersionPin {
   confirmedAt: string;
   confirmation: TemplateConfirmation;
@@ -89,15 +89,18 @@ interface WorkflowTemplateDraft extends WorkflowTemplateDraftInput {
   updatedAt: string;
 }
 export interface ScheduleAttachmentInput extends TemplateVersionPin { scheduleId: string }
-export interface ScheduleAttachment extends ScheduleAttachmentInput {
+/** The pin and scope shown on the local card, plus a new schedule or the routine to reattach. */
+export type ScheduleAttachmentRequest = TemplateVersionPin & { expectedScope: TemplateScope } & (
+  | { scheduleId: string }
+  | { schedule: import("./routines-types.js").RoutineSchedule }
+);
+export type ScheduleAttachment = ScheduleAttachmentInput & TemplateDecisionActor & {
   id: string;
   /** Approved project-registry root, canonicalized at authorization; compared exactly. */
   approvedScope: TemplateScope;
   detachedAt?: string;
-  who: string;
   at: string;
-  origin: TemplateConfirmationOrigin;
-}
+};
 export interface WorkflowTemplateRecord {
   template: WorkflowTemplate;
   versions: TemplateVersion[];
@@ -105,13 +108,15 @@ export interface WorkflowTemplateRecord {
   draft?: WorkflowTemplateDraft;
 }
 export interface WorkflowTemplateConfirmInput { expectedGraphHash: string; expectedDraftRevision: string }
+export interface WorkflowTemplateConfirmResult { version: TemplateVersion; unattended: UnattendedQualification }
 export type WorkflowTemplateErrorCode =
   | "invalid-input" | "template-not-found" | "unknown-version" | "graph-hash-mismatch"
   | "confirmed-version-immutable" | "stale-draft" | "no-draft" | "template-archived"
-  | "bad-stage-id" | "too-many-entries" | "envelope-refused"
+  | "bad-stage-id" | "too-many-entries" | "envelope-refused" | "not-current-version" | "routine-not-found"
   | "scope-changed" | "project-mismatch" | "scope-not-authorised" | "output-not-declared"
+  | "outward-effect-tool" | "tool-effect-unknown"
   | "invalid-template-file" | "invalid-template-run" | "schedule-requires-read-only" | "gate-check-unsupported";
-export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; refusals?: EnvelopeRefusal[]; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "storage-error" };
+export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; refusals?: EnvelopeRefusal[]; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "user-keyboard-required" | "storage-error" };
 
 export interface WorkItemStageRun {
   stageId: string;
@@ -139,6 +144,7 @@ export type EnvelopeRefusal = "tools-broader-than-scope" | "host-shell" | "floor
   | "outputs-need-human-gate" | "setup-outside-commands" | "bad-stage-id" | "too-many-entries";
 type RunPin = TemplateVersionPin;
 export type RunAuthoritySource = { kind: "local-create-and-run"; pin: RunPin; projectRoot?: string }
+  | { kind: "tailnet-create-and-run"; pin: RunPin; projectRoot?: string }
   | { kind: "schedule-attachment"; attachmentId: string; pin: RunPin; firedAt: string };
 export interface RunWorkspace { kind: "git" | "folder"; runRoot: string; branch?: string; baseCommit?: string; outputDir?: string }
 type LaneBlockCode = "envelope-missing" | "isolation-unproven" | "lane-unavailable";
@@ -146,8 +152,18 @@ interface OutputFile { path: string; sha256: string; size: number }
 export interface RequestedOutput { id: string; decl: RequestedOutputDecl; args: string; files?: OutputFile[]; summary: string }
 interface OutputExecution { id: string; status: "pending" | "done" | "failed" | "denied"; at?: string; detail?: string }
 interface JoinConflict { conflictHash: string; reason: "merge-conflict" | "same-path" | "identity-missing" | "interrupted"; files: { path: string; stageIds: string[] }[]; excerpt?: string }
-export interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflict?: JoinConflict; decidedAt?: string }
-export interface TemplateRunStart extends RunPin { source: RunAuthoritySource; stageRuns: WorkItemStageRun[] }
+export interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflictGeneration?: number; conflict?: JoinConflict; decidedAt?: string }
+/** The identity and revision of the item as remote Create and run created it. */
+export interface RemoteProvisionalStart {
+  readonly createdAt: string;
+  readonly mutationRevision: string;
+  /** Original workspace identity for recovery before a run record exists. */
+  readonly workspace?: { readonly runId: string; readonly projectRoot: string };
+}
+export interface TemplateRunStart extends RunPin {
+  source: RunAuthoritySource;
+  stageRuns: WorkItemStageRun[];
+}
 /** The first envelope entry that fails the unattended qualification: stages in graph order, then the collections in this order, then entry order. */
 export interface EnvelopeToolRef { stageId: string; collection: "tools" | "mcpReadOnlyTools" | "mcpGenerationTools" | "pluginGenerationTools"; name: string }
 /** One answer to "may this version run unattended"; a refusal names its code and, for the two effect codes, the tool. */

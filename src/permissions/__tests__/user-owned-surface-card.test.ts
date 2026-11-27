@@ -1,12 +1,24 @@
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { t } from "../../i18n/runtime.js";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { ApprovalGate, type ApprovalDecision, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
+import { RULE_PROVENANCE } from "../decision-provenance.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
 import type { UserOwnedSurface, UserOwnedSurfaceChoice } from "../../shared/permissions-events.js";
+import { PermissionManager, type PermissionCheckResult } from "../permission-manager.js";
+import { PermissionTestResources } from "./test-resources.js";
+import { resolveUserOwnedSurfaceApproval } from "../../tools/pipeline/user-owned-surface.js";
+import { standingAnswer } from "../../__tests__/support/standing-answer.js";
+import { standingAnswerFor } from "../pending-answer-policy.js";
 
 const gates: ApprovalGate[] = [];
-afterEach(() => { for (const gate of gates.splice(0)) gate.disposeAll(); });
+const resources = new PermissionTestResources();
+afterEach(async () => {
+  for (const gate of gates.splice(0)) gate.disposeAll();
+  await resources.cleanup();
+});
 
 function subject(surface: UserOwnedSurface = "browser", overrides: Partial<ApprovalRequestInput> = {}) {
   const contents = makeMockWebContents();
@@ -142,7 +154,7 @@ describe("authenticated user-owned surface choices", () => {
 
   it("retains exact host command binding validation before rendering a selector", async () => {
     const f = subject("host-terminal", { toolName: "terminal_run", toolCategory: "shell", durableApprovalRecordAllowed: false,
-      args: { command: "printf displayed" }, hostTerminal: { tabId: "terminal:example", terminalSessionId: "host", sessionId: "conversation", shell: "zsh", physicalCwd: "/workspace", command: "printf other" } });
+      args: { command: "printf displayed" }, hostTerminal: { tabId: "terminal:example", terminalSessionId: "host", sessionId: "conversation", shell: "zsh", physicalCwd: "/workspace", cwdDevice: "1", cwdInode: "2", command: "printf other" } });
     await expect(f.pending).rejects.toThrow("host terminal binding");
     expect(f.card).toBeUndefined();
   });
@@ -154,6 +166,45 @@ describe("authenticated user-owned surface choices", () => {
     f.gate.resolveFromDesktopRenderer(f.request.id, f.answer({ userOwnedSurfaceChoice: undefined }), f.contents as never);
     expect(f.gate.consumeUserOwnedSurfaceChoice(await f.pending, "conversation", "browser")).toBeUndefined();
   });
+
+  it.each(["memory rule", "forced ask", "mode change", "fresh deny"] as const)(
+    "checks a fallback answer after a %s", async (change) => {
+      const f = subject("host-terminal");
+      f.gate.resolveFromDesktopRenderer(f.request.id, f.answer({ userOwnedSurfaceChoice: "auto" }), f.contents as never);
+      const decision = await f.pending;
+      const home = resources.makeTmpDir("ave-surface-fallback-");
+      const manager = new PermissionManager(join(home, "permissions.json"));
+      manager.setMode("default");
+      const permission: PermissionCheckResult = { decision: "ask", reason: "Approval required", provenance: RULE_PROVENANCE };
+      const recheck = vi.spyOn(manager, "recheckPermission").mockReturnValue(permission);
+      const resolved = resolveUserOwnedSurfaceApproval({
+        manager, gate: f.gate, permission, decision, answer: standingAnswer("tool-use:surface", decision), action: "tool-use:surface", uses: [], request: f.request,
+        sessionId: f.request.sessionId, review: async (checked) => checked,
+      });
+
+      const fallback = sentApprovalCards<ApprovalRequest>(f.contents)[1];
+      if (fallback === undefined) throw new Error("Fallback card was not issued");
+      expect(fallback.userOwnedSurfaceReviewFallback).toBe(true);
+      if (change === "mode change") manager.setMode("strict");
+      if (change === "memory rule" || change === "forced ask") manager.addSessionRule("another-session", "Bash(printf ready)");
+      if (change === "forced ask") recheck.mockReturnValue({ ...permission, forceModal: true });
+      if (change === "fresh deny") recheck.mockReturnValue({ decision: "deny", reason: "Current deny", provenance: RULE_PROVENANCE });
+      f.gate.resolveFromDesktopRenderer(fallback.id, {
+        requestId: fallback.id, choice: "allow-once", nonce: fallback.nonce, hmac: fallback.hmac,
+      }, f.contents as never);
+
+      if (change === "memory rule") {
+        expect(standingAnswerFor((await resolved).answer, "tool-use:surface")).toBeDefined();
+        expect(recheck).toHaveBeenLastCalledWith(permission, { acrossMemoryRuleChanges: true });
+      } else {
+        expect(await resolved).toMatchObject({
+          answer: undefined,
+          permission: { decision: "deny", provenance: RULE_PROVENANCE,
+            reason: change === "fresh deny" ? "Current deny" : change === "forced ask" ? t("be_executor.answerQuestionChanged") : "Permission policy changed while approval was pending." },
+        });
+      }
+    },
+  );
 
   it("refuses session selection on a review fallback card", async () => {
     const f = subject("browser", { userOwnedSurfaceReviewFallback: true });

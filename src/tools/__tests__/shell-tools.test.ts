@@ -12,8 +12,8 @@ import { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { configureHostResources } from "../../main/host-resources.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 
 import { mintOneShotHostShellPermit } from "../../__tests__/support/host-shell-approval.js";
 import { getHostShellExecutionPlan } from "../../permissions/sandbox-capability.js";
@@ -46,8 +46,7 @@ import {
   _spawnPowerShellForTest,
 } from "../shell-tools.js";
 
-// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
-beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
+withSourceHostResources();
 
 describe("bash tool", () => {
   const ctx = (cwd: string = process.cwd()): ToolExecutionContext => ({

@@ -1,6 +1,6 @@
 # Windows folder classification
 
-`path-kind.cpp` builds `ave-path-kind.exe`. Its drive mode prints the current
+`src/main.rs` builds `ave-path-kind.exe`. Its drive mode prints the current
 MS-DOS device mapping of one drive letter:
 
 ```text
@@ -25,12 +25,11 @@ mapping for the drive (the call failed, an unknown drive among them), with the
 Windows error on stderr; `2` the argument is not a drive letter and colon; `3`
 the mapping could not be written. Only `1` is an answer about the drive.
 
-`src/main/windows-path-kind-launcher.ts` runs it, as
-`src/main/windows-job-launcher.ts` runs the job helper. The build uses the
-same script as the job helper and downloads nothing:
+`src/main/windows-path-kind-launcher.ts` runs it. Development builds compile
+the helper offline and embed its digest in the main bundle. The native test
+builds a fresh helper and pin fixture before running:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
 node scripts/test-windows-path-kind.mjs
 ```
 
@@ -237,8 +236,8 @@ system-directory API and repeats the query with spoofed system-root variables.
 
 ## Path and descriptor facts
 
-`pin.h` owns normalization, component opens and handle lifetime for all path
-modes. `dacl.h` owns the one handle-based security-descriptor read, shared
+`src/pin.rs` owns normalization, component opens and handle lifetime for all path
+modes. `src/security.rs` owns the one handle-based security-descriptor read, shared
 by facts serialization and the compatibility deny scan. Each component is
 opened with `BACKUP_SEMANTICS | OPEN_REPARSE_POINT`,
 read-attributes/read-control access and read sharing only. Handles remain open
@@ -317,8 +316,41 @@ with its exact original spelling in `requestPath`. Exceeding the output
 budget returns 4 with no partial reply. The host checks the count and
 each echoed operand before using the facts.
 
-Build both facts modes with `scripts/build-windows-job.ps1 -Helper path-kind`
+Build both facts modes with `bun run build:windows-path-kind`
 and run `scripts/test-windows-path-kind.mjs` and the shared facts Vitest suite.
+
+## Held working directory
+
+`ave-path-kind.exe --hold <directory>` pins the directory and every ancestor
+(traverse access, read and write sharing, no delete sharing), writes the
+`--pin` row in binary mode (at most 8 MiB on the wire, LF included), and keeps
+the handles until stdin closes. It also owns the only handle to a kill-on-close
+job. The handle is not inheritable, and the helper starts no processes.
+
+Its fourth standard handle is a private channel. The host started both this
+helper and the job launcher and relays bytes between their channel ends, so the
+channel reaches only that launcher. Frames are 8 bytes (a kind and a value) and
+replies 9 bytes (a kind and a value):
+
+- `AVH2` and a process id: the helper opens that process, duplicates an event
+  into it and answers `C` with the event's handle value. The process joins the
+  job only after it signals that event, which no other process can name; the
+  helper then answers `A`. Anything else, or a failed step, answers `F`.
+- `AVHQ`, after admission: the helper rechecks every held handle and reopens
+  the leaf by name without following links (same file id, not a reparse point),
+  and answers `P`, or `X` when any of that fails.
+
+The helper stops nothing and reports no result: the launcher bounds its own
+waits and decides the run. The helper's exit closes the job, which stops
+everything in it.
+
+Build `bun run build:windows-path-kind --fixture` for `ave-path-kind-hold-fixture.exe`,
+which is never packaged. It reads the reply limit from
+`AVE_TEST_HOLD_REPLY_LIMIT`. With `AVE_TEST_HOLD_RECHECK=lost` it answers
+every recheck `X`, and with `stall` it never answers one. An `L` on stdin
+prints the job's member process ids as one JSON line on stderr.
+`--breakaway <executable>` tries to start that executable outside every job and
+prints `breakaway refused <error>` (exit 0) or `breakaway allowed` (exit 1).
 
 ## Compatibility deny evidence
 
@@ -345,9 +377,9 @@ Unsupported ACE forms conservatively supply no proof. Concurrent external DACL
 changes and protected descendants remain point-in-time limitations.
 
 The existing helper resource resolver, architecture build, installer packaging
-and Windows CI build also cover this mode. Run
-`src/permissions/__tests__/windows-deny-acl.test.ts` after building the helper;
-the tests change DACLs only under per-test containers, with a synthetic SID.
+and Windows CI build also cover this mode. Run `node scripts/test-windows-path-kind.mjs`
+to exercise deny masks, missing targets, invalid SIDs, and reparse-point refusal
+against the native helper.
 # Policy pipe delivery
 
 `--mxc-policy <pipe> <timeout-ms>` receives a little-endian byte length and
@@ -360,5 +392,13 @@ open for ownership. The helper retains a process handle and checks each
 connection's kernel-reported PID before serving the policy. Rejected clients
 receive no bytes and consume no reads. An atomic budget of two accepted
 connections accommodates an existence check followed by the policy read.
+
+`--mxc-policy-held-v1 <pipe> <timeout-ms>` uses the same length, policy and
+four-byte PID frames. It announces `held-v1` in place of `ready`. After opening
+and retaining the exact live reader process and publishing the binding, the
+helper writes `bound` and closes its response stream. The host waits for this
+complete acknowledgement before authorizing the held launcher to resume the
+reader. Helper stdin remains open for ownership. Both helpers must support the
+held protocol before the reader can start.
 Owner EOF, deadline or release closes the server. Rebuild the existing helper
 after changing its source.

@@ -26,9 +26,14 @@ function fixture() {
   put(root, "resources/licenses/mxc/LICENSE.md", "license");
   put(root, "resources/licenses/mxc/notice.txt", "notice");
   for (const arch of ["x64", "arm64"]) put(root, `node_modules/node-pty/prebuilds/win32-${arch}/pty.node`, arch);
+  const windowsLaunchers = Object.fromEntries(["x64", "arm64"].map((arch) => {
+    const member = `bin/${arch}/wxc-exec.exe`;
+    put(root, `node_modules/fixture/${member}`, arch);
+    return [`win32-${arch}`, { launcher: { member, sha256: contentHash(arch) } }];
+  }));
   const pins = {
     package: "fixture", version: "1.0.0", tarballSha512Base64: "archive-anchor", licenseSha256: contentHash("license"),
-    wxcExecSha256: { x64: "launcher-anchor", arm64: "launcher-anchor" },
+    targets: windowsLaunchers,
     sdk: {
       files: { "koffi/package.json": "stale" }, versions: { fixture: "1.0.0" }, packages: { fixture: "koffi" }, packageMetadata: {},
       notices: { "notice.txt": "stale" },
@@ -52,6 +57,31 @@ function fixture() {
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe("SDK pin generation", () => {
+  it("generates POSIX launcher and library hashes offline and checks drift", async () => {
+    const options = fixture();
+    const target = path.join(options.projectRoot, pinPath);
+    const pins = JSON.parse(readFileSync(target, "utf8"));
+    const launcher = "bin/arm64/mxc-exec-mac";
+    const library = "bin/arm64/libmxc_ffi.dylib";
+    pins.targets["darwin-arm64"] = { launcher: { member: launcher }, library: { member: library } };
+    put(options.projectRoot, pinPath, serializeMxcPins(pins));
+    put(options.projectRoot, `node_modules/fixture/${launcher}`, "launcher");
+    put(options.projectRoot, `node_modules/fixture/${library}`, "library");
+    const offline = { ...options, launchersOnly: true, allowDownload: false };
+    expect(await updateMxcPins(offline)).toBe(true);
+    const generated = JSON.parse(readFileSync(target, "utf8"));
+    expect(generated.targets["darwin-arm64"]).toEqual({
+      launcher: { member: launcher, sha256: contentHash("launcher") },
+      library: { member: library, sha256: contentHash("library") },
+    });
+    expect(generated.sdk).toEqual(pins.sdk);
+    expect(options.stagedRoots).toEqual([]);
+    put(options.projectRoot, `node_modules/fixture/${library}`, "changed");
+    await expect(updateMxcPins({ ...offline, check: true })).rejects.toThrow(/drifted/);
+    put(options.projectRoot, "node_modules/fixture/bin/x64/wxc-exec.exe", "changed");
+    await expect(updateMxcPins(offline)).rejects.toThrow(/Launcher trust anchor mismatch: win32-x64/);
+  });
+
   it("is deterministic, observes both native targets, and preserves reviewed anchors", async () => {
     const options = fixture();
     const first = await generateMxcPins(options);
@@ -65,6 +95,30 @@ describe("SDK pin generation", () => {
     }
     expect(options.stagedRoots.every((root) => !existsSync(root))).toBe(true);
     expect(existsSync(path.join(options.projectRoot, "node_modules/@koromix"))).toBe(false);
+  });
+
+  it("detects a missing macOS addon binary pin", async () => {
+    const options = fixture();
+    const root = options.projectRoot;
+    const pins = JSON.parse(readFileSync(path.join(root, pinPath), "utf8"));
+    const addon = "@koromix/koffi-darwin-arm64";
+    const binary = `${addon}/darwin_arm64/koffi.node`;
+    pins.targets["darwin-arm64"] = {
+      launcher: { member: "bin/arm64/launcher" }, library: { member: "bin/arm64/library" },
+    };
+    pins.sdk.addons["darwin-arm64"] = { package: addon, version: "1.0.0", tarballSha512Base64: "addon-anchor" };
+    put(root, "node_modules/fixture/bin/arm64/launcher", "launcher");
+    put(root, "node_modules/fixture/bin/arm64/library", "library");
+    put(root, `node_modules/${addon}/package.json`, JSON.stringify({ name: addon, version: "1.0.0" }));
+    put(root, `node_modules/${addon}/index.js`, "module.exports = {};");
+    put(root, `node_modules/${binary}`, "addon");
+    put(root, pinPath, serializeMxcPins(pins));
+    await updateMxcPins(options);
+    const generated = JSON.parse(readFileSync(path.join(root, pinPath), "utf8"));
+    expect(generated.sdk.darwinFiles[binary]).toBe(contentHash("addon"));
+    delete generated.sdk.darwinFiles[binary];
+    put(root, pinPath, serializeMxcPins(generated));
+    await expect(updateMxcPins({ ...options, check: true })).rejects.toThrow(/drifted/);
   });
 
   it("records semantic field absence and conditional declaration order", async () => {
@@ -116,6 +170,7 @@ describe("SDK pin generation", () => {
     put(root, "node_modules/@microsoft/mxc-sdk/package.json", JSON.stringify({ name: pins.package, version: "1.0.0" }));
     put(root, "node_modules/@microsoft/mxc-sdk/dist/index.js", "sdk code");
     for (const arch of ["x64", "arm64"]) {
+      put(root, `node_modules/@microsoft/mxc-sdk/bin/${arch}/wxc-exec.exe`, arch);
       put(root, `node_modules/@microsoft/mxc-sdk/bin/${arch}/runtime.dll`, arch);
       put(root, `node_modules/node-pty/prebuilds/win32-${arch}/symbols.pdb`, "symbols");
     }

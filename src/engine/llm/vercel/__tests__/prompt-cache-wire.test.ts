@@ -5,6 +5,7 @@ import type { LLMVendor } from "../../../../shared/llm-vendor-defaults.js";
 import { VercelUnifiedProvider } from "../adapter.js";
 import type { GenericMessage, StreamTurnParams } from "../../types.js";
 import { appendRequestOnlyText } from "../../../turn/request-only-text.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 
 const TOOLS: NonNullable<StreamTurnParams["tools"]> = [
   { name: "read_file", description: "Read a file", inputSchema: { type: "object", properties: {} } },
@@ -30,7 +31,7 @@ async function sentBody(
   baseUrl?: string,
 ): Promise<Record<string, unknown>> {
   const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
-  const provider = new VercelUnifiedProvider(vendor, "fixture-key", baseUrl, fetchResponse);
+  const provider = new VercelUnifiedProvider(vendor, "fixture-key", baseUrl, fetchResponse, { getRetiredModelId: noRetirementEvidence });
   for await (const _event of provider.streamTurn({
     model,
     systemPrompt: "Return the result.",

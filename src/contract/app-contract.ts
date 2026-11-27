@@ -855,6 +855,12 @@ export const CHANNELS = {
   },
 } as const;
 
+export const APPROVAL_REQUEST_CHANNEL = CHANNELS.approval.request;
+export const APPROVAL_SETTLED_CHANNEL = CHANNELS.approval.settled;
+export const ASK_USER_QUESTION_PENDING_CHANNEL = CHANNELS.askUserQuestion.pending;
+export const ASK_USER_QUESTION_RESPOND_CHANNEL = CHANNELS.askUserQuestion.respond;
+export const ASK_USER_QUESTION_TIMEOUT_CHANNEL = CHANNELS.askUserQuestion.timeout;
+
 // ─── Versioned public contract ──────────────────────────────────────────────
 
 /**
@@ -972,6 +978,8 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   // A stage gate, a join decision and a stage retry of a template run are the same work approval.
   [WORK_BOARD.decideStage]: "required",
   [WORK_BOARD.decideJoin]: "required",
+  [WORK_BOARD.openJoin]: "required",
+  [WORK_BOARD.captureDecisionIntent]: "required",
   [WORK_BOARD.retryStage]: "required",
   [WORK_BOARD.templateConfirm]: "required",
   [WORK_BOARD.templateAttachSchedule]: "required",

@@ -1,7 +1,10 @@
 import type { HostShellExecutionPlan } from "../host-shell-execution-plan.js";
 // Load project rules before synchronous permission evaluation; evaluating an unloaded scope is a contract violation and throws.
 import { isCurrentShellRule, withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
+import { analyzeShell, type ShellStatement } from "../../shared/shell-analysis.js";
+import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { stat } from "node:fs/promises";
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { capturePersistedPolicyVersion, isPersistedPolicyVersionCurrent, persistedPolicyVersionForContent, type PersistedPolicyVersion } from "../persisted-policy-version.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
@@ -9,11 +12,12 @@ import { isMissingPathError } from "../../lib/atomic-file.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
-import { inspectPowerShellCommand, parsePowerShellCommand, powerShellRuleShape, proveLiteralPowerShell, type PowerShellCommandInput } from "./powershell-exfiltration.js";
+import { inspectPowerShellCommand, parsePowerShellCommand, powerShellRuleShape, proveLiteralPowerShell, type ParsedPowerShellCommand, type PowerShellCommandInput } from "./powershell-exfiltration.js";
 import { isRetiredHostTerminalRule, PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
-import { projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
+import { matchesProjectRuleRootBinding, ProjectRuleScopeChangedError, projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile, type ProjectRuleRootBinding } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
-import { type ShellCommandInput } from "./shell-prefix-policy.js";
+import { type ParsedShellCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { SHELL_FLOOR_INPUT_LIMIT, SHELL_LITERAL_DATA_LIMIT } from "./shell-floor-policy.js";
 import { MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 
 import type { ApprovalPersistenceGuard } from "../approval-persistence-guard.js";
@@ -114,9 +118,27 @@ export class ProjectRuleScopes {
     return state;
   }
 
-  async addRule(projectCwd: string, rule: PermissionRule, authority?: ApprovalPersistenceGuard): Promise<void> {
+  async addRule(
+    projectCwd: string,
+    rule: PermissionRule,
+    authority?: ApprovalPersistenceGuard,
+    expectedProjectRoot?: ProjectRuleRootBinding,
+  ): Promise<void> {
     const validated = validatePermissionRule(withCurrentShellRuleVersion(rule));
     const location = projectRulesLocation(this.baseDir, projectCwd);
+    let writeAuthority = authority;
+    if (expectedProjectRoot !== undefined) {
+      const isCurrent = () => withLocalityDecision(() => {
+        if (location.projectRoot !== expectedProjectRoot.path || !matchesProjectRuleRootBinding(projectCwd, expectedProjectRoot)) {
+          throw new ProjectRuleScopeChangedError();
+        }
+        return authority?.isCurrent() ?? true;
+      });
+      writeAuthority = {
+        isCurrent,
+        refresh: async () => await (authority?.refresh() ?? true) && isCurrent(),
+      };
+    }
     const file = await updateProjectRulesFile(location, (current) => {
       const exists = current.rules.some((r) => r.pattern === validated.pattern && r.action === validated.action && isCurrentShellRule(r));
       if (!exists) current.rules = current.rules.filter((r) => !(r.pattern === validated.pattern && r.action === validated.action));
@@ -125,7 +147,7 @@ export class ProjectRuleScopes {
         if (validated.action === "allow") current.rules.push(validated);
         else current.rules.unshift(validated);
       }
-    }, authority);
+    }, writeAuthority);
     this.states.set(location.identity, { ok: true, projectRoot: location.projectRoot, rules: Object.freeze([...file.rules]) });
     this.policyVersions.set(location.identity, persistedPolicyVersionForContent(location.filePath, `${JSON.stringify(file, null, 2)}\n`));
     this.revision += 1;
@@ -286,4 +308,73 @@ export function evaluatePowerShellSubject(
     if (!patterns.includes(rule.pattern)) patterns.push(rule.pattern);
   }
   return { decision: "allow", patterns, reason: `allow rules ${patterns.join(", ")}` };
+}
+
+function topLevelStatements(node: ShellStatement): readonly ShellStatement[] {
+  return node.kind === "sequence" ? node.statements : [node];
+}
+
+function bashBoundedDenyPrefix(command: string): { parsed?: ParsedShellCommand; firstStatementLimited?: true } {
+  const outline = analyzeShell(command);
+  if (!outline.ok) return {};
+  const statements = topLevelStatements(outline.program);
+  const source = Buffer.from(command);
+  let best: ParsedShellCommand | undefined;
+  let low = 1;
+  let high = statements.length;
+  while (low <= high) {
+    const count = Math.floor((low + high) / 2);
+    const last = statements[count - 1];
+    if (last === undefined) break;
+    const prefix = source.subarray(0, last.source.end).toString();
+    const analysis = prefix.length <= SHELL_FLOOR_INPUT_LIMIT
+      ? analyzeShell(prefix, "bash", { totalTokens: MAX_SHELL_ANALYSIS_TOKENS }) : undefined;
+    if (analysis?.ok) {
+      const actual = topLevelStatements(analysis.program);
+      if (actual.length === count && actual.every(({ source }, index) => {
+        const expected = statements[index]?.source;
+        return expected !== undefined && source.start === expected.start && source.end === expected.end;
+      })) {
+        best = { command: prefix, analysis, facts: new Map() };
+        low = count + 1;
+        continue;
+      }
+    }
+    high = count - 1;
+  }
+  if (best !== undefined) return { parsed: best };
+  return statements.length === 1 && command.length <= SHELL_FLOOR_INPUT_LIMIT &&
+    (outline.totalTokens ?? 0) > MAX_SHELL_ANALYSIS_TOKENS ? { firstStatementLimited: true } : {};
+}
+
+/** Bash may prove a deny from a parser-verified prefix. PowerShell requires analysis of the full command within budget. */
+export function shellDenyOnBoundedPrefix(input: {
+  command: string;
+  dialect: "bash" | "powershell";
+  cwd?: string | undefined;
+  parsed?: ParsedShellCommand | undefined;
+  parsedPowerShell?: ParsedPowerShellCommand | undefined;
+  analysisLimited?: boolean;
+  ruleScopes: ReadonlyArray<readonly PermissionRule[]>;
+}): { pattern?: string; unreadable?: true; analysisRefused?: true } {
+  const { command, dialect, cwd, parsed, parsedPowerShell, ruleScopes } = input;
+  if (dialect === "bash" && command.length > SHELL_FLOOR_INPUT_LIMIT + SHELL_LITERAL_DATA_LIMIT) return {};
+  const denies = ruleScopes.map((scope) => scope.filter((rule) => rule.action === "deny"));
+  if (dialect === "bash") {
+    const rules = collectShellRuleSet(...denies);
+    if (rules.deny.length === 0) return {};
+    const bounded = parsed?.analysis.ok ? { parsed }
+      : bashBoundedDenyPrefix(command);
+    const evaluated = evaluateShellRules(bounded.parsed ?? parsed ?? { command, analysis: { ok: false, reason: "No completed shell statement" }, facts: new Map() }, rules, cwd);
+    if (evaluated.decision === "deny") return { pattern: evaluated.pattern };
+    if ("firstStatementLimited" in bounded && bounded.firstStatementLimited) return { analysisRefused: true };
+    return evaluated.decision === "ask" ? { unreadable: true } : {};
+  }
+  if (collectPowerShellRules(...denies).deny.length === 0) return {};
+  if (input.analysisLimited || command.length > SHELL_FLOOR_INPUT_LIMIT) return { analysisRefused: true };
+  const parsedCommand = parsedPowerShell ?? parsePowerShellCommand(command);
+  if (parsedCommand.analysisLimited || parsedCommand.syntax.pipelines === null) return { analysisRefused: true };
+  const evaluated = evaluatePowerShellSubject({ command: parsedCommand, cwd, exactAllowOnly: false }, ...denies);
+  if (evaluated.decision === "deny") return { pattern: evaluated.pattern };
+  return evaluated.decision === "ask" ? { unreadable: true } : {};
 }

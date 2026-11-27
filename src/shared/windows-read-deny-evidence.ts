@@ -77,23 +77,25 @@ function checkedWindowsReadDenyEvidence(path: string, snapshot: WindowsReadDenyS
   return { status: "error", reason: "DACL snapshot unavailable" };
 }
 
-export async function readWindowsReadDenyEvidence(paths: readonly string[]): Promise<WindowsReadDenySnapshot> {
-  const all = [...new Map(paths.map(path => [windowsReadDenyKey(path), resolve(path)])).values()];
-  const targets = withLocalityDecision(() => all.filter(path => routeLocality(path) === "local"));
-  const rows = readIsolatedWindowsRows(targets, readWindowsDacls);
-  return new Map([...all.filter(path => !targets.includes(path)).map(path => [windowsReadDenyKey(path), UNPROVEN_LOCALITY] as const), ...targets.map((path, index) => {
-    let evidence: WindowsReadDenyEvidence;
-    try {
-      const result = rows[index]!;
-      if ("error" in result) throw result.error;
-      const row = result.value;
-      const identity = row.exists === true
-        ? { volumeSerialNumber: BigInt(row.volumeSerialNumber!).toString(), fileId: BigInt(row.fileIndex!).toString() } : undefined;
-      evidence = !admitWindowsReparse(row, "evidence") ? { status: "reparse", ...(identity ? { identity } : {}) }
-        : row.exists === false ? { status: "missing" } : { ...evaluateWindowsReadDacl(row), identity };
-    } catch (error) {
-      evidence = { status: "error", reason: errorMessage(error) };
-    }
-    return [windowsReadDenyKey(path), evidence] as const;
-  })]);
+export function readWindowsReadDenyEvidence(paths: readonly string[]): WindowsReadDenySnapshot {
+  return withLocalityDecision(() => {
+    const all = [...new Map(paths.map(path => [windowsReadDenyKey(path), resolve(path)])).values()];
+    const targets = all.filter(path => routeLocality(path) === "local");
+    const rows = readIsolatedWindowsRows(targets, readWindowsDacls);
+    return new Map([...all.filter(path => !targets.includes(path)).map(path => [windowsReadDenyKey(path), UNPROVEN_LOCALITY] as const), ...targets.map((path, index) => {
+      let evidence: WindowsReadDenyEvidence;
+      try {
+        const result = rows[index]!;
+        if ("error" in result) throw result.error;
+        const row = result.value;
+        const identity = row.exists === true
+          ? { volumeSerialNumber: BigInt(row.volumeSerialNumber!).toString(), fileId: BigInt(row.fileIndex!).toString() } : undefined;
+        evidence = !admitWindowsReparse(row, "evidence") ? { status: "reparse", ...(identity ? { identity } : {}) }
+          : row.exists === false ? { status: "missing" } : { ...evaluateWindowsReadDacl(row), identity };
+      } catch (error) {
+        evidence = { status: "error", reason: errorMessage(error) };
+      }
+      return [windowsReadDenyKey(path), evidence] as const;
+    })]);
+  });
 }

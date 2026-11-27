@@ -1,5 +1,6 @@
 /** Assert exact token strings to catch invalid counts and precision drift. */
 import { describe, expect, it } from "vitest";
+import { t } from "../../i18n/runtime.js";
 import { formatCost, formatTokens } from "../cost-format.js";
 
 describe("formatTokens", () => {
@@ -55,9 +56,14 @@ describe("formatCost", () => {
     expect(formatCost(999.99)).toBe("$999.99");
   });
 
-  it("collapses non-positive and non-finite amounts instead of printing $-0.5000", () => {
+  it("collapses a non-positive amount instead of printing $-0.5000", () => {
     expect(formatCost(-0.5)).toBe("$0");
-    expect(formatCost(Number.NaN)).toBe("$0");
-    expect(formatCost(Number.POSITIVE_INFINITY)).toBe("$0");
+  });
+
+  it("shows a non-finite amount as unknown, never as $0", () => {
+    const unknown = t("be_costEstimator.costUnknown");
+    expect(formatCost(Number.NaN)).toBe(unknown);
+    expect(formatCost(Number.POSITIVE_INFINITY)).toBe(unknown);
+    expect(formatCost(Number.NEGATIVE_INFINITY)).toBe(unknown);
   });
 });

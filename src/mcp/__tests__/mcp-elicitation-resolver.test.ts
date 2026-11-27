@@ -1,11 +1,11 @@
 /** Routes elicitation through host approval; unsupported sampling and roots requests throw. */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import {
   createElicitationResolverFactory,
   type ElicitationApprovalGate,
 } from "../mcp-elicitation-resolver.js";
-import type { ApprovalChoice, ApprovalDecision, ApprovalRequestInput } from "../../permissions/approval-gate.js";
+import { ApprovalGate, type ApprovalChoice, type ApprovalDecision, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
 
 function gateReturning(
   choice: ApprovalChoice,
@@ -61,7 +61,23 @@ describe("createElicitationResolverFactory", () => {
     expect(result).toEqual({ action: "decline" });
   });
 
-  it("declines durable approvals because elicitation is one-shot only", async () => {
+  it("cancels on a recordless refusal", async () => {
+    const gate = { requestAndWait: async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "deny-once" as const }) };
+    const resolve = createElicitationResolverFactory({ approvalGate: gate })("s");
+    await expect(resolve("q", { method: "elicitation/create", message: "ok?" })).resolves.toEqual({ action: "cancel" });
+  });
+
+  it.each(["cancelled", "expired"] as const)("cancels when the gate marks the prompt %s", async (reason) => {
+    const window = { isDestroyed: () => false, send: vi.fn() };
+    const gate = new ApprovalGate(window as never, undefined, reason === "expired" ? 1 : 1_000);
+    const resolve = createElicitationResolverFactory({ approvalGate: gate })("s");
+    const pending = resolve("q", { method: "elicitation/create", message: "ok?" });
+    expect(window.send).toHaveBeenCalledWith("ave:approval:request", expect.anything());
+    if (reason === "cancelled") gate.disposeAll();
+    await expect(pending).resolves.toEqual({ action: "cancel" });
+  });
+
+  it("cancels durable approvals because elicitation is one-shot only", async () => {
     const { gate } = gateReturning("allow-session", {
       elicitationContent: { date: "2026-07-01" },
     });
@@ -74,10 +90,10 @@ describe("createElicitationResolverFactory", () => {
       requestedSchema: { type: "object", properties: { date: { type: "string" } } },
     });
 
-    expect(result).toEqual({ action: "decline" });
+    expect(result).toEqual({ action: "cancel" });
   });
 
-  it("declines accepted form content that is missing a required schema field", async () => {
+  it("cancels accepted form content that is missing a required schema field", async () => {
     const { gate } = gateReturning("allow-once", {
       elicitationContent: { date: "2026-07-01" },
     });
@@ -94,10 +110,10 @@ describe("createElicitationResolverFactory", () => {
       },
     });
 
-    expect(result).toEqual({ action: "decline" });
+    expect(result).toEqual({ action: "cancel" });
   });
 
-  it("declines unsupported requestedSchema instead of accepting partial content", async () => {
+  it("cancels unsupported requestedSchema instead of accepting partial content", async () => {
     const { gate } = gateReturning("allow-once", {
       elicitationContent: { tags: ["prod"] },
     });
@@ -110,7 +126,7 @@ describe("createElicitationResolverFactory", () => {
       requestedSchema: { type: "object", properties: { tags: { type: "array" } } },
     });
 
-    expect(result).toEqual({ action: "decline" });
+    expect(result).toEqual({ action: "cancel" });
   });
 
   it("url-mode elicitation forwards the url to the gate args", async () => {

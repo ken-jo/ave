@@ -1,5 +1,6 @@
 /** Spawn isolated child history with scoped tools, a host-assigned round budget, labeled approval prompts, and streamed status.
- * Never expose agent_spawn to children or mutate the parent loop's state. */
+ * Only an opted-in workflow stage can expose agent_spawn inside a child loop. */
+import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import type { ListSessionsOptions, RestoredSubAgentSession, SessionListEntry } from "../memory/session-repository.js";
 import {
   SUBAGENT_MAX_ROUNDS_DEFAULT,
@@ -21,6 +22,7 @@ import {
   GUIDE_MAX_CHARS,
 } from "./turn/guidance-limits.js";
 import { createReadToolResultChunkTool } from "../tools/tool-result-chunk.js";
+import { isUnattendedReadTool } from "../tools/base.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { type MemoryManager } from "../memory/memory-manager.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -32,6 +34,7 @@ import type {
   ApprovalRequestInput,
   PendingApprovalSummary,
 } from "../permissions/approval-gate.js";
+import { forwardPendingAnswerRequest } from "../permissions/pending-answer-policy.js";
 import {
   isModelComplexityLevel,
   resolveModelForComplexity,
@@ -124,6 +127,7 @@ import type {
 } from "../shared/subagent-events.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { sessionAuthorityWithheld, turnExtensionPolicyContext, withholdSessionAuthorityForLifetime } from "../shared/turn-extension-policy.js";
+import { endUnattendedStage, inheritUnattendedStage, registeredUnattendedStageOf } from "../permissions/unattended-lane-registry.js";
 const log = createLogger("ave");
 
 function maskSubAgentText(text: string): string {
@@ -217,7 +221,27 @@ export interface SubAgentSpawnInput {
   hostInputTaint?: "file-content";
   /** Host-only: marks the child as one stage of an unattended workflow run. Minted by the stage scheduler, never by a model or a renderer. */
   unattendedStage?: { runKey: string; stageId: string };
+  /** Host-only lifetime and policy binding for descendants of an opted-in stage. */
+  stageSubAgents?: { stageName: string; runKey: string; max: number };
 }
+
+interface StageSubAgentScope {
+  child: ConversationLoop;
+  maxRounds: number;
+  unattendedStage: SubAgentSpawnInput["unattendedStage"];
+  hostInputTaint: SubAgentSpawnInput["hostInputTaint"];
+  authority: NonNullable<SubAgentSpawnInput["stageSubAgents"]>;
+  bind: NonNullable<SubAgentSpawnCallbacks["onStageSubAgentLinked"]>;
+  spawned: number;
+  stop: AbortController;
+  signal: AbortSignal;
+  pending: Set<Promise<SubAgentSpawnResult>>;
+}
+
+type StageSubAgentInput = Pick<SubAgentSpawnInput,
+  "title" | "instructions" | "spawnId" | "toolUseId" | "toolScope" | "profileModel" | "profileMode"> & {
+    approvalProvenance?: SubAgentApprovalProvenance | null;
+  };
 
 export interface SubAgentActivityUpdate {
   /** Full child transcript snapshot as `ChatEntry[]` (the shared chat model). Idempotent replace; the consumer
@@ -269,6 +293,8 @@ export interface SubAgentSpawnCallbacks {
   /** Fired as soon as a fresh spawn has an addressable child session id. This happens before the first child LLM round, so background
    * `agent_spawn` can return a durable handle immediately and the live viewer can join later activity against the same persisted session. */
   onLinked?: (link: { childSessionId: string }) => void;
+  /** Link a stage descendant to its host-owned workspace and permission scope. Returns its teardown. */
+  onStageSubAgentLinked?: (sessionId: string, title: string) => () => void;
   /** Resume setup reached a durable WORKING state and its active lease exists. */
   onReady?: (link: { childSessionId: string }) => void;
   /** Fired whenever the child loop produces new transcript content (tool start/end, permission review, completed
@@ -623,16 +649,12 @@ function normalizeRoundBudget(requested: number): number {
     ? Math.max(SUBAGENT_MAX_ROUNDS_MIN, Math.floor(requested))
     : MAX_TURNS_DEFAULT;
 }
-/**
- * Tools that must NEVER appear in a sub-agent's registry, whatever the run's
- * {@link SubAgentToolScope} says. Adding `agent_spawn` here is the primary
- * fork-bomb defense; the depth check on the tool itself (in `agent-spawn.ts`)
- * is the defense-in-depth backstop.
- */
+export const MAX_STAGE_SUB_AGENTS = 3;
+const STAGE_SUB_AGENT_TOOLS = ["agent_spawn", "agent_status", "agent_interrupt"] as const;
+
+/** Only opted-in stage loops can control their own descendants. */
 const SUB_AGENT_TOOL_BLOCKLIST = new Set<string>([
-  "agent_spawn",
-  "agent_status",
-  "agent_interrupt",
+  ...STAGE_SUB_AGENT_TOOLS,
   // Parent-only: `agent_guide` addresses the caller's OWN children, and a sub-agent has none. Its execute() already refuses a
   // non-root caller; the blocklist keeps it out of the child's registry so the refusal is never a tool the child can see and try.
   "agent_guide",
@@ -923,7 +945,7 @@ export function makeSubAgentApprovalAdapter(
     // Dropped before the spread, not overwritten after it. Overwriting only covers the runs that HAVE provenance; the runs that deliberately have none; a remote wire
     // run, a host-orchestrated one; are exactly the ones a forged field would smuggle into tier 2, and the gate's only entry condition is that the field is present.
     const { childProvenance: _callerSupplied, ...safeReq } = req;
-    return base.requestAndWait({
+    const forwarded: ApprovalRequestInput = {
       ...safeReq,
       // Child provenance makes the gate require explicit consent. A regular host-shell ask
       // must carry the matching one-shot choices while retaining its exact native binding.
@@ -943,7 +965,8 @@ export function makeSubAgentApprovalAdapter(
               background: provenance.background,
             },
           }),
-    });
+    };
+    return base.requestAndWait(forwardPendingAnswerRequest(req, wrapper, forwarded, base));
   };
   return wrapper;
 }
@@ -991,13 +1014,22 @@ export class SubAgentRunner {
    * matching live wire child before returning so the workspace coordinator's later settings write cannot leave a removed project executing in between. */
   async detachSessionsFromProject(root: string): Promise<number> {
     const detached = await this.deps.subAgentMemoryManager.sessions.detachSessionsFromProject(root);
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = canonicalizePathForMatch(root);
-    } catch {
+    if (process.platform !== "win32") {
+      let canonicalRoot: string;
+      try {
+        canonicalRoot = canonicalizePathForMatch(root);
+      } catch {
+        return detached;
+      }
+      this.cancelActiveWireChildrenForWorkspaceRoot(canonicalRoot);
       return detached;
     }
-    this.cancelActiveWireChildrenForWorkspaceRoot(canonicalRoot);
+    const cancellations = withLocalityDecision(() => {
+      const canonicalRoot = canonicalizePathForMatch(root);
+      return [...this.activeChildren.values()].filter((child) => this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot));
+    });
+    const errors = this.cancelActiveWireChildren(cancellations);
+    if (errors.length > 0) throw new AggregateError(errors, "Sub-agent wire cancellation failed");
     return detached;
   }
 
@@ -1014,28 +1046,38 @@ export class SubAgentRunner {
    * removed project is cancelled, and any child loop is asked the test its revocation aborts by.
    */
   countTurnsAbortedByWorkspaceRootRemoval(root: string, options?: WorkspaceRootRevocationOptions): number {
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = canonicalizePathForMatch(root);
-    } catch {
-      return 0;
+    if (process.platform !== "win32") {
+      let canonicalRoot: string;
+      try {
+        canonicalRoot = canonicalizePathForMatch(root);
+      } catch {
+        return 0;
+      }
+      let count = 0;
+      for (const child of this.activeChildren.values()) {
+        // Cancelling a tracked run stops it; without one the cancel aborts the loop's turn, which stops something only if running.
+        const running = Boolean(this.inFlight.get(child.childSessionId)?.run ?? this.trackedRuns.get(child.childSessionId))
+          || child.loop.hasActiveTurn();
+        if ((running && this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot))
+          || child.loop.wouldWorkspaceRootRemovalAbortTurn(canonicalRoot, options)) count += 1;
+      }
+      return count;
     }
-    let count = 0;
-    for (const child of this.activeChildren.values()) {
-      // Cancelling a tracked run stops it; without one the cancel aborts the loop's turn, which stops something only if running.
-      const running = Boolean(this.inFlight.get(child.childSessionId)?.run ?? this.trackedRuns.get(child.childSessionId))
-        || child.loop.hasActiveTurn();
-      if ((running && this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot))
-        || child.loop.wouldWorkspaceRootRemovalAbortTurn(canonicalRoot, options)) count += 1;
-    }
-    return count;
+    return withLocalityDecision(() => {
+      const canonicalRoot = canonicalizePathForMatch(root);
+      let count = 0;
+      for (const child of this.activeChildren.values()) {
+        // Cancelling a tracked run stops it; otherwise only a running loop can be stopped.
+        const running = Boolean(this.inFlight.get(child.childSessionId)?.run ?? this.trackedRuns.get(child.childSessionId))
+          || child.loop.hasActiveTurn();
+        if ((running && this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot))
+          || child.loop.wouldWorkspaceRootRemovalAbortTurn(canonicalRoot, options)) count += 1;
+      }
+      return count;
+    });
   }
 
-  private cancelActiveWireChildForWorkspaceRoot(
-    child: ActiveSubAgentChild,
-    canonicalRoot: string,
-  ): void {
-    if (!this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot)) return;
+  private cancelActiveWireChild(child: ActiveSubAgentChild): void {
     const trackedRun = this.inFlight.get(child.childSessionId)?.run
       ?? this.trackedRuns.get(child.childSessionId);
     if (trackedRun?.abort) trackedRun.abort();
@@ -1050,10 +1092,16 @@ export class SubAgentRunner {
   }
 
   private cancelActiveWireChildrenForWorkspaceRoot(canonicalRoot: string): unknown[] {
+    return this.cancelActiveWireChildren([...this.activeChildren.values()], canonicalRoot);
+  }
+
+  private cancelActiveWireChildren(children: readonly ActiveSubAgentChild[], canonicalRoot?: string): unknown[] {
     const errors: unknown[] = [];
-    for (const child of [...this.activeChildren.values()]) {
+    for (const child of children) {
       try {
-        this.cancelActiveWireChildForWorkspaceRoot(child, canonicalRoot);
+        if (canonicalRoot === undefined || this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot)) {
+          this.cancelActiveWireChild(child);
+        }
       } catch (error: unknown) {
         errors.push(error);
         log.warn(
@@ -1077,20 +1125,69 @@ export class SubAgentRunner {
     activeChildrenVisited: number;
     liveScopesRevoked: number;
   } {
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = canonicalizePathForMatch(root);
-    } catch {
-      return { activeChildrenVisited: 0, liveScopesRevoked: 0 };
-    }
-
-    const errors = this.cancelActiveWireChildrenForWorkspaceRoot(canonicalRoot);
-    let activeChildrenVisited = 0;
-    let liveScopesRevoked = 0;
-    for (const child of [...this.activeChildren.values()]) {
-      activeChildrenVisited += 1;
+    if (process.platform !== "win32") {
+      let canonicalRoot: string;
       try {
-        const result = child.loop.revokeWorkspaceRoot(canonicalRoot, options);
+        canonicalRoot = canonicalizePathForMatch(root);
+      } catch {
+        return { activeChildrenVisited: 0, liveScopesRevoked: 0 };
+      }
+
+      const errors = this.cancelActiveWireChildrenForWorkspaceRoot(canonicalRoot);
+      let activeChildrenVisited = 0;
+      let liveScopesRevoked = 0;
+      for (const child of [...this.activeChildren.values()]) {
+        activeChildrenVisited += 1;
+        try {
+          const result = child.loop.revokeWorkspaceRoot(canonicalRoot, options);
+          liveScopesRevoked += result.sessionDirectoriesRemoved + result.turnDirectoriesRemoved;
+        } catch (error: unknown) {
+          errors.push(error);
+          log.warn(
+            {
+              childSessionId: child.childSessionId,
+              errorName: error instanceof Error ? error.name : "UnknownError",
+            },
+            "sub-agent workspace scope revocation failed",
+          );
+        }
+      }
+      if (errors.length > 0) {
+        throw Object.assign(
+          new AggregateError(errors, "sub-agent-workspace-root-revoke-failed"),
+          { code: "SUBAGENT_WORKSPACE_ROOT_REVOKE_FAILED" },
+        );
+      }
+      return { activeChildrenVisited, liveScopesRevoked };
+    }
+    const plan = withLocalityDecision(() => {
+      let canonicalRoot: string;
+      try {
+        canonicalRoot = canonicalizePathForMatch(root);
+      } catch (error) {
+        rethrowLocalityFailure(error);
+        return undefined;
+      }
+      const children = [...this.activeChildren.values()];
+      const cancellations = children.filter((child) => this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot));
+      const errors: unknown[] = [];
+      const changes = children.flatMap((child) => {
+        try {
+          return [{ child, apply: child.loop.planWorkspaceRootRevocation(canonicalRoot, options) }];
+        } catch (error) {
+          rethrowLocalityFailure(error);
+          errors.push(error);
+          return [];
+        }
+      });
+      return { cancellations, changes, errors, activeChildrenVisited: children.length };
+    });
+    if (!plan) return { activeChildrenVisited: 0, liveScopesRevoked: 0 };
+    const errors = [...this.cancelActiveWireChildren(plan.cancellations), ...plan.errors];
+    let liveScopesRevoked = 0;
+    for (const { child, apply } of plan.changes) {
+      try {
+        const result = apply();
         liveScopesRevoked += result.sessionDirectoriesRemoved + result.turnDirectoriesRemoved;
       } catch (error: unknown) {
         errors.push(error);
@@ -1109,7 +1206,7 @@ export class SubAgentRunner {
         { code: "SUBAGENT_WORKSPACE_ROOT_REVOKE_FAILED" },
       );
     }
-    return { activeChildrenVisited, liveScopesRevoked };
+    return { activeChildrenVisited: plan.activeChildrenVisited, liveScopesRevoked };
   }
 
 
@@ -1328,6 +1425,7 @@ export class SubAgentRunner {
   private readonly trackedRuns = new Map<string, TrackedSubAgentRun>();
 
   private readonly activeChildren = new Map<string, ActiveSubAgentChild>();
+  private readonly stageSubAgentScopes = new Map<string, StageSubAgentScope>();
 
   /** The conversation that spawned a running child, while it runs; the session whose scope the child
    * inherits (terminal_read reads the parent's window). Undefined for a session that is not a live child. */
@@ -2318,7 +2416,7 @@ export class SubAgentRunner {
   }
 
   /** Shared child-loop reconstruction used by BOTH `spawn()` and `resume()`. Returns the composed {@link ConversationLoopDeps}, the grant the child ended up with (its frozen permission surface, ready to persist), and the wrapped
-   * ApprovalGate. The tool surface comes ONLY from `toolScope`; what each kind grants is specified once on {@link SubAgentToolScope}. The blocklist (`agent_spawn`) is ALWAYS stripped so a sub-agent; spawned or resumed; cannot recurse. */
+   * ApprovalGate. A stage's descendants select tools from the stage's actual registry. */
   private buildChildDeps(args: {
     /** @see SubAgentToolScope */
     toolScope: SubAgentToolScope;
@@ -2327,6 +2425,9 @@ export class SubAgentRunner {
     profileModel: string | undefined;
     /** The parent behind this run, when it has one that could answer for it. `null` leaves the child's approvals on the path they took before tier 2 existed: straight to the user. */
     approvalProvenance: SubAgentApprovalProvenance | null;
+    unattendedStage?: boolean;
+    stageSpawnEnabled?: boolean;
+    parentStage?: { registry: ToolRegistry; activePluginIds: ReadonlySet<string> };
   }): {
     childDeps: ConversationLoopDeps;
     grantedScope: PersistedSubAgentToolScope;
@@ -2334,8 +2435,9 @@ export class SubAgentRunner {
     // Build the sub-agent's tool surface. The blocklist (agent_spawn) is stripped on every branch, including `parent-all`, which starts from the full registry and
     // intersects with it. `agent_send` is dropped here and re-registered below, because it is the parent channel rather than a source tool: see SubAgentToolScope.
     const scope = args.toolScope;
-    const exposeAgentSend = args.includeAgentSend === true
-      || (scope.kind === "exactly" && scope.names.includes("agent_send"));
+    const registry = args.parentStage?.registry ?? this.deps.toolRegistry;
+    const exposeAgentSend = !args.unattendedStage && args.parentStage === undefined && (args.includeAgentSend === true
+      || (scope.kind === "exactly" && scope.names.includes("agent_send")));
     const allowlist = scope.kind === "parent-all"
       ? null
       : scope.kind === "deny-all"
@@ -2343,21 +2445,38 @@ export class SubAgentRunner {
         : scope.names.filter((name) => !SUB_AGENT_TOOL_BLOCKLIST.has(name));
     const baseToolNames = allowlist
       ? allowlist.filter((name) => name !== "agent_send")
-      : this.deps.toolRegistry
+      : registry
           .listAll()
           .map((tool) => tool.name)
           .filter((name) =>
             !SUB_AGENT_TOOL_BLOCKLIST.has(name) && name !== "agent_send");
-    const scopedRegistry = this.deps.toolRegistry.createScopedView(baseToolNames);
+    const scopedRegistry = registry.createScopedView(baseToolNames.filter(name => {
+      const tool = registry.findByName(name);
+      if (!tool || (args.unattendedStage && !isUnattendedReadTool(tool))) return false;
+      return args.parentStage === undefined || tool.source !== "plugin"
+        || (tool.pluginId !== undefined && args.parentStage.activePluginIds.has(tool.pluginId));
+    }));
+    if (args.stageSpawnEnabled) {
+      for (const name of STAGE_SUB_AGENT_TOOLS) {
+        const tool = registry.findByName(name);
+        if (tool?.source !== "builtin") continue;
+        // An admitted unattended stage already has the pinned authority to delegate and stop its own work.
+        // The meta policy still evaluates admission, deny rules and forced floors. Descendant effects are checked separately.
+        scopedRegistry.register(args.unattendedStage && tool.category === "meta"
+          ? { ...tool, decisionOverride: "always-allow-with-audit" }
+          : tool);
+      }
+    }
     const recoveryTool = createReadToolResultChunkTool();
-    if (scopedRegistry.listAll().length > 0 && !scopedRegistry.findByName(recoveryTool.name)) scopedRegistry.register(recoveryTool);
+    if (args.parentStage === undefined && scopedRegistry.size > 0 && !scopedRegistry.findByName(recoveryTool.name)
+      && (!args.unattendedStage || isUnattendedReadTool(recoveryTool))) scopedRegistry.register(recoveryTool);
     if (exposeAgentSend) {
       const agentSend = this.deps.toolRegistry.findByName("agent_send");
       if (agentSend) scopedRegistry.register({ ...agentSend, modelVisible: true });
     }
     const scopedTools = scopedRegistry.listAll();
     const forcedActivePluginIds = new Set(
-      allowlist
+      allowlist || args.parentStage
         ? scopedTools
             .filter((tool) => tool.source === "plugin" && tool.pluginId)
             .map((tool) => tool.pluginId as string)
@@ -2368,7 +2487,7 @@ export class SubAgentRunner {
       : undefined;
 
     // Wrap the parent ApprovalGate so approval requests from this sub-agent's tool calls show "[Sub-Agent: <title>]" in their reason text.
-    const wrappedApprovalGate = this.deps.parentDeps.approvalGate
+    const wrappedApprovalGate = !args.unattendedStage && this.deps.parentDeps.approvalGate
       ? makeSubAgentApprovalAdapter(
           this.deps.parentDeps.approvalGate,
           args.title,
@@ -2404,6 +2523,7 @@ export class SubAgentRunner {
       // the main `~/.ave/sessions/` list; the child's saveSession/loadSession (via `self.deps.memoryManager` in run-turn) now target the subagent namespace under the regex-valid childSessionId set by the caller.
       memoryManager: this.deps.subAgentMemoryManager,
       approvalGate: wrappedApprovalGate,
+      ...(args.unattendedStage ? { headless: true, approvalSurface: "unavailable" as const } : {}),
       // Sub-agent runs are fire-and-forget; no post-turn hook chain to keep the parent session unaffected.
       postTurnHookChain: undefined,
       // The child's sessions live in the sub-agent namespace; the parent's predicate scans the window's main loops and must not judge them.
@@ -2432,6 +2552,72 @@ export class SubAgentRunner {
     callbacks?: SubAgentSpawnCallbacks,
   ): Promise<SubAgentSpawnResult> {
     return await this.runSpawn(input, callbacks);
+  }
+
+  async spawnStageSubAgent(
+    stageSessionId: string,
+    input: StageSubAgentInput,
+    callbacks?: SubAgentSpawnCallbacks,
+    abortSignal?: AbortSignal,
+    activePluginIds: ReadonlySet<string> = new Set(),
+  ): Promise<SubAgentSpawnResult> {
+    if (("stageSubAgents" in input && input.stageSubAgents !== undefined)
+      || ("onStageSubAgentLinked" in (callbacks ?? {}))) {
+      throw new Error("Stage descendants cannot delegate");
+    }
+    if (input.approvalProvenance != null || ("parentAuthoredTask" in input && input.parentAuthoredTask !== undefined)) {
+      throw new Error("Stage descendants cannot carry approval provenance");
+    }
+    const stage = this.stageSubAgentScopes.get(stageSessionId);
+    const ended = () => this.buildFailureResult(buildChildSessionId(stageSessionId), t("be_agentSpawn.stageEnded"));
+    if (!stage || stage.signal.aborted || abortSignal?.aborted) return ended();
+    if (stage.spawned >= stage.authority.max) {
+      return this.buildFailureResult(buildChildSessionId(stageSessionId),
+        t("be_agentSpawn.stageSpawnLimit", { max: String(stage.authority.max) }), { stopReason: "blocked" });
+    }
+    if (input.toolScope.kind === "exactly") {
+      for (const name of input.toolScope.names) {
+        const tool = stage.child.deps.toolRegistry.findByName(name);
+        if (tool?.source === "plugin" && (!tool.pluginId || !activePluginIds.has(tool.pluginId))) {
+          return this.buildFailureResult(buildChildSessionId(stageSessionId),
+            t("be_agentSpawn.stageExtensionOutOfScope", { tool: name }), { stopReason: "blocked" });
+        }
+      }
+    }
+
+    const parentStage = { stage, abortSignal, activePluginIds: new Set(activePluginIds) };
+    stage.spawned += 1;
+    let linked = false;
+    let release: (() => void) | undefined;
+    // Register the promise before linking can notify progress or synchronously re-enter Stop.
+    const run = Promise.resolve().then(() => {
+      if (stage.signal.aborted || abortSignal?.aborted) return ended();
+      return this.runSpawn({
+        ...input,
+        ...stage.child.getSessionProjectContext(),
+        title: `${stage.authority.stageName} › ${input.title}`,
+        originSessionId: stageSessionId,
+        maxRounds: stage.maxRounds,
+        unattendedStage: stage.unattendedStage,
+        hostInputTaint: stage.hostInputTaint,
+      }, {
+        ...callbacks,
+        onLinked: ({ childSessionId }) => {
+          release = stage.bind(childSessionId, input.title);
+          callbacks?.onLinked?.({ childSessionId });
+          linked = true;
+        },
+      }, undefined, undefined, parentStage);
+    }).finally(() => {
+      try {
+        release?.();
+      } finally {
+        if (!linked) stage.spawned -= 1;
+        stage.pending.delete(run);
+      }
+    });
+    stage.pending.add(run);
+    return await run;
   }
 
   /** Host-only A2A ingress. The remote-controlled request is intentionally limited to message text; profile,
@@ -2605,8 +2791,13 @@ export class SubAgentRunner {
     callbacks?: SubAgentSpawnCallbacks,
     executionPolicy?: SubAgentExecutionPolicy,
     durableLinkBarrier?: A2AWireSpawnCallbacks["onDurablyLinked"],
+    stageParent?: { stage: StageSubAgentScope; abortSignal?: AbortSignal; activePluginIds: ReadonlySet<string> },
   ): Promise<SubAgentSpawnResult> {
-    const checkpointChild: { release?: () => void } = {};
+    const inheritedLane = registeredUnattendedStageOf(input.originSessionId);
+    if (inheritedLane && input.unattendedStage === undefined) {
+      input = { ...input, unattendedStage: { runKey: inheritedLane.runKey, stageId: inheritedLane.stageId } };
+    }
+    const checkpointChild: { release?: () => void; endLane?: () => void } = {};
     try {
       // Delegated sessions retain content and attendance policy, never the parent's controller binding.
       const inherited = turnExtensionPolicyContext.getStore();
@@ -2614,20 +2805,26 @@ export class SubAgentRunner {
         ...inherited,
         allowExternalHooks: inherited?.allowExternalHooks ?? true,
         remoteControllerAuthority: undefined,
-      }), () => this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier));
+        ...(input.unattendedStage ? { unattendedStage: true as const, headless: true, approvalSurface: "unavailable" as const, withholdSessionAuthority: true, allowExternalHooks: false } : {}),
+      }), () => this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier, stageParent));
     } finally {
+      checkpointChild.endLane?.();
       checkpointChild.release?.();
     }
   }
 
   private async runSpawnChild(
-    checkpointChild: { release?: () => void },
+    checkpointChild: { release?: () => void; endLane?: () => void },
     input: SubAgentSpawnInput,
     callbacks?: SubAgentSpawnCallbacks,
     executionPolicy?: SubAgentExecutionPolicy,
     durableLinkBarrier?: A2AWireSpawnCallbacks["onDurablyLinked"],
+    stageParent?: { stage: StageSubAgentScope; abortSignal?: AbortSignal; activePluginIds: ReadonlySet<string> },
   ): Promise<SubAgentSpawnResult> {
     const childSessionId = buildChildSessionId(input.originSessionId);
+    if (inheritUnattendedStage(childSessionId, input.originSessionId)) {
+      checkpointChild.endLane = () => endUnattendedStage(childSessionId);
+    }
     // A child of a scheduled wake turn never reads the woken chat's session allows, also after the wake has ended.
     if (sessionAuthorityWithheld()) withholdSessionAuthorityForLifetime(childSessionId);
     if (executionPolicy && typeof durableLinkBarrier !== "function") {
@@ -2637,7 +2834,17 @@ export class SubAgentRunner {
         callbacks,
       );
     }
+    const stageAuthority = input.stageSubAgents;
+    const bindStageSubAgent = callbacks?.onStageSubAgentLinked;
+    if (stageAuthority && (stageAuthority.max !== MAX_STAGE_SUB_AGENTS || !bindStageSubAgent
+      || (input.unattendedStage && stageAuthority.runKey !== input.unattendedStage.runKey))) {
+      throw new Error("Invalid workflow stage sub-agent authority");
+    }
+    const stageStop = stageAuthority ? new AbortController() : undefined;
     const cancellation = new AbortController();
+    const signal = stageParent === undefined ? cancellation.signal : AbortSignal.any([
+      cancellation.signal, stageParent.stage.signal, ...(stageParent.abortSignal ? [stageParent.abortSignal] : []),
+    ]);
     let childForAbort: ConversationLoop | undefined;
     const trackedRun = this.trackRun({
       spawnId: input.spawnId,
@@ -2645,6 +2852,7 @@ export class SubAgentRunner {
       originSessionId: input.originSessionId,
       title: input.title,
       abort: () => {
+        stageStop?.abort();
         cancellation.abort();
         childForAbort?.abortCurrentTurn();
       },
@@ -2685,7 +2893,10 @@ export class SubAgentRunner {
           title: input.title,
           profileModel: input.profileModel,
           includeAgentSend: true,
-          approvalProvenance: buildSubAgentApprovalProvenance({
+          unattendedStage: input.unattendedStage !== undefined,
+          stageSpawnEnabled: stageAuthority !== undefined,
+          ...(stageParent ? { parentStage: { registry: stageParent.stage.child.deps.toolRegistry, activePluginIds: stageParent.activePluginIds } } : {}),
+          approvalProvenance: stageParent ? null : buildSubAgentApprovalProvenance({
             childSessionId,
             originSessionId: input.originSessionId,
             // NOT `instructions`. By the time a profile-based spawn reaches here, `instructions` is the RENDERED prompt; profile body
@@ -2717,8 +2928,7 @@ export class SubAgentRunner {
         }
         // Bind persistence and tracing to the addressable child id before work.
         child.replaceSessionIdentity(childSessionId);
-        // A live parent link follows a host ownership transfer for already
-        // running children; no surface is inferred from persisted ancestry.
+        // Inherit the parent route. A workflow route names the run project and resolves its window when a card is asked.
         updateApprovalSurface({ kind: "inherit", sessionId: childSessionId, parentSessionId: input.originSessionId });
         child.sessionKind = "subagent";
         child.rebindTracer();
@@ -2731,7 +2941,7 @@ export class SubAgentRunner {
     if (!setupResult.ok) {
       if (childForAbort) updateApprovalSurface({ kind: "release", sessionId: childForAbort.sessionId });
       trackedRun.initialMetadataFailed = true;
-      const interrupted = cancellation.signal.aborted;
+      const interrupted = signal.aborted;
       const message = interrupted
         ? "sub-agent run interrupted"
         : (setupResult.error as Error).message ?? "sub-agent setup failed";
@@ -2754,6 +2964,7 @@ export class SubAgentRunner {
           ? child.getSessionProjectContext()
           : {}),
       sourceTools: toPersistedToolScope(grantedScope),
+      ...(input.unattendedStage ? { subAgentUnattended: true } : {}),
       ...(input.profileModel !== undefined ? { profileModel: input.profileModel } : {}),
       ...(input.profileMode !== undefined ? { profileMode: input.profileMode } : {}),
       ...(input.originSessionId !== undefined ? { originSessionId: input.originSessionId } : {}),
@@ -2820,7 +3031,7 @@ export class SubAgentRunner {
     } catch (err) {
       unregisterSpawnChild();
       if (!initialMetadataPersisted) trackedRun.initialMetadataFailed = true;
-      const interrupted = cancellation.signal.aborted;
+      const interrupted = signal.aborted;
       const message = interrupted
         ? "sub-agent run interrupted"
         : initialMetadataPersisted
@@ -2879,7 +3090,7 @@ export class SubAgentRunner {
       try {
         await saveResult(stableResult);
       } catch (err) {
-        const interrupted = cancellation.signal.aborted
+        const interrupted = signal.aborted
           || stableResult.stopReason === "interrupted";
         const message = interrupted
           ? "sub-agent run interrupted"
@@ -2888,12 +3099,14 @@ export class SubAgentRunner {
           completedQuestionWait,
           this.questionDeliveryFailure(stableResult, message),
         );
+        // The stage owns its descendants' effects even when a terminal transcript cannot be saved.
+        if (stageParent) await this.cleanupTerminalChildSession(childSessionId, projectSubAgentResultState(stableResult));
         this.finalizeRun(trackedRun, stableResult);
         if (!interrupted) callbacks?.onError?.(maskSubAgentText(message));
         return stableResult;
       }
 
-      if (cancellation.signal.aborted && stableResult.suspension?.reason === "question") {
+      if (signal.aborted && stableResult.suspension?.reason === "question") {
         stableResult = await this.prepareQuestionStageForPersistence(
           completedQuestionWait,
           this.questionDeliveryFailure(stableResult, "sub-agent run interrupted"),
@@ -2930,7 +3143,7 @@ export class SubAgentRunner {
       return stableResult;
     };
 
-    if (cancellation.signal.aborted) {
+    if (signal.aborted) {
       const message = "sub-agent run interrupted";
       return await persistFinalResult(this.buildFailureResult(childSessionId, message, {
         stopReason: "interrupted",
@@ -2994,6 +3207,13 @@ export class SubAgentRunner {
       : input.instructions;
     let assistantRounds = 0;
     let subagentStopDispatched = false;
+    const stageScope: StageSubAgentScope | undefined = stageStop && stageAuthority && bindStageSubAgent
+      ? {
+        child, maxRounds: cappedRounds, unattendedStage: input.unattendedStage, hostInputTaint: input.hostInputTaint,
+        authority: stageAuthority, bind: bindStageSubAgent, spawned: 0, stop: stageStop,
+        signal: AbortSignal.any([signal, stageStop.signal]), pending: new Set(),
+      }
+      : undefined;
 
     try {
       // Subagent lifecycle parity : fire SubagentStart on the child loop before its spawn run and SubagentStop in the
@@ -3002,8 +3222,9 @@ export class SubAgentRunner {
         agentId: input.spawnId,
         agentType: input.profileMode,
       });
+      if (stageScope) this.stageSubAgentScopes.set(childSessionId, stageScope);
       // C3(a): pass `maxRounds` so queryLoop terminates cleanly between rounds; the previous abortCurrentTurn() approach only halted the next streaming response, leaving in-flight tool calls to run. C3(c): pass
-      // childSessionId so audit entries from tool calls fire under the child's session id, not the parent's. C3(b): spawnDepth=1 so any agent_spawn invocation that slipped past the registry strip refuses with a clear error.
+      // childSessionId so audit entries from tool calls fire under the child's session id, not the parent's. The tool context enforces the same delegation boundary as the scoped registry.
       const result = await child.runTurn(
         initialPrompt,
         this.buildTurnCallbacks({
@@ -3020,11 +3241,12 @@ export class SubAgentRunner {
         }),
         // The run's cancellation signal, exactly as the resume path passes it. The `abortCurrentTurn()` closure registered above cannot cover the window between `interruptRun` firing and this call: it is documented as a no-op when no
         // turn is in flight, so an interrupt that lands during spawn setup was reported as CANCELED while the child went on to burn its full `cappedRounds`; and the second interrupt returns "not running", so the user could not even retry.
-        cancellation.signal,
+        signal,
         {
           maxRounds: cappedRounds,
           sessionIdOverride: childSessionId,
-          spawnDepth: 1,
+          spawnDepth: stageParent ? 2 : 1,
+          ...(stageScope ? { stageSubAgents: true as const } : {}),
           ...(executionPolicy
             ? { approvalReasonPrefix: executionPolicy.approvalReasonPrefix }
             : {}),
@@ -3049,11 +3271,14 @@ export class SubAgentRunner {
         result.authorizationRequired,
       );
       ok = isSuccessfulSubAgentStopReason(childStopReason, childInputRequired);
-      if (!ok) {
+      if (stageParent && (childStopReason === "round-cap" || childStopReason === "input-required")) {
+        ok = false;
+        failureReason = t("be_agentSpawn.stageContinuationUnavailable");
+      } else if (!ok) {
         failureReason = subAgentStopFailureReason(childStopReason, lastText, "run");
       }
     } catch (err) {
-      if (cancellation.signal.aborted) {
+      if (signal.aborted) {
         const message = "sub-agent run interrupted";
         lastText = message;
         failureReason = message;
@@ -3068,6 +3293,11 @@ export class SubAgentRunner {
       // A run aborted mid-stream has deltas with no round boundary behind them, so a queued trailing emission could
       // still land after this run has gone terminal. Drop it here rather than let an activity frame trail the terminal one.
       reasoningStreamEmitter.cancel();
+      if (stageScope) {
+        this.stageSubAgentScopes.delete(childSessionId);
+        stageScope.stop.abort();
+        await Promise.allSettled(stageScope.pending);
+      }
       unregisterSpawnChild();
       // SubagentStop; fires once whether the run completed, errored, or aborted (the subagent has
       // stopped either way). Observe-only/fail-soft here; a clean end already dispatched it inside the run.
@@ -3079,7 +3309,7 @@ export class SubAgentRunner {
       }
     }
 
-    if (cancellation.signal.aborted) {
+    if (signal.aborted) {
       lastText = "sub-agent run interrupted";
       failureReason = lastText;
       childStopReason = "interrupted";
@@ -3601,6 +3831,10 @@ export class SubAgentRunner {
         "sub-agent resume: origin session metadata does not match caller",
       );
     }
+    if (meta.subAgentUnattended || registeredUnattendedStageOf(resumeId) || registeredUnattendedStageOf(originSessionId)
+      || turnExtensionPolicyContext.getStore()?.unattendedStage === true) {
+      return refuseStructurally("sub-agent resume: unattended sessions cannot be resumed");
+    }
     const hasWireBinding = meta.a2aWireHandlerId !== undefined
       || meta.a2aWireInternalOrigin !== undefined;
     if (executionPolicy) {
@@ -3758,6 +3992,7 @@ export class SubAgentRunner {
 
     child = new ConversationLoop(childDeps);
     child.replaceSessionIdentity(resumeId);
+    // Rebuild the live route for this identity without carrying a window through suspension.
     updateApprovalSurface({ kind: "inherit", sessionId: resumeId, parentSessionId: originSessionId });
     child.sessionKind = "subagent";
     child.rebindTracer();

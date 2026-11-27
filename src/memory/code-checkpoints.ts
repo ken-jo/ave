@@ -12,6 +12,8 @@ import { FILE_MENTION_REFERENCE_POLICY } from "../shared/file-mention-reference.
 import { countFileChangeLines } from "../shared/file-change-counts.js";
 import type { TurnChangeReview, TurnReviewDecision, TurnReviewError, TurnReviewResult } from "../shared/turn-change-review.js";
 import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directories.js";
+import { sealTargets, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
+import { isLocalityFailure, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { assertReadableFilePath } from "../tools/file-read-core.js";
 import { ensureFileAccess } from "../tools/file-access-policy.js";
 import { isTerminalReviewUnavailable, readTerminalReviewText, terminalFileEvidence, withOwnedWrites } from "../main/terminal/changed-file-evidence.js";
@@ -374,9 +376,11 @@ export async function checkpointMutationIdentity(filePath: string): Promise<stri
   catch { return resolved; }
 }
 
-async function snapshot(path: string): Promise<{ bytes: Buffer | null; mode: number }> {
+async function snapshot(path: string, seal?: TargetSeal): Promise<{ bytes: Buffer | null; mode: number }> {
   // Refuse changed parent links, file links and special files, including dangling links.
+  seal?.verify();
   if (await canonicalPath(path) !== path) throw new Error("Code checkpoint path changed");
+  seal?.verify();
   let pathInfo;
   try { pathInfo = await lstat(path, { bigint: true }); }
   catch (error) {
@@ -386,8 +390,10 @@ async function snapshot(path: string): Promise<{ bytes: Buffer | null; mode: num
   if (!pathInfo.isFile() || pathInfo.isSymbolicLink() || pathInfo.nlink !== 1n) {
     throw new Error("Code checkpoint requires an unlinked regular file");
   }
+  seal?.verify();
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
+    seal?.verify();
     if (!sameFileIdentity(pathInfo, await handle.stat({ bigint: true }))) throw new Error("Code checkpoint file identity changed");
     const info = await handle.stat();
     if (!info.isFile() || info.nlink !== 1 || info.size > CODE_CHECKPOINT_POLICY.maxFileBytes) {
@@ -397,11 +403,13 @@ async function snapshot(path: string): Promise<{ bytes: Buffer | null; mode: num
     const bytes = Buffer.alloc(Math.min(info.size + 1, CODE_CHECKPOINT_POLICY.maxFileBytes + 1));
     let length = 0;
     while (length < bytes.length) {
+      seal?.verify();
       const read = await handle.read(bytes, length, bytes.length - length, length);
       if (read.bytesRead === 0) break;
       length += read.bytesRead;
     }
     const after = await handle.stat();
+    seal?.verify();
     const pathAfter = await lstat(path, { bigint: true });
     if (length !== info.size || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs
       || pathAfter.mtimeNs !== pathInfo.mtimeNs || pathAfter.ctimeNs !== pathInfo.ctimeNs) {
@@ -533,51 +541,109 @@ export async function deleteCodeCheckpoints(sessionId: string): Promise<void> {
   });
 }
 
+export type RecordCheckpointEffect = (path: string, options?: { localityFailed?: boolean }) => void;
+type MutationRunner<T> = (recordEffect: RecordCheckpointEffect) => Promise<T>;
+
+/** A tracked writer reports a file as soon as its mutation has happened or may have partially happened. */
+type FileMutation<T> = (() => Promise<T>) | { run: MutationRunner<T> };
+
 /** Called only after native file-tool authorization and immediately before mutation. */
 export async function checkpointFileMutation<T>(
   effects: Array<{ path: string } & ({ content: Buffer | string | null } | { copyFrom: string })>,
-  run: () => Promise<T>,
+  mutation: FileMutation<T>,
+  seal?: TargetSeal,
 ): Promise<T> {
+  if (process.platform !== "win32") {
+    const run = typeof mutation === "function" ? mutation : () => mutation.run(() => {});
+    const sessionId = turnContext.getStore()?.sessionId ?? currentAgentObservationIdentity()?.sessionId;
+    if (!sessionId) return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, run, false));
+    const originals = await Promise.all(effects.map(async (effect) => {
+      try {
+        const path = resolvePhysicalFilesystemPath(effect.path, process.cwd(), 64);
+        return { path, requestedPath: effect.path, before: await readTerminalReviewText(path) };
+      } catch (error) {
+        if (!isTerminalReviewUnavailable(error)) throw error;
+        log.warn("terminal review baseline unavailable: %s", (error as Error).message);
+        return { path: effect.path, requestedPath: effect.path, before: undefined };
+      }
+    }));
+    return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, async () => {
+      // Each file's identity is what its writer's own descriptor reported; a write without one records none.
+      const { result, owned } = await withOwnedWrites(run);
+      if (!(result && typeof result === "object" && "isError" in result && result.isError === true)) {
+        for (const original of originals) await terminalFileEvidence.recordWrite(sessionId, original.requestedPath, original.before, owned.get(original.path));
+      }
+      return result;
+    }, false));
+  }
+  const run: MutationRunner<T> = typeof mutation === "function" ? mutation : mutation.run;
+  const tracksEffects = typeof mutation !== "function";
   const sessionId = turnContext.getStore()?.sessionId ?? currentAgentObservationIdentity()?.sessionId;
-  if (!sessionId) return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, run));
-  const originals = await Promise.all(effects.map(async (effect) => {
+  if (!sessionId) return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, run, tracksEffects, seal));
+  const baselinePaths = withLocalityDecision(() => {
+    seal?.verify();
+    return effects.map((effect) => {
+      try {
+        if (seal?.pathFor !== undefined) {
+          const admitted = seal.pathFor(effect.path);
+          if (admitted === undefined) throw new TargetIdentityChangedError();
+          return admitted;
+        }
+        return resolvePhysicalFilesystemPath(effect.path, process.cwd(), 64);
+      }
+      catch (error) {
+        rethrowLocalityFailure(error);
+        if (!isTerminalReviewUnavailable(error)) throw error;
+        log.warn("terminal review baseline unavailable: %s", (error as Error).message);
+        return undefined;
+      }
+    });
+  });
+  const originals = await Promise.all(effects.map(async (effect, index) => {
+    const path = baselinePaths[index];
+    if (path === undefined) return { path: effect.path, requestedPath: effect.path, before: undefined };
     try {
-      const path = resolvePhysicalFilesystemPath(effect.path, process.cwd(), 64);
       return { path, requestedPath: effect.path, before: await readTerminalReviewText(path) };
     } catch (error) {
+      rethrowLocalityFailure(error);
       if (!isTerminalReviewUnavailable(error)) throw error;
       log.warn("terminal review baseline unavailable: %s", (error as Error).message);
       return { path: effect.path, requestedPath: effect.path, before: undefined };
     }
   }));
-  return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, async () => {
+  return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, async (recordEffect) => {
     // Each file's identity is what its writer's own descriptor reported; a write without one records none.
-    const { result, owned } = await withOwnedWrites(run);
+    const { result, owned } = await withOwnedWrites(() => run(recordEffect));
     if (!(result && typeof result === "object" && "isError" in result && result.isError === true)) {
       for (const original of originals) await terminalFileEvidence.recordWrite(sessionId, original.requestedPath, original.before, owned.get(original.path));
     }
     return result;
-  }));
+  }, tracksEffects, seal));
 }
 
 async function checkpointMutation<T>(
   effects: Array<{ path: string } & ({ content: Buffer | string | null } | { copyFrom: string })>,
-  run: () => Promise<T>,
+  run: MutationRunner<T>,
+  tracksEffects: boolean,
+  seal?: TargetSeal,
 ): Promise<T> {
+  const isWindows = process.platform === "win32";
+  const runUntracked = () => run(() => {});
+  seal?.verify();
   const identity = turnContext.getStore();
   requireAvailableCheckpoint(identity);
-  if (!identity || identity.deleted) return run();
+  if (!identity || identity.deleted) return runUntracked();
   return exclusive(async () => {
     requireAvailableCheckpoint(identity);
     let turns: Turn[];
     try { turns = await load(); }
-    catch (error) { deferUnavailable(identity, error); requireAvailableCheckpoint(identity); return run(); }
+    catch (error) { deferUnavailable(identity, error); requireAvailableCheckpoint(identity); return runUntracked(); }
     const turn = turns.find((item) => item.sessionId === identity.sessionId && item.messageId === identity.messageId);
     if (requiredCheckpointContext.getStore() === true && turn?.consumed) throw new CodeCheckpointRequiredError();
     if (!turn || turn.unavailable || identity.unavailable) {
       await makeUnavailable(turns, identity, "unsupported edits");
       requireAvailableCheckpoint(identity);
-      return run();
+      return runUntracked();
     }
     if (requiredCheckpointContext.getStore() === true) {
       // Preserve every earlier before-image and refuse new effects if rewind evidence is damaged.
@@ -585,26 +651,53 @@ async function checkpointMutation<T>(
       catch (error) { blockAutomaticWrites(identity, error); }
     }
     const changes: StoredChange[] = [];
+    const effectPaths = new Map<string, StoredChange>();
+    const targetSeals = new Map<string, TargetSeal>();
+    const checkpointEntry = (path: string): string | Promise<string> => {
+      if (!isWindows || seal?.entryFor === undefined) return canonicalPath(resolve(path));
+      const admitted = seal.entryFor(path);
+      if (admitted === undefined) throw new TargetIdentityChangedError();
+      return admitted;
+    };
     try {
       for (const effect of effects) {
-        const path = await canonicalPath(resolve(effect.path));
-        const before = await snapshot(path);
+        seal?.verify();
+        const path = await checkpointEntry(effect.path);
+        const before = await snapshot(path, seal);
+        seal?.verify();
         const content = "copyFrom" in effect
-          ? (await snapshot(await canonicalPath(resolve(effect.copyFrom)))).bytes
+          ? (await snapshot(await checkpointEntry(effect.copyFrom), seal)).bytes
           : effect.content;
+        seal?.verify();
         const after = typeof content === "string" ? Buffer.from(content) : content;
         if (after && after.length > CODE_CHECKPOINT_POLICY.maxFileBytes) throw new Error("Code checkpoint file limit exceeded");
-        const previous = changes.find((change) => change.path === path);
-        if (previous) previous.afterHash = hash(after);
-        else changes.push({ path, ...await storeImage(before.bytes), mode: before.mode, afterHash: hash(after) });
+        let change = changes.find((entry) => entry.path === path);
+        if (change) change.afterHash = hash(after);
+        else {
+          if (seal) {
+            const targetSeal = withLocalityDecision(() => {
+              seal.verify();
+              return sealTargets(() => resolvePhysicalFilesystemPath(path, process.cwd(), 64));
+            });
+            targetSeals.set(path, targetSeal);
+          }
+          change = { path, ...await storeImage(before.bytes), mode: before.mode, afterHash: hash(after) };
+          changes.push(change);
+        }
+        if (tracksEffects) effectPaths.set(effect.path, change);
       }
-    } catch {
+    } catch (error) {
+      if (isWindows) {
+        rethrowLocalityFailure(error);
+        if (error instanceof TargetIdentityChangedError) throw error;
+      }
       // No effect ran: preserve earlier rewind images and require a person on retry.
       if (requiredCheckpointContext.getStore() === true) blockAutomaticWrites(identity);
       await makeUnavailable(turns, identity, "uncapturable original");
       requireAvailableCheckpoint(identity);
-      return run();
+      return runUntracked();
     }
+    seal?.verify();
     turn.changes.push(...changes);
     if (requiredCheckpointContext.getStore() === true && ledgerStorageBytes(turns) > CODE_CHECKPOINT_POLICY.maxStorageBytes) {
       turn.changes = turn.changes.filter((entry) => !changes.includes(entry));
@@ -626,27 +719,69 @@ async function checkpointMutation<T>(
     if (turn.unavailable) {
       identity.unavailable = true;
       requireAvailableCheckpoint(identity);
-      return run();
+      return runUntracked();
     }
-    for (const change of changes) {
-      const current = await snapshot(change.path).catch(() => undefined);
-      if (!current || hash(current.bytes) !== change.beforeHash) {
-        turn.changes = turn.changes.filter((entry) => !changes.includes(entry));
-        await save(turns, turn);
-        throw new Error("File changed before checkpointed mutation");
+    const discardChanges = async (discarded: ReadonlySet<StoredChange>) => {
+      const retained = turn.changes.filter((change) => !discarded.has(change));
+      if (retained.length === turn.changes.length) return;
+      turn.changes = retained;
+      await save(turns, turn);
+    };
+    if (isWindows) {
+      try {
+        for (const change of changes) {
+          const current = await snapshot(change.path, seal).catch((error: unknown) => {
+            rethrowLocalityFailure(error);
+            if (error instanceof TargetIdentityChangedError) throw error;
+            return undefined;
+          });
+          if (!current || hash(current.bytes) !== change.beforeHash) throw new Error("File changed before checkpointed mutation");
+        }
+        requireAvailableCheckpoint(identity);
+      } catch (error) {
+        // The callback has not run, so cleanup needs only the managed ledger.
+        await discardChanges(new Set(changes));
+        throw error;
       }
-    }
-    requireAvailableCheckpoint(identity);
-    const removeUnchanged = async () => {
-      // No-op failures claim no edit; partial effects remain guarded by the intended after-hash.
+    } else {
       for (const change of changes) {
         const current = await snapshot(change.path).catch(() => undefined);
-        if (current && hash(current.bytes) === change.beforeHash) {
-          const index = turn.changes.indexOf(change);
-          if (index >= 0) turn.changes.splice(index, 1);
+        if (!current || hash(current.bytes) !== change.beforeHash) {
+          turn.changes = turn.changes.filter((entry) => !changes.includes(entry));
+          await save(turns, turn);
+          throw new Error("File changed before checkpointed mutation");
         }
       }
-      await save(turns, turn);
+      requireAvailableCheckpoint(identity);
+    }
+    const snapshotForBookkeeping = (path: string, targetSeal?: TargetSeal) => snapshot(path, targetSeal).catch((error: unknown) => {
+      rethrowLocalityFailure(error);
+      return undefined;
+    });
+    const affected = new Set<StoredChange>();
+    let postEffectSeal = seal;
+    let effectLocalityFailed = false;
+    const recordEffect: RecordCheckpointEffect = (path, options) => {
+      effectLocalityFailed ||= options?.localityFailed === true;
+      const change = effectPaths.get(path);
+      if (change) {
+        affected.add(change);
+        postEffectSeal = postEffectSeal?.afterMutation?.(path) ?? postEffectSeal;
+      }
+    };
+    const removeUnchanged = async (inspectTargets: boolean) => {
+      const discarded = new Set(tracksEffects ? changes.filter((change) => !affected.has(change)) : []);
+      try {
+        if (inspectTargets) {
+          for (const change of changes) {
+            if (discarded.has(change)) continue;
+            const current = await snapshotForBookkeeping(change.path, targetSeals.get(change.path));
+            if (current && hash(current.bytes) === change.beforeHash) discarded.add(change);
+          }
+        }
+      } finally {
+        await discardChanges(discarded);
+      }
     };
     const recordVerifiedCounts = async () => {
       let recorded = false;
@@ -655,7 +790,9 @@ async function checkpointMutation<T>(
         const captures = turn.changes.filter((entry) => entry.path === change.path);
         if (captures.at(-1) !== change
           || captures.some((entry, index) => index > 0 && captures[index - 1].afterHash !== entry.beforeHash)) continue;
-        const current = await snapshot(change.path).catch(() => undefined);
+        const current = isWindows
+          ? await snapshotForBookkeeping(change.path, postEffectSeal)
+          : await snapshot(change.path).catch(() => undefined);
         if (!current || hash(current.bytes) !== change.afterHash) continue;
         const first = captures[0];
         const before = (await hydrate(first)).before;
@@ -679,18 +816,47 @@ async function checkpointMutation<T>(
       }
       if (recorded) await save(turns, turn);
     };
-    try {
-      const result = await run();
-      if (result && typeof result === "object" && "isError" in result && result.isError === true) {
-        await removeUnchanged();
+    if (!isWindows) {
+      const removeUnchangedPosix = async () => {
+        // No-op failures claim no edit; partial effects remain guarded by the intended after-hash.
+        for (const change of changes) {
+          const current = await snapshot(change.path).catch(() => undefined);
+          if (current && hash(current.bytes) === change.beforeHash) {
+            const index = turn.changes.indexOf(change);
+            if (index >= 0) turn.changes.splice(index, 1);
+          }
+        }
+        await save(turns, turn);
+      };
+      try {
+        const result = await runUntracked();
+        if (result && typeof result === "object" && "isError" in result && result.isError === true) {
+          await removeUnchangedPosix();
+        }
+        return result;
+      } catch (error) {
+        await removeUnchangedPosix();
+        throw error;
+      } finally {
+        // Informational totals never replace the effect outcome or weaken restore hashes.
+        await recordVerifiedCounts().catch((error: unknown) => log.warn("checkpoint line counts unavailable: %s", (error as Error).message));
       }
+    }
+    let recordCounts = false;
+    try {
+      const result = await run(recordEffect);
+      const failed = Boolean(result && typeof result === "object" && "isError" in result && result.isError === true);
+      if (failed || (tracksEffects && affected.size < changes.length)) await removeUnchanged(failed && !effectLocalityFailed);
+      recordCounts = !effectLocalityFailed;
       return result;
     } catch (error) {
-      await removeUnchanged();
+      const failedLocality = isLocalityFailure(error);
+      await removeUnchanged(!failedLocality);
+      recordCounts = !failedLocality;
       throw error;
     } finally {
       // Informational totals never replace the effect outcome or weaken restore hashes.
-      await recordVerifiedCounts().catch((error: unknown) => log.warn("checkpoint line counts unavailable: %s", (error as Error).message));
+      if (recordCounts) await recordVerifiedCounts().catch((error: unknown) => log.warn("checkpoint line counts unavailable: %s", (error as Error).message));
     }
   });
 }

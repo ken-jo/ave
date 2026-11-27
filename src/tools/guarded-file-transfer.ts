@@ -1,5 +1,6 @@
+import { admitLocalPath, isLocalityFailure, localFs, localityFailureAffectsPath, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { terminalFileEvidence, writtenFileIdentity, type WrittenFileIdentity } from "../main/terminal/changed-file-evidence.js";
-import { constants, createReadStream, read, type BigIntStats, type ReadStream } from "node:fs";
+import { constants, createReadStream, read, rmdirSync, unlinkSync, type BigIntStats, type ReadStream } from "node:fs";
 import { lstat, mkdir, open, opendir, realpath, rmdir, unlink, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
@@ -12,6 +13,7 @@ import { ensureFileAccess } from "./file-access-policy.js";
 import { FileTransferError } from "./file-transfer-error.js";
 import { FILE_TRANSFER_LIMITS, validateFileTransferLimits } from "./file-transfer-policy.js";
 import type { CopyPathInput, FileTransferLimits, TransferResult, TransferSession, TransferSummary } from "./file-transfer-types.js";
+import type { TargetSeal } from "../permissions/target-seal.js";
 import type { ToolExecutionContext } from "./types.js";
 
 type EntryKind = "file" | "directory";
@@ -75,8 +77,10 @@ function ownedPathKey(path: string): string {
 }
 
 function containsPath(parent: string, child: string): boolean {
-  const suffix = relative(pathKey(parent), pathKey(child));
-  return suffix === "" || (!isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(`..${sep}`));
+  return withLocalityDecision(() => {
+    const suffix = relative(pathKey(parent), pathKey(child));
+    return suffix === "" || (!isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(`..${sep}`));
+  });
 }
 
 function resolvedInput(path: string, context: ToolExecutionContext): string {
@@ -88,9 +92,11 @@ function resolvedInput(path: string, context: ToolExecutionContext): string {
 }
 
 function assertAccess(path: string, context: ToolExecutionContext, assertPath?: (path: string) => void): void {
-  assertPath?.(path);
-  const denied = ensureFileAccess(path, context, "write");
-  if (denied) throw new FileTransferError("path-denied", denied.output);
+  withLocalityDecision(() => {
+    assertPath?.(path);
+    const denied = ensureFileAccess(path, context, "write");
+    if (denied) throw new FileTransferError("path-denied", denied.output);
+  });
 }
 
 function assertSupported(stats: BigIntStats, path: string): void {
@@ -126,8 +132,9 @@ async function ancestorChain(path: string): Promise<Anchor[]> {
   return chain;
 }
 
-async function verifyAnchors(anchors: readonly Anchor[]): Promise<void> {
+async function verifyAnchors(anchors: readonly Anchor[], assertLocality: () => void): Promise<void> {
   for (const anchor of anchors) {
+    assertLocality();
     const stats = await lstat(anchor.path, { bigint: true });
     if (!stats.isDirectory() || !sameFileIdentity(stats, anchor.identity)) {
       throw transferError(`Parent directory changed: ${anchor.path}`);
@@ -162,11 +169,13 @@ class OwnedTransfer {
   accepting = true;
   stopping = false;
   sourceBusy = false;
+  private seal: TargetSeal | undefined;
   readonly onAbort = (): void => this.stop(new FileTransferError("cancelled", "File transfer was cancelled"));
 
   constructor(readonly request: TransferRequest, readonly context: ToolExecutionContext, limits: Readonly<FileTransferLimits>) {
     validateFileTransferLimits(limits);
     this.limits = Object.freeze({ ...limits });
+    this.seal = context.fileTargetSeal;
     this.signal = context.abortSignal ?? new AbortController().signal;
     this.summary = { sourcePath: "", destinationPath: "", files: 0, directories: 0, bytesWritten: 0 };
     this.signal.addEventListener("abort", this.onAbort, { once: true });
@@ -174,11 +183,29 @@ class OwnedTransfer {
   }
 
   check(): void {
+    this.assertLocality();
     if (this.signal.aborted) throw new FileTransferError("cancelled", "File transfer was cancelled");
     if (this.stopping) throw this.firstFailure ?? new Error("File transfer is stopped");
+    this.observeLocality(() => this.seal?.verify());
+  }
+
+  readonly assertLocality = (): void => rethrowLocalityFailure(this.firstFailure);
+
+  observeLocality(observe: () => void): void {
+    this.assertLocality();
+    try { observe(); }
+    catch (error) {
+      if (isLocalityFailure(error)) this.stop(error);
+      throw error;
+    }
+  }
+
+  assertAccess(path: string): void {
+    this.observeLocality(() => assertAccess(path, this.context, this.request.assertPath));
   }
 
   stop(error: unknown): void {
+    if (isLocalityFailure(error) && !isLocalityFailure(this.firstFailure)) this.firstFailure = error;
     this.firstFailure ??= error;
     this.stopping = true;
     for (const stream of this.streams) stream.destroy(error instanceof Error ? error : new Error(errorMessage(error)));
@@ -223,7 +250,7 @@ class OwnedTransfer {
     this.sourceStats = source.stats;
     const lexicalDestination = resolvedInput(this.request.destinationPath, this.context);
     assertAccess(lexicalDestination, this.context, this.request.assertPath);
-    if (containsPath(source.path, lexicalDestination) || containsPath(lexicalDestination, source.path)) {
+    if (withLocalityDecision(() => containsPath(source.path, lexicalDestination) || containsPath(lexicalDestination, source.path))) {
       throw new FileTransferError("source-destination-overlap", "Source and destination paths overlap");
     }
     // Inspect the entry itself before canonical resolution can follow a link.
@@ -244,7 +271,7 @@ class OwnedTransfer {
     // The canonical child and parent identity are still checked independently.
     this.summary.destinationPath = join(parent, basename(lexicalDestination));
     assertAccess(this.summary.destinationPath, this.context, this.request.assertPath);
-    if (containsPath(source.path, this.summary.destinationPath) || containsPath(this.summary.destinationPath, source.path)) {
+    if (withLocalityDecision(() => containsPath(source.path, this.summary.destinationPath) || containsPath(this.summary.destinationPath, source.path))) {
       throw new FileTransferError("source-destination-overlap", "Source and destination paths overlap");
     }
     this.sourceAnchors = await ancestorChain(dirname(source.path));
@@ -289,10 +316,10 @@ class OwnedTransfer {
   }
 
   async verifyOwned(entry: OwnedEntry): Promise<void> {
-    await verifyAnchors(this.destinationAnchors);
+    await verifyAnchors(this.destinationAnchors, this.assertLocality);
     for (const owned of this.ownedChain(entry)) {
       const path = this.entryPath(owned);
-      assertAccess(path, this.context, this.request.assertPath);
+      this.assertAccess(path);
       const stats = await lstat(path, { bigint: true });
       if (!owned.identity || !sameFileIdentity(stats, owned.identity) ||
           (owned.kind === "file" ? !stats.isFile() || stats.nlink !== 1n : !stats.isDirectory())) {
@@ -305,8 +332,8 @@ class OwnedTransfer {
     this.check();
     if (this.ledger.length >= this.limits.maxEntries) throw new FileTransferError("limit-exceeded", "Transfer entry limit exceeded");
     const path = relativePath === "" ? this.summary.destinationPath : join(this.summary.destinationPath, relativePath);
-    assertAccess(path, this.context, this.request.assertPath);
-    await verifyAnchors(this.destinationAnchors);
+    this.assertAccess(path);
+    await verifyAnchors(this.destinationAnchors, this.assertLocality);
     let parentIdentity = this.destinationAnchors[this.destinationAnchors.length - 1].identity;
     if (relativePath !== "") {
       const parentRelative = dirname(relativePath) === "." ? "" : dirname(relativePath);
@@ -322,6 +349,7 @@ class OwnedTransfer {
         await mkdir(path, { mode: 0o700, recursive: false });
         this.ledger.push(entry);
         this.entries.set(ownedPathKey(path), entry);
+        this.assertLocality();
         const stats = await lstat(path, { bigint: true });
         if (!stats.isDirectory()) throw transferError(`Created directory changed: ${path}`);
         entry.identity = { dev: stats.dev, ino: stats.ino };
@@ -341,7 +369,12 @@ class OwnedTransfer {
       if (hasErrno(error, "EEXIST")) throw new FileTransferError("destination-exists", `Destination already exists: ${path}`, { cause: error });
       throw error;
     }
-    await this.verifyOwned(entry);
+    if (process.platform !== "win32") await this.verifyOwned(entry);
+    if (relativePath === "") this.seal = this.seal?.afterMutation?.(path) ?? this.seal;
+    if (process.platform === "win32") {
+      this.check();
+      await this.verifyOwned(entry);
+    }
     this.check();
     return entry;
   }
@@ -448,19 +481,22 @@ class OwnedTransfer {
   }
 
   async verifySource(path: string, expected: BigIntStats): Promise<void> {
-    await verifyAnchors(this.sourceAnchors);
-    assertAccess(path, this.context, this.request.assertPath);
+    await verifyAnchors(this.sourceAnchors, this.assertLocality);
+    this.assertAccess(path);
     const suffix = relative(this.summary.sourcePath, path);
     if (suffix !== "" && (!this.sourceStats.isDirectory() || !containsPath(this.summary.sourcePath, path))) {
       throw new FileTransferError("path-denied", "A source file is outside the transfer source");
     }
     let cursor = this.summary.sourcePath;
     for (const component of suffix === "" ? [] : suffix.split(sep).slice(0, -1)) {
+      this.assertLocality();
       const stats = await lstat(cursor, { bigint: true });
       if (!stats.isDirectory()) throw transferError(`Source parent changed: ${cursor}`);
       cursor = join(cursor, component);
     }
+    this.assertLocality();
     if (suffix !== "" && !(await lstat(cursor, { bigint: true })).isDirectory()) throw transferError(`Source parent changed: ${cursor}`);
+    this.assertLocality();
     const actual = await lstat(path, { bigint: true });
     assertSupported(actual, path);
     if (!sameSource(actual, expected)) throw transferError(`Source changed during transfer: ${path}`);
@@ -563,37 +599,93 @@ class OwnedTransfer {
     }
   }
 
-  async rollback(): Promise<Pick<Extract<TransferResult, { ok: false }>, "cleanup" | "residualPaths" | "cleanupErrors">> {
+  async rollback(): Promise<Pick<Extract<TransferResult, { ok: false }>, "cleanup" | "residualPaths" | "cleanupErrors" | "localityFailed">> {
     const residualPaths: string[] = [];
     let incomplete = this.cleanupErrors.length > 0;
-    for (const entry of [...this.ledger].reverse()) {
-      const path = this.entryPath(entry);
-      try {
-        await this.verifyOwned(entry);
-        if (entry.kind === "file") await unlink(path);
-        else await rmdir(path);
-      } catch (error) {
+    const pending = [...this.ledger].reverse();
+    let next = 0;
+    let localityFailed = false;
+    try {
+      this.assertLocality();
+      for (let entry = pending[next]; entry !== undefined; entry = pending[++next]) {
+        const path = this.entryPath(entry);
+        try {
+          await this.verifyOwned(entry);
+          if (entry.kind === "file") await unlink(path);
+          else await rmdir(path);
+        } catch (error) {
+          rethrowLocalityFailure(error);
+          incomplete = true;
+          this.addCleanupError(`Cleanup preserved ${path}: ${errorMessage(error)}`);
+          // Inspect ancestors first, so residual reporting never follows a detected substitute.
+          try {
+            await verifyAnchors(this.destinationAnchors, this.assertLocality);
+            for (const owned of this.ownedChain(entry)) {
+              const observedPath = this.entryPath(owned);
+              this.assertAccess(observedPath);
+              const stats = await lstat(observedPath, { bigint: true });
+              if (owned === entry || !owned.identity || !stats.isDirectory() || !sameFileIdentity(stats, owned.identity)) {
+                if (residualPaths.length < REPORT_PATH_LIMIT && !residualPaths.includes(observedPath)) residualPaths.push(observedPath);
+                break;
+              }
+            }
+          } catch (observationError) {
+            rethrowLocalityFailure(observationError);
+            if (!hasErrno(observationError, "ENOENT")) this.addCleanupError(`Cannot inspect residual ${path}: ${errorMessage(observationError)}`);
+          }
+        }
+      }
+    } catch (error) {
+      if (process.platform !== "win32" || !isLocalityFailure(error)) throw error;
+      localityFailed = true;
+      const preserve = (path: string, error: unknown, residual?: string): void => {
         incomplete = true;
         this.addCleanupError(`Cleanup preserved ${path}: ${errorMessage(error)}`);
-        // Inspect ancestors first, so residual reporting never follows a detected substitute.
-        try {
-          await verifyAnchors(this.destinationAnchors);
-          for (const owned of this.ownedChain(entry)) {
-            const observedPath = this.entryPath(owned);
-            assertAccess(observedPath, this.context, this.request.assertPath);
-            const stats = await lstat(observedPath, { bigint: true });
-            if (owned === entry || !owned.identity || !stats.isDirectory() || !sameFileIdentity(stats, owned.identity)) {
-              if (residualPaths.length < REPORT_PATH_LIMIT && !residualPaths.includes(observedPath)) residualPaths.push(observedPath);
-              break;
+        if (residual !== undefined && residualPaths.length < REPORT_PATH_LIMIT && !residualPaths.includes(residual)) {
+          residualPaths.push(residual);
+        }
+      };
+      // A poisoned transfer cannot authorize I/O. Recover only via the destination's recorded ownership chain.
+      try {
+        if (this.destinationAnchors.some(({ path }) => localityFailureAffectsPath(error, path))) throw error;
+        withLocalityDecision(() => {
+          for (let entry = pending[next]; entry !== undefined; entry = pending[++next]) {
+            const path = this.entryPath(entry);
+            let residual: string | undefined;
+            try {
+              for (const anchor of this.destinationAnchors) {
+                const stats = localFs.lstatBigint(admitLocalPath(anchor.path));
+                if (!stats?.isDirectory() || !sameFileIdentity(stats, anchor.identity)) {
+                  throw transferError(`Parent directory changed: ${anchor.path}`);
+                }
+              }
+              for (const owned of this.ownedChain(entry)) {
+                const observedPath = this.entryPath(owned);
+                const stats = localFs.lstatBigint(admitLocalPath(observedPath));
+                if (stats !== undefined) residual = observedPath;
+                if (!stats || !owned.identity || !sameFileIdentity(stats, owned.identity) ||
+                    (owned.kind === "file" ? !stats.isFile() || stats.nlink !== 1n : !stats.isDirectory())) {
+                  throw transferError(`Owned destination entry changed: ${observedPath}`);
+                }
+                if (owned !== entry) residual = undefined;
+              }
+              if (entry.kind === "file") unlinkSync(path);
+              else rmdirSync(path);
+            } catch (error) {
+              rethrowLocalityFailure(error);
+              preserve(path, error, residual);
             }
           }
-        } catch (observationError) {
-          if (!hasErrno(observationError, "ENOENT")) this.addCleanupError(`Cannot inspect residual ${path}: ${errorMessage(observationError)}`);
-        }
+        });
+      } catch (error) {
+        if (!isLocalityFailure(error)) throw error;
+        const entry = pending[next];
+        if (entry !== undefined) preserve(this.entryPath(entry), error);
       }
     }
     return {
       cleanup: incomplete ? "incomplete" : this.ledger.length === 0 ? "not-created" : "removed",
+      ...(localityFailed ? { localityFailed: true } : {}),
       ...(residualPaths.length > 0 ? { residualPaths } : {}),
       ...(this.cleanupErrors.length > 0 ? { cleanupErrors: this.cleanupErrors } : {}),
     };
@@ -641,9 +733,9 @@ class OwnedTransfer {
       if (error instanceof FileTransferCleanupError) this.addCleanupError(error.message);
       this.stop(error);
       await this.settle();
-      const failure = this.signal.aborted ? new FileTransferError("cancelled", "File transfer was cancelled") : this.firstFailure ?? error;
-      const result = failedResult(failure, "not-created");
-      return { ...result, ...await this.rollback() };
+      const failure = this.signal.aborted && !isLocalityFailure(this.firstFailure)
+        ? new FileTransferError("cancelled", "File transfer was cancelled") : this.firstFailure ?? error;
+      return { ...failedResult(failure, "not-created"), ...await this.rollback() };
     } finally {
       this.accepting = false;
       this.signal.removeEventListener("abort", this.onAbort);
@@ -665,6 +757,7 @@ export async function runOwnedTransfer(
   try {
     return await new OwnedTransfer(request, context, limits).run(produce);
   } catch (error) {
+    rethrowLocalityFailure(error);
     return failedResult(error, "not-created");
   }
 }
@@ -672,7 +765,11 @@ export async function runOwnedTransfer(
 export async function copyPath(
   input: CopyPathInput,
   context: ToolExecutionContext,
-  options: { requireRegularSource?: boolean; expectedSource?: BigIntStats; assertPath?: (path: string) => void } = {},
+  options: {
+    requireRegularSource?: boolean;
+    expectedSource?: BigIntStats;
+    assertPath?: (path: string) => void;
+  } = {},
 ): Promise<TransferResult> {
   try {
     if (context.abortSignal?.aborted) throw new FileTransferError("cancelled", "File transfer was cancelled");
@@ -683,7 +780,11 @@ export async function copyPath(
     if (options.expectedSource && !sameSource(source.stats, options.expectedSource)) {
       throw transferError("Copy source changed after checkpoint admission");
     }
-    return await runOwnedTransfer({ ...input, destinationKind: source.stats.isDirectory() ? "directory" : "file", assertPath: options.assertPath }, context, async (session) => {
+    return await runOwnedTransfer({
+      ...input,
+      destinationKind: source.stats.isDirectory() ? "directory" : "file",
+      assertPath: options.assertPath,
+    }, context, async (session) => {
       const check = (): void => {
         if (session.signal.aborted) throw new FileTransferError("cancelled", "File transfer was cancelled");
       };
@@ -729,6 +830,7 @@ export async function copyPath(
       await visit(session.sourcePath, "", current);
     });
   } catch (error) {
+    rethrowLocalityFailure(error);
     return failedResult(error, "not-created");
   }
 }

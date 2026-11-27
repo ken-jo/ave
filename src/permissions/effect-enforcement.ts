@@ -1,13 +1,16 @@
-import { answerEpochsOf, personAnswerStands } from "./pending-answer-policy.js";
+import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
+import { assertWindowsTarget, observeWindowsTarget, TargetIdentityChangedError, type TargetSeal } from "./target-seal.js";
+import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, spendStandingAnswer, type PendingAnswerVerdict, type StandingAnswer } from "./pending-answer-policy.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf, type RemoteControllerAuthority } from "../shared/chat-origin.js";
 // Actual host effects enter the common permission pipeline before recording and execution.
 // Authorize before recording and execution; network audit also records denied attempts. Invalid input snapshots never reach implementation.
+import { errorMessage } from "../shared/error-message.js";
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { ApprovalGate, ApprovalChoice } from "./approval-gate.js";
+import type { ApprovalGate, ApprovalChoice, AnsweredRecord, AnsweredProvenance } from "./approval-gate.js";
 import type { PermissionCheckContext, PermissionCheckResult, PermissionManager } from "./permission-manager.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
-import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { decidePermission, NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { issueHostNetworkSubject } from "./host-network-subject.js";
 import type { ApprovalSurface } from "../shared/authorization-required.js";
@@ -51,6 +54,7 @@ export interface EffectGateContext {
   readonly approvalSurface?: ApprovalSurface;
   // The executing tool's name — surfaced in the approval dock.
   readonly toolName: string;
+  readonly toolUseId?: string;
   // The conversation whose turn is blocked on this effect, when there is one. It decides which tile draws the modal; without it the ask is drawn as a lane card in the focused pane, with no transcript waiting on it. Absent for effects raised outside a turn (a plugin's own background work).
   readonly sessionId?: string;
   /** Host-selected panel delivery; the session still scopes review and grants. */
@@ -65,8 +69,21 @@ export interface EffectGateContext {
 }
 
 const gateContextStorage = new AsyncLocalStorage<EffectGateContext>();
+const storageTargetSeal = new AsyncLocalStorage<TargetSeal>();
+
+export function verifyStorageEffectTargets(): void {
+  const seal = storageTargetSeal.getStore();
+  if (seal) holdEffectTargets(seal);
+}
 const authorizationRequiredLatch = new WeakMap<EffectGateContext, () => void>();
 const noApproverLatch = new WeakMap<EffectGateContext, () => void>();
+export type EffectApprovalRefusal = Extract<PendingAnswerVerdict, { kind: "recheck-failed" | "denied" }>
+  | { readonly kind: "host-refused"; readonly reason: string }
+  | { readonly kind: "person-denied"; readonly reason: string; readonly provenance: AnsweredProvenance };
+const approvalRefusalLatch = new WeakMap<EffectGateContext, (verdict: EffectApprovalRefusal) => void>();
+// The frame a plugin child named for a request the host cannot tell apart from a sibling call's.
+const unattributedFrames = new AsyncLocalStorage<EffectGateContext>();
+const UNATTRIBUTED_EFFECT_REASON = "another call of this plugin is active under the same permissions, so the host cannot tell which call asks; retry when one has finished";
 /** Frames whose invocation returned; work left running there keeps no once-grant. */
 const poppedFrames = new WeakSet<EffectGateContext>();
 
@@ -76,6 +93,7 @@ export function runWithEffectGateContext<T>(
   fn: () => Promise<T>,
   onAuthorizationRequired?: () => void,
   onNoApprover?: () => void,
+  onApprovalRefusal?: (verdict: EffectApprovalRefusal) => void,
 ): Promise<T> {
   const frame: EffectGateContext = { ...context, onceGrants: new Set<string>() };
   if (onAuthorizationRequired) {
@@ -83,6 +101,7 @@ export function runWithEffectGateContext<T>(
     authorizationRequiredLatch.set(frame, onAuthorizationRequired);
   }
   if (onNoApprover) noApproverLatch.set(frame, onNoApprover);
+  if (onApprovalRefusal) approvalRefusalLatch.set(frame, onApprovalRefusal);
   const pop = () => {
     poppedFrames.add(frame);
     frame.onceGrants.clear();
@@ -97,10 +116,20 @@ export function runWithEffectGateContext<T>(
   return Promise.resolve(result).finally(pop);
 }
 
+/** Run a child's request in `frame`, which the child named while another live call would authorize the effect alike. Its effects
+ * pass on a standing allow only: none asks, spends the frame's once-grants or ends the frame's call. */
+export function runUnattributedEffectRequest<R>(frame: EffectGateContext, fn: () => R): R {
+  return unattributedFrames.run(frame, fn);
+}
+
+function unattributed(frame: EffectGateContext): boolean {
+  return unattributedFrames.getStore() === frame;
+}
+
 /** Capture the host denial signal for a socket callback that outlives this async frame. */
 export function captureEffectNoApprover(): (() => void) | undefined {
   const frame = gateContextStorage.getStore();
-  return frame === undefined ? undefined : noApproverLatch.get(frame);
+  return frame === undefined || unattributed(frame) ? undefined : noApproverLatch.get(frame);
 }
 
 // Read the ambient effect-gate context, or `undefined` outside a gated invocation.
@@ -221,32 +250,77 @@ function descriptorKey(pluginId: string, methodPath: string, identity: unknown):
 
 type EffectPath = { lexical: string; canonical: string; effect: "read" | "write" };
 
-function effectPaths(methodPath: string, effect: Effect, args: readonly unknown[], resolveStoragePath?: (relativePath: string) => string): EffectPath[] {
-  const paths: EffectPath[] = [];
-  if (methodPath.startsWith("storage.")) {
-    const relativePath = methodPath === "storage.list" && args[0] === undefined ? "." : args[0];
-    if (typeof relativePath !== "string" || !resolveStoragePath) throw new Error("Storage effects require a bound path resolver");
-    const lexical = resolveStoragePath(relativePath);
-    paths.push({ lexical, canonical: canonicalizePathForMatch(lexical), effect });
-  }
-  if (methodPath === "spawnWorker") {
-    const worker = args[0];
-    if (worker !== null && typeof worker === "object") {
-      for (const [field, effect] of [["allowReadPaths", "read"], ["allowWritePaths", "write"]] as const) {
-        const grants = (worker as Record<string, unknown>)[field];
-        if (Array.isArray(grants)) for (const path of grants) {
-          if (typeof path !== "string") throw new Error("Worker filesystem grants must be paths");
-          paths.push({ lexical: path, canonical: canonicalizePathForMatch(path), effect });
+function effectPaths(methodPath: string, effect: Effect, args: readonly unknown[], resolveStoragePath?: (relativePath: string) => string,
+  canonicalize = canonicalizePathForMatch): EffectPath[] {
+  return withLocalityDecision(() => {
+    const paths: EffectPath[] = [];
+    if (methodPath.startsWith("storage.")) {
+      const relativePath = methodPath === "storage.list" && args[0] === undefined ? "." : args[0];
+      if (typeof relativePath !== "string" || !resolveStoragePath) throw new Error("Storage effects require a bound path resolver");
+      const lexical = resolveStoragePath(relativePath);
+      paths.push({ lexical, canonical: canonicalize(lexical), effect });
+    }
+    if (methodPath === "spawnWorker") {
+      const worker = args[0];
+      if (worker !== null && typeof worker === "object") {
+        for (const [field, effect] of [["allowReadPaths", "read"], ["allowWritePaths", "write"]] as const) {
+          const grants = (worker as Record<string, unknown>)[field];
+          if (Array.isArray(grants)) for (const path of grants) {
+            if (typeof path !== "string") throw new Error("Worker filesystem grants must be paths");
+            paths.push({ lexical: path, canonical: canonicalize(path), effect });
+          }
         }
       }
     }
-  }
-  return paths;
+    return paths;
+  });
 }
 
-function insideOwnStorage(paths: readonly EffectPath[], resolveStoragePath?: (relativePath: string) => string): boolean {
-  if (!resolveStoragePath || paths.length === 0) return false;
-  const root = caseFoldForMatch(canonicalizePathForMatch(resolveStoragePath(".")));
+/** The effect's paths and own-storage root, observed in one decision and sealed for every later check up to the effect. */
+interface SealedEffectTargets {
+  paths: EffectPath[];
+  storageRoot: string | undefined;
+  seal: TargetSeal;
+}
+
+function sealEffectTargets(methodPath: string, effect: Effect, args: readonly unknown[], resolveStoragePath?: (relativePath: string) => string): SealedEffectTargets {
+  const observe = () => {
+    const observations = new Map<string, ReturnType<typeof observeWindowsTarget>>();
+    const canonicalize = (path: string): string => {
+      let observation = observations.get(path);
+      if (observation === undefined) {
+        observation = observeWindowsTarget(path);
+        observations.set(path, observation);
+      }
+      return foldCanonicalPathSeparators(observation.path);
+    };
+    const paths = effectPaths(methodPath, effect, args, resolveStoragePath, canonicalize);
+    const relativePath = methodPath === "storage.list" && args[0] === undefined ? "." : args[0];
+    const firstPath = paths[0];
+    const storageRoot = resolveStoragePath && firstPath
+      ? canonicalize(methodPath.startsWith("storage.") && relativePath === "." ? firstPath.lexical : resolveStoragePath("."))
+      : undefined;
+    return { paths, storageRoot, observations };
+  };
+  const expected = withLocalityDecision(observe);
+  const seal: TargetSeal = {
+    verify: () => withLocalityDecision(() => {
+      const current = observe();
+      if (current.observations.size !== expected.observations.size || current.storageRoot !== expected.storageRoot
+        || current.paths.some((path, index) => path.lexical !== expected.paths[index]?.lexical)) throw new TargetIdentityChangedError();
+      for (const [path, observation] of expected.observations) {
+        const actual = current.observations.get(path);
+        if (actual === undefined) throw new TargetIdentityChangedError();
+        assertWindowsTarget(observation, actual);
+      }
+    }),
+  };
+  return { paths: expected.paths, storageRoot: expected.storageRoot, seal };
+}
+
+function insideOwnStorage(paths: readonly EffectPath[], storageRoot: string | undefined): boolean {
+  if (storageRoot === undefined || paths.length === 0) return false;
+  const root = caseFoldForMatch(storageRoot);
   const prefix = root.endsWith("/") ? root : `${root}/`;
   return paths.every(({ canonical }) => {
     const path = caseFoldForMatch(canonical);
@@ -259,6 +333,19 @@ function assertEffectPaths(paths: readonly EffectPath[]): void {
     throw new Error("Effect target changed during approval");
   }
 }
+
+function holdEffectTargets(seal: TargetSeal): void {
+  withLocalityDecision(() => {
+    try {
+      seal.verify();
+    } catch (error) {
+      rethrowLocalityFailure(error);
+      throw new Error("Effect target changed during approval");
+    }
+  });
+}
+
+const PERSON_EFFECT_DENIAL_REASON = "the user denied the effect approval";
 
 // Thrown by the effect-gate when a mutating effect is denied; surfaced as a tool error.
 export class EffectBoundaryDeniedError extends Error {
@@ -274,7 +361,7 @@ export class EffectBoundaryDeniedError extends Error {
         ? NO_APPROVER_MESSAGE
         : reason === "approval-unavailable"
           ? NO_APPROVER_MESSAGE
-          : "the user denied the effect approval";
+          : PERSON_EFFECT_DENIAL_REASON;
     super(
       `[effect-gate] plugin '${pluginId}' blocked from ${where}: ${reasonText ?? detail}`,
     );
@@ -324,6 +411,21 @@ function ordinaryUnderReview(request: PermissionDecisionRequest): boolean {
   return decided.outcome === "allow" || decided.outcome === "sandbox-auto" || decided.outcome === "ask" && CARD_ANSWERED_ASKS.has(decided.reasonCode);
 }
 
+const EFFECT_ANSWER_REFUSED = "Permission policy changed during effect approval";
+
+// Spend the effect card's own standing answer on its effect and leave the grant the person chose. Nothing else resumes an asked effect.
+function resumeAskedEffect(answer: StandingAnswer | undefined, action: string, grant: { key: string; ctx: EffectGateContext } | undefined): void {
+  const stood = spendStandingAnswer(answer, "effect", action);
+  if (stood === undefined) throw new Error(EFFECT_ANSWER_REFUSED);
+  if (grant === undefined) return;
+  const { choice } = stood.decision;
+  if (choice === "allow-once") {
+    if (!poppedFrames.has(grant.ctx)) grant.ctx.onceGrants.add(grant.key);
+  } else if (choice === "allow-session" || choice === "allow-always") {
+    descriptorGrants.set(grant.key, { choice, sessionId: grant.ctx.sessionId });
+  }
+}
+
 // Standalone lifecycle work is outside tool policy. Tool effects are evaluated independently of their enclosing tool's approval.
 export async function gateMutatingEffect(params: {
   pluginId: string;
@@ -338,6 +440,8 @@ export async function gateMutatingEffect(params: {
   approvalGate: ApprovalGate;
   permissionManager?: PermissionManager;
   standaloneScope?: StandaloneScope;
+  /** Targets the caller sealed before this gate and holds again at its effect; the judgment holds them too. */
+  targets?: SealedEffectTargets;
 }): Promise<void> {
   if (params.effect !== "write" && params.methodPath !== "hostFetch" && !pathReadEffectPaths.has(params.methodPath)) return;
   const ctx = currentEffectGateContext();
@@ -349,11 +453,18 @@ export async function gateMutatingEffect(params: {
   const executionCwd = ctx.executionCwd ?? process.cwd();
   await manager.ensureProjectRulesLoaded(executionCwd);
   const headless = ctx.headless || ctx.approvalSurface === "unavailable";
-  const paths = effectPaths(params.methodPath, params.effect, snapshot.args, params.resolveStoragePath);
-  const key = descriptorKey(params.pluginId, params.methodPath, [snapshot.identity, paths,
-    ...(params.input === undefined || params.capabilityBound ? [randomUUID()] : [])]);
-  const storedGrant = descriptorGrants.get(key);
-  const remembered = storedGrant?.choice === "allow-session" && storedGrant.sessionId !== ctx.sessionId ? undefined : storedGrant?.choice;
+  const windows = process.platform === "win32";
+  let paths: EffectPath[] = [];
+  let key = "";
+  let remembered: ApprovalChoice | undefined;
+  const identifyEffect = (effectPaths: EffectPath[]): void => {
+    paths = effectPaths;
+    key = descriptorKey(params.pluginId, params.methodPath, [snapshot.identity, paths,
+      ...(params.input === undefined || params.capabilityBound ? [randomUUID()] : [])]);
+    const storedGrant = descriptorGrants.get(key);
+    remembered = storedGrant?.choice === "allow-session" && storedGrant.sessionId !== ctx.sessionId ? undefined : storedGrant?.choice;
+  };
+  if (!windows) identifyEffect(effectPaths(params.methodPath, params.effect, snapshot.args, params.resolveStoragePath));
   const authNavigation = params.methodPath === "openAuthWindow" || params.methodPath === "openAuthPartitionViewer";
   const network = params.methodPath === "hostFetch" || params.methodPath === "openExternalUrl" || authNavigation;
   const worker = params.methodPath === "spawnWorker" && snapshot.args[0] !== null && typeof snapshot.args[0] === "object" ? snapshot.args[0] as Record<string, unknown> : undefined;
@@ -380,21 +491,37 @@ export async function gateMutatingEffect(params: {
     ...(network ? { ruleSubject: issueHostNetworkSubject({ url: actualUrl as string }) } : workerCommand ? { ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command: workerCommand, cwd: process.cwd() }, shellExecution: { runsSandboxed: false } } : {}),
     ...(remembered === "deny-always" ? { admissionDenial: { code: "effect-denied", reason: "The user denied this exact effect." } } : {}),
   });
-  let permission = checkEffect();
+  // The paths, their policy and the own-storage root are one judgment; its seal holds them up to the effect.
+  const judged = windows ? withLocalityDecision(() => {
+    const sealed = params.targets ?? sealEffectTargets(params.methodPath, params.effect, snapshot.args, params.resolveStoragePath);
+    if (params.targets) holdEffectTargets(params.targets.seal);
+    identifyEffect(sealed.paths);
+    return { permission: checkEffect(), storageRoot: sealed.storageRoot, seal: sealed.seal };
+  }) : undefined;
+  const assertTargets = (): void => {
+    if (judged) holdEffectTargets(judged.seal);
+    else assertEffectPaths(paths);
+  };
+  const ownStorageRoot = (): string | undefined => {
+    if (judged) return judged.storageRoot;
+    if (paths.length > 0 && params.resolveStoragePath) return canonicalizePathForMatch(params.resolveStoragePath("."));
+  };
+  let permission = judged?.permission ?? checkEffect();
   if (ctx.standalone) {
     // Storage reads and own-storage writes need no card but keep admission, floors and rules; remembered grants never widen the approved scope.
     const storageRead = params.effect === "read" && pathReadEffectPaths.has(params.methodPath);
     const ownStorageWrite = params.effect === "write" && params.methodPath.startsWith("storage.");
     const denial = permission.decision === "deny" ? permission.reason
       : permission.decision !== "allow" && (storageRead || !cardAnswersAsk(permission, ownStorageWrite)) ? "needs an approval that work outside a tool call cannot ask for"
-        : ownStorageWrite ? insideOwnStorage(paths, params.resolveStoragePath) ? undefined : "outside the plugin's own storage"
+        : ownStorageWrite ? insideOwnStorage(paths, ownStorageRoot()) ? undefined : "outside the plugin's own storage"
           : !storageRead && await params.standaloneScope?.(params.methodPath, params.target) !== true
             ? "outside the background effects approved when the plugin was enabled" : undefined;
     if (denial !== undefined) throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied", denial);
-    assertEffectPaths(paths);
+    assertTargets();
     return;
   }
-  if (ctx.onceGrants.has(key) || remembered && remembered !== "deny-always") {
+  const attributed = !unattributed(ctx);
+  if (attributed && ctx.onceGrants.has(key) || remembered && remembered !== "deny-always") {
     permission = manager.resolveRememberedPermission(permission, "The user approved this exact effect.");
   }
   const effectInput = { pluginId: params.pluginId, methodPath: params.methodPath, effect: params.effect, target: params.target ?? null };
@@ -418,28 +545,39 @@ export async function gateMutatingEffect(params: {
   ctx.abortSignal?.throwIfAborted();
   if (permission.decision === "allow") {
     if (!await refreshRemoteControllerBoundToSession(ctx.permissionContext?.remoteControllerAuthority, ctx.sessionId)) throw new Error("remote-controller-revoked");
-    assertEffectPaths(paths);
+    assertTargets();
     return;
   }
   if (permission.decision === "deny" || headless) {
     const absentApprover = permission.reasonCode === "no-approver";
-    if (absentApprover) noApproverLatch.get(ctx)?.();
-    if (absentApprover && !ctx.headless && ctx.approvalSurface === "unavailable") authorizationRequiredLatch.get(ctx)?.();
+    if (absentApprover && attributed) noApproverLatch.get(ctx)?.();
+    if (absentApprover && attributed && !ctx.headless && ctx.approvalSurface === "unavailable") authorizationRequiredLatch.get(ctx)?.();
     throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target,
       absentApprover ? ctx.headless ? "headless" : "approval-unavailable" : "denied", permission.reason);
   }
+
+  // An answer would settle the named frame's call, which may not be the one that asked.
+  if (!attributed) throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied", UNATTRIBUTED_EFFECT_REASON);
 
   // Foreground: ask at the effect boundary and await the user decision. The gate mints + verifies its own nonce+HMAC (confused-deputy defence) internally.
   const where = params.target
     ? `${params.methodPath} → ${params.target}`
     : params.methodPath;
   const reusableGrant = snapshot.reusable && !params.capabilityBound && !permission.forceModal && params.input !== undefined;
-  const opened = answerEpochsOf(manager);
-  const decision = await params.approvalGate.requestAndWait({
-    id: randomUUID(),
+  const requestId = randomUUID();
+  const action = `effect:${key}`;
+  const recheckEffect = judged === undefined ? checkEffect : (): PermissionCheckResult => withLocalityDecision(() => {
+    holdEffectTargets(judged.seal);
+    return checkEffect();
+  });
+  const card = openPendingAnswerCard(manager, permission, recheckEffect, "stale-refused",
+    { gate: params.approvalGate, requestId, action, uses: ["effect", "rule-save"] });
+  const decision = await params.approvalGate.requestAndWait(bindPendingAnswerRequest({
+    id: requestId,
     category: "agent-action",
     kind: "agent-action",
     toolName: ctx.toolName,
+    ...(ctx.toolUseId === undefined ? {} : { invocationToolUseId: ctx.toolUseId }),
     // Attribute the modal to the conversation that is blocked on it, the same way an invocation approval does.
     ...(ctx.sessionId === undefined || ctx.unattributedApproval ? {} : { sessionId: ctx.sessionId }),
     // `meta` keeps the sandbox-capability row out of this non-execution modal.
@@ -464,43 +602,51 @@ export async function gateMutatingEffect(params: {
     durableApprovalRecordAllowed: false,
     ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
     ...(permission.reviewer?.verdict ? { reviewerVerdict: permission.reviewer.verdict } : {}),
-  });
+  }, card));
+  let admitted: AnsweredRecord | undefined;
+  let failure: import("./approval-gate.js").ApprovalFailureKind | undefined;
+  let denialProvenance: AnsweredProvenance | undefined;
+  try {
+    const { admitApprovalAnswer, approvalFailureKind, answeredApprovalProvenance } = await import("./approval-gate.js");
+    admitted = admitApprovalAnswer(decision, { requestId, toolName: ctx.toolName, toolUseId: ctx.toolUseId });
+    failure = approvalFailureKind(decision);
+    if (failure === "denied") denialProvenance = answeredApprovalProvenance(decision);
+  } catch (error) {
+    approvalRefusalLatch.get(ctx)?.({ kind: "recheck-failed", reason: errorMessage(error) });
+    throw error;
+  }
+
+  if (failure === "unavailable") {
+    noApproverLatch.get(ctx)?.();
+    throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "approval-unavailable", NO_APPROVER_MESSAGE);
+  }
+  if (denialProvenance !== undefined) {
+    approvalRefusalLatch.get(ctx)?.({ kind: "person-denied", reason: PERSON_EFFECT_DENIAL_REASON, provenance: denialProvenance });
+    if (admitted?.choice === "deny-always" && reusableGrant) descriptorGrants.set(key, { choice: "deny-always", sessionId: ctx.sessionId });
+    throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied");
+  }
+  if (admitted === undefined || failure !== undefined) {
+    const reason = failure === "cancelled" ? "the effect approval request was cancelled"
+      : failure === "expired" ? "the effect approval request expired" : "the host refused the effect approval";
+    approvalRefusalLatch.get(ctx)?.({ kind: "host-refused", reason });
+    throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied", reason);
+  }
 
   ctx.abortSignal?.throwIfAborted();
   if (!await refreshRemoteControllerBoundToSession(ctx.permissionContext?.remoteControllerAuthority, ctx.sessionId)) throw new Error("remote-controller-revoked");
   // Another conversation's or run's memory-only allow rule leaves the answer standing; any other change refuses it.
-  if (!personAnswerStands(manager, opened, permission.forceModal === true, checkEffect)) throw new Error("Permission policy changed during effect approval");
-  assertEffectPaths(paths);
-  if (decision.rememberPattern === NO_APPROVER_MESSAGE) {
-    noApproverLatch.get(ctx)?.();
-    throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "approval-unavailable", NO_APPROVER_MESSAGE);
+  personAnswerStands(card, decision);
+  const verdict = card.verdict;
+  if (verdict?.kind === "recheck-failed" || verdict?.kind === "denied") {
+    approvalRefusalLatch.get(ctx)?.(verdict);
+    throw new Error(verdict.kind === "recheck-failed" ? verdict.reason : verdict.fresh.reason);
   }
-  switch (decision.choice) {
-    case "allow-once":
-      if (reusableGrant && !poppedFrames.has(ctx)) ctx.onceGrants.add(key);
-      return;
-    case "allow-session":
-      if (reusableGrant) descriptorGrants.set(key, { choice: "allow-session", sessionId: ctx.sessionId });
-      return;
-    case "allow-always":
-      if (reusableGrant) descriptorGrants.set(key, { choice: "allow-always", sessionId: ctx.sessionId });
-      return;
-    case "deny-always":
-      if (reusableGrant) descriptorGrants.set(key, { choice: "deny-always", sessionId: ctx.sessionId });
-      throw new EffectBoundaryDeniedError(
-        params.pluginId,
-        params.methodPath,
-        params.target,
-        "denied",
-      );
-    default: // deny-once
-      throw new EffectBoundaryDeniedError(
-        params.pluginId,
-        params.methodPath,
-        params.target,
-        "denied",
-      );
-  }
+  const answer = verdict?.kind === "stands" ? verdict.proof : undefined;
+  if (answer === undefined) throw new Error(EFFECT_ANSWER_REFUSED);
+  assertTargets();
+  const { refusal } = await saveStandingAnswerRule(card, decision);
+  if (refusal !== undefined) throw new Error(refusal);
+  resumeAskedEffect(answer, action, reusableGrant ? { key, ctx } : undefined);
 }
 
 // Marks an already-enforced object so a nested re-wrap is a no-op (idempotent).
@@ -539,7 +685,8 @@ export function enforceMutatingEffects<T extends object>(
           // Seal data once before awaiting policy; target, reviewer identity and execution share this snapshot.
           const snapshot = snapshotMethodArguments(path, callArgs);
           const targetSnapshot = spec?.targetFromArgs?.(snapshot.args);
-          const paths = effectPaths(path, effect, snapshot.args, deps.resolveStoragePath);
+          const targets = process.platform === "win32" ? sealEffectTargets(path, effect, snapshot.args, deps.resolveStoragePath) : undefined;
+          const paths = targets?.paths ?? effectPaths(path, effect, snapshot.args, deps.resolveStoragePath);
           await gateMutatingEffect({
             pluginId: deps.pluginId,
             methodPath: path,
@@ -550,12 +697,18 @@ export function enforceMutatingEffects<T extends object>(
             input: snapshot.args,
             resolveStoragePath: deps.resolveStoragePath,
             standaloneScope: deps.standaloneScope,
+            ...(targets === undefined ? {} : { targets }),
           });
           deps.assertActive();
           const effectContext = currentEffectGateContext();
           if (!isRemoteControllerBoundToSession(effectContext?.permissionContext?.remoteControllerAuthority, effectContext?.sessionId)) throw new Error("remote-controller-revoked");
-          assertEffectPaths(paths);
-          return Reflect.apply(original, target, snapshot.args);
+          if (targets === undefined) {
+            assertEffectPaths(paths);
+            return Reflect.apply(original, target, snapshot.args);
+          }
+          holdEffectTargets(targets.seal);
+          const invoke = () => Reflect.apply(original, target, snapshot.args);
+          return path.startsWith("storage.") ? storageTargetSeal.run(targets.seal, invoke) : invoke();
         })();
       };
     } else if (typeof value === "function") {

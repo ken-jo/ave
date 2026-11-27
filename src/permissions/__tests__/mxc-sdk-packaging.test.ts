@@ -1,4 +1,5 @@
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,12 +8,111 @@ import { contentHash } from "../../__tests__/support/content-hash.js";
 import { assertMxcSdkInventory, MxcIntegrityError, verifyMxcSdk, verifyMxcSdkSource } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
 import type { MxcSdkPins } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
 import PINS from "../mxc-launcher-pins.json" with { type: "json" };
+// @ts-expect-error standalone packaging script has no declaration output
+import { assertPackagedLauncher } from "../../../scripts/lib/mxc-sdk-packaging.mjs";
 
 const roots: string[] = [];
 
 function createTemporaryDirectory(prefix: string) {
   return realpathSync(mkdtempSync(prefix));
 }
+
+describe("packaged launcher inventory", () => {
+  it.each(Object.entries(PINS.targets))("verifies the regular file, hash and selected directory for %s", (target, { launcher }) => {
+    const resources = createTemporaryDirectory(path.join(tmpdir(), "ave-launcher-packaging-"));
+    roots.push(resources);
+    const directory = path.join(resources, "mxc", path.basename(path.dirname(launcher.member)));
+    const binary = path.join(directory, path.basename(launcher.member));
+    const installed = path.join("node_modules", PINS.package, launcher.member);
+    mkdirSync(directory, { recursive: true });
+    expect(() => assertPackagedLauncher(resources, target)).toThrow(/launcher missing/u);
+    copyFileSync(installed, binary);
+    chmodSync(binary, 0o755);
+    if (process.platform === "win32" && !target.startsWith("win32-")) {
+      // A Windows checkout cannot represent executable mode bits.
+      expect(() => assertPackagedLauncher(resources, target)).toThrow(/not executable/u);
+      return;
+    }
+    expect(() => assertPackagedLauncher(resources, target)).not.toThrow();
+    const extra = path.join(directory, "extra");
+    writeFileSync(extra, "");
+    expect(() => assertPackagedLauncher(resources, target)).toThrow(/unexpected packaged launcher entry/iu);
+    unlinkSync(extra);
+    if (!target.startsWith("win32-")) {
+      chmodSync(binary, 0o644);
+      expect(() => assertPackagedLauncher(resources, target)).toThrow(/not executable/u);
+      chmodSync(binary, 0o755);
+    }
+    writeFileSync(binary, "changed");
+    expect(() => assertPackagedLauncher(resources, target)).toThrow(/hash mismatch/u);
+  });
+
+  it("fails the macOS post-sign hook if signing changed the library bytes", async () => {
+    const appOutDir = createTemporaryDirectory(path.join(tmpdir(), "ave-library-after-sign-"));
+    roots.push(appOutDir);
+    const productFilename = "App";
+    const resources = path.join(appOutDir, `${productFilename}.app`, "Contents", "Resources");
+    const { library } = PINS.targets["darwin-arm64"];
+    const binary = path.join(resources, "app.asar.unpacked/node_modules", PINS.package, library.member);
+    mkdirSync(path.dirname(binary), { recursive: true });
+    copyFileSync(path.join("node_modules", PINS.package, library.member), binary);
+    const afterSign = createRequire(import.meta.url)("../../../scripts/electron-after-sign.cjs");
+    const context = { appOutDir, electronPlatformName: "darwin", packager: { appInfo: { productFilename } } };
+    await expect(afterSign(context)).resolves.toBeUndefined();
+    writeFileSync(binary, "changed");
+    await expect(afterSign(context)).rejects.toThrow(/hash mismatch/u);
+  });
+});
+
+describe("Windows post-sign packaging", () => {
+  it.each([{ arch: 1, target: "x64" }, { arch: 3, target: "arm64" }])("checks the final $target package in order", ({ arch, target }) => {
+    const appOutDir = createTemporaryDirectory(path.join(tmpdir(), "ave-mxc-after-sign-"));
+    roots.push(appOutDir);
+    const resources = path.join(appOutDir, "resources");
+    const productFilename = "Packaged App";
+    mkdirSync(path.join(resources, "app.asar.unpacked", "node_modules", "@anthropic-ai", "sandbox-runtime", "vendor", "srt-win"), { recursive: true });
+
+    const require = createRequire(import.meta.url);
+    const script = `
+      import { createRequire, registerHooks } from "node:module";
+
+      const [hook, legacyVerifier, appOutDir, arch, productFilename] = process.argv.slice(1);
+      const require = createRequire(import.meta.url);
+      require(legacyVerifier).assertSrtWinVendor = () => {};
+
+      const calls = [];
+      globalThis.recordCall = (...args) => calls.push(args);
+      registerHooks({ load(url, context, nextLoad) {
+        if (url.endsWith("/scripts/lib/windows-path-kind-package.mjs")) return {
+          format: "module", shortCircuit: true,
+          source: 'export const assertSignedWindowsPathKind = (...args) => globalThis.recordCall("path-kind", ...args);',
+        };
+        if (url.endsWith("/scripts/lib/mxc-sdk-packaging.mjs")) return {
+          format: "module", shortCircuit: true,
+          source: 'export const recordMxcSupervisorRuntime = (...args) => globalThis.recordCall("record", ...args);'
+            + 'export const assertPackagedMxcSdk = (...args) => globalThis.recordCall("verify", ...args);',
+        };
+        return nextLoad(url, context);
+      }});
+
+      await require(hook)({ electronPlatformName: "win32", appOutDir, arch: Number(arch), packager: { appInfo: { productFilename } } });
+      console.log(JSON.stringify(calls));
+    `;
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", script,
+      require.resolve("../../../scripts/electron-after-sign.cjs"),
+      require.resolve("../../../scripts/lib/srt-win-integrity.cjs"),
+      appOutDir, String(arch), productFilename,
+    ], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8", windowsHide: true });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      ["path-kind", appOutDir, target],
+      ["record", resources, target, path.join(appOutDir, `${productFilename}.exe`)],
+      ["verify", resources, target],
+    ]);
+  });
+});
 
 function installation() {
   const directory = createTemporaryDirectory(path.join(tmpdir(), "ave-sdk-integrity-")); roots.push(directory);
@@ -163,7 +263,7 @@ describe("SDK packaging source assertions", () => {
   });
 
   it("records runtime semantics for every source-pinned package manifest", () => {
-    const manifests = [...Object.keys(PINS.sdk.files), ...Object.values(PINS.sdk.architectures).flatMap(Object.keys)]
+    const manifests = [...Object.keys(PINS.sdk.files), ...Object.values(PINS.sdk.architectures).flatMap(Object.keys), ...Object.keys(PINS.sdk.darwinFiles)]
       .filter((file) => file.endsWith("/package.json"));
     expect(Object.keys(PINS.sdk.packageMetadata).sort()).toEqual(manifests.sort());
     const fields = ["name", "version", "main", "exports", "type", "imports"];

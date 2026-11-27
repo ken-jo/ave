@@ -41,11 +41,12 @@ vi.mock("../../../main/windows-path-kind-launcher.js", async (original) => {
   const actual = await original<typeof import("../../../main/windows-path-kind-launcher.js")>();
   const path = await vi.importActual<typeof import("node:path")>("node:path");
   const helper = actual.windowsPathKindHelperIn(path.resolve("resources"));
-  return { ...actual, resolveWindowsPathKindHelper: () => helper };
+  return { ...actual, withWindowsPathKindHelper: <T>(launch: (path: string) => T) => launch(helper) };
 });
 
 import { registerWorkspaceHandlers } from "../workspace.js";
 import * as fileAccessPolicy from "../../../tools/file-access-policy.js";
+import { localFs } from "../../../shared/local-path-io.js";
 import { linkChainVerdict } from "../../../main/external-open-target.js";
 import { configureHostResources } from "../../../main/host-resources.js";
 import {
@@ -194,6 +195,24 @@ function changeWithinRow(dir: string, rows: number, bumped: string, watched: str
     return changed;
   };
 }
+
+it.skipIf(process.platform === "win32")("yields between POSIX folder row policy checks", async ({ onTestFinished }) => {
+  const dir = join(root, "row-policy-order");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "first.txt"), "first");
+  const second = join(dir, "second.pem");
+  writeFileSync(second, "ordinary text");
+  const stopInspecting = allowKeyMaterialInspectionUnder(() => [dir]);
+  onTestFinished(stopInspecting);
+  const changed = changeDuringListing(dir, 1, () => {
+    queueMicrotask(() => writeFileSync(second, "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----\n"));
+  }, onTestFinished);
+
+  const result = await listDir(dir);
+  expect(changed()).toBe(true);
+  expect(result).toMatchObject({ ok: true, hidden: 1 });
+  expect(listedNames(result)).toEqual(["first.txt"]);
+});
 
 beforeAll(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "ave-folder-view-")));
@@ -596,6 +615,20 @@ describe("workspace.listDir folder-view entries", () => {
     expect(res.hidden).toBe(0);
   });
 
+  it.runIf(process.platform === "win32")("uses the checked directory and root for link containment", async () => {
+    const link = join(root, "inside-directory");
+    symlinkSync(join(root, "src"), link, "junction");
+    const realpath = vi.spyOn(fsModule.promises, "realpath").mockRejectedValue(new Error("Unexpected second path resolution"));
+    try {
+      const result = await listDir(root);
+      expect(result.entries?.find((entry) => entry.name === "inside-directory")).toMatchObject({ type: "link", outside: false });
+      expect(realpath).not.toHaveBeenCalled();
+    } finally {
+      realpath.mockRestore();
+      unlinkSync(link);
+    }
+  });
+
   it("reports a link as a link with an outside flag and never follows it", async ({ skip }) => {
     needsFileLinks(skip);
     const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), root)) as ListResult;
@@ -848,13 +881,21 @@ describe("workspace.openPath", () => {
     additionalDirectories.value = [root, outside];
     const swapped = join(root, "swap.txt");
     writeFileSync(swapped, "inside\n");
-    const realStat = fsModule.promises.stat;
-    const spy = vi.spyOn(fsModule.promises, "stat").mockImplementationOnce(async (...args: Parameters<typeof realStat>) => {
-      const result = await realStat(...args);
+    const swap = () => {
       unlinkSync(swapped);
       symlinkSync(join(outside, "secret.txt"), swapped, "file");
-      return result;
-    });
+    };
+    const spy = process.platform === "win32"
+      ? vi.spyOn(localFs, "stat").mockImplementationOnce(((stat) => (verdict) => {
+        const result = stat(verdict);
+        swap();
+        return result;
+      })(localFs.stat))
+      : vi.spyOn(fsModule.promises, "stat").mockImplementationOnce(((stat) => async (...args) => {
+        const result = await stat(...args);
+        swap();
+        return result;
+      })(fsModule.promises.stat));
     try {
       const res = await openPath({ projectRoot: root, path: swapped, intent: GESTURE });
       expect(res.ok).toBe(false);
@@ -1060,7 +1101,7 @@ describe("workspace.listDir links to network locations", () => {
       // A `..` in a target is not judged lexically: fail closed, even when it would land inside.
       expect(outsideOf("up")).toBe(true);
       // Only the listed folder and its project root are resolved, never a link.
-      expect(realpath.mock.calls.map(([path]) => relative(root, String(path)))).toEqual(["chain", ""]);
+      expect(realpath.mock.calls.map(([path]) => relative(root, String(path)))).toEqual(process.platform === "win32" ? [] : ["chain", ""]);
     } finally {
       realpath.mockRestore();
       rmSync(dir, { recursive: true, force: true });

@@ -248,7 +248,7 @@ const managed = readRepoFile("src/main/managed-child-processes.ts");
 const engine = readRepoFile("src/observation/libreoffice-process.ts");
 
 const hookRefresh = section(hook, "let refreshError: unknown", "const startHook =");
-const windowsHook = section(hook, "return new Promise<ScriptHookInvocationResult>", "function stopPreparedHolder");
+const windowsHook = section(hook, "return await new Promise<ScriptHookInvocationResult>", "function stopPreparedHolder");
 const posixHook = section(hook, "async function runPosixHook", "async function runContainedHook");
 const windowsGrant = section(grant, "export async function spawnWindowsBundledProcess", "export function hostRuntimeReads");
 const managedExit = section(managed, "async function waitForManagedProcessGroupExit", "export function observeManagedProcessGroup");

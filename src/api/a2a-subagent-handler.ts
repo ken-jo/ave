@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import type { AgentActionApprovalFailure, AgentActionApprovalResult } from "../permissions/agent-action-approver.js";
 import {
   A2ARole,
   A2ATaskState,
@@ -352,6 +353,7 @@ export interface A2ATaskLifecycleAuditEvent {
     | "storage-failed"
     | "runner-failed";
   handlerId: string;
+  approvalOutcome?: AgentActionApprovalFailure;
   taskId?: string;
   messageId?: string;
   detectionCount?: number;
@@ -372,9 +374,17 @@ export interface A2AWireAuthorizationDescriptor {
   messageId?: string;
 }
 
+type A2AWireAuthorizationResult = { readonly approved: true } | Extract<AgentActionApprovalResult, { approved: false }>;
+
+class A2AApprovalRefusalError extends A2AHandlerError {
+  constructor(readonly approvalOutcome: AgentActionApprovalFailure) {
+    super(A2AHostJsonRpcErrorDefinition.OPERATION_REJECTED);
+  }
+}
+
 export type A2AWireAuthorizer = (
   descriptor: Readonly<A2AWireAuthorizationDescriptor>,
-) => boolean | Promise<boolean>;
+) => A2AWireAuthorizationResult | Promise<A2AWireAuthorizationResult>;
 
 export interface CreateA2ASubAgentHandlerOptions {
   id: string;
@@ -726,6 +736,7 @@ export class A2ASubAgentHandler implements A2ARequestHandler {
       messageId?: string;
       detectionCount?: number;
       operation?: A2AWireOperation;
+      approvalOutcome?: AgentActionApprovalFailure;
     } = {},
   ): void {
     try {
@@ -762,19 +773,21 @@ export class A2ASubAgentHandler implements A2ARequestHandler {
       ...(descriptor.messageId ? { messageId: descriptor.messageId } : {}),
     });
     const authorize = this.options.authorizeOperation as A2AWireAuthorizer | undefined;
-    let allowed = false;
+    let approvalOutcome: AgentActionApprovalFailure;
     try {
-      allowed = typeof authorize === "function" && (await authorize(request)) === true;
+      const result = await authorize?.(request);
+      if (result?.approved === true) return;
+      approvalOutcome = result?.outcome ?? "unavailable";
     } catch {
-      allowed = false;
+      approvalOutcome = "rejected";
     }
-    if (allowed) return;
     this.audit("consent-denied", "dropped", {
       operation: request.operation,
+      approvalOutcome,
       ...(request.taskId ? { taskId: request.taskId } : {}),
       ...(request.messageId ? { messageId: request.messageId } : {}),
     });
-    throw new A2AHandlerError(A2AHostJsonRpcErrorDefinition.OPERATION_REJECTED);
+    throw new A2AApprovalRefusalError(approvalOutcome);
   }
 
   // Grant disclosure only after approval or a caller-owned send, never as a side effect of reading.

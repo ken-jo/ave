@@ -33,6 +33,9 @@ export const TOOL_TIMEOUT_POLICY = {
   tailnetIdentityProbeMs: 5_000,
   // The path-kind helper answers drive and Documents queries from the OS in milliseconds; this bound only ends a stalled start.
   windowsPathKindQueryMs: 15_000,
+  windowsDriveLocalityMs: 5_000,
+  // A held shell run reports within this long of its stop request; past it the hold is released, which stops its whole job.
+  windowsHoldStopMs: 15_000,
   // Cold native startup includes module loading, compilation and account-provider initialization before READY.
   windowsAclHostStartupMs: 120_000,
   // Bound each serial native-location ACL check so a stalled host releases queued admissions before the global ceiling.
@@ -41,6 +44,10 @@ export const TOOL_TIMEOUT_POLICY = {
   gitRepositoryInspectionMs: 30_000,
   // Bound policy delivery even when the container launcher never connects.
   mxcRequestTransportMs: 15_000,
+  // The canary uses a short native request deadline before the shell watchdog.
+  mxcMacShellProbeMs: 5_000,
+  mxcMacShellStopMs: 12_000,
+  mxcMacShellOutputDrainMs: 1_000,
   // A holder's own start must report its ready-frame evidence inside this bound, from supervisor start, or it is refused.
   mxcExtensionReadinessMs: 30_000,
   // Share the exact workload-identity handshake budget with the protocol.

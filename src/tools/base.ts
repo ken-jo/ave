@@ -15,6 +15,7 @@
  * builder, and the plugin/MCP lifecycle all consume this shape.
  */
 import { z } from "zod";
+import { isBrowserToolName } from "../shared/browser-tools.js";
 import type {
   ToolSource,
   ToolCategory,
@@ -75,6 +76,8 @@ export interface Tool {
   readonly description: string;
   readonly source: ToolSource;
   readonly category: ToolCategory;
+  readonly unattendedEffect?: import("../permissions/tool-effect-evidence.js").ToolEffectEvidence;
+  readonly effectAnnotations?: import("../permissions/tool-effect-evidence.js").ExternalEffectAnnotations;
   readonly categoryForInput?: (input: unknown, ctx?: ToolPolicyContext) => ToolCategory;
   /** Permission policy; declared only on `category === "meta"` tools. Tells the executor to take the explicit
    * short-circuit path rather than the standard Layer 3 decision matrix. See {@link ToolDecisionOverride} for semantics. */
@@ -157,6 +160,15 @@ export function isModelExposedTool(tool: Pick<Tool, "modelVisible">): boolean {
   return tool.modelVisible !== false;
 }
 
+/** Only fixed-category local reads are visible and executable in an unattended stage. */
+export function isUnattendedReadTool(tool: Tool): boolean {
+  return tool.source === "builtin" && tool.category === "read" && isModelExposedTool(tool)
+    && !isBrowserToolName(tool.name)
+    && !tool.arbitraryEgress && !tool.requiresMcpScope && !tool.appInvokable
+    && tool.categoryForInput === undefined && tool.decisionOverride === undefined
+    && tool.operationPolicy === undefined;
+}
+
 /** Ergonomic abstract base for hand-written tools backed by a Zod schema. Subclasses implement {@link executeTyped}; {@link execute} parses `rawInput` via the schema
  * first then dispatches typed. Override `source` / `category` with `override readonly` for plugin or dangerous tools; see {@link BashTool} for a complete example. */
 export abstract class ZodTool<TSchema extends z.ZodTypeAny = z.ZodTypeAny>
@@ -216,6 +228,8 @@ export interface DynamicToolSpec {
   workerId?: string;
   mcpServerId?: string;
   mcpReadOnlyHint?: boolean;
+  unattendedEffect?: Tool["unattendedEffect"];
+  effectAnnotations?: Tool["effectAnnotations"];
   mcpRuleIdentity?: Tool["mcpRuleIdentity"];
   operationPolicy?: PluginToolOperationPolicy;
   /** MCP Apps app→server `tools/call` gate; see {@link Tool.appInvokable}. */
@@ -260,6 +274,8 @@ export function createDynamicTool(spec: DynamicToolSpec): Tool {
     workerId: spec.workerId,
     mcpServerId: spec.mcpServerId,
     mcpReadOnlyHint: spec.mcpReadOnlyHint,
+    unattendedEffect: spec.unattendedEffect,
+    effectAnnotations: spec.effectAnnotations,
     mcpRuleIdentity: spec.mcpRuleIdentity,
     operationPolicy: spec.operationPolicy,
     appInvokable: spec.appInvokable,

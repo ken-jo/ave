@@ -1,6 +1,6 @@
 import childProcess from "node:child_process";
 import { dirname } from "node:path";
-import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
+import { withWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
 import { assertManagedChildProcessAdmissionOpen, retainUnterminatedChildProcess, trackManagedChildProcess } from "../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
@@ -14,17 +14,17 @@ class PolicyHelperTerminationError extends Error {
   }
 }
 
-export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
+export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, held = false): Promise<{
   bindChild(child: childProcess.ChildProcess): void;
+  bindHeldPolicy?(launcher: childProcess.ChildProcess, readerPid: number, onFailure: () => void): Promise<void>;
   release(): Promise<void>;
 }> {
   if (!bytes.length || bytes.length > MAX_POLICY_BYTES) throw new Error("Windows sandbox policy frame length is invalid");
   if (!/^\\\\\.\\pipe\\ave-mxc-[a-f0-9]{32}$/u.test(pipe)) throw new Error("Windows sandbox policy pipe name is invalid");
-  const helper = resolveWindowsPathKindHelper();
   assertManagedChildProcessAdmissionOpen("mxc:policy");
-  const server = childProcess.spawn(helper, ["--mxc-policy", pipe, String(TOOL_TIMEOUT_POLICY.mxcRequestTransportMs)], {
+  const server = withWindowsPathKindHelper(helper => childProcess.spawn(helper, [held ? "--mxc-policy-held-v1" : "--mxc-policy", pipe, String(TOOL_TIMEOUT_POLICY.mxcRequestTransportMs)], {
     cwd: dirname(helper), windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"],
-  });
+  }));
   let stopTracking: ReturnType<typeof trackManagedChildProcess> | undefined;
   let bound: childProcess.ChildProcess | undefined;
   let closed = false;
@@ -34,6 +34,9 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
   let failing = false;
   let failure: Error | undefined;
   let rejectReady: (error: Error) => void = () => {};
+  let pendingBind: { resolve(): void; reject(error: Error): void } | undefined;
+  let acknowledged = false;
+  let stopHeld: (() => void) | undefined;
   let resolveClosed: () => void;
   const completion = new Promise<void>((resolve) => { resolveClosed = resolve; });
   let releasePromise: Promise<void> | undefined;
@@ -44,6 +47,8 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
   const release = (): Promise<void> => {
     if (releasePromise) return releasePromise;
     released = true;
+    pendingBind?.reject(failure ?? new Error("Windows sandbox policy binding was released"));
+    pendingBind = undefined;
     clearTimeout(timer);
     releasePromise = Promise.resolve().then(async () => {
       let stopped: Promise<void> | undefined;
@@ -74,7 +79,8 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
     recordFailure(error);
     if (failing) return;
     failing = true;
-    if (bound?.exitCode === null && bound.signalCode === null) cleanup(() => bound?.kill());
+    if (stopHeld !== undefined) cleanup(stopHeld);
+    else if (bound?.exitCode === null && bound.signalCode === null) cleanup(() => bound?.kill());
     void release().then(() => { rejectReady(recordFailure(error)); }, (releaseError) => { rejectReady(recordFailure(releaseError)); });
   };
   const timer = setTimeout(() => fail(new Error("Windows sandbox policy delivery timed out")), TOOL_TIMEOUT_POLICY.mxcRequestTransportMs);
@@ -88,7 +94,7 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
     try { stopTracking?.(); } catch (error) { recordFailure(error); }
     finally { resolveClosed(); }
     if (failure) fail(failure);
-    else if (!released && (!ready || code !== 0)) fail(new Error("Windows sandbox policy helper failed; rebuild the Windows native assets"));
+    else if (!released && (!ready || (held && !acknowledged) || code !== 0)) fail(new Error("Windows sandbox policy helper failed; rebuild the Windows native assets"));
   });
   try {
     await new Promise<void>((resolve, reject) => {
@@ -96,21 +102,34 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
       let response = Buffer.alloc(0);
       server.stdout.on("data", (chunk: Buffer) => {
         if (released) return;
-        if (response.length + chunk.length > 64) {
+        if (acknowledged || response.length + chunk.length > 64) {
           void fail(new Error("Windows sandbox policy helper sent an invalid response"));
           return;
         }
         response = Buffer.concat([response, chunk]);
         if (!response.includes(0x0a)) return;
         try {
-          if (decodeWindowsNativeReply(response) === "ready\n") { ready = true; resolve(); }
-          else void fail(new Error("Windows sandbox policy helper sent an invalid response"));
+          const frame = decodeWindowsNativeReply(response);
+          if (!ready && frame === (held ? "held-v1\n" : "ready\n")) {
+            ready = true;
+            if (held) response = Buffer.alloc(0);
+            resolve();
+          } else if (held && pendingBind !== undefined && frame === "bound\n") {
+            acknowledged = true;
+            response = Buffer.alloc(0);
+          } else void fail(new Error("Windows sandbox policy helper sent an invalid response"));
         } catch (cause) {
           void fail(new Error("Windows sandbox policy helper sent invalid UTF-8", { cause }));
         }
       });
+      if (held) server.stdout.on("error", fail);
       server.stdout.once("end", () => {
-        if (!ready) void fail(new Error("Windows sandbox policy helper sent an incomplete response"));
+        if (!ready || (held && !released && !acknowledged)) {
+          fail(new Error("Windows sandbox policy helper sent an incomplete response"));
+        } else if (acknowledged) {
+          pendingBind?.resolve();
+          pendingBind = undefined;
+        }
       });
       try {
         stopTracking = trackManagedChildProcess(server, { killProcessGroup: false, label: "mxc:policy" });
@@ -126,20 +145,35 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
       }
     });
     if (failure) throw failure;
+    const bind = (owner: childProcess.ChildProcess, readerPid: number | undefined): void => {
+      if (bound !== undefined) throw new Error("Windows sandbox policy client is already bound");
+      bound = owner;
+      owner.once("error", () => { void release().catch(fail); });
+      owner.once("close", () => { void release().catch(fail); });
+      if (readerPid === undefined || !Number.isInteger(readerPid) || readerPid <= 0 || readerPid > 0xffff_ffff || closed || released) {
+        fail(new Error("Windows sandbox policy client did not start"));
+        return;
+      }
+      const pid = Buffer.alloc(4);
+      pid.writeUInt32LE(readerPid);
+      server.stdin.write(pid);
+    };
     return {
-      bindChild: (child) => {
-        if (bound !== undefined) throw new Error("Windows sandbox policy client is already bound");
-        bound = child;
-        child.once("error", () => { void release().catch(fail); });
-        child.once("close", () => { void release().catch(fail); });
-        if (child.pid === undefined || !Number.isInteger(child.pid) || child.pid <= 0 || child.pid > 0xffff_ffff || closed || released) {
-          void fail(new Error("Windows sandbox policy client did not start"));
-          return;
-        }
-        const pid = Buffer.alloc(4);
-        pid.writeUInt32LE(child.pid);
-        server.stdin.write(pid);
+      bindChild(child) {
+        if (held) throw new Error("Windows sandbox policy requires a held reader");
+        bind(child, child.pid);
       },
+      ...(held && {
+        bindHeldPolicy(launcher: childProcess.ChildProcess, readerPid: number, onFailure: () => void) {
+          if (bound !== undefined) throw new Error("Windows sandbox policy client is already bound");
+          if (released || closed) throw failure ?? new Error("Windows sandbox policy helper is unavailable");
+          stopHeld = onFailure;
+          return new Promise<void>((resolve, reject) => {
+            pendingBind = { resolve, reject };
+            try { bind(launcher, readerPid); } catch (error) { fail(error); }
+          });
+        },
+      }),
       release,
     };
   } catch (error) {

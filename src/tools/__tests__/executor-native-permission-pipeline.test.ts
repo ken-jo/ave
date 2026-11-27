@@ -26,7 +26,7 @@ import { withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { mcpToolToTool } from "../../mcp/mcp-tool-adapter.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host-shell-execution-plan.js";
-import { getHostShellExecutionPlan, setShellSandboxRequestedAtBoot, setActiveSandboxCapability, __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest } from "../../permissions/sandbox-capability.js";
+import { getHostShellExecutionPlan, setShellSandboxRequestedAtBoot, setActiveSandboxCapability, setContainerShellSubstrate, __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest } from "../../permissions/sandbox-capability.js";
 import { caseFoldForMatch, foldCanonicalPathSeparators, isAdmissionDeniedPath, allowKeyMaterialInspectionUnder } from "../../permissions/sensitive-paths.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { buildApprovalScopeOptions } from "../../permissions/approval-scope-options.js";
@@ -71,6 +71,8 @@ beforeEach(async () => {
   __resetSessionStoreForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
+  // A container shell published by an earlier test must not carry over; each test that confines shells publishes it.
+  if (process.platform === "darwin") setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
   audit = new AuditLogger(join(root, "audit"));
   manager = new PermissionManager(join(root, "permissions.json"));
   registry = new ToolRegistry();
@@ -124,6 +126,46 @@ function reviewer() {
 }
 
 describe("native invocation permission evidence", () => {
+  it.each(["scope", "scope-before-stop", "stop-before-scope"] as const)("cancels a directory card with the first settlement (%s)", async (order) => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    manager.setMode("default");
+    const turn = new AbortController();
+    const grant = vi.fn();
+    const execute = vi.spyOn(writeTool, "execute");
+    const cardSeen = vi.fn();
+    const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, card: ApprovalRequest) => {
+      if (channel !== IPC_APPROVAL_REQUEST) return;
+      cardSeen(card.kind);
+      queueMicrotask(() => {
+        const cancelScope = () => gate.cancelPendingRequest(card.id, sessionId, "project-scope-changed");
+        if (order === "stop-before-scope") turn.abort();
+        expect(cancelScope()).toBe(order !== "stop-before-scope");
+        if (order === "scope-before-stop") turn.abort();
+      });
+    } } as never);
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
+    const path = join(root, "cancelled-folder.txt");
+    const rows = vi.spyOn(audit, "log");
+    const [result] = await subject.executeAll([
+      { id: "cancelled-folder", name: "write_file", input: { path, content: "do not write" } },
+    ], { sessionId, executionCwd: project, abortSignal: turn.signal,
+      permissionContext: { trustOrigin: "user-keyboard", additionalDirectories: [], onTurnDirectoryGrant: grant } });
+    expect(cardSeen).toHaveBeenCalledExactlyOnceWith("out-of-allowed-dir");
+    expect(turn.signal.aborted).toBe(order !== "scope");
+    const reason = order === "stop-before-scope" ? /user aborted turn/i : /project-scope-changed/;
+    expect.soft(result.is_error).toBe(true);
+    if (order === "stop-before-scope") expect.soft(result.content).not.toContain("project-scope-changed");
+    else expect.soft(result.content).toContain("project-scope-changed");
+    const terminal = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map(line => JSON.parse(line)).at(-1);
+    expect.soft(terminal).toMatchObject({ toolUseId: "cancelled-folder", decision: "deny", terminalKind: "cancelled",
+      trustOrigin: order === "stop-before-scope" ? "user-keyboard" : "unknown",
+      denyReasons: [expect.objectContaining({ reason: expect.stringMatching(reason) })] });
+    expect(rows).toHaveBeenCalledWith(expect.objectContaining({ type: "tool_call",
+      toolCalls: [expect.objectContaining({ permissionDecision: "cancelled", permissionReason: expect.stringMatching(reason) })] }));
+    expect(grant).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("offers a session folder grant that covers siblings only in that session", async () => {
     await audit.setupPermissionAuditChain("aa".repeat(32));
     manager.setMode("default");
@@ -261,6 +303,8 @@ describe("native invocation permission evidence", () => {
       setShellSandboxRequestedAtBoot(true);
       setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
         reason: "Fixture confinement", confines: { filesystem: true, process: true, network: true } });
+      // Shell confinement on macOS is the published container shell; the wrap alone leaves shells on the no-confinement floor.
+      if (process.platform === "darwin") setContainerShellSubstrate({ state: "available" });
     }
     const tool = new BashTool();
     let childEnvironment: Readonly<Record<string, string | undefined>> | undefined;
@@ -404,6 +448,16 @@ describe("native invocation permission evidence", () => {
     expect(requests).toHaveLength(0);
   });
 
+  it("keeps attended directory review on the foreground route when an approval surface is unavailable", async () => {
+    manager.setMode("auto");
+    const dispatch = reviewer();
+    await executor().executeAll([
+      { id: "outside-write", name: writeTool.name, input: { path: join(root, "outside.txt"), content: "report" } },
+    ], { sessionId, executionCwd: project, permissionContext: { trustOrigin: "user-keyboard", approvalSurface: "unavailable" } });
+    expect(dispatch.mock.calls[0]?.[3]).toMatchObject({ lane: "foreground-auto" });
+    expect(requests).toHaveLength(0);
+  });
+
   it("honors a remembered outside write before its headless directory fallback", async () => {
     manager.setMode("default");
     const path = join(root, "remembered-outside.txt");
@@ -511,6 +565,7 @@ describe("native invocation permission evidence", () => {
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
       reason: "Changed fixture confinement", confines: { filesystem: true, process: true, network: true } });
+    if (process.platform === "darwin") setContainerShellSubstrate({ state: "available" });
     const [result] = await run(executor(), tool.name, input, { headless: true });
     expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("do not retry") });
     expect(execute).not.toHaveBeenCalled();
@@ -999,6 +1054,7 @@ describe("native invocation permission evidence", () => {
     ["stop-while-open", "cancelled"],
     ["deny-then-coordinator-stop", "denied"],
     ["deny-then-turn-stop", "denied"],
+    ["scope-then-turn-stop", "cancelled"],
   ] as const)("records one %s rationale decision as %s", async (source, kind) => {
     await audit.setupPermissionAuditChain("aa".repeat(32));
     manager.setMode("auto");
@@ -1044,7 +1100,8 @@ describe("native invocation permission evidence", () => {
       if (source === "headless") {
         await expect(coordinator.promptForApproval(ticketId)).resolves.toMatchObject({ outcome: "denied" });
       } else {
-        const stop = source === "deny-then-turn-stop" ? turn : coordinatorStop;
+        const scopeFirst = source === "scope-then-turn-stop";
+        const stop = source === "deny-then-turn-stop" || scopeFirst ? turn : coordinatorStop;
         const pending = coordinator.promptForApproval(ticketId, { abortSignal: stop.signal });
         await vi.waitFor(() => expect(cards).toHaveLength(1));
         const [card] = cards;
@@ -1055,9 +1112,17 @@ describe("native invocation permission evidence", () => {
           }, contents as never)).toMatchObject({ choice: "deny-once" });
           settledDenialReason = card.reason;
         }
+        if (scopeFirst) expect(gate.cancelPendingRequest(card.id, sessionId, "project-scope-changed")).toBe(true);
         stop.abort();
-        expect(turn.signal.aborted).toBe(source === "deny-then-turn-stop");
-        await expect(pending).resolves.toBeNull();
+        expect(turn.signal.aborted).toBe(source === "deny-then-turn-stop" || scopeFirst);
+        if (scopeFirst) {
+          await expect.soft(pending).resolves.toMatchObject({ outcome: "cancelled", approvalOutcome: "cancelled", reason: expect.stringContaining("project-scope-changed") });
+          expect(gate.pendingCount).toBe(0);
+        } else if (kind === "denied") {
+          await expect(pending).resolves.toMatchObject({ outcome: "denied", approvalOutcome: "denied" });
+        } else {
+          await expect(pending).resolves.toBeNull();
+        }
       }
     }
     const readRows = async () => (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n")
@@ -1072,7 +1137,8 @@ describe("native invocation permission evidence", () => {
       ...(settledDenialReason !== undefined ? { trustOrigin: "user-keyboard" } : {}),
       denyReasons: [expect.objectContaining({ reason: settledDenialReason ?? (source === "headless"
         ? "Nobody can approve this request; do not retry."
-        : "The permission request was stopped; the action was not executed.") })],
+        : source === "scope-then-turn-stop" ? "approval cancelled: project-scope-changed"
+          : "The permission request was stopped; the action was not executed.") })],
     })]);
     const [row] = rows;
     if (row === undefined) throw new Error("Expected a terminal audit row");

@@ -1,4 +1,5 @@
 // Shared chat handlers remain transport-independent; wrappers own sender and gesture validation.
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { MAIN_CHAT_GROUP_ID } from "../../contract/app-contract.js";
 import type { ChatInputOrigin, ChatSendPayload, RemoteControllerAuthority } from "../../shared/chat-origin.js";
 import {
@@ -587,7 +588,7 @@ export async function handleChatSessions(
       : "__ave_unauthorized_project_root__"
     : undefined;
   const includeUnscoped = resolvedProject?.authorized === true && resolvedProject.project?.isDefault === true;
-  const sessions = memoryManager.sessions
+  const sessions = withLocalityDecision(() => memoryManager.sessions
     .listSessionsPage({ kind: families ? "all" : kind, ...(routineId ? { routineId } : {}), ...(projectRoot ? { projectRoot } : {}), ...(includeUnscoped ? { includeUnscoped: true } : {}), limit, ...(before ? { before } : {}), ...(beforeId ? { beforeId } : {}), ...(after ? { after } : {}) })
     .flatMap((s): SessionListRow[] => {
       // Strip legacy default-project tags at the read boundary so they cannot become named sidebar projects.
@@ -599,7 +600,7 @@ export async function handleChatSessions(
       if (row === null) return [];
       if (families && !families.has(row.family)) return [];
       return [row];
-    });
+    }));
   if (!families) {
     return { current: conversationLoop.getSessionId(), sessions };
   }
