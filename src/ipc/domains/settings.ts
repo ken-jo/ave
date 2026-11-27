@@ -492,10 +492,11 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   ): Promise<void> => {
     const active = settingsService.get("llm").activeChatRuntime;
     if (active?.kind !== "subscription" || active.provider !== provider) return;
-    const routeIntent = activeChatRuntimeSelectionIntentRevision;
+    const routeRevision = activeChatRuntimeTransitionRevision;
     await broadcastSettingsSnapshot({ ...deps, isSubscriptionConnected: async (candidate) =>
       subscriptionConnectionProjection(candidate)?.connected ?? false },
-    () => routeIntent === activeChatRuntimeSelectionIntentRevision
+    () => routeRevision === activeChatRuntimeTransitionRevision
+      && sameActiveChatRuntime(settingsService.get("llm").activeChatRuntime, active)
       && subscriptionConnectionProjection(provider)?.revision === revision);
   };
   const stopStatusChangedListener = onSubscriptionRuntimeStatusChanged((provider, connected, revision) => {

@@ -1,3 +1,10 @@
+// @vitest-environment jsdom
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { fakeAppSettings } from "../../../../test/renderer/fake-app-settings.js";
+import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
+import { useSettings } from "../../../ui/renderer/hooks/use-settings.js";
+import type { AppSettings, AveApi } from "../../../ui/renderer/types.js";
+import type { SubscriptionRuntimeStatusUpdatedEvent } from "../../../shared/subscription-runtime.js";
 import { subscriptionAccountFixture } from "../../../__tests__/support/subscription-account-fixture.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolve } from "node:path";
@@ -467,7 +474,10 @@ describe("common subscription runtime IPC", () => {
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
-  it("publishes each transport connection change to the active model once", async () => {
+  it.each([
+    { name: "publishes each transport connection change to the active model once", failsSelection: false },
+    { name: "restores the mounted composer after a concurrent selection fails verification", failsSelection: true },
+  ])("$name", async ({ failsSelection }) => {
     const actual = await vi.importActual<typeof import("../../../main/subscription-runtime-service.js")>(
       "../../../main/subscription-runtime-service.js",
     );
@@ -498,6 +508,7 @@ describe("common subscription runtime IPC", () => {
     deps.getAppWindows = vi.fn(() => [{ isDestroyed: () => false, webContents: { isDestroyed: () => false, send } }]);
     const { registerSettingsHandlers } = await import("../settings.js");
     const dispose = registerSettingsHandlers({ ...deps, isSubscriptionConnected } as never);
+    let unmount: (() => void) | undefined;
     try {
       await service.verify(selection.provider);
       const initial = await invoke("ave:settings:get");
@@ -519,16 +530,57 @@ describe("common subscription runtime IPC", () => {
       await expect(older).resolves.toMatchObject({ ok: true, status: { connection: "signed-out", capabilities: { chat: false } } });
       expect(await isSubscriptionConnected()).toBe(false);
 
-      status = connected;
-      await invoke("ave:settings:subscription:status", selection.provider, { refresh: true });
+      if (failsSelection) {
+        const project = (snapshot: unknown) => fakeAppSettings(snapshot as AppSettings);
+        const { api, emitSubscriptionRuntimeStatusUpdated } = makeMockAveApi({
+          getSettings: async () => project(await invoke("ave:settings:get")),
+        });
+        api.subscriptionRuntimeStatus.mockImplementation(async () => ({ ok: true, status: await service.getCachedStatus(selection.provider) }));
+        send.mockImplementation((channel, payload) => {
+          if (channel === SETTINGS.updated) api.onSettingsUpdated.mock.calls[0]?.[0](project(payload));
+          if (channel === "ave:settings:subscription:status-updated") {
+            emitSubscriptionRuntimeStatusUpdated(payload as SubscriptionRuntimeStatusUpdatedEvent);
+          }
+        });
+        const composer = renderHook(() => useSettings(api as unknown as AveApi));
+        unmount = composer.unmount;
+        await waitFor(() => expect(composer.result.current.activeChatModel).toEqual({ kind: "none", reason: "no-connected-provider" }));
+        const localeStarted = deferred<void>();
+        const releaseLocale = deferred<boolean>();
+        localeMock.tryLoadLocaleMessages.mockImplementationOnce(() => {
+          localeStarted.resolve();
+          return releaseLocale.promise;
+        });
+        status = connected;
+        await act(async () => {
+          try {
+            await invoke("ave:settings:subscription:status", selection.provider, { refresh: true });
+            await localeStarted.promise;
+            vi.spyOn(service, "verify").mockRejectedValueOnce(new actual.SubscriptionRuntimeServiceError("subscription-operation-failed"));
+            await expect(invoke("ave:settings:subscription:use-for-chat", "kimi-code")).resolves.toMatchObject({
+              ok: false, error: "subscription-operation-failed",
+            });
+            expect(composer.result.current.activeChatModel).toMatchObject({ kind: "none" });
+          } finally {
+            releaseLocale.resolve(true);
+          }
+        });
+        await waitFor(() => expect(composer.result.current.activeChatModel).toEqual(selected));
+        expect(api.getSettings).toHaveBeenCalledOnce();
+      } else {
+        status = connected;
+        await invoke("ave:settings:subscription:status", selection.provider, { refresh: true });
+      }
       await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({ activeChatModel: selected })));
       expect(deps.rewireReviewerAgent).not.toHaveBeenCalled();
       expect(send.mock.calls.filter(([channel]) => channel === SETTINGS.updated)).toHaveLength(2);
-      expect(send.mock.calls.filter(([channel]) => channel === "ave:settings:subscription:status-updated")).toHaveLength(2);
+      expect(send.mock.calls.filter(([channel, payload]) => channel === "ave:settings:subscription:status-updated"
+        && (payload as SubscriptionRuntimeStatusUpdatedEvent).provider === selection.provider)).toHaveLength(2);
       expect(currentLlm().activeChatRuntime).toEqual(selection);
       expect(deps.settingsService.patch).not.toHaveBeenCalled();
       expect(verifyIsolation).toHaveBeenCalledOnce();
     } finally {
+      unmount?.();
       dispose();
       await service.stop();
     }
