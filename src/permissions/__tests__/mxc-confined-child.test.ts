@@ -74,6 +74,10 @@ vi.mock("../sandbox-capability.js", async (original) => {
 });
 vi.mock("../egress-host-listener.js", () => ({ openMxcEgressLease: (...args: unknown[]) => state.lease(...args) }));
 vi.mock("../mxc-extension-process.js", () => ({ spawnMxcExtensionProcess: (...args: unknown[]) => state.spawn(...args) }));
+vi.mock("../admitted-obligation.js", async (original) => ({
+  ...await original<typeof import("../admitted-obligation.js")>(),
+  windowsObligationsApply: () => process.platform === "win32",
+}));
 vi.mock("../shell-working-directory-identity.js", async (original) => {
   const actual = await original<typeof import("../shell-working-directory-identity.js")>();
   return { ...actual, pinShellWorkingDirectory: vi.fn(async () => ({ isHeld: () => true, release: async () => {} })) };
