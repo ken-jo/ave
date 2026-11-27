@@ -74,7 +74,11 @@ afterEach(async () => {
   vi.mocked(spawn).mockReset();
 });
 
-describe("macOS shell grant before user code", () => {
+// These cases stage the host's own cwd as a POSIX identity (realpath plus stat dev and inode), which the macOS route's
+// grant-time recheck compares. A Windows host captures identity as volume serial and file id, so there the staged
+// identity never matches and every grant is withheld for that reason alone, hiding the cases' own checks. The route
+// itself runs only on macOS.
+describe.runIf(process.platform !== "win32")("macOS shell grant before user code (POSIX cwd identity; not run on a Windows host)", () => {
   it("grants a verified workload through the caller's final check while the staged cwd still matches", async () => {
     const authorize = vi.fn((grant: () => boolean) => Promise.resolve(grant()));
     const { header, key, control, hostFrames, finish } = launchShell({ authorize, cwdIdentity: ownCwdIdentity() });
@@ -113,9 +117,11 @@ describe("macOS shell grant before user code", () => {
     expect(outcome).not.toHaveProperty("grantWithheld");
     expect(outcome).not.toMatchObject({ rejected: true });
   });
+});
 
+describe("macOS shell frame order", () => {
   it("refuses a ready frame before the workload's verified cwd as a protocol failure", async () => {
-    const { header, key, finish, revoke } = launchShell({ cwdIdentity: ownCwdIdentity() });
+    const { header, key, finish, revoke } = launchShell();
     const ready = encodeMxcFrame({ ...header, type: "shell-ready", id: 7 }, key, "supervisor");
     expect(await finish(ready)).toMatchObject({ cleanupUnverified: true, startFailed: true });
     expect(revoke).toHaveBeenCalled();
