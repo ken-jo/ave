@@ -13,13 +13,25 @@ export function parseWindowsTailnetPortHint(output: string, port: number): Tailn
   const separator = lines.findIndex(line => /^\s*-{2,}\s+-{2,}\s*$/.test(line));
   if (separator === -1) return null;
 
+  let excluded = false;
+  let sawLegend = false;
   for (const line of lines.slice(separator + 1)) {
-    const match = /^\s*(\d{1,5})[ \t]+(\d{1,5})(?:[ \t]+\*)?\s*$/.exec(line);
-    if (!match) continue;
+    const row = line.trim();
+    if (row === "") continue;
+    if (sawLegend) return null;
+    if (/^\*[ \t]+-[ \t]+\S/.test(row)) {
+      sawLegend = true;
+      continue;
+    }
+
+    const match = /^(\d{1,5})[ \t]+(\d{1,5})(?:[ \t]+\*)?$/.exec(row);
+    if (!match) return null;
     const start = Number(match[1]);
     const end = Number(match[2]);
-    if (start > 0 && end <= 65_535 && port >= start && port <= end) return "excluded-range";
+    if (start < 1 || end < start || end > 65_535) return null;
+    if (port >= start && port <= end) excluded = true;
   }
+  if (excluded) return "excluded-range";
   return port >= MIRRORED_PORT_RANGE[0] && port <= MIRRORED_PORT_RANGE[1] ? "mirrored-range" : null;
 }
 

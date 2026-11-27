@@ -30,6 +30,23 @@ describe("Windows Tailnet port hints", () => {
     expect(parseWindowsTailnetPortHint(output, 46_200)).toBe("excluded-range");
   });
 
+  it("recognizes an empty localized table", () => {
+    const output = EXCLUDED_PORTS.replace(/^[ \t]*\d.*\r\n/gm, "");
+    expect(parseWindowsTailnetPortHint(output, 46_200)).toBe("mirrored-range");
+    expect(parseWindowsTailnetPortHint(output, 50_000)).toBeNull();
+  });
+
+  it.each([
+    "     unreadable row",
+    "     48715       44620",
+    "     44620       99999",
+    "     0           48715",
+    "     44620       48715\r\n     unreadable row",
+  ])("rejects a malformed body after the separator (%j)", body => {
+    const output = ["시작 포트    끝 포트", "----------    --------", body].join("\r\n");
+    expect(parseWindowsTailnetPortHint(output, 46_200)).toBeNull();
+  });
+
   it("returns no hint for an unrelated port or unavailable table", () => {
     expect(parseWindowsTailnetPortHint(EXCLUDED_PORTS, 28_000)).toBeNull();
     expect(parseWindowsTailnetPortHint("The requested operation requires elevation.", 46_200)).toBeNull();
