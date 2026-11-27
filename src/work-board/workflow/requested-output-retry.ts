@@ -64,7 +64,8 @@ export function createRecordedOutputEffects(deps: {
     if (!record) return { ok: false, reason: "not_found" };
     const definition = (await resolvePinned(record.pin).catch(() => undefined))?.stages.find(row => row.id === stageId);
     if (!definition) return { ok: false, reason: "graph_mismatch" };
-    const project = record.runStartedBy.kind === "local-create-and-run" ? record.runStartedBy.projectRoot : await deps.scheduledProject(record.runStartedBy);
+    const source = record.runStartedBy;
+    const project = source.kind === "schedule-attachment" ? await deps.scheduledProject(source) : source.projectRoot;
     if (project === null) return { ok: false, reason: "not_found" };
     const projectRoot = project === undefined ? undefined : resolveProjectRoot(project);
     const canExecute = () => !surface.isDestroyed() && (project === undefined || resolveProjectRoot(project) === projectRoot && projectRoot !== null);

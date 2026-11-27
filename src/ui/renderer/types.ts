@@ -1,7 +1,7 @@
 import type { OpenJoinIpcResult } from "../../shared/work-board-types.js";
 import type { MemoryMapApi } from '../../shared/memory-map.js';
 import type { PermissionAuditIntegrity } from "../../audit/audit-schema.js";
-import type { ScheduleAttachment, ScheduleAttachmentRequest, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../../shared/workflow-template-types.js";
+import type { ScheduleAttachment, ScheduleAttachmentRequest, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, WorkflowTemplateConfirmResult } from "../../shared/workflow-template-types.js";
 import type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 export type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 import type { WindowControlsPlacement } from "../../shared/shell-geometry.js";
@@ -427,7 +427,7 @@ export type AvePreloadApi = {
   getWorkflowTemplate: (id: string) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>;
   getWorkflowTemplateProposal: (id: string) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateProposal>>;
   draftWorkflowTemplate: (id: string | null, input: WorkflowTemplateDraftInput) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>;
-  confirmWorkflowTemplate: (id: string, input: WorkflowTemplateConfirmInput) => Promise<WorkflowTemplateIpcResult<TemplateVersion>>;
+  confirmWorkflowTemplate: (id: string, input: WorkflowTemplateConfirmInput) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateConfirmResult>>;
   attachWorkflowTemplateSchedule: (input: ScheduleAttachmentRequest) => Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>;
   detachWorkflowTemplateSchedule: (id: string) => Promise<WorkflowTemplateIpcResult<boolean>>;
   archiveWorkflowTemplate: (id: string) => Promise<WorkflowTemplateIpcResult<null>>;

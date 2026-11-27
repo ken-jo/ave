@@ -94,6 +94,18 @@ describe("plugin-server-projection — normalized Tool[] → MCP tools/list (#88
     }
   });
 
+  it("omits empty annotations and projects only the read declaration", () => {
+    const manifest = structuredClone(BASE_MANIFEST);
+    const extraAnnotations = { readOnlyHint: true, openWorldHint: false };
+    manifest.tools[0].annotations = {};
+    manifest.tools[1].annotations = { readOnlyHint: false };
+    manifest.tools[2].annotations = extraAnnotations;
+    const tools = manifestToolsToMcpTools(manifest);
+    expect(tools[0]).not.toHaveProperty("annotations");
+    expect(tools[1].annotations).toEqual({ readOnlyHint: false });
+    expect(tools[2].annotations).toEqual({ readOnlyHint: true });
+  });
+
   it("carries the signed operationPolicy verbatim on the owning Tool", () => {
     const manifest = structuredClone(BASE_MANIFEST);
     const policy = {

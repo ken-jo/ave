@@ -7,6 +7,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import { hardenMacSandboxGitMetadata, followNamedEntry, macAppOwnedDirectoryWriteRules, macLinkedNameTargetRules, macWriteRootNameRules } from "../macos-sandbox-wrap.js";
 import { parseSandboxWrappedWords, quoteSandboxWrappedWord } from "../sandbox-wrapped-command.js";
 import { t } from "../../i18n/index.js";
+import { reserveTailnetListenerPort } from "../../shared/tailnet-listener-port.js";
 
 function wrap(profile = "(version 1)\n(allow default)", command = "printf 'safe ! $HOME'\n") {
   return {
@@ -17,6 +18,18 @@ function wrap(profile = "(version 1)\n(allow default)", command = "printf 'safe 
 }
 
 describe("typed repository marker rules", () => {
+  it("denies the live Tailnet port while retaining the invocation proxy permit", () => {
+    const release = reserveTailnetListenerPort(46173);
+    try {
+      const proxyPermit = '(allow network-outbound (remote ip "localhost:46174"))';
+      const wrapped = hardenMacSandboxGitMetadata(wrap(`(version 1)\n(deny default)\n${proxyPermit}`));
+      const profile = parseSandboxWrappedWords(wrapped.argv[2] ?? "")[4]?.value;
+      expect(profile).toContain('(deny network-outbound (remote ip "*:46173"))');
+      expect(profile).toContain(proxyPermit);
+    } finally {
+      release();
+    }
+  });
   it("pins the executable that precedes the sandbox in the runtime's command", () => {
     const platform = process.platform;
     const shell = process.execPath.replaceAll("\\", "/");

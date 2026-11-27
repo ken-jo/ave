@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createLogger } from "../../lib/logger.js";
@@ -574,11 +575,15 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const joined = at.run.make(JOIN_DIR);
       file.joinDir = joined.id;
       writeRunFile(at, file);
-      // The branch is made only where no ref has its name: one that is already there is not this run's and stays as it is. A ref is
-      // recorded once git answered that it made it, and only a recorded ref is ever deleted.
       const ref = `refs/heads/${branch}`;
       await assertRepository(at);
-      if ((await git.run(project.root, ["update-ref", END_OF_OPTIONS, ref, baseCommit, ""], { requiresFloor: true })).code !== 0) throw new Error("the run's branch is taken");
+      const creation = randomUUID();
+      file.refs = [{ name: ref, creation }];
+      writeRunFile(at, file);
+      // Git records the receipt as part of the create-only ref update, even when repository reflogs are disabled.
+      const created = await git.run(project.root, ["update-ref", "--no-deref", "--create-reflog", "-m", creation, END_OF_OPTIONS, ref, baseCommit, ""],
+        { drivers: ["-c", "committer.name=Ave", "-c", "committer.email=ave@localhost"], requiresFloor: true });
+      if (created.code !== 0) throw new Error("the run's branch is taken");
       file.refs = [{ name: ref, oid: baseCommit }];
       writeRunFile(at, file);
       await assertRepository(at);
@@ -594,7 +599,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     } catch (error) {
       // What this call made goes the way a release takes it, by the record as far as it was written; a folder that got no record is
       // still the directory this call made.
-      if (recorded) await releaseIn(at, "all", "drop").catch(() => undefined);
+      if (recorded) await releaseIn(at, "all", "drop", run.provisional === true).catch(() => undefined);
       else await at.project.remove(basename(runRoot), at.run.id).catch(() => undefined);
       roots.delete(basename(runRoot));
       return refused(noLink(error) ? "volume-unsupported" : project !== undefined ? "git-unavailable" : "workspace-unavailable");
@@ -1030,16 +1035,45 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     });
   }
 
-  /** The refs the run made go only while each is still at the commit it was made at: a branch a stage was collected onto is the run's
-   * result and stays, and so does one git gave no answer for. */
-  async function deleteRunRefs(at: Held): Promise<void> {
+  /** The exact direct ref at the expected commit. A similarly named child ref or a symbolic ref carries no ownership. */
+  async function refStillAt(root: string, name: string, oid: string): Promise<boolean> {
+    const args = ["for-each-ref", "--count=1", "--format=%(refname)%00%(objectname)%00%(symref)", END_OF_OPTIONS, name];
+    const result = await git.run(root, args, { exact: true, requiresFloor: true });
+    if (result.stderr !== "") throw new Error("the run branch could not be verified");
+    return answered(args, result) === `${name}${NUL}${oid}${NUL}\n`;
+  }
+
+  /** Match the current ref's last reflog entry to the receipt written before creation. */
+  async function hasCreationReceipt(root: string, name: string, oid: string, creation: string): Promise<boolean> {
+    const args = ["reflog", "show", "--no-show-signature", "--no-notes", "--no-decorate", "--format=%H%x00%gs", "-1", END_OF_OPTIONS, name];
+    const result = await git.run(root, args, { exact: true, requiresFloor: true });
+    if (result.stderr !== "") throw new Error("the branch creation receipt could not be verified");
+    return answered(args, result) === `${oid}${NUL}${creation}\n`;
+  }
+
+  /** Keep branches that moved, and keep the record when recovery cannot establish that an owned branch is gone. */
+  async function deleteRunRefs(at: Held, recover: boolean): Promise<void> {
     const { file } = at;
     const root = at.live?.root;
     if (root === undefined) return;
-    for (const ref of [...file.refs]) {
+    for (const ref of file.refs) {
+      if (ref.creation !== undefined && !recover) continue;
       await assertRepository(at);
-      const deleted = await git.run(root, ["update-ref", "-d", END_OF_OPTIONS, ref.name, ref.oid], { requiresFloor: true }).catch(() => undefined);
-      if (deleted?.code !== 0) continue;
+      const oid = ref.oid ?? file.baseCommit;
+      if (oid === undefined) throw new Error("the run branch has no base commit");
+      if (recover) {
+        if (!await refStillAt(root, ref.name, oid)) continue;
+        if (ref.creation !== undefined && !await hasCreationReceipt(root, ref.name, oid, ref.creation)) continue;
+        await assertRepository(at);
+      }
+      const deleted = await git.run(root, ["update-ref", "--no-deref", "-d", END_OF_OPTIONS, ref.name, oid], { requiresFloor: true }).catch(() => undefined);
+      if (deleted?.code !== 0) {
+        if (recover) {
+          await assertRepository(at);
+          if (await refStillAt(root, ref.name, oid)) throw new Error("the run branch could not be removed");
+        }
+        continue;
+      }
       file.refs = file.refs.filter(entry => entry !== ref);
       writeRunFile(at, file);
     }
@@ -1087,7 +1121,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
    * When it is the open project or its repository that is no longer what the record names, the run folder still goes, and nothing in
    * the repository is touched: its branch and worktree list stay as they are. What left the whole run as it is, or undefined.
    */
-  async function releaseIn(at: Held, stageIds: readonly string[] | "all", output: "keep" | "drop" = "keep"): Promise<Mismatch[] | undefined> {
+  async function releaseIn(at: Held, stageIds: readonly string[] | "all", output: "keep" | "drop" = "keep", recover = false): Promise<Mismatch[] | undefined> {
     const { file } = at;
     if (stageIds !== "all") {
       for (const stageId of stageIds) if (file.stages[stageId] !== undefined) await removeStage(at, stageId);
@@ -1108,7 +1142,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       }
       if (repo) {
         await removeRegistration(at, JOIN_DIR);
-        await deleteRunRefs(at);
+        await deleteRunRefs(at, recover);
       }
     }
     if (file.kind === "folder" && at.run.entryId(OUT_DIR) !== undefined) {
@@ -1153,7 +1187,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return serial(run.runId, async () => {
       const found = locate(run);
       if (!found) return;
-      await releaseIn(found, stageIds);
+      await releaseIn(found, stageIds, "keep", run.provisional === true);
       if (stageIds === "all") roots.delete(runSlug(run.itemId, run.runId));
     });
   }
@@ -1227,9 +1261,9 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
    * project again: with none it would report as a second fault what is the first one still. The run folder itself is still checked. */
   const leftWhole = new Map<string, { owner: string; root: RemovedRunProject | undefined }>();
   /** Takes the whole run apart, and remembers the one that was left whole. */
-  async function dropWhole(current: Held, root: RemovedRunProject | undefined, live: string | undefined, output: "keep" | "drop"): Promise<void> {
+  async function dropWhole(current: Held, root: RemovedRunProject | undefined, live: string | undefined, output: "keep" | "drop", recover = false): Promise<void> {
     leftWhole.delete(current.runRoot);
-    const left = await releaseIn({ ...current, ...liveOf(current.file, live) }, "all", output);
+    const left = await releaseIn({ ...current, ...liveOf(current.file, live) }, "all", output, recover);
     if (root !== undefined && left?.every(entry => entry.side === "unverified") === true) leftWhole.set(current.runRoot, { owner: ownerOf(current.file), root });
   }
 
@@ -1278,7 +1312,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return taken;
   }
 
-  async function sweep(activeRunIds: readonly string[], projects?: ReadonlyMap<string, string>): Promise<void> {
+  const sweep: StageWorkspaceProvider["sweep"] = async (activeRunIds, projects, recovery) => {
     const active = new Set(activeRunIds);
     // What a stop between a record's removal and the discard left behind goes here; an answer that could not be had keeps it.
     const selected = await options.removable?.().catch(() => undefined);
@@ -1292,14 +1326,25 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         }).catch((error: unknown) => log.warn("an ignore matcher's folder was not removed: %s", (error as Error).message));
         continue;
       }
+      const pending = recovery?.projects.get(runId);
+      const requested = pending?.itemId === itemId ? pending : undefined;
       await serial(runId, async () => {
-        const output = selected?.({ runId, itemId }) === true && await removableNow({ runId, itemId }).catch(() => false) ? "drop" : "keep";
+        const output = requested !== undefined || (selected?.({ runId, itemId }) === true && await removableNow({ runId, itemId }).catch(() => false)) ? "drop" : "keep";
         const current = heldStill(seen);
-        if (current !== null) await dropWhole(current, undefined, projects?.get(runId), output);
-      }).catch(() => undefined);
+        if (current !== null) await dropWhole(current, undefined, requested?.projectRoot ?? projects?.get(runId), output, requested !== undefined);
+      }).catch((error: unknown) => {
+        if (requested !== undefined) log.warn("provisional workspace cleanup could not finish (run=%s): %s", runId, (error as Error).message);
+      });
       roots.delete(runSlug(itemId, runId));
     }
-  }
+    if (recovery === undefined || recovery.projects.size === 0) return;
+    const remaining = recordedRuns();
+    if (!remaining.whole) return;
+    const recorded = new Set(remaining.runs.map(seen => seen.file.runId));
+    for (const [runId, { itemId }] of recovery.projects) {
+      if (!active.has(runId) && !recorded.has(runId) && !remaining.unread.has(runSlug(itemId, runId))) recovery.onVerified(runId);
+    }
+  };
 
   return { open, prepare, seal, integrate, openJoinFolder, release, discard, sweep };
 }

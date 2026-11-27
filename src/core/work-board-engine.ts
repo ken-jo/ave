@@ -1,4 +1,4 @@
-import { withoutWorkflowProjection } from "../work-board/workflow/run-read-projection.js";
+import { withoutWorkflowProjection, type WorkflowRunReadSurface } from "../work-board/workflow/run-read-projection.js";
 /** Sequence isolated plan and execution children around the user's work approval of each plan; persist their output and execution session
  * id on the board. The approval is a decision stored on the item (permission-decision-tree.md "Work approvals"), not a tool-approval card. */
 import { randomUUID } from "node:crypto";
@@ -37,7 +37,7 @@ import type {
   StageRetryResult,
   WorkItemUpdateResult,
 } from "../shared/work-board-types.js";
-import type { EnvelopeToolRef, RunAuthoritySource } from "../shared/workflow-template-types.js";
+import type { EnvelopeToolRef, RemoteProvisionalStart, RunAuthoritySource } from "../shared/workflow-template-types.js";
 import type { SecuritySettingsDecision } from "../ipc/security-settings-gesture.js";
 import { createStageRunEngine, type StageGateDecider, type StageRunEngineDeps, type ScheduledTemplateSource, type ScheduledTemplateStart } from "../work-board/workflow/stage-run-engine.js";
 import {
@@ -134,7 +134,13 @@ export interface WorkBoardEngineDeps {
   workflow?: Omit<StageRunEngineDeps, "store" | "getRunner" | "getAgentProfile" | "emit" | "holdItem" | "releaseItem">;
 }
 
+import type { WorkDecisionAuthority } from "../work-board/work-decision-authority.js";
+
 interface RunItemOptions {
+  authority?: WorkDecisionAuthority;
+  remoteProvisional?: RemoteProvisionalStart;
+  onTemplateRunAllocated?: (runId: string) => void;
+  onTemplateStarted?: (runId: string) => void;
   agentName?: string;
   /** Set by the host entrypoint, never copied from a renderer payload. */
   approvalSurface?: WebContents | null;
@@ -165,6 +171,7 @@ interface DecidePlanInput {
 }
 
 interface DecidePlanOptions {
+  authority?: WorkDecisionAuthority;
   /** Set by the host entrypoint: the window the execute (or re-plan) child's tool cards appear in. */
   approvalSurface?: WebContents | null;
 }
@@ -200,7 +207,7 @@ export interface WorkBoardEngine {
   /** Template runs. The user's decision at a stage gate or on a join that could not be collected, a retry of a failed stage, and
    * continuing a run that a restart left with only ready stages. Each is refused and changes nothing unless it matches the stored run. */
   decideStageGate(itemId: number, input: StageGateDecideInput, decider?: StageGateDecider): Promise<StageGateDecideResult>;
-  decideStageJoin(itemId: number, input: StageJoinDecideInput): Promise<StageJoinDecideResult>;
+  decideStageJoin(itemId: number, input: StageJoinDecideInput, authority?: WorkDecisionAuthority): Promise<StageJoinDecideResult>;
   openStageJoin(itemId: number, input: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
   retryOutput(itemId: number, input: StageOutputRetryInput, receipt: SecuritySettingsDecision): Promise<StageOutputRetryResult>;
   retryStage(itemId: number, input: StageRetryInput): Promise<StageRetryResult>;
@@ -210,7 +217,7 @@ export interface WorkBoardEngine {
   /** Boot, after the store reconciled: show rows as the run file says and take over unsettled template runs. Spawns nothing. */
   adoptParkedTemplateRuns(): Promise<void>;
   /** Adds what a board reader is told about each row's template run; drops whatever a row says about it itself. */
-  readTemplateRuns<T extends WorkItemResolved>(items: readonly T[], surface?: "local-desktop"): Promise<T[]>;
+  readTemplateRuns<T extends WorkItemResolved>(items: readonly T[], surface?: WorkflowRunReadSurface): Promise<T[]>;
   projectTemplateRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }, surface?: "local-desktop"): Promise<T[]>;
   /** The user's clear of a row shown `template-run-not-found`, while it is as its card showed it: the row ends error. Starts and stops
    * nothing. */
@@ -556,6 +563,7 @@ export function createWorkBoardEngine(
     const got = await store.get(itemId);
     if (got.status !== "found") return refuse({ status: "not_found" });
     const item = got.item;
+    if (item.remoteProvisional && !opts.remoteProvisional) return { status: "not_found" };
     if (item.status === "completed") return refuse({ status: "error", reason: "work-item-completed" });
 
     // A template run is busy as its run record says, read once boot adoption has run; its row's runStatus only shows it.
@@ -574,7 +582,10 @@ export function createWorkBoardEngine(
         inFlight.delete(itemId);
         return { status: "error", reason: "template-run-unavailable", reasonCode: "template-run-unavailable" };
       }
-      return stageRuns.start(itemId, { source: opts.templateSource });
+      return stageRuns.start(itemId, {
+        source: opts.templateSource, authority: opts.authority, remoteProvisional: opts.remoteProvisional,
+        onRunAllocated: opts.onTemplateRunAllocated, onStarted: opts.onTemplateStarted,
+      });
     }
     return guarded(itemId, opts.approvalSurface, () => runItemGuarded(itemId, item, opts));
   }
@@ -877,7 +888,7 @@ export function createWorkBoardEngine(
         planHash: input.planHash,
         status,
         ...(note !== undefined ? { note } : {}),
-      });
+      }, opts.authority);
     } catch (err) {
       // The decision was not stored, so nothing runs.
       inFlight.delete(itemId);
@@ -1072,7 +1083,7 @@ export function createWorkBoardEngine(
     steerRun,
     cancelRun,
     decideStageGate: async (itemId, input, decider) => { await recover(); return stageRuns?.decideGate(itemId, input, decider) ?? { ok: false, reason: "not_found" }; },
-    decideStageJoin: async (itemId, input) => { await recover(); return stageRuns?.decideJoin(itemId, input) ?? { ok: false, reason: "not_found" }; },
+    decideStageJoin: async (itemId, input, authority) => { await recover(); return stageRuns?.decideJoin(itemId, input, authority) ?? { ok: false, reason: "not_found" }; },
     openStageJoin: async (itemId, input, open) => stageRuns?.openJoin(itemId, input, open) ?? { ok: false, reason: "not_found" },
     retryOutput: async (itemId, input, receipt) => { await recover(); return stageRuns?.retryOutput(itemId, input, receipt) ?? { ok: false, reason: "not_found" }; },
     retryStage: async (itemId, input) => { await recover(); return stageRuns?.retryStage(itemId, input) ?? { ok: false, reason: "not_found" }; },

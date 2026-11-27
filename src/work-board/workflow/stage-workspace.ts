@@ -3,7 +3,7 @@ import type { JoinConflict } from "./shipped-shapes.js";
 
 /** `projectRoot`: the project the caller has the run open on, as the caller holds it now; none for a run of no project, and none
  * when the call is made for a run nobody has open. A provider checks what its own record says of the project against it. */
-export interface RunRef { itemId: number; runId: string; runKey: string; projectRoot?: string }
+export interface RunRef { itemId: number; runId: string; runKey: string; projectRoot?: string; provisional?: true }
 interface StageWorkspace { root: string; kind: "git" | "folder"; baseCommit?: string }
 /** Every code a workspace provider refuses with; each has its text in the catalogs. */
 export const WORKSPACE_REFUSALS = [
@@ -13,6 +13,12 @@ type WorkspaceRefusal = typeof WORKSPACE_REFUSALS[number];
 
 /** What the host's run file named for a run when its record went: its project root, and the item it was a run of. */
 export interface RemovedRunProject { projectRoot: string; itemId: number }
+
+/** Boot cleanup for unaccepted starts. Completion requires a verified absence of the owned workspace. */
+interface ProvisionalWorkspaceRecovery {
+  projects: ReadonlyMap<string, RemovedRunProject>;
+  onVerified(runId: string): void;
+}
 
 /** Where a run's stages work. Every stage child gets its own folder under the run root; there is no shared-folder mode. */
 export interface StageWorkspaceProvider {
@@ -44,6 +50,6 @@ export interface StageWorkspaceProvider {
   /** Boot: drop what no active run owns, and with it what `discard` would remove. An active run loses only what a stop during a
    * seeding left of its ignore matcher. `projects` gives, by run id, the project root the host's own run state names for a run; a
    * git run is taken apart only against that root, and one with none is left whole, with a warning. Nothing a run folder holds is
-   * ever taken for it. */
-  sweep(activeRunIds: readonly string[], projects?: ReadonlyMap<string, string>): Promise<void>;
+   * ever taken for it. 'recovery' additionally authorizes dropping an unaccepted start's output and reports verified cleanup. */
+  sweep(activeRunIds: readonly string[], projects?: ReadonlyMap<string, string>, recovery?: ProvisionalWorkspaceRecovery): Promise<void>;
 }

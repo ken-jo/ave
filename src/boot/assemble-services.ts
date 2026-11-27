@@ -9,6 +9,7 @@ import {
 } from "../main/plugin-auth-partition-tracker.js";
 import type { AppServices } from "./types.js";
 import type { ReadyBootContext } from "./context.js";
+import { createTailnetWorkDecisions } from "../main/tailnet-work-decisions.js";
 
 export function assembleAppServices(ctx: ReadyBootContext): AppServices {
   let shutdownPromise: Promise<void> | null = null;
@@ -78,6 +79,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     workBoardStore: ctx.workBoardStore,
     alertsService: ctx.alertsService,
     workBoardEngine: ctx.workBoardEngine,
+    tailnetWorkDecisions: createTailnetWorkDecisions({ ...ctx, auditLogger: ctx.bootAuditLogger }),
     workBoardReport: ctx.workBoardReporter,
     sessionTasksStore: ctx.sessionTasksStore,
     sessionGoalStore: ctx.sessionGoalStore,

@@ -91,6 +91,7 @@ export interface ToolInvocationContext {
   toolName: string;
   // Host policy reason from the original decision, never reconstructed from arguments.
   permissionReason?: string;
+  unattendedGeneration?: { effect: "generate" | "fetch"; dataSent: boolean };
   source: ToolSource;
   category: ToolCategory;
   // Manifest-declared path-bearing argument selectors. Dotted selectors are supported.
@@ -1649,6 +1650,7 @@ function buildUserPrompt(
     sensitiveWrite: sensitiveWrite(nativePath) !== null,
   }));
   const hostPolicyFacts = {
+    ...(input.unattendedGeneration ? { unattendedGeneration: input.unattendedGeneration } : {}),
     ruleVerdict: input.permissionReason === undefined ? ruleVerdict
       : { ...ruleVerdict, reason: maskSensitiveData(input.permissionReason).masked },
     executionCwd: input.executionCwd.slice(0, 512),

@@ -6,7 +6,7 @@ import { access } from "node:fs/promises";
 import { isAbsolute, relative } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { hasUnsafeDirectiveControlChars } from "../../engine/parent-directive.js";
-import { exactToolScope, PARENT_ALL_TOOL_SCOPE, type SubAgentRunner, type SubAgentSpawnResult } from "../../engine/subagent-runner.js";
+import { exactToolScope, MAX_STAGE_SUB_AGENTS, PARENT_ALL_TOOL_SCOPE, type SubAgentRunner, type SubAgentSpawnResult } from "../../engine/subagent-runner.js";
 import { createLogger } from "../../lib/logger.js";
 import type { LoadedAgentProfile } from "../../main/agent-profile-store.js";
 import type { RunClass } from "../../main/run-classification.js";
@@ -16,6 +16,7 @@ import type { WorkflowTemplateStore } from "../../main/workflow-template-store.j
 import type { RunEnd, RunEndCause, RunRemovalCause } from "../../main/workflow-run-store.js";
 import { requiredTier } from "../../permissions/permission-manager.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
+import type { RunScopeHooks } from "../../permissions/run-scope.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
 import { errorMessage } from "../../shared/error-message.js";
 import {
@@ -26,18 +27,19 @@ import {
 } from "../../shared/work-board-types.js";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
 import type {
-  EnvelopeToolRef, RequestedOutput, RunAuthoritySource, StageEnvelope, TemplateScope, TemplateStage, TemplateVersion, UnattendedQualification,
+  EnvelopeToolRef, RemoteProvisionalStart, RequestedOutput, RunAuthoritySource, StageEnvelope, TemplateScope, TemplateStage, TemplateVersion, UnattendedQualification,
   WorkItemStageRun,
 } from "../../shared/workflow-template-types.js";
 import { isUnattendedReadTool } from "../../tools/base.js";
 import { isAllReadOnlyVersion, WorkflowTemplateError } from "../template-graph.js";
+import { WORK_DECISION_AUTHORITY_REVOKED, WorkDecisionAuthorityError, type WorkDecisionAuthority } from "../work-decision-authority.js";
 import type { AuthoriseRunSource, RunAuthorityVerdict } from "./run-authority.js";
 import type { LaneBlockCode, RunPin, StageFailure } from "./shipped-shapes.js";
 import type { PassConditionRegistry } from "./stage-gates.js";
 import { assertPinnedVersion, stepsOf } from "./stage-graph.js";
 import { MAX_STAGE_ATTEMPTS, reduceRun, type RunEffect, type RunEvent } from "./stage-machine.js";
 import { buildStagePrompt, stageInputsOf } from "./stage-prompt.js";
-import { maskWorkflowText, pendingWorkflowDecisions, projectWorkflowRun, savedWorkflowStageActivity, withoutWorkflowProjection, workflowStageActivity } from "./run-read-projection.js";
+import { maskWorkflowText, pendingWorkflowDecisions, projectWorkflowRun, savedWorkflowStageActivity, withoutWorkflowProjection, workflowStageActivity, type WorkflowRunReadSurface } from "./run-read-projection.js";
 import type { WorkflowRunPinView, WorkflowStageActivityUpdate, WorkflowStageView } from "../../shared/workflow-run-view.js";
 import { OwnedFsError } from "./owned-fs.js";
 import { requestedOutputHash, stageOutputIntake, type RequestedOutputHooks } from "./requested-outputs.js";
@@ -58,13 +60,6 @@ const stageDeclaresOutputs = (stage: TemplateStage): boolean => Boolean(stage.re
 
 const runKeyOf = (itemId: number, runId: string): string => `work-board:${itemId}#${runId}`;
 
-/** The run's permission scope: its "Allow for this run" grants and each stage session's own reviewer breaker. `sessionLinked` names the
- * stage and the lane the run authority gave the run, and throws when it refuses the link; `runEnded` revokes every grant of the run. */
-interface RunScopeHooks {
-  sessionLinked(runKey: string, sessionId: string, member: { stageId: string; stageName: string; lane: "attended" | "unattended" }): void;
-  sessionEnded(sessionId: string): void;
-  runEnded(runKey: string): void;
-}
 interface LaneHooks {
   admit(a: { runKey: string; stageId: string; envelope: StageEnvelope | undefined; workspaceRoot: string }): Promise<{ ok: true } | { ok: false; code: LaneBlockCode }>;
   sessionLinked(a: { runKey: string; stageId: string; sessionId: string; envelope: StageEnvelope; workspaceRoot: string }): void;
@@ -75,7 +70,8 @@ interface LaneHooks {
 
 export interface StageRunEngineDeps {
   /** The board: the row of a run carries its id, its shown status and its final output. Nothing a run is decided from is read here. */
-  store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "revokedRowKept" | "clearMissingRun" | "runAuthority" | "revokeRun" | "admitsRunEffect">;
+  store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "revokedRowKept" | "clearMissingRun" | "runAuthority" | "revokeRun" | "admitsRunEffect"
+    | "hasActiveProvisionalStart" | "acceptProvisionalTemplateStart" | "rollbackProvisionalTemplateStart" | "finishProvisionalWorkspaceRecovery">;
   /** Every run-authority field: the pin, the source, the stage runs, the joins, the gates and how the run ended. */
   runs: WorkflowRunState;
   /** The authorised registry root of a project path, or null when the registry does not hold it. */
@@ -119,16 +115,27 @@ export type ScheduledTemplateStart =
   | { ok: true; itemId: number; result: Promise<WorkItemRunResult> }
   | { ok: false; code: string; tool?: EnvelopeToolRef };
 
-export type StageGateDecider = { kind: "local-desktop"; receipt: SecuritySettingsDecision };
+export type StageGateDecider = { kind: "local-desktop"; receipt: SecuritySettingsDecision }
+  | { kind: "tailnet"; authority: WorkDecisionAuthority };
+
+interface StageRunStart {
+  source: RunAuthoritySource;
+  authority?: WorkDecisionAuthority;
+  remoteProvisional?: RemoteProvisionalStart;
+  /** Identifies the provisional run before writes so its caller can retract only that run. */
+  onRunAllocated?: (runId: string) => void;
+  /** With live authority, reports acceptance when the first child is handed to the runner. */
+  onStarted?: (runId: string) => void;
+}
 
 export interface StageRunEngine {
   /** Resolves once admission writes the run. The result observes its first quiescent state separately. */
   startScheduled(source: ScheduledTemplateSource, title: string): Promise<ScheduledTemplateStart>;
   /** Resolves with the run's first quiescent state, or with the start's refusal (error, already_running, not_found). That state may already
    * be past a gate: a decision queued before then is part of it. Gate state comes from events, not from this value. */
-  start(itemId: number, a: { source: RunAuthoritySource }): Promise<WorkItemRunResult>;
+  start(itemId: number, a: StageRunStart): Promise<WorkItemRunResult>;
   decideGate(itemId: number, i: StageGateDecideInput, decider?: StageGateDecider): Promise<StageGateDecideResult>;
-  decideJoin(itemId: number, i: StageJoinDecideInput): Promise<StageJoinDecideResult>;
+  decideJoin(itemId: number, i: StageJoinDecideInput, authority?: WorkDecisionAuthority): Promise<StageJoinDecideResult>;
   openJoin(itemId: number, i: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
   retryOutput(itemId: number, input: StageOutputRetryInput, receipt: SecuritySettingsDecision): Promise<StageOutputRetryResult>;
   retryStage(itemId: number, i: StageRetryInput): Promise<StageRetryResult>;
@@ -143,8 +150,8 @@ export interface StageRunEngine {
    * them) and sweep the workspaces no run owns. Spawns nothing. */
   adoptParkedRuns(): Promise<void>;
   /** Adds what a board reader is told about each row's template run. */
-  readRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }, surface?: "local-desktop"): Promise<T[]>;
-  projectRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }, surface?: "local-desktop"): Promise<T[]>;
+  readRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }, surface?: WorkflowRunReadSurface): Promise<T[]>;
+  projectRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }, surface?: WorkflowRunReadSurface): Promise<T[]>;
   /** The user's clear of a row whose run has no record (WorkBoardStore.clearMissingRun), after the delete intents and markers are read
    * again. Refused `moveRunActive` while this host holds a run of the item: that run's own end settles its row. Starts and stops nothing. */
   clearMissingRun(itemId: number, i: { revision: string; runId: string }): Promise<WorkItemUpdateResult>;
@@ -167,7 +174,6 @@ interface RunState {
   pendingStages: Map<string, number>;
   waiters: Set<() => void>;
   stopping: boolean;
-  outputAbort?: AbortController;
   /** No board row names the run any more. */
   rowGone: boolean;
   /** Why, once `rowGone`: the user's delete was due, or the run was an orphan. */
@@ -179,6 +185,9 @@ interface RunState {
   refused: { code: string; tool?: EnvelopeToolRef } | null;
   /** A fire is provisional until its first child links. Stays present through rollback and result reporting. */
   scheduledStart?: { refusal?: WorkItemRunResult };
+  /** Live authority for the initial launch, cleared when the first child is handed to the runner. */
+  outputAbort?: AbortController;
+  pendingStart?: { authority: WorkDecisionAuthority; onStarted: StageRunStart["onStarted"]; acceptance?: Promise<void> };
   /** stageId → childSessionId, set when the child links. */
   live: Map<string, string>;
   /** `${stageId}#${attempt}` the reducer asked to spawn and no launch consumed yet. */
@@ -347,6 +356,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   function closeState(state: RunState): void {
     if (runs.get(state.itemId) !== state) return;
     if (state.held.length > 0) log.info("held stage run events went with their run's end (id=%d): %s", state.itemId, state.held.map(held => held.kind).join(", "));
+    state.pendingStart = undefined;
     runs.delete(state.itemId);
     deps.releaseItem(state.itemId);
     updateApprovalSurface({ kind: "release", sessionId: workBoardOriginSessionId(state.itemId) });
@@ -356,7 +366,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   /** The project a run works on, from what authorised it: the card's root for Create and run, the approved snapshot for a schedule. */
   async function runProjectOf(source: RunAuthoritySource): Promise<string | undefined> {
-    if (source.kind === "local-create-and-run") return source.projectRoot;
+    if (source.kind !== "schedule-attachment") return source.projectRoot;
     const approved = (await deps.attachments.getAttachment(source.attachmentId))?.approvedScope;
     return approved?.kind === "project" ? approved.projectRoot : undefined;
   }
@@ -636,8 +646,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   /** One write of the run. Null when nothing was stored. */
-  async function writeRun(state: RunState, mutate: (run: RunRecord) => RunRecord | RunEnd | null): Promise<{ run: RunRecord } | { run: null; reason: RunWriteFailure }> {
-    const result = await records.update(state.itemId, state.runId, mutate, state.lost ? "lost" : state.rowGone ? state.removedAs : undefined);
+  async function writeRun(state: RunState, mutate: (run: RunRecord) => RunRecord | RunEnd | null, authority?: WorkDecisionAuthority): Promise<{ run: RunRecord } | { run: null; reason: RunWriteFailure }> {
+    const result = await records.update(state.itemId, state.runId, mutate, state.lost ? "lost" : state.rowGone ? state.removedAs : undefined, authority);
     if (result.ok) {
       if (state.boardUnread) {
         state.boardUnread = false;
@@ -750,7 +760,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** One event: resolve the pin, then one atomic write that checks, reduces and stores the run as it is at that moment, then the effects.
    * `precheck` refuses a user decision before anything is written: on the run as read, before the pin is resolved, and again inside the
    * write. */
-  async function handle<R extends string = never>(state: RunState, event: RunEvent, precheck?: Precheck<R>, replay?: Held, knownAttempt?: number): Promise<R | PinRefusal | "run_mismatch" | "not_found" | null> {
+  async function handle<R extends string = never>(state: RunState, event: RunEvent, precheck?: Precheck<R>, replay?: Held, knownAttempt?: number, authority?: WorkDecisionAuthority): Promise<R | PinRefusal | typeof WORK_DECISION_AUTHORITY_REVOKED | "run_mismatch" | "not_found" | null> {
     if (runs.get(state.itemId) !== state) {
       log.warn("dropped a stage event of another run (id=%d, event=%s)", state.itemId, event.type);
       return "run_mismatch";
@@ -818,7 +828,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         const next = { ...current, stageRuns: step.stageRuns, stageJoins: step.joins };
         ending = step.runStatus === "executing" ? null : step.runStatus;
         return ending === null ? next : endOf(state, next, ending, now);
-      });
+      }, authority);
     } catch (error) {
       if (precheck || replay) throw error;
       if (event.type === "seal_failed") {
@@ -834,6 +844,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }
     if (written.run === null) {
       if (refusal !== null) return refusal;
+      if (authority && written.reason === "refused") return WORK_DECISION_AUTHORITY_REVOKED;
       // The row does not name the run: writeRun read its class, which ends it as lost or removed, and the event goes with that end, or holds
       // it, and the event is held with it (a replay stays where it is).
       if (written.reason === "row-gone" || holdsWrite(state, written.reason)) {
@@ -1095,8 +1106,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         throw stored.reason === "row-gone" ? new WorkflowInvariantError("run-stopped") : new WorkflowInvariantError("run-state-failed", writeFault(stored.reason));
       }
 
-      // The spawn boundary. Preparing took time: the run's source is asked again, and a stop, a refusal or a fault that arrived meanwhile
-      // ends the launch here. Nothing is awaited between these checks and the spawn.
+      // Recheck the run source after preparing the child. The provisional write separately checks the live remote authority at launch.
       if ((await authorise()).lane !== lane) throw new WorkflowInvariantError("run-not-authorised", "source-not-authorised");
       if (halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");
 
@@ -1105,10 +1115,52 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         repository: record.runWorkspace?.kind === "git" ? state.ref.projectRoot : undefined,
       }) : undefined;
       let linked: string | undefined;
-      let scoped = false;
+      let releaseStageSession: (() => void) | undefined;
       let activitySignature = "";
+      const member = { stageId, stageName: stage.name, lane };
+      const unattended = lane === "unattended" && stage.envelope
+        ? { runKey, stageId, envelope: stage.envelope, workspaceRoot: stageRoot }
+        : undefined;
+      const linkStageSession = (sessionId: string, agentTitle?: string): (() => void) => {
+        let scoped = false;
+        let laneLinkStarted = false;
+        const release = () => {
+          try {
+            deps.workspaceBinding?.unbind(sessionId);
+          } finally {
+            try {
+              if (scoped) deps.runScope?.sessionEnded(sessionId);
+            } finally {
+              if (laneLinkStarted) deps.lane?.sessionEnded(sessionId);
+            }
+          }
+        };
+        try {
+          let bound = true;
+          try {
+            deps.workspaceBinding?.bind(sessionId, stageRoot);
+          } catch (error) {
+            if (agentTitle !== undefined) throw error;
+            bound = false;
+          }
+          // The stage is already tracked, so let its runner report a workspace refusal as an interruption.
+          if (agentTitle === undefined && (!bound || halted(state, stageId))) runner.interruptRun(sessionId, workBoardOriginSessionId(state.itemId));
+          if (deps.runScope) {
+            deps.runScope.sessionLinked(runKey, sessionId, agentTitle === undefined ? member : { ...member, agentTitle });
+            scoped = true;
+          }
+          if (unattended) {
+            laneLinkStarted = true;
+            deps.lane?.sessionLinked({ ...unattended, sessionId });
+          }
+        } catch (error) {
+          release();
+          throw error;
+        }
+        return release;
+      };
       try {
-        const result = await runner.spawn(
+        const launchChild = () => runner.spawn(
           {
             title: `${stage.name}: ${item.title}`,
             instructions: prompt.instructions,
@@ -1122,6 +1174,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
             ...(prompt.taint ? { hostInputTaint: prompt.taint } : {}),
             ...(lane === "unattended" ? { unattendedStage: { runKey, stageId } } : {}),
             ...(intake ? { stageOutputTool: intake.tool } : {}),
+            ...(stage.allowSubAgents ? { stageSubAgents: { stageName: stage.name, runKey, max: MAX_STAGE_SUB_AGENTS } } : {}),
           },
           {
             onLinked: ({ childSessionId }) => {
@@ -1132,20 +1185,17 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
               linked = childSessionId;
               state.live.set(stageId, childSessionId);
               state.starting.delete(stageId);
-              // A child whose folder cannot be bound does not work in it.
-              let bound = true;
-              try { deps.workspaceBinding?.bind(childSessionId, stageRoot); } catch { bound = false; }
-              // A stop, a rejection or a revocation that arrived while the child was starting reaches it here.
-              if (!bound || state.stopping || state.faulted !== null || state.interruptAsked.has(stageId) || state.revoked.has(stageId)) runner.interruptRun(childSessionId, workBoardOriginSessionId(state.itemId));
-              // The run's permission scope takes the session with its stage and the lane the authority gave the run. A refused link (the
-              // run has ended, or the session belongs to another run) throws and fails the launch.
-              deps.runScope?.sessionLinked(runKey, childSessionId, { stageId, stageName: stage.name, lane });
-              scoped = true;
-              if (lane === "unattended" && stage.envelope) deps.lane?.sessionLinked({ runKey, stageId, sessionId: childSessionId, envelope: stage.envelope, workspaceRoot: stageRoot });
+              releaseStageSession = linkStageSession(childSessionId);
               state.scheduledStart = undefined;
               emit({ itemId: state.itemId, phase: "executing", stageId, attempt, runSessionId: childSessionId });
               post(state, { type: "stage_linked", stageId, childSessionId }, attempt);
             },
+            ...(stage.allowSubAgents ? { onStageSubAgentLinked: (sessionId: string, agentTitle: string) => {
+              if (!linked || state.live.get(stageId) !== linked || halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");
+              const release = linkStageSession(sessionId, agentTitle);
+              emit({ itemId: state.itemId, phase: "executing", stageId, attempt, runSessionId: linked, subAgentSessionId: sessionId });
+              return release;
+            } } : {}),
             onActivity: ({ entries }) => {
               if (linked === undefined || !canShowRun(state)) return;
               const stageActivity: WorkflowStageActivityUpdate = {
@@ -1162,15 +1212,35 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
             },
           },
         );
+        let running: ReturnType<typeof launchChild> | undefined;
+        const pendingStart = state.pendingStart;
+        if (pendingStart) {
+          // Only one first stage commits the launch. Its runner call follows the guarded rename without yielding.
+          pendingStart.acceptance ??= store.acceptProvisionalTemplateStart(state.itemId, state.runId, pendingStart.authority,
+            () => !halted(state, stageId), () => {
+              running = launchChild();
+              void running.catch(() => undefined);
+            });
+          try { await pendingStart.acceptance; } catch (error) {
+            if (error instanceof WorkDecisionAuthorityError) throw new WorkflowInvariantError("run-not-authorised", error.code);
+            throw new WorkflowInvariantError("run-state-failed", error instanceof WorkBoardWriteRefusal ? error.code : "run-state-unavailable");
+          }
+        }
+        if (!running) {
+          if (halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");
+          running = launchChild();
+        }
+        if (state.pendingStart) {
+          const { onStarted } = state.pendingStart;
+          state.pendingStart = undefined;
+          onStarted?.(state.runId);
+        }
+        const result = await running;
         return { result, requestedOutputs: intake?.close(), inputTaint: prompt.taint !== undefined };
       } finally {
         intake?.close();
         state.live.delete(stageId);
-        if (linked !== undefined) {
-          deps.workspaceBinding?.unbind(linked);
-          if (scoped) deps.runScope?.sessionEnded(linked);
-          if (lane === "unattended") deps.lane?.sessionEnded(linked);
-        }
+        releaseStageSession?.();
       }
     } finally {
       state.starting.delete(stageId);
@@ -1277,7 +1347,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return { status: "awaiting_approval" };
   }
 
-  async function start(itemId: number, a: { source: RunAuthoritySource }): Promise<WorkItemRunResult> {
+  async function start(itemId: number, a: StageRunStart): Promise<WorkItemRunResult> {
     try {
       // A run a restart left unsettled is taken over first: a start never races its adoption, and never replaces such a run.
       const adoptedNow = await adopted();
@@ -1289,12 +1359,21 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const got = await store.get(itemId);
       if (got.status !== "found") return { status: "not_found" };
       const row = got.item;
+      if (a.source.kind === "tailnet-create-and-run") {
+        if (!a.authority) return refusedStart(WORK_DECISION_AUTHORITY_REVOKED);
+        if (!row.remoteProvisional || row.remoteProvisional.mutationRevision !== a.remoteProvisional?.mutationRevision
+          || row.remoteProvisional.workspace?.runId !== a.remoteProvisional?.workspace?.runId) {
+          return refusedStart("template-run-unavailable");
+        }
+      } else if (row.remoteProvisional) return refusedStart("template-run-unavailable");
       const record = row.runId === undefined ? null : await records.get(itemId, row.runId);
       if (record ? record.settled === undefined : ROW_BUSY.has(row.runStatus ?? "idle")) return busy;
       const checked = await checkStart(a.source, row.projectRoot);
       if ("status" in checked) return checked;
-      const started = await beginStart(itemId, a.source, checked);
-      return "status" in started ? started : await firstResult(started);
+      const started = await beginStart(itemId, a.source, checked, undefined, a);
+      if ("status" in started) return started;
+      if (!a.authority) a.onStarted?.(started.runId);
+      return await firstResult(started);
     } finally {
       // A refused start never opened a run; the caller's in-flight mark goes with it.
       if (!runs.has(itemId)) deps.releaseItem(itemId);
@@ -1311,7 +1390,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const pin = source.pin;
     try {
       // Only the source's approved project may be used for a run.
-      if (source.kind === "local-create-and-run" && source.projectRoot !== undefined) {
+      if (source.kind !== "schedule-attachment" && source.projectRoot !== undefined) {
         const registered = deps.resolveProjectRoot(source.projectRoot);
         if (registered === null) return refusedStart("scope-not-authorised");
         if (registered !== source.projectRoot) return refusedStart("project-mismatch");
@@ -1403,18 +1482,22 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     await workspace.discard(projects, runId => runId !== ref.runId);
   }
 
-  function newRunRef(itemId: number, projectRoot: string | undefined): RunRef {
-    const runId = randomUUID();
+  function newRunRef(itemId: number, projectRoot: string | undefined, runId: string = randomUUID()): RunRef {
     return { itemId, runId, runKey: runKeyOf(itemId, runId), ...(projectRoot !== undefined ? { projectRoot } : {}) };
   }
 
-  async function beginStart(itemId: number, source: RunAuthoritySource, { projectRoot, version }: CheckedStart, scheduledRef?: RunRef): Promise<RunState | WorkItemRunResult> {
-    const ref = scheduledRef ?? newRunRef(itemId, projectRoot);
+  async function beginStart(itemId: number, source: RunAuthoritySource, { projectRoot, version }: CheckedStart, scheduledRef?: RunRef, start?: StageRunStart): Promise<RunState | WorkItemRunResult> {
+    const authority = start?.authority;
+    const reservedId = source.kind === "tailnet-create-and-run" ? start?.remoteProvisional?.workspace?.runId : undefined;
+    const ref = scheduledRef ?? newRunRef(itemId, projectRoot, reservedId);
+    if (reservedId !== undefined) ref.provisional = true;
     const pin = source.pin;
     const refused = refusedStart;
     const { runId } = ref;
+    start?.onRunAllocated?.(runId);
     const opened = await workspace.open(ref, projectRoot);
     if (!opened.ok) {
+      if (authority && !await authority.refreshCurrent()) return refused(WORK_DECISION_AUTHORITY_REVOKED);
       if (source.kind === "schedule-attachment") {
         const verdict = await verdictFor("start", projectRoot, source, pin);
         if (!verdict.ok) return refused(verdict.code, "tool" in verdict ? verdict.tool : undefined);
@@ -1426,15 +1509,18 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     try {
       const stageRuns = version.stages.map((stage): WorkItemStageRun => ({ stageId: stage.id, attempt: 1, status: "waiting" }));
       // The run file gets the pin, the source and the stage runs first; the board row then names the run by its id and nothing else.
-      const begun = await records.begin(itemId, runId, startedAt, { templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash, source, stageRuns });
+      const begun = await records.begin(itemId, runId, startedAt, {
+        templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash, source, stageRuns,
+      }, authority);
       if (begun.status !== "updated") return await abandonStart(ref, false, begun.status === "invalid" ? refused(begun.reason) : { status: "not_found" });
       recorded = true;
-      const placed = await records.update(itemId, runId, current => ({ ...current, runWorkspace: opened.workspace }));
+      const placed = await records.update(itemId, runId, current => ({ ...current, runWorkspace: opened.workspace }), undefined, authority);
       if (!placed.ok) {
+        if (authority && placed.reason === "refused") return await abandonStart(ref, true, refused(WORK_DECISION_AUTHORITY_REVOKED));
         log.warn("the run workspace could not be stored (id=%d): %s", itemId, placed.reason);
         return await abandonStart(ref, true, refused(writeFault(placed.reason)));
       }
-      const shown = await store.setRunStatus(itemId, "executing");
+      const shown = await store.setRunStatus(itemId, "executing", authority);
       if (shown.status !== "updated") {
         log.warn("the run could not be shown on the board (id=%d): %s", itemId, shown.status);
         return await abandonStart(ref, true, refused("template-run-not-shown"));
@@ -1451,21 +1537,48 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           return read.status === "found" ? read.run.settled === undefined : read.status !== "not-found";
         }, () => true);
       }
-      const code = error instanceof WorkflowTemplateError || error instanceof WorkBoardWriteRefusal ? error.code : unreadable ? "invalid-template-run" : undefined;
+      const code = error instanceof WorkflowTemplateError || error instanceof WorkBoardWriteRefusal || error instanceof WorkDecisionAuthorityError ? error.code : unreadable ? "invalid-template-run" : undefined;
       return abandonStart(ref, recorded, refused(code ?? "run-state-unavailable"), unstarted);
     }
     const state = openState(itemId, runId, projectRoot, source);
     if (scheduledRef) state.scheduledStart = {};
+    if (authority) {
+      if (start?.remoteProvisional) state.pendingStart = { authority, onStarted: start.onStarted };
+      // The first scheduler write reduces the start into spawn effects. Commit it under the same guard as other decisions.
+      const reason = await enqueue(state, () => handle(state, { type: "started" }, () => null, undefined, undefined, authority))
+        .catch(error => {
+          log.warn("remote template start could not be committed (id=%d): %s", itemId, errorMessage(error));
+          return "run-state-unavailable";
+        });
+      if (reason !== null) {
+        try { return await abandonStart(ref, true, refused(reason)); }
+        finally { closeState(state); }
+      }
+      if (!start?.remoteProvisional) emit({ itemId, phase: "executing" });
+      return state;
+    }
     emit({ itemId, phase: "executing" });
     post(state, { type: "started" });
     return state;
   }
 
   async function firstResult(state: RunState): Promise<WorkItemRunResult> {
-    await idle(state);
-    const result = await resultOf(state);
-    state.scheduledStart = undefined;
-    return result;
+    try {
+      await idle(state);
+      return await resultOf(state);
+    } finally {
+      state.scheduledStart = undefined;
+      if (state.pendingStart) {
+        // No child accepted the start. Retire the POST authority and close any retryable run before returning.
+        state.stopping = true;
+        state.pendingStart = undefined;
+        await enqueue(state, async () => {
+          if (runs.get(state.itemId) === state) {
+            await unwind(state, { type: "stop_requested" }, "pre-launch-start-refused");
+          }
+        });
+      }
+    }
   }
 
   /** A start that failed after its workspace was opened: the workspace goes, and a run that was already stored ends `error`. A stored run
@@ -1498,14 +1611,21 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return result;
   }
 
+  type DecisionRefusal = PinRefusal | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "not_found" | "not_pending";
+
   /** A user action on an unsettled run: refused before any write unless `precheck` passes and the pin still resolves. */
-  async function decide<R extends string>(itemId: number, runId: string, event: RunEvent, precheck: Precheck<R>):
-  Promise<R | PinRefusal | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "not_found" | "not_pending" | null> {
+  function decide<R extends string>(itemId: number, runId: string, event: RunEvent, precheck: Precheck<R>):
+  Promise<R | DecisionRefusal | null>;
+  function decide<R extends string>(itemId: number, runId: string, event: RunEvent, precheck: Precheck<R>, authority: WorkDecisionAuthority | undefined):
+  Promise<R | DecisionRefusal | typeof WORK_DECISION_AUTHORITY_REVOKED | null>;
+  async function decide<R extends string>(itemId: number, runId: string, event: RunEvent, precheck: Precheck<R>, authority?: WorkDecisionAuthority):
+  Promise<R | DecisionRefusal | typeof WORK_DECISION_AUTHORITY_REVOKED | null> {
     // An end the run file did not confirm, or a deleted row's run not taken over yet, holds back only its own run's decisions, once the
     // boot takeover has succeeded.
     if (!(await adopted()).ok && (!takenOver || (unconfirmed.size === 0 && !intentsPending))) return "runs_not_adopted";
     const got = await store.get(itemId);
     if (got.status !== "found") return "not_found";
+    if (got.item.remoteProvisional) return "not_pending";
     if (got.item.runId !== runId) return "run_mismatch";
     const record = await records.get(itemId, runId);
     if (!record) return "run_mismatch";
@@ -1513,7 +1633,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (unconfirmed.has(runId)) return "run_end_unconfirmed";
     const state = await stateFor(record);
     if (!state) return "not_pending";
-    return enqueue(state, () => handle(state, event, precheck));
+    return enqueue(state, () => handle(state, event, precheck, undefined, undefined, authority));
   }
 
   function noteRefusal(i: StageGateDecideInput): "note_required" | "note_too_long" | "note_invalid" | null {
@@ -1525,7 +1645,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   const decidable = (itemId: number): boolean => {
     const state = runs.get(itemId);
-    return state !== undefined && !state.stopping && state.refused === null && state.faulted === null;
+    return state !== undefined && state.pendingStart === undefined && !state.stopping && state.refused === null && state.faulted === null;
   };
 
   async function retryOutput(itemId: number, input: StageOutputRetryInput, receipt: SecuritySettingsDecision): Promise<StageOutputRetryResult> {
@@ -1549,6 +1669,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (run.output === undefined || run.resultHash === undefined || resultHashOf(run.output) !== run.resultHash || i.resultHash !== run.resultHash) return "result_mismatch";
       if (requestedOutputHash(run) !== i.outputHash) return "output_mismatch";
       if (run.requestedOutputs?.length && i.decision === "approve") {
+        if (decider?.kind === "tailnet") return "outputs-need-local-approver";
         const state = runs.get(itemId);
         if (!surface || !state) return "user-gesture-required";
         outputSurfaces = outputApprovalSurfaces.get(state) ?? new Map();
@@ -1558,18 +1679,18 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const note = noteRefusal(i);
       if (note) return note;
       return i.decision === "request_changes" && run.attempt >= MAX_STAGE_ATTEMPTS ? "attempts_exhausted" : null;
-    }).finally(() => outputSurfaces?.delete(i.stageId));
+    }, decider?.kind === "tailnet" ? decider.authority : undefined).finally(() => outputSurfaces?.delete(i.stageId));
     if (reason !== null) return { ok: false, reason };
     return { ok: true, status: i.decision === "approve" ? "approved" : i.decision === "reject" ? "rejected" : "changes_requested" };
   }
 
-  async function decideJoin(itemId: number, i: StageJoinDecideInput): Promise<StageJoinDecideResult> {
+  async function decideJoin(itemId: number, i: StageJoinDecideInput, authority?: WorkDecisionAuthority): Promise<StageJoinDecideResult> {
     const reason = await decide(itemId, i.runId, { type: "join_decided", joinId: i.joinId, decision: i.decision }, (record) => {
       const join = (record.stageJoins ?? []).find(candidate => candidate.joinId === i.joinId);
       if (!join) return "not_found";
       if (join.status !== "conflict" || !join.conflict || !decidable(itemId)) return "not_pending";
       return join.conflict.conflictHash === i.conflictHash && (join.conflictGeneration ?? 0) === i.generation ? null : "conflict_mismatch";
-    });
+    }, authority);
     return reason === null ? { ok: true } : { ok: false, reason };
   }
 
@@ -1661,6 +1782,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const releaseWorkspace = (runId: string): void => {
       for (let i = active.length - 1; i >= 0; i -= 1) if (active[i] === runId) active.splice(i, 1);
     };
+    const provisionalItems = new Set(found.provisional.map(item => item.id));
+    const retractable = only === undefined ? provisionalRetractions(found) : [];
+    for (const { item, run } of retractable) await settleProvisionalRun(item, run);
     // A row write that fails leaves the adoption to the next attempt; a row that is gone by then is an orphan for that attempt.
     const shownOnRow = (itemId: number, patch: Parameters<typeof store.setRunResult>[1]): Promise<boolean> =>
       store.setRunResult(itemId, patch).then(result => result.status === "updated", () => false);
@@ -1716,7 +1840,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       return true;
     };
     for (const run of found.orphans) {
-      if (run.settled !== undefined || !wanted(run.runId) || held(run)) continue;
+      if (provisionalItems.has(run.itemId) || run.settled !== undefined || !wanted(run.runId) || held(run)) continue;
       const ended = await records.update(run.itemId, run.runId, current => endedAs(current, "orphan", at), "orphan");
       // Not confirmed over: nothing is pruned or swept, and the record keeps its workspace until an adoption ends it.
       if (!ended.ok) {
@@ -1727,7 +1851,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }
     // A run whose row no longer names or holds it ends error, as it does live.
     for (const run of found.lost) {
-      if (run.settled !== undefined || !wanted(run.runId) || held(run)) continue;
+      if (provisionalItems.has(run.itemId) || run.settled !== undefined || !wanted(run.runId) || held(run)) continue;
       const ended = await records.update(run.itemId, run.runId, current => endedAs(current, "lost", at), "lost");
       if (!ended.ok) {
         log.warn("a template run its row no longer names could not be ended (id=%d): %s", run.itemId, ended.reason);
@@ -1742,11 +1866,47 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const root = await runProjectOf(run.runStartedBy).catch(() => undefined);
       if (root !== undefined) projects.set(run.runId, root);
     }
+    const recovery = new Map(found.provisionalWorkspaces);
+    for (const { item, marker, run } of retractable) {
+      if (run) releaseWorkspace(run.runId);
+      const reserved = marker.workspace;
+      if (reserved) recovery.set(reserved.runId, { itemId: item.id, projectRoot: reserved.projectRoot });
+    }
     await records.pruneSettled();
-    if (only === undefined && found.keepWorkspaces !== undefined) await workspace.sweep([...new Set(active)], projects).catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
-    const still = new Set(found.kept.map(run => run.runId));
+    const verified = new Set<string>();
+    if (only === undefined && found.keepWorkspaces !== undefined) {
+      await workspace.sweep([...new Set(active)], projects, { projects: recovery, onVerified: runId => verified.add(runId) })
+        .catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
+    }
+    for (const { item, marker, run } of retractable) {
+      await store.rollbackProvisionalTemplateStart(item.id, marker, run?.runId, marker.workspace !== undefined && verified.has(marker.workspace.runId));
+    }
+    const retired = [...verified].filter(runId => found.provisionalWorkspaces.has(runId));
+    if (retired.length > 0) await store.finishProvisionalWorkspaceRecovery(retired);
+    const still = new Set(found.kept.filter(run => !provisionalItems.has(run.itemId)).map(run => run.runId));
     kept = only === undefined ? still : new Set([...kept].filter(runId => still.has(runId)));
     return { ok: true };
+  }
+
+  function provisionalRetractions(found: Extract<Awaited<ReturnType<typeof records.adoption>>, { ok: true }>) {
+    const byItem = new Map(found.runs.filter(run => run.runStartedBy.kind === "tailnet-create-and-run").map(run => [run.itemId, run]));
+    return found.provisional.flatMap(item => {
+      const marker = item.remoteProvisional;
+      if (!marker || store.hasActiveProvisionalStart(item.id)) return [];
+      return [{ item, marker, run: byItem.get(item.id) }];
+    });
+  }
+
+  async function settleProvisionalRun(item: Pick<WorkItemResolved, "id" | "runId">, run: RunRecord | undefined): Promise<void> {
+    if (!run || run.settled !== undefined) return;
+    if (item.runId === run.runId) {
+      const at = new Date().toISOString();
+      const ended = await records.update(item.id, run.runId, current => endedAs(current, "stopped", at));
+      if (!ended.ok && ended.reason !== "refused") throw new WorkflowInvariantError("run-state-failed", writeFault(ended.reason));
+    } else if (item.runId === undefined) {
+      const ended = await records.settleUnstarted(item.id, run.runId);
+      if (ended !== "settled") throw new WorkflowInvariantError("run-state-failed", ended === "named" ? "run-state-unavailable" : writeFault(ended));
+    }
   }
 
   /** The run as it ends now, as `ends`: every open stage cancelled. Null when it is already over. */
@@ -1862,12 +2022,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return { activity, breaker };
   }
 
-  function projectRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }, surface?: "local-desktop"): Promise<T[]> {
+  function projectRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }, surface?: WorkflowRunReadSurface): Promise<T[]> {
     detach(() => adopted().catch((error: unknown) => log.warn("template run takeover for a reader failed: %s", errorMessage(error))));
     return readRuns(items, detail, surface);
   }
 
-  async function readRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }, surface?: "local-desktop"): Promise<T[]> {
+  async function readRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }, surface?: WorkflowRunReadSurface): Promise<T[]> {
     const named = items.some(item => item.templateId !== undefined && (item.runId !== undefined || (Array.isArray(item.runHistory) && item.runHistory.length > 0)));
     const runOf = named ? await records.view().catch(() => null) : null;
     return Promise.all(items.map(async (item) => {
@@ -1878,7 +2038,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         const record = runOf({ id: item.id, runId });
         if (!record || record.pin.templateId !== item.templateId) return null;
         const source = record.runStartedBy;
-        const scope = source.kind === "local-create-and-run"
+        const scope = source.kind !== "schedule-attachment"
           ? source.projectRoot === undefined ? { kind: "all" as const } : { kind: "project" as const, projectRoot: source.projectRoot }
           : (await deps.attachments.getAttachment(source.attachmentId))?.approvedScope;
         if (!scope) return null;
@@ -1911,9 +2071,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (run.settled !== undefined) return owned ? clean : { ...clean, runStatus: run.settled.status };
       const stateAllowsDecision = !unconfirmed.has(run.runId) && (!owned || decidable(item.id));
       if (stateAllowsDecision) {
-        const localVersion = surface === "local-desktop" && run.stageRuns.some(stage => stage.status === "awaiting_gate" && stage.requestedOutputs?.length)
+        const decisionVersion = surface !== undefined && run.stageRuns.some(stage => stage.status === "awaiting_gate" && stage.requestedOutputs?.length)
           ? inspected === run ? inspectedVersion : await resolvePinned(run.pin).catch(() => undefined) : undefined;
-        clean.pendingWorkflowDecisions = pendingWorkflowDecisions(run, localVersion);
+        clean.pendingWorkflowDecisions = pendingWorkflowDecisions(run, surface, decisionVersion);
       }
       if (!owned) return { ...clean, runStatus: "executing", templateRunState: "resuming" };
       return { ...clean, runStatus: "executing", templateRunState: isAwaitingStageReview(run) ? "awaiting_review" : "running" };

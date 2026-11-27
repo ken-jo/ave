@@ -19,6 +19,9 @@ import {
   selectMessageCatalogChecks,
   selectTriggeredLockSuites,
 } from "./hooks/pre-push-source-policy.mjs";
+import { ciShardCount, readPlanFile, runsCoverage } from "./verify-ci-shard-count.mjs";
+
+export { readPlanFile };
 
 export const MUST_RUN_TESTS_PATH = "config/ci-must-run-tests.json";
 
@@ -132,20 +135,6 @@ export function expandMustRunTests(document, trackedTests, changedPaths) {
   return [...selected].sort();
 }
 
-export const COVERAGE_EVENTS = Object.freeze(["schedule", "workflow_dispatch"]);
-
-export function runsCoverage(eventName) {
-  return COVERAGE_EVENTS.includes(eventName);
-}
-
-// A native run already dominates the critical path. Keep one full worker pool
-// beside it instead of paying for extra runners that finish early.
-export const FULL_RUN_SHARDS = 4;
-
-export function ciShardCount(plan, coverage, nativeChecks = false) {
-  return plan.mode === "full" && !coverage && !nativeChecks ? FULL_RUN_SHARDS : 1;
-}
-
 // Reject malformed shard values so the aggregate cannot misreport coverage.
 export function parseCiShard(value) {
   if (value === undefined || value === "") return null;
@@ -154,17 +143,6 @@ export function parseCiShard(value) {
     throw new Error(`AVE_CI_SHARD must be <index>/<count> with 1 <= index <= count, got ${JSON.stringify(value)}`);
   }
   return Number(match[2]) === 1 ? null : `${match[1]}/${match[2]}`;
-}
-
-// Every shard consumes the same written plan rather than recomputing selection.
-export function readPlanFile(text) {
-  const plan = JSON.parse(text);
-  const valid = plan !== null && typeof plan === "object"
-    && (plan.mode === "full" || plan.mode === "affected")
-    && typeof plan.reason === "string"
-    && Array.isArray(plan.tests) && plan.tests.every((test) => typeof test === "string");
-  if (!valid) throw new Error("the CI plan file is not a { mode, reason, tests } plan");
-  return { mode: plan.mode, reason: plan.reason, tests: plan.tests };
 }
 
 function full(reason) {
@@ -488,18 +466,18 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
         before: process.env.AVE_CI_DIFF_BASE,
       });
     const eventName = process.env.GITHUB_EVENT_NAME;
-    const coverage = runsCoverage(eventName);
-    if (coverage && plan.mode !== "full") throw new Error(`${eventName} must plan a full run to enforce coverage`);
+    const coverage = runsCoverage(eventName, plan);
     if (writePlanAt) {
       writeFileSync(writePlanAt, `${JSON.stringify(plan)}\n`, "utf8");
       let changes;
       try { changes = eventName === "push" ? pushChanges(process.env.AVE_CI_DIFF_BASE).entries : pullRequestChanges().entries; } catch { /* Unknown impact retains platforms. */ }
       const platforms = platformChecksRequired(eventName, plan, changes, process.env.GITHUB_BASE_REF);
-      const shards = Array.from({ length: ciShardCount(plan, coverage, platforms) }, (_, index) => index + 1);
-      console.log(`[ci-suite] planned ${describeRun(plan, coverage)} in ${shards.length} shard(s): ${plan.reason}`);
+      const shardCount = ciShardCount(plan, coverage, platforms);
+      const shards = Array.from({ length: shardCount }, (_, index) => index + 1);
+      console.log(`[ci-suite] planned ${describeRun(plan, coverage)} in ${shardCount} shard(s): ${plan.reason}`);
       writeSummary(plan, coverage);
       if (process.env.GITHUB_OUTPUT) {
-        appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\nplatform_checks=${platforms}\n`);
+        appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\nshard_count=${shardCount}\nplatform_checks=${platforms}\n`);
         if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\nNative platform checks: ${platforms ? "required" : "not selected (renderer-only diff)"}.\n`);
       }
       process.exit(0);

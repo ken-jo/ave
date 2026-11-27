@@ -293,6 +293,7 @@ export interface SessionMetadata {
   branchedAt?: string;
   // Resume must restore the frozen permission scope from child-only host-written metadata.
   sourceTools?: string[];
+  subAgentUnattended?: true;
   profileModel?: string;
   profileMode?: string;
   /** Parent chat session or host-minted internal A2A origin bound to this child. */
@@ -727,6 +728,7 @@ function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata
       : sourceTools && sourceTools.length > 0
         ? sourceTools
         : undefined,
+    subAgentUnattended: raw.subAgentUnattended === true ? true : undefined,
     profileModel,
     profileMode,
     originSessionId,

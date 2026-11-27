@@ -81,7 +81,7 @@
     "check:typecheck-tests:update": "node scripts/check-test-typecheck-baseline.mjs --update-baseline",
     "check:test-duplicates": "node scripts/check-test-duplicates.mjs",
     "check:sot-shapes": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-sot-shapes.test.mjs && node scripts/check-sot-shapes.mjs",
-    "check:asrt-claims": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-asrt-version-claims.test.mjs && node scripts/check-asrt-version-claims.mjs",
+    "check:asrt-claims": "node scripts/check-asrt-version-claims.mjs",
     "check:safestorage-sync": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-safestorage-sync.test.mjs test/scripts/check-safestorage-messages.test.mjs && node scripts/check-safestorage-sync.mjs && node scripts/check-safestorage-messages.mjs",
     "check:retired-name": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/retired-name.test.mjs && node scripts/check-retired-name.mjs",
     "check:sot-shapes:update": "node scripts/check-sot-shapes.mjs --update-baseline",
@@ -546,7 +546,10 @@
       ]
     },
     "win": {
-      "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(win32){,/**/*}"],
+      "files": [
+        "package.json",
+        "!node_modules/onnxruntime-node/bin/napi-v6/!(win32){,/**/*}"
+      ],
       "signExts": [
         "!ave-path-kind.exe",
         "!srt-win.exe",

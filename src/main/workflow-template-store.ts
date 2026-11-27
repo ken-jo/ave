@@ -1,14 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { openFeatureNamespace, writeFileAtomicAtPath } from "./storage/feature-namespace.js";
+import { openFeatureNamespace, writeFileAtomicAtPath, writeFileAtomicAtPathIf } from "./storage/feature-namespace.js";
 import { readAveHomeInput } from "../shared/ave-home-trust.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { ChangeSignal } from "../lib/change-signal.js";
 import { createLogger } from "../lib/logger.js";
+import { UUID_PATTERN } from "../shared/uuid.js";
 import { isRecord } from "../shared/is-record.js";
-import { attachmentScopeMatches, isTemplateScope, hasTemplateKeys, canonicalTemplateGraph, validateStageForConfirm, isAllReadOnlyVersion, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
+import { attachmentScopeMatches, isTemplateScope, hasTemplateKeys, canonicalTemplateGraph, validateStageForConfirm, isAllReadOnlyVersion, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, qualifyUnattended, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
+import type { ToolEffectResolver } from "../permissions/tool-effect-evidence.js";
+import { WorkDecisionAuthorityError } from "../work-board/work-decision-authority.js";
+import { parseTemplateConfirmInput } from "../work-board/work-decision-input.js";
 import { assertHostDecisionProof, type HostDecisionProof } from "./workflow-template-decision.js";
-import { isWorkflowTemplateProposalId, type ScheduleAttachment, type ScheduleAttachmentInput, type TemplateScope, type TemplateConfirmationOrigin, type TemplateVersion, type TemplateVersionPin, type WorkflowTemplate, type WorkflowTemplateConfirmInput, type WorkflowTemplateDraftInput, type WorkflowTemplateProposal, type WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
+import { isWorkflowTemplateProposalId, type ScheduleAttachment, type ScheduleAttachmentInput, type TemplateScope, type TemplateDecisionActor, type TemplateConfirmationOrigin, type TemplateVersion, type TemplateVersionPin, type WorkflowTemplate, type WorkflowTemplateConfirmInput, type WorkflowTemplateConfirmResult, type WorkflowTemplateDraftInput, type WorkflowTemplateProposal, type WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
 
 interface ScheduleRunAuthority {
   record: WorkflowTemplateRecord | null;
@@ -18,8 +22,24 @@ interface ScheduleRunAuthority {
 interface TemplatesFile { version: 1; templates: WorkflowTemplateRecord[] }
 const log = createLogger("workflow-templates");
 const MAX_PENDING_PROPOSALS = 16;
+const maxActorLength = (origin: TemplateConfirmationOrigin): number => origin === "local-desktop" ? 128 : 512;
+const isDecisionOrigin = (origin: unknown): origin is TemplateConfirmationOrigin => origin === "local-desktop" || origin === "tailnet-surface";
 const emptyFile = (): TemplatesFile => ({ version: 1, templates: [] });
 const timestamp = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value));
+
+function hasDecisionProvenance(value: Record<string, unknown>): value is Record<string, unknown> & TemplateDecisionActor {
+  return typeof value.who === "string" && value.who.length > 0 && (
+    (value.origin === "local-desktop" && value.auditId === undefined)
+    || (value.origin === "tailnet-surface" && value.who.length <= maxActorLength(value.origin)
+      && typeof value.auditId === "string" && UUID_PATTERN.test(value.auditId))
+  );
+}
+
+function decisionActor(proof: HostDecisionProof | undefined, localWho: string): TemplateDecisionActor {
+  return proof?.origin === "tailnet-surface"
+    ? { who: proof.remote.login, origin: proof.origin, auditId: proof.auditId }
+    : { who: localWho, origin: "local-desktop" };
+}
 
 function validateFile(raw: unknown): TemplatesFile {
   requireTemplate(isRecord(raw) && raw.version === 1 && Array.isArray(raw.templates), "invalid-template-file");
@@ -37,11 +57,11 @@ function validateFile(raw: unknown): TemplatesFile {
       requireTemplate(v.basedOn === undefined || (isTemplateVersion(v.basedOn) && v.basedOn < v.version), "unknown-version");
       requireTemplate(isGraphHash(v.graphHash) && graphHashOf(v) === v.graphHash, "graph-hash-mismatch");
       const c = v.confirmation;
-      requireTemplate(c.templateId === t.id && c.version === v.version && c.graphHash === v.graphHash && c.at === v.confirmedAt && typeof c.who === "string" && c.who.length > 0 && c.origin === "local-desktop", "invalid-template-file");
+      requireTemplate(c.templateId === t.id && c.version === v.version && c.graphHash === v.graphHash && c.at === v.confirmedAt && hasDecisionProvenance(c), "invalid-template-file");
     }
     requireTemplate(record.scheduleAttachments === undefined || Array.isArray(record.scheduleAttachments), "invalid-template-file");
     for (const attachment of record.scheduleAttachments ?? []) {
-      requireTemplate(hasTemplateKeys(attachment, ["id", "scheduleId", "templateId", "version", "graphHash", "who", "at", "origin", "detachedAt", "approvedScope"]) && isTemplateId(attachment.scheduleId) && (attachment.detachedAt !== undefined || !schedules.has(attachment.scheduleId)) && isTemplateId(attachment.id) && !attachmentIds.has(attachment.id) && (attachment.detachedAt === undefined || timestamp(attachment.detachedAt)) && attachment.templateId === t.id && isTemplateVersion(attachment.version) && isGraphHash(attachment.graphHash) && timestamp(attachment.at) && typeof attachment.who === "string" && attachment.who.length > 0 && attachment.who.length <= 128 && attachment.origin === "local-desktop", "invalid-template-file");
+      requireTemplate(hasTemplateKeys(attachment, ["id", "scheduleId", "templateId", "version", "graphHash", "who", "at", "origin", "auditId", "detachedAt", "approvedScope"]) && isTemplateId(attachment.scheduleId) && (attachment.detachedAt !== undefined || !schedules.has(attachment.scheduleId)) && isTemplateId(attachment.id) && !attachmentIds.has(attachment.id) && (attachment.detachedAt === undefined || timestamp(attachment.detachedAt)) && attachment.templateId === t.id && isTemplateVersion(attachment.version) && isGraphHash(attachment.graphHash) && timestamp(attachment.at) && hasDecisionProvenance(attachment) && (attachment.origin !== "local-desktop" || attachment.who.length <= 128), "invalid-template-file");
       requireTemplate(isTemplateScope(attachment.approvedScope), "invalid-template-file");
       const version = record.versions.find((v: TemplateVersion) => v.version === attachment.version);
       requireTemplate(version, "unknown-version");
@@ -78,9 +98,15 @@ export class WorkflowTemplateStore {
     try { raw = JSON.parse(input.bytes.toString("utf8")); } catch { throw new WorkflowTemplateError("invalid-template-file"); }
     return validateFile(raw);
   }
-  private async commit(file: TemplatesFile): Promise<void> {
+  private async commit(file: TemplatesFile, proof?: HostDecisionProof): Promise<void> {
     validateFile(file);
-    await writeFileAtomicAtPath(this.filePath, `${JSON.stringify(file, null, 2)}\n`);
+    const body = `${JSON.stringify(file, null, 2)}\n`;
+    if (proof?.origin === "tailnet-surface") {
+      const { authority } = proof.remote;
+      if (!await authority.refreshCurrent() || !await writeFileAtomicAtPathIf(this.filePath, body, authority.isCurrent)) throw new WorkDecisionAuthorityError();
+    } else {
+      await writeFileAtomicAtPath(this.filePath, body);
+    }
     this.changed.emit();
   }
   private find(file: TemplatesFile, id: string): WorkflowTemplateRecord {
@@ -90,6 +116,9 @@ export class WorkflowTemplateStore {
   }
   async list(): Promise<WorkflowTemplate[]> {
     return structuredClone((await this.readFile()).templates.filter(r => !r.template.archivedAt).map(r => r.template));
+  }
+  async listReviewRecords(): Promise<WorkflowTemplateRecord[]> {
+    return structuredClone((await this.readFile()).templates.filter(record => record.template.archivedAt === undefined));
   }
   async get(id: string): Promise<WorkflowTemplateRecord> { return structuredClone(this.find(await this.readFile(), id)); }
   /** Read the template, its versions and the referenced attachment together after preceding writes. */
@@ -139,10 +168,13 @@ export class WorkflowTemplateStore {
     this.proposals.set(proposal.id, { sessionId, proposal });
     return structuredClone(proposal);
   }
-  getProposal(id: string): WorkflowTemplateProposal {
-    const proposal = this.proposals.get(id)?.proposal;
-    requireTemplate(proposal, "no-draft");
-    return structuredClone(proposal);
+  getProposal(id: string, conversationId?: string): WorkflowTemplateProposal {
+    const entry = this.proposals.get(id);
+    requireTemplate(entry && (conversationId === undefined || entry.sessionId === conversationId), "no-draft");
+    return structuredClone(entry.proposal);
+  }
+  listProposals(conversationId: string): WorkflowTemplateProposal[] {
+    return [...(this.proposalIdsBySession.get(conversationId) ?? [])].map(id => this.getProposal(id, conversationId));
   }
   private removeProposal(id: string): void {
     const entry = this.proposals.get(id);
@@ -169,37 +201,43 @@ export class WorkflowTemplateStore {
       await this.commit(file); return structuredClone(record);
     });
   }
-  async confirmDraft(id: string, input: WorkflowTemplateConfirmInput, actor: { who: string; origin: TemplateConfirmationOrigin }): Promise<TemplateVersion> {
-    requireTemplate(hasTemplateKeys(input, ["expectedGraphHash", "expectedDraftRevision"]) && isGraphHash(input.expectedGraphHash) && isTemplateId(input.expectedDraftRevision));
-    requireTemplate(actor?.origin === "local-desktop" && typeof actor.who === "string" && actor.who.length > 0 && actor.who.length <= 128);
+  async confirmDraft(id: string, input: WorkflowTemplateConfirmInput, actor: { who: string; origin: TemplateConfirmationOrigin; proof?: HostDecisionProof }, effects: ToolEffectResolver): Promise<WorkflowTemplateConfirmResult> {
+    const binding = parseTemplateConfirmInput(input);
+    requireTemplate(binding);
+    requireTemplate(isDecisionOrigin(actor?.origin) && typeof actor.who === "string" && actor.who.length > 0 && actor.who.length <= maxActorLength(actor.origin));
+    const proof = actor.origin === "tailnet-surface" ? actor.proof : undefined;
+    if (actor.origin === "tailnet-surface") {
+      assertHostDecisionProof(proof, { allowTailnet: true });
+      requireTemplate(proof.origin === actor.origin && proof.remote.login === actor.who);
+    }
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await this.readFile();
-      const proposal = isWorkflowTemplateProposalId(id) ? this.getProposal(id) : undefined;
+      const proposal = isWorkflowTemplateProposalId(id) ? this.getProposal(id, proof?.origin === "tailnet-surface" ? proof.remote.conversationId : undefined) : undefined;
       const at = new Date(this.now()).toISOString();
       const record: WorkflowTemplateRecord = proposal
         ? { template: { id: randomUUID(), name: proposal.draft.name, scope: proposal.draft.scope, currentVersion: 0, createdAt: at, updatedAt: at }, versions: [], draft: { ...proposal.draft, graphHash: proposal.graphHash, revision: proposal.id, updatedAt: at } }
         : this.find(file, id);
       requireTemplate(!record.template.archivedAt, "template-archived");
       const draft = record.draft; requireTemplate(draft, "no-draft");
-      const graphHash = graphHashOf(draft); requireTemplate(graphHash === input.expectedGraphHash && draft.revision === input.expectedDraftRevision, "stale-draft");
+      const graphHash = graphHashOf(draft); requireTemplate(graphHash === binding.expectedGraphHash && draft.revision === binding.expectedDraftRevision, "stale-draft");
       const refusals = [...new Set(draft.stages.flatMap(stage => validateStageForConfirm(stage, draft)))];
       if (refusals.length) throw new WorkflowTemplateError("envelope-refused", "Stage confirmation refused", refusals);
       const version = record.template.currentVersion + 1;
       const templateId = record.template.id;
-      const confirmed: TemplateVersion = { templateId, version, graphHash, stages: structuredClone(draft.stages), edges: structuredClone(draft.edges), ...(draft.setupCommands !== undefined ? { setupCommands: [...draft.setupCommands] } : {}), confirmedAt: at, ...(draft.basedOn !== undefined ? { basedOn: draft.basedOn } : {}), confirmation: { templateId, version, graphHash, who: actor.who, origin: actor.origin, at } };
+      const confirmed: TemplateVersion = { templateId, version, graphHash, stages: structuredClone(draft.stages), edges: structuredClone(draft.edges), ...(draft.setupCommands !== undefined ? { setupCommands: [...draft.setupCommands] } : {}), confirmedAt: at, ...(draft.basedOn !== undefined ? { basedOn: draft.basedOn } : {}), confirmation: { templateId, version, graphHash, ...decisionActor(proof, actor.who), at } };
       record.versions.push(confirmed);
       record.template = { ...record.template, name: draft.name, scope: structuredClone(draft.scope), currentVersion: version, updatedAt: at };
       if (draft.description === undefined) delete record.template.description; else record.template.description = draft.description;
       delete record.draft;
       if (proposal) file.templates.push(record);
-      await this.commit(file);
+      await this.commit(file, proof);
       if (proposal) this.removeProposal(id);
-      return structuredClone(confirmed);
+      return { version: structuredClone(confirmed), unattended: qualifyUnattended(confirmed, effects) };
     });
   }
   async attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof, approvedScope: TemplateScope, options?: { requireCurrent: true }): Promise<ScheduleAttachment> {
     requireTemplate(hasTemplateKeys(input, ["scheduleId", "templateId", "version", "graphHash"]) && isTemplateId(input.scheduleId) && isTemplateId(input.templateId) && isTemplateVersion(input.version) && isGraphHash(input.graphHash));
-    assertHostDecisionProof(proof);
+    assertHostDecisionProof(proof, { allowTailnet: true });
     requireTemplate(isTemplateScope(approvedScope));
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await this.readFile(); const record = this.find(file, input.templateId);
@@ -210,11 +248,11 @@ export class WorkflowTemplateStore {
       requireTemplate(version.graphHash === input.graphHash, "graph-hash-mismatch");
       requireTemplate(isAllReadOnlyVersion(canonicalTemplateGraph(version)), "schedule-requires-read-only");
       requireTemplate(attachmentScopeMatches({ approvedScope }, record.template).ok, "scope-changed");
-      const attachment: ScheduleAttachment = { ...input, approvedScope: structuredClone(approvedScope), id: randomUUID(), who: "user", origin: proof.origin, at: proof.decidedAt };
+      const attachment: ScheduleAttachment = { ...input, approvedScope: structuredClone(approvedScope), id: randomUUID(), ...decisionActor(proof, "user"), at: proof.decidedAt };
       for (const r of file.templates) for (const prior of r.scheduleAttachments ?? []) if (prior.scheduleId === input.scheduleId && prior.detachedAt === undefined) prior.detachedAt = proof.decidedAt;
       record.scheduleAttachments ??= [];
       record.scheduleAttachments.push(attachment);
-      await this.commit(file); return structuredClone(attachment);
+      await this.commit(file, proof); return structuredClone(attachment);
     });
   }
   async getAttachment(id: string): Promise<ScheduleAttachment | null> {

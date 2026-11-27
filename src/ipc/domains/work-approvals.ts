@@ -9,18 +9,16 @@ import { WORK_APPROVALS } from "../../shared/ipc-channels.js";
 import { hasOnlyKeys } from "../../shared/is-record.js";
 import { maskWorkflowText } from "../../work-board/workflow/run-read-projection.js";
 import { listAuthorizedWorkspaceProjects, resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
-import { isDecidablePlan, isReplanningPlan } from "../../main/work-board-store.js";
+import { planScope, planView, workflowApprovalViews } from "../../main/work-approval-review.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
 import type { RoutineRecord, InvalidRoutine, RoutineFailure } from "../../shared/routines-types.js";
-import type { WorkItem, WorkItemResolved, WorkProposal } from "../../shared/work-board-types.js";
+import type { WorkItem, WorkProposal } from "../../shared/work-board-types.js";
 import type {
   RoutineAttentionApprovalView,
   WorkApprovalListResult,
   WorkApprovalNavigationView,
-  WorkflowApprovalView,
   WorkApprovalProject,
   WorkApprovalView,
-  WorkPlanApprovalView,
   WorkProposalApprovalView,
 } from "../../shared/work-approvals-types.js";
 
@@ -65,43 +63,6 @@ function proposalView(proposal: WorkProposal): WorkProposalApprovalView {
       reason: masked(row.reason),
       ...(row.resolution !== undefined ? { resolution: masked(row.resolution) } : {}),
     })),
-  };
-}
-
-// A plan belongs to its item's project, or is shared when the item has none. A plan whose project is no longer authorized (the user removed
-// it) has no scope, and is neither listed nor counted anywhere.
-function planScope(item: WorkItem, projects: readonly WorkApprovalProject[]): WorkPlanApprovalView["scope"] | null {
-  if (!item.projectRoot) return { type: "unscoped" };
-  const project = projects.find((entry) => projectRootEquals(entry.projectRoot, item.projectRoot));
-  if (!project) return null;
-  return { type: "project", projectRoot: project.projectRoot, isDefault: project.isDefault };
-}
-
-function planView(item: WorkItemResolved, projects: readonly WorkApprovalProject[]): WorkPlanApprovalView | null {
-  const pending = isDecidablePlan(item);
-  if (!pending && !isReplanningPlan(item)) return null;
-  const approval = item.planApproval;
-  if (!approval || !item.runId) return null;
-  const scope = planScope(item, projects);
-  if (scope === null) return null;
-  return {
-    kind: "plan",
-    key: `plan:${item.id}`,
-    scope,
-    title: masked(item.title),
-    arrivedAt: approval.requestedAt,
-    itemId: item.id,
-    runId: item.runId,
-    planHash: approval.planHash,
-    plan: masked(item.plan ?? ""),
-    revision: approval.revision,
-    ...(approval.agentName !== undefined ? { agentName: approval.agentName } : {}),
-    phase: pending ? "pending" : "replanning",
-    // The store's own judgement, the same one the item's detail shows.
-    stale: pending && item.planStale === true,
-    // The plan this card is about: the waiting one, or the one being made after a change request.
-    planNumber: approval.revision + (pending ? 1 : 2),
-    ...(!pending && approval.note !== undefined ? { changeRequest: masked(approval.note) } : {}),
   };
 }
 
@@ -202,19 +163,8 @@ export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
       const view = planView(item, projects);
       return view ? [canReadRun(item) ? view : toNavigation(view)] : [];
     });
-    const workflowViews = workflowItems.flatMap((item): WorkApprovalView[] => {
-      const scope = planScope(item, projects);
-      if (scope === null) return [];
-      return (item.pendingWorkflowDecisions ?? []).map(decision => {
-        const view: WorkflowApprovalView = {
-          ...decision, scope, itemId: item.id, title: masked(item.title),
-          key: decision.kind === "stage-gate"
-            ? `stage:${item.id}:${decision.binding.runId}:${decision.binding.stageId}:${decision.binding.attempt}`
-            : `join:${item.id}:${decision.binding.runId}:${decision.binding.joinId}:${decision.binding.generation}`,
-        };
-        return canReadRun(item) ? view : toNavigation(view);
-      });
-    });
+    const workflowViews = workflowItems.flatMap(item => workflowApprovalViews(item, projects)
+      .map(view => canReadRun(item) ? view : toNavigation(view)));
 
     const sharedViews = [...proposalViews, ...routineViews];
     const items: WorkApprovalView[] = [...planViews, ...workflowViews, ...(homeRoot === null ? sharedViews.map(toNavigation) : sharedViews)];

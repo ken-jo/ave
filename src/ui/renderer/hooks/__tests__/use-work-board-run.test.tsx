@@ -453,6 +453,19 @@ describe("useWorkBoardRun — live steps (LS-2)", () => {
     expect(result.current.runState[4]?.sessionIds).toEqual([]);
   });
 
+  it("claims each sub-agent session without replacing its stage session", () => {
+    const { api, emit, start } = harness();
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    const stage = { itemId: 4, phase: "executing" as const, stageId: "scan", attempt: 1, runSessionId: "sub-stage" };
+    emit(stage);
+    emit({ ...stage, subAgentSessionId: "sub-helper" });
+    emit({ ...stage, subAgentSessionId: "sub-helper" });
+    expect(result.current.runState[4]?.sessionIds).toEqual(["sub-stage", "sub-helper"]);
+    expect(result.current.runState[4]?.stageUpdates?.scan?.sessionId).toBe("sub-stage");
+    start(4);
+    expect(result.current.runState[4]?.sessionIds).toEqual([]);
+  });
+
   it("records a sent steer with the renderer's own text, and marks it delivered with the turn that took it", async () => {
     const { api, emit, steer } = steerHarness();
     const { result } = renderHook(() => useWorkBoardRun(api, []));

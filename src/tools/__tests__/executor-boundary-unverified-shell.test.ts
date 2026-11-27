@@ -5,7 +5,7 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 
 import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -47,6 +47,7 @@ import { cardGate, defined, probe, sessionGate } from "../../__tests__/support/f
 
 const ORIGINAL_PLATFORM = process.platform;
 const HOME = "C:\\Users\\alice\\.ave";
+let caseRoot: string;
 let testRoot: string;
 
 const DIALECTS = [
@@ -59,12 +60,12 @@ const DIALECTS = [
 ] as const;
 
 function manager(mode: "default" | "auto" | "allow", rules: readonly string[]): PermissionManager {
-  const pm = new PermissionManager(join(testRoot, `permissions-${mode}.json`));
+  const pm = new PermissionManager(join(caseRoot, `permissions-${mode}.json`));
   pm.setMode(mode);
   pm.setRules(rules.map(pattern => pattern.includes("(")
     ? { pattern, action: "allow" as const, shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }
     : { pattern, action: "allow" as const }));
-  setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, recentlyDenied: makeRecentlyDeniedStore(join(testRoot, "recently-denied.json")) });
+  setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, recentlyDenied: makeRecentlyDeniedStore(join(caseRoot, "recently-denied.json")) });
   pm.dispatchReviewer = vi.fn(async () => ({ verdict: { level: "low" as const, reason: "Bounded effect" }, cacheReason: "miss-not-found" as const,
     outcome: "fresh" as const, judge: reviewerJudgeOutcomeForTest("allow", "Bounded effect") })) as never;
   return pm;
@@ -79,13 +80,23 @@ beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "reso
 
 describe("host shells under an unverifiable Ave home boundary", () => {
   beforeEach(() => {
-    testRoot = realpathSync(mkdtempSync(join(tmpdir(), "boundary-shell-")));
+    caseRoot = realpathSync(mkdtempSync(join(tmpdir(), "boundary-shell-")));
+    testRoot = join(caseRoot, "workspace");
+    mkdirSync(testRoot);
     __resetShellResolverCache();
     vi.spyOn(powerShellStartup, "isPowerShellStartupPinned").mockReturnValue(true);
-    // The shipped path-kind helper that pins Windows paths still runs.
-    childProcessMock.execFileSync.mockImplementation((file: string, args: readonly string[], options?: object) =>
-      /[\\/]ave-path-kind\.exe$/i.test(file) ? childProcessMock.actualExecFileSync(file, args, options)
-        : args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB\0" : "__ave_shell_ok__");
+    // Pin the empty workspace with the native helper once per case. Policy files live outside it.
+    let workspacePin: Buffer | string | undefined;
+    childProcessMock.execFileSync.mockImplementation((file: string, args: readonly string[], options?: object) => {
+      if (!/[\\/]ave-path-kind\.exe$/i.test(file)) {
+        return args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB\0" : "__ave_shell_ok__";
+      }
+      if (args.length === 2 && args[0] === "--pin" && args[1] === testRoot) {
+        workspacePin ??= childProcessMock.actualExecFileSync(file, args, options);
+        return workspacePin;
+      }
+      return childProcessMock.actualExecFileSync(file, args, options);
+    });
     requestedSandboxUnavailable("win32");
   });
 
@@ -97,7 +108,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     childProcessMock.execFileSync.mockReset();
     vi.restoreAllMocks();
     setProcessPlatform(ORIGINAL_PLATFORM);
-    rmSync(testRoot, { recursive: true, force: true });
+    rmSync(caseRoot, { recursive: true, force: true });
   });
 
   const cases = (["boundary-link", "boundary-unlisted"] as const).flatMap(category => DIALECTS.flatMap(dialect => ([

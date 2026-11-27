@@ -384,6 +384,7 @@ abstract class FileTool<TSchema extends z.ZodTypeAny> extends ZodTool<TSchema> {
 
 export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
   readonly name = "read_file";
+  readonly unattendedEffect = "safe";
   readonly description =
     "Read a UTF-8 text file from the workspace. Returns a header line (path, line range, total lines) " +
     "followed by the lines, each prefixed with its 1-based line number and a tab; the prefix is not part " +
@@ -682,6 +683,7 @@ export const ViewImageInputSchema = FilePathSchema.extend({
 // Local images share read_file path gates and travel through ToolExecutionResult.image in the native visual channel.
 export class ViewImageTool extends FileTool<typeof ViewImageInputSchema> {
   readonly name = "view_image";
+  readonly unattendedEffect = "safe";
   override readonly awaitCancellationSettlement = true as const;
   readonly description =
     "Read and validate a local PNG, JPEG, GIF or WebP image and return a resized visual copy. " +
@@ -774,6 +776,7 @@ function documentRouteFailure(failure: ToolExecutionResult): ToolExecutionResult
 
 export class ReadDocumentTool extends FileTool<typeof ReadDocumentInputSchema> {
   readonly name = "read_document";
+  readonly unattendedEffect = "safe";
   readonly description =
     "Read CSV, TSV, XLSX, XLS, ODS, PDF, PPTX, DOCX or ODT using bounded document extraction. " +
     "Select sheet (zero-based sheet and absolute row/column offsets; default 20 rows by 10 columns, " +
@@ -866,6 +869,7 @@ export class ReadDocumentTool extends FileTool<typeof ReadDocumentInputSchema> {
 
 export class OpenDocumentTool extends FileTool<typeof OpenDocumentInputSchema> {
   readonly name = "open_document";
+  readonly unattendedEffect = "safe";
   readonly description =
     "Present a local CSV, TSV, XLSX, XLS, ODS, PDF, PPTX, DOCX, ODT, HWP or HWPX to the user. " +
     "HWP and HWPX require the optional document engine and compatible import runtime, and are not supported on macOS yet. " +
@@ -908,6 +912,7 @@ export class OpenDocumentTool extends FileTool<typeof OpenDocumentInputSchema> {
 
 export class ListFilesTool extends FileTool<typeof ListFilesInputSchema> {
   readonly name = "list_files";
+  readonly unattendedEffect = "safe";
   readonly description =
     "List files and directories under a workspace path. Returns bounded, depth-limited entries.";
   readonly inputSchema = ListFilesInputSchema;
@@ -955,6 +960,7 @@ export class ListFilesTool extends FileTool<typeof ListFilesInputSchema> {
 
 export class GlobFilesTool extends FileTool<typeof GlobFilesInputSchema> {
   readonly name = "glob_files";
+  readonly unattendedEffect = "safe";
   readonly description =
     "Find files by glob pattern under the workspace. Searches paths, not file contents.";
   readonly inputSchema = GlobFilesInputSchema;
@@ -1009,6 +1015,7 @@ export class GlobFilesTool extends FileTool<typeof GlobFilesInputSchema> {
 
 export class GrepFilesTool extends FileTool<typeof GrepFilesInputSchema> {
   readonly name = "grep_files";
+  readonly unattendedEffect = "safe";
   readonly description = GREP_FILES_DESCRIPTION;
   readonly inputSchema = GrepFilesInputSchema;
   override readonly category: ToolCategory = "read";
@@ -1070,6 +1077,7 @@ async function storeWriteDiff(ctx: ToolExecutionContext, before: string | null, 
 
 export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
   readonly name = "write_file";
+  readonly unattendedEffect = "safe";
   readonly description =
     "Create or overwrite a UTF-8 text file. Parent directories are created automatically. " +
     "Overwriting an existing file requires reading it with read_file in this session first. In the " +
@@ -1166,6 +1174,7 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
 
 export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
   readonly name = "edit_file";
+  readonly unattendedEffect = "safe";
   readonly description =
     "Replace exact text in an existing UTF-8 file. Fails when the match is missing or ambiguous. " +
     "The file must have been read with read_file in this session and be unchanged since (in the " +
@@ -1258,6 +1267,7 @@ export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
 
 export class MultiEditTool extends FileTool<typeof MultiEditInputSchema> {
   readonly name = "multi_edit";
+  readonly unattendedEffect = "safe";
   readonly description =
     "Apply one or more exact text replacements to an existing UTF-8 file, in order. Fails before writing " +
     "when any replacement is missing or ambiguous. The file must have been read with read_file in this " +
@@ -1361,6 +1371,7 @@ const PATCH_CHANGE_LETTER = { add: "A", delete: "D", update: "M" } as const;
 
 export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
   readonly name = "apply_patch";
+  readonly unattendedEffect = "safe";
   readonly description =
     "Add, update, move or delete one or more UTF-8 text files with a single patch. Every section is " +
     "validated before any file is written. Files being updated or deleted must have been read with " +
@@ -1517,6 +1528,7 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
 
 export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
   readonly name = "move_file";
+  readonly unattendedEffect = "safe";
   readonly description =
     "Move or rename a regular file within the workspace. Parent directories are created automatically.";
   readonly inputSchema = MoveFileInputSchema;
@@ -1617,6 +1629,7 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
 
 export class CopyPathTool extends FileTool<typeof CopyPathInputSchema> {
   readonly name = "copy_path";
+  readonly unattendedEffect = "safe";
   readonly description =
     "Copy a regular binary/text file or a complete directory tree to a new destination within admitted workspace roots. The destination parent must exist; existing destinations, links and special entries are rejected. Uses owner-only POSIX mode bits where supported and preserves the source owner's executable bit; does not copy ACLs. The destination may be visible during work; success means the complete copy finished.";
   readonly inputSchema = CopyPathInputSchema;
@@ -1685,6 +1698,7 @@ export class CopyPathTool extends FileTool<typeof CopyPathInputSchema> {
 
 export class ExtractArchiveTool extends FileTool<typeof ExtractArchiveInputSchema> {
   readonly name = "extract_archive";
+  readonly unattendedEffect = "safe";
   readonly description =
     "Extract a tar or gzip-compressed tar archive to a new directory within admitted workspace roots. The destination parent must exist. Rejects existing destinations, unsafe paths, links, unsupported entries and malformed archives. ZIP and archive creation are unsupported. Uses owner-only POSIX mode bits where supported and preserves only each file member's owner executable bit; does not copy ACLs. Success means the complete archive was processed without skipped members.";
   readonly inputSchema = ExtractArchiveInputSchema;
@@ -1769,6 +1783,7 @@ function fileTransferExecutionResult(result: TransferResult): ToolExecutionResul
 
 export class DeleteFileTool extends FileTool<typeof DeleteFileInputSchema> {
   readonly name = "delete_file";
+  readonly unattendedEffect = "safe";
   readonly description = "Delete a regular file from the workspace.";
   readonly inputSchema = DeleteFileInputSchema;
   override readonly category: ToolCategory = "write";

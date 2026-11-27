@@ -28,7 +28,9 @@ export function withoutWorkflowProjection<T extends WorkItemResolved>(item: T): 
   return clean;
 }
 
-export function pendingWorkflowDecisions(run: WorkflowRunRecord, localVersion?: TemplateVersion): PendingWorkflowDecision[] {
+export type WorkflowRunReadSurface = "local-desktop" | "tailnet";
+
+export function pendingWorkflowDecisions(run: WorkflowRunRecord, surface?: WorkflowRunReadSurface, version?: TemplateVersion): PendingWorkflowDecision[] {
   if (!isAwaitingStageReview(run)) return [];
   const pending: PendingWorkflowDecision[] = [];
   for (const stage of run.stageRuns) {
@@ -36,7 +38,7 @@ export function pendingWorkflowDecisions(run: WorkflowRunRecord, localVersion?: 
       || stage.output === undefined || stage.resultHash === undefined || resultHashOf(stage.output) !== stage.resultHash) continue;
     const outputs = stage.requestedOutputs;
     if (outputs?.length) {
-      const definition = localVersion?.stages.find(candidate => candidate.id === stage.stageId);
+      const definition = version?.stages.find(candidate => candidate.id === stage.stageId);
       if (!definition || !requestedOutputsMatchStage(definition, outputs)) continue;
     }
     const outputHash = requestedOutputHash(stage);
@@ -44,7 +46,7 @@ export function pendingWorkflowDecisions(run: WorkflowRunRecord, localVersion?: 
       kind: "stage-gate",
       binding: { runId: run.runId, stageId: stage.stageId, attempt: stage.attempt, resultHash: stage.resultHash, ...(outputHash !== undefined && { outputHash }) },
       result: maskWorkflowText(stage.output),
-      ...(outputs?.length && { outputs: outputs.map(output => {
+      ...(surface === "local-desktop" && outputs?.length && { outputs: outputs.map(output => {
         const pushRunBranch = isWorkflowPush(output.decl);
         const args = JSON.parse(output.args);
         return {
