@@ -348,13 +348,17 @@ async function withLiveReviewer(
     loseAuth: () => Promise<void>;
     reply: ReturnType<typeof vi.fn<LLMProvider["streamTurn"]>>;
     apiReply: ReturnType<typeof vi.fn<LLMProvider["streamTurn"]>>;
-    registerRouteSelection: (refreshProvider: () => Promise<void>, refreshActiveLlmWildcard?: () => void) => Promise<{
+    registerRouteSelection: (
+      refreshProvider: () => Promise<void>,
+      refreshActiveLlmWildcard?: () => void,
+      persistSelection?: (selection: LLMSettings["activeChatRuntime"]) => Promise<void>,
+    ) => Promise<{
       invoke: ReturnType<typeof makeAppIpcInvoker>;
       getSelection: () => LLMSettings["activeChatRuntime"];
       rewire: () => Promise<void>;
-      getSecret: ReturnType<typeof vi.fn<() => string>>;
+      getSecret: ReturnType<typeof vi.fn<() => string | Promise<string>>>;
     }>;
-    dispatch: (headless: boolean) => Promise<{
+    dispatch: (headless: boolean, beforeResolve?: () => Promise<void>) => Promise<{
       review: Awaited<ReturnType<PermissionManager["dispatchReviewer"]>>;
       result: ReturnType<PermissionManager["resolveReviewedPermission"]>;
     }>;
@@ -426,7 +430,7 @@ async function withLiveReviewer(
       host: createBootHostFixture(), toolRegistry: { setDenyRules: vi.fn() }, permissionManager: manager,
       approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() }, getMainWindow: () => null,
       settingsService: {
-        onChanged: vi.fn(), getSecret: vi.fn(() => "fixture-key"),
+        onChanged: vi.fn(), getSecret: vi.fn<() => string | Promise<string>>(() => "fixture-key"),
         get: (key: string) => key === "llm" ? getLlm() : {},
       },
       llmFetch: vi.fn(), singleHopNetworkFetch: vi.fn(),
@@ -438,7 +442,7 @@ async function withLiveReviewer(
     const setReviewer = vi.spyOn(manager, "setReviewer");
     await wireReviewerAndPermissions(context as never);
     let invocation = 0;
-    const dispatch = async (headless: boolean) => {
+    const dispatch = async (headless: boolean, beforeResolve?: () => Promise<void>) => {
       const sessionId = "live-review";
       const permission = manager.checkDetailed("network_probe", "builtin", "network", undefined, { sessionId, headless });
       const review = await manager.dispatchReviewer("network_probe", {
@@ -446,6 +450,7 @@ async function withLiveReviewer(
         pathFields: [], finalInput: { url: "http://localhost:3456" }, trustOrigin: "llm-tool-arg",
         executionCwd: tempDir, allowedDirectories: [tempDir], sensitivePathsAdjacent: [], permissionDecision: permission,
       }, undefined, { lane: headless ? "headless" : "foreground-auto" });
+      await beforeResolve?.();
       return { review, result: manager.resolveReviewedPermission(permission, review) };
     };
     const seedVerdict = async (headless: boolean) => {
@@ -477,7 +482,11 @@ async function withLiveReviewer(
       if (!installedCache) throw new Error("Missing reviewer cache");
       return installedCache;
     };
-    const registerRouteSelection = async (refreshProvider: () => Promise<void>, refreshActiveLlmWildcard?: () => void) => {
+    const registerRouteSelection = async (
+      refreshProvider: () => Promise<void>,
+      refreshActiveLlmWildcard?: () => void,
+      persistSelection?: (selection: LLMSettings["activeChatRuntime"]) => Promise<void>,
+    ) => {
       vi.doMock("../../../main/subscription-runtime-service.js", async importOriginal => ({
         ...await importOriginal<typeof import("../../../main/subscription-runtime-service.js")>(),
         getSubscriptionRuntimeService: async () => ({
@@ -496,6 +505,7 @@ async function withLiveReviewer(
           hasStoredSecret: async () => true,
           patch: async (value: { llm: { activeChatRuntime: LLMSettings["activeChatRuntime"] } }) => {
             selection = value.llm.activeChatRuntime;
+            await persistSelection?.(selection);
           },
         },
         conversationLoop: { permissionManager: manager, refreshProvider },
@@ -570,10 +580,16 @@ it("fences both Settings route switches while the chat provider refresh is pendi
     for (const kind of ["subscription", "api"] as const) {
       const refreshStarted = deferred<void>();
       const releaseRefresh = deferred<void>();
+      const reviewReady = deferred<void>();
       refreshProvider.mockImplementationOnce(async () => {
         refreshStarted.resolve();
         await releaseRefresh.promise;
       });
+      const priorReview = dispatch(false, async () => {
+        reviewReady.resolve();
+        await refreshStarted.promise;
+      });
+      await reviewReady.promise;
       const pending = kind === "subscription"
         ? invoke(CHANNELS.settings.subscriptionUseForChat, "grok-build")
         : invoke(CHANNELS.settings.subscriptionUseApiForChat);
@@ -584,6 +600,7 @@ it("fences both Settings route switches while the chat provider refresh is pendi
       reply.mockClear();
       try {
         expect(getSelection()?.kind).toBe(kind);
+        expect((await priorReview).result).toMatchObject({ decision: "deny", reasonCode: "policy-changed" });
         for (const headless of [false, true]) {
           const { review, result } = await dispatch(headless);
           expect.soft(review.outcome, kind).toBe("error");
@@ -653,7 +670,7 @@ it("recovers automatic review on an ordinary rewire after both selection and rol
     await expect(invoke(CHANNELS.settings.subscriptionUseForChat, "grok-build"))
       .resolves.toMatchObject({ ok: false, error: "subscription-operation-failed" });
     expect(getSelection()?.kind).toBe("api");
-    expect(getSecret).toHaveBeenCalledTimes(2);
+    expect(getSecret).toHaveBeenCalledTimes(3);
     expect((await dispatch(false)).result.decision).toBe("ask");
     expect((await dispatch(true)).result.decision).toBe("deny");
 
@@ -664,6 +681,106 @@ it("recovers automatic review on an ordinary rewire after both selection and rol
     expect(result.decision).toBe("allow");
     expect(apiReply).toHaveBeenCalledOnce();
   }, undefined, true);
+});
+
+it.each(["before", "after"])("rebinds the settled rollback when an ordinary rewire finishes %s persistence", async (finish) => {
+  await withLiveReviewer("api", async ({ getCache, dispatch, registerRouteSelection }) => {
+    const restoring = deferred<void>();
+    const persistRollback = deferred<void>();
+    const recoveryStarted = deferred<void>();
+    const finishRecovery = deferred<string>();
+    const rollbackRebindFailed = deferred<void>();
+    const wildcard = vi.fn().mockImplementationOnce(() => { throw new Error("Wildcard refresh failed"); });
+    const { invoke, getSecret, rewire } = await registerRouteSelection(async () => {}, wildcard, async (route) => {
+      if (route.kind === "api") {
+        restoring.resolve();
+        await persistRollback.promise;
+      }
+    });
+    expect((await dispatch(true)).review.outcome).toBe("fresh");
+    await getCache().flush();
+    getSecret.mockImplementationOnce(() => {
+      rollbackRebindFailed.resolve();
+      throw new Error("Credential store unavailable");
+    });
+    const pending = invoke(CHANNELS.settings.subscriptionUseForChat, "grok-build");
+    await restoring.promise;
+    await rollbackRebindFailed.promise;
+    getSecret.mockImplementationOnce(() => {
+      recoveryStarted.resolve();
+      return finishRecovery.promise;
+    });
+    const ordinary = rewire();
+    await recoveryStarted.promise;
+    try {
+      if (finish === "before") {
+        finishRecovery.resolve("fixture-key");
+        await ordinary;
+      }
+      expect((await dispatch(true)).result.decision).toBe("deny");
+      persistRollback.resolve();
+      if (finish === "after") {
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect((await dispatch(true)).result.decision).toBe("deny");
+      }
+    } finally {
+      persistRollback.resolve();
+      finishRecovery.resolve("fixture-key");
+      await ordinary;
+      await expect(pending).resolves.toMatchObject({ ok: false, error: "subscription-operation-failed" });
+    }
+    const { review, result } = await dispatch(true);
+    expect(result.decision).toBe("allow");
+    expect(review.outcome).toBe("cache");
+  });
+});
+
+it.each(["explicit reviewer", "independent active chain"])("keeps warmed %s authority through a paused chat refresh", async (authority) => {
+  const explicitReviewer = authority === "explicit reviewer";
+  await withLiveReviewer("api", async ({ manager, dispatch, registerRouteSelection }) => {
+    if (!explicitReviewer) {
+      const { BuiltinLlmJudge } = await import("../../../permissions/judge/builtin-llm-judge.js");
+      const { judgeSettings, collectingAudit } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
+      const stage = { id: "independent", provider: "builtin-llm", model: { vendor: "openai", model: "fixture-independent" } } as const;
+      manager.setJudge({
+        settings: judgeSettings({ chain: [stage], categories: { shell: true, network: true, write: true } }),
+        chain: [{ settings: stage, judge: new BuiltinLlmJudge({
+          async classifyWithTrace() {
+            const verdict = { level: "low", reason: "Independent verdict" } as const;
+            return { ruleVerdict: verdict, finalVerdict: verdict, llmVerdict: verdict, outcome: "fresh" };
+          },
+        }, stage.model.model) }],
+        breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger,
+      });
+    }
+    const refreshStarted = deferred<void>();
+    const releaseRefresh = deferred<void>();
+    const { invoke } = await registerRouteSelection(async () => {
+      refreshStarted.resolve();
+      await releaseRefresh.promise;
+    });
+    expect((await dispatch(false)).review.outcome).toBe("fresh");
+    expect((await dispatch(false)).review.outcome).toBe("cache");
+    const reviewReady = deferred<void>();
+    const pendingReview = dispatch(false, async () => {
+      reviewReady.resolve();
+      await refreshStarted.promise;
+    });
+    await reviewReady.promise;
+    const pending = invoke(CHANNELS.settings.subscriptionUseForChat, "grok-build");
+    await refreshStarted.promise;
+    try {
+      expect.soft((await pendingReview).result.decision).toBe("allow");
+      for (const headless of [false, true]) {
+        const { review, result } = await dispatch(headless);
+        expect.soft(review.outcome).toBe("cache");
+        expect.soft(result.decision).toBe("allow");
+      }
+    } finally {
+      releaseRefresh.resolve();
+      await expect(pending).resolves.toMatchObject({ ok: true });
+    }
+  }, undefined, explicitReviewer);
 });
 
 it("keeps warmed API review available during refresh of an identical settled Settings selection", async () => {

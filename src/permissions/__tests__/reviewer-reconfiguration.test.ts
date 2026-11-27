@@ -81,6 +81,19 @@ describe("reviewer reconfiguration authority", () => {
     expect((await current.review(true)).permission).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
   });
 
+  it("keeps the newer settled chat hold when a rewire started for an older generation completes", async () => {
+    const { manager, review } = subject();
+    const older = manager.beginChatRuntimeReviewerReconfiguration(true)!;
+    manager.settleChatRuntimeReviewerReconfiguration(older);
+    const rewire = manager.beginReviewerReconfiguration();
+    const newer = manager.beginChatRuntimeReviewerReconfiguration(true)!;
+    manager.settleChatRuntimeReviewerReconfiguration(newer);
+    manager.completeReviewerReconfiguration(rewire);
+    expect((await review()).permission.decision).toBe("ask");
+    manager.completeReviewerReconfiguration(manager.beginReviewerReconfiguration());
+    expect((await review()).permission.decision).toBe("allow");
+  });
+
   it("lets a successful healthy-settings rollback restore review after the failed rewire", async () => {
     const current = subject(true);
     const path = join(root, "settings.json");

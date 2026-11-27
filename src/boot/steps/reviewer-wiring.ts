@@ -215,6 +215,7 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
       rationaleScopeReviewer = new LlmRationaleScopeReviewer(
         adapter,
         effectiveSettings.model,
+        deps.selectedModel ? undefined : () => deps.permissionManager.isChatRuntimeReviewerHeld(),
       );
       approvalSentenceSelector = new LlmApprovalSentenceSelector(
         adapter,
@@ -235,6 +236,7 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
     classifier,
     cache,
     verdictCacheEnabled: !effectiveSettings.provider.startsWith("subscription:"),
+    followsChat: deps.selectedModel === undefined,
     recentlyDenied,
     degradedToRule,
     ...(runtimeMode === "llm" ? { model: `${effectiveSettings.provider}/${effectiveSettings.model}` } : {}),
