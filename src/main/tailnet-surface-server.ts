@@ -5,6 +5,7 @@ import { createTailnetOwnerIdentityPolicy, probeTailnetOwnerIdentityGuard } from
 import type { SecretEncryption } from "../data/secret-document-store.js";
 // The owner must enable the listener and approve the exact serve command; never retain admin credentials or mutate tailnet policy.
 import { readFile } from "node:fs/promises";
+import { createServer as createPortProbe } from "node:net";
 import { join } from "node:path";
 import { platform as hostPlatform } from "node:process";
 import {
@@ -46,7 +47,7 @@ import {
 } from "./tailnet-pairing-share-store.js";
 import { TAILNET_WORK_DECISION_PATH } from "../shared/tailnet-work-decisions.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
-import { assertTailnetListenerPortAllowed } from "../permissions/tailnet-listener-policy.js";
+import { assertTailnetListenerPortAllowed, readTailnetListenerPortPolicy } from "../permissions/tailnet-listener-policy.js";
 import { getWindowsTailnetPortHint } from "./tailnet-port-hint.js";
 import { createLogger } from "../lib/logger.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
@@ -101,7 +102,7 @@ export interface TailnetObserverConfigFile {
 const TAILNET_FEATURE_NAMESPACE = "tailnet";
 const TAILNET_OBSERVER_CONFIG_FILE = "observer.json";
 const TAILNET_OWN_DEVICE_ADMISSION_FILE = "own-device-admission.json";
-const LEGACY_TAILNET_OBSERVER_PORT = 46_173;
+export const LEGACY_TAILNET_OBSERVER_PORT = 46_173;
 const log = createLogger("tailnet-observer");
 
 const CONFIG_KEYS: readonly TailnetObserverConfigKey[] = [
@@ -181,6 +182,10 @@ function envLayer(env: NodeJS.ProcessEnv): RawLayer {
 export function tailnetObserverEnableOverride(env: NodeJS.ProcessEnv = process.env): boolean | undefined {
   const enabled = env[ENV_KEY.enabled];
   return enabled === undefined ? undefined : enabled === "1";
+}
+
+export function hasTailnetObserverPortOverride(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[ENV_KEY.port] !== undefined;
 }
 
 // Project the file onto the raw vocabulary. `false` becomes an ABSENT key rather than `"0"`: every boolean below accepts `"1"` or absence and rejects
@@ -414,6 +419,34 @@ export function getTailnetObserverRuntimeState(): TailnetObserverRuntimeState {
     lastStartError,
     portBlock,
   });
+}
+
+function probeLoopbackBind(port: number): Promise<number | null> {
+  return new Promise(resolve => {
+    const probe = createPortProbe();
+    probe.once("error", () => resolve(null));
+    probe.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
+      const address = probe.address();
+      const bound = typeof address === "object" && address !== null ? address.port : null;
+      probe.close(() => resolve(bound));
+    });
+  });
+}
+
+// Fresh setup probes before saving. A subsequent bind refusal leaves the selected port visible.
+export async function chooseObserverPort(): Promise<number | null> {
+  const isAllowed = await readTailnetListenerPortPolicy();
+  if (isAllowed(DEFAULT_TAILNET_OBSERVER_PORT) && await probeLoopbackBind(DEFAULT_TAILNET_OBSERVER_PORT) !== null) {
+    return DEFAULT_TAILNET_OBSERVER_PORT;
+  }
+
+  const bound = await probeLoopbackBind(0);
+  if (bound === null || isAllowed(bound)) return bound;
+  // The ephemeral range may overlap a confined-worker range.
+  for (let candidate = 1024; candidate <= 65_535; candidate++) {
+    if (isAllowed(candidate) && await probeLoopbackBind(candidate) !== null) return candidate;
+  }
+  return null;
 }
 
 function dependencies(

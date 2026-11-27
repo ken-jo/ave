@@ -410,6 +410,11 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
               </Button>
             </div>
           )}
+          {chosenPort === null ? null : (
+            <p className="text-sm text-muted-foreground">
+              {`${t("tailnetObserver.portLabel")}: ${chosenPort}`}
+            </p>
+          )}
           <p className="text-sm text-muted-foreground">{t("tailnetSetup.doneOwnDevice")}</p>
           <div className="flex flex-wrap items-center gap-2">
             <Button

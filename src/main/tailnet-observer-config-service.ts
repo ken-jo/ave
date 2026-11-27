@@ -1,9 +1,12 @@
 // Revalidate renderer proposals with the boot resolver and persist in the tailnet namespace; settings cannot grant this authority.
 import { assertTailnetListenerPortAllowed } from "../permissions/tailnet-listener-policy.js";
 import {
+  chooseObserverPort,
   configureTailscaleServe,
   getTailnetObserverRuntimeState,
+  hasTailnetObserverPortOverride,
   isTailnetOwnDeviceAdmissionEnabled,
+  LEGACY_TAILNET_OBSERVER_PORT,
   loadTailnetObserverConfig,
   probeTailscaleEnvironment,
   readTailnetObserverConfigFile,
@@ -254,7 +257,8 @@ export function createTailnetObserverConfigService(
     },
 
     async guidedSetup(): Promise<TailnetGuidedSetupResult> {
-      if (tailnetObserverEnableOverride(options.env) === false) return guidedFailure("tailnet-serve-not-listening");
+      const enableOverride = tailnetObserverEnableOverride(options.env);
+      if (enableOverride === false) return guidedFailure("tailnet-serve-not-listening");
       const environment = await probeEnvironment();
       // Only `ready` can be set up. Every other state needs an action outside this app — install, sign in, start the daemon — and the surface that asked for
       // this already knows the sentence for each one.
@@ -272,8 +276,18 @@ export function createTailnetObserverConfigService(
       }
 
       try {
+        let port: number | null = file?.port ?? DEFAULT_TAILNET_OBSERVER_PORT;
+        if (file === null && !hasTailnetObserverPortOverride(options.env)) {
+          const { listeningPort, portBlock } = runtimeState();
+          port = listeningPort ?? portBlock?.port ?? null;
+          if (port === null && enableOverride === true && environment.serveTargetPort === LEGACY_TAILNET_OBSERVER_PORT) {
+            port = LEGACY_TAILNET_OBSERVER_PORT;
+          }
+          port ??= await chooseObserverPort();
+          if (port === null) return guidedFailure("tailnet-guided-setup-port-unavailable");
+        }
         await saveAndRestart(
-          proposalToFile(recommendedConfig(file?.port ?? DEFAULT_TAILNET_OBSERVER_PORT), tailnetWebOriginFor(environment.dnsName)),
+          proposalToFile(recommendedConfig(port), tailnetWebOriginFor(environment.dnsName)),
         );
       } catch (err) {
         return guidedFailure(guidedErrorCode(err));

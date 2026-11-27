@@ -6078,6 +6078,7 @@ export const en = {
   "tailnetSetup.manualShow": "Set up manually",
   "tailnetSetup.manualHide": "Hide manual settings",
   "tailnetSetup.errorNotReady": "Tailscale is not ready on this computer, so there is nothing to set up yet.",
+  "tailnetSetup.errorPortUnavailable": "No local port could be opened for the listener. Set it up manually and name a free port.",
   "tailnetSetup.errorOwnDeviceAdmissionUnavailable": "Pairing is not running on this desktop, so there is no approval step to skip.",
   "tailnetSetup.errorOwnDeviceAdmissionLogin": "This computer's Tailscale login could not be read, so there is no account to allow.",
 

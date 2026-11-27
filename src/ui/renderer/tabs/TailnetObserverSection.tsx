@@ -101,6 +101,8 @@ export function tailnetObserverErrorText(code: string, t: (key: string) => strin
       return t("tailnetObserver.errorServeCommandFailed");
     case "tailnet-guided-setup-not-ready":
       return t("tailnetSetup.errorNotReady");
+    case "tailnet-guided-setup-port-unavailable":
+      return t("tailnetSetup.errorPortUnavailable");
     case TAILNET_OBSERVER_PORT_BLOCKED:
       return t("tailnetObserver.errorPortBlocked");
     case "tailnet-own-device-admission-unavailable":

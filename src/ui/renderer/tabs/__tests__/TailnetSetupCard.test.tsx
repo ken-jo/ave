@@ -166,6 +166,24 @@ describe("TailnetSetupCard", () => {
       );
     });
 
+    it("shows the selected alternate port on the completed setup", async () => {
+      const port = 28_999;
+      const { api } = makeApi({
+        guidedSetup: {
+          ok: true,
+          snapshot: configuredSnapshot({ listeningPort: port }),
+          webOrigin: WEB_ORIGIN,
+          port,
+          serve: "configured",
+        },
+      });
+      render(<TailnetSetupCard api={api} onCreateInvitation={() => undefined} />);
+
+      fireEvent.click(await screen.findByTestId("tailnet-setup-connect"));
+
+      expect(await screen.findByTestId("tailnet-setup-done")).toHaveTextContent("Local port: 28999");
+    });
+
     it("holds the button disabled and labelled in progress for the whole call", async () => {
       let release = (): void => undefined;
       const inFlight = new Promise<void>((resolve) => { release = () => resolve(); });

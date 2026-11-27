@@ -6080,6 +6080,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "tailnetSetup.manualShow": "수동으로 설정",
   "tailnetSetup.manualHide": "수동 설정 숨기기",
   "tailnetSetup.errorNotReady": "이 컴퓨터에서 Tailscale이 준비되지 않아 아직 설정할 것이 없습니다.",
+  "tailnetSetup.errorPortUnavailable": "리스너가 쓸 로컬 포트를 열지 못했습니다. 수동으로 설정해 비어 있는 포트를 지정하세요.",
   "tailnetSetup.errorOwnDeviceAdmissionUnavailable": "이 데스크톱에서 페어링이 동작하지 않아 건너뛸 승인 단계가 없습니다.",
   "tailnetSetup.errorOwnDeviceAdmissionLogin": "이 컴퓨터의 Tailscale 로그인 계정을 읽지 못해 허용할 계정을 확인할 수 없습니다.",
 
