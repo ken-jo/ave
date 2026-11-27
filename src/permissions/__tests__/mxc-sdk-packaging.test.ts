@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -62,6 +63,56 @@ describe("packaged launcher inventory", () => {
     await expect(afterSign(context)).resolves.toBeUndefined();
     writeFileSync(binary, "changed");
     await expect(afterSign(context)).rejects.toThrow(/hash mismatch/u);
+  });
+});
+
+describe("Windows post-sign packaging", () => {
+  it.each([{ arch: 1, target: "x64" }, { arch: 3, target: "arm64" }])("checks the final $target package in order", ({ arch, target }) => {
+    const appOutDir = createTemporaryDirectory(path.join(tmpdir(), "ave-mxc-after-sign-"));
+    roots.push(appOutDir);
+    const resources = path.join(appOutDir, "resources");
+    const productFilename = "Packaged App";
+    mkdirSync(path.join(resources, "app.asar.unpacked", "node_modules", "@anthropic-ai", "sandbox-runtime", "vendor", "srt-win"), { recursive: true });
+
+    const require = createRequire(import.meta.url);
+    const script = `
+      import { createRequire, registerHooks } from "node:module";
+
+      const [hook, legacyVerifier, appOutDir, arch, productFilename] = process.argv.slice(1);
+      const require = createRequire(import.meta.url);
+      require(legacyVerifier).assertSrtWinVendor = () => {};
+
+      const calls = [];
+      globalThis.recordCall = (...args) => calls.push(args);
+      registerHooks({ load(url, context, nextLoad) {
+        if (url.endsWith("/scripts/lib/windows-path-kind-package.mjs")) return {
+          format: "module", shortCircuit: true,
+          source: 'export const assertSignedWindowsPathKind = (...args) => globalThis.recordCall("path-kind", ...args);',
+        };
+        if (url.endsWith("/scripts/lib/mxc-sdk-packaging.mjs")) return {
+          format: "module", shortCircuit: true,
+          source: 'export const recordMxcSupervisorRuntime = (...args) => globalThis.recordCall("record", ...args);'
+            + 'export const assertPackagedMxcSdk = (...args) => globalThis.recordCall("verify", ...args);',
+        };
+        return nextLoad(url, context);
+      }});
+
+      await require(hook)({ electronPlatformName: "win32", appOutDir, arch: Number(arch), packager: { appInfo: { productFilename } } });
+      console.log(JSON.stringify(calls));
+    `;
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", script,
+      require.resolve("../../../scripts/electron-after-sign.cjs"),
+      require.resolve("../../../scripts/lib/srt-win-integrity.cjs"),
+      appOutDir, String(arch), productFilename,
+    ], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8", windowsHide: true });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      ["path-kind", appOutDir, target],
+      ["record", resources, target, path.join(appOutDir, `${productFilename}.exe`)],
+      ["verify", resources, target],
+    ]);
   });
 });
 
