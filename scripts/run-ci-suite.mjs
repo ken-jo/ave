@@ -494,11 +494,12 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       let changes;
       try { changes = eventName === "push" ? pushChanges(process.env.AVE_CI_DIFF_BASE).entries : pullRequestChanges().entries; } catch { /* Unknown impact retains platforms. */ }
       const platforms = platformChecksRequired(eventName, plan, changes, process.env.GITHUB_BASE_REF);
-      const shards = Array.from({ length: ciShardCount(plan, coverage, platforms) }, (_, index) => index + 1);
-      console.log(`[ci-suite] planned ${describeRun(plan, coverage)} in ${shards.length} shard(s): ${plan.reason}`);
+      const shardCount = ciShardCount(plan, coverage, platforms);
+      const shards = Array.from({ length: shardCount }, (_, index) => index + 1);
+      console.log(`[ci-suite] planned ${describeRun(plan, coverage)} in ${shardCount} shard(s): ${plan.reason}`);
       writeSummary(plan, coverage);
       if (process.env.GITHUB_OUTPUT) {
-        appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\nplatform_checks=${platforms}\n`);
+        appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\nshard_count=${shardCount}\nplatform_checks=${platforms}\n`);
         if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\nNative platform checks: ${platforms ? "required" : "not selected (renderer-only diff)"}.\n`);
       }
       process.exit(0);

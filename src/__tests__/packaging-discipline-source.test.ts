@@ -1602,11 +1602,17 @@ describe("installer smoke and packaging discipline", () => {
     { label: "cancelled tests", selected: "false", native: "skipped", build: "success", vitest: "cancelled", docs: "false", status: 1 },
     { label: "documentation path", selected: "false", native: "skipped", build: "success", vitest: "skipped", docs: "true", status: 0 },
     { label: "missing documentation impact", selected: "false", native: "skipped", build: "success", vitest: "success", docs: "", status: 1 },
-  ])("evaluates the actual aggregate shell for $label", ({ selected, native, build, vitest, docs, status }) => {
+    { label: "complete matrix", selected: "true", native: "success", build: "success", vitest: "success", docs: "false", count: "2", matrix: "[1,2]", status: 0 },
+    { label: "missing matrix", selected: "true", native: "success", build: "success", vitest: "success", docs: "false", count: "2", matrix: "", status: 1 },
+    { label: "one-shard fallback", selected: "true", native: "success", build: "success", vitest: "success", docs: "false", count: "2", matrix: "[1]", status: 1 },
+    { label: "duplicate shard", selected: "true", native: "success", build: "success", vitest: "success", docs: "false", count: "2", matrix: "[1,1]", status: 1 },
+    { label: "missing shard count", selected: "true", native: "success", build: "success", vitest: "success", docs: "false", count: "", matrix: "[1,2]", status: 1 },
+  ])("evaluates the actual aggregate shell for $label", ({ selected, native, build, vitest, docs, status, count = "1", matrix = "[1]" }) => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
     const command = workflow.jobs["build-and-test"].steps[0].run as string;
     const result = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
       ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: build, VITEST_RESULT: vitest, DOCS_ONLY: docs,
+      VITEST_SHARD_COUNT: count, VITEST_SHARDS: matrix,
       PLATFORM_CHECKS: selected, WINDOWS_PREPARATION_RESULT: native,
       WINDOWS_PACKAGING_RESULT: native, WINDOWS_SCRIPTS_RESULT: native, WINDOWS_DEV_BOOT_RESULT: native, WINDOWS_RESULT: native, MACOS_RESULT: native, LINUX_RESULT: native,
       WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
@@ -1627,6 +1633,7 @@ describe("installer smoke and packaging discipline", () => {
     const command = workflow.jobs["build-and-test"].steps[0].run as string;
     const result = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
       ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success", VITEST_RESULT: "success",
+      VITEST_SHARD_COUNT: "1", VITEST_SHARDS: "[1]",
       DOCS_ONLY: "false", PLATFORM_CHECKS: "true", WINDOWS_PREPARATION_RESULT: preparation,
       WINDOWS_PACKAGING_RESULT: "success", WINDOWS_SCRIPTS_RESULT: "success", WINDOWS_DEV_BOOT_RESULT: "success",
       WINDOWS_RESULT: shards, MACOS_RESULT: "success", LINUX_RESULT: "success",
@@ -1765,9 +1772,20 @@ describe("installer smoke and packaging discipline", () => {
       },
     });
     expect(result.status, result.error?.message ?? result.stderr).toBe(0);
-    expect(readFileSync(output, "utf8")).toBe("shards=[1,2]\nplatform_checks=true\n");
+    expect(readFileSync(output, "utf8")).toBe("shards=[1,2]\nshard_count=2\nplatform_checks=true\n");
     expect(JSON.parse(readFileSync(plan, "utf8"))).toEqual({
       mode: "full", reason: "push runs the full suite", tests: [],
+    });
+  });
+
+  it("requires an explicit Linux shard matrix and passes the planned count to the aggregate", () => {
+    const { jobs } = parseYaml(readRepoFile(".github/workflows/ci.yml"));
+    expect(jobs.build.outputs.shards).toBe(githubExpression("steps.plan.outputs.shards"));
+    expect(jobs.build.outputs.shard_count).toBe(githubExpression("steps.plan.outputs.shard_count"));
+    expect(jobs.vitest.strategy.matrix.shard).toBe(githubExpression("fromJSON(needs.build.outputs.shards)"));
+    expect(jobs["build-and-test"].steps[0].env).toMatchObject({
+      VITEST_SHARDS: githubExpression("needs.build.outputs.shards"),
+      VITEST_SHARD_COUNT: githubExpression("needs.build.outputs.shard_count"),
     });
   });
 
@@ -1816,9 +1834,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(matched(commands, VERIFIES_THE_CODE)).toEqual([]);
     expect(shards).toMatch(/^ {4}needs: build$/mu);
     // One failed or cancelled shard makes needs.vitest.result fail the aggregate.
-    expect(build).toContain(`      shards: ${githubExpression("steps.plan.outputs.shards || '[1]'")}`);
     expect(shards).toContain("      fail-fast: false\n");
-    expect(shards).toContain("        shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}");
     expect(shards).toContain(`          AVE_CI_PLAN_FILE: ${githubExpression("runner.temp")}/ci-plan/ci-plan.json`);
     expect(shards).toContain("          AVE_CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}");
 
@@ -1877,9 +1893,9 @@ describe("installer smoke and packaging discipline", () => {
     expect(mustRun.groups.permissions).toContain("src/permissions/");
   });
 
-  it("gates the Vitest shards on the build job's documentation classification", () => {
+  it("gates the Vitest shards on the build job's documentation classification and matrix output", () => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
-    expect(workflow.jobs.vitest.if).toBe("needs.build.outputs.docs_only != 'true'");
+    expect(workflow.jobs.vitest.if).toBe("needs.build.outputs.docs_only != 'true' && needs.build.outputs.shards != ''");
   });
 
   it.each(["vitest", "linux-confinement-tests"])("installs and saves packages before dependency code in %s", (jobId) => {
