@@ -410,6 +410,8 @@ function browserPaneGuidance(windowId: number, sessionId: string): string {
   const target = browserTabRegistry.browserPaneTarget(windowId, sessionId);
   if (!target) return "";
   if (target.kind === "empty") return t("be_browserTools.paneEmptyGuidance");
+  if (target.kind === "blocked") return t("be_browserTools.paneBlockedGuidance");
+  if (target.kind === "paused") return t("be_browserTools.panePausedGuidance");
   if (target.kind !== "live") return t("be_browserTools.paneUnavailableGuidance");
 
   const url = URL.parse(target.url);

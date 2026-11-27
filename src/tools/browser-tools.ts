@@ -32,7 +32,7 @@ interface BrowserTabsAccess<G extends BrowserGuest = BrowserGuest> {
   liveTabInWindow(handle: string, windowId: number): BrowserTabRecord<G> | undefined;
   listTabs(windowId: number): BrowserTabView[];
   listSessionTabs(windowId: number, actor: BrowserSessionActor, includeDirectChildren: boolean): BrowserTabView[];
-  assertActorAccess(tab: BrowserTabRecord<G>, actor: BrowserSessionActor): void;
+  tabActionAccess(windowId: number, handle: string, actor: BrowserSessionActor): { tab: BrowserTabRecord<G>; paused: boolean } | undefined;
   acquireControl(tab: BrowserTabRecord<G>, actor: BrowserSessionActor): BrowserControlLease;
   releaseControl(tabId: string, leaseId: string): void;
   /** The tab a conversation acts on when a call names none (its pane chat's tab, else the shown one). */
@@ -140,6 +140,7 @@ export interface ResolvedBrowserTab<G extends BrowserGuest> {
   readonly tab: BrowserTabRecord<G>;
   readonly origin: string | null;
   readonly opener: BrowserTabOpener;
+  readonly paused: boolean;
 }
 
 /** Scope resolution shared by the policy hooks and the execute bodies. */
@@ -160,12 +161,10 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       if (input.tabId !== undefined && (typeof input.tabId !== "string" || !BROWSER_TAB_ID_PATTERN.test(input.tabId))) return undefined;
       const fallback = input.tabId === undefined ? deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId, sessionId) : undefined;
       const handle = (input.tabId as string | undefined) ?? (fallback?.ok ? fallback.handle : undefined);
-      if (handle === undefined) return undefined;
-      const tab = deps.tabs.liveTabInWindow(handle, scope.windowId);
-      if (!tab || !tab.guest || !sessionId) return undefined;
-      try { deps.tabs.assertActorAccess(tab, { sessionId, directParentSessionId: deps.liveOriginSessionId(sessionId) }); }
-      catch { return undefined; }
-      return { tab, origin: browserOrigin(tab.guest.getURL()), opener: tab.opener };
+      if (handle === undefined || !sessionId) return undefined;
+      const access = deps.tabs.tabActionAccess(scope.windowId, handle, { sessionId, directParentSessionId: deps.liveOriginSessionId(sessionId) });
+      if (!access?.tab.guest) return undefined;
+      return { ...access, origin: browserOrigin(access.tab.guest.getURL()), opener: access.tab.opener };
     },
     // Only a main chat view opens new tabs. A side or pane chat acts in its attached page, or loads one into its empty pane.
     tabNewTarget: (scope) => {

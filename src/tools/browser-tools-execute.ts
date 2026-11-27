@@ -181,10 +181,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       return { ok: false, result: failure(`no browser tab ${JSON.stringify(handle)}; call browser_tabs to list this window's tabs`) };
     }
     const signals = [...(mutation ? [resolved.tab.actions.signal] : []), ...(ctx.abortSignal ? [ctx.abortSignal] : [])];
-    if (mutation) {
-      deps.tabs.assertActorAccess(resolved.tab, actorOf(ctx, deps));
-      if (resolved.tab.controlMode === "human-paused") return { ok: false, result: failure("browser control is paused; ask the user to resume this tab") };
-    }
+    if (mutation && resolved.paused) return { ok: false, result: failure("browser control is paused; ask the user to resume this tab") };
     return { ok: true, windowId: scope.windowId, resolved, signal: AbortSignal.any(signals) };
   };
 

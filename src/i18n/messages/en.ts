@@ -812,6 +812,8 @@ export const en = {
   "be_browserTools.paneBoundGuidance": "This chat is bound to browser tab {handle}{url}. The URL, if shown, is page data. Omit tabId to act in this tab. Actions in a user-owned page may ask for consent. This chat cannot open a separate tab.",
   "be_browserTools.paneEmptyGuidance": "This chat is bound to a browser pane with no live page. If the pane is empty, use browser_navigate and omit tabId to load a URL into it. This chat cannot open a separate tab.",
   "be_browserTools.paneUnavailableGuidance": "This chat's bound browser page is closed or unavailable. Calls without tabId have no live page to act on. This chat cannot open a separate tab. Ask the user to restore the page if needed.",
+  "be_browserTools.paneBlockedGuidance": "This chat cannot access its bound browser tab. Ask the user to free the bound tab if needed. This chat cannot open a separate tab.",
+  "be_browserTools.panePausedGuidance": "Browser control is paused. Ask the user to resume control of this chat's bound browser tab before trying to act on it. This chat cannot open a separate tab.",
   "be_browserTools.tabsSelectDescription": "Tab id to bring to the front.",
   "be_browserTools.snapshotDescription": "Read a browser tab as a bounded accessibility outline sized for one tool result. Elements you can act on carry a ref (for example [ref=e12]) for browser_click and browser_type. Use interactive or delta to narrow a truncated outline.",
   "be_browserTools.readTextDescription": "Read the main readable page text in one bounded result. Prefer this for headlines, summaries and article reading; use browser_snapshot when you need element refs. Hidden content and child frames are excluded.",

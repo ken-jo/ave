@@ -50,6 +50,35 @@ function bindPage(id: number, tabId: string, url: string) {
 }
 
 describe("browser pane turn guidance", () => {
+  it("withholds the bound tab while another conversation holds its lease", () => {
+    const loop = createLoop(WINDOW_ID);
+    bindPage(1, PANE.tabId, BOUND_URL);
+    browserTabRegistry.bindConversationSurface(loop.getSessionId(), { windowId: WINDOW_ID, surface: PANE });
+    const tab = browserTabRegistry.liveRendererTab(WINDOW_ID, PANE.tabId)!;
+    const lease = browserTabRegistry.acquireControl(tab, { sessionId: "other-session" });
+    const blocked = loop.buildSystemPromptForScope(SCOPE);
+    expect(blocked).toContain("This chat cannot access its bound browser tab.");
+    expect(blocked).not.toContain(tab.handle);
+    expect(blocked).not.toContain(BOUND_URL);
+    browserTabRegistry.releaseControl(tab.handle, lease.id);
+    expect(loop.buildSystemPromptForScope(SCOPE)).toContain(`This chat is bound to browser tab ${tab.handle}`);
+  });
+
+  it("asks the user to resume paused control before advertising browser actions again", () => {
+    const loop = createLoop(WINDOW_ID);
+    const sessionId = loop.getSessionId();
+    bindPage(1, PANE.tabId, BOUND_URL);
+    browserTabRegistry.bindConversationSurface(sessionId, { windowId: WINDOW_ID, surface: PANE });
+    const tab = browserTabRegistry.liveRendererTab(WINDOW_ID, PANE.tabId)!;
+    browserTabRegistry.acquireControl(tab, { sessionId });
+    expect(browserTabRegistry.pause(WINDOW_ID, PANE.tabId)).toBe(true);
+    const paused = loop.buildSystemPromptForScope(SCOPE);
+    expect(paused).toContain("Browser control is paused. Ask the user to resume");
+    expect(paused).not.toContain("Omit tabId to act in this tab.");
+    expect(browserTabRegistry.resume(WINDOW_ID, PANE.tabId)).toBe(true);
+    expect(loop.buildSystemPromptForScope(SCOPE)).toContain("Omit tabId to act in this tab.");
+  });
+
   it("names the bound page in a pane turn even when another tab is active", () => {
     const loop = createLoop(WINDOW_ID);
     bindPage(1, PANE.tabId, `${BOUND_URL}?token=private#fragment`);

@@ -729,6 +729,14 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
   }
 
+  tabActionAccess(windowId: number, handle: string, actor: BrowserSessionActor): { tab: BrowserTabRecord<G>; paused: boolean } | undefined {
+    const tab = this.liveTabInWindow(handle, windowId);
+    if (!tab?.guest) return undefined;
+    try { this.assertActorAccess(tab, actor); }
+    catch { return undefined; }
+    return { tab, paused: tab.controlMode === "human-paused" };
+  }
+
   acquireControl(tab: BrowserTabRecord<G>, actor: BrowserSessionActor): BrowserControlLease {
     this.assertActorAccess(tab, actor);
     if (tab.controlMode === "human-paused") throw new Error("browser control is paused; ask the user to resume this tab");
@@ -1339,7 +1347,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
 
   browserPaneTarget(windowId: number, sessionId: string):
     | { kind: "live"; handle: string; url: string }
-    | { kind: "empty" | "unavailable" }
+    | { kind: "empty" | "unavailable" | "blocked" | "paused" }
     | undefined {
     const bound = this.conversationSurface(windowId, sessionId);
     if (bound?.kind !== "browser") return undefined;
@@ -1347,7 +1355,10 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (this.retiredWorkspaceTabs.has(key) || this.isClosedByAgent(windowId, bound.tabId)) return { kind: "unavailable" };
     const target = this.defaultBrowserTab(windowId, sessionId);
     if (!target.ok) return { kind: this.handleByWindowTab.has(key) ? "unavailable" : "empty" };
-    return { kind: "live", handle: target.handle, url: this.tabs.get(target.handle)?.guest?.getURL() ?? "" };
+    const access = this.tabActionAccess(windowId, target.handle, { sessionId });
+    if (!access) return { kind: "blocked" };
+    if (access.paused) return { kind: "paused" };
+    return { kind: "live", handle: target.handle, url: access.tab.guest?.getURL() ?? "" };
   }
 
   // A live tab by handle, in any window. For approval hooks, which have no session.
