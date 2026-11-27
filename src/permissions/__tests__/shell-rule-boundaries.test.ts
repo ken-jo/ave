@@ -14,7 +14,7 @@ import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
 import { requestBoundShellCard } from "../../__tests__/support/host-shell-approval.js";
 import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
-import { allowKeyMaterialInspection } from "../sensitive-paths.js";
+import { allowKeyMaterialInspection, caseFoldForMatch } from "../sensitive-paths.js";
 
 withSourceHostResources();
 
@@ -40,7 +40,8 @@ const shellSubject = (command: string) => ({ kind: "shell" as const, dialect: "b
 it.skipIf(process.platform === "win32")("reuses the completed POSIX shell shape after file content changes", () => {
   const file = join(project, "report.pem");
   writeFileSync(file, "ordinary report text");
-  const release = allowKeyMaterialInspection(path => path === file);
+  // A grant is asked with the canonical, case-folded path: on macOS that folds the mkdtemp suffix.
+  const release = allowKeyMaterialInspection(path => path === caseFoldForMatch(file));
   const command = 'cat "$DOC" report.pem';
   const parsed = asParsedShellCommand(command);
   try {
@@ -56,14 +57,14 @@ it.skipIf(process.platform === "win32")("reuses the completed POSIX shell shape 
 it.skipIf(process.platform === "win32")("runs the POSIX shell file scan before returning a matching deny rule", () => {
   const file = join(project, "report.pem");
   writeFileSync(file, "ordinary report text");
-  const inspect = vi.fn((path: string) => path === file);
+  const inspect = vi.fn((path: string) => path === caseFoldForMatch(file));
   const release = allowKeyMaterialInspection(inspect);
   const pattern = "Bash(cat report.pem)";
   const spec = parseRuleSpecifier(pattern);
   if (spec.kind !== "bash") throw new Error("Expected a shell rule");
   try {
     expect(evaluateShellRules("cat report.pem", { deny: [{ spec, pattern }], ask: [], allow: [] }, project).decision).toBe("deny");
-    expect(inspect).toHaveBeenCalledWith(file);
+    expect(inspect).toHaveBeenCalledWith(caseFoldForMatch(file));
   } finally {
     release();
   }
