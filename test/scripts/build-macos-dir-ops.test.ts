@@ -115,6 +115,19 @@ describe("buildMacosDirOps", () => {
     expect(build()).toHaveLength(1 + MACOS_DIR_OPS_TEST_BUILDS.length);
   });
 
+  it("rebuilds helpers when only the packaged macOS floor changes", () => {
+    const root = fixtureRoot({ helpers: NEW });
+    const calls: string[][] = [];
+    const build = () => buildMacosDirOps({ root, arch: "arm64", platform: "darwin", ifStale: true, testBuilds: true, spawn: compilerStub(calls), log: () => {} });
+    expect(build()).toEqual([]);
+    write(root, "package.json", new Date("2026-03-01T00:00:00Z"), JSON.stringify({
+      build: { mac: { minimumSystemVersion: "15.0" } },
+    }));
+    expect(build()).toHaveLength(1 + MACOS_DIR_OPS_TEST_BUILDS.length);
+    for (const args of calls) expect(args).toContain("-mmacosx-version-min=15.0");
+    expect(build()).toEqual([]);
+  });
+
   it("fails clearly on an unsupported architecture or a failed compile", () => {
     const calls: string[][] = [];
     expect(() => buildMacosDirOps({ root: fixtureRoot(), arch: "x64", platform: "darwin", spawn: compilerStub(calls), log: () => {} })).toThrow(/unsupported macOS helper architecture: x64/);
@@ -127,12 +140,18 @@ describe("buildMacosDirOps", () => {
 describe("macOS download file helper wiring", () => {
   const packageJson = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
 
-  it("restricts both installer formats to arm64 while preserving the OS floor", () => {
+  it("documents the packaged macOS floor in the provider spawn contract", () => {
+    const doc = readFileSync(resolve("docs/architecture/openai-provider-integration.md"), "utf8");
+    const documented = /\[minimum macOS version\]\(\.\.\/\.\.\/package\.json(?:#L\d+)?\) is (\d+)\./u.exec(doc)?.[1];
+    expect(documented).toBe(packageJson.build.mac.minimumSystemVersion.split(".")[0]);
+  });
+
+  it("restricts both installer formats to arm64 while keeping the macOS 15 floor", () => {
     expect(packageJson.build.mac.target).toEqual([
       { target: "dmg", arch: ["arm64"] },
       { target: "zip", arch: ["arm64"] },
     ]);
-    expect(packageJson.build.mac.minimumSystemVersion).toBe("13.0");
+    expect(packageJson.build.mac.minimumSystemVersion).toBe("15.0");
   });
 
   it("builds the helper with the app and before tests, and its fault-injecting variants only for tests", () => {

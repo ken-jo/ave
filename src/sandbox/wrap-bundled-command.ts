@@ -19,7 +19,7 @@ import { join, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { t } from "../i18n/index.js";
 import { errorMessage } from "../shared/error-message.js";
-import { isContainerRouteEnabled } from "../shared/container-platform.js";
+import { isContainerHolderRouteEnabled } from "../shared/container-platform.js";
 import { createLogger } from "../lib/logger.js";
 import {
   liveMxcHolderWritableRoots,
@@ -281,7 +281,7 @@ export function hostRuntimeReads(command: string): string[] {
 
 /** The selected boot plan routes extension holders to containers. A checking or rejected plan is refused by the guard. */
 export function isMxcExtensionBackendSelected(): boolean {
-  if (!isContainerRouteEnabled(process.platform)) return false;
+  if (!isContainerHolderRouteEnabled(process.platform)) return false;
   const plan = getWindowsExtensionBackendPlan();
   return plan?.selectedBackend === "mxc" && plan.readiness === "ready";
 }

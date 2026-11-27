@@ -168,6 +168,7 @@ describe("Windows path helper build", { skip: process.platform !== "win32" }, ()
     const launcher = join(root, windowsJobLauncherPath(process.arch));
     mkdirSync(dirname(launcher), { recursive: true });
     writeFileSync(launcher, "launcher fixture");
+    writeFileSync(join(root, windowsJobLauncherPath(process.arch, true)), "policy reader fixture");
     const built = runBuild();
     assert.equal(built.status, 0, built.stderr);
     const executable = join(root, windowsPathKindPath(process.arch));

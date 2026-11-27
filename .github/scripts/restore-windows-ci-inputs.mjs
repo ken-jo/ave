@@ -14,9 +14,11 @@ if (!temp || !env) throw new Error("Windows artifact restore requires runner pat
 const { TARGETS } = createRequire(import.meta.url)("../../scripts/lib/srt-win-integrity.cjs");
 const vendor = "node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win";
 const launcher = windowsJobLauncherPath();
+const policyReaderFixture = windowsJobLauncherPath(process.arch, true);
 const helpers = [
   launcher,
   join(dirname(launcher), "ave-job-query-failure.exe"),
+  policyReaderFixture,
   windowsPathKindPath(process.arch),
   windowsPathKindReceiptPath(process.arch),
   windowsPathKindHoldFixturePath(process.arch),
@@ -40,6 +42,7 @@ for (const file of helpers) {
 verifyWindowsPathKindReceipt(process.cwd(), process.arch);
 const now = new Date();
 utimesSync(launcher, now, now);
+utimesSync(policyReaderFixture, now, now);
 const mirror = join(temp, "python-release-mirror");
 if (!readdirSync(mirror, { withFileTypes: true, recursive: true }).some(file => file.isFile() && file.name.endsWith(".tar.gz"))) {
   throw new Error("Managed interpreter archive is missing");

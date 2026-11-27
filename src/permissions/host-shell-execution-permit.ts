@@ -3,7 +3,7 @@ import { withLocalityDecision } from "../shared/local-path-io.js";
 import type { ChildProcess } from "node:child_process";
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
-import type { HeldWindowsDirectory, HeldWindowsRun } from "../shared/windows-path-facts.js";
+import type { HeldWindowsDirectory, HeldWindowsPolicy, HeldWindowsRun } from "../shared/windows-path-facts.js";
 import { captureShellWorkingDirectoryIdentity, holdShellWorkingDirectory, matchesShellWorkingDirectoryIdentity, pinShellWorkingDirectory, sameShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
 import {
   parseHostShellExecutionInput,
@@ -309,13 +309,13 @@ export interface HostShellSpawnDirectoryHold {
   /** Throws HostShellDirectoryHoldError once the directory is no longer held. */
   assertHeld(): void;
   /** The program and arguments that start the given executable inside the hold's job. */
-  command(executable: string, args: readonly string[]): { executable: string; args: string[] };
+  command(executable: string, args: readonly string[], heldPolicy?: boolean): { executable: string; args: string[] };
   /** Arguments that make a job launcher join the hold's job. */
   readonly launcherArgs: readonly string[];
   /** The standard handles a held launch needs; undefined without a hold. */
   readonly stdio: HeldWindowsDirectory["stdio"] | undefined;
   /** Keep the hold for this started launcher and return its run; undefined without a hold. */
-  bind(child: ChildProcess): HeldWindowsRun | undefined;
+  bind(child: ChildProcess, policy?: HeldWindowsPolicy): HeldWindowsRun | undefined;
   /** Wait for release unless a child owns the hold. */
   dispose(): void | Promise<void>;
 }
@@ -342,8 +342,8 @@ export async function holdHostShellSpawnDirectory(authorization: HostShellSpawnA
     command: held.command,
     launcherArgs: held.launcherArgs,
     stdio: held.stdio,
-    bind(child) {
-      const run = held.bind(child);
+    bind(child, policy) {
+      const run = held.bind(child, policy);
       bound = true;
       return run;
     },

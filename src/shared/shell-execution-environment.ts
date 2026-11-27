@@ -1,4 +1,5 @@
 import type { HostShellExecutionPlan, HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
+import { isWindowsContainerShell } from "./container-platform.js";
 import { t } from "../i18n/runtime.js";
 import { exactRulePassesUnsandboxedShellAsk, requiresUnsandboxedShellAsk } from "./unsandboxed-shell-ask.js";
 
@@ -44,7 +45,7 @@ export function shellExecutionEnvironmentPrompt(plan: ShellEnvironmentPlan, inte
     confinement,
     t("shellExecution.defaultRoute"),
     // Bash cannot start in Windows containers; model guidance and tool refusal must agree.
-    ...(plan.mode === "asrt" && plan.substrate === "mxc" ? [t("shellExecution.mxcBashUnavailable")] : []),
+    ...(plan.mode === "asrt" && isWindowsContainerShell(plan) ? [t("shellExecution.mxcBashUnavailable")] : []),
     // A helper-unavailable plan blocks the host route too, so no host request is offered.
     ...(!interactive ? [t("shellExecution.noInteractiveApproval")]
       : hostPlan.fallbackReason === "home-privacy-helper-unavailable" ? []

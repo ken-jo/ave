@@ -128,7 +128,7 @@ describe("each spawn path reads only its own scope's gate", () => {
   it("hooks/script-hook-runner.ts takes a user hook's sandbox from the host-shell plan", () => {
     // A user hook runs the user's own command: its scope is the host shell, read through the plan it was admitted under (or the live plan), while a bundled hook keeps the worker gate checked above.
     const text = source("hooks/script-hook-runner.ts");
-    expect(text).toMatch(/confinement\s*\?\s*isPluginWorkerConfinementActive\(\)\s*:\s*\(admittedPlan \?\? getHostShellExecutionPlan\(\)\)\.mode === "asrt"/);
+    expect(text).toMatch(/confinement\s*\?\s*isPluginWorkerConfinementActive\(\)\s*:\s*\(admittedPlan \?\? getHostShellExecutionPlan\("default", "hook"\)\)\.mode === "asrt"/);
   });
 
   it.each(shellPaths)("%s gates on the shell sandbox, never the raw or worker gate", (file) => {
@@ -172,8 +172,9 @@ describe("each spawn path reads only its own scope's gate", () => {
     const plan = text.slice(text.indexOf("export function getHostShellExecutionPlan"));
     const body = plan.slice(0, plan.indexOf("\n}\n"));
     expect(body).toContain("requestedSandbox: isShellSandboxRequestedAtBoot()");
-    // MXC's per-command capability (Windows) or else the shell-scoped one; never the process-wide or worker capability.
+    // The shell plan takes its own published container proof, and Darwin hooks retain the scope of the wrap.
     expect(body).toContain("activeCapability: mxc ?? detectShellSandboxCapability()");
-    expect(body).toContain("const mxc = detectMxcShellCapability();");
+    expect(body).toContain('const mxc = darwin && consumer === "hook" ? undefined : detectMxcShellCapability();');
+    expect(body).toContain('shellSubstrate: mxc !== undefined ? "mxc" : selectsMacContainer ? "none" : "asrt"');
   });
 });

@@ -40,8 +40,9 @@ function assertPackageMetadata(bytes, relative, metadata) {
 
 // Installation files belong to the signed-in user. Verification detects drift,
 // but cannot protect against that user racing replacement during native loading.
-export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env, strictNativeDirectories = false) {
-  if (!path.isAbsolute(nodeModules) || !Object.hasOwn(pins.sdk.architectures, arch)) {
+export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env, strictNativeDirectories = false, platform = "win32", verifyAddonBytes = false) {
+  const darwin = platform === "darwin" && arch === "arm64";
+  if (!path.isAbsolute(nodeModules) || (!darwin && (platform !== "win32" || !Object.hasOwn(pins.sdk.architectures, arch)))) {
     throw new MxcIntegrityError("Unsupported SDK installation or architecture");
   }
   for (const key of Object.keys(environment)) {
@@ -49,15 +50,25 @@ export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env,
       throw new MxcIntegrityError(`Native loader override refused: ${key}`);
     }
   }
-  const entries = { ...pins.sdk.files, ...pins.sdk.architectures[arch] };
+  const addonDirectory = `${platform}_${arch}`;
+  const addonPackage = `@koromix/koffi-${platform}-${arch}`;
+  const addonRelative = `${addonPackage}/${addonDirectory}/koffi.node`;
+  const library = darwin ? pins.targets?.["darwin-arm64"]?.library : undefined;
   try {
     const root = realpathSync(nodeModules);
+    if (darwin && (!library || !Object.hasOwn(pins.sdk.darwinFiles ?? {}, addonRelative))) {
+      throw new MxcIntegrityError("Missing native SDK pins for macOS");
+    }
+    const entries = { ...pins.sdk.files, ...(darwin ? pins.sdk.darwinFiles : pins.sdk.architectures[arch]) };
+    if (library) entries[`${pins.sdk.packages["@microsoft/mxc-sdk"]}/${library.member}`] = library.sha256;
     for (const [relative, expected] of Object.entries(entries)) {
       const file = path.join(root, ...relative.split("/"));
       const resolved = realpathSync(file);
       if (resolved !== file || !lstatSync(file).isFile()) {
         throw new MxcIntegrityError(`Native payload path redirected: ${relative}`);
       }
+      // On macOS the app signer replaces the addon's upstream signature.
+      if (darwin && !verifyAddonBytes && relative === addonRelative) continue;
       const bytes = readFileSync(file);
       if (relative.endsWith("/package.json")) {
         // Raw manifest hashes remain source/archive audit pins. Packaging may
@@ -68,7 +79,7 @@ export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env,
       const digest = createHash("sha256").update(bytes).digest("hex");
       if (digest !== expected) throw new MxcIntegrityError(`Native payload hash mismatch: ${relative}`);
     }
-    assertMxcSdkInventory(root, pins, strictNativeDirectories ? arch : undefined);
+    assertMxcSdkInventory(root, pins, !darwin && strictNativeDirectories ? arch : undefined);
     const sdkRoot = path.join(root, "@microsoft", "mxc-sdk");
     const require = createRequire(pathToFileURL(path.join(sdkRoot, "package.json")));
     // The loader falls back to a source-build tree beside the installation, and registers an optional runtime package
@@ -112,22 +123,21 @@ export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env,
         throw new MxcIntegrityError(`Runtime resolution redirected: ${name}`);
       }
     }
-    const addonPackage = `@koromix/koffi-win32-${arch}`;
-    const addonRoot = path.join(root, "@koromix", `koffi-win32-${arch}`);
+    const addonRoot = path.join(root, addonPackage);
     const addonRequire = createRequire(pathToFileURL(path.join(root, "koffi", "package.json")));
     if (addonRequire.resolve(addonPackage) !== path.join(addonRoot, "index.js")) {
       throw new MxcIntegrityError("Native addon resolution redirected");
     }
     // These are the only directories registered for native dependency search.
-    const nativeDirectories = [path.join(sdkRoot, "bin", arch), path.join(addonRoot, `win32_${arch}`)];
+    const nativeDirectories = [path.join(sdkRoot, "bin", arch), path.join(addonRoot, addonDirectory)];
     for (const directory of nativeDirectories) {
       for (const name of readdirSync(directory)) {
-        if (!strictNativeDirectories && !/\.(dll|node)$/i.test(name)) continue;
+        if (!strictNativeDirectories && !(darwin ? /\.(dylib|node)$/i : /\.(dll|node)$/i).test(name)) continue;
         const relative = path.relative(root, path.join(directory, name)).split(path.sep).join("/");
         if (!lstatSync(path.join(directory, name)).isFile() || !Object.hasOwn(entries, relative)) throw new MxcIntegrityError(`Unexpected native payload: ${relative}`);
       }
     }
-    return { sdkRoot, nativeDirectories, addonPath: path.join(addonRoot, `win32_${arch}`, "koffi.node") };
+    return { sdkRoot, nativeDirectories, addonPath: path.join(root, addonRelative) };
   } catch (error) {
     if (error instanceof MxcIntegrityError) throw error;
     throw new MxcIntegrityError("Native SDK verification failed", { cause: error });
@@ -208,9 +218,10 @@ export function assertMxcSdkInventory(nodeModules, pins, arch) {
 }
 
 // Source verification retains archive byte identity before packaging rewrites manifests.
-export function verifyMxcSdkSource(nodeModules, arch, pins, environment = process.env) {
-  const verified = verifyMxcSdk(nodeModules, arch, pins, environment);
-  for (const [relative, expected] of Object.entries({ ...pins.sdk.files, ...pins.sdk.architectures[arch] })) {
+export function verifyMxcSdkSource(nodeModules, arch, pins, environment = process.env, platform = "win32") {
+  const verified = verifyMxcSdk(nodeModules, arch, pins, environment, false, platform, true);
+  const nativePins = platform === "darwin" ? pins.sdk.darwinFiles : pins.sdk.architectures[arch];
+  for (const [relative, expected] of Object.entries({ ...pins.sdk.files, ...nativePins })) {
     if (!relative.endsWith("/package.json")) continue;
     const digest = createHash("sha256").update(readFileSync(path.join(nodeModules, relative))).digest("hex");
     if (digest !== expected) throw new MxcIntegrityError(`Source package manifest hash mismatch: ${relative}`);

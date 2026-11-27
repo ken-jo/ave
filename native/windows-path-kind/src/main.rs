@@ -133,7 +133,8 @@ fn dispatch(args: &[Vec<u16>]) -> u8 {
         .split_first()
         .map_or((&[][..], &[][..]), |(verb, rest)| (verb.as_slice(), rest));
     match String::from_utf16(verb).as_deref() {
-        Ok("--mxc-policy") => policy::run(rest),
+        Ok("--mxc-policy") => policy::run(rest, false),
+        Ok("--mxc-policy-held-v1") => policy::run(rest, true),
         Ok("--system-directory") => {
             if rest.is_empty() {
                 print_system()

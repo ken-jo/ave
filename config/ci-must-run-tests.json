@@ -8,6 +8,8 @@
       "src/sandbox/",
       "src/plugins/isolation/",
       "src/tools/__tests__/bash-sandbox-home-integration.test.ts",
+      "src/tools/__tests__/session-read-shell.test.ts",
+      "src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts",
       "src/tools/__tests__/mxc-shell-source.test.ts",
       "src/mcp/__tests__/mcp-stdio-sandbox-wrap.test.ts"
     ],

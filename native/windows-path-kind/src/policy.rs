@@ -46,7 +46,7 @@ fn read_u32() -> Result<u32, u32> {
     Ok(u32::from_le_bytes(bytes))
 }
 
-fn watch_owner(delivery: &Delivery) {
+fn watch_owner(delivery: &Delivery, acknowledge: bool) {
     let Ok(pid) = read_u32() else {
         return;
     };
@@ -63,6 +63,12 @@ fn watch_owner(delivery: &Delivery) {
         return;
     }
     delivery.signal(&delivery.bound);
+    if acknowledge {
+        let output = unsafe { GetStdHandle(STDOUT) };
+        if write(output, b"bound\n") != Ok(6) || unsafe { CloseHandle(output) } == 0 {
+            return delivery.fail();
+        }
+    }
     let _ = read(input(), &mut [0]);
 }
 
@@ -153,7 +159,7 @@ fn event() -> Handle {
     unsafe { Handle::from_raw(CreateEventW(null_mut(), 1, 0, null())) }.unwrap_or_else(|_| exit(1))
 }
 
-pub fn run(args: &[Vec<u16>]) -> u8 {
+pub fn run(args: &[Vec<u16>], acknowledge: bool) -> u8 {
     let [name, milliseconds] = args else {
         return 2;
     };
@@ -223,9 +229,12 @@ pub fn run(args: &[Vec<u16>]) -> u8 {
         failed: AtomicBool::new(false),
         policy,
     });
+    if acknowledge && write(unsafe { GetStdHandle(STDOUT) }, b"held-v1\n") != Ok(8) {
+        exit(1);
+    }
     let owner_delivery = Arc::clone(&delivery);
     let owner = thread::Builder::new()
-        .spawn(move || watch_owner(&owner_delivery))
+        .spawn(move || watch_owner(&owner_delivery, acknowledge))
         .unwrap_or_else(|_| exit(1));
     let workers: Vec<_> = pipes
         .iter()
@@ -237,7 +246,7 @@ pub fn run(args: &[Vec<u16>]) -> u8 {
                 .unwrap_or_else(|_| exit(1))
         })
         .collect();
-    if write(unsafe { GetStdHandle(STDOUT) }, b"ready\n") != Ok(6) {
+    if !acknowledge && write(unsafe { GetStdHandle(STDOUT) }, b"ready\n") != Ok(6) {
         exit(1);
     }
     let waits = [delivery.done.raw(), owner.as_raw_handle()];

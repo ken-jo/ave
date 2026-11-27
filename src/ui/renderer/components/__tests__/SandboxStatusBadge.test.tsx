@@ -59,6 +59,14 @@ describe("SandboxStatusBadge", () => {
     expect(screen.getByTestId("sandbox-off-status")).toHaveTextContent("설정에서 비활성화됨");
   });
 
+  it("shows a failed macOS container alongside an active wrap", () => {
+    render(<SandboxStatusBadge capability={{
+      ...capability({ platform: "darwin", active: true }),
+      containerShell: { state: "unavailable", reason: "shell-start-failed", egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } },
+    }} />);
+    expect(screen.getByTestId("sandbox-off-status")).toHaveTextContent("셸 격리 사용 불가");
+  });
+
   it("shows unsupported platform status", () => {
     render(<SandboxStatusBadge capability={capability({ platform: "freebsd", requestedSandbox: false })} />);
     expect(screen.getByTestId("sandbox-off-status")).toHaveTextContent("지원하지 않는 플랫폼");

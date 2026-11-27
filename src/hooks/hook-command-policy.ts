@@ -44,7 +44,7 @@ export function createHookCommandAuthorizer(deps: {
     if (turnPolicy?.allowExternalHooks === false) return { decision: "deny", reason: "External hooks are disabled for this turn" };
     const cwdIdentity = captureShellWorkingDirectoryIdentity(cwd);
     if (!cwdIdentity) return { decision: "deny", reason: "Hook working directory is unavailable" };
-    const plan = getHostShellExecutionPlan();
+    const plan = getHostShellExecutionPlan("default", "hook");
     const projectRulesCwd = projectDir === cwd ? cwdIdentity.realpath : projectDir;
     await deps.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     const context = {

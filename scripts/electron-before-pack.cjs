@@ -17,8 +17,8 @@ module.exports = async function beforePack(context) {
     const arch = "arm64";
     const { buildMacosDirOps } = await import(pathToFileURL(join(__dirname, "build-macos-dir-ops.mjs")).href);
     buildMacosDirOps({ root: context.packager.projectDir, arch });
-    const { stageMxcLauncher } = await import("./fetch-mxc.mjs");
-    await stageMxcLauncher({ target: `darwin-${arch}`, projectRoot });
+    const { verifyMxcSdkSource } = await import("./lib/mxc-sdk-integrity.mjs");
+    verifyMxcSdkSource(join(projectRoot, "node_modules"), arch, require("../src/permissions/mxc-launcher-pins.json"), {}, "darwin");
     return;
   }
   if (platform === "linux") {

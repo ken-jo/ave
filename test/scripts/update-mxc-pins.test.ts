@@ -97,6 +97,30 @@ describe("SDK pin generation", () => {
     expect(existsSync(path.join(options.projectRoot, "node_modules/@koromix"))).toBe(false);
   });
 
+  it("detects a missing macOS addon binary pin", async () => {
+    const options = fixture();
+    const root = options.projectRoot;
+    const pins = JSON.parse(readFileSync(path.join(root, pinPath), "utf8"));
+    const addon = "@koromix/koffi-darwin-arm64";
+    const binary = `${addon}/darwin_arm64/koffi.node`;
+    pins.targets["darwin-arm64"] = {
+      launcher: { member: "bin/arm64/launcher" }, library: { member: "bin/arm64/library" },
+    };
+    pins.sdk.addons["darwin-arm64"] = { package: addon, version: "1.0.0", tarballSha512Base64: "addon-anchor" };
+    put(root, "node_modules/fixture/bin/arm64/launcher", "launcher");
+    put(root, "node_modules/fixture/bin/arm64/library", "library");
+    put(root, `node_modules/${addon}/package.json`, JSON.stringify({ name: addon, version: "1.0.0" }));
+    put(root, `node_modules/${addon}/index.js`, "module.exports = {};");
+    put(root, `node_modules/${binary}`, "addon");
+    put(root, pinPath, serializeMxcPins(pins));
+    await updateMxcPins(options);
+    const generated = JSON.parse(readFileSync(path.join(root, pinPath), "utf8"));
+    expect(generated.sdk.darwinFiles[binary]).toBe(contentHash("addon"));
+    delete generated.sdk.darwinFiles[binary];
+    put(root, pinPath, serializeMxcPins(generated));
+    await expect(updateMxcPins({ ...options, check: true })).rejects.toThrow(/drifted/);
+  });
+
   it("records semantic field absence and conditional declaration order", async () => {
     const options = fixture();
     const generated = await generateMxcPins(options);

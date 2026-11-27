@@ -55,6 +55,7 @@ import {
   __resetSandboxRequestedAtBootForTest,
   __resetWindowsSandboxSubstrateForTest,
   setActiveSandboxCapability,
+  setContainerShellSubstrate,
   setShellSandboxRequestedAtBoot,
   setWindowsSandboxSubstrate,
 } from "../../permissions/sandbox-capability.js";
@@ -122,6 +123,8 @@ function fullDarwinAsrt(): void {
     reason: "full ASRT",
     confines: { filesystem: true, process: true, network: true },
   });
+  // macOS shells run on the container route once its shell is published; the wrap alone leaves them on the no-confinement floor.
+  setContainerShellSubstrate({ state: "available" });
 }
 function explicitlySandboxOff(platform: "darwin" | "linux" | "win32"): void {
   setProcessPlatform(platform);
@@ -177,6 +180,8 @@ function recordingAuditLogger(): {
 describe("ToolExecutor — Windows partial shell Plan B", () => {
   beforeEach(() => {
     testRoot = realpathSync(mkdtempSync(join(tmpdir(), "partial-shell-policy-")));
+    // A container shell published by an earlier darwin test must not carry over; fullDarwinAsrt publishes it again.
+    setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
     __resetShellResolverCache();
     // The shipped path-kind helper that pins Windows cwds still runs.
     childProcessMock.execFileSync.mockImplementation((file: string, args: readonly string[], options?: object) =>
@@ -456,6 +461,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       platform: "darwin",
       requestedSandbox: true,
       mode: "asrt",
+      substrate: "mxc",
       fallbackReason: "none",
       capability: { kind: "asrt", confines: { filesystem: true, process: true, network: true } },
     });

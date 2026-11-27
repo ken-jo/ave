@@ -5,6 +5,7 @@
     "CHANGELOG.md",
     "CLAUDE.md",
     "README.md",
+    "docs/architecture/openai-provider-integration.md",
     "docs/blueprints/a2a-subagent-messaging.md",
     "docs/design/permission-review-scenario-board-v2.html",
     "docs/design/plugin-hostapi-protocol.md",
@@ -53,6 +54,9 @@
     "docs/research/sandbox-isolation.md"
   ],
   "readers": {
+    "docs/architecture/openai-provider-integration.md": [
+      "test/scripts/build-macos-dir-ops.test.ts"
+    ],
     "docs/design/permission-review-scenario-board-v2.html": [
       "src/permissions/__tests__/permission-review-scenario-board.test.ts"
     ],
