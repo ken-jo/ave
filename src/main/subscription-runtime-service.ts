@@ -1098,7 +1098,8 @@ type HostConnection = {
   scope: string;
   safetyEpoch: number;
   proven: boolean;
-  target?: { source: object; attempts: number; retry: boolean };
+  // The target object is the confirmation generation. An omitted source ties it to the host auth home.
+  target?: { source?: object; attempts: number; retry: boolean };
   timer?: ReturnType<typeof setTimeout>;
   confirming: boolean;
 };
@@ -1903,7 +1904,7 @@ export class SubscriptionRuntimeService {
         }
         if (verdict.accountKey && state.accountKey && verdict.accountKey !== state.accountKey) {
           state.accountKey = verdict.accountKey;
-          state.target = { source: evidence.source, attempts: 0, retry: true };
+          state.target = { attempts: 0, retry: true };
           this.latchConnection(provider, state, "unknown", evidence.version);
           this.confirmAccount(provider, state);
           return false;

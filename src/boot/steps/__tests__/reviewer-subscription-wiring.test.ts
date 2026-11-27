@@ -194,7 +194,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
 });
 
 it.each([
-  "sign-out batched with initialization", "prompt pipe loss", "live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog",
+  "sign-out batched with initialization", "prompt pipe loss", "account replacement during isolation proof", "live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog",
   "logout during failed login", "cancel detects sign-out during failed login",
   "account notification confirmation", "account notification overtaken by logout", "account notification retries after rejection",
   "account notification retries after supersession", "account notification retry withdrawn by sign-out",
@@ -245,6 +245,10 @@ it.each([
   };
   let useConversation = false;
   const startupSignOut = scenario === "sign-out batched with initialization";
+  const replacementDuringProof = scenario === "account replacement during isolation proof";
+  let accountEmail = "alice@example.test";
+  const primaryReadEmails: string[] = [];
+  let proofChild: RuntimeProcessFixture | undefined;
   const threadStarted = deferred<{ child: RuntimeProcessFixture; id: number }>();
   const holdsCatalog = scenario === "sign-out during catalog" || scenario === "process exit during catalog";
   const usesAccountNotification = scenario.startsWith("account notification") || scenario === "matching login completion" || scenario === "account read during cancel";
@@ -255,12 +259,12 @@ it.each([
   let child: RuntimeProcessFixture | undefined;
   let accountConnected = true;
   let runtimeHome = tempDir;
-  if (startupSignOut || holdsCatalog || usesAccountNotification || realCancelRace || promptPipeLoss) {
+  if (startupSignOut || replacementDuringProof || holdsCatalog || usesAccountNotification || realCancelRace || promptPipeLoss) {
     if (process.platform !== "win32") normalizeFixtureAncestorPermissions(tempDir);
     runtimeHome = join(tempDir, "runtime");
     await createPrivateDirectory(runtimeHome);
   }
-  const artifact = startupSignOut || holdsCatalog || usesAccountNotification ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
+  const artifact = startupSignOut || replacementDuringProof || holdsCatalog || usesAccountNotification ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
   const cliArtifact = realCancelRace || promptPipeLoss ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
   const realCli = cliArtifact && new ClaudeCodeSubscriptionClient({
     runtimeHome, workspaceDir: runtimeHome, runtimeTempDir: runtimeHome,
@@ -345,7 +349,10 @@ it.each([
               const { method, id } = JSON.parse(line);
               if (method === "model/list") catalogStarted.resolve(id);
               else if (method === "account/read" && holdAccountReads) accountReads.push(id);
-              else if (method === "account/login/start" && scenario === "matching login completion") {
+              else if (method === "account/read" && replacementDuringProof) {
+                primaryReadEmails.push(accountEmail);
+                server.stdout.write(JSON.stringify({ id, result: { account: { type: "chatgpt", email: accountEmail } } }) + "\n");
+              } else if (method === "account/login/start" && scenario === "matching login completion") {
                 server.stdout.write(`${JSON.stringify({ id, result: { type: "chatgpt", loginId: "fixture-login", authUrl: "https://auth.openai.com/authorize" } })}\n`);
               } else if (id !== undefined) server.stdout.write(`${JSON.stringify({
                 id, result: method === "account/read"
@@ -362,12 +369,16 @@ it.each([
       resolveRuntime: async () => ({ ...artifact, version: "0.153.4" }),
       spawn: () => {
         const server = new RuntimeProcessFixture();
+        proofChild = server;
         server.stdin.on("data", (chunk) => {
           for (const line of String(chunk).trim().split("\n")) {
             const { method, id } = JSON.parse(line);
-            if (method === "initialize") {
+            if (method === "initialize" && startupSignOut) {
               server.stdout.write([JSON.stringify({ id, result: {} }),
                 JSON.stringify({ method: "account/updated", params: { authMode: null } }), ""].join("\n"));
+            } else if (method === "account/read" && replacementDuringProof) {
+              accountEmail = "bob@example.test";
+              server.stdout.write(JSON.stringify({ id, result: { account: { type: "chatgpt", email: accountEmail } } }) + "\n");
             } else if (method === "thread/start") {
               threadStarted.resolve({ child: server, id });
             } else if (id !== undefined) {
@@ -450,6 +461,17 @@ it.each([
         await settled;
         await session.stop();
       }
+    } else if (replacementDuringProof) {
+      useConversation = true;
+      const readsBeforeProof = primaryReadEmails.length;
+      await expect(runtime.verify(provider)).rejects.toMatchObject({ code: "subscription-status-superseded" });
+      expect(proofChild?.killed).toBe(true);
+      expect(await immediate).toMatchObject({ result: { decision: "deny", reasonCode: "no-approver" } });
+      expect(primaryReadEmails.slice(readsBeforeProof)).toEqual(["alice@example.test"]);
+      await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
+      expect(primaryReadEmails.slice(readsBeforeProof)).toEqual(["alice@example.test", "bob@example.test"]);
+      expect(await dispatch(true)).toMatchObject({ review: { outcome: "fresh" }, result: { decision: "allow" } });
+      return;
     } else if (promptPipeLoss) {
       const session = await runtime.openTextSession(selection);
       try {
