@@ -1,8 +1,9 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 /** Load each package’s revocations from its bound source and pin before plugins start. */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished } from "vitest";
 import { feedRevocationsFromSnapshots } from "../steps/revocation-bootstrap.js";
 import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
 
@@ -10,11 +11,13 @@ const PIN = "a".repeat(40);
 
 describe("feedRevocationsFromSnapshots", () => {
   let home: string;
-  const audit = { log: vi.fn() };
+  let events: ReturnType<typeof collectPermissionEvents>["events"];
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "ave-revocation-boot-"));
-    audit.log.mockClear();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    events = capture.events;
   });
 
   afterEach(() => {
@@ -80,7 +83,7 @@ describe("feedRevocationsFromSnapshots", () => {
     // A source cannot revoke packages bound elsewhere or installed without a source.
     expect(revocationRegistry.evaluate("plugin", "sampleportal", "1.0.0")).toEqual({ kind: "allow" });
     expect(revocationRegistry.evaluate("plugin", "sideloaded", "1.0.0")).toEqual({ kind: "allow" });
-    expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ input: "revocations_loaded rules=1 unreadable=0" }));
+    expect(events).toContainEqual({ event: "revocations_loaded", ruleCount: 1, unreadableCount: 0 });
   });
 
   it("feeds what it can read when a snapshot is unreadable, and never throws", async () => {
@@ -93,7 +96,7 @@ describe("feedRevocationsFromSnapshots", () => {
 
     expect(revocationRegistry.evaluate("plugin", "sampleportal", "1.0.0")).toMatchObject({ kind: "block", sourceId: "ave" });
     expect(revocationRegistry.evaluate("plugin", "meeting", "1.0.0")).toEqual({ kind: "allow" });
-    expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ input: "revocations_loaded rules=1 unreadable=1" }));
+    expect(events).toContainEqual({ event: "revocations_loaded", ruleCount: 1, unreadableCount: 1 });
   });
 
   it("reports a pinned source whose snapshot file is gone as unreadable, not as revoking nothing", async () => {
@@ -104,7 +107,7 @@ describe("feedRevocationsFromSnapshots", () => {
 
     await feedRevocationsFromSnapshots({ appVersion: "0.12.0", home, pluginRegistryPath });
 
-    expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ input: "revocations_loaded rules=0 unreadable=1" }));
+    expect(events).toContainEqual({ event: "revocations_loaded", ruleCount: 0, unreadableCount: 1 });
   });
 
   it("feeds an empty set on a fresh home, so the gates know they were fed", async () => {

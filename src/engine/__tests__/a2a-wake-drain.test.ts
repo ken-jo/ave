@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { A2ASubAgentMessageBus } from "../a2a-subagent-message-bus.js";
 import type { DeliverToParentInput } from "../a2a-subagent-message-bus.js";
 import type { ConversationLoop } from "../conversation-loop.js";
@@ -43,7 +44,6 @@ interface DrainFixture {
 }
 
 function makeBus(options: {
-  audit: ReturnType<typeof vi.fn>;
   entries: unknown[];
   wake: ParentWake;
   activeSession?: () => string;
@@ -81,15 +81,9 @@ function makeBus(options: {
   return { bus, lastGuidance: () => lastGuidance };
 }
 
-function auditInputs(audit: ReturnType<typeof vi.fn>): string[] {
-  return audit.mock.calls.map((call) => String((call[0] as { input?: string })?.input ?? ""));
-}
-
 describe("wake drain", () => {
-  let audit: ReturnType<typeof vi.fn>;
   let entries: unknown[];
   beforeEach(() => {
-    audit = vi.fn();
     entries = [];
   });
 
@@ -101,7 +95,7 @@ describe("wake drain", () => {
     const wake = vi.fn(async () => {
       mailboxSizeDuringWake.push(entries.length);
     });
-    const { bus } = makeBus({ audit, entries, wake, peek });
+    const { bus } = makeBus({ entries, wake, peek });
 
     await expect(bus.deliverToParent(delivery())).resolves.toMatchObject({
       ok: true,
@@ -125,7 +119,6 @@ describe("wake drain", () => {
     let activeTurn = true;
     const wake = vi.fn(async () => undefined);
     const { bus } = makeBus({
-      audit,
       entries,
       wake,
       hasActiveTurn: () => activeTurn,
@@ -151,7 +144,6 @@ describe("wake drain", () => {
     let activeTurn = true;
     const wake = vi.fn(async () => undefined);
     const { bus, lastGuidance } = makeBus({
-      audit,
       entries,
       wake,
       hasActiveTurn: () => activeTurn,
@@ -181,7 +173,7 @@ describe("wake drain", () => {
     const wake = vi.fn(() => new Promise<void>((resolve) => {
       wakeResolvers.push(resolve);
     }));
-    const { bus } = makeBus({ audit, entries, wake });
+    const { bus } = makeBus({ entries, wake });
 
     await expect(bus.deliverToParent(delivery("message-1"))).resolves.toMatchObject({
       disposition: "wake-requested",
@@ -206,11 +198,12 @@ describe("wake drain", () => {
   });
 
   it("fails closed when the loop switched sessions, and keeps the token", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     let activeSession = PARENT;
     let activeTurn = true;
     const wake = vi.fn(async () => undefined);
     const { bus } = makeBus({
-      audit,
       entries,
       wake,
       activeSession: () => activeSession,
@@ -228,7 +221,7 @@ describe("wake drain", () => {
     bus.notifyTurnSettled(PARENT);
     await settleDetachedWork();
     expect(wake).not.toHaveBeenCalled();
-    expect(auditInputs(audit).at(-1)).toContain("mailbox-no-wake:session-mismatch");
+    expect(capture.events.at(-1)).toMatchObject({ event: "subagent_message_delivery", operation: "wake", outcome: "refused", reasonCode: "session-mismatch", sessionId: PARENT });
 
     // Inactive sessions hold their token until they become active again.
     activeSession = PARENT;

@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, onTestFinished } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { A2ASubAgentMessageBus } from "../a2a-subagent-message-bus.js";
 import type { ConversationLoop } from "../conversation-loop.js";
 import type { ResolvedSubAgentAddress } from "../a2a-subagent-message-bus.js";
@@ -20,7 +21,6 @@ function makeBus(overrides: {
   activeSession?: string;
   hasActiveTurn?: boolean;
   registerHandler?: boolean;
-  audit: ReturnType<typeof vi.fn>;
 }) {
   const address: ResolvedSubAgentAddress = {
     parentSessionId: "parent-session",
@@ -56,38 +56,42 @@ const DELIVERY = {
   message: makeMessage(),
 };
 
-function lastAuditInput(audit: ReturnType<typeof vi.fn>): string {
-  return String((audit.mock.calls.at(-1)?.[0] as { input?: string })?.input ?? "");
-}
-
 describe("wake refusal audit", () => {
-  let audit: ReturnType<typeof vi.fn>;
-  beforeEach(() => { audit = vi.fn(); });
 
   it("names an unregistered handler", async () => {
-    const bus = makeBus({ audit, registerHandler: false });
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const bus = makeBus({ registerHandler: false });
     const result = await bus.deliverToParent(DELIVERY);
     expect(result).toMatchObject({ ok: true, disposition: "mailbox" });
-    expect(lastAuditInput(audit)).toContain("mailbox-no-wake:handler-unregistered");
+    expect(capture.events).toContainEqual(expect.objectContaining({ operation: "wake", outcome: "refused", reasonCode: "handler-unregistered" }));
   });
 
   it("names a disabled flag", async () => {
-    const bus = makeBus({ audit, wakeFlag: false });
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const bus = makeBus({ wakeFlag: false });
     await bus.deliverToParent(DELIVERY);
-    expect(lastAuditInput(audit)).toContain("mailbox-no-wake:flag-off");
+    expect(capture.events).toContainEqual(expect.objectContaining({ operation: "wake", outcome: "refused", reasonCode: "flag-off" }));
   });
 
   it("names a session mismatch", async () => {
-    const bus = makeBus({ audit, activeSession: "some-other-session" });
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const bus = makeBus({ activeSession: "some-other-session", registerHandler: false });
     await bus.deliverToParent(DELIVERY);
-    expect(lastAuditInput(audit)).toContain("mailbox-no-wake:session-mismatch");
+    expect(capture.events).toContainEqual({
+      event: "subagent_message_delivery", sessionId: "parent-session", childSessionId: "sub-child",
+      operation: "wake", outcome: "refused", reasonCode: "session-mismatch:handler-unregistered",
+    });
   });
 
   it("wakes — and audits nothing about refusal — when every condition holds", async () => {
-    const bus = makeBus({ audit });
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const bus = makeBus({});
     const result = await bus.deliverToParent(DELIVERY);
     expect(result).toMatchObject({ ok: true, disposition: "wake-requested" });
-    const all = audit.mock.calls.map((c) => String((c[0] as { input?: string })?.input ?? ""));
-    expect(all.some((line) => line.includes("mailbox-no-wake"))).toBe(false);
+    expect(capture.events.some(({ operation, outcome }) => operation === "wake" && outcome === "refused")).toBe(false);
   });
 });
