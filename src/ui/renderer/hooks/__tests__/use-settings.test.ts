@@ -566,10 +566,9 @@ describe("useSettings", () => {
   });
 
   it("refreshes the mounted subscription on focus and ignores a pre-disconnect status reply", async () => {
-    const settings = makeSettings();
     const selection = { kind: "subscription", provider: "codex", model: "saved-model" } as const;
+    const settings = { ...makeSettings(), activeChatModel: selection };
     settings.llm.activeChatRuntime = selection;
-    settings.activeChatModel = selection;
     const { api, emitSubscriptionRuntimeStatusUpdated } = makeMockAveApi({ settings, hasApiKey: false });
     const status = {
       ok: true,
@@ -589,7 +588,7 @@ describe("useSettings", () => {
       .mockResolvedValue(status);
     const { result } = renderHook(() => useSettings(api as unknown as AveApi));
     await waitFor(() => expect(result.current.subscriptionChatReady).toBe(true));
-    const push = api.onSettingsUpdated.mock.calls[0]![0];
+    const [push] = requiredFixture(api.onSettingsUpdated.mock.calls[0]);
     act(() => emitSubscriptionRuntimeStatusUpdated({ provider: selection.provider, revision: 1 }));
     await waitFor(() => expect(api.subscriptionRuntimeStatus).toHaveBeenCalledTimes(2));
     act(() => {

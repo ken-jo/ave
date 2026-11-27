@@ -330,7 +330,7 @@ describe("App view history after a restored launch location", () => {
     const { result, rerender } = renderHook(({ view }: { view: "home" | "settings" }) => ({
       ...useActiveView(api, [], { view, navigate }),
       ...useSettingsTab(api),
-    }), { initialProps: { view: "home" as const } });
+    }), { initialProps: { view: "home" as "home" | "settings" } });
 
     act(() => {
       result.current.setSettingsTab("llm", "provider-setup");

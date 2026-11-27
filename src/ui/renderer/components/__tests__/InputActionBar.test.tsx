@@ -866,7 +866,7 @@ describe("model card (status-row model cell)", () => {
       vertexProjectConfigured: available,
       llm: {
         ...settings.llm,
-        pinnedModels: [...settings.llm.pinnedModels!, model],
+        pinnedModels: [...(settings.llm.pinnedModels ?? []), model],
         modelListCache: {
           ...settings.llm.modelListCache,
           "vertex-ai": { vendor: "vertex-ai", models: [model] },

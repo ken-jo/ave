@@ -6,6 +6,7 @@ import { configureHostResources } from "../../../main/host-resources.js";
 
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import type { LLMProvider } from "../../../engine/llm/types.js";
+import { requiredFixture } from "../../../__tests__/support/required-fixture.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
 import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
@@ -153,14 +154,14 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
       expect(options.streamProviderFor("claude")).toBeNull();
       expect(subscriptionProviderFactory).toHaveBeenCalledOnce();
       connected = false;
-      await context.rewireReviewerAgent!();
+      await requiredFixture(context.rewireReviewerAgent)();
       const disconnected = wireReviewerAgent.mock.calls.at(-1)?.[0] as typeof options;
       expect(disconnected.streamProviderFor("subscription:codex")).toBeNull();
       expect(disconnected.streamProviderFor("claude")).toBeNull();
       expect(subscriptionProviderFactory).toHaveBeenCalledOnce();
 
       connected = true;
-      await context.rewireReviewerAgent!();
+      await requiredFixture(context.rewireReviewerAgent)();
       const restored = wireReviewerAgent.mock.calls.at(-1)?.[0] as typeof options;
       expect(restored.readActiveLlm()).toEqual(options.readActiveLlm());
       expect(restored.streamProviderFor("subscription:codex")).toBe(subscriptionProvider);
