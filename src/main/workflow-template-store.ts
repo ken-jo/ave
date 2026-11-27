@@ -6,7 +6,9 @@ import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { ChangeSignal } from "../lib/change-signal.js";
 import { createLogger } from "../lib/logger.js";
 import { isRecord } from "../shared/is-record.js";
-import { attachmentScopeMatches, isTemplateScope, hasTemplateKeys, canonicalTemplateGraph, validateStageForConfirm, isAllReadOnlyVersion, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
+import { attachmentScopeMatches, isTemplateScope, hasTemplateKeys, canonicalTemplateGraph, validateStageForConfirm, isAllReadOnlyVersion, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, qualifyUnattended, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
+import type { ToolEffectResolver } from "../permissions/tool-effect-evidence.js";
+import type { WorkflowTemplateConfirmResult } from "../shared/workflow-template-types.js";
 import { assertHostDecisionProof, type HostDecisionProof } from "./workflow-template-decision.js";
 import { isWorkflowTemplateProposalId, type ScheduleAttachment, type ScheduleAttachmentInput, type TemplateScope, type TemplateConfirmationOrigin, type TemplateVersion, type TemplateVersionPin, type WorkflowTemplate, type WorkflowTemplateConfirmInput, type WorkflowTemplateDraftInput, type WorkflowTemplateProposal, type WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
 
@@ -169,7 +171,7 @@ export class WorkflowTemplateStore {
       await this.commit(file); return structuredClone(record);
     });
   }
-  async confirmDraft(id: string, input: WorkflowTemplateConfirmInput, actor: { who: string; origin: TemplateConfirmationOrigin }): Promise<TemplateVersion> {
+  async confirmDraft(id: string, input: WorkflowTemplateConfirmInput, actor: { who: string; origin: TemplateConfirmationOrigin }, effects: ToolEffectResolver): Promise<WorkflowTemplateConfirmResult> {
     requireTemplate(hasTemplateKeys(input, ["expectedGraphHash", "expectedDraftRevision"]) && isGraphHash(input.expectedGraphHash) && isTemplateId(input.expectedDraftRevision));
     requireTemplate(actor?.origin === "local-desktop" && typeof actor.who === "string" && actor.who.length > 0 && actor.who.length <= 128);
     return withInProcessFileQueue(this.filePath, async () => {
@@ -194,7 +196,7 @@ export class WorkflowTemplateStore {
       if (proposal) file.templates.push(record);
       await this.commit(file);
       if (proposal) this.removeProposal(id);
-      return structuredClone(confirmed);
+      return { version: structuredClone(confirmed), unattended: qualifyUnattended(confirmed, effects) };
     });
   }
   async attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof, approvedScope: TemplateScope, options?: { requireCurrent: true }): Promise<ScheduleAttachment> {

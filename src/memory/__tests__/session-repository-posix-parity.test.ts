@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,6 +49,8 @@ it('indexes a saved session synchronously and appends without writing repair int
     { role: 'assistant', content: 'new response' },
   ]);
   const appendedIds = rowIdsOf(repository.loadSession(session) ?? []);
+  assert.ok(savedIds);
+  assert.ok(appendedIds);
   expect(appendedIds).toHaveLength(savedIds.length + 1);
   expect(isIdPrefix(savedIds, appendedIds)).toBe(true);
   expect(existsSync(join(root, 'sessions', '.search-repair.json'))).toBe(false);

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MemoryManager } from "../memory-manager.js";
-import { type SessionRepository, type SessionMetadata } from "../session-repository.js";
+import type { SessionMetadata } from "../session-repository.js";
 import { WindowsSessionRepository } from "../session-repository-win32.js";
 import { SessionSearchIndex } from "../session-search-index.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -89,7 +89,8 @@ describe("MemoryManager workspace project detachment", () => {
 
   it("keeps old sessions detached after re-add while allowing new sessions to use the root", async () => {
     await seed(SESSION_A, ROOT, "alpha");
-    const stale = memory.sessions.loadSessionMetadata(SESSION_A)!;
+    const stale = memory.sessions.loadSessionMetadata(SESSION_A);
+    expect.assert(stale);
 
     await memory.sessions.detachSessionsFromProject(ROOT);
     await memory.sessions.saveSessionMetadata(SESSION_A, { ...stale, title: "late" });

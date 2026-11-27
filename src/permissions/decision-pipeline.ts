@@ -1,5 +1,8 @@
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type { UserOwnedSurface, UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
+import type { ToolEffectEvidence } from "./tool-effect-evidence.js";
+import type { UnattendedStageEntry } from "./unattended-lane-registry.js";
+import { decideUnattended } from "./unattended-lane.js";
 
 export type PermissionPipelineOutcome = "allow" | "sandbox-auto" | "ask" | "ask-forced" | "deny";
 export type PermissionFloorCode = "protected-path" | "critical-delete" | "project-escape" | "other-principal" | "sandbox-unavailable" | "shell-analysis-limit";
@@ -8,6 +11,11 @@ export interface PermissionDecisionRequest {
   tool: { name: string; source: ToolSource; kind: ToolCategory | "mcp" | "file-write"; readOnlyHint?: boolean };
   mode: "strict" | "default" | "auto" | "allow";
   headless: boolean;
+  unattended?: UnattendedStageEntry;
+  unattendedEffect?: ToolEffectEvidence;
+  unattendedInputSummary?: string;
+  unattendedCommand?: readonly string[];
+  unattendedNetwork?: { host: string; port: number; sandboxed: boolean; connection?: true };
   rationaleAvailable?: boolean;
   sessionId?: string;
   ownerAway?: boolean;
@@ -92,6 +100,7 @@ export function decidePermission(request: PermissionDecisionRequest): Permission
   if (!["read", "write", "file-write", "shell", "network", "mcp"].includes(request.tool.kind)) {
     return { outcome: "deny", reasonCode: "unsupported-tool-kind", reason: "The tool kind is not supported by the permission contract." };
   }
+  if (request.unattended) return decideUnattended(request);
   if (request.floor) {
     if (request.headless) return { outcome: "deny", reasonCode: "no-approver", reason: NO_APPROVER_MESSAGE };
     if (request.floor.code === "sandbox-unavailable" && request.floorSessionEligible && request.rules?.exactHostRule !== undefined &&

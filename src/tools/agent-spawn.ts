@@ -160,21 +160,17 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
       },
     },
     execute: async (rawInput, ctx) => {
-      // Refuse nested spawning even if registry filtering accidentally exposes the tool to a child.
+      const originSessionId = toolSessionId(ctx);
+      const runner = deps.getRunner();
+      // Only an opted-in stage receives host authority to delegate.
       const depth = typeof ctx.metadata?.spawnDepth === "number"
         ? (ctx.metadata.spawnDepth as number)
         : 0;
-      if (depth >= 1) {
-        return {
-          output: JSON.stringify({
-            error: "agent_spawn cannot be invoked from a sub-agent",
-            taskState: projectSubAgentRunState("rejected"),
-          }),
-          isError: true,
-        };
+      const stageSpawn = depth === 1 && ctx.metadata?.stageSubAgents === true;
+      if (depth >= 1 && !stageSpawn) {
+        return spawnFailure(t("be_agentSpawn.depthLimit"));
       }
       // Require an originating conversation to own progress frames and child approvals.
-      const originSessionId = toolSessionId(ctx);
       if (originSessionId === undefined) {
         return {
           output: JSON.stringify({
@@ -187,9 +183,8 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
       const a = (rawInput ?? {}) as Record<string, unknown>;
       // Use background execution only when results can reach the parent, keeping parent-child messaging live.
       // Windowless owners keep children inline so authorization terminal control can settle before the next parent round.
-      const background = ctx.metadata?.supportsA2AParentDelivery === true
+      const background = !stageSpawn && ctx.metadata?.supportsA2AParentDelivery === true
         && ctx.metadata?.approvalSurface !== "unavailable";
-      const runner = deps.getRunner();
       if (!runner) {
         return spawnFailure("agent_spawn runner not configured", "error");
       }
@@ -212,6 +207,9 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
       const resumeId = typeof a.resumeId === "string" && a.resumeId.trim()
         ? a.resumeId.trim()
         : undefined;
+      if (stageSpawn && resumeId) {
+        return spawnFailure(t("be_agentSpawn.stageContinuationUnavailable"));
+      }
 
       if (!instructions || (!resumeId && !title)) {
         return spawnFailure("instructions are required; title is required when agentName is not provided (unless resumeId is set)");
@@ -320,7 +318,20 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
           },
         };
         // Resume restores persisted profile and scope; tool arguments cannot re-scope the child.
-        const run = async () => resumeId
+        const spawnInput = {
+          title,
+          instructions: profile ? renderAgentProfilePrompt(profile, instructions) : instructions,
+          spawnId,
+          toolUseId,
+          toolScope,
+          profileModel: profile?.model,
+          profileMode: profile?.mode,
+        };
+        const activePluginIds = ctx.metadata?.activePluginIds;
+        const run = async () => stageSpawn
+          ? await runner.spawnStageSubAgent(originSessionId, spawnInput, callbacks, ctx.abortSignal,
+              activePluginIds instanceof Set ? activePluginIds : undefined)
+          : resumeId
           ? await runner.resume(
               resumeId,
               instructions,
@@ -332,22 +343,12 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
             )
           : await runner.spawn(
               {
-                title,
-                instructions: profile
-                  ? renderAgentProfilePrompt(profile, instructions)
-                  : instructions,
+                ...spawnInput,
                 // Parent adjudication needs the original task text before the profile charter is rendered around it.
                 parentAuthoredTask: instructions,
-                spawnId,
-                toolUseId,
-                toolScope,
                 originSessionId,
                 background,
                 projectRoot: ctx.cwd,
-                // Resolve profile model tiers against the active provider; absence inherits the parent model.
-                profileModel: profile?.model,
-                // Profile mode adds working posture and skill guidance; absence leaves the default inert.
-                profileMode: profile?.mode,
               },
               callbacks,
             );

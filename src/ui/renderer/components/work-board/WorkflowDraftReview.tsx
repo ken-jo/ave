@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import type { ProjectIdentity } from "../../../../shared/project-identity.js";
-import type { TemplateVersion, WorkflowTemplateDraftInput, WorkflowTemplateRecord } from "../../../../shared/workflow-template-types.js";
+import type { TemplateVersion, WorkflowTemplateConfirmResult, WorkflowTemplateDraftInput, WorkflowTemplateRecord } from "../../../../shared/workflow-template-types.js";
 import type { AveApi } from "../../types.js";
 import { WorkflowTemplateEditor } from "./WorkflowTemplateEditor.js";
 import { WorkflowTemplateDetails } from "./workflow-template-details.js";
@@ -52,7 +52,7 @@ export function WorkflowDraftReview({ api, templateId, initialDraft, projects, o
   templateId: string | null;
   initialDraft: WorkflowTemplateDraftInput;
   projects: readonly ProjectIdentity[];
-  onSaved: (version: TemplateVersion) => void;
+  onSaved: (result: WorkflowTemplateConfirmResult) => void;
   onBusyChange: (busy: boolean) => void;
 }) {
   const { t } = useTranslation();

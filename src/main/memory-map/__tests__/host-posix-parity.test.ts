@@ -11,7 +11,7 @@ import type { MemoryMapCatalog, ReadMemoryMapCatalog } from '../catalog.js';
 import { buildGraph, LOCAL_NAMESPACE, vectorKey } from '../graph.js';
 import { MemoryMapHost } from '../host.js';
 import { ProviderEmbeddings } from '../provider-embeddings.js';
-import type { MemoryWorkerRunner } from '../worker-client.js';
+import type { MemoryWorkerRunner, MemoryWorkerTask } from '../worker-client.js';
 
 const roots: string[] = [];
 const catalog: MemoryMapCatalog = {
@@ -48,14 +48,19 @@ it.each(['catalog change', 'consent renewal'] as const)('forwards provider proje
   const config: MemoryEmbeddingConfig = { source: 'provider', providerId: 'openai', modelId: 'text-embedding-3-small' };
   const settings = { get: (name: string) => name === 'memoryEmbedding' ? config : undefined } as unknown as SettingsService;
   const progress: MemoryMapProgress[] = [];
-  const runProject: MemoryWorkerRunner = async <T>(_folder, task, _signal, report): Promise<T> => {
+  const runProject: MemoryWorkerRunner = async <T>(
+    _folder: string, task: MemoryWorkerTask, _signal: AbortSignal, report?: (progress: MemoryMapProgress) => void,
+  ): Promise<T> => {
     if (task.kind !== 'project') throw new Error('Unexpected local inference');
     report?.({ jobId: task.input.jobId, phase: 'neighbours', completed: 1, total: 1 });
     report?.({ jobId: task.input.jobId, phase: 'projection', completed: 1, total: 1 });
     return await buildGraph(task.input, cpuOnly, () => {}) as T;
   };
-  const provider = new ProviderEmbeddings(settings, async () => { throw new Error('Unexpected network'); }, runProject);
-  const consent = {
+  const provider = new ProviderEmbeddings(settings, {
+    isRouteEligible: () => true,
+    send: async () => { throw new Error('Unexpected network'); },
+  }, runProject);
+  const consent: NonNullable<MemoryEmbeddingConfig['consent']> = {
     version: MEMORY_EMBEDDING_CONSENT_VERSION, providerId: 'openai', modelId: 'text-embedding-3-small',
     endpointId: provider.namespace().modelRevision, timestamp: '2026-01-01T00:00:00.000Z',
   };
@@ -107,7 +112,7 @@ it('reads the catalog exactly three times after projection to publish a stable g
   const namespace = await useMemoryMapNamespace();
   const readCatalog = vi.fn(() => catalog);
   let readsAtProjection = 0;
-  const runWorker: MemoryWorkerRunner = async <T>(_folder, task): Promise<T> => {
+  const runWorker: MemoryWorkerRunner = async <T>(_folder: string, task: MemoryWorkerTask): Promise<T> => {
     if (task.kind === 'embed-batch') return [vector] as T;
     if (task.kind !== 'project') throw new Error('Unexpected retrieval');
     const result = await buildGraph(task.input, cpuOnly, () => {});

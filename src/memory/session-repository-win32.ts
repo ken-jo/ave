@@ -10,7 +10,7 @@ import { writeUtf8FileAtomicSync, isMissingPathError } from "../lib/atomic-file.
 import { openFeatureNamespace } from "../main/storage/feature-namespace.js";
 import { t } from "../i18n/index.js";
 import { projectRootKey } from "../shared/project-identity.js";
-import { type IndexedSessionInput, type SessionSearchIndexPolicy, type SessionSearchIndexPolicySource } from "./session-search-index.js";
+import type { IndexedSessionInput, SessionSearchIndexPolicy, SessionSearchIndexPolicySource } from "./session-search-index.js";
 import { createLogger } from "../lib/logger.js";
 import { isRecord } from "../shared/is-record.js";
 import { parseStrictJsonText } from "../shared/strict-json.js";
@@ -516,7 +516,7 @@ export class WindowsSessionRepository extends SessionRepository {
     const targetPath = join(sessionSnapshotDir, `${compactNum}.jsonl`);
     await withFileLock(targetPath, async () => {
       const prepared = this.prepareSessionMessagesForDisk(sessionId, messages);
-      const lines = prepared.messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
+      const lines = `${prepared.messages.map((m) => JSON.stringify(m)).join("\n")}\n`;
       this.markSearchSourceChanged();
       writeUtf8FileAtomicSync(targetPath, lines);
       // Release unpublished artifact pins only after durable checkpoint ownership commits.

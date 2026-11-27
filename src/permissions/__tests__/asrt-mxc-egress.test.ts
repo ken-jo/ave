@@ -193,7 +193,7 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     if (failures.length > 0) throw new AggregateError(failures, "contained shell egress teardown failed");
   });
 
-  it("starts no shared proxy: a contained session's only egress endpoints are its invocations' relays", () => {
+  it("starts no shared proxy for a contained session", () => {
     expect(SandboxManager.getProxyPort()).toBeUndefined();
     expect(SandboxManager.getProxyAuthToken()).toBeUndefined();
   });
@@ -449,24 +449,24 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     expect(again).toHaveBeenCalledOnce();
   });
 
-  it("fails the session's reset after the rest of its teardown while a relay's port stays bound, and releases it at the next", async () => {
+  it("keeps ownership of a relay after a failed reset and releases its port at the next reset", async () => {
     const relay = await hostListener.openHostEgressListener(invocation.token);
     const close = http.Server.prototype.close;
-    let refuse = true;
-    vi.spyOn(http.Server.prototype, "close").mockImplementation(function (this: http.Server, callback?: (error?: Error) => void) {
+    const closeSpy = vi.spyOn(http.Server.prototype, "close").mockImplementation(function (this: http.Server, callback?: (error?: Error) => void) {
       const address = this.address();
-      if (refuse && address !== null && typeof address === "object" && address.port === relay.port) {
+      if (address !== null && typeof address === "object" && address.port === relay.port) {
         queueMicrotask(() => callback?.(new Error("relay unbind failed")));
         return this;
       }
       return close.call(this, callback);
     });
-    const failure: unknown = await resetAsrtSandbox().catch((error: unknown) => error);
-    expect(failure).toEqual(new Error("relay unbind failed"));
-    // The rest of the session ended; the relay is still owned, and drops what connects.
-    await expect(hostListener.openHostEgressListener(openInvocation(invocation.owner).token)).rejects.toThrow("the service is not started");
-    expect(await probePort(relay.port, sockets)).toBe("dropped");
-    refuse = false;
+    try {
+      await expect(resetAsrtSandbox()).rejects.toEqual(new Error("relay unbind failed"));
+      await expect(hostListener.openHostEgressListener(openInvocation(invocation.owner).token)).rejects.toThrow("the service is not started");
+      expect(await probePort(relay.port, sockets)).toBe("dropped");
+    } finally {
+      closeSpy.mockRestore();
+    }
     await expect(resetAsrtSandbox()).resolves.toBeUndefined();
     expect(await probePort(relay.port, sockets)).toBe("refused");
   });

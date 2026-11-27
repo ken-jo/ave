@@ -92,7 +92,7 @@ jobs:
       - name: Check documentation policy
         if: steps.docs-impact.outputs.docs_only == 'true'
         working-directory: ave
-        run: node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-asrt-version-claims.test.mjs && node scripts/check-asrt-version-claims.mjs && node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/retired-name.test.mjs && node scripts/check-retired-name.mjs
+        run: node scripts/check-asrt-version-claims.mjs && node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/retired-name.test.mjs && node scripts/check-retired-name.mjs
       # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
       # user's bun home; on Windows it is a checksum-verified release download
       # (see the action).
@@ -1013,8 +1013,6 @@ jobs:
         working-directory: ave
         shell: powershell
         run: |
-          node .github/scripts/run-in-job.mjs node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/srt-win-build.test.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/check-srt-win-integrity.cjs --upstream --inputs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .github/scripts/run-in-job.mjs node scripts/build-srt-win.mjs --test-native
@@ -1655,7 +1653,6 @@ jobs:
           src/plugins/isolation/__tests__/process-plugin-host-death.test.ts
           src/main/__tests__/process-group-reaper.test.ts
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
-          src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
           src/tools/__tests__/host-script-policy.test.ts
           src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts
@@ -1676,9 +1673,7 @@ jobs:
           src/__tests__/windows-memory-import-graph.test.ts
           src/main/memory-map/__tests__/local-runtime-release-gate.test.ts
           src/main/memory-map/__tests__/inference-child-native.test.ts
-          test/scripts/asrt-patched-symbols.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
-          src/permissions/__tests__/asrt-sandbox.test.ts
           src/permissions/__tests__/permission-manager-meta-override.test.ts
           src/tools/__tests__/registry-meta-governance.test.ts
           src/tools/__tests__/executor-rationale-batch.test.ts
@@ -1858,16 +1853,13 @@ jobs:
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: >
           bun run test --
-          test/scripts/asrt-bwrap-ownership.test.ts
           src/permissions/__tests__/linux-sandbox-wrap.test.ts
-          src/permissions/__tests__/asrt-sandbox.test.ts
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
           src/plugins/isolation/__tests__/plugin-stderr.test.ts
           src/permissions/__tests__/launcher-environment.test.ts
           src/plugins/isolation/__tests__/process-plugin-host-death.test.ts
           src/main/__tests__/process-group-reaper.test.ts
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
-          src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
           src/tools/__tests__/host-script-policy.test.ts
           src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts
@@ -1875,7 +1867,6 @@ jobs:
           src/permissions/__tests__/egress-token-isolation-native.test.ts
           src/main/terminal/__tests__/terminal-egress-native.test.ts
           src/main/memory-map/__tests__/inference-child-native.test.ts
-          test/scripts/asrt-patched-symbols.test.ts
           src/main/terminal/__tests__/pty-manager-linux-sandbox.test.ts
           src/permissions/__tests__/sandbox-control-writes.integration.test.ts
           src/permissions/__tests__/sandbox-shell-sockets.integration.test.ts

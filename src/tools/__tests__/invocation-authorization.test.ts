@@ -21,6 +21,12 @@ import {
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
+import { endUnattendedStage, onUnattendedDenied, registerUnattendedStage } from "../../permissions/unattended-lane-registry.js";
+import * as shellFilesystemPath from "../../shared/shell-filesystem-path.js";
+import { withCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
+import * as sensitivePaths from "../../permissions/sensitive-paths.js";
+import { ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
@@ -191,4 +197,134 @@ describe("shell review requires a risk judgment", () => {
       expect(requestAndWait).toHaveBeenCalledOnce();
     }
   });
+});
+
+it("routes the sealed edit-subject check through the unattended lane", async () => {
+  vi.stubEnv("AVE_HOME", directory);
+  const manager = new PermissionManager(join(directory, "permissions.json"));
+  manager.setMode("allow");
+  const check = vi.spyOn(manager, "checkDetailed");
+  const registry = new ToolRegistry();
+  const tool = new WriteFileTool();
+  const execute = vi.spyOn(tool, "execute");
+  registry.register(tool);
+  const executor = new ToolExecutor(registry, undefined, manager);
+  const sessionId = "unattended-edit";
+  registerUnattendedStage(sessionId, {
+    runKey: "run", stageId: "stage", workspaceRoot: directory, isolation: { proven: false },
+    envelope: {
+      tools: [tool.name], readRoots: [], writePaths: ["**"], commands: [], network: [],
+      mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+      outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+    },
+  });
+  try {
+    await runWithToolExecutionCwd(directory, () => executor.executeAll([
+      { id: "lane-edit", name: tool.name, input: { path: "report.txt", content: "report" } },
+    ], { sessionId, permissionContext: userPermissionContext() }));
+    const editCheck = check.mock.calls.findIndex(call => call[4]?.ruleSubject?.kind === "edit");
+    expect(editCheck).toBeGreaterThanOrEqual(0);
+    expect(check.mock.calls[editCheck][4]?.sessionId).toBe(sessionId);
+    expect(check.mock.results[editCheck]?.value).toMatchObject({
+      decision: "deny", reasonCode: "forbidden-unattended", pipelineRequest: { unattended: { stageId: "stage" } },
+    });
+    expect(execute).not.toHaveBeenCalled();
+  } finally {
+    endUnattendedStage(sessionId);
+  }
+});
+
+it.each([
+  { path: "report.txt", allowed: true },
+  { path: "draft.txt", allowed: false },
+])("reports only terminal denials for a proven stage edit of $path", async ({ path, allowed }) => {
+  vi.stubEnv("AVE_HOME", join(directory, "state"));
+  const manager = new PermissionManager(join(directory, "permissions.json"));
+  const check = vi.spyOn(manager, "checkDetailed");
+  const registry = new ToolRegistry();
+  const tool = new WriteFileTool();
+  const execute = vi.spyOn(tool, "execute");
+  registry.register(tool);
+  manager.setUnattendedToolEffectResolver(createToolEffectResolver(registry));
+  const executor = new ToolExecutor(registry, undefined, manager);
+  const sessionId = "proven-edit";
+  registerUnattendedStage(sessionId, {
+    runKey: "run", stageId: "stage", workspaceRoot: directory, isolation: { proven: true },
+    envelope: {
+      tools: [tool.name], readRoots: [], writePaths: ["report.txt"], commands: [], network: [],
+      mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+      outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+    },
+  });
+  const onDenied = vi.fn();
+  const unsubscribe = onUnattendedDenied(onDenied);
+  try {
+    const [result] = await withCodeCheckpoint({ sessionId, messageId: "edit" }, () =>
+      runWithToolExecutionCwd(directory, () => executor.executeAll([
+        { id: "proven-edit", name: tool.name, input: { path, content: "report" } },
+      ], { sessionId, permissionContext: userPermissionContext() })));
+    expect(result?.is_error === true, result?.content).toBe(!allowed);
+    expect(execute).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    if (allowed) {
+      expect(onDenied).not.toHaveBeenCalled();
+    } else {
+      expect(onDenied).toHaveBeenCalledExactlyOnceWith({
+        sessionId, code: "outside-envelope",
+        call: { toolName: tool.name, source: "builtin", inputSummary: expect.stringContaining(path) },
+      });
+    }
+    const editCheck = check.mock.calls.findIndex(call => call[4]?.ruleSubject?.kind === "edit");
+    expect(check.mock.results[editCheck]?.value).toMatchObject({
+      decision: allowed ? "allow" : "deny",
+      pipelineRequest: { unattended: { stageId: "stage" }, fileWrite: { checkpointAvailable: true } },
+    });
+  } finally {
+    unsubscribe();
+    endUnattendedStage(sessionId);
+  }
+});
+
+it.each([
+  ["write", "proven"], ["write", "unproven"], ["write", "interim"],
+  ["read", "proven"], ["read", "unproven"], ["read", "interim"],
+] as const)("reports an unresolved %s only for a linked stage with proven isolation (%s)", async (effect, state) => {
+  const manager = new PermissionManager(join(directory, "permissions.json"));
+  const registry = new ToolRegistry();
+  const tool = effect === "write" ? new WriteFileTool() : new ReadFileTool();
+  const execute = vi.spyOn(tool, "execute");
+  registry.register(tool);
+  const executor = new ToolExecutor(registry, undefined, manager);
+  const sessionId = "unresolved-target";
+  if (state !== "interim") registerUnattendedStage(sessionId, {
+    runKey: "run", stageId: "stage", workspaceRoot: directory, isolation: { proven: state === "proven" },
+    envelope: {
+      tools: [tool.name], readRoots: [], writePaths: ["**"], commands: [], network: [],
+      mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+      outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+    },
+  });
+  const onDenied = vi.fn();
+  const unsubscribe = onUnattendedDenied(onDenied);
+  const resolveTarget = effect === "write"
+    ? vi.spyOn(shellFilesystemPath, "resolveShellFilesystemPath")
+    : vi.spyOn(sensitivePaths, "resolvePathForPolicy");
+  resolveTarget.mockImplementationOnce(() => { throw new Error("Target identity unavailable"); });
+  try {
+    const [result] = await runWithToolExecutionCwd(directory, () => executor.executeAll([
+      { id: "unresolved", name: tool.name, input: { path: "report.txt", ...(effect === "write" ? { content: "report" } : {}) } },
+    ], { sessionId, permissionContext: userPermissionContext() }));
+    expect(result?.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    if (state === "proven") {
+      expect(onDenied).toHaveBeenCalledExactlyOnceWith({
+        sessionId, code: "outside-envelope", call: { toolName: tool.name, source: "builtin", inputSummary: expect.stringContaining("report.txt") },
+      });
+    } else {
+      expect(onDenied).not.toHaveBeenCalled();
+    }
+  } finally {
+    resolveTarget.mockRestore();
+    unsubscribe();
+    endUnattendedStage(sessionId);
+  }
 });

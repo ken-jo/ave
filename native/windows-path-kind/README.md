@@ -367,9 +367,9 @@ Unsupported ACE forms conservatively supply no proof. Concurrent external DACL
 changes and protected descendants remain point-in-time limitations.
 
 The existing helper resource resolver, architecture build, installer packaging
-and Windows CI build also cover this mode. Run
-`src/permissions/__tests__/windows-deny-acl.test.ts` after building the helper;
-the tests change DACLs only under per-test containers, with a synthetic SID.
+and Windows CI build also cover this mode. Run `node scripts/test-windows-path-kind.mjs`
+to exercise deny masks, missing targets, invalid SIDs, and reparse-point refusal
+against the native helper.
 # Policy pipe delivery
 
 `--mxc-policy <pipe> <timeout-ms>` receives a little-endian byte length and
