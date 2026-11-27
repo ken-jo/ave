@@ -181,6 +181,27 @@ it("fails when a required PowerShell parser cannot launch", () => {
   }), /Missing parser: pwsh/);
 });
 
+for (const [name, result, expected] of [
+  ["output overflow", { error: Object.assign(new Error("overflow"), { code: "ENOBUFS" }) }, /pwsh parser output exceeded the 1048576-byte buffer limit/],
+  ["timeout", { error: Object.assign(new Error("timeout"), { code: "ETIMEDOUT" }) }, error =>
+    error.message === "Cannot launch required pwsh parser" && error.cause?.code === "ETIMEDOUT"],
+  ["truncated JSON", { status: 0, stdout: '{"steps":[' }, SyntaxError],
+  ["missing records", { status: 0, stdout: '{"steps":[],"resolutions":[]}' }, /Incomplete pwsh parser result/],
+]) {
+  it(`rejects parser ${name}`, t => {
+    const launch = t.mock.method(childProcess, "spawnSync", () => result);
+    syncBuiltinESMExports();
+    try {
+      const steps = [{ name: "example", shell: "pwsh", run: "Write-Output 'example'" }];
+      assert.throws(() => powerShellCommandProblems(steps), expected);
+      assert.equal(launch.mock.calls[0].arguments[2].timeout, 15_000);
+    } finally {
+      launch.mock.restore();
+      syncBuiltinESMExports();
+    }
+  });
+}
+
 for (const systemRootName of ["SystemRoot", "SYSTEMROOT"]) {
   it(`launches the system parser with literal command lookup and an edition-specific environment (${systemRootName})`, t => {
     const originalEnv = process.env;
@@ -368,6 +389,46 @@ function parsedLines(_shell, sources, groupSizes = [sources.length]) {
 
 it("accepts the workflow's contained commands and stated exemptions", realParser, () => {
   checkWindowsWorkflow(workflow);
+});
+
+it("reports invalid PowerShell syntax with its job and step", realParser, () => {
+  const changed = changedWorkflow(steps => {
+    steps.unshift({ name: "Invalid example", shell: "pwsh", run: "if (" });
+  }, "windows-dev-boot");
+  assert.throws(() => checkWindowsWorkflow(changed), /windows-dev-boot: Invalid example: line 1:/);
+});
+
+it("accepts an edition batch whose parser output exceeds one MiB", realParser, t => {
+  const parsed = parse(workflow);
+  for (const id of ["windows-permission-tests", "windows-tier-tests", "windows-dev-boot", "windows-script-tests", "windows-payload-packaging"]) {
+    const { steps } = parsed.jobs[id];
+    const setup = steps.findIndex(step => step.run === "node ave/.github/scripts/isolate-job-home.mjs");
+    assert.ok(setup >= 0);
+    steps.splice(setup, 0, ...Array.from({ length: 6 }, (_, index) => ({
+      name: `Write example ${index + 1}`, shell: "pwsh", run: `Write-Output '${"x".repeat(18_000)}'`,
+    })));
+  }
+  const launch = t.mock.method(childProcess, "spawnSync");
+  syncBuiltinESMExports();
+  try {
+    checkWindowsWorkflow(stringify(parsed));
+    assert.equal(launch.mock.callCount(), 2);
+    const [pwsh] = launch.mock.calls;
+    assert.equal(pwsh.arguments[0], "pwsh");
+    const previousLimit = 1024 * 1024;
+    assert.ok(Buffer.byteLength(pwsh.result.stdout) > previousLimit);
+    const { groupSizes } = JSON.parse(pwsh.arguments[2].input);
+    const { steps, resolutions } = JSON.parse(pwsh.result.stdout);
+    let offset = 0;
+    for (const [index, size] of groupSizes.entries()) {
+      const group = { steps: steps.slice(offset, offset + size), resolutions: [resolutions[index]] };
+      assert.ok(Buffer.byteLength(JSON.stringify(group)) <= previousLimit);
+      offset += size;
+    }
+  } finally {
+    launch.mock.restore();
+    syncBuiltinESMExports();
+  }
 });
 
 it("accepts the workflow's contained commands and stated exemptions from parsed lines", () => {

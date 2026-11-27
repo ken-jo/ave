@@ -181,6 +181,7 @@ const WORKFLOW_EXECUTABLES = [
   "./node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe",
 ];
 const TEST_COMMAND_NAME_RE = /\.(?:ts|tsx|mjs)$|\.test\./i;
+const PARSER_OUTPUT_BYTES_PER_GROUP = 1024 * 1024;
 const INSPECT_POWERSHELL_AST = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -256,11 +257,15 @@ function inspectPowerShell(shell, steps, groupSizes) {
   const env = windowsPowerShellEnv();
   const executable = shell === "powershell" ? windowsPowerShellPath(env) : shell;
   const encoded = Buffer.from(INSPECT_POWERSHELL_AST, "utf16le").toString("base64");
+  const maxBuffer = PARSER_OUTPUT_BYTES_PER_GROUP * groupSizes.length;
   const result = spawnSync(executable, ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
     input: JSON.stringify({ steps, groupSizes, executableNames: WORKFLOW_EXECUTABLES }),
     encoding: "utf8", windowsHide: true, timeout: 15_000,
-    env,
+    maxBuffer, env,
   });
+  if (result.error?.code === "ENOBUFS") {
+    throw new Error(`${shell} parser output exceeded the ${maxBuffer}-byte buffer limit`, { cause: result.error });
+  }
   if (result.error) throw new Error(`Cannot launch required ${shell} parser`, { cause: result.error });
   if (result.status !== 0) throw new Error(`${shell} parser failed: ${result.stderr}`);
   return JSON.parse(result.stdout);
