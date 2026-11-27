@@ -167,8 +167,8 @@ interface TailnetListenerCapabilities {
 export interface TailnetSurfaceServer {
   readonly host: "127.0.0.1";
   readonly port: number;
-  /** Applies a reduction to this bound listener and invalidates authority issued by removed routes. */
-  reduceCapabilities(next: TailnetListenerCapabilities): void;
+  /** Reduces live features and replaces authorization without rebinding the listener. */
+  reduceCapabilities(next: TailnetListenerCapabilities, authorization?: TailnetAuthorization): void;
   close(): Promise<void>;
 }
 
@@ -436,23 +436,34 @@ export async function startTailnetSurfaceServer(
     pairedSharingEnabled: options.pairedSharing !== undefined,
     webEnabled: webRuntime !== undefined,
   };
-  function reduceCapabilities(next: TailnetListenerCapabilities): void {
+  let activeOptions = options;
+  function reduceCapabilities(next: TailnetListenerCapabilities, authorization = activeOptions.authorization): void {
+    const current = activeOptions.authorization;
+    const authorizationChanged = authorization.kind !== current.kind
+      || (authorization.kind === "app-capability" && current.kind === "app-capability" && authorization.capability !== current.capability);
     const pairedSharingEnabled = capabilities.pairedSharingEnabled && next.pairedSharingEnabled;
     const controllerEnabled = pairedSharingEnabled && capabilities.controllerEnabled && next.controllerEnabled;
     const webEnabled = pairedSharingEnabled && capabilities.webEnabled && next.webEnabled;
-    if (pairedSharingEnabled === capabilities.pairedSharingEnabled && controllerEnabled === capabilities.controllerEnabled && webEnabled === capabilities.webEnabled) return;
+    if (!authorizationChanged && pairedSharingEnabled === capabilities.pairedSharingEnabled
+      && controllerEnabled === capabilities.controllerEnabled && webEnabled === capabilities.webEnabled) return;
     capabilities = { pairedSharingEnabled, controllerEnabled, webEnabled };
-    if (!webEnabled) webRuntime?.sessions.clear();
-    if (!controllerEnabled) attachmentStore?.clear();
+    if (authorizationChanged) {
+      activeOptions = { ...activeOptions, authorization };
+      for (const endStream of [...liveStreams]) endStream();
+      server.closeAllConnections();
+    }
+    if (authorizationChanged || !webEnabled) webRuntime?.sessions.clear();
+    if (authorizationChanged || !controllerEnabled) attachmentStore?.clear();
     controllerBroker?.revalidatePairedTurns();
     for (const check of [...pairedShareStreamChecks]) check();
   }
 
   const server: Server = createServer((req, res) => {
+    const requestOptions = activeOptions;
     void route(
       req,
       res,
-      options,
+      requestOptions,
       liveStreams,
       pairedShareStreamChecks,
       webSessionStreamChecks,
@@ -465,6 +476,7 @@ export async function startTailnetSurfaceServer(
       webReadRequestLimiter,
       webRuntime,
       () => capabilities,
+      () => requestOptions === activeOptions,
     ).catch((error) => {
       if (error instanceof TailnetOwnerIdentityError && !res.headersSent) { sendJson(res, 403, { ok: false, error: error.code }); return; }
       options.log?.(`tailnet observer routing error: ${errorMessage(error)}`);
@@ -555,6 +567,7 @@ async function route(
   webReadRequestLimiter: TailnetRequestLimiter,
   web: TailnetWebRuntime | undefined,
   capabilities: () => TailnetListenerCapabilities,
+  isAuthorizationCurrent: () => boolean,
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://tailnet-observer.invalid");
   const path = url.pathname;
@@ -576,9 +589,9 @@ async function route(
   const webPairingClaimRoute = path === "/tailnet/v2/web/pairing/claim";
   const webRoute = webDocumentRoute || webSnapshotRoute || webEventsRoute || webCommandRoute
     || webAttachmentRoute || webLogoutRoute || webPairingClaimRoute || webWorkDecisionRoute;
-  const isControllerCurrent = () => capabilities().controllerEnabled && (!webRoute || capabilities().webEnabled);
+  const isControllerCurrent = () => isAuthorizationCurrent() && capabilities().controllerEnabled && (!webRoute || capabilities().webEnabled);
   const controllerRequest = controllerRoute || attachmentRoute || webCommandRoute || webAttachmentRoute || webWorkDecisionRoute;
-  const isCurrent = () => (!webRoute || capabilities().webEnabled)
+  const isCurrent = () => isAuthorizationCurrent() && (!webRoute || capabilities().webEnabled)
     && (!controllerRequest || isControllerCurrent())
     && (options.pairedSharing === undefined || capabilities().pairedSharingEnabled);
   if (!capabilities().controllerEnabled) {

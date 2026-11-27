@@ -815,8 +815,10 @@ export function reduceTailnetObserverCapabilities(config: TailnetObserverConfig)
     const pairedSharingEnabled = bound.pairedSharingEnabled && config.pairedSharingEnabled;
     const controllerEnabled = pairedSharingEnabled && bound.controllerEnabled && config.controllerEnabled;
     const webEnabled = pairedSharingEnabled && webOrigin !== undefined && webOrigin === config.webOrigin;
-    activeServer.reduceCapabilities({ controllerEnabled, pairedSharingEnabled, webEnabled });
-    activeConfig = { ...bound, pairedSharingEnabled, controllerEnabled, ...(webEnabled ? { webOrigin } : {}) };
+    activeServer.reduceCapabilities({ controllerEnabled, pairedSharingEnabled, webEnabled }, config.authorization);
+    activeConfig = {
+      ...bound, authorization: config.authorization, pairedSharingEnabled, controllerEnabled, ...(webEnabled ? { webOrigin } : {}),
+    };
     if (!pairedSharingEnabled) activePairedSharingRuntime = null;
   };
   const next = lifecycleChain.then(reduce, reduce);

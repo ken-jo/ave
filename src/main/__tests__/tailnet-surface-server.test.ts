@@ -1258,7 +1258,7 @@ describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer Apply on 
         const result = await settings.apply(proposal);
         expect.soft(result.restartNeeded).toBe(restartNeeded);
         expect.soft(result).toMatchObject({ outcome });
-        if (enableOverride === true) expect.soft(restartListener).not.toHaveBeenCalled();
+        if (enableOverride === true && !savedEnabled) expect.soft(restartListener).not.toHaveBeenCalled();
 
         expect(resolveTailnetObserverApply(savedEnabled, enableOverride, effectivePort, boundPort, priorBlock))
           .toEqual({ status: { outcome, restartNeeded }, portBlock: clearsBlock ? null : priorBlock });
@@ -1305,16 +1305,11 @@ describe.each(["win32", "darwin", "linux"] as const)("Tailnet observer Apply on 
       await expect.soft(settings.snapshot()).resolves.toMatchObject(blocked);
 
       env.AVE_TAILNET_OBSERVER = "1";
-      await expect.soft(settings.apply({ ...enabled, port: APPLY_PORT })).resolves.toMatchObject({ restartNeeded: true });
-      await expect.soft(settings.snapshot()).resolves.toMatchObject(blocked);
-
-      delete env.AVE_TAILNET_OBSERVER;
-      env.AVE_TAILNET_OBSERVER_PORT = String(APPLY_PORT);
-      await expect.soft(settings.apply(enabled)).resolves.toMatchObject({ restartNeeded: true });
+      await expect.soft(settings.apply({ ...enabled, enabled: false, port: APPLY_PORT })).resolves.toMatchObject({ restartNeeded: true });
       await expect.soft(settings.snapshot()).resolves.toMatchObject(blocked);
       expect.soft(startServer.mock.calls.map(([request]) => request.port)).toEqual([OTHER_PORT]);
 
-      delete env.AVE_TAILNET_OBSERVER_PORT;
+      delete env.AVE_TAILNET_OBSERVER;
       startServer.mockRejectedValueOnce(Object.assign(new Error("Listen failed"), { syscall: "listen" }));
       await expect(settings.apply({ ...enabled, port: APPLY_PORT })).resolves.toMatchObject({ restartNeeded: true });
       await expect(settings.snapshot()).resolves.toMatchObject({

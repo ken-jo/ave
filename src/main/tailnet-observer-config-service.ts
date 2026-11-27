@@ -190,9 +190,8 @@ export function createTailnetObserverConfigService(
     mode: "apply" | "guided",
   ): Promise<TailnetObserverApplyStatus> {
     const enableOverride = tailnetObserverEnableOverride(env);
-    const { config, provenance } = await loadTailnetObserverConfig({ env, readConfigFile: async () => file });
-    const reduceOnly = mode === "apply" && config !== null
-      && (enableOverride === true || provenance.port === "env-override");
+    const { config } = await loadTailnetObserverConfig({ env, readConfigFile: async () => file });
+    const reduceOnly = mode === "apply" && config !== null && file.enabled !== true && enableOverride === true;
     if (config && !reduceOnly) await assertTailnetListenerPortAllowed(config.port);
     await writeConfigFile(file);
     if (reduceOnly) await reduceTailnetObserverCapabilities(config);
