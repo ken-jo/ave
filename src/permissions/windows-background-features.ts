@@ -104,9 +104,13 @@ export async function refreshWindowsBackgroundAdmission(scope: "all" | "switches
     };
   }
   if (!isWindowsBackgroundFeatureReleaseEnabled()) {
+    const isWindows = process.platform === "win32";
     return {
       ...INACTIVE_ADMISSION,
-      searchIndexPolicy: () => releaseIsCurrent() ? "enabled" : "inactive",
+      searchIndexPolicy: (preference) => {
+        if (!releaseIsCurrent()) return "inactive";
+        return isWindows && preference === false ? "paused" : "enabled";
+      },
     };
   }
   if (isSandboxGateUndecidedAtBoot()) return INACTIVE_ADMISSION;

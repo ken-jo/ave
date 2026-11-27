@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SessionSearchIndex } from '../../../memory/session-search-index.js';
 import { WindowsSessionRepository as SessionRepository } from '../../../memory/session-repository-win32.js';
 import { deferred } from '../../../__tests__/support/deferred.js';
 import { MXC_RELEASE_GATE_EVIDENCE } from '../../../__tests__/support/mxc-supervisor.js';
@@ -162,10 +163,12 @@ describe('Windows local inference release gate', () => {
     expect(await switches()).toBe(false);
   });
 
-  it('keeps session indexing unchanged until complete packaged evidence is registered', async () => {
-    expect(await policy(false)).toBe('enabled');
+  it('defaults to indexing and honors an explicit pause without complete packaged evidence', async () => {
+    expect(await policy(undefined)).toBe('enabled');
+    expect(await policy(false)).toBe('paused');
     unregister = registerMxcReleaseGateEvidence({ ...MXC_RELEASE_GATE_EVIDENCE, noWorkerPort: false });
-    expect(await policy(false)).toBe('enabled');
+    expect(await policy(true)).toBe('enabled');
+    expect(await policy(false)).toBe('paused');
   });
 
   it('defaults session indexing on and stops it independently of inference on a released PC without a backend', async () => {
@@ -336,6 +339,38 @@ describe('Windows local inference release gate', () => {
     expect((await second).searchIndexPolicy(undefined)).toBe('inactive');
     expect(await policy(undefined)).toBe('enabled-with-recovery');
   });
+});
+
+it('keeps a stored pause across release evidence withdrawal without opening SQLite', async () => {
+  unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
+  const aveDir = indexDirs.track(mkdtempSync(join(tmpdir(), 'ave-index-release-')));
+  const sessionId = 'aaaaaaaa-1111-2222-3333-444444444444';
+  let preference = true;
+  const repository = new SessionRepository({ aveDir, ...sessionSearchIndexPolicySource(() => preference) });
+  try {
+    await repository.saveSession(sessionId, [{ role: 'user', content: 'Indexed before pause' }]);
+    await repository.searchIndexIdle();
+    expect(await repository.searchSessionsWithCurrentPolicy('Indexed before pause')).toHaveLength(1);
+    expect(await switches()).toBe(true);
+    preference = false;
+    expect(await policy(preference)).toBe('paused');
+    repository.closeSearchIndex();
+    unregister();
+
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, 'open');
+    try {
+      expect(await switches()).toBe(false);
+      await repository.saveSession(sessionId, [{ role: 'user', content: 'Saved after pause' }]);
+      await repository.searchIndexIdle();
+      expect.soft(await repository.searchSessionsWithCurrentPolicy('Indexed before pause')).toEqual([]);
+      expect.soft(await repository.searchSessionsWithCurrentPolicy('Saved after pause')).toEqual([]);
+      expect(openIndex).not.toHaveBeenCalled();
+    } finally {
+      openIndex.mockRestore();
+    }
+  } finally {
+    repository.closeSearchIndex();
+  }
 });
 
 it('a late search cannot reuse an earlier batch account receipt', async () => {
