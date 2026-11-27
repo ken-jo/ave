@@ -210,13 +210,30 @@ export async function writeJsonAtomic<T>(dir: string, name: string, value: T): P
 }
 
 /** Prepare a private parent directory before the caller's guarded commit. */
-export function preparePrivateFileDirectory(filePath: string): Promise<void> {
-  return ensureDir(dirname(filePath));
+export function preparePrivateFileDirectory(filePath: string, assertStillValid?: () => void): Promise<void> {
+  return ensureDir(dirname(filePath), assertStillValid);
 }
 
+const ATOMIC_COMMIT_REFUSED = Symbol("atomic commit refused");
+
 /** Finish directory preparation, then check authority, commit and deliver the commit receipt without yielding. */
-export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean, didCommit?: () => void): Promise<boolean> {
-  await preparePrivateFileDirectory(filePath);
+export async function writeFileAtomicAtPathIf(
+  filePath: string,
+  body: string,
+  canCommit: () => boolean,
+  didCommit?: () => void,
+  requireDirectoryAdmission = false,
+): Promise<boolean> {
+  const assertCanCommit = requireDirectoryAdmission ? () => {
+    if (!canCommit()) throw ATOMIC_COMMIT_REFUSED;
+  } : undefined;
+  try {
+    await preparePrivateFileDirectory(filePath, assertCanCommit);
+    assertCanCommit?.();
+  } catch (error) {
+    if (error === ATOMIC_COMMIT_REFUSED) return false;
+    throw error;
+  }
   let committed: boolean;
   try {
     committed = replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
@@ -228,27 +245,9 @@ export async function writeFileAtomicAtPathIf(filePath: string, body: string, ca
   return committed;
 }
 
-const ATOMIC_COMMIT_REFUSED = Symbol("atomic commit refused");
-
-/** Finish directory preparation, then check authority and commit without yielding. `onCommitted` runs in the step that
- * replaced the file, also when only the directory sync after the replacement failed, so state that mirrors the file
- * never trails it across a yield. */
-export async function writeFileAtomicAtPathAdmitted(filePath: string, body: string, canCommit: () => boolean, onCommitted?: () => void): Promise<boolean> {
-  const assertCanCommit = (): void => {
-    if (!canCommit()) throw ATOMIC_COMMIT_REFUSED;
-  };
-  let committed: boolean;
-  try {
-    await ensureDir(dirname(filePath), assertCanCommit);
-    assertCanCommit();
-    committed = replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
-  } catch (error) {
-    if (error === ATOMIC_COMMIT_REFUSED) return false;
-    if (isCommittedAtomicWriteError(error)) onCommitted?.();
-    throw error;
-  }
-  if (committed) onCommitted?.();
-  return committed;
+/** Require admission for directory writes and atomic staging as well as the final replacement. */
+export function writeFileAtomicAtPathAdmitted(filePath: string, body: string, canCommit: () => boolean, onCommitted?: () => void): Promise<boolean> {
+  return writeFileAtomicAtPathIf(filePath, body, canCommit, onCommitted, true);
 }
 
 export interface FeatureNamespaceHandle {
