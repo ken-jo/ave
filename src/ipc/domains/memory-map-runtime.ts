@@ -52,8 +52,12 @@ export interface MemoryMapRuntime {
 }
 
 export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapScopeResolver): MemoryMapRuntime {
-  const send = createMemoryProviderEgress(deps.singleHopNetworkFetch, MEMORY_EMBEDDING_ALLOWED_DOMAINS, _entry => {
-    logPermissionEvent("memory_embeddings_network_decision", { sessionId: permissionLogId('memory-embeddings') });
+  const send = createMemoryProviderEgress(deps.singleHopNetworkFetch, MEMORY_EMBEDDING_ALLOWED_DOMAINS, entry => {
+    logPermissionEvent("memory_embeddings_network_decision", {
+      sessionId: permissionLogId('memory-embeddings'),
+      decision: entry.allowed ? 'allow' : 'deny',
+      ...(!entry.allowed ? { reasonCode: entry.reason } : {}),
+    }, entry.allowed ? 'info' : 'warn');
   });
   const provider = new ProviderEmbeddings(deps.settingsService, send);
   let settingsGeneration = 0;
