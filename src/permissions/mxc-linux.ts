@@ -12,13 +12,13 @@ import type { HostResources } from "../main/host-resources.js";
 import { containerTarget } from "../shared/container-platform.js";
 import { errorMessage } from "../shared/error-message.js";
 import { isRecord } from "../shared/is-record.js";
-import type { LinuxRawIpVerdict, MxcRawIpUdpArrival, SandboxContainerShellSupport, SandboxContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
+import type { LinuxRawIpVerdict, SandboxContainerShellSupport, SandboxContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { INVOCATION_PROXY_REFUSED_STATUS, openInvocationProxyListener } from "./egress-invocation-listener.js";
 import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
 import { holdMxcLinuxPlaceholders } from "./mxc-linux-placeholders.js";
 import {
-  LINUX_RAW_IP_PROBER, linuxRawIpProberArguments, linuxRawIpVerdict, openLinuxRawIpHostTargets, parseLinuxRawIpProbeOutput, primaryIpv4,
+  LINUX_RAW_IP_PROBER, linuxRawIpProberArguments, linuxRawIpUdpArrival, linuxRawIpUdpSend, linuxRawIpVerdict, openLinuxRawIpHostTargets, parseLinuxRawIpProbeOutput, primaryIpv4,
   readLinuxLauncherFirewall,
 } from "./mxc-linux-raw-ip.js";
 import filterPins from "./mxc-linux-seccomp-pins.json" with { type: "json" };
@@ -470,9 +470,9 @@ async function runLinuxCanary(
         log.warn("Linux raw-IP prober output unreadable: %s", (error as NodeJS.ErrnoException).code);
         return undefined;
       });
-      const udpArrived = udp !== undefined && output?.targets.UA === "0" ? await udp.settle() : udp?.arrived === true;
-      // Without a host-side UDP listener nothing could arrive, so arrival was not measured.
-      const udpArrival: MxcRawIpUdpArrival = udpArrived ? "arrived" : udp === undefined ? "unmeasured" : "absent";
+      const udpSend = linuxRawIpUdpSend(output?.targets.UA);
+      const udpArrived = udp !== undefined && udpSend === "sent" ? await udp.settle() : udp?.arrived === true;
+      const udpArrival = linuxRawIpUdpArrival(udpSend, udp !== undefined, udpArrived);
       const rawIpProbe = linuxRawIpVerdict({
         ran: true, ...(output === undefined ? {} : { output }), expectedStatus: INVOCATION_PROXY_REFUSED_STATUS,
         nonceRecorded, tlRan: targets !== undefined, udpArrival, firewallDrops,

@@ -16,7 +16,7 @@ import { openEgressInvocation } from "../egress-invocations.js";
 import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
 import { launcherPathFor, pinnedLauncherSha256 } from "../mxc-launcher.js";
 import { _runLinuxCanaryForTest as runCanary, detectHostMxcLinuxShellSupport, requireMxcLinuxShellPrograms } from "../mxc-linux.js";
-import { primaryIpv4 } from "../mxc-linux-raw-ip.js";
+import { LINUX_RAW_IP_PROBER, primaryIpv4 } from "../mxc-linux-raw-ip.js";
 import { _forgetMxcRuntimeRootForTest, currentMxcRuntimeHost, establishMxcRuntimeRoot, requireMxcContainerStartRoot } from "../mxc-runtime-root.js";
 import { __resetActiveSandboxCapabilityForTest, __resetContainerShellSubstrateForTest, __resetSandboxRequestedAtBootForTest,
   setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
@@ -302,6 +302,15 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     expect(await runCanary(requireMxcContainerStartRoot(), programs, undefined, { hostAddress: "192.0.2.55" })).toMatchObject({
       state: "available", rawIpProbe: { rawIp: "unknown", reason: "no-evidence" },
     });
+  });
+
+  it("is unknown, not blocked, when the real prober sends no datagram", async () => {
+    const programs = await requireMxcLinuxShellPrograms(resources);
+    const send = '  datagram "/dev/udp/$host/$udp" & pids="$pids $!"\n';
+    expect(LINUX_RAW_IP_PROBER).toContain(send);
+    // Every TCP target still runs, so only the missing UDP measurement stands between this run and `blocked`.
+    expect(await runCanary(requireMxcContainerStartRoot(), programs, undefined, { prober: LINUX_RAW_IP_PROBER.replace(send, "") }))
+      .toMatchObject({ state: "available", rawIpProbe: { rawIp: "unknown", reason: "udp-unmeasured", udpArrival: "unmeasured" } });
   });
 
   it("does not take a prober's printed refusals without the host recording the control nonce", async () => {

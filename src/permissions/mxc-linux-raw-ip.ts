@@ -7,6 +7,7 @@ import { createLogger } from "../lib/logger.js";
 import type {
   LinuxRawIpTarget, LinuxRawIpUnknownReason, LinuxRawIpVerdict, MxcRawIpUdpArrival,
 } from "../shared/sandbox-capability-info.js";
+import type { MxcRawIpUdpSend } from "./mxc-raw-ip-udp.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 /**
@@ -85,7 +86,7 @@ export interface LinuxRawIpMeasurement {
   readonly nonceRecorded: boolean;
   /** TL ran: the host had a primary non-loopback IPv4 to aim at. */
   readonly tlRan: boolean;
-  /** Whether the UDP nonce reached the host-side listener; `unmeasured` when no listener could be opened. */
+  /** Whether the UDP nonce reached the host-side listener (`linuxRawIpUdpArrival`). */
   readonly udpArrival: MxcRawIpUdpArrival;
   /**
    * The host-side TCP arrival listener on the host's primary IPv4, absent when it could not be opened: whether an
@@ -94,6 +95,24 @@ export interface LinuxRawIpMeasurement {
   readonly arrival?: { readonly controlPassed: boolean; readonly arrived: boolean };
   /** The launcher's firewall for this container, read while it ran, drops every egress but loopback and the proxy. */
   readonly firewallDrops: boolean;
+}
+
+/**
+ * What the prober's `UA` line says about the datagram: sent, refused in the container by a local policy error, or
+ * neither (missing, timed out or unclassified), which is no send to measure.
+ */
+export function linuxRawIpUdpSend(printed: string | undefined): MxcRawIpUdpSend {
+  if (printed === "0") return "sent";
+  return classifyLinuxRawIpTarget(printed).class === "refused-local" ? "refused-local" : "unmeasured";
+}
+
+/**
+ * The UDP arrival evidence, as on macOS: an arrival counts whatever was printed; otherwise it is `absent` only when a
+ * host-side listener was open and the datagram was sent (and waited for) or refused locally.
+ */
+export function linuxRawIpUdpArrival(send: MxcRawIpUdpSend, listening: boolean, arrived: boolean): MxcRawIpUdpArrival {
+  if (arrived) return "arrived";
+  return listening && send !== "unmeasured" ? "absent" : "unmeasured";
 }
 
 /** The verdict, in the rules' order. `blocked` needs this boot's measurement with the control passed. */
@@ -137,6 +156,8 @@ export function linuxRawIpVerdict(measurement: LinuxRawIpMeasurement): LinuxRawI
   const t6Refused = t6.class === "refused-local" || t6Structural || refusedArrival(t6);
   // Rule 3.
   if (t4Refused && t6Refused && tl !== undefined) {
+    // As on every POSIX backend, a datagram nobody measured leaves `blocked` unproved.
+    if (udpArrival === "unmeasured") return unknown("udp-unmeasured");
     const evidenceKind = t4.class !== "refused-local" || (t6.class !== "refused-local" && !t6Structural) ? "arrival"
       : t6.class === "refused-local" ? "measured" : "structural";
     log.info(`raw-ip blocked, evidence ${evidenceKind}`);

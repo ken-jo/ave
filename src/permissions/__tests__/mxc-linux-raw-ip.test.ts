@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { acceptMeasuredContainerEgress, containerEgressProtocolCoverage, posixContainerMeasuredEgress, type LinuxRawIpVerdict, type MxcRawIpUdpArrival } from "../../shared/sandbox-capability-info.js";
 import { INVOCATION_PROXY_REFUSED_STATUS } from "../egress-invocation-listener.js";
 import {
-  classifyLinuxRawIpTarget, type LinuxRawIpMeasurement, linuxFirewallPayloadDrops, linuxRawIpProberArguments, linuxRawIpVerdict,
+  classifyLinuxRawIpTarget, type LinuxRawIpMeasurement, linuxFirewallPayloadDrops, linuxRawIpProberArguments, linuxRawIpUdpArrival, linuxRawIpUdpSend, linuxRawIpVerdict,
   openLinuxRawIpHostTargets, parseLinuxRawIpProbeOutput,
 } from "../mxc-linux-raw-ip.js";
 
@@ -146,6 +146,31 @@ describe("Linux raw-IP verdict rules", () => {
       .toEqual(unknown("raw-ip-reachable", ["udp"], "arrived"));
     // A datagram that left the container but never arrived leaves the TCP verdict standing.
     expect(linuxRawIpVerdict(measured([...refused, "TL deadline", "UA 0", "IF lo"]))).toEqual(blocked("measured"));
+  });
+
+  it("never publishes blocked while the UDP datagram is unmeasured, as on macOS", () => {
+    const unmeasured = { udpArrival: "unmeasured" } as const;
+    expect(linuxRawIpVerdict(measured([CONTROL, `T4 ${REFUSED}`, `T6 ${REFUSED}`, "TL deadline", "IF lo"], unmeasured)))
+      .toEqual(unknown("udp-unmeasured", [], "unmeasured"));
+    expect(linuxRawIpVerdict(measured(DROPPED, { ...ARRIVAL_HELD, ...unmeasured })))
+      .toEqual(unknown("udp-unmeasured", [], "unmeasured"));
+    // Without the TCP evidence the TCP reason still names what failed first.
+    expect(linuxRawIpVerdict(measured(DROPPED, unmeasured))).toEqual(unknown("timeout", [], "unmeasured"));
+  });
+
+  it("measures UDP arrival only from an open listener and a datagram sent or refused locally", () => {
+    expect(linuxRawIpUdpSend("0")).toBe("sent");
+    expect(linuxRawIpUdpSend(REFUSED)).toBe("refused-local");
+    expect(linuxRawIpUdpSend("Permission denied")).toBe("refused-local");
+    for (const printed of [undefined, "deadline", "Network is unreachable", "Bad file descriptor"]) {
+      expect(linuxRawIpUdpSend(printed), String(printed)).toBe("unmeasured");
+    }
+    expect(linuxRawIpUdpArrival("sent", true, false)).toBe("absent");
+    expect(linuxRawIpUdpArrival("refused-local", true, false)).toBe("absent");
+    expect(linuxRawIpUdpArrival("unmeasured", true, false)).toBe("unmeasured");
+    expect(linuxRawIpUdpArrival("sent", false, false)).toBe("unmeasured");
+    // An arrival counts whatever the prober printed.
+    expect(linuxRawIpUdpArrival("unmeasured", true, true)).toBe("arrived");
   });
 
   it("never publishes blocked without both sides of the control", () => {

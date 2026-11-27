@@ -324,10 +324,10 @@ export type MacRawIpUnknownReason = Exclude<MxcRawIpUnknownReason, "listener-una
 export type MacRawIpVerdict = MxcRawIpProbeVerdict<MacRawIpUnknownReason>;
 
 /**
- * The reasons the Linux shell container's canary gives: the macOS ones less `udp-unmeasured`, since a UDP datagram that
- * did not arrive (or could not be sent for) leaves the TCP verdict standing.
+ * The reasons the Linux shell container's canary gives: the macOS ones. As on every POSIX backend, `blocked` needs the
+ * UDP datagram measured and not arrived; an unmeasured one is `udp-unmeasured`.
  */
-export type LinuxRawIpUnknownReason = Exclude<MacRawIpUnknownReason, "udp-unmeasured">;
+export type LinuxRawIpUnknownReason = MacRawIpUnknownReason;
 /** The Linux probe's targets: the shared ones plus `ta`, the TCP arrival listener on the host's primary IPv4. */
 export type LinuxRawIpTarget = MxcRawIpTarget | "ta";
 /** Whether a process in the Linux shell container can reach an IP address directly, as this boot's canary measured it. */
