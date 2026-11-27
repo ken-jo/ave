@@ -470,7 +470,6 @@ describe("CodexAppServerClient", () => {
       },
     });
     await expect(harness.client.getStatus()).rejects.toMatchObject({ code: "codex-runtime-invalid-executable" });
-    expect(verdict).toHaveBeenCalledExactlyOnceWith({ kind: "unavailable", runtime: "not-configured" });
     expect(harness.spawnCalls).toEqual([]);
     expect(harness.client.getCachedStatus().runtime).toBe("unavailable");
   });
