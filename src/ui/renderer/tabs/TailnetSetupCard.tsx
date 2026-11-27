@@ -227,8 +227,11 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
 
   const derivedOrigin = webOrigin ?? snapshot.derivedWebOrigin;
   const listeningPort = snapshot.listeningPort;
-  const serveOn = snapshot.environment.serveConfigured
-    && snapshot.environment.serveTargetPort === listeningPort;
+  const { serveConfigured, serveTargetPort } = snapshot.environment;
+  const serveOn = serveConfigured && serveTargetPort === listeningPort;
+  const serveStatus = serveConfigured && serveTargetPort !== null && listeningPort !== null && !serveOn
+    ? t("tailnetSetup.statusServePortMismatch", { servePort: serveTargetPort, listenerPort: listeningPort })
+    : t(serveOn ? "tailnetSetup.statusServeOn" : "tailnetSetup.statusServeOff");
 
   const portBlockText = tailnetObserverPortBlockText(snapshot, t);
   const failure = error === null || (error === TAILNET_OBSERVER_PORT_BLOCKED && portBlockText !== null) ? null : (
@@ -367,7 +370,7 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
             {snapshot.provenance.port === "unset" ? ` (${t("tailnetSetup.statusPortAuto")})` : ""}
           </p>
           <p className="text-sm text-muted-foreground" data-testid="tailnet-setup-status-serve">
-            {serveOn ? t("tailnetSetup.statusServeOn") : t("tailnetSetup.statusServeOff")}
+            {serveStatus}
           </p>
           {ownDeviceAdmissionControl}
           <div className="flex flex-wrap items-center gap-2">

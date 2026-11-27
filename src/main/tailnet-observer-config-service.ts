@@ -79,6 +79,7 @@ function savedView(file: TailnetObserverConfigFile | null): TailnetObserverConfi
 function effectiveView(
   resolution: TailnetObserverResolution,
   saved: TailnetObserverConfigView,
+  runtimePort: number | null,
 ): TailnetObserverConfigView {
   const config = resolution.config;
   if (config === null) {
@@ -87,7 +88,9 @@ function effectiveView(
   return Object.freeze({
     enabled: true,
     authorization: config.authorization,
-    port: config.port,
+    port: !resolution.fileConfigured && resolution.provenance.port === "unset"
+      ? runtimePort ?? config.port
+      : config.port,
     controllerEnabled: config.controllerEnabled,
     pairedSharingEnabled: config.pairedSharingEnabled,
     webEnabled: config.webOrigin !== undefined,
@@ -202,8 +205,8 @@ export function createTailnetObserverConfigService(
         ...(options.env === undefined ? {} : { env: options.env }),
         readConfigFile: async () => file,
       });
-      const effective = effectiveView(resolution, saved);
       const state = runtimeState();
+      const effective = effectiveView(resolution, saved, state.listeningPort ?? state.portBlock?.port ?? null);
       const environment = await probeEnvironment();
       return Object.freeze({
         saved,

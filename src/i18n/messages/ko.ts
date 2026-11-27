@@ -6070,6 +6070,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "tailnetSetup.statusPortAuto": "자동으로 선택함",
   "tailnetSetup.statusServeOn": "Tailscale Serve가 테일넷을 이 리스너로 전달합니다.",
   "tailnetSetup.statusServeOff": "Tailscale Serve가 아직 이 리스너로 전달하지 않습니다.",
+  "tailnetSetup.statusServePortMismatch": "Serve는 {servePort} 포트로 전달합니다. 리스너는 {listenerPort} 포트에서 수신 중입니다.",
   "tailnetSetup.ownDeviceAdmissionAllow": "내 기기 허용",
   "tailnetSetup.ownDeviceAdmissionOn": "내 기기 허용됨",
   "tailnetSetup.ownDeviceAdmissionRelease": "해제",

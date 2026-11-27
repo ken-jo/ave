@@ -420,6 +420,21 @@ describe("TailnetSetupCard", () => {
       expect(screen.queryByTestId("tailnet-setup-not-ready")).toBeNull();
     });
 
+    it("shows both ports when Serve and an environment override disagree", async () => {
+      const { api } = makeApi({
+        snapshot: configuredSnapshot({
+          provenance: { ...configuredSnapshot().provenance, port: "env-override" },
+          listeningPort: 28_999,
+          environment: { ...READY_ENVIRONMENT, serveConfigured: true, serveTargetPort: 46_173 },
+        }),
+      });
+      render(<TailnetSetupCard api={api} onCreateInvitation={() => undefined} />);
+
+      expect(await screen.findByTestId("tailnet-setup-status-serve")).toHaveTextContent(
+        "Serve forwards to port 46173. The listener is on port 28999.",
+      );
+    });
+
     it("says a port nobody named was chosen for them", async () => {
       const { api } = makeApi({ snapshot: configuredSnapshot() });
       render(<TailnetSetupCard api={api} onCreateInvitation={() => undefined} />);

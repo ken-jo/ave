@@ -605,11 +605,24 @@ async function startForBoot(
   portBlock = null;
   // This must run before listener construction. A disabled observer opens no port and starts no Tailnet-specific transport side effect.
   const resolved = dependencies(options.dependencies, options.env);
-  const { config } = await loadTailnetObserverConfig({
+  const { config: configured, fileConfigured, provenance } = await loadTailnetObserverConfig({
     ...(options.env === undefined ? {} : { env: options.env }),
     readConfigFile: resolved.readConfigFile,
   });
-  if (!config) return null;
+  if (!configured) return null;
+
+  let port = configured.port;
+  if (!fileConfigured) {
+    const { serveTargetPort } = await resolved.probeEnvironment();
+    // Only the former implicit port identifies an upgrade without a saved or overridden port.
+    if (provenance.port === "unset" && serveTargetPort === LEGACY_TAILNET_OBSERVER_PORT) {
+      port = serveTargetPort;
+      options.log?.(`[tailnet-observer] Preserving listener port ${port} from the existing Serve target`);
+    } else if (serveTargetPort !== null && serveTargetPort !== port) {
+      options.log?.(`[tailnet-observer] Serve targets port ${serveTargetPort}; the configured listener port is ${port}`);
+    }
+  }
+  const config = port === configured.port ? configured : Object.freeze({ ...configured, port });
   await assertTailnetListenerPortAllowed(config.port);
   if (config.controllerEnabled && options.conversationCommandPort === undefined) {
     throw new Error("tailnet-controller-command-port-unavailable");

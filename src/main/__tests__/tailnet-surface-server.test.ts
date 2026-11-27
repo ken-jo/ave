@@ -100,6 +100,7 @@ function options(
         // This matrix asks an environment question. Reading the real host-owned file would make the answer depend on whether the developer running it happens to
         // have an observer configured.
         readConfigFile: async (): Promise<TailnetObserverConfigFile | null> => null,
+        probeEnvironment: () => probeTailscaleEnvironment({ runCommand: async () => ({ kind: "not-found" }) }),
       },
     },
   };
@@ -687,6 +688,51 @@ describe("Tailnet observer configuration surface", () => {
     expect(resolveTailnetObserverConfig(env)).toEqual(
       (await loadTailnetObserverConfig({ env, readConfigFile: async () => null })).config,
     );
+  });
+
+  it.each([
+    { name: "legacy route", target: 46_173, override: undefined, port: 46_173, notice: "Preserving listener port 46173" },
+    { name: "fresh install", target: null, override: undefined, port: 28_173, notice: null },
+    { name: "explicit override", target: 46_173, override: "28999", port: 28_999, notice: "Serve targets port 46173; the configured listener port is 28999" },
+    { name: "unrelated route", target: 39_000, override: undefined, port: 28_173, notice: "Serve targets port 39000; the configured listener port is 28173" },
+  ])("resolves an environment-only listener with $name", async ({ target, override, port, notice }) => {
+    const env = {
+      AVE_TAILNET_OBSERVER: "1",
+      AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
+      ...(override === undefined ? {} : { AVE_TAILNET_OBSERVER_PORT: override }),
+    };
+    const { input, startServer } = options(env);
+    const runCommand = runner({
+      "status --json": { kind: "ran", code: 0, stdout: readyStatus(), stderr: "" },
+      "serve status --json": {
+        kind: "ran", code: 0, stderr: "",
+        stdout: JSON.stringify(target === null ? {} : {
+          Web: { "desk.example-tailnet.ts.net:443": { Handlers: { "/": { Proxy: `http://127.0.0.1:${target}` } } } },
+        }),
+      },
+    });
+    const probeEnvironment = () => probeTailscaleEnvironment({ platform: "linux", runCommand });
+    const log = vi.fn();
+    const settings = createTailnetObserverConfigService({
+      pairedSharingBootstrapFailed: () => false,
+      env,
+      readConfigFile: input.dependencies.readConfigFile,
+      readOwnDeviceAdmission: async () => false,
+      probeEnvironment,
+    });
+
+    await expect.soft(maybeStartTailnetObserverServer({
+      ...input, log, dependencies: { ...input.dependencies, probeEnvironment },
+    })).resolves.toEqual({ port });
+    expect.soft(startServer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port }));
+    await expect.soft(settings.snapshot()).resolves.toMatchObject({
+      saved: { port: 28_173, enabled: false },
+      effective: { port, enabled: true },
+      listeningPort: port,
+      provenance: { port: override === undefined ? "unset" : "env-override" },
+      environment: { serveTargetPort: target },
+    });
+    if (notice !== null) expect(log).toHaveBeenCalledWith(expect.stringContaining(notice));
   });
 
   it("boots a portless upgrade fixture on its existing Serve target and saves the legacy port", async () => {

@@ -6068,6 +6068,7 @@ export const en = {
   "tailnetSetup.statusPortAuto": "chosen automatically",
   "tailnetSetup.statusServeOn": "Tailscale Serve forwards your tailnet to this listener.",
   "tailnetSetup.statusServeOff": "Tailscale Serve does not forward to this listener yet.",
+  "tailnetSetup.statusServePortMismatch": "Serve forwards to port {servePort}. The listener is on port {listenerPort}.",
   "tailnetSetup.ownDeviceAdmissionAllow": "Allow my own devices",
   "tailnetSetup.ownDeviceAdmissionOn": "My own devices allowed",
   "tailnetSetup.ownDeviceAdmissionRelease": "Turn off",
