@@ -138,12 +138,11 @@ export function runsCoverage(eventName) {
   return COVERAGE_EVENTS.includes(eventName);
 }
 
-// A native run already dominates the critical path. Keep one full worker pool
-// beside it instead of paying for extra runners that finish early.
 export const FULL_RUN_SHARDS = 4;
 
 export function ciShardCount(plan, coverage, nativeChecks = false) {
-  return plan.mode === "full" && !coverage && !nativeChecks ? FULL_RUN_SHARDS : 1;
+  if (plan.mode !== "full" || coverage) return 1;
+  return nativeChecks ? 2 : FULL_RUN_SHARDS;
 }
 
 // Reject malformed shard values so the aggregate cannot misreport coverage.

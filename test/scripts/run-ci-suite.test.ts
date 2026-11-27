@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { createVitest } from "vitest/node";
 
 import {
   AFFECTED_TEST_LIMIT,
@@ -267,10 +268,10 @@ describe("CI test selection fallbacks", () => {
   it("shards only a full run without coverage, and passes the shard to Vitest", () => {
     const fullPlan = { mode: "full" as const, reason: "push runs the full suite", tests: [] };
     const affected = { mode: "affected" as const, reason: "traced", tests: ["src/a.test.ts"] };
-    expect(FULL_RUN_SHARDS).toBeGreaterThan(1);
+    expect(FULL_RUN_SHARDS).toBe(4);
     expect(ciShardCount(fullPlan, false)).toBe(FULL_RUN_SHARDS);
     expect(ciShardCount(fullPlan, true)).toBe(1);
-    expect(ciShardCount(fullPlan, false, true)).toBe(1);
+    expect(ciShardCount(fullPlan, false, true)).toBe(2);
     expect(ciShardCount(fullPlan, true, true)).toBe(1);
     expect(ciShardCount(affected, false)).toBe(1);
     expect(ciShardCount(affected, false, true)).toBe(1);
@@ -285,6 +286,36 @@ describe("CI test selection fallbacks", () => {
     ]);
     expect(() => ciSuiteArguments(fullPlan, true, "1/4")).toThrow("a coverage run cannot be sharded");
   });
+
+  it("selects every project and file in the full plan exactly once across the two native-check shards", async () => {
+    const event = "push";
+    const plan = readPlanFile(JSON.stringify(planCiSuite(event, { ref: "refs/tags/v1.0.0" })));
+    const count = ciShardCount(plan, runsCoverage(event), platformChecksRequired(event, plan));
+    expect(count).toBe(2);
+
+    const context = await createVitest({ root, run: true, watch: false });
+    try {
+      const filters = ciSuiteArguments(plan, false, parseCiShard("1/1")).slice(3);
+      const files = await context.getRelevantTestSpecifications(filters);
+      expect(files.length).toBeGreaterThan(count);
+      const Sequencer = context.config.sequence.sequencer;
+      const sequencer = new Sequencer(context);
+      const selected: typeof files = [];
+      for (let index = 1; index <= count; index++) {
+        context.config.shard = { index, count };
+        const shard = await sequencer.shard(files);
+        expect(shard.length).toBeGreaterThan(0);
+        selected.push(...shard);
+      }
+      const keys = (specifications: typeof files) => specifications
+        .map(({ project, moduleId }) => JSON.stringify([project.name, moduleId])).sort();
+      const combined = keys(selected);
+      expect(combined).toEqual(keys(files));
+      expect(new Set(combined).size).toBe(combined.length);
+    } finally {
+      await context.close();
+    }
+  }, 60_000);
 
   it("reads a shard and a written plan strictly", () => {
     expect(parseCiShard(undefined)).toBeNull();

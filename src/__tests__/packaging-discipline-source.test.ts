@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { windowsRegressionSuites } from "../../.github/scripts/check-windows-workflow.mjs";
-import { githubExpression, readRepoFile } from "./test-helpers.js";
+import { githubExpression, readRepoFile, useTempDirs } from "./test-helpers.js";
 import {
   TRUSTED_EVENTS,
   PULL_REQUEST_TARGET_WORKFLOWS,
@@ -1746,6 +1746,31 @@ describe("installer smoke and packaging discipline", () => {
     expect(job.steps.indexOf(cache)).toBeLessThan(job.steps.indexOf(step));
   });
 
+  const makePlanDir = useTempDirs("linux-vitest-plan-");
+
+  it("publishes two Linux matrix entries alongside native jobs for a full run without coverage", () => {
+    const planDir = makePlanDir();
+    const plan = resolve(planDir, "ci-plan.json");
+    const output = resolve(planDir, "output");
+    const result = spawnSync(process.execPath, ["scripts/run-ci-suite.mjs", "--write-plan", plan], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_EVENT_NAME: "push",
+        GITHUB_REF: "refs/tags/v1.0.0",
+        AVE_CI_DIFF_BASE: "",
+        GITHUB_OUTPUT: output,
+        GITHUB_STEP_SUMMARY: "",
+      },
+    });
+    expect(result.status, result.error?.message ?? result.stderr).toBe(0);
+    expect(readFileSync(output, "utf8")).toBe("shards=[1,2]\nplatform_checks=true\n");
+    expect(JSON.parse(readFileSync(plan, "utf8"))).toEqual({
+      mode: "full", reason: "push runs the full suite", tests: [],
+    });
+  });
+
   it("requires independent gates through the build-and-test aggregate", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
     const verification = jobs.get("build-and-test");
@@ -1791,8 +1816,10 @@ describe("installer smoke and packaging discipline", () => {
     expect(matched(commands, VERIFIES_THE_CODE)).toEqual([]);
     expect(shards).toMatch(/^ {4}needs: build$/mu);
     // One failed or cancelled shard makes needs.vitest.result fail the aggregate.
+    expect(build).toContain(`      shards: ${githubExpression("steps.plan.outputs.shards || '[1]'")}`);
     expect(shards).toContain("      fail-fast: false\n");
     expect(shards).toContain("        shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}");
+    expect(shards).toContain(`          AVE_CI_PLAN_FILE: ${githubExpression("runner.temp")}/ci-plan/ci-plan.json`);
     expect(shards).toContain("          AVE_CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}");
 
     // Sorted, because VERIFIES_THE_CODE is sorted and `matched` returns marker
