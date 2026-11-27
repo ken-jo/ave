@@ -28,8 +28,7 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
     __resetSandboxRequestedAtBootForTest();
   });
 
-  it("returns the genuine asrt capability for the ASRT-wrapped host-shell tools when the gate is ON", () => {
-    // Linux shells run inside ASRT itself.
+  it("reports a verified Linux shell container to the reviewer", () => {
     try {
       setProcessPlatform("linux");
       setShellSandboxRequestedAtBoot(true);
@@ -40,6 +39,7 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
         reason: "ASRT (bwrap) active — fs+process+network contained",
         confines: { filesystem: true, process: true, network: true },
       });
+      setContainerShellSubstrate("linux", { state: "available" });
 
       for (const toolName of ["bash", "powershell"]) {
         const cap = resolveReviewerSandboxCapability("builtin", toolName);
@@ -216,7 +216,7 @@ describe("substrate-aware capability — end-to-end reviewer prompt + downgrade 
   });
 
   it.each([
-    ["Linux ASRT", "linux", "ASRT (bwrap) active"],
+    ["the proven Linux container", "linux", "ASRT (bwrap) active"],
     ["the proven macOS container", "darwin", "ASRT (Seatbelt) active"],
   ] as const)("a host bash tool contained by %s presents executionSandbox=asrt to the reviewer when the gate is ON", async (_name, platform, reason) => {
     try {
@@ -229,8 +229,7 @@ describe("substrate-aware capability — end-to-end reviewer prompt + downgrade 
         reason,
         confines: { filesystem: true, process: true, network: true },
       });
-      // macOS shells are contained by the container the boot canary proved, not by ASRT.
-      if (platform === "darwin") setContainerShellSubstrate("darwin", { state: "available" });
+      setContainerShellSubstrate(platform, { state: "available" });
 
       const { provider, complete } = capturingProvider();
       const classifier = new LlmRiskClassifier(provider, "gpt-4o-mini");
@@ -248,7 +247,7 @@ describe("substrate-aware capability — end-to-end reviewer prompt + downgrade 
       // The genuinely-wrapped host-shell substrate earns the asrt report.
       expect(userPrompt).toContain("executionSandbox=asrt");
     } finally {
-      if (platform === "darwin") setContainerShellSubstrate("darwin", { state: "unavailable", reason: "shell-start-failed" });
+      setContainerShellSubstrate(platform, { state: "unavailable", reason: "shell-start-failed" });
       setProcessPlatform(HOST_PLATFORM);
     }
   });

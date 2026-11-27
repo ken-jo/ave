@@ -31,7 +31,7 @@ export type PosixPolicyRefusal =
   | "backend-unmeasured" | "pattern-row" | "relative-row" | "nested-grant-under-deny" | "deny-without-outcome"
   | "chain-unreadable" | "grant-limit-exceeded" | "root-write-grant" | "placeholder-parent-unproved";
 
-export interface BubblewrapPlaceholder {
+interface BubblewrapPlaceholder {
   readonly path: string;
   readonly ancestor: string;
   readonly device: bigint;

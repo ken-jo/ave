@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { MxcIntegrityError, PTY_SOURCE_BUILD_DIRECTORIES, SDK_INSTALLATION_AUXILIARIES, verifyMxcSdk, verifyMxcSupervisorRuntime } from "./mxc-sdk-integrity.mjs";
 import PINS from "../../src/permissions/mxc-launcher-pins.json" with { type: "json" };
+import LINUX_FILTER_PINS from "../../src/permissions/mxc-linux-seccomp-pins.json" with { type: "json" };
 import { mxcLauncherForTarget } from "../fetch-mxc.mjs";
 
 export function assertPackagedLauncher(resources, target) {
@@ -19,6 +20,21 @@ export function assertPackagedLauncher(resources, target) {
   if (createHash("sha256").update(readFileSync(file)).digest("hex") !== pin.sha256) {
     throw new Error(`Packaged launcher hash mismatch: ${file}`);
   }
+}
+
+export function stagePackagedLinuxShellFilter(resources, arch) {
+  if (!Object.hasOwn(LINUX_FILTER_PINS, arch)) throw new Error(`Unsupported Linux shell filter architecture: ${arch}`);
+  const source = new URL("../../resources/", import.meta.url);
+  const relative = `linux-shell-seccomp/${arch}/apply-seccomp`;
+  const packaged = path.join(resources, relative);
+  mkdirSync(path.dirname(packaged), { recursive: true });
+  copyFileSync(new URL(relative, source), packaged);
+  const entry = lstatSync(packaged);
+  if (!entry.isFile() || (entry.mode & 0o111) !== 0o111
+    || createHash("sha256").update(readFileSync(packaged)).digest("hex") !== LINUX_FILTER_PINS[arch]) {
+    throw new Error(`Packaged Linux shell filter does not match its ${arch} pin`);
+  }
+  cpSync(new URL("licenses/linux-shell-seccomp/", source), path.join(resources, "licenses", "linux-shell-seccomp"), { recursive: true });
 }
 
 export function finalizePackagedMxcSdk(resources, arch, executable) {

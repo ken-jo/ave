@@ -13,7 +13,7 @@ import {
   egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased,
 } from "../permissions/egress-invocations.js";
 import { buildSeatbeltShellRequest } from "../permissions/mxc-macos.js";
-import { buildBubblewrapShellRequest, requireMxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
+import { buildBubblewrapShellRequest, projectLinuxSavedSessionDenies, requireMxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
 import { holdMxcLinuxPlaceholders } from "../permissions/mxc-linux-placeholders.js";
 import { atOrUnder, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants } from "../permissions/mxc-posix.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
@@ -95,12 +95,18 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
   });
   const userDenyRead = getUserReadDenies();
   const protectedFloor = getProtectedReadDenyFloor().filter(path => !userDenyRead.includes(path));
+  const lookups = posixPolicyLookups(hostHome, false);
+  const allowRead = ["/", ...input.allowRead.filter(admittedPath)];
+  const denyRead = [...input.denyRead, runtimeRoot];
+  const reads = linux ? await projectLinuxSavedSessionDenies({
+    denyRead, userDenyRead, lookups, grants: [...allowRead, ...mandatory.allowWrite, ...input.floorPierces], signal: lifecycle.signal,
+  }) : { denyRead, userDenyRead, rows: [] };
   const model = shellPolicyModel({
-    allowRead: ["/", ...input.allowRead.filter(admittedPath)], allowWrite: mandatory.allowWrite,
-    denyRead: [...input.denyRead, runtimeRoot], userDenyRead, protectedFloor,
+    allowRead, allowWrite: mandatory.allowWrite,
+    denyRead: reads.denyRead, userDenyRead: reads.userDenyRead, protectedFloor,
     denyWrite: [],
     floorPierces: input.floorPierces,
-  }, [...mandatory.literalRows, ...mandatory.patternRows, ...sensitive.map(entry =>
+  }, [...reads.rows, ...mandatory.literalRows, ...mandatory.patternRows, ...sensitive.map(entry =>
     policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", linux || typeof entry !== "string")),
     ...(linux ? getUserWriteDenies().map(entry => policyFloorRow(
       typeof entry === "string" ? entry : entry.path, "ro", "protected-name", typeof entry !== "string" && entry.literal === true,
@@ -109,7 +115,6 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
       policyFloorRow(dirname(path), "ro", "protected-name", true))),
   ]);
   const roots = [hostHome, input.cwd, ...mandatory.allowWrite];
-  const lookups = posixPolicyLookups(hostHome, false);
   const foldsCase = !linux && roots.every(path => pathFoldsCase(lookups.canonical(path)));
 
   let active = false;

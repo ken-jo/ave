@@ -5126,6 +5126,8 @@ export const en = {
   "sandboxPolicy.containerShellTimedOut": "Shell command timed out after {seconds} seconds.",
   "sandboxPolicy.containerShellNoExitCode": "The shell ended by a signal or before it started, so it reported no exit code.",
   "sandboxPolicy.containerStartRefused": "The macOS sandbox container refused to start the shell command.",
+  "sandboxPolicy.linuxContainerStartRefused": "The Linux sandbox container refused to start the shell command.",
+  "sandboxPolicy.linuxContainerShellRefused": "The Linux sandbox container refused the shell command. {reason}",
   "sandboxPolicy.containerShellCleanupUnverified": "The shell command was stopped, but its processes could not be confirmed gone.",
   "sandboxPolicy.containerShellRefused": "The macOS sandbox container refused the shell command: {reason}",
   "sandboxPolicy.scanNarrowed": "{reason}; write access narrowed to {roots}. Unscanned or withheld roots: {removed}.",

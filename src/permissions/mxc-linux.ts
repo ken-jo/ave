@@ -5,9 +5,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { posix } from "node:path";
 import { promisify } from "node:util";
+import { expandReadDenyGlobLinuxSteps } from "@anthropic-ai/sandbox-runtime/dist/sandbox/read-deny-glob.js";
+import { finishInTurns, type GlobWalkListings } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { createLogger } from "../lib/logger.js";
 import type { HostResources } from "../main/host-resources.js";
 import { containerTarget } from "../shared/container-platform.js";
+import { errorMessage } from "../shared/error-message.js";
 import { isRecord } from "../shared/is-record.js";
 import type { SandboxContainerShellSupport, SandboxContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
@@ -17,13 +20,58 @@ import filterPins from "./mxc-linux-seccomp-pins.json" with { type: "json" };
 import { atOrUnder, canonicalPath, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants, type PosixPolicyLookups } from "./mxc-posix.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow } from "./policy-model.js";
+import { containsGlobChars, globPatternBaseDir } from "./sandbox-path-spelling.js";
 import { quoteSandboxWrappedWord as quote } from "./sandbox-wrapped-command.js";
+import { getConfiguredSessionReadPolicy } from "./sensitive-paths.js";
 
 const runFile = promisify(execFile);
 const log = createLogger("mxc-linux");
 const SYSTEM_TOOL_DIRS = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 const LINUX_TOOLS = ["bwrap", "slirp4netns", "unshare", "nsenter", "ip", "iptables", "ip6tables", "iptables-restore", "ip6tables-restore"];
 const PROXY_VARIABLES = /^(?:https?|all|no|ftp)_proxy$/iu;
+
+/** The saved-session grant and its generated exclusions use the same launch-time walk as the Linux wrap. */
+export async function projectLinuxSavedSessionDenies(input: {
+  readonly denyRead: readonly string[];
+  readonly userDenyRead: readonly string[];
+  readonly grants: readonly string[];
+  readonly lookups: PosixPolicyLookups;
+  readonly signal: AbortSignal;
+}) {
+  const { denyRead, userDenyRead, lookups, signal } = input;
+  const session = getConfiguredSessionReadPolicy();
+  const root = session.allowRead[0];
+  const generated = new Set(session.denyRead);
+  const configured = new Set(userDenyRead);
+  const projected = new Map<string, { pattern: string; user: boolean }>();
+  for (const entry of new Set([...denyRead, ...userDenyRead])) {
+    if (root === undefined || !containsGlobChars(entry)) continue;
+    const user = configured.has(entry);
+    const pattern = entry.startsWith("~/") ? lookups.home + entry.slice(1) : entry;
+    const base = globPatternBaseDir(pattern);
+    if ((user && posix.isAbsolute(base) && atOrUnder(canonicalPath(base, true, lookups), root, false))
+      || (generated.has(entry) && !user)) projected.set(entry, { pattern, user });
+  }
+  const grants = input.grants.map(path => canonicalPath(path, false, lookups));
+  const listings: GlobWalkListings = new Map();
+  const unlistable = new Set<string>();
+  const rows = await finishInTurns((function* () {
+    const rows: ReturnType<typeof policyFloorRow>[] = [];
+    for (const { pattern, user } of projected.values()) {
+      const matches = yield* expandReadDenyGlobLinuxSteps(pattern, grants, unlistable, {
+        listings, ...(root !== undefined && pattern.startsWith(`${root}/`) ? { anchor: root } : {}),
+      });
+      rows.push(...matches.map(path => policyFloorRow(path, "denied", user ? "user-deny" : "read-boundary", true)));
+    }
+    return rows;
+  })(), signal);
+  for (const path of unlistable) {
+    if (grants.some(grant => atOrUnder(grant, path, false))) {
+      throw new Error(`Cannot resolve Linux container read denies beneath: ${path}`);
+    }
+  }
+  return { denyRead: denyRead.filter(path => !projected.has(path)), userDenyRead: userDenyRead.filter(path => !projected.has(path)), rows };
+}
 
 function trustedDirectory(path: string): boolean {
   for (let directory = path; ; directory = posix.dirname(directory)) {
@@ -308,8 +356,7 @@ async function runLinuxCanary(root: string, programs: MxcLinuxShellPrograms, sig
     }
   } catch (error) {
     signal?.throwIfAborted();
-    log.warn("Linux container canary failed (%s): %s", isRecord(error) ? error.code : undefined,
-      error instanceof Error ? error.message : String(error));
+    log.warn("Linux container canary failed (%s): %s", isRecord(error) ? error.code : undefined, errorMessage(error));
     return "shell-start-failed" as const;
   } finally {
     proxy.close();

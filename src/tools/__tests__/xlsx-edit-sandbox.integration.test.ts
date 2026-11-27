@@ -10,11 +10,12 @@ import { initializeAsrtSandbox, resetAsrtSandbox } from "../../permissions/asrt-
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
 import { quotePowerShell } from "../../__tests__/support/powershell-literal.js";
 import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
-import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
+import { __resetActiveSandboxCapabilityForTest, __resetContainerShellSubstrateForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
   getHostShellExecutionPlan, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../permissions/sandbox-capability.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { buildNativeShellSupervisor } from "../../__tests__/support/mxc-shell-supervisor-native.js";
 import { detectHostMxcMacShellSupport } from "../../permissions/mxc-macos.js";
+import { detectHostMxcLinuxShellSupport } from "../../permissions/mxc-linux.js";
 import { establishMxcRuntimeRoot } from "../../permissions/mxc-runtime-root.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { hostScriptRuntimePaths } from "../../main/host-script-runtime.js";
@@ -33,6 +34,7 @@ describe("native governed XLSX command", () => {
     // macOS shells run in the container, started by a supervisor bundled from this source (never a stale dist) whose
     // development layout also holds the host scripts the command runs.
     const mac = process.platform === "darwin";
+    const linux = process.platform === "linux";
     if (mac && process.arch !== "arm64") testContext.skip("The macOS shell container requires arm64");
     const supervisors: Array<Awaited<ReturnType<typeof buildNativeShellSupervisor>>> = [];
     const macResources = async () => {
@@ -52,6 +54,8 @@ describe("native governed XLSX command", () => {
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([["Budget", 12]]), "Sheet");
     writeFileSync(path, XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer);
     writeFileSync(request, JSON.stringify({ sheet: 0, edits: [{ cell: "B1", value: 84 }] }));
+    const linuxRuntime = linux ? mkdtempSync("/tmp/ave-xlsx-runtime-") : undefined;
+    if (linuxRuntime !== undefined) vi.stubEnv("AVE_TEST_SANDBOX_BASE", linuxRuntime);
     try {
       if (process.platform === "win32") {
         const started = await requireMxcCapability(testContext.skip);
@@ -71,15 +75,15 @@ describe("native governed XLSX command", () => {
           reason: "Native startup workload succeeded", confines: { filesystem: true, process: true, network: true } });
       }
       setShellSandboxRequestedAtBoot(true);
-      const proveMacContainer = async () => {
+      const provePosixContainer = async (platform: "darwin" | "linux") => {
         establishMxcRuntimeRoot();
-        const support = await detectHostMxcMacShellSupport(hostResourcesNow());
+        const probe = platform === "darwin" ? detectHostMxcMacShellSupport : detectHostMxcLinuxShellSupport;
+        const support = await probe(currentResources);
         expect(support).toEqual({ state: "available" });
-        setContainerShellSubstrate("darwin", support);
+        setContainerShellSubstrate(platform, support);
       };
       let currentResources = hostResources;
-      const hostResourcesNow = () => currentResources;
-      if (mac) await proveMacContainer();
+      if (mac || linux) await provePosixContainer(mac ? "darwin" : "linux");
       const windows = process.platform === "win32";
       const tool = windows ? new PowerShellTool() : new BashTool();
       const commandFor = (target: string) => windows
@@ -87,7 +91,7 @@ describe("native governed XLSX command", () => {
         : `ELECTRON_RUN_AS_NODE=1 ${[runtime.javascriptRuntime, script, target, request].map(shellQuote).join(" ")}`;
       const context = { cwd: directory, extraAllowedDirectories: [], metadata: {}, blockReadsOutsideWorkingDirectories: true,
         hostShellExecutionPlan: getHostShellExecutionPlan() };
-      expect(context.hostShellExecutionPlan).toMatchObject({ mode: "asrt", ...(windows ? {} : { substrate: mac ? "mxc" : "asrt" }) });
+      expect(context.hostShellExecutionPlan).toMatchObject({ mode: "asrt", substrate: "mxc" });
       const timeoutSeconds = TOOL_TIMEOUT_POLICY.shellDefaultMs / 1000;
       const records: DocumentEditJournalRecord[] = [];
       const leases: Array<{ finish(): Promise<void> }> = [];
@@ -163,9 +167,15 @@ describe("native governed XLSX command", () => {
           copyFileSync(resolve("resources", binary), join(fixtureResources, binary));
         }
       }
+      if (linux) {
+        for (const binary of [join("mxc", process.arch, "lxc-exec"), join("linux-shell-seccomp", process.arch, "apply-seccomp")]) {
+          mkdirSync(dirname(join(fixtureResources, binary)), { recursive: true });
+          copyFileSync(resolve("resources", binary), join(fixtureResources, binary));
+        }
+      }
       currentResources = { resourcePath: fixtureResources, isPackaged: !mac };
       configureHostResources(currentResources);
-      if (mac) await proveMacContainer();
+      if (mac) await provePosixContainer("darwin");
       const probeCommand = windows
         ? `$env:ELECTRON_RUN_AS_NODE='1'; & ${[runtime.javascriptRuntime, probe].map(quotePowerShell).join(" ")}`
         : `ELECTRON_RUN_AS_NODE=1 ${[runtime.javascriptRuntime, probe].map(shellQuote).join(" ")}`;
@@ -180,9 +190,11 @@ describe("native governed XLSX command", () => {
       await resetAsrtSandbox();
       vi.restoreAllMocks();
       __resetActiveSandboxCapabilityForTest();
+      __resetContainerShellSubstrateForTest();
       __resetSandboxRequestedAtBootForTest();
       __resetWindowsSandboxSubstrateForTest();
-      if (mac) setContainerShellSubstrate("darwin", { state: "unavailable", reason: "shell-start-failed" });
+      vi.unstubAllEnvs();
+      if (linuxRuntime !== undefined) rmSync(linuxRuntime, { recursive: true, force: true });
       for (const supervisor of supervisors) supervisor.dispose();
       rmSync(directory, { recursive: true, force: true });
     }

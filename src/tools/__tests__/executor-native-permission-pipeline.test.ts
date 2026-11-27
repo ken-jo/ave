@@ -72,7 +72,7 @@ beforeEach(async () => {
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
   // A container shell published by an earlier test must not carry over; each test that confines shells publishes it.
-  if (process.platform === "darwin") setContainerShellSubstrate("darwin", { state: "unavailable", reason: "shell-start-failed" });
+  if (process.platform === "darwin" || process.platform === "linux") setContainerShellSubstrate(process.platform, { state: "unavailable", reason: "shell-start-failed" });
   audit = new AuditLogger(join(root, "audit"));
   manager = new PermissionManager(join(root, "permissions.json"));
   registry = new ToolRegistry();
@@ -303,8 +303,8 @@ describe("native invocation permission evidence", () => {
       setShellSandboxRequestedAtBoot(true);
       setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
         reason: "Fixture confinement", confines: { filesystem: true, process: true, network: true } });
-      // Shell confinement on macOS is the published container shell; the wrap alone leaves shells on the no-confinement floor.
-      if (process.platform === "darwin") setContainerShellSubstrate("darwin", { state: "available" });
+      // Shell containment requires the boot canary’s container proof.
+      if (process.platform === "darwin" || process.platform === "linux") setContainerShellSubstrate(process.platform, { state: "available" });
     }
     const tool = new BashTool();
     let childEnvironment: Readonly<Record<string, string | undefined>> | undefined;
@@ -565,7 +565,7 @@ describe("native invocation permission evidence", () => {
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
       reason: "Changed fixture confinement", confines: { filesystem: true, process: true, network: true } });
-    if (process.platform === "darwin") setContainerShellSubstrate("darwin", { state: "available" });
+    if (process.platform === "darwin" || process.platform === "linux") setContainerShellSubstrate(process.platform, { state: "available" });
     const [result] = await run(executor(), tool.name, input, { headless: true });
     expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("do not retry") });
     expect(execute).not.toHaveBeenCalled();

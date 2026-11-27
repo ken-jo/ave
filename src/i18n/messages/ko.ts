@@ -5128,6 +5128,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "sandboxPolicy.containerShellTimedOut": "셸 명령이 {seconds}초 후 시간 초과되었습니다.",
   "sandboxPolicy.containerShellNoExitCode": "셸이 신호를 받았거나 시작 전에 끝나 종료 코드를 보고하지 않았습니다.",
   "sandboxPolicy.containerStartRefused": "macOS 샌드박스 컨테이너가 셸 명령 시작을 거부했습니다.",
+  "sandboxPolicy.linuxContainerStartRefused": "Linux 샌드박스 컨테이너가 셸 명령 시작을 거부했습니다.",
+  "sandboxPolicy.linuxContainerShellRefused": "Linux 샌드박스 컨테이너가 셸 명령을 거부했습니다. {reason}",
   "sandboxPolicy.containerShellCleanupUnverified": "셸 명령을 중단했지만 관련 프로세스가 모두 종료되었는지 확인하지 못했습니다.",
   "sandboxPolicy.containerShellRefused": "macOS 샌드박스 컨테이너가 셸 명령을 거부했습니다: {reason}",
   "sandboxPolicy.scanNarrowed": "{reason}. 쓰기 허용 범위를 {roots}(으)로 축소했습니다. 스캔하지 못했거나 허용하지 않은 루트: {removed}.",

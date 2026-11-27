@@ -12,7 +12,6 @@ export interface LinuxContainerShellExit {
   readonly cancelled: boolean;
   readonly rejected: boolean;
   readonly cleanupUnverified: boolean;
-  readonly failure?: { readonly code: string };
   readonly cleanupNotice?: string;
 }
 

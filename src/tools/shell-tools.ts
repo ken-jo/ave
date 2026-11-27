@@ -2847,12 +2847,13 @@ async function runPosixContainerShell(input: {
     child.stdout.on("data", collector.collect);
     child.stderr.on("data", collector.collectStderr);
     const exit = await completion;
-    const interrupted = exit.cancelled || exit.timedOut || exit.cleanupUnverified || exit.failure !== undefined;
+    const failure = "failure" in exit ? exit.failure : undefined;
+    const interrupted = exit.cancelled || exit.timedOut || exit.cleanupUnverified || failure !== undefined;
     const artifact = await collector.finish(interrupted);
     collector.finishObservation(exit.code, exit.cancelled ? "cancelled" : interrupted || exit.rejected ? "failed" : undefined);
     if (exit.rejected) {
       result = {
-        output: t("sandboxPolicy.containerStartRefused"), isError: true,
+        output: process.platform === "linux" ? t("sandboxPolicy.linuxContainerStartRefused") : t("sandboxPolicy.containerStartRefused"), isError: true,
         metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
       };
     } else {
@@ -2868,7 +2869,7 @@ async function runPosixContainerShell(input: {
       const ending = exit.cancelled ? t("sandboxPolicy.containerShellCancelled")
         : exit.timedOut ? t("sandboxPolicy.containerShellTimedOut", { seconds: timeoutMs / 1000 })
           : exit.cleanupUnverified ? t("sandboxPolicy.containerShellCleanupUnverified")
-            : exit.failure ? t("sandboxPolicy.containerShellRefused", { reason: exit.failure.code })
+            : failure ? t("sandboxPolicy.containerShellRefused", { reason: failure.code })
               : noExitCode ? t("sandboxPolicy.containerShellNoExitCode") : "";
       const output = await annotateWithSandboxViolations(egress.token, [format, ending].filter(Boolean).join("\n"), undefined, policyNotices);
       result = {
@@ -2894,7 +2895,8 @@ async function runPosixContainerShell(input: {
     }
     result = input.signal?.aborted
       ? { output: t("sandboxPolicy.containerShellCancelled"), isError: true, metadata: { aborted: true, sandboxed: false } }
-      : { output: t("sandboxPolicy.containerShellRefused", { reason: shellFailureText([error], "code") }), isError: true,
+      : { output: t(process.platform === "linux" ? "sandboxPolicy.linuxContainerShellRefused" : "sandboxPolicy.containerShellRefused",
+        { reason: shellFailureText([error], "code") }), isError: true,
         metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } };
   }
   return withReleaseFailures(result, await lifecycle.dispose(), "code");

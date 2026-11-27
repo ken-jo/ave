@@ -2028,6 +2028,25 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     }
   });
 
+  it("lists install commands for the specific missing Linux packages", async () => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValue({
+      platform: "linux", enabled: true, available: true, kind: "full", reason: "",
+      runtime: { available: true, kind: "full", reason: "" },
+      containerShell: { state: "unavailable", reason: "tools-missing", detail: ["bwrap", "iptables", "iptables-restore"],
+        egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } },
+      confines: { filesystem: true, process: true, network: true },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    const row = screen.getByTestId("os-sandbox-linux-container");
+    expect(row).toHaveAttribute("data-state", "unavailable");
+    expect(row).toHaveTextContent("sudo apt install bubblewrap iptables");
+    expect(row).toHaveTextContent("sudo dnf install bubblewrap iptables-nft");
+    expect(row).toHaveTextContent("sudo zypper install bubblewrap iptables");
+    expect(row).toHaveTextContent("sudo pacman -S bubblewrap iptables-nft");
+    expect(row).not.toHaveTextContent("slirp4netns");
+  });
+
   it("keeps opt-in enabled and shows a localized error, not main's raw detail, on an ok:false shape", async () => {
     const { updateSettings } = installApiWithWindows({
       sandboxWindowsInstall: vi.fn(async () => ({
