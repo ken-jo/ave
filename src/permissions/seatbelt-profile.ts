@@ -219,10 +219,28 @@ const sameForm = (left: SeatbeltForm, right: SeatbeltForm): boolean => typeof le
  * operation (or `default`) passes only with Unix-socket filters or that one proxy filter, and an allow with no filter
  * at all opens every address. The rule is compared with what `buildSeatbeltShellProfile` itself writes.
  */
+/** True when a rule could hide below the top level: an `allow` or `import` inside another form. */
+function hidesNestedRule(form: SeatbeltForm, depth: number): boolean {
+  if (typeof form === "string") return false;
+  if (depth > 0 && (form[0] === "allow" || form[0] === "import")) return true;
+  return form.some(item => hidesNestedRule(item, depth + 1));
+}
+
+/** A Unix-socket filter exactly as the builder writes it: `(local|remote unix-socket (subpath|literal|regex <literal>))`. */
+function isUnixSocketFilter(filter: SeatbeltForm): boolean {
+  if (typeof filter === "string" || filter.length !== 3) return false;
+  const [side, kind, path] = filter;
+  return (side === "local" || side === "remote") && kind === "unix-socket" && typeof path !== "string" && path !== undefined
+    && path.length === 2 && (path[0] === "subpath" || path[0] === "literal" || path[0] === "regex")
+    && typeof path[1] === "string" && (path[1].startsWith("\"") || path[1].startsWith("#\""));
+}
+
 export function seatbeltProfileAllowsOnlyProxyIpEgress(profile: string, proxyPort: number): boolean {
   const forms = parseSeatbeltForms(profile);
   const proxyAllow = parseSeatbeltForms(seatbeltProxyEgressAllow(proxyPort))?.[0];
   if (forms === undefined || proxyAllow === undefined || typeof proxyAllow === "string") return false;
+  // The check reads top-level rules only, so anything that could carry a rule elsewhere fails it.
+  if (forms.some(form => typeof form === "string" || form[0] === "import" || hidesNestedRule(form, 0))) return false;
   if (!forms.some(form => sameForm(form, ["deny", "default"]))) return false;
   let proxyAllows = 0;
   for (const form of forms) {
@@ -234,8 +252,7 @@ export function seatbeltProfileAllowsOnlyProxyIpEgress(profile: string, proxyPor
       continue;
     }
     const filters = form.slice(1).filter(item => typeof item !== "string");
-    const unixSocketOnly = filters.length > 0 && filters.every(filter => filter.length === 3
-      && (filter[0] === "local" || filter[0] === "remote") && filter[1] === "unix-socket");
+    const unixSocketOnly = filters.length > 0 && filters.every(isUnixSocketFilter);
     if (!unixSocketOnly) return false;
   }
   return proxyAllows === 1;

@@ -1741,7 +1741,8 @@ describe("installer smoke and packaging discipline", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
     const tests = jobRunCommands(jobs.get("macos-permission-tests") as string).find((command) => command.includes("bun run test --"));
     const gated = spawnSync("git", ["ls-files", "*.native.test.ts"], { encoding: "utf8" }).stdout.split("\n").filter(Boolean)
-      .filter((file) => /process\.platform === "darwin"/u.test(readRepoFile(file)));
+      // Any mention of darwin counts, so a suite gated through a constant or helper is not missed.
+      .filter((file) => /\bdarwin\b/u.test(readRepoFile(file)));
     expect(gated.length).toBeGreaterThan(0);
     for (const file of gated) expect(tests, `macos-permission-tests omits ${file}`).toContain(file);
     // A listed suite must run, not skip: the job is on an arm64 image and requires the sandbox cases, so a native

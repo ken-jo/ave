@@ -179,6 +179,12 @@ describe("Seatbelt structural IP egress evidence", () => {
     ["two proxy allows", (profile: string) => `${profile}\n(allow network-outbound (remote ip "localhost:9000"))`, 9000],
     ["an unbalanced form", (profile: string) => `${profile}\n(allow network-outbound (remote ip "*:*")`, 9000],
     ["an unterminated string", (profile: string) => `${profile}\n(allow file-read* (literal "/x))`, 9000],
+    ["an allow nested in another form", (profile: string) => `${profile}\n(if #t (allow network* (remote ip "*:*")))`, 9000],
+    ["an import", (profile: string) => `${profile}\n(import "system.sb")`, 9000],
+    ["a top-level atom", (profile: string) => `${profile}\nallow`, 9000],
+    ["a Unix-socket filter with an IP third item", (profile: string) =>
+      `${profile}\n(allow network-outbound (remote unix-socket (remote ip "*:*")))`, 9000],
+    ["a Unix-socket filter with a bare third item", (profile: string) => `${profile}\n(allow network-outbound (remote unix-socket any))`, 9000],
   ])("does not hold with %s", (_name, edit, port) => {
     expect(seatbeltProfileAllowsOnlyProxyIpEgress(edit(built()), port)).toBe(false);
   });
