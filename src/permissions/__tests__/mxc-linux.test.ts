@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -90,12 +89,15 @@ it("keeps the Linux request bytes stable and requires the nearest cwd row to all
 });
 
 describe("checked-in Linux shell filters", () => {
-  // A line-ending conversion on checkout (autocrlf, a text attribute) would change the bytes packaging hashes.
-  it.each(Object.entries(seccompPins))("keeps the %s filter byte-identical to its blob and its pin", (arch, pin) => {
+  // A line-ending conversion on checkout (autocrlf, a text attribute) would change the bytes packaging hashes. The
+  // checked-out bytes must match the pin, and the attributes file must mark each filter binary, so no checkout converts
+  // it. Both are read from the tree, so a source tree without `.git` proves the same.
+  it.each(Object.entries(seccompPins))("keeps the %s filter byte-identical to its pin and marked binary", (arch, pin) => {
     const path = `resources/linux-shell-seccomp/${arch}/apply-seccomp`;
-    expect(execFileSync("git", ["check-attr", "binary", "--", path], { encoding: "utf8" })).toBe(`${path}: binary: set\n`);
-    const blob = execFileSync("git", ["cat-file", "blob", `HEAD:${path}`], { maxBuffer: 16 * 1024 * 1024 });
-    expect(readFileSync(path).equals(blob)).toBe(true);
-    expect(createHash("sha256").update(blob).digest("hex")).toBe(pin);
+    expect(createHash("sha256").update(readFileSync(path)).digest("hex")).toBe(pin);
+    const rules = readFileSync(".gitattributes", "utf8").split("\n").map(line => line.trim().split(/\s+/u));
+    // Attribute patterns here use `*` within one path segment only.
+    const matches = (pattern: string) => new RegExp(`^${pattern.split("*").map(part => part.replace(/[.+?^${}()|[\]\\]/gu, "\\$&")).join("[^/]*")}$`, "u").test(path);
+    expect(rules.some(([pattern, ...attributes]) => pattern !== undefined && matches(pattern) && attributes.includes("binary"))).toBe(true);
   });
 });
