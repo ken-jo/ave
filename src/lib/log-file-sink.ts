@@ -246,16 +246,13 @@ export interface LogFileSinkOptions {
   maxBytes?: number;
 }
 
-export interface LogFileSink {
-  write(chunk: string): void;
-  flush(): Promise<void>;
-  readonly pending: number;
+export interface LogFileSink extends Omit<ReturnType<typeof createAsyncLogDestination>, "stream"> {
   destroy(): void;
   readonly currentFile: string;
 }
 
 /** Set private modes during creation; unrecoverable directory failure is handled by boot. */
-export function createLogFileSink(options: LogFileSinkOptions = {}): LogFileSink {
+export function createLogFileSink(options: LogFileSinkOptions = {}, onDrain?: () => void): LogFileSink {
   const dir = options.dir ?? join(aveHome(), "logs");
   const retentionDays = options.retentionDays ?? LOG_RETENTION_DAYS;
   const maxBytes = options.maxBytes ?? LOG_MAX_BYTES;
@@ -274,7 +271,7 @@ export function createLogFileSink(options: LogFileSinkOptions = {}): LogFileSink
   let nextFile: string | undefined;
   const destination = createAsyncLogDestination({
     dest: currentFile, sync: false, mode: PRIVATE_FILE_MODE, maxLength: LOG_MAX_BYTES,
-  });
+  }, onDrain);
   const { stream: boom } = destination;
 
   let pruning = false;
@@ -315,12 +312,14 @@ export function createLogFileSink(options: LogFileSinkOptions = {}): LogFileSink
   return {
     flush: destination.flush,
     get pending() { return destination.pending; },
+    get dropped() { return destination.dropped; },
+    takeDropped: destination.takeDropped,
     get currentFile(): string {
       return currentFile;
     },
-    write(chunk: string): void {
+    write(chunk: string, countDrops?: boolean): void {
       if (closed) return;
-      destination.write(chunk);
+      destination.write(chunk, countDrops);
     },
     destroy(): void {
       if (closed) return;

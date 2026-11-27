@@ -6,18 +6,26 @@ through local diagnostics and renderer IPC.
 ## Application logs
 
 The application logger (`src/lib/logger.ts`) emits structured permission,
-approval, reviewer, hook, sandbox, and DLP events. Producers select bounded
-correlation IDs and decision metadata before logging. DLP events report counts
-while enforcement continues on the original input path.
+approval, reviewer, hook, sandbox, and DLP events. Tool calls use process-local
+keyed correlation IDs. DLP events report counts while enforcement continues on
+the original input path.
 
 Packaged and production hosts write ordinary logs under <ave home>/logs.
-Development file logging is opt-in. Files roll at 10 MiB with up to 20 per
-date and a 200 MiB total cap. Retention defaults to seven days and is set
+Development file logging is opt-in. Files roll after a completed write reaches
+10 MiB, with up to 20 per date and a 200 MiB total cap. Retention defaults to
+seven days and is set
 through diagnostics.logRetentionDays (1–365 days). Settings → Diagnostics
 exposes the live log tail and consent-gated, redacted support bundles.
 
-Historical audit files are left in place and ignored. Permission outcomes,
-approval binding, and shutdown are independent of log availability.
+Logging is best-effort. One file writer preserves order across rolls. Bounded
+destination buffers can drop records under backpressure. When delivery resumes
+or shutdown flushes the destinations, `app_log_loss` reports counts for each
+destination. Shutdown waits up to 500 ms and counts records since the last
+confirmed drain as unconfirmed on a stalled destination. The diagnostic itself
+is best-effort. Permission outcomes, approval binding, and shutdown status are
+independent of log delivery.
+
+Historical audit files are left in place and ignored.
 
 ## Plugin performance stats
 

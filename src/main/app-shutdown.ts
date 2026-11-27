@@ -3,8 +3,7 @@ import type { BootHost } from "../boot/host-runtime.js";
 import { browserTabRegistry } from "./browser/browser-tab-registry.js";
 // Ordered teardown runs under a hard deadline so a wedged subsystem cannot hang app.quit(). Unordered cleanup belongs in registerShutdownHook instead of
 // separate before-quit listeners.
-import { createLogger, closeFileLogSink } from "../lib/logger.js";
-import { flushPermissionLogs } from "../lib/permission-log.js";
+import { createLogger, closeFileLogSink, flushLogDestinations } from "../lib/logger.js";
 import { runShutdownRoutines } from "./shutdown-routines.js";
 import { stopLocalApiServer } from "./local-api-server.js";
 import { stopTailnetObserverServer } from "./tailnet-surface-server.js";
@@ -225,7 +224,7 @@ async function finishIncompleteBootShutdown(result: { status: "completed" | "fai
     await releaseOsSandboxAfterIncompleteShutdown(reason);
     log.error({ status: result.status }, "incomplete host bootstrap cleanup did not complete");
   }
-  await flushPermissionLogs();
+  await flushLogDestinations();
   closeFileLogSink();
   setAppShutdownCompleted(true);
   return result.status;
@@ -417,7 +416,7 @@ export async function runAppShutdownCleanup(options: {
         reason: options.reason,
       }, "shutdown cleanup timed out");
       // Flush the logger so the diagnostic above (and any preceding warn about which subsystem hung) makes it to disk before the process leaves.
-      await flushPermissionLogs();
+      await flushLogDestinations();
       // Close the file log sink last so no shutdown or timeout diagnostic is lost.
       closeFileLogSink();
       setAppShutdownCompleted(true);
@@ -442,7 +441,7 @@ export async function runAppShutdownCleanup(options: {
         options.reason,
         errorMessage(result.error),
       );
-      await flushPermissionLogs();
+      await flushLogDestinations();
       // LAST step (failed path): close the file sink after the failure diagnostic has been flushed. See the timed-out branch above.
       closeFileLogSink();
       setAppShutdownCompleted(true);
@@ -451,7 +450,7 @@ export async function runAppShutdownCleanup(options: {
 
     await shutdownHost?.close();
     // LAST step (happy path): flush any remaining buffered logs, then close the production log file sink after every shutdown step has logged.
-    await flushPermissionLogs();
+    await flushLogDestinations();
     closeFileLogSink();
     setAppShutdownCompleted(true);
     return "completed";

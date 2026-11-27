@@ -2,18 +2,34 @@ import sonicBoom, { type SonicBoom as SonicBoomInstance, type SonicBoomOpts } fr
 
 const SonicBoom = sonicBoom as unknown as new (options: SonicBoomOpts) => SonicBoomInstance;
 
-export function createAsyncLogDestination(options: SonicBoomOpts) {
+export function createAsyncLogDestination(options: SonicBoomOpts, onDrain?: () => void) {
   const stream = new SonicBoom(options);
   let pending = 0;
+  let dropped = 0;
+  let countDrop = true;
   stream.on("error", () => {});
-  stream.on("drop", () => { pending -= 1; });
-  stream.on("drain", () => { pending = 0; });
+  const recordDrop = () => {
+    pending -= 1;
+    if (countDrop) dropped += 1;
+  };
+  stream.on("drop", recordDrop);
+  stream.on("drain", () => {
+    pending = 0;
+    onDrain?.();
+  });
   return {
     stream,
     get pending() { return pending; },
-    write(chunk: string): void {
+    get dropped() { return dropped; },
+    takeDropped(): number {
+      const count = dropped;
+      dropped = 0;
+      return count;
+    },
+    write(chunk: string, countDrops = true): void {
+      countDrop = countDrops;
       pending += 1;
-      try { stream.write(chunk); } catch { pending -= 1; }
+      try { stream.write(chunk); } catch { recordDrop(); }
     },
     flush(): Promise<void> {
       return new Promise<void>((resolve) => {

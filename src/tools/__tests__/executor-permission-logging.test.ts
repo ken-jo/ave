@@ -90,13 +90,13 @@ it("does not change execution or repeat an effect when the logger throws", async
   expect(failing).toHaveBeenCalledWith(expect.objectContaining({ event: "permission_decision", decision: "allow" }));
 });
 
-it.each(["normal", "slow"])("logs safely to production console, file and support bundle with %s storage", async (storage) => {
+it.each(["normal", "slow", "blocked"])("logs safely to production console, file and support bundle with %s storage", async (storage) => {
   const root = mkdtempSync(join(tmpdir(), "ave-permission-log-sink-"));
   roots.push(root);
   const logsDir = join(root, "logs");
   const { VITEST: _vitest, ...inherited } = process.env;
   const script = [
-    "import { initFileLogSink, closeFileLogSink } from \"./src/lib/logger.ts\";",
+    "import { initFileLogSink, closeFileLogSink, flushLogDestinations } from \"./src/lib/logger.ts\";",
     "import { PermissionManager } from \"./src/permissions/permission-manager.ts\";",
     "import { ToolExecutor } from \"./src/tools/executor.ts\";",
     "import { ToolRegistry } from \"./src/tools/registry.ts\";",
@@ -110,7 +110,6 @@ it.each(["normal", "slow"])("logs safely to production console, file and support
     "import { installApprovalCardPresenters } from \"./src/permissions/approval-presentation.ts\";",
     "import { ApprovalGate, IPC_APPROVAL_REQUEST } from \"./src/permissions/approval-gate.ts\";",
     "import { logPermissionEvent } from \"./src/lib/permission-log.ts\";",
-    "import * as permissionLog from \"./src/lib/permission-log.ts\";",
     "import { drainToolInvocationsForExit } from \"./src/tools/invocation-ledger.ts\";",
     "import { configureHostResources } from \"./src/main/host-resources.ts\";",
     "configureHostResources({ resourcePath: join(process.cwd(), \"resources\"), isPackaged: false });",
@@ -145,16 +144,26 @@ it.each(["normal", "slow"])("logs safely to production console, file and support
     "  if ((await pending).choice !== \"allow-once\") throw new Error(\"Approval did not settle while storage was slow\");",
     "  uninstall();",
     "  if (await drainToolInvocationsForExit(25) !== \"committed\") throw new Error(\"Forced drain waited on storage\");",
+    "  logPermissionEvent(\"drop_probe\", { marker: canary, padding: \"x\".repeat(10 * 1024 * 1024) });",
+    "  logPermissionEvent(\"resumed_probe\", {});",
+    "  const reported = () => fs.readdirSync(logs).some((name) => fs.readFileSync(join(logs, name), \"utf8\").includes('\"event\":\"app_log_loss\"'));",
+    "  for (let i = 0; i < 50 && !reported(); i++) await new Promise((resolve) => setTimeout(resolve, 10));",
+    "  if (!reported()) throw new Error(\"Missing loss diagnostic after delivery resumed\");",
+    "}",
+    "if (storage === \"blocked\") {",
+    "  await flushLogDestinations();",
+    "  const write = fs.write;",
+    "  fs.write = (...args) => {",
+    "    if (args[0] > 2 && String(args[1]).includes('\"event\":\"shutdown_probe\"')) return;",
+    "    return write(...args);",
+    "  };",
     "}",
     "logPermissionEvent(\"shutdown_probe\", {});",
-    "await permissionLog.flushPermissionLogs?.();",
+    "const started = performance.now();",
+    "await flushLogDestinations();",
+    "if (storage === \"blocked\" && (performance.now() - started < 350 || performance.now() - started > 1500)) throw new Error(\"Flush missed the shutdown deadline\");",
     "closeFileLogSink();",
     "release();",
-    "if (storage === \"slow\") {",
-    "  await setImmediate();",
-    "  for (let i = 0; i < 300; i++) logPermissionEvent(\"queue_probe\", { index: i });",
-    "  await setImmediate();",
-    "}",
   ].join("\n");
   const { stdout, stderr } = await promisify(execFile)(process.execPath, [
     "--import", "tsx", "--input-type=module", "-e", script, "--", root, logsDir, CANARY, OPAQUE_PROVIDER_ID, storage,
@@ -171,14 +180,20 @@ it.each(["normal", "slow"])("logs safely to production console, file and support
     expect(decisions).toHaveLength(1);
     expect(output).not.toContain(OPAQUE_PROVIDER_ID);
     expect(output).not.toContain(CANARY);
-    expect(output).toContain('"event":"shutdown_probe"');
+    if (output === stdout || storage !== "blocked") expect(output).toContain('"event":"shutdown_probe"');
     correlationIds.push(decisions[0]?.match(/"correlationId":"([a-f0-9]{32})"/)?.[1]);
   }
   expect(correlationIds[0]).toMatch(/^[a-f0-9]{32}$/);
   expect(new Set(correlationIds).size).toBe(1);
   if (storage === "slow") {
-    const overflow = stdout.split("\n").find((line) => line.includes('"event":"permission_log_overflow"'));
-    expect(JSON.parse(overflow ?? "{}")).toMatchObject({ dropped: 44 });
+    const losses = stdout.split("\n").filter((line) => line.includes('"event":"app_log_loss"'));
+    expect(losses).toHaveLength(1);
+    expect(JSON.parse(losses[0] ?? "{}")).toMatchObject({ consoleDropped: 1, fileDropped: 1 });
+  }
+  if (storage === "blocked") {
+    const loss = stdout.split("\n").find((line) => line.includes('"event":"app_log_loss"'));
+    expect(JSON.parse(loss ?? "{}")).toMatchObject({ consoleUnconfirmed: 0, fileUnconfirmed: 1 });
+    expect(file).not.toContain('"event":"shutdown_probe"');
   }
   expect(stderr).not.toContain(CANARY);
   expect(stderr).not.toContain(OPAQUE_PROVIDER_ID);

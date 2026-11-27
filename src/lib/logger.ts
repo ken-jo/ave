@@ -16,6 +16,9 @@ const useJsonFormat =
 
 /** The mutable file target permits boot attachment without reconstructing the logger. */
 let fileSink: LogFileSink | null = null;
+let reportingLoss = false;
+let lossReportScheduled = false;
+let flushing = false;
 
 const LOG_LEVEL = process.env.LOG_LEVEL ?? ((isProduction || isPackagedElectron) ? "info" : "debug");
 
@@ -47,7 +50,7 @@ export const transport = !isTest && !useJsonFormat
 
 const fileStream = {
   write(chunk: string): void {
-    try { fileSink?.write(chunk); } catch { /* Logging cannot affect the caller. */ }
+    try { fileSink?.write(chunk, !reportingLoss); } catch { /* Logging cannot affect the caller. */ }
   },
 };
 
@@ -86,7 +89,7 @@ export function initFileLogSink(options: LogFileSinkOptions = {}): LogFileSink |
       fileSink.destroy();
       fileSink = null;
     }
-    fileSink = createLogFileSink(options);
+    fileSink = createLogFileSink(options, scheduleLossReport);
     return fileSink;
   } catch {
     fileSink = null;
@@ -109,10 +112,10 @@ function getBestEffortLogger(): pino.Logger {
       fd: execHeadless ? 2 : 1,
       sync: false,
       maxLength: 1024 * 1024,
-    });
+    }, scheduleLossReport);
     permissionConsole = destination;
     const pretty = useJsonFormat ? undefined : prettyStream.prettyFactory(prettyOptions);
-    const consoleStream = { write: (chunk: string) => destination.write(pretty ? pretty(chunk) : chunk) };
+    const consoleStream = { write: (chunk: string) => destination.write(pretty ? pretty(chunk) : chunk, !reportingLoss) };
     bestEffortLogger = pino({ level: LOG_LEVEL, redact }, pino.multistream([
       { stream: consoleStream, level: LOG_LEVEL as pino.Level },
       { stream: fileStream as NodeJS.WritableStream, level: LOG_LEVEL as pino.Level },
@@ -121,26 +124,53 @@ function getBestEffortLogger(): pino.Logger {
   return bestEffortLogger;
 }
 
+function scheduleLossReport(): void {
+  if (flushing || lossReportScheduled || (!fileSink?.dropped && !permissionConsole?.dropped)) return;
+  lossReportScheduled = true;
+  setImmediate(() => {
+    lossReportScheduled = false;
+    if (!flushing) reportLogLoss();
+  }).unref();
+}
+
+function reportLogLoss(consoleUnconfirmed = 0, fileUnconfirmed = 0): boolean {
+  const consoleDropped = permissionConsole?.takeDropped() ?? 0;
+  const fileDropped = fileSink?.takeDropped() ?? 0;
+  if (!consoleDropped && !fileDropped && !consoleUnconfirmed && !fileUnconfirmed) return false;
+  reportingLoss = true;
+  try {
+    getBestEffortLogger().warn({
+      event: "app_log_loss", consoleDropped, fileDropped, consoleUnconfirmed, fileUnconfirmed,
+    }, "app_log_loss");
+  } catch {
+    // A broken destination cannot affect logging callers.
+  } finally {
+    reportingLoss = false;
+  }
+  return true;
+}
+
 export async function flushLogDestinations(): Promise<void> {
-  const file = fileSink;
-  const console = permissionConsole;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((resolve) => { timer = setTimeout(resolve, 500); });
+  const flush = () => Promise.all([fileSink?.flush(), permissionConsole?.flush()]);
+  flushing = true;
   try {
     await Promise.race([
-      Promise.all([file?.flush(), console?.flush(), new Promise<void>((resolve) => {
+      Promise.all([flush(), new Promise<void>((resolve) => {
         try { logger.flush(() => resolve()); } catch { resolve(); }
       })]),
-      new Promise<void>((resolve) => { timer = setTimeout(resolve, 500); }),
+      deadline,
     ]);
     // Pending counts are records accepted since the last confirmed drain.
-    const undelivered = (file?.pending ?? 0) + (console?.pending ?? 0);
-    if (undelivered > 0) {
-      getBestEffortLogger().warn({ event: "permission_log_shutdown_loss", undelivered }, "permission_log_shutdown_loss");
+    if (reportLogLoss(permissionConsole?.pending, fileSink?.pending)) {
+      await Promise.race([flush(), deadline]);
     }
   } catch {
     // A broken destination cannot change shutdown status.
   } finally {
     clearTimeout(timer);
+    flushing = false;
   }
 }
 
