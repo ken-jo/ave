@@ -44,7 +44,7 @@ import { isRecord } from "../shared/is-record.js";
 import { MAX_HOOK_CONTEXT_CHARS } from "./script-hook-types.js";
 import { runHttpHook, type HttpHookDefinition, type HttpHookRuntime } from "./http-hook-runner.js";
 import type { HookCommandAuthorizer } from "./hook-command-policy.js";
-import { MAX_TIMER_DELAY_MS, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { containerHolderStopMs, MAX_TIMER_DELAY_MS } from "../shared/tool-timeout-policy.js";
 import { dirname, resolve } from "node:path";
 import { realpathSync, statSync } from "node:fs";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
@@ -317,12 +317,16 @@ export async function runOneHookScript(
   // container route only when that plan's shell substrate is a container, otherwise its existing srt-win or plain route.
   // The host classifies: the hook registry sets `confinement` and `pluginOwner` on every plugin hook.
   const userHook = !confinement && runnable.pluginOwner === undefined;
+  // On macOS a user hook admitted under a container shell plan is a holder of its own, whatever the extension setting:
+  // a user hook follows the shell setting. It never takes the wrap: if the holder route is not proven the holder start
+  // refuses and the hook is denied. A plan that confines nothing was already put to the shell card's floor.
+  const containerShellPlan = admittedPlan?.mode === "asrt" && admittedPlan.substrate === "mxc";
   const containedRoute = confinement
     ? isMxcExtensionBackendSelected()
-    : userHook && process.platform === "win32" && admittedPlan?.mode === "asrt" && admittedPlan.substrate === "mxc"
-      && isMxcExtensionBackendSelected();
-  if (containedRoute) {
-    // Git Bash cannot start in a container; refuse before admission, never switch this hook to another backend.
+    : userHook && containerShellPlan
+      && (process.platform === "win32" ? isMxcExtensionBackendSelected() : process.platform === "darwin");
+  if (containedRoute && process.platform === "win32") {
+    // Git Bash cannot start in a Windows container; refuse before admission, never switch this hook to another backend.
     try {
       assertMxcHolderNotBashForm(spawnCmd, shellFlavor);
     } catch (error) {
@@ -349,8 +353,9 @@ export async function runOneHookScript(
       return deny(`sandbox unavailable: ${(error as Error).message}`);
     }
   }
-  // The owner holds a POSIX hook's sandbox teardown; this runner sees only the handle. A Windows hook gets none.
-  const hookResources = process.platform === "win32" ? undefined : createManagedResources();
+  // The owner holds a POSIX hook's sandbox teardown; this runner sees only the handle. A Windows hook gets none, and
+  // neither does a contained hook, whose holder owns its own stop.
+  const hookResources = process.platform === "win32" || containedRoute ? undefined : createManagedResources();
   let noteProcessGroup: ((pid: number) => void) | undefined;
   let targetLaunch: SandboxTargetLaunch | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
@@ -856,7 +861,7 @@ async function runContainedHook(input: {
   let fault: unknown;
   // The hook's own timeout disposes the container; disposal itself is bounded by the process-tree kill budget. Past
   // both, completion has not settled: deny instead of waiting on it, and leave the holder to its lifetime owner.
-  const settleBudgetMs = input.timeoutMs + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
+  const settleBudgetMs = input.timeoutMs + containerHolderStopMs();
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
   const unsettled = new Promise<"unsettled">((resolveUnsettled) => {
     settleTimer = setTimeout(() => resolveUnsettled("unsettled"), settleBudgetMs);
