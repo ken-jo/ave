@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { _detectMxcMacShellSupportForTest, _seatbeltCanaryPassedForTest, buildSeatbeltShellRequest, mapSeatbeltShellRequest } from "../mxc-macos.js";
+import { _detectMxcMacShellSupportForTest, _seatbeltCanaryPassedForTest, buildSeatbeltShellRequest, mapSeatbeltShellRequest, udpSendOutcome } from "../mxc-macos.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-model.js";
 import type { MacRawIpVerdict } from "../../shared/sandbox-capability-info.js";
 
@@ -60,6 +60,15 @@ describe("macOS container shell detector", () => {
     // Even a canary that measured blocked cannot publish it on an unavailable container: that arm has no field.
     deps.canary.mockResolvedValue({ verdict: reason });
     await expect(_detectMxcMacShellSupportForTest(deps)).resolves.toEqual({ state: "unavailable", reason });
+  });
+});
+
+describe("macOS raw-IP UDP send code", () => {
+  it("counts only a policy refusal as refused-local; any other failed send was never sent", () => {
+    expect(udpSendOutcome("0")).toBe("sent");
+    expect(udpSendOutcome("1")).toBe("refused-local");
+    expect(udpSendOutcome("13")).toBe("refused-local");
+    for (const code of ["49", "51", "65", "61", "x", undefined]) expect(udpSendOutcome(code)).toBe("unmeasured");
   });
 });
 
