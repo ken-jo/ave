@@ -115,7 +115,7 @@ describe("A2A question control and causal propagation", () => {
       }
       const log = vi.fn();
       const self = { deps: { approvalGate: outcome === "unavailable" ? undefined : gate },
-        auditLogger: { log }, currentAbortController: controller };
+        currentAbortController: controller };
       const status = outcome === "replayed" ? "rejected" : outcome;
       const result = await gateCrossAgentInterceptedMetaTools(self as never, [toolUse as never], "[Sub-Agent]", "agent-message", sessionId);
       expect.soft(result).toEqual({ approved: [], denied: [expect.objectContaining({
@@ -454,7 +454,6 @@ describe("A2A question control and causal propagation", () => {
       bus = new A2AAgentMessageBus({
         parentBus: { deliverToParent: vi.fn() } as never,
         mailbox,
-        auditLogger: { log: vi.fn() } as never,
         resolveSender: async () => ({
           childSessionId: senderChildSessionId,
           originSessionId,

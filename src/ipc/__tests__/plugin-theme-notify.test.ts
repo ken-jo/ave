@@ -38,7 +38,7 @@ describe("host theme publication", () => {
     registerPluginsHandlers({
       pluginRuntime: { subscribePluginStateChange: vi.fn(() => () => undefined), getWildcardConfigOverride: () => undefined },
       pluginMarketplace: {}, settingsService: { get: () => ({}) },
-      auditLogger: { log: vi.fn() }, getMainWindow: () => null,
+      getMainWindow: () => null,
     } as never);
     const handler = handlers.get(CHANNELS.host.pluginThemeNotify);
     expect(handler).toBeTypeOf("function");

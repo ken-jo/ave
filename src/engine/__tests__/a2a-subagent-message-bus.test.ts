@@ -69,7 +69,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: vi.fn(async () => address),
     });
   });
@@ -137,7 +136,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -342,7 +340,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => null,
     });
 
@@ -391,7 +388,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -430,7 +426,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -801,7 +796,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: restartedAudit } as never,
       resolveChildAddress: async (parentSessionId) => ({
         parentSessionId,
         childSessionId: "sub-child",
@@ -819,7 +813,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       parentLoop: { getSessionId: () => "parent-session", hasActiveTurn: () => false } as unknown as ConversationLoop,
       mailbox: { enqueue, peek: async () => [], acknowledge: async () => 0 } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: false }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => resolved,
     });
     await expect(localBus.deliverToParent({
@@ -845,7 +838,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-other",
@@ -876,7 +868,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
         acknowledge: async () => 0,
       } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: false }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session", childSessionId: "sub-child", childTitle: "worker",
       }),
@@ -924,7 +915,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       } as unknown as ConversationLoop,
       mailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: false }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session", childSessionId: "sub-child", childTitle: "worker",
       }),
@@ -993,7 +983,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       } as unknown as ConversationLoop,
       mailbox: { enqueue, peek: async () => entries, acknowledge } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: false }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session", childSessionId: "sub-child", childTitle: "worker",
       }),
@@ -1015,7 +1004,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       parentLoop: { getSessionId: () => "parent-session", hasActiveTurn: () => false } as unknown as ConversationLoop,
       mailbox: { enqueue, peek: async () => entries, acknowledge: async () => 0 } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: true }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session", childSessionId: "sub-child", childTitle: "worker",
       }),
@@ -1052,7 +1040,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       } as unknown as ConversationLoop,
       mailbox: { enqueue, peek, acknowledge: async () => 0 } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: true }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -1086,7 +1073,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       } as unknown as ConversationLoop,
       mailbox: { enqueue, peek: async () => entries, acknowledge: async () => 0 } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: false }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -1140,7 +1126,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       } as unknown as ConversationLoop,
       mailbox: { enqueue, peek, acknowledge: async () => 0 } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: true }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -1186,7 +1171,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       } as unknown as ConversationLoop,
       mailbox: { enqueue, peek: async () => entries, acknowledge: async () => 0 } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: false }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -1221,7 +1205,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
         acknowledge: async () => 0,
       } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: true }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session", childSessionId: "sub-child", childTitle: "worker",
       }),
@@ -1279,7 +1262,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
         acknowledge: async () => 0,
       } as unknown as SubAgentMessageMailbox,
       settingsService: { get: () => ({ subAgentAutonomousWake: true }) } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session", childSessionId: "sub-child", childTitle: "worker",
       }),
@@ -1317,7 +1299,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       settingsService: {
         get: () => ({ subAgentAutonomousWake: false }),
       } as never,
-      auditLogger: { log: audit } as never,
       resolveChildAddress: async () => ({
         parentSessionId: "parent-session",
         childSessionId: "sub-child",
@@ -1475,7 +1456,6 @@ function createPersistedBusFixture(
     settingsService: {
       get: () => ({ subAgentAutonomousWake: false }),
     } as never,
-    auditLogger: { log: audit } as never,
     resolveChildAddress,
     releaseEphemeralChildAddress,
   });

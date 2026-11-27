@@ -1,7 +1,7 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -15,13 +15,13 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import type { ApprovalGate } from "../../permissions/approval-gate.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
+import { collectPermissionEvents, watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 
 const COMMAND = resolve(__dirname, "../../../test/fixtures/hooks/influence-command.cjs");
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await cleanupTmpDir(root); });
 
-function setup(event: "PreToolUse" | "PermissionRequest", mode = "mutate", audit?: AuditLogger) {
+function setup(event: "PreToolUse" | "PermissionRequest", mode = "mutate") {
   const root = mkdtempSync(join(tmpdir(), "ave-hook-mutation-"));
   roots.push(root);
   const registry = new ToolRegistry();
@@ -37,7 +37,7 @@ function setup(event: "PreToolUse" | "PermissionRequest", mode = "mutate", audit
   bindHookConfigPaths(entries, dirname(COMMAND));
   manager.setTrustedRegistry([], entries);
   const requestAndWait = answeringRequestAndWait<{ id: string; args?: Record<string, unknown> }>(() => ({ choice: "deny-once" as const }));
-  const executor = new ToolExecutor(registry, undefined, permissions, undefined, { requestAndWait } as unknown as ApprovalGate, manager, audit);
+  const executor = new ToolExecutor(registry, undefined, permissions, undefined, { requestAndWait } as unknown as ApprovalGate, manager);
   const pre = vi.spyOn(manager, "runPreToolUse");
   const permission = vi.spyOn(manager, "runPermissionRequest");
   return { root, manager, execute, requestAndWait, pre, permission, run: () => executor.executeAll([{ id: "mutated-call", name: "mutation_probe", input: {} }], {
@@ -84,29 +84,27 @@ describe("hook replacement permission reentry", () => {
   });
 
   it("ends bounded replacements with the rule's one deny row and its one denial, and no host row", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ave-hook-mutation-audit-"));
-    roots.push(root);
-    const audit = new AuditLogger(join(root, "audit"));
-    await audit.setupPermissionAuditChain("ab".repeat(32));
+    const capture = collectPermissionEvents();
     try {
-      const probe = setup("PreToolUse", "loop", audit);
+      const probe = setup("PreToolUse", "loop");
       const lifecycle = vi.spyOn(probe.manager, "runLifecycleEvent");
       const [result] = await probe.run();
       expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("could not safely restart") });
-      await audit.close();
-      const rows = readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
-        .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.toolUseId === "mutated-call" && row.decision !== "ask");
-      expect(rows).toEqual([expect.objectContaining({ decision: "deny",
-        denyReasons: [{ reason: "Hook input mutation could not safely restart permission classification", source: "hook-input-mutation" }] })]);
+
+      expect(capture.events.filter((event) => event.event === "permission_decision" && event.toolUseId === "mutated-call" && event.decision !== "ask")).toEqual([
+        expect.objectContaining({ event: "permission_decision", decision: "deny", terminalKind: "denied" }),
+      ]);
       expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([["PermissionDenied", "mutation-session", "user-keyboard",
         { toolName: "mutation_probe", denyReason: { source: "tool-executor", reason: "Hook input mutation could not safely restart permission classification" } },
         expect.anything()]]);
     } finally {
-      await audit.close();
+      capture.restore();
     }
   });
 
-  it("ends bounded replacements through the ledger when the audit chain is not set up, so no host row replaces the rule's", async () => {
+  it("ends bounded replacements through the ledger even when the log sink throws", async () => {
+    const sink = watchPermissionEvents(() => { throw new Error("Log sink unavailable"); });
+    onTestFinished(() => sink.mockRestore());
     const probe = setup("PreToolUse", "loop");
     const lifecycle = vi.spyOn(probe.manager, "runLifecycleEvent");
     const [result] = await probe.run();

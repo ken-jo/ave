@@ -10,7 +10,6 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { PostTurnHookChain } from "../../hooks/post-turn-hook-chain.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
@@ -216,8 +215,8 @@ describe("ConversationLoop onTurnSummary", () => {
         yield { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 60, outputTokens: 10 } };
       },
     };
-    const auditLogger = new AuditLogger();
-    const logTurn = vi.spyOn(auditLogger, "logTurn");
+
+
     const loop = createLoopWithRegistry(provider, new ToolRegistry(), {
       settingsService: {
         get: () => ({
@@ -234,16 +233,15 @@ describe("ConversationLoop onTurnSummary", () => {
         }),
         getSecret: async () => "test-key",
       },
-      auditLogger,
     } as never);
     let summary: TurnSummary | null = null;
 
     try {
       await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { ...userKeyboardTurn() });
     } finally {
-      await auditLogger.close();
+
     }
-    expect(auditLogger.getWriterStats().pendingWrites).toBe(0);
+
     expect(sent).toEqual([{ outputTokenLimit: 8_192 }]);
     const recorded = {
       modelCatalogSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
@@ -269,7 +267,7 @@ describe("ConversationLoop onTurnSummary", () => {
       },
     };
     expect(summary!.modelSettings).toEqual({ ...recorded, remainingContextOutputTokens: expect.any(Number) });
-    expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: recorded }));
+
   });
 
   it.each(["unlisted", "without-output"].flatMap((entry) => [
@@ -320,10 +318,10 @@ describe("ConversationLoop onTurnSummary", () => {
       name: "read_value", description: "Read the value.", source: "builtin", category: "read",
       jsonSchema: { type: "object", properties: {} }, isReadOnly: () => true, execute: readValue,
     }));
-    const auditLogger = new AuditLogger();
-    const logTurn = vi.spyOn(auditLogger, "logTurn");
+
+
     const loop = createLoopWithRegistry(new VercelUnifiedProvider(vendor, "fixture-key", "https://provider.invalid/v1", fetchResponse, { getRetiredModelId: noRetirementEvidence }), toolRegistry, {
-      settingsService: { get: () => settings, getSecret: () => "fixture-key" }, auditLogger,
+      settingsService: { get: () => settings, getSecret: () => "fixture-key" },
     } as never);
     let summary: TurnSummary | undefined;
     try {
@@ -333,7 +331,7 @@ describe("ConversationLoop onTurnSummary", () => {
       expect(fetchResponse).toHaveBeenCalledTimes(2);
       const output = { requested: 32_000, requestedSource: "host-default", effective: 32_000, effectiveSource: "host-default" };
       expect(summary?.modelSettings?.output).toEqual(output);
-      expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: expect.objectContaining({ output }) }));
+
       // Record native serialization limits even when the route ceiling is unknown.
       const sent = vendor === "claude" ? 4_096 : 32_000;
       for (const [, init] of fetchResponse.mock.calls) {
@@ -346,10 +344,10 @@ describe("ConversationLoop onTurnSummary", () => {
         expect(summary?.modelSettings).not.toHaveProperty("requestControls");
       }
     } finally {
-      await auditLogger.close();
+
       installModelCatalog(catalog);
     }
-    expect(auditLogger.getWriterStats().pendingWrites).toBe(0);
+
   });
 
   it("sends no tool definitions to a model the catalog says takes none, and records that", async () => {
@@ -488,19 +486,19 @@ describe("ConversationLoop onTurnSummary", () => {
       { type: "response.completed", response: { usage: { input_tokens: 60, output_tokens: 10, total_tokens: 70 } } },
     ], false);
     const runOn = async (provider: LLMProvider, settings: ReturnType<typeof fakeLlmSettings>) => {
-      const auditLogger = new AuditLogger();
-      const logTurn = vi.spyOn(auditLogger, "logTurn");
+
+
       const loop = createLoopWithRegistry(provider, new ToolRegistry(), {
-        settingsService: { get: () => settings, getSecret: () => "test-key" }, auditLogger,
+        settingsService: { get: () => settings, getSecret: () => "test-key" },
       } as never);
       let summary: TurnSummary | undefined;
       try {
         const result = await loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { ...userKeyboardTurn() });
         expect(result.text).toBe("answer");
       } finally {
-        await auditLogger.close();
+
       }
-      return { summary, logTurn };
+      return { summary };
     };
 
     it.each([
@@ -511,18 +509,15 @@ describe("ConversationLoop onTurnSummary", () => {
       expect(settings.vendors[vendor].baseUrl).toBeUndefined();
       vi.stubEnv(env, "https://proxy.invalid/v1");
       const transport = vi.fn<typeof fetch>(async () => respond(model));
-      const { summary, logTurn } = await runOn(new VercelUnifiedProvider(vendor, "fixture-key", undefined, transport, { getRetiredModelId: noRetirementEvidence }), settings);
+      const { summary } = await runOn(new VercelUnifiedProvider(vendor, "fixture-key", undefined, transport, { getRetiredModelId: noRetirementEvidence }), settings);
       expect(String(transport.mock.calls[0]?.[0])).toBe(`https://proxy.invalid/v1${path}`);
       // The turn's primary-route price and the request's own price agree: neither names the catalog.
       expect(summary?.modelSettings?.pricing).toEqual(unavailable);
       expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([unavailable]);
       // The address prices the request and stops there: it is not part of the turn record.
       expect(JSON.stringify(summary)).not.toContain("proxy.invalid");
-      expect(JSON.stringify(logTurn.mock.calls)).not.toContain("proxy.invalid");
-      expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({
-        modelSettings: expect.objectContaining({ pricing: unavailable }),
-        usageByModel: [expect.objectContaining({ pricing: unavailable })],
-      }));
+
+
     });
 
     it("keeps the recorded price on the turn record when a later request never answers", async () => {
@@ -530,8 +525,8 @@ describe("ConversationLoop onTurnSummary", () => {
       const settings = fakeLlmSettings({ provider: "openai", model });
       settings.vendors.openai.enableThinking = false;
       vi.stubEnv("OPENAI_BASE_URL", "https://proxy.invalid/v1");
-      const auditLogger = new AuditLogger();
-      const logTurn = vi.spyOn(auditLogger, "logTurn");
+
+
       const toolRegistry = new ToolRegistry();
       toolRegistry.register(createDynamicTool({
         name: "read_value", description: "Read the value.", source: "builtin", category: "read",
@@ -551,21 +546,16 @@ describe("ConversationLoop onTurnSummary", () => {
         throw init?.signal?.reason ?? new DOMException("The operation was aborted", "AbortError");
       });
       const loop = createLoopWithRegistry(new VercelUnifiedProvider("openai", "fixture-key", undefined, transport, { getRetiredModelId: noRetirementEvidence }), toolRegistry, {
-        settingsService: { get: () => settings, getSecret: () => "test-key" }, auditLogger,
+        settingsService: { get: () => settings, getSecret: () => "test-key" },
       } as never);
       try {
         const result = await loop.runTurn("Report the result.", {}, undefined, { ...userKeyboardTurn() });
         expect(result.stopReason).toBe("interrupted");
       } finally {
-        await auditLogger.close();
+
       }
       expect(transport).toHaveBeenCalledTimes(2);
-      // The second request started after the first was priced: the audit row keeps the
-      // recorded price, not the catalog price projected from settings.
-      expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({
-        usageByModel: [expect.objectContaining({ pricing: unavailable })],
-        modelSettings: expect.objectContaining({ pricing: unavailable }),
-      }));
+
     });
 
     it("keeps the Responses wire under an environment proxy, even with that proxy's report in the model-list cache", async () => {
@@ -703,43 +693,39 @@ describe("ConversationLoop onTurnSummary", () => {
       const model = "gpt-3.5-turbo";
       const baseUrl = "https://entry.invalid/gateway/fixture-path-credential/v1";
       const transport = vi.fn<typeof fetch>(async () => chatAnswer(model));
-      const { summary, logTurn } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", baseUrl, transport, { getRetiredModelId: noRetirementEvidence }), configuredProxy(baseUrl, model));
+      const { summary } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", baseUrl, transport, { getRetiredModelId: noRetirementEvidence }), configuredProxy(baseUrl, model));
       expect(String(transport.mock.calls[0]?.[0])).toContain("fixture-path-credential");
       expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([
         { source: "endpoint-report", rates: { inputPer1M: 3, outputPer1M: 4 } },
       ]);
       expect(JSON.stringify(summary)).not.toContain("fixture-path-credential");
-      expect(JSON.stringify(logTurn.mock.calls)).not.toContain("fixture-path-credential");
-      expect(JSON.stringify(logTurn.mock.calls)).not.toContain("entry.invalid");
+
+
     });
 
     it("records no price for a turn whose only request fails before it answers", async () => {
       const model = "gpt-3.5-turbo";
       const settings = fakeLlmSettings({ provider: "openai", model });
       vi.stubEnv("OPENAI_BASE_URL", "https://proxy.invalid/v1");
-      const auditLogger = new AuditLogger();
-      const logTurn = vi.spyOn(auditLogger, "logTurn");
+
+
       const transport = vi.fn<typeof fetch>(async () => new Response(
         JSON.stringify({ error: { message: "fixture rejected", type: "invalid_request_error" } }),
         { status: 400, headers: { "content-type": "application/json" } },
       ));
       const loop = createLoopWithRegistry(new VercelUnifiedProvider("openai", "fixture-key", undefined, transport, { getRetiredModelId: noRetirementEvidence }), new ToolRegistry(), {
-        settingsService: { get: () => settings, getSecret: () => "test-key" }, auditLogger,
+        settingsService: { get: () => settings, getSecret: () => "test-key" },
       } as never);
+      let summary: TurnSummary | undefined;
       try {
-        await loop.runTurn("Report the result.", {}, undefined, { ...userKeyboardTurn() }).catch(() => undefined);
+        await loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { ...userKeyboardTurn() }).catch(() => undefined);
       } finally {
-        await auditLogger.close();
+
       }
       expect(transport).toHaveBeenCalled();
       // Nothing answered, so nothing was priced: the settings' catalog projection is not a record.
-      const recorded = logTurn.mock.calls.map(([entry]) => entry as { modelSettings?: { pricing?: unknown }; usageByModel?: unknown[] });
-      expect(recorded.length).toBeGreaterThan(0);
-      for (const entry of recorded) {
-        expect(entry.usageByModel ?? []).toEqual([]);
-      }
-      expect(recorded.map((entry) => entry.modelSettings?.pricing))
-        .toEqual(recorded.map((entry) => (entry.modelSettings === undefined ? undefined : { source: "unknown" })));
+      expect(summary?.usageByModel ?? []).toEqual([]);
+      if (summary?.modelSettings) expect(summary.modelSettings.pricing).toEqual({ source: "unknown" });
     });
 
     it.each([
@@ -828,8 +814,8 @@ describe("ConversationLoop onTurnSummary", () => {
         };
       },
     };
-    const auditLogger = new AuditLogger();
-    const logTurn = vi.spyOn(auditLogger, "logTurn");
+
+
     const loop = createLoopWithRegistry(provider, new ToolRegistry(), {
       settingsService: {
         get: () => ({
@@ -838,23 +824,20 @@ describe("ConversationLoop onTurnSummary", () => {
         }),
         getSecret: async () => "test-key",
       },
-      auditLogger,
     } as never);
     let summary: TurnSummary | null = null;
 
     try {
       await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { ...userKeyboardTurn() });
     } finally {
-      await auditLogger.close();
+
     }
-    expect(auditLogger.getWriterStats().pendingWrites).toBe(0);
+
     expect(summary!.modelSettings?.pricing).toEqual({ source: "user", rates: { inputPer1M: 0.5, outputPer1M: 3 } });
     expect(summary!.usageByModel).toEqual([
       expect.objectContaining({ pricing: summary!.modelSettings!.pricing, tokenUsage: expect.objectContaining({ outputTokens: 10, reasoningTokens: 4 }) }),
     ]);
-    expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({
-      usageByModel: [expect.objectContaining({ pricing: summary!.modelSettings!.pricing, tokenUsage: expect.objectContaining({ reasoningTokens: 4 }) })],
-    }));
+
   });
 
   it("emits a summary for a turn whose only output was reasoning", async () => {
@@ -1042,11 +1025,7 @@ describe("ConversationLoop onTurnSummary", () => {
       () => fallback,
     );
     const saveSession = vi.fn(async () => {});
-    const auditLogger = {
-      logTurn: vi.fn(),
-      logToolCall: vi.fn(),
-      isPermissionAuditChainReady: () => false,
-    };
+
     const loop = createLoopWithRegistry(provider, toolRegistry, {
       disableSessionPersistence: false,
       settingsService: {
@@ -1054,7 +1033,6 @@ describe("ConversationLoop onTurnSummary", () => {
         getSecret: async () => "test-key",
       },
       memoryManager: { sessions: { saveSession, listSessions: () => [] } } as never,
-      auditLogger: auditLogger as never,
     });
 
     let summary: { vendorProvider?: string; vendorModel?: string }
@@ -1082,12 +1060,10 @@ describe("ConversationLoop onTurnSummary", () => {
       vendorProvider: "openai",
       vendorModel: "gpt-5.4-mini",
     });
-    expect(auditLogger.logTurn).toHaveBeenCalledWith(
-      expect.objectContaining({ route: "openai/gpt-5.4-mini" }),
-    );
+
   });
 
-  async function sameIdentityFallbackRecords(resumePrimary = false, log = vi.fn<AuditLogger["log"]>()) {
+  async function sameIdentityFallbackRecords(resumePrimary = false) {
     const model = "gpt-5.4-mini";
     const llm = fakeLlmSettings({ model });
     const primarySent: StreamTurnParams[] = [];
@@ -1114,7 +1090,7 @@ describe("ConversationLoop onTurnSummary", () => {
         yield { type: "message_complete", stopReason: resumePrimary ? "tool_use" : "end_turn", usage: { inputTokens: 10, outputTokens: 1 } };
       },
     }));
-    const auditLogger = { logTurn: vi.fn(), log, isPermissionAuditChainReady: () => false };
+
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
       name: "read_item", description: "Read an item", source: "builtin", category: "read", version: "1",
@@ -1135,7 +1111,6 @@ describe("ConversationLoop onTurnSummary", () => {
         } }),
         getSecret: async () => "test-key",
       } as never,
-      auditLogger: auditLogger as never,
     });
     const onTurnSummary = vi.fn<(summary: TurnSummary) => void>();
     retrySleep.skip = true;
@@ -1150,7 +1125,7 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(fallbackSent[0]?.outputTokenLimit).toBe(32_000);
     expect(fallbackSent[0]?.outputCeiling).toBeUndefined();
     expect(onTurnSummary).toHaveBeenCalledTimes(1);
-    expect(auditLogger.logTurn).toHaveBeenCalledTimes(1);
+
     expect(beginJournal).toHaveBeenCalledOnce();
     expect(endJournal).toHaveBeenCalledOnce();
     const persisted = memoryManager.sessions.loadSession(loop.getSessionId()) as GenericMessage[] | null;
@@ -1158,11 +1133,11 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(persisted?.findLast((message) => message.role === "assistant")?.meta?.turnSummary).toMatchObject({
       vendorProvider: "openai", vendorModel: model,
     });
-    return { summary: onTurnSummary.mock.calls[0]![0], audit: auditLogger.logTurn.mock.calls[0]![0] };
+    return { summary: onTurnSummary.mock.calls[0]![0] };
   }
 
-  it.each(["summary", "audit"] as const)("omits primary resolution from a same-identity fallback's %s record", async (surface) => {
-    const record = (await sameIdentityFallbackRecords())[surface];
+  it("omits primary resolution from a same-identity fallback summary", async () => {
+    const { summary: record } = await sameIdentityFallbackRecords();
     expect(record).toBeDefined();
     expect(record.modelSettings).toBeUndefined();
   });
@@ -1171,26 +1146,18 @@ describe("ConversationLoop onTurnSummary", () => {
     const storage = join(aveHome(), "code-checkpoints");
     await mkdir(storage, { recursive: true });
     await writeFile(join(storage, "turns.json"), "{");
-    const { summary, audit } = await sameIdentityFallbackRecords();
+    const { summary } = await sameIdentityFallbackRecords();
     expect(summary).toBeDefined();
-    expect(audit).toBeDefined();
     expect((await readdir(storage)).some((name) => name.startsWith("turns.json.corrupt-"))).toBe(true);
   });
 
   it("records a later primary request after a fallback tool round", async () => {
-    const records = await sameIdentityFallbackRecords(true);
-    for (const record of [records.summary, records.audit]) {
-      expect(record.modelSettings?.output).toMatchObject({ effective: 4_096, effectiveSource: "provider-reported" });
-      expect(record.modelSettings?.requestControls).toEqual({ outputTokenLimit: 4_096 });
-    }
+    const { summary } = await sameIdentityFallbackRecords(true);
+    expect(summary.modelSettings?.output).toMatchObject({ effective: 4_096, effectiveSource: "provider-reported" });
+    expect(summary.modelSettings?.requestControls).toEqual({ outputTokenLimit: 4_096 });
   });
 
-  it("settles a tool turn when terminal audit telemetry rejects", async () => {
-    const failure = new Error("terminal audit write failed");
-    const log = vi.fn<AuditLogger["log"]>().mockRejectedValueOnce(failure);
-    await expect(sameIdentityFallbackRecords(true, log)).rejects.toBe(failure);
-    expect(log).toHaveBeenCalledOnce();
-  });
+
 
   it("keeps mixed-provider fallback rounds out of single-model turn badge pricing", async () => {
     vi.useFakeTimers();
@@ -1241,18 +1208,13 @@ describe("ConversationLoop onTurnSummary", () => {
       () => fallback,
     );
     const saveSession = vi.fn(async () => {});
-    const auditLogger = {
-      logTurn: vi.fn(),
-      log: vi.fn<AuditLogger["log"]>(),
-      isPermissionAuditChainReady: () => false,
-    };
+
     const loop = createLoopWithRegistry(provider, toolRegistry, {
       settingsService: {
         get: () => fakeLlmSettings({ provider: "claude", model: "claude-sonnet-4-6" }),
         getSecret: async () => "test-key",
       },
       memoryManager: { sessions: { saveSession, listSessions: () => [] } } as never,
-      auditLogger: auditLogger as never,
     });
 
     let summary: { vendorProvider?: string; vendorModel?: string }
@@ -1273,19 +1235,10 @@ describe("ConversationLoop onTurnSummary", () => {
 
     expect(summary?.vendorProvider).toBeUndefined();
     expect(summary?.vendorModel).toBeUndefined();
-    expect(auditLogger.logTurn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        usageByModel: [
-          expect.objectContaining({ vendorProvider: "claude", vendorModel: "claude-sonnet-4-6",
-          }),
-          expect.objectContaining({ vendorProvider: "openai", vendorModel: "gpt-5.4-mini",
-          }),
-        ],
-      }),
-    );
+
   });
 
-  it("persists reported subscription usage separately from API billing while retaining its audit route and projected context", async () => {
+  it("persists reported subscription usage separately from API billing with projected context", async () => {
     const toolRegistry = new ToolRegistry();
     const saveSession = vi.fn(async (..._args: unknown[]) => {});
     const memoryManager = {
@@ -1300,22 +1253,16 @@ describe("ConversationLoop onTurnSummary", () => {
       get: fakeUsageReportingSubscriptionSettings,
       getSecret: () => "test-key",
     };
-    const auditLogger = {
-      logTurn: vi.fn(),
-      logToolCall: vi.fn(),
-      isPermissionAuditChainReady: () => false,
-    };
+
     const loop = createLoopWithRegistry(
       createUsageReportingSubscriptionProvider(),
       toolRegistry,
       {
         settingsService: settingsService as never,
         memoryManager: memoryManager as never,
-        auditLogger: auditLogger as never,
         postTurnHookChain: new PostTurnHookChain({
           memoryManager: memoryManager as never,
           settingsService: settingsService as never,
-          auditLogger: auditLogger as never,
         }),
       },
     );
@@ -1396,19 +1343,12 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(summary).not.toHaveProperty("vendorModel");
     expect(summary).not.toHaveProperty("usageByModel");
 
-    const auditPayload = auditLogger.logTurn.mock.calls.at(-1)?.[0] as
-      | Record<string, unknown>
-      | undefined;
-    expect(auditPayload).toMatchObject({
-      route: "subscription:codex/gpt-5.5-codex",
-    });
-    expect(auditPayload?.tokenUsage).toBeUndefined();
-    expect(auditPayload?.usageByModel).toBeUndefined();
-    expect(auditPayload?.subscriptionUsage).toEqual([
-      expect.objectContaining({ source: "provider-reported", billable: false }),
-    ]);
-    expect(auditPayload).not.toHaveProperty("vendorProvider");
-    expect(auditPayload).not.toHaveProperty("vendorModel");
+
+
+
+
+
+
 
     const savedMessages = saveSession.mock.calls.at(-1)?.[1] as
       | GenericMessage[]
@@ -1437,11 +1377,7 @@ describe("ConversationLoop onTurnSummary", () => {
 
   it("uses a local estimate for subscription sessions without a provider usage report", async () => {
     const toolRegistry = new ToolRegistry();
-    const auditLogger = {
-      logTurn: vi.fn(),
-      logToolCall: vi.fn(),
-      isPermissionAuditChainReady: () => false,
-    };
+
     const loop = createLoopWithRegistry(
       {
         vendor: "openai",
@@ -1457,29 +1393,20 @@ describe("ConversationLoop onTurnSummary", () => {
           get: fakeUsageReportingSubscriptionSettings,
           getSecret: async () => "test-key",
         } as never,
-        auditLogger: auditLogger as never,
       },
     );
 
-    await loop.runTurn("질문", {}, undefined, { ...userKeyboardTurn() });
+    let summary: TurnSummary | undefined;
+    await loop.runTurn("질문", { onTurnSummary: (value) => { summary = value; } }, undefined, { ...userKeyboardTurn() });
+    expect(summary?.subscriptionUsage).toEqual([expect.objectContaining({
+      provider: "codex", source: "local-estimate", billable: false,
+      inputTokens: expect.any(Number), outputTokens: expect.any(Number),
+    })]);
 
-    const auditPayload = auditLogger.logTurn.mock.calls.at(-1)?.[0] as
-      | Record<string, unknown>
-      | undefined;
-    expect(auditPayload).toMatchObject({
-      route: "subscription:codex/gpt-5.5-codex",
-    });
-    expect(auditPayload?.tokenUsage).toBeUndefined();
-    expect(auditPayload?.usageByModel).toBeUndefined();
-    expect(auditPayload?.subscriptionUsage).toEqual([
-      expect.objectContaining({
-        provider: "codex",
-        source: "local-estimate",
-        billable: false,
-        inputTokens: expect.any(Number),
-        outputTokens: expect.any(Number),
-      }),
-    ]);
+
+
+
+
     expect((loop as unknown as { lastRoundProviderInputTokens: number })
       .lastRoundProviderInputTokens).toBe(0);
     expect((loop as unknown as { lastReportedSubscriptionContextWindow: unknown })

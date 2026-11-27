@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
+import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 import { OVERLAY_V1 } from "../../../shared/ipc-channels.js";
 
@@ -55,7 +56,6 @@ async function setup(opts?: { queueGuidance?: () => string; sessionId?: string }
     toolRegistry: { size: 0, findByName: vi.fn() },
     getPluginToolInvoker: () => vi.fn(),
     settingsService: { get: vi.fn(() => ({})) },
-    auditLogger: { log: vi.fn() },
     pluginMarketplace: { list: vi.fn(async () => []) },
     conversationLoop,
     findLoopBySessionId: vi.fn((sessionId: string) => {
@@ -86,7 +86,9 @@ beforeEach(() => {
 
 describe("ave:mcp:ui-message — sender gate", () => {
   it("rejects an unauthorized sender frame before touching the conversation", async () => {
-    const { deps, serverId, queueGuidance, fire, send } = await setup();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { serverId, queueGuidance, fire, send } = await setup();
     const handler = handlers.get(CHANNEL)!;
 
     const result = await handler(
@@ -100,7 +102,7 @@ describe("ave:mcp:ui-message — sender gate", () => {
     expect(queueGuidance).not.toHaveBeenCalled();
     expect(fire).not.toHaveBeenCalled();
     expect(stagedCards(send)).toHaveLength(0);
-    expect(deps.auditLogger.log).toHaveBeenCalled(); // auditUnauthorized
+    expect(capture.events).toContainEqual({ event: "ipc_sender_refused", channel: CHANNEL });
   });
 
   it("rejects an app proxy frame on the host-renderer-only channel", async () => {

@@ -49,7 +49,6 @@ function readLocale(value: unknown): string {
 }
 
 export function registerTourHandlers(deps: IpcDeps): void {
-  const { auditLogger } = deps;
 
   // Persist later answers for the next launch; a registration-local set prevents reasking during this launch.
   const answeredThisLaunch = new Set<string>();
@@ -107,7 +106,7 @@ export function registerTourHandlers(deps: IpcDeps): void {
       | { ok: false; error: string; message: string }
     > => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.onboarding.listPending, e);
+        auditUnauthorized(CHANNELS.onboarding.listPending);
         return {
           ok: false,
           error: UNAUTHORIZED_FRAME.error,
@@ -138,7 +137,7 @@ export function registerTourHandlers(deps: IpcDeps): void {
       | { ok: false; error: string; message: string }
     > => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.onboarding.answer, e);
+        auditUnauthorized(CHANNELS.onboarding.answer);
         return {
           ok: false,
           error: UNAUTHORIZED_FRAME.error,
@@ -190,7 +189,7 @@ export function registerTourHandlers(deps: IpcDeps): void {
       | { ok: false; error: string; message: string }
     > => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.tour.getState, e);
+        auditUnauthorized(CHANNELS.tour.getState);
         return {
           ok: false,
           error: UNAUTHORIZED_FRAME.error,
@@ -225,7 +224,7 @@ export function registerTourHandlers(deps: IpcDeps): void {
         | { ok: false; error: string; message: string }
       > => {
         if (!validateHostRendererSender(e)) {
-          auditUnauthorized(auditLogger, channel, e);
+          auditUnauthorized(channel);
           return {
             ok: false,
             error: UNAUTHORIZED_FRAME.error,
@@ -267,7 +266,7 @@ export function registerTourHandlers(deps: IpcDeps): void {
       | { ok: false; error: string; message: string }
     > => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.tour.start, e);
+        auditUnauthorized(CHANNELS.tour.start);
         return {
           ok: false,
           error: UNAUTHORIZED_FRAME.error,

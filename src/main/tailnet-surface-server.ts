@@ -49,7 +49,6 @@ import {
   type TailnetShareActorId,
 } from "./tailnet-pairing-share-store.js";
 import { TAILNET_WORK_DECISION_PATH } from "../shared/tailnet-work-decisions.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import { assertTailnetListenerPortAllowed, readTailnetListenerPortPolicy } from "../permissions/tailnet-listener-policy.js";
 import { getWindowsTailnetPortHint } from "./tailnet-port-hint.js";
 
@@ -165,8 +164,6 @@ export interface StartTailnetObserverServerOptions {
   readonly log?: (message: string) => void;
   // Where automatic own-device grants are recorded. The listener's log is a developer-facing stream; an admission that skipped the approval click belongs
   // in the same audit log every other grant of this authority already lands in.
-  readonly auditLogger?: AuditLogger;
-  // @internal deterministic lifecycle injection for tests.
   readonly dependencies?: Partial<TailnetObserverServerDependencies>;
 }
 
@@ -568,7 +565,6 @@ export async function setTailnetOwnDeviceAdmission(
   overrides: {
     readonly runtime?: TailnetPairedSharingRuntime | null;
     readonly namespace?: FeatureNamespaceHandle;
-    readonly auditLogger?: AuditLogger;
   } = {},
 ): Promise<void> {
   const runtime = overrides.runtime === undefined ? activePairedSharingRuntime : overrides.runtime;
@@ -585,9 +581,7 @@ export async function setTailnetOwnDeviceAdmission(
     ...(proof ? { assertIdentity: proof.assertCurrent } : {}),
     store: runtime.store,
     namespace,
-    audit: ownDeviceAdmissionAudit(
-      overrides.auditLogger ?? compositionOptions?.auditLogger,
-    ),
+    audit: ownDeviceAdmissionAudit(),
     previousActorId,
     nextActorId,
   });
@@ -603,9 +597,7 @@ export async function isTailnetOwnDeviceAdmissionEnabled(
 
 // Write automatic grants and revocations to the same audit log the IPC layer uses, so a grant nobody clicked for is not the one event with no record.
 // The account appears only as the store's own opaque fingerprint — never a login.
-function ownDeviceAdmissionAudit(
-  _auditLogger: AuditLogger | undefined,
-): TailnetOwnDeviceAdmissionAudit {
+function ownDeviceAdmissionAudit(): TailnetOwnDeviceAdmissionAudit {
   return (action, _actorFingerprint, _pairingId) => {
     logPermissionEvent("remote_device_admission", { sessionId: permissionLogId("tailnet-own-device-admission"), action: permissionLogId(action) });
   };
@@ -671,7 +663,7 @@ async function startForBoot(
             deviceStatus: (login: string, actorId: TailnetShareActorId, assertIdentity: () => void) => pairedSharingRuntime.store.withOwnerIdentityGuard(assertIdentity, () => resolveTailnetDeviceStatus({
               store: pairedSharingRuntime.store,
               namespace: resolved.openTailnetNamespace(),
-              audit: ownDeviceAdmissionAudit(options.auditLogger),
+              audit: ownDeviceAdmissionAudit(),
               assertIdentity,
               getOwnerLogin: pairedSharingRuntime.authorizer.currentOwnerLogin,
               login,

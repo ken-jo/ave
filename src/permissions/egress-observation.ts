@@ -1,6 +1,4 @@
-/** Sandbox execution telemetry uses a separate JSONL schema from permission decisions (docs/research/sandbox-isolation.md). */
-
-import type { SandboxKind, SandboxCapability } from "../permissions/sandbox-capability.js";
+import type { SandboxKind, SandboxCapability } from "./sandbox-capability.js";
 import type { UserApprovalVerdict } from "../shared/permissions-events.js";
 import type { ToolTrustOrigin } from "../tools/types.js";
 import type { RiskLevel } from "../shared/permission-review-status.js";

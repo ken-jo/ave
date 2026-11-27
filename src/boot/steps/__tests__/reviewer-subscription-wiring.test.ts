@@ -54,8 +54,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
           } : {},
           getSecret,
         },
-        llmFetch: vi.fn(), getMainWindow: () => null, bootAuditLogger: { log: vi.fn() },
-        subscriptionProviderFactory: vi.fn(),
+        llmFetch: vi.fn(), getMainWindow: () => null, subscriptionProviderFactory: vi.fn(),
       };
       await wireReviewerAndPermissions(context as never);
       const options = wireReviewerAgent.mock.calls[0]?.[0] as unknown as {
@@ -130,7 +129,6 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
         settingsService,
         llmFetch: vi.fn(),
         getMainWindow: () => null,
-        bootAuditLogger: { log: vi.fn() },
         subscriptionProviderFactory,
       };
 
@@ -187,7 +185,7 @@ it.each([false, true])("blocks existing reviewer authority before a production c
     });
     const context = { host: createBootHostFixture(), toolRegistry: { setDenyRules: vi.fn() }, permissionManager: manager,
       approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() }, settingsService: { onChanged: vi.fn(), get: settingsGet, getSecret: vi.fn() },
-      llmFetch: vi.fn(), singleHopNetworkFetch: vi.fn(), getMainWindow: () => null, bootAuditLogger: { log: vi.fn() }, subscriptionProviderFactory: vi.fn(),
+      llmFetch: vi.fn(), singleHopNetworkFetch: vi.fn(), getMainWindow: () => null, subscriptionProviderFactory: vi.fn(),
       rewireReviewerAgent: undefined as (() => Promise<void>) | undefined };
     await wireReviewerAndPermissions(context as never);
     const classify = vi.fn(() => ({ level: "low" as const, reason: "Previously configured reviewer" }));
@@ -203,10 +201,10 @@ it.each([false, true])("blocks existing reviewer authority before a production c
     expect((await dispatch(false)).review.outcome).toBe("cache");
     const oldJudge = vi.fn(async () => ({ decision: "allow" as const, rationale: "Previously healthy custom judge" }));
     if (custom) {
-      const { judgeSettings, scriptedStage, collectingAudit } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
+      const { judgeSettings, scriptedStage } = await import("../../../permissions/judge/__tests__/judge-request-fixture.js");
       const stage = scriptedStage("old-provider");
       manager.setJudge({ settings: judgeSettings({ chain: [stage], categories: { shell: true, write: true, network: true } }), chain: [{ settings: stage, judge: { id: "old-provider", version: "fixture", judge: oldJudge } }],
-        breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger });
+        breaker: manager.getJudgeBreaker(), });
       expect((await dispatch(false)).result.decision).toBe("allow");
       expect(oldJudge).toHaveBeenCalledOnce();
       oldJudge.mockClear();

@@ -14,7 +14,6 @@ import { approvalActionSummary } from "../shared/approval-action-summary.js";
 import { resolveConversationTitle } from "../shared/conversation-title.js";
 import { stagedOriginForInput } from "../shared/staged-origins.js";
 import type { PolicyFile } from "./policy-store.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import type { NotificationService } from "../main/notification-service.js";
 import type { ToolCategory } from "../tools/types.js";
 import type { RiskVerdict } from "./reviewer/risk-classifier.js";
@@ -48,9 +47,9 @@ import type {
 } from "../shared/chat-origin.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
-import {
-  type HostShellExecutionPermitBinding,
-  type ShellApprovalDirectory,
+import type {
+  HostShellExecutionPermitBinding,
+  ShellApprovalDirectory,
 } from "./host-shell-execution-permit.js";
 import { isBrokerGuestRoutePlan, isIssuedExecutionPlan, type ExecutionPlan } from "./execution-router.js";
 import {
@@ -1238,7 +1237,6 @@ export class ApprovalGate {
     webContents: WebContents | ApprovalSurfaceResolver | null,
     initialPolicy?: PolicyFile,
     timeoutMs = TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs,
-    _auditLogger?: AuditLogger,
     notificationService?: NotificationService,
     headlessExec?: { onDenied: (requestId: string, toolName: string) => void },
   ) {
@@ -1870,7 +1868,7 @@ export class ApprovalGate {
           if (currentOwner && !recipients.includes(currentOwner)) {
             this.announceSettledToRenderer(fullReq.id, [currentOwner]);
           }
-        } catch (error) {
+        } catch {
           logPermissionEvent("approval_notification_owner_failed", {
             requestId: permissionLogId(fullReq.id),
             sessionId: permissionLogId(fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID),
@@ -2041,7 +2039,7 @@ export class ApprovalGate {
                   }
                 : {}),
             };
-      } catch (sealErr) {
+      } catch {
         if (!this.pending.delete(fullReq.id)) return;
         clearTimeout(timer);
         logPermissionEvent("approval_seal_failed", {

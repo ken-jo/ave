@@ -20,7 +20,7 @@ owning workflow; do not migrate a rounded number by stringifying it. No automati
 legacy-record migration or authority restoration is added.
 
 The source-wide identity review also covers the already exact bigint reads in
-`audit/hmac-chain.ts`, `audit/permission-audit-proof.ts`,
+`lib/stable-regular-file.ts`,
 `marketplace/sources/folder-fs.ts`,
 `marketplace/sources/folder-tree.ts`, `marketplace/net/source-input.ts`,
 `marketplace/sources/registry.ts` and `marketplace/sources/sync.ts` under `src/`.

@@ -1,10 +1,11 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { requiredFixture } from "../../../__tests__/support/required-fixture.js";
 import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
 
 useConfigurationOwner();
 
 // Shell isolation and plugin-worker confinement are independent settings.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,10 +36,9 @@ async function setup() {
     mainFrame: frame, isDestroyed: () => false, send: vi.fn(),
   });
   const window = { webContents: contents, isDestroyed: () => false };
-  const auditLogger = { log: vi.fn(), append: vi.fn(async (_entry: unknown) => {}) };
+
   const refreshSandboxNetworkConfig = vi.fn(async () => undefined);
-  const deps = { settingsService, conversationLoop: { refreshProvider: vi.fn() }, auditLogger,
-    getMainWindow: () => window, getAppWindows: () => [window], singleHopNetworkFetch: vi.fn(), refreshSandboxNetworkConfig };
+  const deps = { settingsService, conversationLoop: { refreshProvider: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window], singleHopNetworkFetch: vi.fn(), refreshSandboxNetworkConfig };
   const { registerSettingsHandlers } = await import("../settings.js");
   const { registerPermissionsHandlers } = await import("../permissions.js");
   stopSettingsListener = registerSettingsHandlers(deps as never);
@@ -57,7 +57,7 @@ async function setup() {
     }
     return result;
   };
-  return { settingsService, auditLogger, refreshSandboxNetworkConfig, contents, invoke, gesture, updateSecurity };
+  return { settingsService, refreshSandboxNetworkConfig, contents, invoke, gesture, updateSecurity };
 }
 
 afterEach(async () => {
@@ -122,6 +122,8 @@ describe("shell sandbox checkbox write", () => {
   });
 
   it("propagates a settings persistence failure and retains both confinement choices", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const f = await setup();
     await f.settingsService.patch({ features: { osToolSandbox: true, pluginWorkerConfinement: true } });
     const save = vi.spyOn(f.settingsService as unknown as { saveSettings(settings: AppSettings): Promise<void> }, "saveSettings");
@@ -131,6 +133,8 @@ describe("shell sandbox checkbox write", () => {
     expect(new SettingsService({ userDataPath, encryption: unavailableSecretEncryption }).get("features"))
       .toMatchObject({ osToolSandbox: true, pluginWorkerConfinement: true });
     expect(f.refreshSandboxNetworkConfig).not.toHaveBeenCalled();
-    expect(f.auditLogger.append).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ input: expect.stringContaining('"phase":"requested"') }));
+    expect(capture.events.filter(({ event }) => event === "security_settings_changed")).toEqual([
+      expect.objectContaining({ phase: "requested" }),
+    ]);
   });
 });

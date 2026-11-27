@@ -55,7 +55,7 @@ export interface A2ALoopbackRuntime {
 export interface CreateA2ALoopbackRuntimeOptions {
   services: Pick<
     AppServices,
-    "agentProfileStore" | "getSubAgentRunner" | "auditLogger"
+    "agentProfileStore" | "getSubAgentRunner"
   >;
   project: Readonly<{ root: string; name?: string }>;
   appVersion: string;

@@ -1,11 +1,10 @@
-import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WebContents } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AuditLogger } from "../../audit/audit-logger.js";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { SubAgentRunner } from "../../engine/subagent-runner.js";
 import type { LLMProvider, StreamEvent } from "../../engine/llm/types.js";
@@ -63,11 +62,10 @@ async function boardRun() {
   mkdirSync(workspace);
   vi.stubEnv("AVE_HOME", join(root, "state"));
   cleanup.push(() => cleanupTmpDir(root));
-  const audit = new AuditLogger(join(root, "audit"));
-  await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
-  cleanup.push(() => audit.close());
-  const auditLog = vi.spyOn(audit, "log");
-  const gate = new ApprovalGate((sessionId, terminalTabId) => approvalSurfaceRegistry.resolve(sessionId, terminalTabId), undefined, undefined, audit);
+  const capture = collectPermissionEvents();
+  const events = capture.events;
+  cleanup.push(async () => capture.restore());
+  const gate = new ApprovalGate((sessionId, terminalTabId) => approvalSurfaceRegistry.resolve(sessionId, terminalTabId), undefined, undefined);
   cleanup.push(async () => { gate.disposeAll(); });
   const owner = surface(101);
   const foreign = surface(202);
@@ -108,8 +106,7 @@ async function boardRun() {
   patchLoopProvider(provider);
   const runner = new SubAgentRunner({
     parentDeps: makeSubagentLoopDeps(registry, {
-      permissionManager: manager, approvalGate: gate, approvalSurface: "interactive", hookRunner: new HookRunner(), auditLogger: audit,
-      getAdditionalDirectories: () => [workspace], getDefaultProject: () => ({ projectRoot: workspace }),
+      permissionManager: manager, approvalGate: gate, approvalSurface: "interactive", hookRunner: new HookRunner(), getAdditionalDirectories: () => [workspace], getDefaultProject: () => ({ projectRoot: workspace }),
       authorizeProject: (projectRoot) => projectRoot === workspace ? { projectRoot } : null,
     }),
     toolRegistry: registry, subAgentMemoryManager: memory,
@@ -121,7 +118,7 @@ async function boardRun() {
   const approve = (request: ApprovalRequest, contents: WebContents) => gate.resolveFromDesktopRenderer(request.id, {
     requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac,
   }, contents);
-  return { owner, foreign, execute, gate, engine, store, itemId: created.itemId, auditLog, approve, path, scripts };
+  return { owner, foreign, execute, gate, engine, store, itemId: created.itemId, events, approve, path, scripts };
 }
 
 // The plan approval is a work approval stored on the item (permission-decision-tree.md "Work approvals"), so it sends no card. The execute
@@ -152,7 +149,7 @@ describe("Work Board registered approval owner", () => {
     expect(f.approve(action, f.owner.contents)).toBeNull();
     expect(f.execute).toHaveBeenCalledTimes(1);
     // The foreign window's answer to the execute child's card is refused and audited; the plan itself sent no card to refuse.
-    expect(f.auditLog.mock.calls.filter(([record]) => record.output?.includes("[approval:surface-owner-required]"))).toHaveLength(1);
+    expect(f.events.filter(({ event, reasonCode }) => event === "approval_response_rejected" && reasonCode === "surface-owner-required")).toHaveLength(1);
     expect(approvalSurfaceRegistry.resolve(workBoardOriginSessionId(f.itemId))).toBeNull();
   });
 

@@ -8,7 +8,6 @@ import { join } from "node:path";
 import { t } from "../../i18n/index.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
@@ -40,7 +39,6 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 
-let loopAuditLoggers: AuditLogger[] = [];
 
 class ScriptedProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -86,9 +84,7 @@ class AbortAwareBlockingProvider implements LLMProvider {
 }
 
 function buildLoopDeps(toolRegistry: ToolRegistry) {
-  const auditLogger = new AuditLogger();
-  loopAuditLoggers.push(auditLogger);
-  return makeSubagentLoopDeps(toolRegistry, { auditLogger });
+  return makeSubagentLoopDeps(toolRegistry, {  });
 }
 
 function patchProvider(provider: LLMProvider) {
@@ -133,12 +129,10 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     process.env.AVE_HOME = tmpHome;
     memoryStores = [];
     approvalGates = [];
-    loopAuditLoggers = [];
   });
 
   afterEach(async () => {
     for (const gate of approvalGates) gate.disposeAll();
-    await Promise.all(loopAuditLoggers.map((logger) => logger.close()));
     for (const store of memoryStores) store.sessions.closeSearchIndex();
     if (prevAveHome === undefined) delete process.env.AVE_HOME;
     else process.env.AVE_HOME = prevAveHome;
@@ -3146,7 +3140,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const bus = new A2AAgentMessageBus({
       parentBus: { deliverToParent: parentDeliver } as never,
       mailbox,
-      auditLogger: { log: audit } as never,
       resolveSender: (childSessionId) =>
         runner.resolveSubAgentSender(childSessionId),
       resolvePeer: (sender, recipient) =>
@@ -3219,7 +3212,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const bus = new A2AAgentMessageBus({
       parentBus: { deliverToParent: parentDeliver } as never,
       mailbox,
-      auditLogger: { log: vi.fn() } as never,
       resolveSender: (childSessionId) =>
         runner.resolveSubAgentSender(childSessionId),
       resolvePeer: (sender, recipient) =>

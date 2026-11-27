@@ -1,5 +1,6 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 /** Hook trust policy: docs/architecture/permission-policy-design.md, Layer 6. */
-import { describe, expect, it, beforeAll, beforeEach, afterEach, vi } from "vitest";
+import { describe, expect, it, beforeAll, beforeEach, afterEach, onTestFinished } from "vitest";
 import {
   existsSync,
   mkdtempSync,
@@ -109,47 +110,17 @@ describe("wireHookSystem permission hook policy", () => {
     ]);
   });
 
-  it("emits hook.quarantined audit entries for boot-time quarantine", async () => {
+  it("excludes a quarantined hook and logs its type and state", async () => {
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
     writeExecutableHook(hooksDir, "pre-untrusted.sh", "#!/bin/sh\nexit 0");
-    const auditLogger = {
-      log: vi.fn(),
-      isPermissionAuditChainReady: vi.fn(() => true),
-      appendPermissionAuditEntry: vi.fn(async (entry) => ({ ...entry, prevHash: "h" })),
-    };
-
-    await wireHookSystem({
+    const result = await wireHookSystem({
       hooksDir,
       lockfilePath: join(hooksDir, ".lockfile.json"),
       disabledDir: join(hooksDir, ".disabled"),
-      auditLogger,
     });
-
-    expect(auditLogger.log).toHaveBeenCalledTimes(1);
-    expect(auditLogger.appendPermissionAuditEntry).toHaveBeenCalledTimes(1);
-    const entry = auditLogger.log.mock.calls[0][0];
-    expect(entry.type).toBe("warn");
-    expect(entry.toolCalls).toEqual([
-      { name: "hook_trust_boot", isError: false, trust: "high" },
-    ]);
-    expect(JSON.parse(entry.input)).toEqual(
-      expect.objectContaining({
-        kind: "hook.quarantined",
-        fileName: "pre-untrusted.sh",
-        hookType: "pre",
-        state: "new",
-      }),
-    );
-    expect(auditLogger.appendPermissionAuditEntry.mock.calls[0][0]).toMatchObject({
-      decision: "deny",
-      tool: "hook_trust_boot",
-      source: "builtin",
-      category: "meta",
-      denyReasons: [
-        expect.objectContaining({
-          reason: "hook.quarantined:pre-untrusted.sh:new",
-          source: "hook-trust-workflow",
-        }),
-      ],
-    });
+    expect(result.manager.size()).toBe(0);
+    const events = logs.events.filter(row => row.event === "hook_quarantined");
+    expect(events).toEqual([{ event: "hook_quarantined", hookType: "pre", state: "new" }]);
   });
 });

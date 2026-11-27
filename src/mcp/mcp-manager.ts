@@ -25,7 +25,6 @@ import type { McpSkill } from "./mcp-skills.js";
 import { McpOAuthError, McpOAuthSession, tryMcpOAuthCredentialKey, type McpOAuthDependencies, type McpOAuthSecrets } from "./mcp-oauth.js";
 import { ToolRegistry, type PreparedMcpRegistryReplacement } from "../tools/registry.js";
 import type { Tool } from "../tools/base.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import type { McpInputRequestResolver } from "./mcp-client.js";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
@@ -224,8 +223,6 @@ export class McpManager {
     private readonly toolRegistry: ToolRegistry,
     private readonly networkFetch: typeof fetch,
     configPath?: string,
-    _auditLogger?: AuditLogger,
-    /** Bind elicitation approval per server; without a resolver, input_required fails closed. */
     private readonly inputResolverFactory?: (serverId: string) => McpInputRequestResolver,
     /** Emit once for permanent retirement, never reconnect; consumers disable cards and clear partitions. */
     private readonly onServerDisconnected?: (serverId: string) => void,

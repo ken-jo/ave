@@ -46,7 +46,6 @@ describe("thinking budget settings IPC", () => {
       registerSettingsHandlers({
         settingsService,
         conversationLoop: { refreshProvider: vi.fn() },
-        auditLogger: { log: vi.fn() },
         getAppWindows: () => [{ isDestroyed: () => false, webContents: { isDestroyed: () => false, send } }],
         singleHopNetworkFetch: vi.fn(),
       } as never);

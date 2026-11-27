@@ -10,7 +10,7 @@ import {
   type RiskVerdict,
 } from "../../reviewer/risk-classifier.js";
 import { BuiltinLlmJudge, mapRiskVerdictToJudgeDecision, type TracingRiskClassifier } from "../builtin-llm-judge.js";
-import { collectingAudit, judgeInvocation, judgeRequest, judgeSettings } from "./judge-request-fixture.js";
+import { collectJudgeEvents, judgeInvocation, judgeRequest, judgeSettings } from "./judge-request-fixture.js";
 import { useTempDirs } from "../../../__tests__/test-helpers.js";
 import { VerdictCache } from "../../reviewer/verdict-cache.js";
 import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
@@ -124,7 +124,7 @@ describe("builtin-llm parity with the shipped reviewer dispatch", () => {
               : (await dispatchReviewerForInteractiveAuto(...(args as Parameters<typeof dispatchReviewerForInteractiveAuto>)))?.decision;
 
           const settings = judgeSettings({ timeoutMs: 10_000, chain: [{ provider: "builtin-llm", id: "builtin-llm" }] });
-          const { logger } = collectingAudit();
+          collectJudgeEvents();
           const judged = await resolveJudge(
             { priorDecision: "undecided", strictMode: false, capabilityGrant: false },
             judgeRequest({
@@ -142,7 +142,7 @@ describe("builtin-llm parity with the shipped reviewer dispatch", () => {
                 judge: new BuiltinLlmJudge(new LlmRiskClassifier(provider, "model-under-test", fallbackOnError, {}, NO_RETRY)),
               }],
               breaker: new JudgeCircuitBreaker(settings.breaker),
-              audit: logger,
+
             },
           );
           if (!judged.judged) throw new Error("expected judged");

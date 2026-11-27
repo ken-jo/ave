@@ -1,6 +1,5 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { describe, it, expect, vi } from "vitest";
-import os from "node:os";
-import { pathToFileURL } from "node:url";
 import type { IpcMainInvokeEvent } from "electron";
 import {
   validateSender,
@@ -85,47 +84,21 @@ describe("UNAUTHORIZED_FRAME", () => {
   });
 });
 
-describe("auditUnauthorized", () => {
-  it("calls auditLogger.log with warn type and channel/frameUrl", () => {
-    const mockLogger = { log: vi.fn() };
-    const event = foreignFrameEvent("https://evil.example.com/") as IpcMainInvokeEvent;
-    auditUnauthorized(mockLogger as never, "ave:test:channel", event);
-    expect(mockLogger.log).toHaveBeenCalledOnce();
-    const call = mockLogger.log.mock.calls[0][0] as Record<string, unknown>;
-    expect(call.type).toBe("warn");
-    expect(call.sessionId).toBe("ipc-guard");
-    const parsed = JSON.parse(call.input as string);
-    expect(parsed.channel).toBe("ave:test:channel");
-    expect(parsed.frameUrl).toBe("https://evil.example.com/");
-  });
-
-  // Audit redaction must apply at the shared unauthorized-frame reporting boundary.
-  it("redacts the user's home directory in file:// frame URLs", () => {
-    const mockLogger = { log: vi.fn() };
-    const home = os.homedir();
-    const event = foreignFrameEvent(`file://${home}/Documents/ave-project/ave/dist/src/untrusted-frame.html`) as IpcMainInvokeEvent;
-    auditUnauthorized(mockLogger as never, "ave:test:channel", event);
-    const parsed = JSON.parse(
-      mockLogger.log.mock.calls[0][0].input as string,
-    );
-    expect(parsed.frameUrl).toBe("file://<home>/Documents/ave-project/ave/dist/src/untrusted-frame.html");
-    expect(parsed.frameUrl).not.toContain(home);
-  });
-
-  it("redacts an alternate percent spelling of the frame home and decodes the suffix", () => {
-    const mockLogger = { log: vi.fn() };
-    const url = pathToFileURL(os.homedir()).href;
-    const encoded = url.replace(/(?<=\/)[a-z](?!:)/iu, letter => `%${letter.charCodeAt(0).toString(16)}`);
-    expect(encoded).not.toBe(url);
-    const frame = foreignFrameEvent(`${encoded}/Mixed%20File`);
-    auditUnauthorized(mockLogger as never, "ave:test:channel", frame);
-    expect(JSON.parse(mockLogger.log.mock.calls[0][0].input as string).frameUrl).toBe("file://<home>/Mixed File");
+describe("sender refusal logging", () => {
+  it("emits exactly the channel and event for a denied sender", () => {
+    const capture = collectPermissionEvents();
+    try {
+      auditUnauthorized("ave:test:channel");
+      expect(capture.events).toEqual([{ event: "ipc_sender_refused", channel: "ave:test:channel" }]);
+    } finally {
+      capture.restore();
+    }
   });
 });
 
 describe("gated() integration — unauthorized path returns UNAUTHORIZED_FRAME", () => {
   it("handler is NOT called when sender is unauthorized", async () => {
-    const handler = vi.fn(async () => ({ ok: true }));
+    const handler = vi.fn(async (_event: IpcMainInvokeEvent) => ({ ok: true }));
     const event = foreignFrameEvent("https://evil.example.com/") as IpcMainInvokeEvent;
 
     const result = !validateSender(event) ? UNAUTHORIZED_FRAME : await handler(event);
@@ -135,7 +108,7 @@ describe("gated() integration — unauthorized path returns UNAUTHORIZED_FRAME",
   });
 
   it("handler IS called when sender is authorized", async () => {
-    const handler = vi.fn(async () => ({ ok: true, data: "hello" }));
+    const handler = vi.fn(async (_event: IpcMainInvokeEvent) => ({ ok: true, data: "hello" }));
     const event = foreignFrameEvent("file:///dist/index.html") as IpcMainInvokeEvent;
 
     const result = !validateSender(event) ? UNAUTHORIZED_FRAME : await handler(event);

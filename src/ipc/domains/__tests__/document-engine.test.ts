@@ -46,7 +46,7 @@ beforeEach(() => {
   audit = vi.fn();
   deps = { getMainWindow: () => null,
     getAppWindows: () => registered ? [{ webContents: sender, isDestroyed: () => false }] : [],
-    auditLogger: { log: audit }, singleHopNetworkFetch: vi.fn(),
+    singleHopNetworkFetch: vi.fn(),
   } as unknown as IpcDeps;
   mocks.state.mockResolvedValue(ABSENT);
   mocks.install.mockResolvedValue(undefined);

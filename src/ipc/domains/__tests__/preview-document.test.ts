@@ -65,7 +65,7 @@ import { CHANNELS } from "../../../contract/app-contract.js";
 const auditLog = vi.fn();
 const appWindows: Array<{ isDestroyed: () => boolean; webContents: object }> = [];
 const fixtureSenders = new Set<EventEmitter>();
-const deps = { auditLogger: { log: auditLog }, getAppWindows: () => appWindows, getMainWindow: () => null } as never;
+const deps = { getAppWindows: () => appWindows, getMainWindow: () => null } as never;
 const OK_FRAME = "file:///app/index.html";
 const EVIL_FRAME = "https://evil.example.com/x";
 const dirLinkType = process.platform === "win32" ? "junction" : "dir";

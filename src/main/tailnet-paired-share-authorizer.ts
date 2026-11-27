@@ -2,7 +2,7 @@ import { createTailnetOwnerIdentityPolicy, type TailnetOwnerIdentityEvidence } f
 import type { TailnetOwnerIdentityErrorCode } from "../shared/tailnet-sharing.js";
 // Derive actor IDs with a domain-separated HMAC using an OS-encrypted secret; pairing still requires a separate scoped share.
 import { createHmac, randomBytes } from "node:crypto";
-import type { SecretStore } from "../audit/hmac-chain.js";
+import type { SecretStore } from "../lib/protected-secret-store.js";
 import type {
   TailnetPairedShareGuard,
   TailnetPairingShareBinding,

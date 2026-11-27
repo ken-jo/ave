@@ -52,7 +52,7 @@ function projectRootFilter(filter: unknown): string | undefined {
 }
 
 export function registerRoutineHandlers(deps: IpcDeps): void {
-  const { routinesStore, routinesScheduler, memoryManager, auditLogger } = deps;
+  const { routinesStore, routinesScheduler, memoryManager } = deps;
 
   // 대화에 연결: the chat must exist and belong to the item's project. A chat outside any named project belongs to the default
   // workspace, like everywhere else. Null when the chat may be connected, else the error code.
@@ -66,7 +66,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(ROUTINES.list, (e, filter?: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ROUTINES.list, e);
+      auditUnauthorized(ROUTINES.list);
       return UNAUTHORIZED_FRAME;
     }
     if (!routinesStore) return { routines: [], invalid: [] } satisfies RoutineListResult;
@@ -76,7 +76,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(ROUTINES.remove, async (e, id: string) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ROUTINES.remove, e);
+      auditUnauthorized(ROUTINES.remove);
       return UNAUTHORIZED_FRAME;
     }
     if (!routinesStore) return { ok: false, error: "no-store" };
@@ -102,7 +102,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(ROUTINES.triggerNow, async (e, id: string) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ROUTINES.triggerNow, e);
+      auditUnauthorized(ROUTINES.triggerNow);
       return UNAUTHORIZED_FRAME;
     }
     if (!routinesStore) return { ok: false, error: "no-store" };
@@ -118,7 +118,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(ROUTINES.pendingResults, async (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ROUTINES.pendingResults, e);
+      auditUnauthorized(ROUTINES.pendingResults);
       return UNAUTHORIZED_FRAME;
     }
     if (!routinesStore) return [];
@@ -155,7 +155,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(ROUTINES.acknowledgeResult, async (e, routineId: string, firedAt: string) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ROUTINES.acknowledgeResult, e);
+      auditUnauthorized(ROUTINES.acknowledgeResult);
       return UNAUTHORIZED_FRAME;
     }
     if (!routinesStore) return { ok: false, error: "no-store" };
@@ -166,7 +166,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(ROUTINES.acknowledgeFailure, async (e, routineId: unknown, failureFiredAt: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ROUTINES.acknowledgeFailure, e);
+      auditUnauthorized(ROUTINES.acknowledgeFailure);
       return UNAUTHORIZED_FRAME;
     }
     if (typeof routineId !== "string" || typeof failureFiredAt !== "string") return { ok: false, error: "invalid-input" };
@@ -185,7 +185,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       input: Omit<AddRoutineInput, "createdBy">,
     ) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, ROUTINES.add, e);
+        auditUnauthorized(ROUTINES.add);
         return UNAUTHORIZED_FRAME;
       }
       if (!routinesStore) return { ok: false, error: "no-store" };
@@ -211,7 +211,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(ROUTINES.update, async (e, id: unknown, patch: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ROUTINES.update, e);
+      auditUnauthorized(ROUTINES.update);
       return UNAUTHORIZED_FRAME;
     }
     if (!routinesStore) return { ok: false, error: "no-store" };
@@ -241,7 +241,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
   ] as const) {
     ipcMain.handle(channel, async (e, id: unknown) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, channel, e);
+        auditUnauthorized(channel);
         return UNAUTHORIZED_FRAME;
       }
       if (!routinesStore) return { ok: false, error: "no-store" };
@@ -253,7 +253,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(ROUTINES.listOccurrences, async (e, query: unknown): Promise<RoutineOccurrencesResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ROUTINES.listOccurrences, e);
+      auditUnauthorized(ROUTINES.listOccurrences);
       return UNAUTHORIZED_FRAME;
     }
     const q = (query && typeof query === "object" ? query : {}) as Record<string, unknown>;

@@ -1,5 +1,4 @@
 import { withLocalityDecision } from "../../shared/local-path-io.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 /** Isolated factories preserve the runtime contract (docs/blueprints/plugin-process-isolation.md).
  * Worker confinement is independent of shell confinement: disabled children receive no isolation relaxation; enabled wrapping is mandatory and failure prevents loading. */
 import { mkdirSync, statSync } from "node:fs";
@@ -745,7 +744,6 @@ export async function spawnConfinedPluginChild(
 export interface OutOfProcessPluginSpec {
   readonly manifest: PluginManifest;
   readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
-  readonly effectAudit?: Pick<AuditLogger, "logShadow">;
   /** How the plugin's process is produced, and so what construct's `entryPath` says (decision 33): the resolved, real path of the plugin's JS module (not
    * of the child runtime) for an `entry` plugin; for a `process` plugin the launch `resolveProcessLaunch` built, whose command path construct carries. */
   readonly launch:
@@ -973,7 +971,6 @@ export function createOutOfProcessPluginFactory(
         entryPath: spec.launch.kind === "entry" ? spec.launch.entryPath : spec.launch.command,
         table,
         ...(spec.auditLog ? { auditLog: spec.auditLog } : {}),
-        effectAudit: spec.effectAudit,
         onClosed: async () => {
           try {
             await spawned.waitForExit?.();

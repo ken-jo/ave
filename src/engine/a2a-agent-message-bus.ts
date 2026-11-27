@@ -1,6 +1,5 @@
 import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { randomUUID } from "node:crypto";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import {
   A2A_ROLE_AGENT,
   A2ATaskState,
@@ -39,7 +38,6 @@ import { GUIDE_MAX_CHARS } from "./turn/guidance-limits.js";
 export interface A2AAgentMessageBusDeps {
   parentBus: A2ASubAgentMessageBus;
   mailbox: A2AAgentMessageMailbox;
-  auditLogger: AuditLogger;
   resolveSender: (senderChildSessionId: string) => Promise<ResolvedA2ASender | null>;
   resolvePeer: (
     senderChildSessionId: string,

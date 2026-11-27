@@ -312,7 +312,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
           {
             const [{ startEgressDenyMonitor }, { emitSandboxAudit }] = await Promise.all([
               import("../../permissions/egress-deny-monitor.js"),
-              import("../../audit/sandbox-audit-sink.js"),
+              import("../../permissions/egress-logging.js"),
             ]);
             await startEgressDenyMonitor({
               subscribe: subscribeAsrtViolations,
@@ -326,7 +326,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             const [{ createUpstreamProxyRouter, upstreamProxyDeps }, { maskSensitiveData }, { emitSandboxAudit }] = await Promise.all([
               import("../../permissions/upstream-proxy.js"),
               import("../../audit/dlp-filter.js"),
-              import("../../audit/sandbox-audit-sink.js"),
+              import("../../permissions/egress-logging.js"),
             ]);
             const mask = (text: string): string => maskSensitiveData(text).masked;
             const upstream = createUpstreamProxyRouter(upstreamProxyDeps(settingsService, ctx.host.resolveProxy, (event) => {

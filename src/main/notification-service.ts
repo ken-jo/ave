@@ -1,11 +1,10 @@
-import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
+import { logPermissionEvent } from "../lib/permission-log.js";
 import type { MainWindow } from "./main-window-host.js";
 import { isBackgroundE2eRuntime, showWindowForRuntime } from "./e2e-window-presentation.js";
 // Host lifecycle events enter window notification history; unfocused events additionally use OS delivery. Requests use their cards in-app.
 // Audit metadata only, never body text; test mode and pre-ready calls have no side effects.
 import type { ActivationArguments, WebContents } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import { createLogger } from "../lib/logger.js";
 import { stripMarkdown } from "../shared/strip-markdown.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -88,8 +87,6 @@ export interface NotificationServiceOptions {
   isOsNotificationsEnabled?: () => boolean;
   // Live MainWindow getter. Service tolerates null (e.g. window closed).
   getMainWindow: () => MainWindow | null;
-  auditLogger?: AuditLogger;
-  // Test injection — by default the service uses Electron's Notification constructor and `app.isReady()`. Tests pass stubs to avoid loading Electron at all.
   notificationFactory?: (opts: {
     title: string;
     body: string;
@@ -133,7 +130,7 @@ function unavailableNotificationFactory(): never {
 
 export class NotificationService {
   private readonly getMainWindow: () => MainWindow | null;
-  private readonly auditLogger?: AuditLogger;
+
   private readonly notificationFactory: NonNullable<NotificationServiceOptions["notificationFactory"]>;
   private readonly isOsNotificationsEnabled: () => boolean;
   private readonly isReady: () => boolean;
@@ -148,7 +145,6 @@ export class NotificationService {
 
   constructor(opts: NotificationServiceOptions) {
     this.getMainWindow = opts.getMainWindow;
-    this.auditLogger = opts.auditLogger;
     this.notificationFactory = opts.notificationFactory ?? unavailableNotificationFactory;
     this.isOsNotificationsEnabled = opts.isOsNotificationsEnabled ?? (() => true);
     this.isReady = opts.isReady ?? (() => false);
@@ -247,7 +243,7 @@ export class NotificationService {
       const now = performance.now();
       const elapsedMs = now - last;
       if (last !== 0 && elapsedMs < cooldownMs && opts.bypassFocusGate !== true) {
-        this.auditSuppressed(opts.kind, elapsedMs);
+        this.logSuppression(opts.kind, elapsedMs);
         return false;
       }
       this.lastFiredAt.set(opts.kind, now);
@@ -264,7 +260,7 @@ export class NotificationService {
 
     if (focusGateActive && (opts.kind === "approval" || opts.kind === "ask-user")) {
       // The request card owns attention; hidden cards already have a pending-answer indicator.
-      this.audit("in-app", opts.kind, cleanTitle, "card");
+      this.logDelivery("in-app", opts.kind, "card");
       return true;
     }
 
@@ -297,18 +293,18 @@ export class NotificationService {
 
     if (turnEndOsSuppression !== undefined) {
       // A history-only completion must not consume the OS cooldown or prevent a later background completion cue.
-      this.auditSuppressed(opts.kind, 0, turnEndOsSuppression);
-      if (recorded) this.audit("in-app", opts.kind, cleanTitle);
+      this.logSuppression(opts.kind, 0, turnEndOsSuppression);
+      if (recorded) this.logDelivery("in-app", opts.kind);
       return recorded;
     }
 
     // Focus gating includes every app-owned window; bypass forces OS delivery. A failed foreground record retains the OS fallback.
     if (focusGateActive && recorded) {
-      this.audit("in-app", opts.kind, cleanTitle);
+      this.logDelivery("in-app", opts.kind);
       return true;
     }
     const osDelivered = this.fireOsNotification(opts, cleanTitle, truncatedPlainBody, urgent);
-    if (osDelivered || recorded) this.audit(osDelivered ? "os" : "in-app", opts.kind, cleanTitle);
+    if (osDelivered || recorded) this.logDelivery(osDelivered ? "os" : "in-app", opts.kind);
     // OS-selected delivery acknowledges only the OS outcome: a send can precede the renderer subscription during boot.
     return osDelivered;
   }
@@ -386,27 +382,16 @@ export class NotificationService {
     }
   }
 
-  private audit(_gate: "os" | "in-app", kind: NotificationKind, _title: string, _surface?: "card"): void {
-    if (!this.auditLogger) return;
-    try {
-      logPermissionEvent("notification_created", { sessionId: permissionLogId("notification-service"), kind: permissionLogId(kind) });
-    } catch {
-      // audit failure must never block the app
-    }
+  private logDelivery(gate: "os" | "in-app", kind: NotificationKind, surface?: "card"): void {
+    logPermissionEvent("notification_created", { kind, gate, surface });
   }
 
-  // Audit a suppressed fire. Must NEVER silently drop — a missing audit trail hides runaway-loop bugs.
-  private auditSuppressed(
+  private logSuppression(
     kind: NotificationKind,
     elapsedMs: number,
     reason: "cooldown" | "foreground" | "os-notifications-disabled" = "cooldown",
   ): void {
-    if (!this.auditLogger) return;
-    try {
-      logPermissionEvent("notification_suppressed", { kind, elapsedMs, reasonCode: reason });
-    } catch {
-      // audit failure must never block the app
-    }
+    logPermissionEvent("notification_suppressed", { kind, elapsedMs, reasonCode: reason });
   }
 }
 

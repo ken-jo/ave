@@ -2456,7 +2456,7 @@ export class PermissionManager {
       budget: "classifier",
       settings: { ...DEFAULT_JUDGE_SETTINGS, chain: [defaultStage], mode: "active", categories: { shell: true, write: true, network: true } },
       chain: [{ settings: defaultStage, judge: new BuiltinLlmJudge(this.reviewerClassifier, this.reviewerModel) }],
-      breaker: wired.breaker, audit: wired.audit,
+      breaker: wired.breaker,
     } : wired;
     const reviewedRequest = input.permissionDecision ? this.pipelineRequests.get(input.permissionDecision as PermissionCheckResult)?.request : undefined;
     const policyEpoch = this.requestPolicyEpoch(reviewedRequest);

@@ -1,6 +1,7 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { setReviewerForTest, wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 // Keep the permission scenario board tied to executable policy (docs/design/permission-review-scenario-board-v2.html).
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi, onTestFinished } from "vitest";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -101,7 +102,6 @@ async function runProbe(args: {
   gate?: ReturnType<typeof makeGate>;
   headless?: boolean;
   trustOrigin?: "user-keyboard" | "llm-tool-arg" | "plugin-emitted";
-  auditLogger?: ConstructorParameters<typeof ToolExecutor>[6];
   overlayTriggerOrigin?: string;
 }) {
   const registry = new ToolRegistry();
@@ -113,7 +113,6 @@ async function runProbe(args: {
     undefined,
     args.gate as never,
     undefined,
-    args.auditLogger,
   );
   return executor.executeAll(
     [{ id: `tu-${args.tool.name}`, name: args.tool.name, input: args.input }],
@@ -369,42 +368,21 @@ describe("permission-review-scenario-board-v2.html contract", () => {
           ...(category === "meta" ? { decisionOverride: "ask" as const } : {}),
         });
         const gate = makeGate("deny-once");
-        const appendPermissionAuditEntry = vi.fn(
-          async (entry: Record<string, unknown>) => ({
-            ...entry,
-            prevHash: "h",
-          }),
-        );
-        const auditLogger = {
-          log: vi.fn(),
-          isPermissionAuditChainReady: vi.fn(() => true),
-          assertPermissionAuditWritable: vi.fn(),
-          appendPermissionAuditEntry,
-          isShadowChannelWritable: vi.fn(() => true),
-        };
+        const logs = collectPermissionEvents();
+        onTestFinished(logs.restore);
+
         const result = await runProbe({
           tool,
           pm,
           gate,
           input,
-          auditLogger: auditLogger as never,
         });
         expect(result[0].is_error).toBeUndefined();
         expect(execute).toHaveBeenCalledOnce();
         expect(gate.requestAndWait).not.toHaveBeenCalled();
-        expect(appendPermissionAuditEntry).toHaveBeenCalledOnce();
-        expect(appendPermissionAuditEntry).toHaveBeenCalledWith(
-          expect.objectContaining({
-            decision: "allow",
-            tool: name,
-            source: "builtin",
-            category,
-            reviewer: expect.objectContaining({
-              level: "medium",
-              reason: "medium reviewer verdict",
-            }),
-          }),
-        );
+        expect(logs.events.filter(row => row.event === "permission_decision" && row.tool === name)).toEqual([
+          expect.objectContaining({ decision: "allow", source: "builtin", category, reviewerRisk: "medium" }),
+        ]);
       } finally {
         await cleanup();
       }

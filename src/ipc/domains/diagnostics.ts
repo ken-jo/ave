@@ -1,4 +1,4 @@
-import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
+import { logPermissionEvent } from "../../lib/permission-log.js";
 import { pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
 // Diagnostics are internal and host-renderer-only; exported logs and bundle content pass through DLP.
 import { ipcMain } from "electron";
@@ -97,13 +97,13 @@ function lineMatchesLevel(line: string, level: LogLevelFilter): boolean {
 }
 
 export function registerDiagnosticsHandlers(deps: IpcDeps): void {
-  const { auditLogger, settingsService, getMainWindow } = deps;
+  const { settingsService, getMainWindow } = deps;
 
   ipcMain.handle(
     CHANNELS.diagnostics.export,
     async (e, opts?: { dateFrom?: string; dateTo?: string; includeCrashDumps?: boolean }) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.diagnostics.export, e);
+        auditUnauthorized(CHANNELS.diagnostics.export);
         return UNAUTHORIZED_FRAME;
       }
       // Validate day keys before bundle construction.
@@ -139,8 +139,7 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
 
         const { writeFile } = await import("node:fs/promises");
         await writeFile(res.filePath, buffer);
-        // Audit effective options, date range, byte size, and redacted destination without exposing host paths.
-        logPermissionEvent("diagnostics_bundle_exported", { sessionId: permissionLogId("diagnostics-export") });
+        logPermissionEvent("diagnostics_bundle_exported", { bytes: buffer.length, includeCrashDumps });
         return { ok: true as const, path: res.filePath, bytes: buffer.length };
       } catch (err) {
         log.warn({ err }, "diagnostics export failed");
@@ -151,7 +150,7 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.diagnostics.crashList, async (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.diagnostics.crashList, e);
+      auditUnauthorized(CHANNELS.diagnostics.crashList);
       return UNAUTHORIZED_FRAME;
     }
     try {
@@ -167,7 +166,7 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
     CHANNELS.logs.tail,
     async (e, args?: { lines?: number; level?: string }) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.logs.tail, e);
+        auditUnauthorized(CHANNELS.logs.tail);
         return UNAUTHORIZED_FRAME;
       }
       try {

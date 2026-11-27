@@ -77,7 +77,7 @@ async function harness() {
     installedPluginIds: async () => installed.map((entry) => entry.pluginId),
     predecessorBlocks,
     appVersion: "0.14.0", locale: () => "en", overlay: { show: vi.fn(), dismiss: vi.fn() },
-    notifications: { isFocusGateActive: () => false, fire: vi.fn() }, emit: vi.fn(), audit: vi.fn(),
+    notifications: { isFocusGateActive: () => false, fire: vi.fn() }, emit: vi.fn(),
   });
   services.push(service); await service.load();
   return { service, installed, blocked, configs, warn, restart, writes, journal, applyConfig, predecessorBlocks,

@@ -1,3 +1,4 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { randomUUID } from "node:crypto";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 /** Foreground memory reuse requires a matching tuple and non-escalated verdict, records an audit hit, and never bypasses deny or forced-modal gates.
@@ -11,10 +12,9 @@ import { makeWriteProbeTool } from "./approval-memory-test-fixtures.js";
 
 // Store B lookup + audit sink; shaped per-test. vi.mock factories are hoisted above all imports, so the
 // mock fns must be created via vi.hoisted (which runs even earlier) to be referenceable inside the factories.
-const { lookupApprovalMock, lookupUserDecisionMock, emitSandboxAuditMock, state } = vi.hoisted(() => ({
+const { lookupApprovalMock, lookupUserDecisionMock, state } = vi.hoisted(() => ({
   lookupApprovalMock: vi.fn(async (): Promise<unknown> => state.lookupResult),
   lookupUserDecisionMock: vi.fn(async (): Promise<unknown> => state.decisionResult),
-  emitSandboxAuditMock: vi.fn(async () => {}),
   state: { lookupResult: null as unknown, decisionResult: null as unknown },
 }));
 
@@ -28,15 +28,6 @@ vi.mock("../../permissions/user-approval-store.js", async () => {
   };
 });
 
-vi.mock("../../audit/sandbox-audit-sink.js", async () => {
-  const actual: typeof import("../../audit/sandbox-audit-sink.js") =
-    await vi.importActual("../../audit/sandbox-audit-sink.js");
-  return {
-    ...actual,
-    emitSandboxAudit: emitSandboxAuditMock,
-  };
-});
-
 import { ToolExecutor } from "../executor.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { ToolRegistry } from "../registry.js";
@@ -46,6 +37,7 @@ import { answeringRequestAndWait } from "../../__tests__/support/answering-appro
 
 describe("ToolExecutor — explicit-approval memory skips the foreground modal (Store B)", () => {
   let dir: string;
+  let logs: ReturnType<typeof collectPermissionEvents>;
 
   function makeManager(mode: "strict" | "default" | "auto" | "allow" = "default") {
     const manager = new PermissionManager(join(dir, "permissions.json"));
@@ -59,7 +51,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     state.decisionResult = null;
     lookupApprovalMock.mockClear();
     lookupUserDecisionMock.mockClear();
-    emitSandboxAuditMock.mockClear();
+    logs = collectPermissionEvents();
   });
 
   it("(a) session approval → same tuple re-call skips the modal and audits memoryHit", async () => {
@@ -102,19 +94,9 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     expect(executeSpy).toHaveBeenCalledTimes(1);
     expect(result[0].is_error).toBeUndefined();
 
-    // Audit entry records the memory-hit provenance.
-    expect(emitSandboxAuditMock).toHaveBeenCalled();
-    const entry = emitSandboxAuditMock.mock.calls[0]?.[0] as unknown as {
-      reviewer: {
-        llmVerdict: string | null;
-        userApprovalUsed: { memoryHit: boolean; verdictAtApproval: string | null } | null;
-      };
-      tool: { name: string };
-    };
-    expect(entry.tool.name).toBe("write_probe");
-    expect(entry.reviewer.llmVerdict).toBeNull();
-    expect(entry.reviewer.userApprovalUsed?.memoryHit).toBe(true);
-    expect(entry.reviewer.userApprovalUsed?.verdictAtApproval).toBe("low");
+    expect(logs.events).toContainEqual(expect.objectContaining({
+      event: "permission_approval_memory_hit", tool: "write_probe", scope: "session", reviewerRisk: "low",
+    }));
   });
 
   it("an exact persistent deny blocks the matching tool and input before the approval dock", async () => {
@@ -264,11 +246,10 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     );
 
     expect(result?.decision).toBe("allow");
-    const entry = emitSandboxAuditMock.mock.calls.at(-1)?.[0] as unknown as
-      | { tool: { args: string } }
-      | undefined;
-    expect(entry?.tool.args).toBe('{"operation":"status"}');
-    expect(entry?.tool.args).not.toContain("must-never-reach-audit");
+    const entry = logs.events.find(row => row.event === "permission_approval_memory_hit");
+    expect(entry).toMatchObject({ source: "plugin", trustOrigin: "plugin-emitted" });
+    expect(entry).not.toHaveProperty("args");
+    expect(JSON.stringify(entry)).not.toContain("must-never-reach-audit");
   });
 
   it("(a2) foreground-auto reviewer path checks Store B before reviewer dispatch", async () => {
@@ -330,7 +311,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     );
     expect(result).toBeNull();
     expect(lookupApprovalMock).toHaveBeenCalledTimes(1);
-    expect(emitSandboxAuditMock).not.toHaveBeenCalled();
+    expect(logs.events).not.toContainEqual(expect.objectContaining({ event: "permission_approval_memory_hit" }));
   });
 
   it("(c) revoked / absent approval (lookup null) → re-prompt", async () => {
@@ -768,6 +749,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
   });
 
   afterEach(async () => {
+    logs.restore();
     await cleanupTmpDir(dir);
   });
 });

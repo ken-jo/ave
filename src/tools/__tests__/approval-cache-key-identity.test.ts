@@ -7,7 +7,6 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
@@ -41,7 +40,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
   let dir: string;
   let aveHomeDir: string;
   let prevAveHome: string | undefined;
-  let auditLogger: AuditLogger;
+
   let reviewerCache: VerdictCache | undefined;
 
   beforeEach(() => {
@@ -50,11 +49,10 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     prevAveHome = process.env.AVE_HOME;
     process.env.AVE_HOME = aveHomeDir;
     __resetSessionStoreForTest();
-    auditLogger = new AuditLogger(join(aveHomeDir, "audit"));
   });
 
   afterEach(async () => {
-    await auditLogger.close();
+
     await reviewerCache?.flush();
     reviewerCache = undefined;
     if (prevAveHome === undefined) delete process.env.AVE_HOME;
@@ -127,7 +125,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     };
     const gate = new ApprovalGate(nativeWebContents as never);
     const approvalInputs = vi.spyOn(gate, "requestAndWait");
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined);
     let seq = 0;
     const run = async (
       name: string,

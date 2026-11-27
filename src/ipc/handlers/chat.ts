@@ -34,7 +34,7 @@ import type { IpcDeps } from "../types.js";
 import { createLogger } from "../../lib/logger.js";
 import { isValidSessionId } from "../../shared/session-id.js";
 import { MAX_PROJECT_NAME_CHARS, MAX_PROJECT_ROOT_CHARS, sessionFamilyOf, toSessionListRow, type SessionListEntry } from "../../memory/session-repository.js";
-import { type SessionKind } from "../../shared/session-lookup.js";
+import type { SessionKind } from "../../shared/session-lookup.js";
 import { resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
 import { isDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
@@ -89,7 +89,7 @@ export async function prepareParentMailboxTurn(deps: IpcDeps): Promise<ParentMai
   let entries: ParentMailboxEntry[];
   try {
     entries = await runner.peekParentMailbox(parentSessionId);
-  } catch (err) {
+  } catch {
     logPermissionEvent("subagent_mailbox_peek_failed", { sessionId: permissionLogId(parentSessionId) }, "warn");
     return null;
   }
@@ -135,7 +135,7 @@ export async function acknowledgeParentMailboxAfterTurn(
   if (!runner) return;
   try {
     await runner.acknowledgeParentMailbox(mailboxTurn.parentSessionId, mailboxTurn.entryIds);
-  } catch (err) {
+  } catch {
     logPermissionEvent("subagent_mailbox_ack_failed", { sessionId: permissionLogId(mailboxTurn.parentSessionId) }, "warn");
   }
 }

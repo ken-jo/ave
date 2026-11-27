@@ -40,7 +40,6 @@ async function setup(options: { rejectReads?: boolean } = {}) {
   const controller = rejectingController(options);
   const { registerRemoteA2AHandlers } = await import("../remote-a2a.js");
   registerRemoteA2AHandlers({
-    auditLogger: { log: vi.fn() },
     remoteA2AActionController: controller,
   } as never);
   return controller;
@@ -50,7 +49,7 @@ async function setupDisabled() {
   handlers.clear();
   vi.clearAllMocks();
   const { registerRemoteA2AHandlers } = await import("../remote-a2a.js");
-  registerRemoteA2AHandlers({ auditLogger: { log: vi.fn() } } as never);
+  registerRemoteA2AHandlers({  } as never);
 }
 
 beforeEach(() => {
@@ -79,7 +78,7 @@ describe("remote A2A IPC rejection boundary", () => {
       handlers.clear();
       vi.clearAllMocks();
       const { registerRemoteA2AHandlers } = await import("../remote-a2a.js");
-      registerRemoteA2AHandlers({ auditLogger: { log: vi.fn() }, ...deps } as never);
+      registerRemoteA2AHandlers({ ...deps } as never);
       return await invokeFileIpcHandler(handlers, CHANNELS.remoteA2a.status);
     }
 
@@ -145,7 +144,7 @@ describe("remote A2A IPC rejection boundary", () => {
     vi.clearAllMocks();
     const { registerRemoteA2AHandlers } = await import("../remote-a2a.js");
     const tasks = [{ state: "sent", taskHandle: "task_handle_222222", updatedAt: "2026-07-16T00:00:02.000Z" }];
-    registerRemoteA2AHandlers({ auditLogger: { log: vi.fn() }, remoteA2AActionController: { ...rejectingController(), tasks: vi.fn(() => tasks) } } as never);
+    registerRemoteA2AHandlers({ remoteA2AActionController: { ...rejectingController(), tasks: vi.fn(() => tasks) } } as never);
     await expect(invokeFileIpcHandler(handlers, CHANNELS.remoteA2a.tasks)).resolves.toEqual({ ok: true, tasks });
 
     await setupDisabled();
@@ -163,7 +162,6 @@ describe("remote A2A IPC rejection boundary", () => {
     vi.clearAllMocks();
     const { registerRemoteA2AHandlers } = await import("../remote-a2a.js");
     registerRemoteA2AHandlers({
-      auditLogger: { log: vi.fn() },
       remoteA2AStartFailureReason: "a2a-remote-outbound-config-incomplete",
     } as never);
 
@@ -247,7 +245,6 @@ describe("remote A2A IPC rejection boundary", () => {
     };
     const { registerRemoteA2AHandlers } = await import("../remote-a2a.js");
     registerRemoteA2AHandlers({
-      auditLogger: { log: vi.fn() },
       remoteA2AActionController: controller,
     } as never);
 

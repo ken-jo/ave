@@ -277,7 +277,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     pluginRuntime,
     pluginMarketplace,
     settingsService,
-    auditLogger,
     getMainWindow,
   } = deps;
   const broadcastPluginLifecycleEvent = (channel: string, payload: unknown) => {
@@ -291,14 +290,14 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   // Retain bootstrap status for windows that miss events while the splash document is loaded.
   ipcMain.handle(CHANNELS.bootstrap.statusGet, (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.bootstrap.statusGet, e);
+      auditUnauthorized(CHANNELS.bootstrap.statusGet);
       return null;
     }
     return latestBootstrapStatus();
   });
 
   ipcMain.handle(CHANNELS.plugins.uninstall, async (e, pluginId: string) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.plugins.uninstall, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.plugins.uninstall); return UNAUTHORIZED_FRAME; }
     const broadcastUninstallResult = (payload: { slug: string; success: boolean; error?: string }) => {
       broadcastPluginLifecycleEvent(CHANNELS.plugins.uninstallResult, payload);
     };
@@ -319,7 +318,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     CHANNELS.plugins.setEnabled,
     async (e, pluginId: unknown, enabled: unknown) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.plugins.setEnabled, e);
+        auditUnauthorized(CHANNELS.plugins.setEnabled);
         return UNAUTHORIZED_FRAME;
       }
       if (typeof pluginId !== "string" || pluginId.length === 0) {
@@ -350,7 +349,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   );
 
   ipcMain.handle(CHANNELS.plugins.installLocal, async (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.plugins.installLocal, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.plugins.installLocal); return UNAUTHORIZED_FRAME; }
     if (!isDevModeUnlocked()) {
       throw new Error("[security] dev mode not unlocked — enable a supported AVE_DEV* flag in a non-packaged build");
     }
@@ -400,7 +399,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.plugins.contributionTrustList, (e, pluginId?: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.plugins.contributionTrustList, e);
+      auditUnauthorized(CHANNELS.plugins.contributionTrustList);
       return UNAUTHORIZED_FRAME;
     }
     if (pluginId !== undefined && (typeof pluginId !== "string" || pluginId.length === 0)) {
@@ -416,7 +415,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.plugins.contributionTrustSet, async (e, input: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.plugins.contributionTrustSet, e);
+      auditUnauthorized(CHANNELS.plugins.contributionTrustSet);
       return UNAUTHORIZED_FRAME;
     }
     const value = asPlainRecord(input);
@@ -462,7 +461,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.plugins.backgroundEffectsGet, async (e, pluginId: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.plugins.backgroundEffectsGet, e);
+      auditUnauthorized(CHANNELS.plugins.backgroundEffectsGet);
       return UNAUTHORIZED_FRAME;
     }
     if (typeof pluginId !== "string" || pluginId.length === 0) return { ok: false, error: "invalid-plugin-id" };
@@ -483,7 +482,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   // The renderer names the review it showed; approval binds only if the running plugin's source and scope still match it.
   ipcMain.handle(CHANNELS.plugins.backgroundEffectsApprove, async (e, input: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.plugins.backgroundEffectsApprove, e);
+      auditUnauthorized(CHANNELS.plugins.backgroundEffectsApprove);
       return UNAUTHORIZED_FRAME;
     }
     const { pluginId, reviewSha256 } = asPlainRecord(input);
@@ -509,7 +508,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   let upgradeHolder: WebContents | undefined;
   ipcMain.handle(CHANNELS.plugins.backgroundEffectsUpgradeGet, async (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.plugins.backgroundEffectsUpgradeGet, e);
+      auditUnauthorized(CHANNELS.plugins.backgroundEffectsUpgradeGet);
       return UNAUTHORIZED_FRAME;
     }
     const store = deps.pluginBackgroundEffects;
@@ -542,7 +541,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.plugins.backgroundEffectsUpgradeDone, (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.plugins.backgroundEffectsUpgradeDone, e);
+      auditUnauthorized(CHANNELS.plugins.backgroundEffectsUpgradeDone);
       return UNAUTHORIZED_FRAME;
     }
     const store = deps.pluginBackgroundEffects;
@@ -552,7 +551,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.runtime.counts, (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.runtime.counts, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.runtime.counts); return UNAUTHORIZED_FRAME; }
     return {
       // Count model-visible tools; registry size also includes app-only and auth tools.
       tools: deps.toolRegistry.getModelVisibleTools().length,
@@ -563,7 +562,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.agents.list, async (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.agents.list, e);
+      auditUnauthorized(CHANNELS.agents.list);
       return UNAUTHORIZED_FRAME;
     }
     const agents = (await deps.agentProfileStore?.list() ?? []).map((agent) => ({
@@ -579,7 +578,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.skills.list, async (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.skills.list, e);
+      auditUnauthorized(CHANNELS.skills.list);
       return UNAUTHORIZED_FRAME;
     }
     const skills = deps.skillStore?.listCatalogSync() ?? [];
@@ -588,7 +587,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.plugins.configGet, (e, pluginId: string) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.plugins.configGet, e);
+      auditUnauthorized(CHANNELS.plugins.configGet);
       return pluginConfigError("unauthorized-frame", t("mainDialog.unauthorizedFrame"));
     }
     try {
@@ -600,7 +599,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.plugins.configSet, async (e, pluginId: string, config: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.plugins.configSet, e);
+      auditUnauthorized(CHANNELS.plugins.configSet);
       return pluginConfigError("unauthorized-frame", t("mainDialog.unauthorizedFrame"));
     }
     try {
@@ -664,7 +663,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.plugins.configSchemaGet, (e, pluginId: string) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.plugins.configSchemaGet, e);
+      auditUnauthorized(CHANNELS.plugins.configSchemaGet);
       return pluginConfigError("unauthorized-frame", t("mainDialog.unauthorizedFrame"));
     }
     try {
@@ -677,7 +676,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.plugins.configSecretSet, async (e, pluginId: string, key: string, value: string) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.plugins.configSecretSet, e);
+      auditUnauthorized(CHANNELS.plugins.configSecretSet);
       return pluginConfigError("unauthorized-frame", t("mainDialog.unauthorizedFrame"));
     }
     try {
@@ -755,7 +754,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.plugins.configSecretListKeys, async (e, pluginId: string) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.plugins.configSecretListKeys, e);
+      auditUnauthorized(CHANNELS.plugins.configSecretListKeys);
       return pluginConfigError("unauthorized-frame", t("mainDialog.unauthorizedFrame"));
     }
     try {
@@ -780,7 +779,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.plugins.perfStats, (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.plugins.perfStats, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.plugins.perfStats); return UNAUTHORIZED_FRAME; }
     return pluginRuntime.getPerfStats();
   });
 
@@ -790,7 +789,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     payload?: unknown,
     options?: { userAction?: boolean; operationGrantToken?: string },
   ) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.plugins.call, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.plugins.call); return UNAUTHORIZED_FRAME; }
     return pluginRuntime.callFromUi(method, payload, {
       userAction: options?.userAction === true,
       // Renderer cannot choose the authority-bearing session identity.
@@ -810,7 +809,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       hookProbeToolName: unknown,
     ) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.plugins.e2eBundleSnapshot, e);
+        auditUnauthorized(CHANNELS.plugins.e2eBundleSnapshot);
         return UNAUTHORIZED_FRAME;
       }
       if (!isE2eTestRuntime()) {
@@ -877,15 +876,15 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   };
 
   ipcMain.handle(CHANNELS.mcp.servers, (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.servers, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.mcp.servers); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.listServers();
   });
   ipcMain.handle(CHANNELS.mcp.kill, (e, serverId: string) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.kill, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.mcp.kill); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.killSwitch(serverId);
   });
   ipcMain.handle(CHANNELS.mcp.authenticate, async (e, serverId: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.authenticate, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.mcp.authenticate); return UNAUTHORIZED_FRAME; }
     if (!isUsableMcpServerId(serverId) && !isBundledMcpConfigId(serverId)) {
       return { connected: false, errorCode: "mcp-auth-failed" };
     }
@@ -899,20 +898,20 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
   });
   ipcMain.handle(CHANNELS.mcp.configGet, (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configGet, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.mcp.configGet); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.getConfigs();
   });
   ipcMain.handle(CHANNELS.mcp.configPath, (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configPath, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.mcp.configPath); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.getConfigPath();
   });
   ipcMain.handle(CHANNELS.mcp.managementState, (event) => {
-    if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.mcp.managementState, event); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(event)) { auditUnauthorized(CHANNELS.mcp.managementState); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.getManagementState();
   });
   ipcMain.handle(CHANNELS.mcp.startServer, async (event, serverId: unknown, approvedFingerprint?: unknown, intent?: unknown) => {
     if (!validateHostRendererSender(event) || event.senderFrame !== event.sender.mainFrame) {
-      auditUnauthorized(auditLogger, CHANNELS.mcp.startServer, event);
+      auditUnauthorized(CHANNELS.mcp.startServer);
       return UNAUTHORIZED_FRAME;
     }
     if (!hasUserKeyboardIntent(intent)
@@ -927,7 +926,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   });
   ipcMain.handle(CHANNELS.mcp.undoRemove, async (event, serverId: unknown, intent?: unknown) => {
     if (!validateHostRendererSender(event) || event.senderFrame !== event.sender.mainFrame) {
-      auditUnauthorized(auditLogger, CHANNELS.mcp.undoRemove, event);
+      auditUnauthorized(CHANNELS.mcp.undoRemove);
       throw new Error("unauthorized-frame: Server restore requires the host main frame");
     }
     if (!hasUserKeyboardIntent(intent)
@@ -937,7 +936,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   });
   ipcMain.handle(CHANNELS.mcp.clearApiKey, async (event, serverId: unknown, intent?: unknown) => {
     if (!validateHostRendererSender(event) || event.senderFrame !== event.sender.mainFrame) {
-      auditUnauthorized(auditLogger, CHANNELS.mcp.clearApiKey, event);
+      auditUnauthorized(CHANNELS.mcp.clearApiKey);
       throw new Error("unauthorized-frame: Credential changes require the host main frame");
     }
     if (!hasUserKeyboardIntent(intent)
@@ -948,11 +947,11 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     else await deps.mcpManager.clearApiKey(serverId);
   });
   ipcMain.handle(CHANNELS.mcp.configAdd, async (e, config: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configAdd, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.mcp.configAdd); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.addConfig(config as import("../../mcp/types.js").McpServerConfig);
   });
   ipcMain.handle(CHANNELS.mcp.configSetApiKey, async (e, serverId: string, apiKey: string) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configSetApiKey, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.mcp.configSetApiKey); return UNAUTHORIZED_FRAME; }
     if (!checkSetApiKeyRateLimit(String(serverId))) {
       throw new Error("Rate limit exceeded: ave:mcp:config:set-api-key (5/min per server)");
     }
@@ -962,13 +961,13 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       : deps.mcpManager.setApiKey(serverId, apiKey);
   });
   ipcMain.handle(CHANNELS.mcp.configRemove, async (e, serverId: string) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configRemove, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.mcp.configRemove); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.removeConfig(serverId);
   });
   // Rendering has no user-action rate bucket; legitimate card mounts must not starve prompt or attachment requests.
   // Proxy-session capacity and dispose-on-unmount own reclamation.
   ipcMain.handle(CHANNELS.mcp.uiResource, async (e, serverId: string, uri: string, generationId?: string) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.uiResource, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.mcp.uiResource); return UNAUTHORIZED_FRAME; }
     // Install the server's deny-by-default network gate before reading its resource.
     installMcpAppPartitionPolicy(serverId);
 
@@ -985,7 +984,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   // Use mcp-app provenance without userAction so iframe claims cannot bypass governance.
   ipcMain.handle(CHANNELS.mcp.callTool, async (e, serverId: unknown, name: unknown, args: unknown, generationId?: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.mcp.callTool, e);
+      auditUnauthorized(CHANNELS.mcp.callTool);
       return UNAUTHORIZED_FRAME;
     }
     if (typeof serverId !== "string" || !serverId.trim()) {
@@ -1047,7 +1046,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   // Notifications share the existing focus, cooldown, and sanitization policy.
   ipcMain.handle(CHANNELS.mcp.uiMessage, async (e, serverId: unknown, cardSessionId: unknown, params: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.mcp.uiMessage, e);
+      auditUnauthorized(CHANNELS.mcp.uiMessage);
       return UNAUTHORIZED_FRAME;
     }
     const auditMcpApp = (_type: "info" | "error", _input: string) => {
@@ -1141,7 +1140,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   // Return a provenance envelope without starting a turn; ordinary send revalidates it under prompt-emitted origin.
   ipcMain.handle(CHANNELS.mcp.getPrompt, async (e, serverId: unknown, name: unknown, args: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.mcp.getPrompt, e);
+      auditUnauthorized(CHANNELS.mcp.getPrompt);
       return UNAUTHORIZED_FRAME;
     }
     const auditPrompt = (_type: "info" | "error", _input: string) => {
@@ -1209,7 +1208,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   // Catalog reads use local declared-resource state and consume no server round-trip budget.
   ipcMain.handle(CHANNELS.mcp.listResources, (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.mcp.listResources, e);
+      auditUnauthorized(CHANNELS.mcp.listResources);
       return UNAUTHORIZED_FRAME;
     }
     return { ok: true as const, servers: deps.mcpManager.listDeclaredResources() };
@@ -1217,7 +1216,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.mcp.attachResource, async (e, serverId: unknown, uri: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.mcp.attachResource, e);
+      auditUnauthorized(CHANNELS.mcp.attachResource);
       return UNAUTHORIZED_FRAME;
     }
     const auditAttach = (_type: "info" | "error", _input: string) => {
@@ -1270,7 +1269,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   // Template listing reads host-held state without a server request or rate charge.
   ipcMain.handle(CHANNELS.mcp.listResourceTemplates, (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.mcp.listResourceTemplates, e);
+      auditUnauthorized(CHANNELS.mcp.listResourceTemplates);
       return UNAUTHORIZED_FRAME;
     }
     return { ok: true as const, servers: deps.mcpManager.listDeclaredResourceTemplates() };
@@ -1281,7 +1280,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     CHANNELS.mcp.attachResourceTemplate,
     async (e, serverId: unknown, uriTemplate: unknown, values: unknown) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.mcp.attachResourceTemplate, e);
+        auditUnauthorized(CHANNELS.mcp.attachResourceTemplate);
         return UNAUTHORIZED_FRAME;
       }
       const auditAttach = (_type: "info" | "error", _input: string) => {
@@ -1357,7 +1356,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   // The user's save dialog authorizes each write; cancellation stops the remaining files without error.
   ipcMain.handle(CHANNELS.mcp.uiDownloadFile, async (e, serverId: unknown, params: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.mcp.uiDownloadFile, e);
+      auditUnauthorized(CHANNELS.mcp.uiDownloadFile);
       return UNAUTHORIZED_FRAME;
     }
     const auditDownload = (_type: "info" | "error", _input: string) => {
@@ -1408,7 +1407,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     CHANNELS.mcp.uiModelContext,
     (e, serverId: unknown, cardSessionId: unknown, cardId: unknown, params: unknown) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.mcp.uiModelContext, e);
+        auditUnauthorized(CHANNELS.mcp.uiModelContext);
         return UNAUTHORIZED_FRAME;
       }
       const auditContext = (_type: "info" | "error", _input: string) => {
@@ -1444,14 +1443,14 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   // Dispose proxy tokens on unmount so reclaimed cards cannot evict still-mounted sessions.
   ipcMain.handle(CHANNELS.mcp.disposeUiSession, (e, token: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.disposeUiSession, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.mcp.disposeUiSession); return UNAUTHORIZED_FRAME; }
     if (typeof token === "string" && token.length > 0) disposeMcpAppProxySession(token);
     return { ok: true as const };
   });
 
   ipcMain.handle(CHANNELS.mcp.importClaudeDesktopPreview, async (e, raw: string) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.mcp.importClaudeDesktopPreview, e);
+      auditUnauthorized(CHANNELS.mcp.importClaudeDesktopPreview);
       return UNAUTHORIZED_FRAME;
     }
     if (typeof raw === "string" && raw.length > 1_000_000) {
@@ -1471,7 +1470,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       payload: { raw: string; conflictPolicy?: "skip" | "overwrite" },
     ) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.mcp.importClaudeDesktopApply, e);
+        auditUnauthorized(CHANNELS.mcp.importClaudeDesktopApply);
         return UNAUTHORIZED_FRAME;
       }
       const { importFailureKind, parseClaudeDesktopConfig } = await import("../../mcp/claude-desktop-import.js");
@@ -1541,7 +1540,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   // Fan out theme updates to registered webviews and publish the same host event.
   ipcMain.handle(CHANNELS.host.pluginThemeNotify, (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.host.pluginThemeNotify, e);
+      auditUnauthorized(CHANNELS.host.pluginThemeNotify);
       return UNAUTHORIZED_FRAME;
     }
     const validated = recordValidatedTheme(payload);
@@ -1555,7 +1554,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     const win = getMainWindow();
     if (!validateHostRendererSender(e) || !win || win.isDestroyed()
       || e.sender !== win.webContents || e.senderFrame !== e.sender.mainFrame) {
-      auditUnauthorized(auditLogger, CHANNELS.notification.toast, e);
+      auditUnauthorized(CHANNELS.notification.toast);
       return UNAUTHORIZED_FRAME;
     }
     if (payload === null || typeof payload !== "object" || Array.isArray(payload)
@@ -1568,7 +1567,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.notification.clicked, (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.notification.clicked, e);
+      auditUnauthorized(CHANNELS.notification.clicked);
       return UNAUTHORIZED_FRAME;
     }
     const kind = (payload as { kind?: unknown } | null | undefined)?.kind;

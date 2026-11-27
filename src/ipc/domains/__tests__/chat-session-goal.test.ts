@@ -54,7 +54,6 @@ async function setup() {
         saveSessionMetadata: vi.fn(async () => undefined),
       },
     },
-    auditLogger: { log: vi.fn() },
     getMainWindow: vi.fn(() => null),
   } as unknown as Parameters<typeof registerChatHandlers>[0]);
   return { sessionGoalStore, abortCurrentTurn };

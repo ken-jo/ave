@@ -3,7 +3,7 @@ import { isHostRefusal, markHostRefusal } from "./host-refusal.js";
 import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { appendToolInvocationAudit, trackDetachedToolInvocation } from "./invocation-ledger.js";
 import { isHostExitAbort } from "../shared/host-exit-abort.js";
-import type { ToolAuditTerminationReason } from "../audit/audit-logger.js";
+import type { ToolAuditTerminationReason } from "./executor-contract.js";
 import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, bindPendingAnswerRequest, openPendingAnswerCard, pendingQuestionStillAsked, personAnswerStands, saveStandingAnswerRule, standingAnswerFor, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
@@ -23,7 +23,7 @@ import type { ApprovalRequestInput, LinkedApprovalTarget } from "../permissions/
 import { randomUUID } from "node:crypto";
 import type { PermissionCheckResult } from "../permissions/permission-manager.js";
 import { HOST_TERMINAL_PERMISSION_CHANGED, issueHostTerminalWriteAuthority, type HostTerminalWriteAuthority } from "../permissions/host-terminal-write-authority.js";
-import type { ToolExecutionAuditMetadata } from "../audit/audit-schema.js";
+import type { ToolExecutionAuditMetadata } from "./pipeline/permission-decision.js";
 import { isPiiRedactionEnabled, maskSensitiveData } from "../audit/dlp-filter.js";
 import { emitEffectShadowLog } from "../permissions/reviewer/risk-shadow-log.js";
 import { runWithEffectLedger, type EffectLedger } from "../permissions/effect-ledger.js";
@@ -81,8 +81,8 @@ import {
   scriptHookRefusal,
   type InvocationRunnerServices,
 } from "./invocation-services.js";
-import {
-  type AuditWriter,
+import type {
+  AuditWriter,
 } from "./pipeline/audit-writer.js";
 import {
   RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT,
@@ -191,7 +191,7 @@ export interface ExecutionStageContext {
     reason: string,
     input: Record<string, unknown>,
     blockedPermission?: PermissionCheckResult,
-    hookChain?: import("../audit/audit-schema.js").HookResult[],
+    hookChain?: import("./pipeline/permission-decision.js").HookResult[],
   ) => Promise<ToolResult>;
   startTime: number;
   callbacks: ToolExecutorCallbacks | undefined;
@@ -481,7 +481,7 @@ export async function executeAuthorizedToolInvocation(
   let effectAuthorizationRequired: AuthorizationRequiredControl | undefined;
   let effectNoApprover = false;
   let effectApprovalRefusal: EffectApprovalRefusal | undefined;
-  let latePermissionHookChain: import("../audit/audit-schema.js").HookResult[] | undefined;
+  let latePermissionHookChain: import("./pipeline/permission-decision.js").HookResult[] | undefined;
   let handlerAdmissionBlocked = true;
   let outputArtifact: ToolOutputArtifactInfo | undefined;
   let ownedOutputCapture: ToolOutputCapture | undefined;
@@ -606,12 +606,12 @@ export async function executeAuthorizedToolInvocation(
           },
         } as const;
         if (consumed.ok) {
-          await appendToolInvocationAudit(services.auditLogger, {
+          await appendToolInvocationAudit({
             ...commonGrantAudit,
             decision: "allow",
             });
         } else {
-          await appendToolInvocationAudit(services.auditLogger, {
+          await appendToolInvocationAudit({
             ...commonGrantAudit,
             decision: "deny",
             denyReasons: [{
@@ -1408,7 +1408,7 @@ export async function executeAuthorizedToolInvocation(
     terminationReason = "indeterminate";
     // The ceiling and the quit seal are the host's stops; the invocation's principal decided nothing here.
     const hostStopped = !outcome.ok && outcome.reason === "ceiling" || isHostExitAbort(abortSignal?.reason);
-    await appendToolInvocationAudit(services.auditLogger, {
+    await appendToolInvocationAudit({
       ts: new Date().toISOString(),
       auditId: randomUUID(),
       tool: toolUse.name,
@@ -1597,7 +1597,6 @@ export async function executeAuthorizedToolInvocation(
         hostObservable: tool.source === "plugin",
         hostObservedEffect: effectSummary,
       },
-      services.auditLogger,
     );
   }
   if (
@@ -1657,7 +1656,7 @@ export async function executeAuthorizedToolInvocation(
         settlement,
         async () => {
           try {
-            await appendToolInvocationAudit(services.auditLogger, { ...pluginOperationRow("settled"), decision: "allow" });
+            await appendToolInvocationAudit({ ...pluginOperationRow("settled"), decision: "allow" });
             lease.release();
           } catch (error) {
             log.error(
@@ -1669,7 +1668,7 @@ export async function executeAuthorizedToolInvocation(
           }
         },
         // The worker is stopped with its plugin; its settlement is no longer recorded.
-        () => appendToolInvocationAudit(services.auditLogger, {
+        () => appendToolInvocationAudit({
           ...pluginOperationRow("indeterminate"),
           decision: "deny",
           denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-execution" }],

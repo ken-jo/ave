@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +7,6 @@ import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-an
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
 import { takeWindowsHelperLaunches, totalLaunches } from "../../../__tests__/support/windows-helper-spawns.js";
-import { AuditLogger } from "../../../audit/audit-logger.js";
 import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../../boot/steps/windows-sandbox-plan.js";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
 import { configureHostResources } from "../../../main/host-resources.js";
@@ -106,15 +104,14 @@ afterEach(async () => {
 
 async function subject() {
   const root = resources.makeTmpDir("ave-spawn-budget-");
-  const audit = new AuditLogger(join(root, "audit"));
-  await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
+
   const contents = { id: 101, mainFrame: { url: "file:///application/index.html" }, isDestroyed: vi.fn(() => false), send: vi.fn() };
   const window = { isDestroyed: vi.fn(() => false), webContents: contents };
   const firstCard = deferred<ApprovalRequest>();
   contents.send.mockImplementation((channel: string, card: ApprovalRequest) => {
     if (channel === IPC_APPROVAL_REQUEST) firstCard.resolve(card);
   });
-  const gate = new ApprovalGate((sessionId) => sessionId === SESSION_ID ? contents as unknown as WebContents : null, undefined, undefined, audit);
+  const gate = new ApprovalGate((sessionId) => sessionId === SESSION_ID ? contents as unknown as WebContents : null, undefined, undefined);
   const complete = vi.fn<LlmReviewerProvider["complete"]>(async () => ({
     text: JSON.stringify({ level: "low", reason: "reviewed action" }), tokensIn: 1, tokensOut: 1, costUsd: 0,
   }));
@@ -127,18 +124,17 @@ async function subject() {
   });
   manager.setJudge({
     settings: { ...DEFAULT_JUDGE_SETTINGS, chain: [], categories: { ...DEFAULT_JUDGE_SETTINGS.categories }, breaker: { ...DEFAULT_JUDGE_SETTINGS.breaker } },
-    chain: [], breaker: manager.getJudgeBreaker(), audit,
+    chain: [], breaker: manager.getJudgeBreaker(),
   });
   const registry = new ToolRegistry();
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, new ScriptHookManager(), audit);
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, new ScriptHookManager());
   cleanup.push(async () => {
     gate.disposeAll();
-    await audit.close();
+
   });
   const { registerPermissionsHandlers } = await import("../permissions.js");
   registerPermissionsHandlers({
-    conversationLoop: { permissionManager: manager }, approvalGate: gate, auditLogger: audit,
-    toolRegistry: registry, getMainWindow: () => window, getAppWindows: () => [window],
+    conversationLoop: { permissionManager: manager }, approvalGate: gate, toolRegistry: registry, getMainWindow: () => window, getAppWindows: () => [window],
   } as never);
   const event = { sender: contents, senderFrame: contents.mainFrame } as unknown as IpcMainInvokeEvent;
   return { root, executor, registry, event, card: firstCard.promise };

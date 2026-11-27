@@ -1,16 +1,15 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { HookRunner } from "../../hooks/hook-runner.js";
 import type { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { answeredApprovalProvenance, type ApprovalGate } from "../../permissions/approval-gate.js";
 import { answeredApprovalDecision } from "../../__tests__/support/answering-approval-gate.js";
-import { PermissionManager } from "../../permissions/permission-manager.js";
+import type { PermissionManager } from "../../permissions/permission-manager.js";
 import { makePermissionManager } from "./executor-reviewer-fixtures.js";
 import { createDynamicTool } from "../base.js";
 import {
@@ -40,7 +39,7 @@ import type {
   RationaleRuntimeMaterialization,
 } from "../pipeline/rationale-orchestrator.js";
 import {
-  RATIONALE_TERMINAL_AUDIT_UNKNOWN_RESULT,
+  RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT,
   ToolExecutor,
   type RationaleResumeExecuteOptions,
 } from "../executor.js";
@@ -165,29 +164,6 @@ function createScriptHooks(order: string[]): ScriptHookManager {
   } as unknown as ScriptHookManager;
 }
 
-function createAuditLogger(order: string[], directory: string): AuditLogger {
-  return {
-    isPermissionAuditChainReady: () => true,
-    isShadowChannelWritable: () => true,
-    getPermissionShadowLogFile: () => join(directory, "shadow.jsonl"),
-    assertPermissionAuditWritable: () => {
-      order.push("audit-writable");
-    },
-    appendPermissionAuditEntry: vi.fn(async (entry) => {
-      order.push(
-        entry.decision === "ask"
-          ? "permission-ask-audit"
-          : "final-permission-audit",
-      );
-      return entry;
-    }),
-    log: vi.fn(() => {
-      order.push("final-audit");
-    }),
-    logShadow: vi.fn(),
-  } as unknown as AuditLogger;
-}
-
 function tracedStartCas(
   order: string[],
   backing: InMemoryHostInvocationStartCasStore,
@@ -205,7 +181,7 @@ function tracedStartCas(
   };
 }
 
-async function fixture(audit?: (directory: string) => Promise<AuditLogger>) {
+async function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "ave-rationale-resume-"));
   const order: string[] = [];
   const invocationAudits: Array<{ state: unknown }> = [];
@@ -241,7 +217,7 @@ async function fixture(audit?: (directory: string) => Promise<AuditLogger>) {
     }),
   } as unknown as ApprovalGate;
   const scriptHooks = createScriptHooks(order);
-  const auditLogger = audit ? await audit(directory) : createAuditLogger(order, directory);
+
   const executor = new ToolExecutor(
     registry,
     hooks,
@@ -249,7 +225,6 @@ async function fixture(audit?: (directory: string) => Promise<AuditLogger>) {
     undefined,
     approvalGate,
     scriptHooks,
-    auditLogger,
   );
 
   let reviewerRequestId: string | undefined;
@@ -335,7 +310,12 @@ async function fixture(audit?: (directory: string) => Promise<AuditLogger>) {
     isAuthenticConsumedAllowOnceReceipt: authenticateReceipt,
     hostInvocationStartCas: tracedStartCas(order, startStore),
   };
+  const terminalEvents: Record<string, unknown>[] = [];
   const log = watchPermissionEvents((event) => {
+    if (event.event === "permission_decision" && event.toolUseId === "sealed-use" && event.decision !== "ask") {
+      terminalEvents.push(event);
+      order.push("terminal-log");
+    }
     if (event.event !== "rationale_invocation") return;
     invocationAudits.push({ state: event.state });
     order.push(
@@ -377,8 +357,8 @@ async function fixture(audit?: (directory: string) => Promise<AuditLogger>) {
     loadReceipt,
     control,
     invocationAudits,
+    terminalEvents,
     log,
-    auditLogger,
   };
 }
 
@@ -404,21 +384,21 @@ describe("ToolExecutor sealed rationale resume", () => {
         "script-pre",
         "current-identity",
         "permission-hook",
-        "permission-ask-audit",
+
         "receipt-load",
         "receipt-auth",
-        "audit-writable",
+
         "start-cas",
         "start-consume",
         "authorized-audit",
         "started-audit",
         "tool-start",
-        "audit-writable",
+
         "tool-execute",
         "config-post",
         "script-post",
-        "final-audit",
-        "final-permission-audit",
+
+        "terminal-log",
         "terminal-cas",
         "terminal-audit",
         "tool-end",
@@ -432,11 +412,9 @@ describe("ToolExecutor sealed rationale resume", () => {
   it("records the resumed allow as the desk's answer with one terminal row", async () => {
     const f = await fixture();
     try {
-      const append = vi.mocked(f.auditLogger.appendPermissionAuditEntry);
-      const before = append.mock.calls.length;
       const result = await resumeFixture(f);
       expect(result.is_error).toBeUndefined();
-      const terminal = append.mock.calls.slice(before).map(([entry]) => entry).filter(entry => entry.decision !== "ask" && !("grantLifetime" in entry));
+      const terminal = f.terminalEvents;
       expect(terminal).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
     } finally {
       f.log.mockRestore();
@@ -452,10 +430,8 @@ describe("ToolExecutor sealed rationale resume", () => {
     try {
       await f.manager.addAlwaysAllowedPersist("sealed_write");
       Object.assign(f.resumeRuntime, { hasApprovedPolicyTransition: () => transition });
-      const append = vi.mocked(f.auditLogger.appendPermissionAuditEntry);
-      const before = append.mock.calls.length;
       const result = await resumeFixture(f);
-      const terminal = append.mock.calls.slice(before).map(([entry]) => entry).filter(entry => entry.decision !== "ask" && !("grantLifetime" in entry));
+      const terminal = f.terminalEvents;
       if (transition) {
         expect(result.is_error, JSON.stringify(result)).toBeUndefined();
         expect(f.execute).toHaveBeenCalledOnce();
@@ -473,27 +449,18 @@ describe("ToolExecutor sealed rationale resume", () => {
   });
 
   it("ends a script-hook mutation during the resume with the rule's one deny row, its one denial and no host row", async () => {
-    const realAudit = async (directory: string) => {
-      const logger = new AuditLogger(join(directory, "audit"));
-      await logger.setupPermissionAuditChain("ef".repeat(32));
-      return logger;
-    };
-    const f = await fixture(realAudit);
-    const audit = f.auditLogger as AuditLogger;
+    const f = await fixture();
     try {
       vi.mocked(f.scriptHooks.runPreToolUse).mockResolvedValue({ decision: "allow", reason: "rewrites the payload",
         updatedInput: { payload: "changed" }, results: [] });
       const result = await resumeFixture(f);
       expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("could not safely restart") });
       expect(f.execute).not.toHaveBeenCalled();
-      await audit.close();
-      const rows = readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
-        .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.toolUseId === "sealed-use" && row.decision !== "ask");
-      expect(rows).toEqual([expect.objectContaining({ decision: "deny",
-        denyReasons: [{ reason: "Hook input mutation could not safely restart permission classification", source: "hook-input-mutation" }] })]);
+
+      expect(f.terminalEvents).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "denied" })]);
       expect(vi.mocked(f.scriptHooks.runLifecycleEvent).mock.calls.filter(([event]) => event === "PermissionDenied")).toHaveLength(1);
     } finally {
-      await audit.close();
+
       f.log.mockRestore();
       await cleanupTmpDir(f.directory);
     }
@@ -786,7 +753,7 @@ describe("ToolExecutor sealed rationale resume", () => {
 
         expect(result).toEqual(expect.objectContaining({
           tool_use_id: "sealed-use",
-          content: RATIONALE_TERMINAL_AUDIT_UNKNOWN_RESULT,
+          content: RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT,
           is_error: true,
         }));
         expect(result).not.toHaveProperty("rawResult");
@@ -796,7 +763,7 @@ describe("ToolExecutor sealed rationale resume", () => {
         expect(commitTerminal).toHaveBeenCalledOnce();
         expect(onToolEnd).toHaveBeenCalledOnce();
         expect(onToolEnd.mock.calls[0]?.[1]).toBe(
-          RATIONALE_TERMINAL_AUDIT_UNKNOWN_RESULT,
+          RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT,
         );
         expect(f.invocationAudits.map((record) => record.state)).toEqual([
           "authorized",
@@ -838,7 +805,7 @@ describe("ToolExecutor sealed rationale resume", () => {
 
       expect(result).toEqual(expect.objectContaining({
         tool_use_id: "sealed-use",
-        content: RATIONALE_TERMINAL_AUDIT_UNKNOWN_RESULT,
+        content: RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT,
         is_error: true,
       }));
       expect(result.content).not.toContain("sealed tool failure secret");
@@ -846,7 +813,7 @@ describe("ToolExecutor sealed rationale resume", () => {
       expect(commitTerminal).toHaveBeenCalledOnce();
       expect(onToolEnd).toHaveBeenCalledOnce();
       expect(onToolEnd.mock.calls[0]?.[1]).toBe(
-        RATIONALE_TERMINAL_AUDIT_UNKNOWN_RESULT,
+        RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT,
       );
       expect(f.invocationAudits.map((record) => record.state)).toEqual([
         "authorized",

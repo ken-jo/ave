@@ -1,8 +1,8 @@
+import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { withLocalityDecision } from "../shared/local-path-io.js";
 import type { Stats } from "node:fs";
 import { stat } from "node:fs/promises";
 
-import type { AuditEntry } from "../audit/audit-logger.js";
 import { sanitizeRuntimeAllowedDirectories } from "./allowed-directories.js";
 import {
   beginWorkspaceRootRemovalPersist,
@@ -19,10 +19,6 @@ const DEFAULT_CONCURRENCY = 4;
 const MAX_CONCURRENCY = 8;
 
 type StatFn = (path: string) => Promise<Pick<Stats, "isDirectory">>;
-
-export interface WorkspaceRootAuditLogger {
-  log(entry: AuditEntry): void;
-}
 
 export interface WorkspaceRootGrantPruner {
   prunePathGrantsUnderRoot(
@@ -88,7 +84,6 @@ export interface PendingWorkspaceRootCleanup {
 }
 
 export interface ReconcileWorkspaceRootsOptions {
-  auditLogger?: WorkspaceRootAuditLogger;
   permissionManager?: WorkspaceRootGrantPruner;
   source: "boot" | "list-roots" | string;
   // Test-only settings file override.
@@ -138,19 +133,18 @@ function stableErrorCode(error: unknown): string {
   return /^[A-Z0-9_-]{1,64}$/.test(code) ? code : "UNKNOWN";
 }
 
-function audit(
-  logger: WorkspaceRootAuditLogger | undefined,
+function logReconciliation(
   source: string,
-  type: "info" | "warn",
+  level: "info" | "warn",
   detail: Record<string, unknown>,
 ): void {
-  logger?.log({
-    timestamp: new Date().toISOString(),
-    sessionId: "boot",
-    type,
-    input: "workspace-root-reconcile",
-    output: JSON.stringify({ source, ...detail }),
-  });
+  logPermissionEvent("workspace_root_reconciliation", {
+    source: permissionLogId(source),
+    outcome: permissionLogId(detail.outcome),
+    reasonCode: permissionLogId(detail.reason),
+    code: permissionLogId(detail.code),
+    prunedGrants: typeof detail.prunedGrants === "number" ? detail.prunedGrants : undefined,
+  }, level);
 }
 
 async function probeRoot(storedPath: string, statFn: StatFn, timeoutMs: number): Promise<RootProbe> {
@@ -373,7 +367,7 @@ export async function reconcileWorkspaceRoots(
     inactiveRoots.add(result.intent.runtimePath);
     const path = opaqueWorkspaceRootAuditRef(result.intent.runtimePath);
     if (result.completed) {
-      audit(options.auditLogger, options.source, "info", {
+      logReconciliation(options.source, "info", {
         path,
         operationId: result.intent.operationId,
         outcome: "cleanup-complete",
@@ -387,7 +381,7 @@ export async function reconcileWorkspaceRoots(
         code: result.code ?? "UNKNOWN",
         prunedGrants: result.prunedGrants,
       });
-      audit(options.auditLogger, options.source, "warn", {
+      logReconciliation(options.source, "warn", {
         path,
         operationId: result.intent.operationId,
         outcome: "cleanup-pending",
@@ -420,7 +414,7 @@ export async function reconcileWorkspaceRoots(
     }
     if (probe.kind === "invalid-path") {
       retained.push({ storedPath: probe.storedPath, reason: "invalid-path", code: "INVALID_PATH" });
-      audit(options.auditLogger, options.source, "warn", {
+      logReconciliation(options.source, "warn", {
         path: redactedPath,
         outcome: "retained",
         reason: "invalid-path",
@@ -435,7 +429,7 @@ export async function reconcileWorkspaceRoots(
         reason: "unprobed",
         code: "STAT_UNPROBED_AFTER_TIMEOUT",
       });
-      audit(options.auditLogger, options.source, "warn", {
+      logReconciliation(options.source, "warn", {
         path: redactedPath,
         outcome: "retained",
         reason: "unprobed",
@@ -450,7 +444,7 @@ export async function reconcileWorkspaceRoots(
         reason: "timeout",
         code: "STAT_TIMEOUT",
       });
-      audit(options.auditLogger, options.source, "warn", {
+      logReconciliation(options.source, "warn", {
         path: redactedPath,
         outcome: "retained",
         reason: "timeout",
@@ -465,7 +459,7 @@ export async function reconcileWorkspaceRoots(
         reason: "transient-error",
         code: probe.code,
       });
-      audit(options.auditLogger, options.source, "warn", {
+      logReconciliation(options.source, "warn", {
         path: redactedPath,
         outcome: "retained",
         reason: "transient-error",
@@ -506,7 +500,7 @@ export async function reconcileWorkspaceRoots(
           ...(code ? { code } : {}),
         });
         if (reason !== "directory") {
-          audit(options.auditLogger, options.source, "warn", {
+          logReconciliation(options.source, "warn", {
             path: redactedPath,
             outcome: "retained",
             reason,
@@ -531,7 +525,7 @@ export async function reconcileWorkspaceRoots(
           reason: "persist-error",
           code,
         });
-        audit(options.auditLogger, options.source, "warn", {
+        logReconciliation(options.source, "warn", {
           path: redactedPath,
           outcome: "retained",
           reason: "intent-persist-failed",
@@ -550,7 +544,7 @@ export async function reconcileWorkspaceRoots(
           code: execution.code ?? "UNKNOWN",
           prunedGrants: execution.prunedGrants,
         });
-        audit(options.auditLogger, options.source, "warn", {
+        logReconciliation(options.source, "warn", {
           path: redactedPath,
           operationId: execution.intent.operationId,
           outcome: "cleanup-pending",
@@ -566,7 +560,7 @@ export async function reconcileWorkspaceRoots(
         prunedGrants: execution.prunedGrants,
       };
       removed.push(removedRoot);
-      audit(options.auditLogger, options.source, "info", {
+      logReconciliation(options.source, "info", {
         path: redactedPath,
         operationId: execution.intent.operationId,
         outcome: "removed",
@@ -576,7 +570,7 @@ export async function reconcileWorkspaceRoots(
       try {
         await options.onRemoved?.(removedRoot, execution.context);
       } catch (error: unknown) {
-        audit(options.auditLogger, options.source, "warn", {
+        logReconciliation(options.source, "warn", {
           path: redactedPath,
           outcome: "lifecycle-finalize-failed",
           code: stableErrorCode(error),

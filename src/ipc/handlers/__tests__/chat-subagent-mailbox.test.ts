@@ -27,7 +27,6 @@ function makeDeps(entries: Array<ReturnType<typeof mailboxEntry>>) {
       getSessionId: () => sessionId,
     },
     getSubAgentRunner: () => ({ peekParentMailbox, acknowledgeParentMailbox }),
-    auditLogger: { log },
   } as unknown as IpcDeps;
   return {
     deps,

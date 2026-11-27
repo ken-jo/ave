@@ -37,7 +37,7 @@ export function registerDocumentEngineHandlers(deps: IpcDeps): void {
 
   const authorize = (event: IpcMainInvokeEvent, channel: string, args: readonly unknown[]): DocumentEngineActionResult | undefined => {
     if (!validateAppWindowMainFrameSender(event, deps)) {
-      auditUnauthorized(deps.auditLogger, channel, event);
+      auditUnauthorized(channel);
       return { ok: false, error: "unauthorized" };
     }
     if (args.length !== 0) return { ok: false, error: "bad-request" };

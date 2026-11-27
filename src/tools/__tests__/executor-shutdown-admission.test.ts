@@ -1,10 +1,10 @@
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { collectPermissionEvents, watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import type { PluginRuntimeGenerationAccess } from "../../plugins/plugin-host-generation.js";
@@ -12,9 +12,8 @@ import type { ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PluginGenerationCoordinator, type ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 
 const roots: string[] = [];
-const loggers: Array<{ close(): Promise<void> }> = [];
 afterEach(async () => {
-  for (const logger of loggers.splice(0)) await logger.close();
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
@@ -50,7 +49,6 @@ async function freshExecutor(
   const { ToolRegistry } = await import("../registry.js");
   const { createDynamicTool } = await import("../base.js");
   const { PermissionManager } = await import("../../permissions/permission-manager.js");
-  const { AuditLogger } = await import("../../audit/audit-logger.js");
   const { t } = await import("../../i18n/index.js");
   const { ScriptHookManager } = await import("../../hooks/script-hook-manager.js");
   const root = mkdtempSync(join(tmpdir(), "ave-executor-shutdown-"));
@@ -63,9 +61,7 @@ async function freshExecutor(
     isDestroyed: () => false,
     send: (channel: string, request: ApprovalRequest) => { if (channel === IPC_APPROVAL_REQUEST) { cards.push(request); asked.resolve(request); } },
   } as never);
-  const audit = new AuditLogger(join(root, "audit"));
-  loggers.push(audit);
-  await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
+
   const executes = Array.from({ length: toolCount }, (_, index) => vi.fn(async () => `done ${index}`));
   const registry = new ToolRegistry();
   for (const [index, execute] of executes.entries()) {
@@ -94,30 +90,23 @@ async function freshExecutor(
       execute: async () => ({ output: "unintercepted", isError: false }),
     }));
   }
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, generationAccess && new ScriptHookManager(), audit, undefined, undefined, undefined, generationAccess && (() => generationAccess));
-  const rows = (): Array<Record<string, unknown>> => {
-    const file = audit.getPermissionAuditLogFile();
-    if (!existsSync(file)) return [];
-    return readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
-  };
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, generationAccess && new ScriptHookManager(), undefined, undefined, undefined, generationAccess && (() => generationAccess));
+  const capture = collectPermissionEvents();
+  const rows = () => capture.events.filter((event) => event.event === "permission_decision");
   const hostShutdownRows = (all: Array<Record<string, unknown>>, toolUseId: string) => all.filter((row) =>
-    row.toolUseId === toolUseId && row.decision === "deny" && JSON.stringify(row.denyReasons ?? []).includes("host-shutdown"));
+    row.toolUseId === toolUseId && row.decision === "deny" && row.terminalKind === "cancelled");
   const toolUses = executes.map((_, index) => ({ id: `tu-queued-${index}`, name: `queued_probe_${index}`, input: { value: String(index) } }));
   const cancelled = t("be_executor.toolExecutionCancelled");
-  const plainRows = (): Array<Record<string, unknown>> => readdirSync(audit.getAuditDir())
-    .filter((name) => name.endsWith(".jsonl") && !name.includes("permission-audit"))
-    .flatMap((name) => readFileSync(join(audit.getAuditDir(), name), "utf8").split("\n").filter(Boolean))
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
-  return { ledger, executor, executes, audit, manager, rows, plainRows, hostShutdownRows, toolUses, cancelled, gate, asked: asked.promise, cards };
+  return { ledger, executor, executes, capture, manager, rows, hostShutdownRows, toolUses, cancelled, gate, asked: asked.promise, cards };
 }
 
 describe("ToolExecutor admission across the quit seal", () => {
   it("writes one host-shutdown deny row before close for a tool arriving between seal and close", async () => {
-    const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses } = await freshExecutor(1);
+    const { ledger, executor, executes, rows, hostShutdownRows, toolUses } = await freshExecutor(1);
     ledger.sealToolInvocations();
     const running = executor.executeAll(toolUses, { sessionId: "sess-seal-open", permissionContext: userPermissionContext() });
     let rowsAtClose: Array<Record<string, unknown>> = [];
-    const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+    const join = ledger.closeToolInvocations().then((count) => { rowsAtClose = rows(); return count; });
     const [result] = await running;
     await expect(join).resolves.toBe(1);
     expect(result.is_error).toBe(true);
@@ -130,7 +119,7 @@ describe("ToolExecutor admission across the quit seal", () => {
   });
 
   it("records a tool the seal interrupts mid-execution as a host-shutdown deny without the invocation origin", async () => {
-    const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses } = await freshExecutor(1);
+    const { ledger, executor, executes, rows, hostShutdownRows, toolUses } = await freshExecutor(1);
     const started = deferred<void>();
     const finish = deferred<string>();
     executes[0].mockImplementationOnce(() => { started.resolve(); return finish.promise; });
@@ -138,7 +127,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     await started.promise;
     let rowsAtClose: Array<Record<string, unknown>> = [];
     ledger.sealToolInvocations();
-    const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+    const join = ledger.closeToolInvocations().then((count) => { rowsAtClose = rows(); return count; });
     const [result] = await running;
     await join;
     finish.resolve("late");
@@ -149,14 +138,14 @@ describe("ToolExecutor admission across the quit seal", () => {
   });
 
   it("keeps a user's answered deny when the seal lands before the executor resumes", async () => {
-    const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, gate, asked } = await freshExecutor(1, [], { ask: true });
+    const { ledger, executor, executes, rows, hostShutdownRows, toolUses, gate, asked } = await freshExecutor(1, [], { ask: true });
     const running = executor.executeAll(toolUses, { sessionId: "sess-answered", permissionContext: userPermissionContext() });
     const card = await asked;
     // The person's answer settles the gate; the seal lands before the awaiting executor runs again.
     expect(gate?.resolve(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac })?.choice).toBe("deny-once");
     ledger.sealToolInvocations();
     let rowsAtClose: Array<Record<string, unknown>> = [];
-    const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+    const join = ledger.closeToolInvocations().then((count) => { rowsAtClose = rows(); return count; });
     const [result] = await running;
     await join;
     expect(result.is_error).toBe(true);
@@ -164,18 +153,18 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(hostShutdownRows(rowsAtClose, "tu-queued-0")).toEqual([]);
     // The user's row lands before the audit closes.
     expect(terminalRows(rowsAtClose, "tu-queued-0")).toEqual([expect.objectContaining({
-      denyReasons: [{ reason: "user denied approval request", source: "tool-executor" }],
+      terminalKind: "denied",
       trustOrigin: "user-keyboard",
     })]);
   });
 
   it("records a parked ask the seal cancels as the host's refusal", async () => {
-    const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, asked } = await freshExecutor(1, [], { ask: true });
+    const { ledger, executor, executes, rows, hostShutdownRows, toolUses, asked } = await freshExecutor(1, [], { ask: true });
     const running = executor.executeAll(toolUses, { sessionId: "sess-parked", permissionContext: userPermissionContext() });
     await asked;
     ledger.sealToolInvocations();
     let rowsAtClose: Array<Record<string, unknown>> = [];
-    const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+    const join = ledger.closeToolInvocations().then((count) => { rowsAtClose = rows(); return count; });
     const [result] = await running;
     await join;
     expect(result.is_error).toBe(true);
@@ -187,7 +176,7 @@ describe("ToolExecutor admission across the quit seal", () => {
   it.each(["executeAll", "executeConversationBatch"] as const)(
     "writes the host-shutdown row before close for a queued tool while the previous result waits on the journal (%s)",
     async (path) => {
-      const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, cancelled } = await freshExecutor(2);
+      const { ledger, executor, executes, rows, hostShutdownRows, toolUses, cancelled } = await freshExecutor(2);
       let firstDelivered!: () => void;
       const delivered = new Promise<void>((resolve) => { firstDelivered = resolve; });
       let releaseJournal!: () => void;
@@ -208,7 +197,7 @@ describe("ToolExecutor admission across the quit seal", () => {
       await delivered;
       let rowsAtClose: Array<Record<string, unknown>> = [];
       ledger.sealToolInvocations();
-      const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+      const join = ledger.closeToolInvocations().then((count) => { rowsAtClose = rows(); return count; });
       let results: Awaited<typeof running>;
       try {
         // The join does not wait on the journal.
@@ -246,7 +235,7 @@ describe("ToolExecutor admission across the quit seal", () => {
         : executor.executeConversationBatch(toolUses, { ...options, executionCwd: process.cwd(), interceptedMetaToolHandler: async () => null });
       await expect(exited).rejects.toThrow("journal write failed");
       ledger.sealToolInvocations();
-      await expect(ledger.closeToolInvocationAudit(async () => {})).resolves.toBe(0);
+      await expect(ledger.closeToolInvocations()).resolves.toBe(0);
       expect(executes[1]).not.toHaveBeenCalled();
       expect(hostShutdownRows(rows(), "tu-queued-1")).toHaveLength(0);
     },
@@ -283,21 +272,13 @@ describe("ToolExecutor admission across the quit seal", () => {
   it("refuses a call that reaches the executor after close without failing the quit", async () => {
     const { ledger, executor, executes, toolUses } = await freshExecutor(1);
     ledger.sealToolInvocations();
-    let releaseClose!: () => void;
-    const closeHeld = new Promise<void>((resolve) => { releaseClose = resolve; });
-    const join = ledger.closeToolInvocationAudit(async () => { await closeHeld; });
+    await expect(ledger.closeToolInvocations()).resolves.toBe(0);
     const delivered: string[] = [];
-    let results: Awaited<ReturnType<typeof executor.executeAll>>;
-    try {
-      results = await executor.executeAll(toolUses, {
+    const results = await executor.executeAll(toolUses, {
         sessionId: "sess-after-close",
         permissionContext: userPermissionContext(),
         onToolResult: async (result) => { delivered.push(result.tool_use_id); },
       });
-    } finally {
-      releaseClose();
-    }
-    await expect(join).resolves.toBe(0);
     expect(executes[0]).not.toHaveBeenCalled();
     expect(results[0]).toMatchObject({ tool_use_id: "tu-queued-0", is_error: true });
     expect(delivered).toEqual(["tu-queued-0"]);
@@ -320,14 +301,14 @@ describe("ToolExecutor admission across the quit seal", () => {
       acquireExact,
       runWithLease: async <T>(_lease: unknown, operation: () => Promise<T>) => operation(),
     } as unknown as PluginRuntimeGenerationAccess;
-    const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses } = await freshExecutor(2, [], { generationAccess: access });
+    const { ledger, executor, executes, rows, hostShutdownRows, toolUses } = await freshExecutor(2, [], { generationAccess: access });
     executes[0].mockImplementationOnce(async () => { await blocker; return "done 0"; });
     const onToolEnd = vi.fn();
     const running = executor.executeAll(toolUses, { sessionId: "sess-generation", permissionContext: userPermissionContext(), callbacks: { onToolEnd } });
     await vi.waitFor(() => expect(executes[0]).toHaveBeenCalledOnce(), { timeout: 10_000 });
     ledger.sealToolInvocations();
     let rowsAtClose: Array<Record<string, unknown>> = [];
-    const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+    const join = ledger.closeToolInvocations().then((count) => { rowsAtClose = rows(); return count; });
     releaseBlocker();
     let held: ReturnType<typeof setTimeout> | undefined;
     const settled = await Promise.race([join, new Promise((resolve) => { held = setTimeout(() => resolve("held"), 10_000); })])
@@ -368,7 +349,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(call.acquireExact).not.toHaveBeenCalled();
     expect(executes[0]).not.toHaveBeenCalled();
     expect(rows().filter((row) => row.toolUseId === "tu-queued-0")).toEqual([
-      expect.objectContaining({ decision: "deny", denyReasons: [expect.objectContaining({ reason: "user aborted turn" })] }),
+      expect.objectContaining({ decision: "deny", terminalKind: "cancelled" }),
     ]);
     expect(call.callbacks.onToolEnd).toHaveBeenCalledWith("queued_probe_0", cancelled, true,
       expect.objectContaining({ source: "plugin", category: "write", pluginId: "probe-plugin" }), undefined, expect.any(Number));
@@ -390,15 +371,13 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(executes[0]).not.toHaveBeenCalled();
     expect(call.callbacks.onToolStart).not.toHaveBeenCalled();
     expect(rows().filter((row) => row.toolUseId === "tu-queued-0")).toEqual([
-      expect.objectContaining({ terminalKind: "cancelled", denyReasons: expect.arrayContaining([
-        expect.objectContaining({ reason: expect.stringContaining("model-hidden tool") }),
-      ]) }),
+      expect.objectContaining({ terminalKind: "cancelled" }),
     ]);
   });
 
   it("answers an aborted plugin tool whose MCP owner changed with the owner deny", async () => {
     const call = abortedPluginCall();
-    const { executor, executes, audit, plainRows, toolUses } = await freshExecutor(1, [], { generationAccess: call.access });
+    const { executor, executes, rows, toolUses } = await freshExecutor(1, [], { generationAccess: call.access });
     const [result] = await executor.executeAll(toolUses, {
       sessionId: "sess-owner-abort",
       permissionContext: userPermissionContext({ expectedMcpServerId: "server-a" }),
@@ -408,14 +387,12 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(result).toMatchObject({ tool_use_id: "tu-queued-0", is_error: true, content: expect.stringContaining("MCP tool owner changed") });
     expect(call.acquireExact).not.toHaveBeenCalled();
     expect(executes[0]).not.toHaveBeenCalled();
-    await audit.close();
-    const reasons = plainRows().flatMap((row) => (row.toolCalls as Array<Record<string, unknown>> | undefined) ?? [])
-      .filter((toolCall) => toolCall.name === "queued_probe_0").map((toolCall) => toolCall.permissionReason);
-    expect(reasons).toEqual([expect.stringContaining("MCP tool owner changed")]);
+
+    expect(terminalRows(rows(), "tu-queued-0")).toEqual([expect.objectContaining({ decision: "deny" })]);
   });
 
   it("keeps a queued tool's host-shutdown row when the force-kill path closes the audit in the seal's tick", async () => {
-    const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, cancelled } = await freshExecutor(2);
+    const { ledger, executor, executes, rows, hostShutdownRows, toolUses, cancelled } = await freshExecutor(2);
     let firstDelivered!: () => void;
     const delivered = new Promise<void>((resolve) => { firstDelivered = resolve; });
     let releaseJournal!: () => void;
@@ -429,11 +406,11 @@ describe("ToolExecutor admission across the quit seal", () => {
     });
     await delivered;
     ledger.sealToolInvocations();
-    const closed = ledger.drainToolInvocationAuditForExit(() => audit.close(), 2_000);
+    const closed = ledger.drainToolInvocationsForExit(2_000);
     releaseJournal();
     const results = await running;
     await expect(closed).resolves.toBe("committed");
-    await expect(ledger.closeToolInvocationAudit(async () => {})).resolves.toBe(0);
+    await expect(ledger.closeToolInvocations()).resolves.toBe(0);
     expect(executes[1]).not.toHaveBeenCalled();
     expect(results[1]).toMatchObject({ tool_use_id: "tu-queued-1", is_error: true, content: cancelled });
     // The claim queues the row inside the seal, so the close drains it.
@@ -442,7 +419,7 @@ describe("ToolExecutor admission across the quit seal", () => {
   });
 
   it("starts a claimed tool in the batch's async context when the seal comes from outside it", async () => {
-    const { ledger, executor, executes, audit, rows, plainRows, hostShutdownRows, toolUses } = await freshExecutor(2, [], { modelVisible: false });
+    const { ledger, executor, executes, rows, hostShutdownRows, toolUses } = await freshExecutor(2, [], { modelVisible: false });
     const { runWithToolExecutionCwd } = await import("../execution-context.js");
     const { runWithInvocationOrigin } = await import("../../plugins/runtime/origin-chain.js");
     const batchCwd = mkdtempSync(join(tmpdir(), "ave-executor-shutdown-cwd-"));
@@ -462,7 +439,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     await delivered;
     let rowsAtClose: Array<Record<string, unknown>> = [];
     ledger.sealToolInvocations();
-    const quit = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+    const quit = ledger.closeToolInvocations().then((count) => { rowsAtClose = rows(); return count; });
     try {
       await expect(quit).resolves.toBe(1);
     } finally {
@@ -472,17 +449,16 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(executes[1]).not.toHaveBeenCalled();
     expect(hostShutdownRows(rowsAtClose, "tu-queued-1")).toEqual([expect.objectContaining({ tool: "queued_probe_1" })]);
     expect(terminalRows(rowsAtClose, "tu-queued-1")).toHaveLength(1);
-    expect(plainRows().filter((row) => JSON.stringify(row.toolCalls).includes("tu-queued-1"))).toEqual([expect.objectContaining({
+    expect(terminalRows(rowsAtClose, "tu-queued-1")[0]).toMatchObject({
       sessionId: "sess-batch-context",
-      input: JSON.stringify({ value: "1" }),
-      toolCalls: [expect.objectContaining({ name: "queued_probe_1", terminationReason: "host-shutdown" })],
-    })]);
+      terminationReason: "host-shutdown",
+    });
   });
 
   it.each(["executeAll", "executeConversationBatch"] as const)(
     "writes a host-shutdown row before close for every tool of a batch that starts after the seal (%s)",
     async (path) => {
-      const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, cancelled } = await freshExecutor(3);
+      const { ledger, executor, executes, rows, hostShutdownRows, toolUses, cancelled } = await freshExecutor(3);
       ledger.sealToolInvocations();
       const options = { sessionId: "sess-after-seal", permissionContext: userPermissionContext() };
       const running = path === "executeAll"
@@ -490,7 +466,7 @@ describe("ToolExecutor admission across the quit seal", () => {
         : executor.executeConversationBatch(toolUses, { ...options, executionCwd: process.cwd(), interceptedMetaToolHandler: async () => null })
           .then((outcome) => (outcome.outcome === "completed" ? outcome.results : []));
       let rowsAtClose: Array<Record<string, unknown>> = [];
-      await expect(ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); })).resolves.toBe(3);
+      await expect(ledger.closeToolInvocations().then((count) => { rowsAtClose = rows(); return count; })).resolves.toBe(3);
       const results = await running;
       for (const execute of executes) expect(execute).not.toHaveBeenCalled();
       for (const toolUse of toolUses) {
@@ -504,7 +480,7 @@ describe("ToolExecutor admission across the quit seal", () => {
   it.each(["executeAll", "executeConversationBatch"] as const)(
     "claims a parallel segment queued behind a held tool at the seal (%s)",
     async (path) => {
-      const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, cancelled } = await freshExecutor(3, [], { parallelSafe: [1, 2] });
+      const { ledger, executor, executes, rows, hostShutdownRows, toolUses, cancelled } = await freshExecutor(3, [], { parallelSafe: [1, 2] });
       const hold = holdResultOf("tu-queued-0");
       const options = { sessionId: "sess-parallel", permissionContext: userPermissionContext(), onToolResult: hold.onToolResult };
       const running = path === "executeAll"
@@ -514,7 +490,7 @@ describe("ToolExecutor admission across the quit seal", () => {
       await hold.delivered;
       let rowsAtClose: Array<Record<string, unknown>> = [];
       ledger.sealToolInvocations();
-      const quit = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+      const quit = ledger.closeToolInvocations().then((count) => { rowsAtClose = rows(); return count; });
       let results: Awaited<typeof running>;
       try {
         await expect(quit).resolves.toBe(2);
@@ -533,7 +509,7 @@ describe("ToolExecutor admission across the quit seal", () => {
   );
 
   it("claims the tool after an intercepted meta tool and refuses the meta tool itself ([held, request_plugin, tool])", async () => {
-    const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, cancelled } = await freshExecutor(2, ["request_plugin"]);
+    const { ledger, executor, executes, rows, hostShutdownRows, toolUses, cancelled } = await freshExecutor(2, ["request_plugin"]);
     const hold = holdResultOf("tu-queued-0");
     const handler = vi.fn(async () => null);
     const batch = [toolUses[0], { id: "tu-meta", name: "request_plugin", input: {} }, toolUses[1]];
@@ -547,7 +523,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     await hold.delivered;
     let rowsAtClose: Array<Record<string, unknown>> = [];
     ledger.sealToolInvocations();
-    const quit = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+    const quit = ledger.closeToolInvocations().then((count) => { rowsAtClose = rows(); return count; });
     let outcome: Awaited<typeof running>;
     try {
       await expect(quit).resolves.toBe(1);
@@ -576,7 +552,6 @@ describe("ToolExecutor admission across the quit seal", () => {
     const { createDynamicTool } = await import("../base.js");
     const { PermissionManager } = await import("../../permissions/permission-manager.js");
     const { VerdictCache } = await import("../../permissions/reviewer/verdict-cache.js");
-    const { AuditLogger } = await import("../../audit/audit-logger.js");
     const { ScriptHookManager } = await import("../../hooks/script-hook-manager.js");
     const { setReviewerForTest } = await import("../../__tests__/support/reviewer-judge.js");
     const { makeRecentlyDeniedStore } = await import("../../__tests__/support/recently-denied.js");
@@ -590,8 +565,6 @@ describe("ToolExecutor admission across the quit seal", () => {
       cache: new VerdictCache(join(root, "reviewer-cache.jsonl")),
       recentlyDenied: makeRecentlyDeniedStore(join(root, "recently-denied.jsonl")),
     });
-    const audit = new AuditLogger(join(root, "audit"));
-    loggers.push(audit);
     const executes = [vi.fn(async () => "first"), vi.fn(async () => "second")];
     const registry = new ToolRegistry();
     for (const [index, execute] of executes.entries()) {
@@ -606,7 +579,7 @@ describe("ToolExecutor admission across the quit seal", () => {
       }));
     }
     const gate = { requestAndWait: vi.fn(async () => { throw new Error("The rationale control must suspend first"); }) };
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate as never, new ScriptHookManager(), audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate as never, new ScriptHookManager());
     const { runtime } = createRationaleHostRuntime();
     const outcome = await executor.executeConversationBatch([
       { id: "tu-rationale-0", name: "rationale_probe_0", input: { payload: "first" } },
@@ -620,7 +593,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(outcome.outcome).toBe("rationale-required");
     ledger.sealToolInvocations();
     expect(ledger.pendingToolInvocationCount()).toBe(0);
-    await expect(ledger.closeToolInvocationAudit(async () => {})).resolves.toBe(0);
+    await expect(ledger.closeToolInvocations()).resolves.toBe(0);
     for (const execute of executes) expect(execute).not.toHaveBeenCalled();
   });
 });
@@ -647,13 +620,13 @@ describe("terminal rows of early refusals", () => {
       acquireExact,
       runWithLease: async <T>(_lease: unknown, operation: () => Promise<T>) => operation(),
     } as unknown as PluginRuntimeGenerationAccess;
-    const { ledger, executor, executes, audit, rows, toolUses } = await freshExecutor(1, [], { generationAccess: access });
+    const { ledger, executor, executes, rows, toolUses } = await freshExecutor(1, [], { generationAccess: access });
     const running = executor.executeAll(toolUses, { sessionId: "sess-generation-pending", permissionContext: userPermissionContext() });
     await vi.waitFor(() => expect(acquireExact).toHaveBeenCalledOnce());
     coordinator.closeAdmission((pluginId) => Object.assign(new Error(`plugin '${pluginId}' is shutting down`), { code: "plugin-runtime-shutdown" }));
     ledger.sealToolInvocations();
     let rowsAtClose: Array<Record<string, unknown>> = [];
-    const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+    const join = ledger.closeToolInvocations().then((count) => { rowsAtClose = rows(); return count; });
     const [result] = await running;
     await join;
     finishCommit();
@@ -685,13 +658,13 @@ describe("terminal rows of early refusals", () => {
 
 describe("forced shutdown with parked executors", () => {
   it("writes one host terminal row per parked executor before the sink closes and none on a late resume", async () => {
-    const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, gate, cards } = await freshExecutor(2, [], { ask: true });
+    const { ledger, executor, executes, rows, hostShutdownRows, toolUses, gate, cards } = await freshExecutor(2, [], { ask: true });
     const running = toolUses.map((toolUse) => executor.executeAll([toolUse], { sessionId: `sess-parked-${toolUse.id}`, permissionContext: userPermissionContext() }));
     await vi.waitFor(() => expect(cards).toHaveLength(2));
     // The force-kill path: seal, cancel parked cards, then close the sink in the same tick.
     ledger.sealToolInvocations();
     gate?.disposeAll();
-    await expect(ledger.drainToolInvocationAuditForExit(() => audit.close(), 2_000)).resolves.toBe("committed");
+    await expect(ledger.drainToolInvocationsForExit(2_000)).resolves.toBe("committed");
     const rowsAtClose = rows();
     // Each late continuation meets the closed sink: a refused claim, not a write.
     const results = (await Promise.all(running)).flat();
@@ -703,19 +676,20 @@ describe("forced shutdown with parked executors", () => {
       expect(terminalRows(rowsAtClose, toolUse.id)).toHaveLength(1);
       expect(terminalRows(rows(), toolUse.id)).toHaveLength(1);
     }
-    await expect(ledger.closeToolInvocationAudit(async () => {})).resolves.toBe(0);
+    await expect(ledger.closeToolInvocations()).resolves.toBe(0);
   });
 
   it.each(["held history", "failed history", "held hook"] as const)(
     "commits the desk's deny before close with a %s, and the late continuation writes nothing",
     async (sideEffect) => {
-      const { ledger, executor, executes, audit, manager, rows, toolUses, gate, cards } = await freshExecutor(1, [], { ask: true });
+      const { ledger, executor, executes, capture, manager, rows, toolUses, gate, cards } = await freshExecutor(1, [], { ask: true });
       const { AuditWriter } = await import("../pipeline/audit-writer.js");
       const order: string[] = [];
-      const appendRow = audit.appendPermissionAuditEntry.bind(audit);
-      vi.spyOn(audit, "appendPermissionAuditEntry").mockImplementation((entry) => {
-        if (entry.toolUseId === toolUses[0].id && entry.decision !== "ask") order.push("row");
-        return appendRow(entry);
+      watchPermissionEvents((entry) => {
+        if (entry.toolUseId === toolUses[0].id && entry.event === "permission_decision" && entry.decision !== "ask") {
+          order.push("row");
+          capture.events.push(entry);
+        }
       });
       const held = deferred<void>();
       const sideEffectCall = vi.fn(() => {
@@ -735,7 +709,7 @@ describe("forced shutdown with parked executors", () => {
       expect(order).toEqual(["row", "side effect"]);
       ledger.sealToolInvocations();
       gate?.disposeAll();
-      await expect(ledger.drainToolInvocationAuditForExit(() => audit.close(), 2_000)).resolves.toBe("committed");
+      await expect(ledger.drainToolInvocationsForExit(2_000)).resolves.toBe("committed");
       const rowsAtClose = rows();
       expect(terminalRows(rowsAtClose, toolUses[0].id)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
       held.resolve();
@@ -755,7 +729,6 @@ describe("a rationale control suspended before its card", () => {
     const { ToolRegistry } = await import("../registry.js");
     const { createDynamicTool } = await import("../base.js");
     const { PermissionManager } = await import("../../permissions/permission-manager.js");
-    const { AuditLogger } = await import("../../audit/audit-logger.js");
     const { createRationaleHostRuntime } = await import("../../__tests__/support/rationale-host-runtime.js");
     const { setReviewerForTest } = await import("../../__tests__/support/reviewer-judge.js");
     const { makeRecentlyDeniedStore } = await import("../../__tests__/support/recently-denied.js");
@@ -769,9 +742,7 @@ describe("a rationale control suspended before its card", () => {
       cache: new VerdictCache(join(root, "reviewer-cache.jsonl")),
       recentlyDenied: makeRecentlyDeniedStore(join(root, "recently-denied.jsonl")),
     });
-    const audit = new AuditLogger(join(root, "audit"));
-    loggers.push(audit);
-    await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
+
     const execute = vi.fn(async () => "must-not-run");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -780,28 +751,26 @@ describe("a rationale control suspended before its card", () => {
       execute: async () => ({ output: await execute(), isError: false }),
     }));
     const requestAndWait = vi.fn(async () => { throw new Error("The rationale control must suspend before the approval card"); });
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const { runtime, materialize } = createRationaleHostRuntime();
     const outcome = await executor.executeConversationBatch([{ id: "rationale-parked", name: "rationale_write", input: { payload: "requested" } }], {
       executionCwd: root, sessionId: "session-rationale-quit", rationaleRuntime: runtime,
       permissionContext: { trustOrigin: "llm-tool-arg" as const, userIntent: "Perform the requested operation." },
     });
     expect(outcome.outcome).toBe("rationale-required");
+    const capture = collectPermissionEvents();
     const candidate = materialize.mock.calls[0]?.[0];
-    const rows = (): Array<Record<string, unknown>> => existsSync(audit.getPermissionAuditLogFile())
-      ? readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
-      : [];
-    return { ledger, audit, candidate, execute, rows: () => terminalRows(rows(), "rationale-parked") };
+    return { ledger, candidate, execute, rows: () => terminalRows(capture.events, "rationale-parked") };
   }
 
   it("writes one host-shutdown row before close on a forced quit and nothing for the coordinator's later stop", async () => {
-    const { ledger, audit, candidate, execute, rows } = await suspendedControl();
+    const { ledger, candidate, execute, rows } = await suspendedControl();
     expect(rows()).toEqual([]);
     ledger.sealToolInvocations();
-    await expect(ledger.drainToolInvocationAuditForExit(() => audit.close(), 2_000)).resolves.toBe("committed");
+    await expect(ledger.drainToolInvocationsForExit(2_000)).resolves.toBe("committed");
     const atClose = rows();
     expect(atClose).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
-    expect(JSON.stringify(atClose[0]?.denyReasons)).toContain("host-shutdown");
+    expect(atClose[0]).toMatchObject({ terminalKind: "cancelled" });
     await candidate.recordTerminalDenial?.("The permission request was stopped; the action was not executed.", true);
     expect(rows()).toEqual(atClose);
     expect(execute).not.toHaveBeenCalled();

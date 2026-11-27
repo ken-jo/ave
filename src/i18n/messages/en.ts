@@ -977,7 +977,6 @@ export const en = {
   "be_executor.approvalGateMissing": "[Approval gate not connected] Tool '{name}' ({source}) — ask decision but no approval gate available, blocked. {reason}",
   "be_executor.hookBlockScript": "[Hook blocked] {reason}",
   "be_executor.rateLimitExceeded": "[Rate limit] Tool '{name}' (trust:{trust}) call frequency exceeded. Please try again in a moment.",
-  "be_executor.auditChainBlock": "[Audit chain blocked] Tool '{name}' — permission audit chain is not writable: {error}",
 
   // be_hookRunner
   "be_hookRunner.blockedByHook": "{name} blocked the tool execution",
@@ -2431,8 +2430,6 @@ export const en = {
   "formatIpcError.rolePromptOriginRestricted": "Role prompts can only be changed from a user input origin.",
   "formatIpcError.personaPromptOriginRestricted": "Persona prompts can only be changed from a user input origin.",
   "formatIpcError.noPermissionManager": "The permission manager has not been initialized yet. Please try again in a moment.",
-  "formatIpcError.permissionAuditNotReady": "The audit log is not ready.",
-  "formatIpcError.permissionAuditWriteFailed": "Failed to write to the audit log.",
   "formatIpcError.auditChainNotInitialized": "The audit chain has not been initialized.",
   "formatIpcError.managed": "The change was blocked by an administrator policy, or an error occurred while saving.",
   "formatIpcError.modelListCacheMainOwned": "Ave manages the saved model list. To update it, sync the model list in Settings → Model.",

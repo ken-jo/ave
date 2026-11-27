@@ -1,5 +1,4 @@
 import { logPermissionEvent, permissionLogId } from "../../../lib/permission-log.js";
-import type { AuditEntry } from "../../../audit/audit-logger.js";
 import type { SettingsService } from "../../../data/settings-store.js";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 
@@ -11,7 +10,6 @@ export async function routeExternalUrl(input: {
   url: string;
   pluginId: string;
   settingsService: Pick<SettingsService, "get">;
-  bootAuditLogger: { log: (entry: AuditEntry) => void };
   openLinkWindowService: (
     opts: { url: string; windowTitle?: string; persistPartition?: string },
   ) => Promise<void>;

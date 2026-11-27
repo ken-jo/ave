@@ -52,16 +52,6 @@ describe("assembleAppServices rationale shutdown", () => {
           order.push("mcp");
         }),
       },
-      bootAuditLogger: {
-        close: vi.fn(async () => {
-          order.push("audit-writer");
-        }),
-      },
-      auditService: {
-        stop: vi.fn(async () => {
-          order.push("audit");
-        }),
-      },
       tracing: { shutdown: async () => { order.push("tracing"); } },
       lateBinding: { pluginToolInvokerRef: { fn: undefined } },
     } as unknown as BootContext;

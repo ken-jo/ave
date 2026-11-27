@@ -648,7 +648,6 @@ describe("wireReviewerAndPermissions marketplace preset endpoint binding", () =>
       llmFetch: vi.fn(),
       singleHopNetworkFetch: unusedNetworkFetch,
       getMainWindow: () => null,
-      bootAuditLogger: { log: vi.fn() },
     };
     await wireReviewerAndPermissions(bootContext as never);
     expect(
@@ -786,7 +785,6 @@ describe("wireReviewerAndPermissions self-hosted direct endpoint binding", () =>
       llmFetch: vi.fn(),
       singleHopNetworkFetch: unusedNetworkFetch,
       getMainWindow: () => null,
-      bootAuditLogger: { log: vi.fn() },
     };
     await wireReviewerAndPermissions(bootContext as never);
 

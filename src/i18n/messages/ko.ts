@@ -979,7 +979,6 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_executor.approvalGateMissing": "[승인 게이트 미연결] 도구 '{name}' ({source}) — ask 결정이지만 승인 게이트가 없어 차단. {reason}",
   "be_executor.hookBlockScript": "[Hook 차단] {reason}",
   "be_executor.rateLimitExceeded": "[속도 제한] 도구 '{name}' (trust:{trust}) 호출 빈도 초과. 잠시 후 다시 시도해주세요.",
-  "be_executor.auditChainBlock": "[감사 체인 차단] 도구 '{name}' — permission audit chain is not writable: {error}",
 
   // be_hookRunner
   "be_hookRunner.blockedByHook": "{name} 훅에 의해 차단됨",
@@ -2433,8 +2432,6 @@ export const ko: Record<MessageCatalogKey, string> = {
   "formatIpcError.rolePromptOriginRestricted": "역할 프롬프트는 사용자 입력 출처에서만 변경할 수 있습니다.",
   "formatIpcError.personaPromptOriginRestricted": "Persona 프롬프트는 사용자 입력 출처에서만 변경할 수 있습니다.",
   "formatIpcError.noPermissionManager": "권한 매니저가 아직 초기화되지 않았습니다. 잠시 후 다시 시도해주세요.",
-  "formatIpcError.permissionAuditNotReady": "감사 로그가 준비되지 않았습니다.",
-  "formatIpcError.permissionAuditWriteFailed": "감사 로그 기록에 실패했습니다.",
   "formatIpcError.auditChainNotInitialized": "감사 체인이 초기화되지 않았습니다.",
   "formatIpcError.managed": "관리자 정책에 의해 변경이 차단되었거나 저장 중 오류가 발생했습니다.",
   "formatIpcError.modelListCacheMainOwned": "저장된 모델 목록은 Ave에서 관리합니다. 목록을 갱신하려면 설정 → 모델에서 모델 목록을 동기화하세요.",

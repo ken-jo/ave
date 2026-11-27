@@ -168,8 +168,6 @@ it.each([
   });
 
   const context = harness.context(true, true);
-  const logRefusal = vi.fn();
-  context.bootAuditLogger.log = logRefusal;
   await initSandboxGate(context);
 
   expect(h.initialize).not.toHaveBeenCalled();
@@ -177,7 +175,6 @@ it.each([
   expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
   expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("isolation is OFF"), category, path, remedy);
   expect(() => assertAveHomePrivacyForConfinement()).toThrow(refusal);
-  expect(logRefusal).toHaveBeenCalledWith(expect.objectContaining({ type: "error", output: expect.stringContaining("ave_home_privacy_refused") }));
   await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ extensions: "none" }));
 });
 
@@ -493,8 +490,6 @@ describe("initSandboxGate — Windows MXC substrate", () => {
       h.initialize.mockRejectedValue(Object.assign(new Error(`sandbox: refusing confinement: ${home}\\logs is a link or reparse point`),
         { code: "ave-home-boundary-unverified", reason, home }));
       const context = harness.context(true, true);
-      const logRefusal = vi.fn();
-      context.bootAuditLogger.log = logRefusal;
 
       await initSandboxGate(context);
 
@@ -543,7 +538,6 @@ describe("initSandboxGate — Windows MXC substrate", () => {
       { code: "ave-home-boundary-unverified", reason: "unlisted", home: "C:\\Users\\alice\\.ave" }));
 
     const context = harness.context(false, true);
-    context.bootAuditLogger.log = vi.fn();
     await initSandboxGate(context);
 
     expect(getAveHomePrivacyFailure()).toMatchObject({ enforcement: "none", category: "helper-unavailable" });
@@ -562,7 +556,6 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
     h.detectMxc.mockResolvedValue(MXC_OK);
     const context = harness.context(true, true);
-    context.bootAuditLogger.log = vi.fn();
 
     await initSandboxGate(context);
 

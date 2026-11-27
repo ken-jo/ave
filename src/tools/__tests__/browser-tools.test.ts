@@ -1,14 +1,14 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import type { UserOwnedSurfaceChoice } from "../../shared/permissions-events.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 /** The agent browser tools through the real ToolExecutor, PermissionManager, ApprovalGate and approval store, over the real main-side tab registry with fake guests and fake page actions. Covers
  * who is asked when (agent tab vs user tab, per origin, per action), the TOCTOU re-check, window scope, denied schemes, the untrusted-content fence, and user takeover cancelling a pending action. */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
+import { mkdtempSync } from "node:fs";
 import { t } from "../../i18n/index.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { ApprovalGate, answeredApprovalProvenance, answeredRecordForAction, type ApprovalDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
@@ -133,7 +133,6 @@ describe("browser tools", () => {
   let dir: string;
   let aveHomeDir: string;
   let prevAveHome: string | undefined;
-  let auditLogger: AuditLogger;
   let reviewerCache: VerdictCache | undefined;
 
   beforeEach(() => {
@@ -142,12 +141,11 @@ describe("browser tools", () => {
     prevAveHome = process.env.AVE_HOME;
     process.env.AVE_HOME = aveHomeDir;
     __resetSessionStoreForTest();
-    auditLogger = new AuditLogger(join(aveHomeDir, "audit"));
   });
 
   afterEach(async () => {
     setAgentBrowserObservationSink(undefined);
-    await auditLogger.close();
+
     await reviewerCache?.flush();
     reviewerCache = undefined;
     if (prevAveHome === undefined) delete process.env.AVE_HOME;
@@ -250,7 +248,7 @@ describe("browser tools", () => {
       },
     };
     const gate = new ApprovalGate(nativeWebContents as never, undefined, options.approvalWaitMs);
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined);
     let seq = 0;
     const run = async (name: string, input: Record<string, unknown>, sessionId: string | undefined = HOST_SESSION) => {
       let browserPreview: unknown;
@@ -326,7 +324,9 @@ describe("browser tools", () => {
 
   describe.each(["site consent", "destination action"] as const)("%s card", (kind) => {
     it.each(["denied", "rejected", "expired", "cancelled"] as const)("preserves the %s outcome in the result and audit", async (outcome) => {
-      await auditLogger.setupPermissionAuditChain("aa".repeat(32));
+      const capture = collectPermissionEvents();
+      onTestFinished(capture.restore);
+
       const h = harness({
         denySite: outcome === "denied", denyAction: outcome === "denied",
         leaveCardUnanswered: outcome === "expired",
@@ -352,8 +352,8 @@ describe("browser tools", () => {
         cancelled: "project-scope-changed",
       }[outcome];
       expect.soft(result).toMatchObject({ isError: true, output: expect.stringContaining(detail) });
-      const terminal = readFileSync(auditLogger.getPermissionAuditLogFile(), "utf8").trim().split("\n")
-        .map(line => JSON.parse(line)).at(-1);
+      const terminal = capture.events.filter((event) => event.event === "permission_decision" &&
+        event.toolUseId === "call-1" && event.decision !== "ask").at(-1);
       expect(terminal).toMatchObject({
         toolUseId: "call-1", decision: "deny", terminalKind: outcome === "cancelled" ? "cancelled" : "denied",
         trustOrigin: outcome === "denied" ? "user-keyboard" : "unknown",

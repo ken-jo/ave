@@ -55,7 +55,7 @@ beforeEach(() => {
   vi.spyOn(ipcMain, "handle").mockImplementation((channel, handler) => { handlers.set(channel, handler); });
   bootSystem = { hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: "Test Root", corpCaDebugLog: false };
   bootTelemetry = { crashReportEndpoint: "https://reports.example/boot" };
-  registerAppHandlers({ settingsService: { get: (key: string) => key === "telemetry" ? bootTelemetry : bootSystem }, auditLogger, relaunchApp, getMainWindow: () => ({ webContents: mainEvent.sender, isDestroyed: () => false }) } as unknown as IpcDeps);
+  registerAppHandlers({ settingsService: { get: (key: string) => key === "telemetry" ? bootTelemetry : bootSystem }, relaunchApp, getMainWindow: () => ({ webContents: mainEvent.sender, isDestroyed: () => false }) } as unknown as IpcDeps);
 });
 afterEach(async () => {
   clearAppUpdateInstallRequested();
@@ -92,7 +92,7 @@ async function providerPresetSettings() {
   await settingsService.patch({});
   const refreshProvider = vi.fn();
   const refreshSandboxNetworkConfig = vi.fn(async () => undefined);
-  presetDeps = { settingsService, auditLogger, getAppWindows: () => [],
+  presetDeps = { settingsService, getAppWindows: () => [],
     conversationLoop: { refreshProvider }, refreshSandboxNetworkConfig } as unknown as IpcDeps;
   return { settingsService, refreshProvider, refreshSandboxNetworkConfig,
     stored: () => readFileSync(settingsFilePath(settingsRoot!), "utf8") };

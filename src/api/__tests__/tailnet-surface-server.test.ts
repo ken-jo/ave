@@ -2242,7 +2242,7 @@ async function pairedWorkFixture(h: Awaited<ReturnType<typeof stageRunHarness>>)
   const log = vi.fn();
   const runtime = createTailnetWorkDecisions({
     workBoardStore: h.board, workBoardEngine: h.engine, workflowTemplateStore: h.templates, routinesStore: routines,
-    settingsService: { get: key => DEFAULT_SETTINGS[key] }, auditLogger: { log }, toolRegistry: new ToolRegistry(),
+    settingsService: { get: key => DEFAULT_SETTINGS[key] }, toolRegistry: new ToolRegistry(),
   });
   if (!runtime) throw new Error("Work decision runtime unavailable");
   const list = vi.fn(runtime.list);

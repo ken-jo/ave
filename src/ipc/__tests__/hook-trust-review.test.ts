@@ -23,8 +23,7 @@ beforeEach(() => {
   handlers.clear(); vi.clearAllMocks();
   review.mockResolvedValue({ ok: true, verb: "accept" });
   list.mockReturnValue({ ok: true, verb: "list", active: [], disabled: [] });
-  registerPermissionsHandlers({ conversationLoop: { getSessionProjectRoot: () => "/workspace/project" }, auditLogger: audit,
-    scriptHookManager: manager, getAppWindows: () => [{ isDestroyed: () => false, webContents: event.sender }] } as never);
+  registerPermissionsHandlers({ conversationLoop: { getSessionProjectRoot: () => "/workspace/project" }, scriptHookManager: manager, getAppWindows: () => [{ isDestroyed: () => false, webContents: event.sender }] } as never);
 });
 
 function handler(channel: string) {

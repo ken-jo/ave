@@ -384,16 +384,14 @@ describe("PostTurnHookChain", () => {
       autoCompact: boolean;
       logTurn: ReturnType<typeof vi.fn>;
     }) {
-      const auditLogger = {
-        logTurn: opts.logTurn,
-      } as unknown as import("../../audit/audit-logger.js").AuditLogger;
+
       const settingsService = {
         get: vi.fn((key: string) => {
           if (key === "llm") return fakeLlmSettings({ model: "gpt-5.4-mini" });
           return { systemPrompt: "", autoCompact: opts.autoCompact };
         }),
       } as unknown as SettingsService;
-      return new PostTurnHookChain({ auditLogger, settingsService });
+      return new PostTurnHookChain({ settingsService });
     }
 
     it("emits `${provider}/${model}` for llm-route turns", async () => {
@@ -584,16 +582,14 @@ describe("PostTurnHookChain", () => {
 
     it("logs cleaned output when stream markers are present", async () => {
       const logTurn = vi.fn();
-      const auditLogger = {
-        logTurn,
-      } as unknown as import("../../audit/audit-logger.js").AuditLogger;
+
       const settingsService = {
         get: vi.fn((key: string) => {
           if (key === "llm") return fakeLlmSettings();
           return { systemPrompt: "", autoCompact: false };
         }),
       } as unknown as SettingsService;
-      const chain = new PostTurnHookChain({ auditLogger, settingsService });
+      const chain = new PostTurnHookChain({ settingsService });
 
       await chain.run({
         sessionId: "session-audit-cleaned",

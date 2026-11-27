@@ -22,7 +22,6 @@ type JudgeDeps = {
   providerForModel: (model: JudgeModelRef) => LLMProvider | null;
   selectedModelCacheScope: (model: JudgeModelRef) => Record<string, unknown>;
   networkFetch: typeof unusedNetworkFetch;
-  audit: unknown;
   settings: JudgeSettings;
   chainRejected?: boolean;
   settingsUnreadable?: boolean;
@@ -93,8 +92,7 @@ describe("judge configured provider wiring", () => {
         permissionManager: new PermissionManager(join(directory, "permissions.json")),
         approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() },
         settingsService, llmFetch: unusedNetworkFetch, singleHopNetworkFetch: unusedNetworkFetch,
-        getMainWindow: () => null, bootAuditLogger: { log: vi.fn() },
-        subscriptionProviderFactory: vi.fn(() => provider),
+        getMainWindow: () => null, subscriptionProviderFactory: vi.fn(() => provider),
       };
       const writeSettings = (judge: unknown) => writeFileSync(settingsPath, JSON.stringify({ permissions: { judge } }));
       writeSettings({ model: selected, chain: [
@@ -108,7 +106,7 @@ describe("judge configured provider wiring", () => {
       expect(context.approvalGate.setOwnerAwayAutoSkipMinutes).toHaveBeenCalledWith(0);
       expect(settingsService.onChanged).toHaveBeenCalledWith("permissions", expect.any(Function));
       expect(lastJudge().networkFetch).toBe(unusedNetworkFetch);
-      expect(lastJudge().audit).toBe(context.bootAuditLogger);
+
       expect(lastJudge().settings.chain).toHaveLength(2);
       expect(lastJudge().chainRejected).toBeUndefined();
       expect(lastReviewer().selectedModel).toEqual({ label: "openai-compatible/shared-model", available: true });
@@ -233,8 +231,7 @@ describe("judge configured provider wiring", () => {
         permissionManager: new PermissionManager(join(directory, "permissions.json")),
         approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() },
         settingsService, llmFetch: unusedNetworkFetch, singleHopNetworkFetch: unusedNetworkFetch,
-        getMainWindow: () => null, bootAuditLogger: { log: vi.fn() },
-        subscriptionProviderFactory: vi.fn(() => provider),
+        getMainWindow: () => null, subscriptionProviderFactory: vi.fn(() => provider),
       };
       const rewire = () => (context as unknown as { rewireReviewerAgent: () => Promise<void> }).rewireReviewerAgent();
       const lastReviewer = () => wireReviewerAgent.mock.lastCall?.[0] as ReviewerDeps;

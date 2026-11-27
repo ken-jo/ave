@@ -33,7 +33,6 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
     llmFetch,
     singleHopNetworkFetch,
     getMainWindow,
-    bootAuditLogger,
     subscriptionProviderFactory,
   } = ctx;
 
@@ -201,7 +200,6 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
       providerForModel: (model) => reviewerStreamProviderFor(secrets, model.vendor, model.model, model.route),
       selectedModelCacheScope,
       networkFetch: singleHopNetworkFetch,
-      audit: bootAuditLogger,
       resolveRootSessionId: ctx.resolveRootSessionId,
     });
     ctx.rationaleScopeReviewer = reviewerResult.rationaleScopeReviewer;

@@ -1,3 +1,4 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 async function runGuardedOwnerOperation<T>(guard: () => void, operation: () => Promise<T>): Promise<T> { guard(); const result = await operation(); guard(); return result; }
 import { EventEmitter } from "node:events";
 import { createServer, type Server } from "node:net";
@@ -7,7 +8,7 @@ import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-nam
 import { DEFAULT_TAILNET_OBSERVER_PORT, TAILNET_OBSERVER_PORT_BLOCKED } from "../../shared/tailnet-observer-config.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { useTempDirs as trackTempDirs } from "../../__tests__/test-helpers.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import * as windowsRuntime from "@anthropic-ai/sandbox-runtime";
 import * as windowsIntegrity from "../../permissions/srt-win-integrity.js";
 import * as sandboxCapability from "../../permissions/sandbox-capability.js";
@@ -21,7 +22,6 @@ import { writeJsonAtomic, type FeatureNamespaceHandle } from "../storage/feature
 import { resolveTailnetObserverApply } from "../tailnet-observer-apply.js";
 import { createTailnetObserverConfigService } from "../tailnet-observer-config-service.js";
 import type { TailnetShareActorId } from "../tailnet-pairing-share-store.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { TailnetPairingDeviceStatus } from "../../api/tailnet-surface-server.js";
 import {
   IMPLICIT_TAILNET_OBSERVER_PORT,
@@ -1635,22 +1635,10 @@ function fakeRuntime(store: ReturnType<typeof fakeStore>, logins: Record<string,
   } as unknown as TailnetPairedSharingRuntime;
 }
 
-// Collects the audit entries the admission path writes.
-function fakeAuditLogger() {
-  const entries: { sessionId: string; type: string; input?: string }[] = [];
-  return {
-    logger: { log: (entry: { sessionId: string; type: string; input?: string }) => {
-      entries.push(entry);
-    } } as unknown as AuditLogger,
-    entries,
-  };
-}
-
 async function deviceStatusFor(input: {
   namespace: FeatureNamespaceHandle;
   runtime: TailnetPairedSharingRuntime;
   probeLogin: string | null;
-  auditLogger?: AuditLogger;
 }) {
   input.runtime = { ...input.runtime, authorizer: { ...input.runtime.authorizer, currentOwnerLogin: () => input.probeLogin } };
   const f = options({
@@ -1660,7 +1648,6 @@ async function deviceStatusFor(input: {
   });
   await maybeStartTailnetObserverServer({
     ...f.input,
-    ...(input.auditLogger === undefined ? {} : { auditLogger: input.auditLogger }),
     dependencies: {
       ...f.input.dependencies,
       probeEnvironment: async () => tailscaleEnvironment(input.probeLogin),
@@ -1679,16 +1666,17 @@ async function deviceStatusFor(input: {
 
 describe("own-device admission", () => {
   it("admits a same-account device with no approval click while it is on", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const namespace = memoryNamespace({
       [ADMISSION_FILE]: { version: 1, admittedActorId: OWN_ACTOR },
     });
     const store = fakeStore();
-    const audit = fakeAuditLogger();
+    const admissionEvents = () => capture.events.filter(({ event }) => event === "remote_device_admission");
     const deviceStatus = await deviceStatusFor({
       namespace,
       runtime: fakeRuntime(store),
       probeLogin: OWNER_LOGIN,
-      auditLogger: audit.logger,
     });
 
     // `active`, not just "paired": the page is what turns this into the sentence the device reads, and an admitted device is not waiting for an approval.
@@ -1697,26 +1685,24 @@ describe("own-device admission", () => {
     expect(store.pairings).toEqual([
       expect.objectContaining({ actorId: OWN_ACTOR, state: "active" }),
     ]);
-    expect(audit.entries).toEqual([
-      expect.objectContaining({ sessionId: "tailnet-own-device-admission", type: "approval" }),
-    ]);
-    expect(JSON.parse(audit.entries[0]?.input ?? "{}")).toMatchObject({ action: "granted" });
+    expect(admissionEvents()).toEqual([expect.objectContaining({ action: "granted" })]);
 
     // The waiting page reloads on a timer. A pairing that is already active is not a second grant, so it is neither re-activated nor audited again.
     await expect(deviceStatus(OWNER_LOGIN, OWN_ACTOR))
       .resolves.toEqual({ pairing: "active", ownDevice: true });
-    expect(audit.entries).toHaveLength(1);
+    expect(admissionEvents()).toHaveLength(1);
   });
 
   it("leaves the same device waiting for approval while it is off", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const namespace = memoryNamespace();
     const store = fakeStore();
-    const audit = fakeAuditLogger();
+    const admissionEvents = () => capture.events.filter(({ event }) => event === "remote_device_admission");
     const deviceStatus = await deviceStatusFor({
       namespace,
       runtime: fakeRuntime(store),
       probeLogin: OWNER_LOGIN,
-      auditLogger: audit.logger,
     });
 
     await expect(deviceStatus(OWNER_LOGIN, OWN_ACTOR))
@@ -1725,7 +1711,7 @@ describe("own-device admission", () => {
       expect.objectContaining({ actorId: OWN_ACTOR, state: "pending" }),
     ]);
     expect(store.activatePairing).not.toHaveBeenCalled();
-    expect(audit.entries).toHaveLength(0);
+    expect(admissionEvents()).toHaveLength(0);
   });
 
   it("admits nobody but this desktop's own login, on or off", async () => {
@@ -1768,21 +1754,21 @@ describe("own-device admission", () => {
   });
 
   it("approves a device already waiting when the owner turns it on", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const namespace = memoryNamespace();
     const store = fakeStore([{ id: PENDING_ID, actorId: OWN_ACTOR, state: "pending" }]);
-    const audit = fakeAuditLogger();
+    const admissionEvents = () => capture.events.filter(({ event }) => event === "remote_device_admission");
 
     await setTailnetOwnDeviceAdmission(true, {
       runtime: fakeRuntime(store),
       namespace,
-      auditLogger: audit.logger,
     });
 
     expect(store.pairings[0]).toMatchObject({ state: "active" });
     expect(await namespace.readJson(ADMISSION_FILE, null))
       .toEqual({ version: 1, admittedActorId: OWN_ACTOR });
-    expect(JSON.parse(audit.entries[0]?.input ?? "{}"))
-      .toMatchObject({ action: "granted", pairingId: PENDING_ID });
+    expect(admissionEvents()).toEqual([expect.objectContaining({ action: "granted" })]);
   });
 
   it("refuses to record an admission it could not identify an account for", async () => {
@@ -1797,24 +1783,24 @@ describe("own-device admission", () => {
   });
 
   it("takes the granted access back when the owner turns it off", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const namespace = memoryNamespace({
       [ADMISSION_FILE]: { version: 1, admittedActorId: OWN_ACTOR },
     });
     const store = fakeStore([{ id: PENDING_ID, actorId: OWN_ACTOR, state: "active" }]);
-    const audit = fakeAuditLogger();
+    const admissionEvents = () => capture.events.filter(({ event }) => event === "remote_device_admission");
 
     await setTailnetOwnDeviceAdmission(false, {
       runtime: fakeRuntime(store),
       namespace,
-      auditLogger: audit.logger,
     });
 
     expect(store.revokePairing).toHaveBeenCalledWith(PENDING_ID);
     expect(store.pairings[0]).toMatchObject({ state: "revoked" });
     expect(await namespace.readJson(ADMISSION_FILE, null))
       .toEqual({ version: 1, admittedActorId: null });
-    expect(JSON.parse(audit.entries[0]?.input ?? "{}"))
-      .toMatchObject({ action: "revoked", pairingId: PENDING_ID });
+    expect(admissionEvents()).toEqual([expect.objectContaining({ action: "revoked" })]);
 
     // Off means off: the next request from that same device waits for approval.
     const deviceStatus = await deviceStatusFor({
@@ -1828,16 +1814,17 @@ describe("own-device admission", () => {
   });
 
   it("moves the admission with the desktop's account and revokes the old one", async () => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const namespace = memoryNamespace({
       [ADMISSION_FILE]: { version: 1, admittedActorId: OTHER_ACTOR },
     });
     const store = fakeStore([{ id: PENDING_ID, actorId: OTHER_ACTOR, state: "active" }]);
-    const audit = fakeAuditLogger();
+    const admissionEvents = () => capture.events.filter(({ event }) => event === "remote_device_admission");
     const deviceStatus = await deviceStatusFor({
       namespace,
       runtime: fakeRuntime(store),
       probeLogin: OWNER_LOGIN,
-      auditLogger: audit.logger,
     });
 
     await expect(deviceStatus(OWNER_LOGIN, OWN_ACTOR))
@@ -1846,7 +1833,7 @@ describe("own-device admission", () => {
     expect(store.pairings[1]).toMatchObject({ actorId: OWN_ACTOR, state: "active" });
     expect(await namespace.readJson(ADMISSION_FILE, null))
       .toEqual({ version: 1, admittedActorId: OWN_ACTOR });
-    expect(audit.entries.map((entry) => JSON.parse(entry.input ?? "{}").action))
+    expect(admissionEvents().map((entry) => entry.action))
       .toEqual(["revoked", "granted"]);
   });
 

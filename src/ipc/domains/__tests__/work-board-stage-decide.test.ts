@@ -14,7 +14,7 @@ import { captureWorkBoardTestGesture, pressWorkBoardTestKey, workBoardTestSender
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { registerPermissionsHandlers } from "../permissions.js";
 import { registerWorkApprovalsHandlers } from "../work-approvals.js";
-import { AuditLogger } from "../../../audit/audit-logger.js";
+
 // A stage gate, a join decision, a stage retry and the start of a template run are work approvals: a sender-validated board-window main
 // frame with a consumed keyboard gesture. The renderer names hashes and ids; it never mints the run source.
 import { beforeEach, expect, it, vi } from "vitest";
@@ -91,7 +91,6 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
     },
     workBoardEngine: engine,
     settingsService: { get: (key: string) => (key === "privacy" ? privacy : undefined) },
-    auditLogger: { log },
     getMainWindow: () => window,
     getAppWindows: () => [window],
   } as unknown as IpcDeps);
@@ -266,7 +265,7 @@ it.each<[string, string, Parameters<typeof stageRunHarness>[0], (h: Harness) => 
   try {
     const owner = workBoardTestSender();
     const window = { isDestroyed: () => false, webContents: owner };
-    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
     const [channel, args] = await prepare(h);
     const files = [h.boardPath, join(h.dir, "workflow-runs.json")];
     for (const written of files) writeFileSync(written, JSON.stringify(JSON.parse(readFileSync(written, "utf8"))));
@@ -299,16 +298,16 @@ it("projects a parked result on get and list, then refuses the superseded snapsh
     const privatePath = ["", "Users", "demo", "Documents", "report.md"].join("/");
     const rawResult = `First review result at ${privatePath}`;
     const { id, item } = await awaiting(h, { summary: rawResult });
-    const audit = new AuditLogger(join(h.dir, "audit"));
+
     const owner = workBoardTestSender();
     const window = { isDestroyed: () => false, webContents: owner };
-    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, settingsService: { get: () => undefined }, auditLogger: audit, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, settingsService: { get: () => undefined }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
     const event = { sender: owner, senderFrame: owner.mainFrame };
     const stage = item.stageRuns[0];
     const binding = { runId: item.runId, stageId: "a", attempt: 1, resultHash: stage.resultHash };
     const expected = { runPin: item.record?.pin, pendingWorkflowDecisions: [{ kind: "stage-gate", binding, result: expect.stringContaining("First review result at ") }] };
     registerWorkApprovalsHandlers({
-      workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] }, auditLogger: audit,
+      workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
     } as unknown as IpcDeps);
     await bindDefaultProject(event);
     await expect(handler(WORK_APPROVALS.list)(event, {})).resolves.toMatchObject({
@@ -344,7 +343,7 @@ it("projects join conflict evidence and refuses the previous conflict hash after
     const window = { isDestroyed: () => false, webContents: owner };
     const deps = {
       workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
-      auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+      getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps;
     registerWorkBoardHandlers(deps);
     registerWorkApprovalsHandlers(deps);
@@ -382,7 +381,7 @@ it("shows stored delegation edges only for the parent session of this legacy ite
   registerWorkBoardHandlers({
     workBoardStore: { get },
     getSubAgentRunner: () => ({ isPersistedSpawnOfOrigin, listPersistedSpawnsForOrigin }),
-    auditLogger: { log: vi.fn() }, getMainWindow: () => window,
+    getMainWindow: () => window,
   } as unknown as IpcDeps);
   await bindDefaultProject(event);
   await expect(handler(WORK_BOARD.get)(event, 7)).resolves.toMatchObject({
@@ -470,7 +469,7 @@ it.each([
     registerWorkBoardHandlers({
       workBoardStore: { get: () => ({ status: "found", item }), update: result, transition: result, complete: result, reopen: result },
       workBoardEngine: { clearMissingRun: result },
-      auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+      getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps);
     const invoke = handler(channel);
     await handler(WORK_BOARD.setProjectScope)(event, rootA);
@@ -508,7 +507,7 @@ it("scopes run progress, failure, list, get, transcript, reports, briefings, app
     const deps = {
       workBoardReport: { generate },
       workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
-      auditLogger: { log: vi.fn() }, getMainWindow: () => windows[0], getAppWindows: () => windows,
+      getMainWindow: () => windows[0], getAppWindows: () => windows,
     } as unknown as IpcDeps;
     registerWorkBoardHandlers(deps);
     registerWorkApprovalsHandlers(deps);
@@ -591,7 +590,6 @@ it("reads Work Approvals without confirming a failed settle or releasing its wor
     const before = readFileSync(runsFile);
     registerWorkApprovalsHandlers({
       workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
-      auditLogger: { log: vi.fn() },
     } as unknown as IpcDeps);
     await expect(handler(WORK_APPROVALS.list)({}, { allProjects: true })).resolves.toMatchObject({ ok: true, items: [] });
     await h.drainRunWork();
@@ -629,8 +627,7 @@ it("opens only the current conflict's host-owned join folder with a fresh receip
     const owner = workBoardTestSender();
     const event = { sender: owner, senderFrame: owner.mainFrame };
     const window = { webContents: owner, isDestroyed: () => false };
-    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, auditLogger: { log: vi.fn() },
-      getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
     await expect(handler(WORK_BOARD.openJoin)(event, id, input)).resolves.toEqual({ ok: false, reason: "user-gesture-required" });
     await expect(decide(WORK_BOARD.openJoin, event, id, { ...input, path: "other" })).resolves.toEqual({ ok: false, reason: "invalid-input" });
     await expect(decide(WORK_BOARD.openJoin, event, id, { ...input, conflictHash: "b".repeat(64) })).resolves.toEqual({ ok: false, reason: "conflict_mismatch" });
@@ -660,7 +657,7 @@ it("keeps a B stage and its descendant approval details out of the launching A w
     projectSettings.mockReturnValue({ ...settings, permissions: { ...settings.permissions, additionalDirectories: [rootA, rootB] } });
     const deps = {
       approvalGate: gate, workBoardStore: h.board, workBoardEngine: h.engine,
-      auditLogger: { log: vi.fn() }, getMainWindow: () => windows[0], getAppWindows: () => windows,
+      getMainWindow: () => windows[0], getAppWindows: () => windows,
     } as unknown as IpcDeps;
     registerWorkBoardHandlers(deps);
     registerPermissionsHandlers(deps);
@@ -770,7 +767,7 @@ it("a click approves a stage with requested outputs and shows the full request",
     const window = { isDestroyed: () => false, webContents: owner };
     const deps = {
       workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
-      auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+      getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps;
     registerWorkBoardHandlers(deps);
     registerWorkApprovalsHandlers(deps);

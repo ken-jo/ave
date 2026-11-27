@@ -71,17 +71,7 @@ vi.mock("electron", () => {
 
 type AuditRow = { sessionId?: string; input?: string };
 const auditRows: AuditRow[] = [];
-const auditLogger = {
-  log: vi.fn((row: AuditRow) => {
-    auditRows.push(row);
-  }),
-  logWarn: vi.fn(),
-  search: vi.fn(() => []),
-  getStats: vi.fn(() => ({})),
-  flush: vi.fn(async () => undefined),
-  getAuditDir: vi.fn(() => "/nonexistent-audit-dir"),
-  getPermissionAuditSecret: vi.fn(() => null),
-};
+
 
 /**
  * Enough shape for each `register*Handlers` to finish wiring. The host sender
@@ -101,7 +91,6 @@ function registeredHostEvent(): IpcMainInvokeEvent {
 
 function makeDeps(): never {
   return {
-    auditLogger,
     getMainWindow: () => null,
     getAppWindows: () => appWindows,
     conversationLoop: {

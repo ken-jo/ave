@@ -4,7 +4,7 @@ import { deferred } from "../../__tests__/support/deferred.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { within } from "../../__tests__/support/signal-wait.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
+
 import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
 import { makeConversationLoopSettings } from "../../engine/__tests__/conversation-loop-test-helpers.js";
 import { makeSubagentLoopDeps, patchLoopProvider } from "../../engine/__tests__/support/subagent-loop-fixtures.js";
@@ -154,7 +154,6 @@ it("a pass verdict leaves a pending tool approval of a sibling untouched", async
           approvalGate: approvals,
           permissionManager,
           settingsService: makeConversationLoopSettings(false),
-          auditLogger: new AuditLogger(),
           networkFetch: unusedNetworkFetch,
         }),
         toolRegistry,

@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
+import { describe, it, expect, beforeEach, vi, onTestFinished } from "vitest";
 import { resolveApiKey } from "../resolve-api-key.js";
 import type { PluginManifest, PluginRegistryTrust } from "../../../plugins/types.js";
 import type { HostSecretGrantEvidence } from "../../../plugins/secret-access/grants.js";
@@ -58,11 +59,6 @@ function manifestFor(pluginId: string, allowedKeys: string[]): PluginManifest {
   } as PluginManifest;
 }
 
-function makeAuditLogger() {
-  const log = vi.fn();
-  return { log, mock: log };
-}
-
 interface SettingsOverrides {
   provider: string;
   retiredProvider?: string;
@@ -120,7 +116,6 @@ describe("resolveApiKey — signal.aborted at entry", () => {
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService({ provider: "openai" }) as never,
-        auditLogger: makeAuditLogger(),
         ...NO_GRANT,
       },
     );
@@ -139,7 +134,7 @@ describe("resolveApiKey — Tier-1 own-namespace short-circuit", () => {
     });
     const result = await resolveApiKey(
       { purpose: "llm" },
-      { pluginId: "plugin-x", manifest, manifestSha256: manifestSha(manifest), settingsService: settings as never, auditLogger: makeAuditLogger(), ...NO_GRANT },
+      { pluginId: "plugin-x", manifest, manifestSha256: manifestSha(manifest), settingsService: settings as never, ...NO_GRANT },
     );
     expect(result).toEqual({ ok: false, reason: "no-host-vendor" });
     expect(settings.getSecret).not.toHaveBeenCalled();
@@ -154,7 +149,7 @@ describe("resolveApiKey — Tier-1 own-namespace short-circuit", () => {
     });
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "openai" },
-      { pluginId: "plugin-x", manifest, manifestSha256: manifestSha(manifest), settingsService: settings as never, auditLogger: makeAuditLogger(), ...NO_GRANT },
+      { pluginId: "plugin-x", manifest, manifestSha256: manifestSha(manifest), settingsService: settings as never, ...NO_GRANT },
     );
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -177,7 +172,6 @@ describe("resolveApiKey — Tier-1 own-namespace short-circuit", () => {
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: settings as never,
-        auditLogger: makeAuditLogger(),
         ...NO_GRANT,
       },
     );
@@ -190,7 +184,8 @@ describe("resolveApiKey — Tier-1 own-namespace short-circuit", () => {
 
   it("rejects URL-shaped values in plugin-owned llm api keys before returning a bearer", async () => {
     const manifest = manifestFor("plugin-x", []);
-    const audit = makeAuditLogger();
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
     const settings = makeSettingsService({
       provider: "openai",
       secrets: { "plugin.plugin-x.llm.apiKey.openai": "https://example.openai.azure.com/openai/deployments/stt/audio/transcriptions" },
@@ -203,16 +198,14 @@ describe("resolveApiKey — Tier-1 own-namespace short-circuit", () => {
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: settings as never,
-        auditLogger: audit,
         ...NO_GRANT,
       },
     );
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("no-host-vendor");
-    expect(audit.mock).toHaveBeenCalledWith(expect.objectContaining({
-      type: "warn",
-      input: expect.stringContaining("endpoint-url-in-api-key-like-secret"),
+    expect(logs.events).toContainEqual(expect.objectContaining({
+      event: "plugin_secret_access", pluginId: "plugin-x", decision: "deny", reason: "endpoint-url-in-api-key-like-secret",
     }));
   });
 });
@@ -226,7 +219,6 @@ describe("resolveApiKey — Tier-2 manifest allowlist miss", () => {
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService({ provider: "openai" }) as never,
-        auditLogger: makeAuditLogger(),
         ...NO_GRANT,
       },
     );
@@ -250,7 +242,6 @@ describe("resolveApiKey — Tier-3 whitelist registry deny passthrough", () => {
           provider: "openai",
           secrets: { "llm.apiKey.openai": "sk-host" },
         }) as never,
-        auditLogger: makeAuditLogger(),
         ...officialGrant(manifestSha(manifest)),
       },
     );
@@ -276,7 +267,6 @@ describe("resolveApiKey — Tier-3 BEFORE Tier-4 ordering (cycle 1 MEDIUM)", () 
           provider: "claude",
           secrets: { "llm.apiKey.openai": "sk-host" },
         }) as never,
-        auditLogger: makeAuditLogger(),
         ...officialGrant(manifestSha(manifest)),
       },
     );
@@ -297,7 +287,6 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
         manifestSha256,
         // Active vendor is claude → vendor-mismatch on requested openai.
         settingsService: makeSettingsService({ provider: "claude" }) as never,
-        auditLogger: makeAuditLogger(),
         ...officialGrant(manifestSha(manifest)),
       },
     );
@@ -312,7 +301,8 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
     const presetKey = "llm.marketplaceProvider.future-router.apiKey";
     const manifest = manifestFor(GRANTED, [presetKey]);
     const manifestSha256 = manifestSha(manifest);
-    const auditLogger = makeAuditLogger();
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
     const settingsService = makeSettingsService({
       provider: "openai-compatible",
       marketplaceProviderPresetId: "future-router",
@@ -326,15 +316,15 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
         manifest,
         manifestSha256,
         settingsService: settingsService as never,
-        auditLogger,
         ...officialGrant(manifestSha(manifest)),
       },
     );
 
     expect(result).toEqual({ ok: false, reason: "not-whitelisted" });
     expect(settingsService.getSecret).not.toHaveBeenCalledWith(presetKey);
-    const lines = auditLogger.log.mock.calls.map((c) => (c[0] as { input?: string }).input ?? "");
-    expect(lines.some((l) => l.includes("reason=not-in-grant-table") && l.includes("(tier-3)"))).toBe(true);
+    expect(logs.events).toContainEqual(expect.objectContaining({
+      event: "plugin_secret_access", decision: "deny", reason: "not-in-grant-table", tier: "tier-3",
+    }));
   });
 
   it("still denies a preset key whose preset is installed but NOT active", async () => {
@@ -356,7 +346,6 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
         manifest,
         manifestSha256,
         settingsService: settingsService as never,
-        auditLogger: makeAuditLogger(),
         ...officialGrant(manifestSha(manifest)),
       },
     );
@@ -369,7 +358,8 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
     // Audit manifest misses as not-allowlisted while preserving the public not-whitelisted result contract.
     const manifest = manifestFor("p", []);
     const manifestSha256 = manifestSha(manifest);
-    const auditLogger = makeAuditLogger();
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
     const settingsService = makeSettingsService({ provider: "openai" });
 
     const result = await resolveApiKey(
@@ -379,18 +369,15 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
         manifest,
         manifestSha256,
         settingsService: settingsService as never,
-        auditLogger,
         ...NO_GRANT,
       },
     );
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("not-whitelisted");
-    const lines = auditLogger.log.mock.calls.map(
-      (c) => (c[0] as { input?: string }).input ?? "",
-    );
-    expect(lines.some((l) => l.includes("reason=not-allowlisted"))).toBe(true);
-    expect(lines.some((l) => l.includes("(tier-2)"))).toBe(true);
+    expect(logs.events).toContainEqual(expect.objectContaining({
+      event: "plugin_secret_access", decision: "deny", reason: "not-allowlisted", tier: "tier-2",
+    }));
   });
 
   it("denies the generic OpenAI-compatible key while a marketplace preset is active", async () => {
@@ -410,7 +397,6 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
         manifest,
         manifestSha256,
         settingsService: settingsService as never,
-        auditLogger: makeAuditLogger(),
         ...officialGrant(manifestSha(manifest)),
       },
     );
@@ -435,7 +421,6 @@ describe("resolveApiKey — success: release() lifetime", () => {
           provider: "openai",
           secrets: { "llm.apiKey.openai": "sk-host" },
         }) as never,
-        auditLogger: makeAuditLogger(),
         ...officialGrant(manifestSha(manifest)),
       },
     );
@@ -462,7 +447,6 @@ describe("resolveApiKey — signal aborts mid-flight (cycle 1 HIGH)", () => {
           provider: "openai",
           secrets: { "llm.apiKey.openai": "sk-host" },
         }) as never,
-        auditLogger: makeAuditLogger(),
         ...officialGrant(manifestSha(manifest)),
       },
     );
@@ -489,7 +473,6 @@ describe("resolveApiKey — vendor alias normalization (cycle 1 CRITICAL)", () =
           provider: "claude", // host vendor name
           secrets: { "llm.apiKey.claude": "sk-claude" },
         }) as never,
-        auditLogger: makeAuditLogger(),
         ...officialGrant(manifestSha(manifest)),
       },
     );
@@ -512,7 +495,6 @@ describe("resolveApiKey — vendor alias normalization (cycle 1 CRITICAL)", () =
           provider: "vertex-ai",
           secrets: { "llm.apiKey.vertex-ai": "sk-vertex" },
         }) as never,
-        auditLogger: makeAuditLogger(),
         ...officialGrant(manifestSha(manifest)),
       },
     );
@@ -535,7 +517,6 @@ describe("resolveApiKey — vendor alias normalization (cycle 1 CRITICAL)", () =
           secrets: { "llm.apiKey.azure-foundry": "sk-azure" },
           baseUrl: "https://my-region.openai.azure.com",
         }) as never,
-        auditLogger: makeAuditLogger(),
         ...officialGrant(manifestSha(manifest)),
       },
     );
@@ -563,7 +544,6 @@ describe("resolveApiKey — permission revoke fires release() on outstanding bea
           provider: "openai",
           secrets: { "llm.apiKey.openai": "sk-host" },
         }) as never,
-        auditLogger: makeAuditLogger(),
         ...officialGrant(manifestSha(manifest)),
         getPluginRevokeSignal: () => revokeController.signal,
       },
@@ -589,7 +569,6 @@ describe("resolveApiKey — permission revoke fires release() on outstanding bea
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService({ provider: "openai" }) as never,
-        auditLogger: makeAuditLogger(),
         ...NO_GRANT,
         getPluginRevokeSignal: () => revokeController.signal,
       },
@@ -613,7 +592,6 @@ describe("resolveApiKey — baseUrl present on azure-foundry success", () => {
           secrets: { "llm.apiKey.azure-foundry": "sk-az" },
           baseUrl: "https://foo.bar/",
         }) as never,
-        auditLogger: makeAuditLogger(),
         ...officialGrant(manifestSha(manifest)),
       },
     );
@@ -629,7 +607,8 @@ describe("resolveApiKey — Tier 3 reads the host-owned registry, never the mani
 
   it("attributes the allow line to the host-secret grant", async () => {
     const manifest = manifestFor(GRANTED, ["llm.apiKey.openai"]);
-    const auditLogger = makeAuditLogger();
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "openai" },
       {
@@ -637,15 +616,13 @@ describe("resolveApiKey — Tier 3 reads the host-owned registry, never the mani
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService(readsHostKey) as never,
-        auditLogger,
         ...officialGrant(manifestSha(manifest)),
       },
     );
     expect(result.ok).toBe(true);
-    const allowLine = auditLogger.mock.mock.calls
-      .map((c) => String(c[0]?.input ?? ""))
-      .find((input) => input.includes("resolveApiKey allow"));
-    expect(allowLine).toContain("source=host-secret-grant");
+    expect(logs.events).toContainEqual(expect.objectContaining({
+      event: "plugin_secret_access", decision: "allow", credentialSource: "host-secret-grant",
+    }));
   });
 
   it("grants nothing to an admin install the official snapshot did not publish", async () => {
@@ -658,7 +635,6 @@ describe("resolveApiKey — Tier 3 reads the host-owned registry, never the mani
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: settingsService as never,
-        auditLogger: makeAuditLogger(),
         ...officialGrant(manifestSha(manifest), { installSource: "admin", origin: undefined }),
       },
     );
@@ -675,7 +651,6 @@ describe("resolveApiKey — Tier 3 reads the host-owned registry, never the mani
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService(readsHostKey) as never,
-        auditLogger: makeAuditLogger(),
         ...NO_GRANT,
       },
     );
@@ -691,7 +666,6 @@ describe("resolveApiKey — Tier 3 reads the host-owned registry, never the mani
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService(readsHostKey) as never,
-        auditLogger: makeAuditLogger(),
         ...officialGrant("f".repeat(64)),
       },
     );

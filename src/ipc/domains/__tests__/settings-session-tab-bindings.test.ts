@@ -50,7 +50,7 @@ beforeEach(async () => {
     save: async (id, snapshot) => { if (id === 7) await settings.patch({ system: { ...settings.get("system"), mainLayout: snapshot } }); },
     sessionExists: () => true,
   });
-  registerSettingsHandlers({ settingsService: settings, conversationLoop: { refreshProvider: vi.fn() }, auditLogger: { log: vi.fn() }, getAppWindows: () => [] } as never);
+  registerSettingsHandlers({ settingsService: settings, conversationLoop: { refreshProvider: vi.fn() }, getAppWindows: () => [] } as never);
 });
 
 afterEach(async () => {

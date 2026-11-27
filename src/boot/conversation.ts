@@ -27,7 +27,6 @@ import { ConversationLoop } from "../engine/conversation-loop.js";
 import type { RationaleCoordinatorFactory } from "../engine/turn/rationale-conversation-orchestration.js";
 import { PostTurnHookChain } from "../hooks/post-turn-hook-chain.js";
 import { HookRunner } from "../hooks/hook-runner.js";
-import { AuditLogger } from "../audit/audit-logger.js";
 import type { NotificationService } from "../main/notification-service.js";
 import type { LLMProvider } from "../engine/llm/types.js";
 import type { SubscriptionChatRuntimeSelection } from "../shared/subscription-runtime.js";
@@ -102,24 +101,20 @@ export function createPostTurnHookChain(opts: {
   idleScheduler?: IdleSchedulerService;
   settingsService: SettingsService;
   memoryCaptureService?: AutomaticMemoryCaptureSubmitter;
-  /** Reuse the host audit logger to keep plugin and host trails unified. */
-  auditLogger?: AuditLogger;
-}): { postTurnHookChain: PostTurnHookChain; auditLogger: AuditLogger } {
-  const auditLogger = opts.auditLogger ?? new AuditLogger();
+}): { postTurnHookChain: PostTurnHookChain; } {
+
   const postTurnHookChain = new PostTurnHookChain({
     memoryManager: opts.memoryManager,
-    auditLogger,
     idleScheduler: opts.idleScheduler,
     settingsService: opts.settingsService,
     memoryCaptureService: opts.memoryCaptureService,
   });
-  return { postTurnHookChain, auditLogger };
+  return { postTurnHookChain };
 }
 
 export async function createApprovalGate(
   /** Where each card is drawn, resolved per request; null for a headless run. */
   surface: ApprovalSurfaceResolver | null,
-  auditLogger: AuditLogger,
   notificationService?: NotificationService,
 ): Promise<ApprovalGate> {
 
@@ -128,7 +123,6 @@ export async function createApprovalGate(
     surface,
     bootPolicy,
     5 * 60 * 1000,
-    auditLogger,
     notificationService,
     surface === null ? {
       onDenied: (requestId, toolName) => {
@@ -192,7 +186,6 @@ export interface ConversationDeps {
   /** Whether `/<name>` names an indexed skill (routes a typed skill slash to the model). */
   isSkillName?: (name: string) => boolean;
   notificationService?: NotificationService;
-  auditLogger?: AuditLogger;
   rewireReviewerAgent?: () => Promise<void>;
   llmFetch?: typeof fetch;
   networkFetch: typeof fetch;
@@ -221,7 +214,6 @@ export type RoutineConversationLoopDeps = Pick<
   | "llmFetch"
   | "networkFetch"
   | "tracer"
-  | "auditLogger"
   | "isDefaultProjectRoot"
   | "getDefaultProject"
   | "authorizeProject"
@@ -280,7 +272,6 @@ export function createRoutineConversationLoop(
     pluginRuntime: deps.pluginRuntime,
     pluginOperationGrants: deps.pluginOperationGrants,
     pluginOperationIdentityProvider: deps.pluginOperationIdentityProvider,
-    auditLogger: deps.auditLogger,
     llmFetch: deps.llmFetch,
     networkFetch: deps.networkFetch,
     ...(deps.tracer ? { tracer: deps.tracer } : {}),
@@ -322,7 +313,6 @@ export type SideChatConversationLoopDeps = Pick<
   | "tracer"
   | "rationaleCoordinatorFactory"
   | "closeRationaleSession"
-  | "auditLogger"
   | "subscriptionProviderFactory"
   | "broadcastPermissionConfigChanged"
   | "approvalSurface"
@@ -355,7 +345,6 @@ export function createSideChatConversationLoop(
   const { postTurnHookChain } = createPostTurnHookChain({
     memoryManager: deps.sideChatMemoryManager,
     settingsService: deps.settingsService,
-    ...(deps.auditLogger ? { auditLogger: deps.auditLogger } : {}),
   });
   return new ConversationLoop({
     settingsService: deps.settingsService,
@@ -372,7 +361,6 @@ export function createSideChatConversationLoop(
     pluginOperationGrants: deps.pluginOperationGrants,
     pluginOperationIdentityProvider: deps.pluginOperationIdentityProvider,
     postTurnHookChain,
-    auditLogger: deps.auditLogger,
     ...(deps.rationaleCoordinatorFactory
       ? { rationaleCoordinatorFactory: deps.rationaleCoordinatorFactory }
       : {}),
@@ -435,7 +423,6 @@ export function createConversationLoop(deps: ConversationDeps,
     skillOverlay: deps.skillOverlay,
     isSkillName: deps.isSkillName,
     notificationService: deps.notificationService,
-    auditLogger: deps.auditLogger,
     rewireReviewerAgent: deps.rewireReviewerAgent,
     llmFetch: deps.llmFetch,
     networkFetch: deps.networkFetch,
@@ -476,7 +463,6 @@ function callLlmWithOptionalOutputLimit(
 
 export function createCallLlmForPlugin(
   conversationLoop: ConversationLoop,
-  _auditLogger: AuditLogger,
   options: CallLlmRateLimitOptions = {},
 ): (pluginId: string, prompt: string, opts?: { maxTokens?: number; systemPrompt?: string; signal?: AbortSignal },
 ) => Promise<string> {
@@ -489,9 +475,7 @@ export function createCallLlmForPlugin(
     const arr = buckets.get(pluginId) ?? [];
     const fresh = arr.filter((t) => now - t < windowMs);
     if (fresh.length >= maxCalls) {
-      try {
-        logPermissionEvent("plugin_llm_rate_limited", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
-      } catch {}
+      logPermissionEvent("plugin_llm_rate_limited", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
       throw new Error(
         `[plugin:${pluginId}] callLlm rate-limit exceeded — ${maxCalls} calls per ${windowMs}ms`,
       );
@@ -499,9 +483,7 @@ export function createCallLlmForPlugin(
     fresh.push(now);
     buckets.set(pluginId, fresh);
 
-    try {
-      logPermissionEvent("plugin_llm_called", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) });
-    } catch {}
+    logPermissionEvent("plugin_llm_called", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) });
 
     return callLlmWithOptionalOutputLimit(conversationLoop, prompt, opts);
   };

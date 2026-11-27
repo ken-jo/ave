@@ -1,7 +1,7 @@
 /** Append each run to its own JSONL path and preserve older runs indexed by board history; storage uses read-modify-write. */
 import type { WorkBoardStorage } from "./storage.js";
 import type { RunTranscriptEvent } from "../shared/work-board-types.js";
-import { parseJsonlLines } from "../audit/jsonl-reader.js";
+import { parseJsonlLines } from "../lib/jsonl-record-file.js";
 
 export type { RunTranscriptEvent };
 

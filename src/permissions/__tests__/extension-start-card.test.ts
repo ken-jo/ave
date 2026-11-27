@@ -20,7 +20,7 @@ const KEYS = ["plugin-child:a", "mcp-stdio:b", "plugin-child:c"];
 function makeGate() {
   const wc = { send: vi.fn(), isDestroyed: vi.fn(() => false) };
   const auditLogger = { log: vi.fn() };
-  const gate = new ApprovalGate(wc as never, undefined, 5_000, auditLogger as never);
+  const gate = new ApprovalGate(wc as never, undefined, 5_000);
   const audit = () => auditLogger.log.mock.calls.map(([row]) => String((row as { output?: string }).output ?? ""));
   return { wc, gate, audit };
 }

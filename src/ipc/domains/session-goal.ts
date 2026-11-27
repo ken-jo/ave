@@ -17,11 +17,11 @@ function namedSession(sessionId: unknown): string | null {
 }
 
 export function registerSessionGoalHandlers(deps: IpcDeps): void {
-  const { sessionGoalStore, auditLogger, getMainWindow } = deps;
+  const { sessionGoalStore, getMainWindow } = deps;
 
   ipcMain.handle(CHANNELS.sessionGoal.get, (e, sessionId: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.sessionGoal.get, e);
+      auditUnauthorized(CHANNELS.sessionGoal.get);
       return UNAUTHORIZED_FRAME;
     }
     const sid = namedSession(sessionId);
@@ -39,7 +39,7 @@ export function registerSessionGoalHandlers(deps: IpcDeps): void {
   ): void => {
     ipcMain.handle(channel, async (e, sessionId: unknown) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, channel, e);
+        auditUnauthorized(channel);
         return UNAUTHORIZED_FRAME;
       }
       const sid = namedSession(sessionId);

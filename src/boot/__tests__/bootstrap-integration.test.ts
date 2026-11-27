@@ -76,7 +76,6 @@ vi.mock("../services.js", () => ({
       pythonPath: "/usr/bin/python3",
       pythonRuntime: { kind: "python-runtime-stub" },
       bashAstValidator: {},
-      auditService: { stop: vi.fn(async () => {}) },
       settingsService: {
         get: vi.fn((key: string) => {
           switch (key) {
@@ -599,31 +598,8 @@ vi.mock("../../permissions/user-approval-store.js", () => ({
   setApprovalConversationRootResolver: vi.fn(),
 }));
 vi.mock("../../permissions/manifest-integrity.js", () => ({
-  bindManifestIntegrityAudit: vi.fn(),
+  bindManifestIntegrityLogging: vi.fn(),
   manifestIntegrityState: { onViolation: vi.fn() },
-}));
-
-vi.mock("../../audit/audit-logger.js", () => ({
-  AuditLogger: class {
-    setupPermissionAuditChain = vi.fn();
-    log = vi.fn();
-    logSandboxGate = vi.fn();
-    flush = vi.fn(async () => {});
-    close = vi.fn(async () => {});
-    rotateAndPrune = vi.fn(async () => {});
-    getAuditDir = vi.fn(() => `${h.root}/audit`);
-    getPermissionAuditSecret = vi.fn(() => "s".repeat(64));
-    getPermissionAuditSealStore = vi.fn(() => ({
-      read: vi.fn(() => null),
-      write: vi.fn(),
-    }));
-  },
-}));
-vi.mock("../../audit/hmac-chain.js", () => ({
-  FileSecretStore: class {},
-  SafeStorageSecretStore: class { static async open() { return { read: () => null, write: () => undefined }; } },
-  ensureAuditSecret: vi.fn(() => ({})),
-  computeLineHmac: vi.fn(() => "h".repeat(64)),
 }));
 
 // Mock the broadcaster to keep unrelated IPC implementations out of the boot graph.
@@ -631,7 +607,7 @@ vi.mock("../../ipc/domains/permissions.js", () => ({
   broadcastPermissionConfigChanged: vi.fn(),
 }));
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { bootstrap, type AppServices } from "../../boot.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
 import { aveScratchDir, removeAveScratchDirIfEmpty } from "../../shared/ave-scratch.js";
@@ -641,6 +617,9 @@ import { wireModelCatalogRefresh } from "../steps/model-catalog-refresh.js";
 // Both boots need a scratch AVE_HOME because marketplace setup removes retired caches.
 const savedAveHome = process.env["AVE_HOME"];
 process.env["AVE_HOME"] = `${h.root}/ave-home`;
+const legacyAuditDir = `${h.root}/ave-home/audit`;
+const legacyAuditPath = `${legacyAuditDir}/2026-11-24.permission-audit.jsonl`;
+const legacySealPath = `${legacyAuditDir}/2026-11-24.permission-audit.seal.json`;
 afterAll(async () => {
   try {
     // Each full boot creates the scratch directory for this home; boot removes it on process exit, which a test worker never emits.
@@ -758,6 +737,9 @@ describe("bootstrap() integration lock", () => {
     // Keep OS isolation off for a deterministic boot path without native runtime initialization.
     savedSandboxEnv = process.env["AVE_SANDBOX_ENABLED"];
     delete process.env["AVE_SANDBOX_ENABLED"];
+    mkdirSync(legacyAuditDir, { recursive: true });
+    writeFileSync(legacyAuditPath, "broken audit record");
+    mkdirSync(legacySealPath, { recursive: true });
     const win = fakeWindow();
     services = await bootWithWindow(win, "interactive");
   }, 180_000);
@@ -766,6 +748,12 @@ describe("bootstrap() integration lock", () => {
     if (savedSandboxEnv === undefined)
       delete process.env["AVE_SANDBOX_ENABLED"];
     else process.env["AVE_SANDBOX_ENABLED"] = savedSandboxEnv;
+  });
+
+  it("boots with corrupt and unopenable retired audit artifacts in its home", () => {
+    expect(services.notificationService).toBeDefined();
+    expect(readFileSync(legacyAuditPath, "utf8")).toBe("broken audit record");
+    expect(existsSync(legacySealPath)).toBe(true);
   });
 
   it("reads installed routine plugins from the live registry including pending updates and disabled entries", async () => {
@@ -841,8 +829,6 @@ describe("bootstrap() integration lock", () => {
         "alertsService",
         "approvalGate",
         "askUserQuestionGate",
-        "auditLogger",
-        "auditService",
         "autoUpdaterStop",
         "bashAstValidator",
         "clearAuthPartitionService",

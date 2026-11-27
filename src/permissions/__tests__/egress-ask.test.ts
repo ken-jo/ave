@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SandboxAskCallback, SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
-import type { SandboxEgressDecisionAuditEntry } from "../../audit/sandbox-audit.js";
+import type { SandboxEgressDecisionAuditEntry } from "../../permissions/egress-observation.js";
 import {
   egressAllowlistMatches,
   EGRESS_DENY_REASONS,

@@ -405,7 +405,7 @@ function validTokens(value: unknown): value is number {
 
 function toUsageTurn(sessionId: string, timestamp: string, summary: Record<string, unknown>): UsageTurnEntry {
   const route = typeof summary.vendorProvider === "string" && typeof summary.vendorModel === "string"
-    ? summary.vendorProvider + "/" + summary.vendorModel
+    ? `${summary.vendorProvider}/${summary.vendorModel}`
     : undefined;
   const segments = Array.isArray(summary.usageByModel) ? summary.usageByModel.filter(
     (item): item is ModelUsageSegment => isRecord(item) && typeof item.vendorProvider === "string"

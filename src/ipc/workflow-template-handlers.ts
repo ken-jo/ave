@@ -45,7 +45,7 @@ export function registerWorkflowTemplateHandlers(
   };
   const handle = <T>(channel: string, action: (store: NonNullable<IpcDeps["workflowTemplateStore"]>, event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<T>) => {
     ipcMain.handle(channel, async (event, ...args: unknown[]): Promise<WorkflowTemplateIpcResult<T>> => {
-      if (!validateHostRendererSender(event)) { auditUnauthorized(deps.auditLogger, channel, event); return { ...UNAUTHORIZED_FRAME, ok: false }; }
+      if (!validateHostRendererSender(event)) { auditUnauthorized(channel); return { ...UNAUTHORIZED_FRAME, ok: false }; }
       if (!store) return { ok: false, error: "no-store" };
       try { return { ok: true, value: await action(store, event, ...args) }; }
       catch (error) { return { ok: false, ...(error instanceof WorkflowTemplateError && error.refusals ? { refusals: error.refusals } : {}), error: error instanceof WorkflowTemplateError || error instanceof TemplateGestureError || error instanceof TemplateFrameError || error instanceof TemplateStoreUnavailableError ? error.code : "storage-error" }; }
@@ -72,7 +72,7 @@ export function registerWorkflowTemplateHandlers(
   });
   const requireOwnerFrame = (event: IpcMainInvokeEvent, channel: string) => {
     if (!isBoardOwnerFrame(event)) {
-      auditUnauthorized(deps.auditLogger, channel, event);
+      auditUnauthorized(channel);
       throw new TemplateFrameError();
     }
   };
@@ -85,7 +85,7 @@ export function registerWorkflowTemplateHandlers(
     }
     const routines = deps.routinesStore;
     if (!routines) throw new TemplateStoreUnavailableError();
-    const { attachment: result } = await attachWorkflowSchedule(store, routines, request, () => mintHostDecisionProof("local-desktop"), deps.auditLogger);
+    const { attachment: result } = await attachWorkflowSchedule(store, routines, request, () => mintHostDecisionProof("local-desktop"));
     logPermissionEvent("template_schedule_attached", { sessionId: permissionLogId(`work-board:${result.templateId}`) });
     return result;
   });

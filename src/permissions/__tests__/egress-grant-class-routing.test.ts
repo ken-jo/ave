@@ -21,7 +21,7 @@ import {
   subscribeEgressRelayViolations,
 } from "../egress-relay/relay.js";
 import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
-import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry, SandboxEgressFailureAuditEntry } from "../../audit/sandbox-audit.js";
+import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry, SandboxEgressFailureAuditEntry } from "../../permissions/egress-observation.js";
 import { createUpstreamProxyRouter } from "../upstream-proxy.js";
 import { DEFAULT_UPSTREAM_PROXY, type UpstreamProxySettings } from "../../shared/upstream-proxy.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";

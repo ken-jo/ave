@@ -2508,7 +2508,6 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
       url: "https://example.com/sso",
       pluginId: "plugin-a",
       settingsService: service,
-      bootAuditLogger: { log: () => {} },
       openLinkWindowService: async ({ url }) => { inAppOpened.push(url); },
       shellOpenExternal: async (url) => { shellOpened.push(url); },
     });

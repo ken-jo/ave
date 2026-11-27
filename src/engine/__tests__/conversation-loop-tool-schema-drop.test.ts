@@ -132,7 +132,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
     expect(summary?.modelSettings?.reasoning).not.toHaveProperty("suppressed");
   });
 
-  it("keeps the previous request record when a runtime switch prevents the reduced-tool retry", async () => {
+  it("interrupts the reduced-tool retry when the runtime switches", async () => {
     const provider = new ToolRecordingProvider([[rejection("bad_tool")]], "openai");
     const settings = chatCompletionsGpt5Settings();
     let switched = false;
@@ -140,15 +140,12 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
       ? { kind: "subscription", provider: "codex", model: "gpt-5.5-codex" }
       : undefined });
     const loop = makeLoop(provider, [{ name: "bad_tool" }], settings);
-    const logTurn = vi.spyOn(loop.auditLogger, "logTurn");
     const result = await loop.runTurn("go", {
       onDecision: (event) => { if (event.kind === "tool_schema.drop") switched = true; },
     }, undefined, { ...userKeyboardTurn() });
     expect(provider.toolNamesPerCall).toEqual([["bad_tool"]]);
     expect(result.stopReason).toBe("interrupted");
-    expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: expect.objectContaining({
-      reasoning: expect.objectContaining({ kind: "openai-effort", effort: "high" }),
-    }) }));
+    expect(switched).toBe(true);
   });
 
   it("drops the rejected tool and retries the round with the reduced tool set", async () => {

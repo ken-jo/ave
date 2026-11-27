@@ -1,5 +1,4 @@
 import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import type { ScheduleAttachmentRequest } from "../shared/workflow-template-types.js";
 import { attachmentScopeMatches, requireTemplate } from "../work-board/template-graph.js";
 import { WorkDecisionAuthorityError } from "../work-board/work-decision-authority.js";
@@ -13,7 +12,6 @@ export async function attachWorkflowSchedule(
   routines: RoutinesStore,
   request: ScheduleAttachmentRequest,
   mintProof: () => HostDecisionProof,
-  _audit: Pick<AuditLogger, "log">,
 ) {
   const { templateId, version, graphHash, expectedScope } = request;
   const record = await store.get(templateId);

@@ -2,7 +2,6 @@ import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { redactForLLM } from "../audit/dlp-filter.js";
 import { MAX_HOOK_CONTEXT_CHARS, hookInvocationFailureReason, type ScriptHookInvocationResult } from "./script-hook-types.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 
 export interface HookInfluenceScope {
   readonly context: string[];
@@ -20,7 +19,7 @@ export function hookContextForControl(control: object): readonly string[] {
   return controlContext.get(control) ?? [];
 }
 
-export function recordHookExecutionAudit(_logger: Pick<AuditLogger, "log"> | undefined, sessionId: string, results: readonly ScriptHookInvocationResult[]): void {
+export function recordHookExecutionAudit(sessionId: string, results: readonly ScriptHookInvocationResult[]): void {
   for (const hook of results) {
     logPermissionEvent("hook_executed", {
       sessionId: permissionLogId(sessionId),

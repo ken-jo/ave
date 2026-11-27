@@ -48,7 +48,6 @@ async function register(): Promise<void> {
     },
     settingsService: { get: vi.fn(() => ({})), patch: vi.fn(async () => undefined) },
     memoryManager: mm,
-    auditLogger: { log: vi.fn() },
     getMainWindow: vi.fn(() => null),
   } as never);
 }

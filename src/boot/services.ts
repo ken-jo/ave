@@ -29,7 +29,6 @@ import {
   createBashKillTool,
 } from "../tools/shell-tools.js";
 import { BashAstValidator } from "../main/bash-ast-validator.js";
-import { AuditService } from "../main/audit-service.js";
 import { PythonRuntimeBootstrapper } from "../main/python-runtime.js";
 import { createLogger, initFileLogSink } from "../lib/logger.js";
 import { LOG_RETENTION_DAYS, LOG_MAX_BYTES, reprunePersistedRetention,
@@ -48,7 +47,6 @@ export interface CoreServices {
   pythonPath: string | undefined;
   pythonRuntime: PythonRuntimeBootstrapper;
   bashAstValidator: BashAstValidator;
-  auditService: AuditService;
   settingsService: SettingsService;
   memoryManager: MemoryManager;
   /** Id-only record of injected/searched/read memories for the main store. */
@@ -109,8 +107,6 @@ export async function bootstrapCoreServices(mainWindow: MainWindow | null, host:
 
   const bashAstValidator = new BashAstValidator({ mode: "deny" });
 
-  const auditService = new AuditService();
-  await auditService.start();
 
   // Seed fresh installs from supported OS language preferences; query only after app readiness.
   const settingsService = new SettingsService({
@@ -191,7 +187,6 @@ export async function bootstrapCoreServices(mainWindow: MainWindow | null, host:
     pythonPath,
     pythonRuntime,
     bashAstValidator,
-    auditService,
     settingsService,
     memoryManager,
     memoryUsageLog,

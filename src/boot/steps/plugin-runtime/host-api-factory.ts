@@ -20,12 +20,11 @@ import type {
 } from "../../../plugins/public-contract.js";
 import { FloatingDock } from "../../../main/floating-dock.js";
 import { onLocaleChange } from "../../../i18n/index.js";
-import { CREDENTIAL_HEADERS, evaluateHostFetch, runHostFetchHops, type HostFetchTransport } from "../../../main/host-fetch-guard.js";
+import { CREDENTIAL_HEADERS, evaluateHostFetch, runHostFetchHops, type HostFetchDenyReason, type HostFetchTransport } from "../../../main/host-fetch-guard.js";
 import {
   partitionCookieHeaderForUrl,
   partitionCookiesForUrl,
 } from "../../../main/auth-partition-cookie-jar.js";
-import type { AuditLogger } from "../../../audit/audit-logger.js";
 import type { PluginRuntime } from "../../../plugins/runtime.js";
 import { instrumentEffectsByPath } from "../../../permissions/hostapi-effect-recorder.js";
 import { enforceMutatingEffects, gateMutatingEffect, snapshotEffectArguments, assertSnapshotableRequestBody, currentEffectGateContext } from "../../../permissions/effect-enforcement.js";
@@ -209,7 +208,6 @@ export interface CreateHostApiFactoryDeps {
   /** Re-read the registry into `getRegistryEntry` when the file changed since the last read. */
   refreshRegistryEntryCacheIfChanged: () => Promise<void>;
   settingsService: SettingsService;
-  bootAuditLogger: AuditLogger;
   leaseDenialAudit?: LeaseDenialAudit;
   _onCredentialIssuanceStageForTest?: (stage: CredentialIssuanceStage) => Promise<void> | void;
   /** Reuse runtime audit transport so host and webview storage refusals share one record shape. */
@@ -268,7 +266,6 @@ export function createHostApiFactory(
     getRegistryEntry,
     refreshRegistryEntryCacheIfChanged,
     settingsService,
-    bootAuditLogger,
     pluginRuntimeAuditLog,
     networkFetch,
     mainWindow,
@@ -290,7 +287,7 @@ export function createHostApiFactory(
     settingsService,
     (pluginId) => permissionManager?.getPluginRevokeEpoch(pluginId) ?? 0,
   );
-  const leaseDenialAudit = deps.leaseDenialAudit ?? new LeaseDenialAudit(bootAuditLogger);
+  const leaseDenialAudit = deps.leaseDenialAudit ?? new LeaseDenialAudit();
 
   /** Resolve the current window on every send; null means no desktop surface. */
   const liveMainWindow = (): MainWindow | null => getMainWindow ? getMainWindow() : mainWindow;
@@ -677,7 +674,6 @@ export function createHostApiFactory(
             manifest,
             manifestSha256,
             settingsService,
-            auditLogger: bootAuditLogger,
             readRegistryEntry,
             grantEvidence: hostSecretGrantEvidence,
             ...(deps._onCredentialIssuanceStageForTest
@@ -755,13 +751,6 @@ export function createHostApiFactory(
       },
       getSecret: async (key) => {
         // Both secret APIs use runSecretGate; this closure owns only its result shape and audit accounting.
-        // Cap audit keys at 64 characters to prevent oversized denial records.
-        const auditKey = key.slice(0, 64);
-        const audit = (_type: "info" | "warn", _line: string): void => {
-          try {
-            logPermissionEvent("plugin_storage_refused", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
-          } catch { /* audit must not break host */ }
-        };
         // Trust the host registry entry, never writable plugin.json claims.
         const outcome = await runSecretGate({
           pluginId,
@@ -784,23 +773,16 @@ export function createHostApiFactory(
           },
         });
         if (outcome.kind === "deny") {
-          audit("warn", `hostSecret_denied reason=${outcome.reason} key=${auditKey}`);
+          logPermissionEvent("plugin_secret_denied", { pluginId: permissionLogId(pluginId), reasonCode: outcome.reason }, "warn");
           return null;
         }
         const value = await settingsService.getSecret(key);
         // Block endpoint URLs in API-key-shaped plugin secrets; otherwise own-namespace reads can exfiltrate data.
         if (shouldBlockPluginSecretRead({ pluginId, storageKey: key, value })) {
-          audit(
-            "warn",
-            `pluginSecret_denied reason=endpoint-url-in-api-key-like-secret key=${auditKey}`,
-          );
+          logPermissionEvent("plugin_secret_denied", { pluginId: permissionLogId(pluginId), reasonCode: "endpoint-url-in-api-key-like-secret" }, "warn");
           return null;
         }
-        if (outcome.via === "own-namespace") {
-          audit("info", `pluginSecret_read key=${auditKey}`);
-          return value;
-        }
-        audit("info", `hostSecret_read key=${auditKey}`);
+        logPermissionEvent("plugin_secret_read", { pluginId: permissionLogId(pluginId), scope: outcome.via });
         return value;
       },
       callLlm: async (prompt, opts) => {
@@ -816,10 +798,8 @@ export function createHostApiFactory(
         const fetchEffectContext = currentEffectGateContext();
         // Use the host’s OS proxy and trust-store transport for declared network access.
         // The shared evaluator owns scheme, HTTPS, allow-list, and DNS-aware SSRF checks; audit stays here.
-        const auditEgressDeny = (_detail: string) => {
-          try {
-            logPermissionEvent("plugin_host_fetch_denied", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
-          } catch { /* audit must not break host */ }
+        const logEgressDenial = (reasonCode: HostFetchDenyReason | "redirect-cap" | "capability-missing" | "cookie-header-refused"): void => {
+          logPermissionEvent("plugin_host_fetch_denied", { pluginId: permissionLogId(pluginId), reasonCode }, "warn");
         };
         // Read the plugin-controlled method getter once; effect classification, audit, and wire verb share that snapshot.
         const { method: rawVerb, ...restInit } = init ?? {};
@@ -851,7 +831,7 @@ export function createHostApiFactory(
           ...(effectTarget !== undefined ? { target: effectTarget } : {}),
         });
         if (!manifest.capabilities?.includes(CAPABILITY_EXTERNAL_AUTH_CONSUMER)) {
-          auditEgressDeny("capability external-auth-consumer not declared");
+          logEgressDenial("capability-missing");
           throw new Error(
             `[plugin:${pluginId}] capability not declared: external-auth-consumer (hostFetch)`,
           );
@@ -866,7 +846,7 @@ export function createHostApiFactory(
           allowPrivateNetworks: manifest.networkAccess?.allowPrivateNetworks === true,
         });
         if (!decision.ok) {
-          auditEgressDeny(decision.detail);
+          logEgressDenial(decision.reason);
           throw new Error(decision.message);
         }
         // Each exact hop authorizes immediately before transport; manifest and destination checks remain independent.
@@ -885,9 +865,7 @@ export function createHostApiFactory(
             (transportInit.headers as HeadersInit | undefined) ?? {},
           ).has("cookie");
           if (pluginSentCookie) {
-            auditEgressDeny(
-              "plugin sent its own Cookie header while authCookiePartition is declared",
-            );
+            logEgressDenial("cookie-header-refused");
             throw new Error(
               `[plugin:${pluginId}] hostFetch: a plugin declaring networkAccess.authCookiePartition `
                 + `must not send its own Cookie header — the host injects session cookies from `
@@ -938,7 +916,7 @@ export function createHostApiFactory(
               logPermissionEvent("plugin_directory_refused", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
             } catch { /* audit must not break host */ }
           },
-          auditDeny: (_reason, detail) => auditEgressDeny(detail),
+          auditDeny: logEgressDenial,
           onResponseBodyError: (error) => {
             if (error instanceof CredentialLeaseError) leaseDenialAudit.record(pluginId, "hostFetch", error);
           },
@@ -984,7 +962,6 @@ export function createHostApiFactory(
           url,
           pluginId,
           settingsService,
-          bootAuditLogger,
           openLinkWindowService: (opts) => openLinkWindowService(requireMainWindow(), opts),
           shellOpenExternal,
         });
@@ -1252,7 +1229,6 @@ export function createHostApiFactory(
           dedupe: triggerConversationDedupe,
           rateLimiter: triggerConversationRateLimiter,
           denyAuditThrottle: triggerDenyAuditThrottle,
-          auditLogger: bootAuditLogger,
           suggestions: declaredSuggestions === null
             ? undefined
             : { declared: declaredSuggestions, ledger: suggestionLedger },

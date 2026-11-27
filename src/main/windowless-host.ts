@@ -35,7 +35,6 @@ export async function createWindowlessHost(projectRoot: string, host: BootHost) 
       getCurrentConversationId: () => services.conversationLoop.getSessionId(),
       isConversationBusy: () => conversationSurfaceRuntime.activity.isBusy(),
       workDecisions: services.tailnetWorkDecisions,
-      auditLogger: services.auditLogger,
     }),
     startLocalApi: () => maybeStartLocalApiServer({
       services,

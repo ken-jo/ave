@@ -108,7 +108,6 @@ async function setup(options: {
   const log = vi.fn();
   const { registerTelegramConnectionHandlers } = await import("../telegram-connection.js");
   registerTelegramConnectionHandlers({
-    auditLogger: { log },
     telegramConnectionService: f.service,
     getMainWindow: () => options.includeWindow
       ? { isDestroyed: () => false, webContents: { send } }
@@ -126,7 +125,6 @@ async function setupDisabled() {
   const log = vi.fn();
   const { registerTelegramConnectionHandlers } = await import("../telegram-connection.js");
   registerTelegramConnectionHandlers({
-    auditLogger: { log },
     getMainWindow: () => null,
   } as never);
   return { log };

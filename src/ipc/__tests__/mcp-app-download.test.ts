@@ -28,7 +28,6 @@ const auditLog = vi.fn();
 
 function makeDeps() {
   return {
-    auditLogger: { log: auditLog },
     getMainWindow: () => null,
     pluginRuntime: {
       subscribePluginStateChange: vi.fn(() => () => undefined),

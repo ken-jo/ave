@@ -4,7 +4,6 @@ import { posix, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import {
   TOOL_TIMEOUT_POLICY,
   resolveWorkloadBrokerInvocationBudgetMs,
@@ -100,8 +99,6 @@ function allowingExecutor(tool: Tool, root: string): ToolExecutor {
   registry.register(tool);
   const permissionManager = new PermissionManager(join(root, "permissions.json"));
   permissionManager.setMode("allow");
-  const auditLogger = new AuditLogger(join(root, "audit"));
-  auditLoggers.push(auditLogger);
   return new ToolExecutor(
     registry,
     undefined,
@@ -109,7 +106,6 @@ function allowingExecutor(tool: Tool, root: string): ToolExecutor {
     undefined,
     undefined,
     undefined,
-    auditLogger,
   );
 }
 
@@ -136,11 +132,9 @@ async function invoke(
 }
 
 let root: string;
-let auditLoggers: AuditLogger[];
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "ave-executor-broker-file-"));
-  auditLoggers = [];
   broker.active = true;
   broker.current = broker.primary;
   broker.acquire.mockReset();
@@ -158,7 +152,6 @@ beforeEach(() => {
 afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
-  await Promise.all(auditLoggers.map((logger) => logger.close()));
   await cleanupTmpDir(root);
 });
 

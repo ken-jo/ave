@@ -1,3 +1,4 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
 
 useConfigurationOwner();
@@ -5,7 +6,7 @@ useConfigurationOwner();
 import { createBootHostFixture, createDesktopHostFixture } from "../../../__tests__/support/host-runtime.js";
 import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
 /** Drive the captured boot HostApi factory so config precedence and capability lifetimes are tested at their producer. */
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
 import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -229,12 +230,8 @@ type CreateHostApi = (
   candidateRegistryEntry?: PluginRegistryTrust,
 ) => ConfigHostApi;
 
-/** The logger passed to boot is the sink for runtime audit records. */
-let lastBootAuditLogger: { log: ReturnType<typeof vi.fn> };
-
 async function initAndGetFactory(
   settingsService: unknown,
-  bootAuditLogger: { log: ReturnType<typeof vi.fn> } = { log: vi.fn() },
   networkFetch: typeof fetch = vi.fn(async () => new Response(null)) as unknown as typeof fetch,
   approvalGate: unknown = { requestAndWait: vi.fn() },
   options: {
@@ -245,8 +242,6 @@ async function initAndGetFactory(
   } = {},
 ): Promise<CreateHostApi> {
   runtimeTestState.capturedRuntimeOptions = null;
-  // Keep the handle on the actual injected logger so assertions read the wired sink.
-  lastBootAuditLogger = bootAuditLogger;
   await initPluginRuntime({
     host: createBootHostFixture({ desktop: createDesktopHostFixture({
       getAppWindows: () => runtimeTestState.browserWindows as never[],
@@ -266,7 +261,6 @@ async function initAndGetFactory(
       replacePluginTools: vi.fn(),
     } as never,
     pythonPath: undefined,
-    bootAuditLogger: lastBootAuditLogger as never,
     mainWindow: {} as never,
     networkFetch: directHostFetchTransport(networkFetch),
     openAuthWindowService: vi.fn(),
@@ -430,6 +424,8 @@ describe("HostApi.storage containment refusals reach the boot audit log", () => 
   const dirLinkType = process.platform === "win32" ? "junction" : "dir";
 
   it("routes a symlink escape through the shared plugin-runtime audit sink", async () => {
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
     const createHostApi = await initAndGetFactory(makeSettingsService(new Map()));
     const dataDir = pluginDataDirIn(tmpDirs.track(
       mkdtempSync(join(tmpdir(), `ave-storage-audit-boot-${"x".repeat(64)}-`)),
@@ -452,55 +448,37 @@ describe("HostApi.storage containment refusals reach the boot audit log", () => 
       /symlink escapes plugin storage root/,
     );
 
-    // Use the same storage-audit sink and transport as the runtime.
-    const entries = lastBootAuditLogger.log.mock.calls.map(
-      ([entry]) => entry as { type: string; sessionId: string; input: string; output?: string },
-    );
-    const refusals = entries.filter((e) =>
-      e.input.includes("plugin_storage_path_rejected"),
-    );
-    expect(refusals).toHaveLength(1);
-    expect(refusals[0]!.type).toBe("error");
-    expect(refusals[0]!.sessionId).toBe("plugin-runtime");
-    expect(refusals[0]!.input).toBe("[ERROR] plugin_storage_path_rejected");
-    const serializedOutput = refusals[0]?.output ?? "";
-    expect(serializedOutput.length).toBeLessThanOrEqual(500);
-    const payload = JSON.parse(serializedOutput) as Record<string, unknown>;
-    expect(payload).toMatchObject({
-      truncated: true,
-      originalLength: expect.any(Number),
-      pluginId: "alice",
-      reason: "storage: rejected symlink escape",
-      preview: expect.any(String),
-    });
-    expect(payload.originalLength).toBeGreaterThan(500);
+    const refusals = logs.events.filter(row => row.event === "plugin_storage_path_rejected");
+    expect(refusals).toEqual([{ event: "plugin_storage_path_rejected", pluginId: "alice", decision: "deny" }]);
+    expect(JSON.stringify(refusals)).not.toContain("secret.txt");
   });
-  it("preserves short runtime audit metadata", async () => {
+  it("emits a worker level without forwarding its message or data", async () => {
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
     await initAndGetFactory(makeSettingsService(new Map()));
     const auditLog = runtimeTestState.capturedRuntimeOptions?.auditLog as (level: string, message: string, data: unknown) => void;
-    const data = { pluginId: "plugin-a", reason: "fixture refusal" };
-    auditLog("error", "fixture_refusal", data);
-    const entry = lastBootAuditLogger.log.mock.calls.at(-1)?.[0] as { output?: string } | undefined;
-    const output = entry?.output ?? "";
-    expect(JSON.parse(output)).toEqual(data);
+    auditLog("error", "fixture_refusal", { reason: "fixture-secret" });
+    expect(logs.events).toContainEqual(expect.objectContaining({ event: "plugin_worker_log", workerLevel: "error" }));
+    expect(JSON.stringify(logs.events)).not.toContain("fixture-secret");
+    expect(JSON.stringify(logs.events)).not.toContain("fixture_refusal");
   });
 
   it.each([
     { name: "long path", detail: `D:\\fixtures\\${"long-root\\".repeat(40)}output` },
     { name: "escaped text", detail: '"\\\r\n😀'.repeat(150) },
-  ])("keeps oversized audit payloads parseable: $name", async ({ detail }) => {
+  ])("omits oversized worker payloads: $name", async ({ detail }) => {
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
     await initAndGetFactory(makeSettingsService(new Map()));
     const auditLog = runtimeTestState.capturedRuntimeOptions?.auditLog as (level: string, message: string, data: unknown) => void;
     const data = { pluginId: "plugin-a", reason: "fixture refusal", detail };
     auditLog("error", "fixture_refusal", data);
-    const entry = lastBootAuditLogger.log.mock.calls.at(-1)?.[0] as { output?: string } | undefined;
-    const output = entry?.output ?? "";
-    const payload = JSON.parse(output) as { truncated: boolean; originalLength: number; preview: string };
-    expect(output.length).toBeLessThanOrEqual(500);
-    expect(payload).toMatchObject({ truncated: true, originalLength: JSON.stringify(data).length });
-    expect(JSON.stringify(data).startsWith(payload.preview)).toBe(true);
+    expect(logs.events).toContainEqual(expect.objectContaining({ event: "plugin_worker_log", workerLevel: "error" }));
+    expect(JSON.stringify(logs.events)).not.toContain(JSON.stringify(detail));
   });
   it("stays silent for an in-sandbox write", async () => {
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
     const createHostApi = await initAndGetFactory(makeSettingsService(new Map()));
     const dataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-storage-audit-ok-"))));
     const api = createHostApi(
@@ -516,10 +494,7 @@ describe("HostApi.storage containment refusals reach the boot audit log", () => 
     expect(existsSync(join(resolvePluginHostStorageDir(dataDir), "prefs.json"))).toBe(true);
     expect(existsSync(join(dataDir, "prefs.json"))).toBe(false);
 
-    const inputs = lastBootAuditLogger.log.mock.calls.map(
-      ([entry]) => (entry as { input: string }).input,
-    );
-    expect(inputs.filter((i) => i.includes("plugin_storage_path_rejected"))).toEqual([]);
+    expect(logs.events.filter(row => row.event === "plugin_storage_path_rejected")).toEqual([]);
   });
 });
 
@@ -842,7 +817,7 @@ describe("HostApi incarnation authority", () => {
     const disposers: Array<() => void> = [];
     let active = true;
     let reached = 0;
-    const createHostApi = await initAndGetFactory(settings, undefined, undefined, undefined, {
+    const createHostApi = await initAndGetFactory(settings, undefined, undefined, {
       permissionManager,
       onCredentialIssuanceStage: async (at) => {
         if (at !== stage) return;
@@ -883,7 +858,7 @@ describe("HostApi incarnation authority", () => {
       providerId: "fixture-router", label: "Fixture Router", baseUrl: "https://router.example.test/v1",
       defaultModel: "fixture", modelOptions: ["fixture"], requiresApiKey: true,
     };
-    const createHostApi = await initAndGetFactory(settings, undefined, undefined, undefined, {
+    const createHostApi = await initAndGetFactory(settings, undefined, undefined, {
       onCredentialIssuanceStage: async (stage) => {
         if (stage === "after-secret-read") await settings.installMarketplaceProviderPreset(preset);
       },
@@ -907,7 +882,7 @@ describe("HostApi incarnation authority", () => {
     };
     await settings.installMarketplaceProviderPreset(preset);
     const transport = vi.fn(async () => new Response(null));
-    const createHostApi = await initAndGetFactory(settings, undefined, transport as typeof fetch);
+    const createHostApi = await initAndGetFactory(settings, transport as typeof fetch);
     const { manifest, manifestSha256 } = granted("meeting", "llm.apiKey.openai");
     manifest.capabilities = ["external-auth-consumer"];
     const api = createHostApi(
@@ -931,7 +906,7 @@ describe("HostApi incarnation authority", () => {
     const settings = new SettingsService(leaseSettingsOptions(root));
     await settings.setSecret("llm.apiKey.openai", "synthetic-key");
     const controller = new AbortController();
-    const createHostApi = await initAndGetFactory(settings, undefined, undefined, undefined, {
+    const createHostApi = await initAndGetFactory(settings, undefined, undefined, {
       onCredentialIssuanceStage: (stage) => { if (stage === "after-gate") controller.abort(); },
     });
     const { manifest, manifestSha256 } = granted("meeting", "llm.apiKey.openai");
@@ -1089,7 +1064,7 @@ describe("HostApi incarnation authority", () => {
       const permissionManager = new PermissionManager(join(root, "permissions.json"));
       permissionManager.setMode("allow");
       const createHostApi = await initAndGetFactory(
-        makeSettingsService(new Map()), { log: vi.fn() }, vi.fn() as unknown as typeof fetch, { requestAndWait: vi.fn() }, { permissionManager });
+        makeSettingsService(new Map()), vi.fn() as unknown as typeof fetch, { requestAndWait: vi.fn() }, { permissionManager });
       const api = createHostApi(
         "plugin-a", { id: "plugin-a", config: {} } as never,
         pluginDataDirIn(root),
@@ -1279,7 +1254,7 @@ describe("HostApi incarnation authority", () => {
     settings.getSecret.mockImplementation((key: string) =>
       key === "plugin.plugin-a.llm.apiKey.openai" ? "synthetic-secret" : undefined);
     const transport = vi.fn(async () => new Response("ok")) as unknown as typeof fetch;
-    const createHostApi = await initAndGetFactory(settings, { log: vi.fn() }, transport);
+    const createHostApi = await initAndGetFactory(settings, transport);
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"], networkAccess: { allowedDomains: ["api.openai.com"] } },
@@ -1338,7 +1313,7 @@ describe("HostApi incarnation authority", () => {
       { name: "SID", value: "host-cookie", domain: "api.openai.com", path: "/" },
     ]) } }));
     const createHostApi = await initAndGetFactory(
-      settings, undefined, transport as unknown as typeof fetch, undefined, { getAuthPartition },
+      settings, transport as unknown as typeof fetch, undefined, { getAuthPartition },
     );
     const api = createHostApi(
       "plugin-a",
@@ -1385,9 +1360,10 @@ describe("HostApi incarnation authority", () => {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     };
-    const auditLog = vi.fn();
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
     const createHostApi = await initAndGetFactory(
-      settings, { log: auditLog }, vi.fn(async () => new Response("body")) as unknown as typeof fetch,
+      settings, vi.fn(async () => new Response("body")) as unknown as typeof fetch,
     );
     const api = createHostApi(
       "plugin-a",
@@ -1400,10 +1376,8 @@ describe("HostApi incarnation authority", () => {
     generation += 1;
     for (const listener of listeners) listener();
     await expect(response.text()).rejects.toMatchObject({ code: "lease-unavailable" });
-    const denials = auditLog.mock.calls.map(([entry]) => entry as { type: string; input: string })
-      .filter((entry) => entry.type === "plugin_hostapi_denied");
-    expect(denials).toHaveLength(1);
-    expect(denials[0]?.input).toContain("code=lease-unavailable count=1 stage=after-await");
+    const denials = logs.events.filter(row => row.event === "plugin_secret_lease_denied");
+    expect(denials).toEqual([expect.objectContaining({ code: "lease-unavailable", count: 1, stage: "after-await" })]);
   });
 
   it("refuses a lease revoked while a mutating request waits for approval", async () => {
@@ -1425,7 +1399,7 @@ describe("HostApi incarnation authority", () => {
     const managerRoot = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-effect-policy-")));
     const permissionManager = new PermissionManager(join(managerRoot, "permissions.json"));
     permissionManager.setMode("strict");
-    const createHostApi = await initAndGetFactory(settings, { log: vi.fn() }, transport, approvalGate, { permissionManager });
+    const createHostApi = await initAndGetFactory(settings, transport, approvalGate, { permissionManager });
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"], networkAccess: { allowedDomains: ["api.openai.com"] } },
@@ -1458,7 +1432,7 @@ describe("HostApi incarnation authority", () => {
     permissionManager.setMode("allow");
     const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
     const approvals = new PluginBackgroundEffectApprovals();
-    const createHostApi = await initAndGetFactory(settings, { log: vi.fn() }, transport, { requestAndWait }, {
+    const createHostApi = await initAndGetFactory(settings, transport, { requestAndWait }, {
       permissionManager, backgroundEffectApprovals: approvals,
     });
     const manifestOf = (version: string, allowedDomains = ["api.openai.com"]) => ({
@@ -1510,11 +1484,13 @@ describe("HostApi incarnation authority", () => {
         await key.release();
       }
     };
+    const logs = collectPermissionEvents();
+    onTestFinished(logs.restore);
     const first = manifestOf("1.0.0");
     const child = await childFor(first);
     await expect(child.hostApi.hostFetch!("https://refused.example.test")).rejects.toThrow("Host request failed.");
-    expect(lastBootAuditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining("not in networkAccess.allowedDomains"),
+    expect(logs.events).toContainEqual(expect.objectContaining({
+      event: "plugin_host_fetch_denied", pluginId: "plugin-a", reasonCode: "not-allowlisted",
     }));
     await expect(fetchWithLease(child)).rejects.toThrow();
     expect(transport).not.toHaveBeenCalled();
@@ -1570,7 +1546,7 @@ describe("HostApi incarnation authority", () => {
       runtimeTestState.readPluginRegistry.mockResolvedValue(
         registryAt("2026-11-01T00:00:00.000Z", { kind: "marketplace", previousManifestFileSha256: null, previousReceiptRaw: null }));
       writeFileSync(runtimeTestState.registryPath, "update pending");
-      const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), undefined, undefined, undefined, {
+      const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), undefined, undefined, {
         backgroundEffectApprovals: approvals,
       });
       approvals.approve(backgroundEffectSubject(manifest, trustAt("2026-11-01T00:00:00.000Z"), true));
@@ -1608,7 +1584,7 @@ describe("HostApi incarnation authority", () => {
       });
       writeFileSync(runtimeTestState.registryPath, "local install committed");
       const approvals = new PluginBackgroundEffectApprovals(join(dir, "approvals.json"));
-      const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), undefined, undefined, undefined, {
+      const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), undefined, undefined, {
         backgroundEffectApprovals: approvals,
       });
       createHostApi("plugin-a", manifest, pluginDataDirIn(dir), activeIncarnation(), "plugin-a", local);
@@ -1627,7 +1603,7 @@ describe("HostApi incarnation authority", () => {
     permissionManager.setMode(mode);
     const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
     const approvals = new PluginBackgroundEffectApprovals();
-    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, transport, { requestAndWait }, {
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), transport, { requestAndWait }, {
       permissionManager, backgroundEffectApprovals: approvals,
     });
     const manifest = {
@@ -1677,7 +1653,7 @@ describe("HostApi incarnation authority", () => {
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
     permissionManager.setMode(mode);
     const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
-    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, undefined, { requestAndWait }, {
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), undefined, { requestAndWait }, {
       permissionManager, backgroundEffectApprovals: new PluginBackgroundEffectApprovals(),
     });
     const manifest = {
@@ -1697,7 +1673,7 @@ describe("HostApi incarnation authority", () => {
 
   it("reviews the newest live HostApi's background scope, falling back when a candidate is discarded", async () => {
     const approvals = new PluginBackgroundEffectApprovals();
-    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, undefined, undefined, {
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), undefined, undefined, {
       backgroundEffectApprovals: approvals,
     });
     const entry: PluginRegistryTrust = {
@@ -1735,7 +1711,7 @@ describe("HostApi incarnation authority", () => {
     permissionManager.setMode(mode);
     const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
     const approvals = new PluginBackgroundEffectApprovals();
-    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, undefined, { requestAndWait }, {
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), undefined, { requestAndWait }, {
       permissionManager, backgroundEffectApprovals: approvals,
     });
     const entry: PluginRegistryTrust = {
@@ -1816,7 +1792,7 @@ describe("host fetch binds approved request bodies to transport", () => {
       sent.push(Array.from(body.entries()));
       return new Response("sent");
     }) as unknown as typeof fetch;
-    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, transport, approvalGate, { permissionManager });
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), transport, approvalGate, { permissionManager });
     const api = createHostApi("plugin-a", { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"], networkAccess: { allowedDomains: ["93.184.216.34"] } }, pluginDataDirIn(root), activeIncarnation(), "plugin-a");
     const body = new FormData();
     body.set("payload", "approved");
@@ -1836,7 +1812,7 @@ describe("host fetch binds approved request bodies to transport", () => {
     permissionManager.setMode("allow");
     const approvalGate = { requestAndWait: vi.fn() };
     const transport = vi.fn(async () => new Response("unused")) as unknown as typeof fetch;
-    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, transport, approvalGate, { permissionManager });
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), transport, approvalGate, { permissionManager });
     const api = createHostApi("plugin-a", { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"], networkAccess: { allowedDomains: ["93.184.216.34"] } }, pluginDataDirIn(root), activeIncarnation(), "plugin-a");
     const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array([1])); controller.close(); } });
     await runWithEffectGateContext({ headless: false, approvalSurface: "interactive", toolName: "sample" }, async () => {

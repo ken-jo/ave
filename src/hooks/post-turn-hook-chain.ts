@@ -3,9 +3,8 @@ import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 
 import type { RunModelSettings } from "../shared/run-model-settings.js";
 import { detectFromStream, type DetectorResult } from "../engine/checkpoint-detector.js";
-import { type GenericMessage, type TokenUsage, type TokenUsageByModel } from "../engine/llm/types.js";
+import type { GenericMessage, TokenUsage, TokenUsageByModel } from "../engine/llm/types.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import type { IdleSchedulerService } from "../main/idle-scheduler.js";
 import type { SettingsService } from "../data/settings-store.js";
 import { createLogger } from "../lib/logger.js";
@@ -64,7 +63,6 @@ export interface PostTurnHookContext {
 
 export interface PostTurnHookChainDeps {
   memoryManager?: MemoryManager;
-  auditLogger?: AuditLogger;
   idleScheduler?: IdleSchedulerService;
   settingsService?: SettingsService;
   memoryCaptureService?: AutomaticMemoryCaptureSubmitter;

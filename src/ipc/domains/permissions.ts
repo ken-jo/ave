@@ -29,10 +29,7 @@ import { exactCanonicalStringify } from "../../shared/exact-json.js";
 import { AveHomeConfigurationRefusedWriteError, aveHome, getAveHomePrivacyFailure, isAveHomeConfigurationRefused } from "../../shared/ave-home.js";
 import { approveAveHomeTrustItems, AveHomeTrustReviewError, getAveHomeTrustReview, removeAveHomeTrustItem, type AveHomeTrustReviewView } from "../../shared/ave-home-trust.js";
 import { AveHomeConfigurationNotOwnerError } from "../../shared/ave-home-configuration-access.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 import { getWindowsProfileReadDenyWarnings } from "../../permissions/asrt-sandbox.js";
-import {
-} from "../../shared/egress-denials.js";
 import { envForcedValueForSettingsPath, resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 import {
   HOME_FOLDER_REFUSED,
@@ -58,8 +55,6 @@ import type {
   PermissionDirCommand,
   PermissionReviewerCommand,
 } from "../../permissions/permission-slash.js";
-import {
-} from "../../permissions/permission-settings-store.js";
 import {
   recordApproval,
   getUserApprovalGeneration,
@@ -137,7 +132,6 @@ function requireUserKeyboardIntent(payload: unknown): { ok: true } | { ok: false
 
 /** Run one review action; its known refusals reach the card as their own message, and every success is audited. */
 function homeTrustAction<T extends { ok: true; detail: Record<string, unknown> }>(
-  _auditLogger: AuditLogger,
   action: string,
   run: () => T,
 ): Omit<T, "detail"> | { ok: false; error: string; message: string } {
@@ -275,7 +269,7 @@ function broadcastSandboxCapabilityChanged(deps: PermissionConfigBroadcastTarget
 }
 
 export function registerPermissionsHandlers(deps: IpcDeps): void {
-  const { conversationLoop, approvalGate, auditLogger } = deps;
+  const { conversationLoop, approvalGate } = deps;
   // The status snapshot can change after the first renderer read (the Windows MXC start probe settles seconds after boot); push a hint on every change.
   setSandboxStatusChangeListener(() => broadcastSandboxCapabilityChanged(deps));
   const reviewSuggestionTracker = createPermissionReviewSuggestionTracker();
@@ -286,7 +280,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   };
 
   ipcMain.handle(PERMISSIONS.getMode, (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.getMode, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.getMode); return UNAUTHORIZED_FRAME; }
     return handleGetMode(deps);
   });
 
@@ -394,7 +388,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
 
   // read-only, sender-frame-guarded; the shell egress grants that outlive a call (conversation, terminal tab, workspace, always), for Settings → Permissions → Network.
   ipcMain.handle(PERMISSIONS.egressGrantsList, async (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressGrantsList, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.egressGrantsList); return UNAUTHORIZED_FRAME; }
     const { listEgressGrants } = await import("../../permissions/egress-runtime.js");
     try {
       return { ok: true as const, grants: await listEgressGrants() };
@@ -405,7 +399,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
 
   // MUTATING (sender-frame-guarded + user-keyboard intent): revoke one shell egress grant. The payload names it exactly; anything else is refused.
   ipcMain.handle(PERMISSIONS.egressGrantRevoke, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressGrantRevoke, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.egressGrantRevoke); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
@@ -468,14 +462,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   };
 
   ipcMain.handle(PERMISSIONS.watchedQuarantineList, async (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.watchedQuarantineList, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.watchedQuarantineList); return UNAUTHORIZED_FRAME; }
     const { listWatchedQuarantine } = await import("../../permissions/windows-watched-rows.js");
     try { return { ok: true as const, entries: listWatchedQuarantine() }; }
     catch (error) { return { ok: false as const, error: "watched-quarantine-unreadable", message: errorMessage(error) }; }
   });
 
   ipcMain.handle(PERMISSIONS.watchedQuarantineRestore, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.watchedQuarantineRestore, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.watchedQuarantineRestore); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
@@ -494,7 +488,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(PERMISSIONS.upstreamProxyGet, async (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.upstreamProxyGet, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.upstreamProxyGet); return UNAUTHORIZED_FRAME; }
     return upstreamProxyView();
   });
 
@@ -504,7 +498,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
     const appWindowMainFrame = e.senderFrame !== null && e.senderFrame === e.sender?.mainFrame
       && windows.some((window) => window?.webContents === e.sender);
-    if (!validateHostRendererSender(e) || !appWindowMainFrame) { auditUnauthorized(auditLogger, PERMISSIONS.upstreamProxySet, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e) || !appWindowMainFrame) { auditUnauthorized(PERMISSIONS.upstreamProxySet); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
@@ -581,7 +575,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // Only explicit user consent may trigger privilege elevation; reject foreign frames and synthetic gestures, with auditing.
   // Check intent synchronously before awaits, and invoke directly from the click because a status probe can outlast activation.
   ipcMain.handle(PERMISSIONS.sandboxWindowsInstall, async (e, payload: unknown): Promise<SandboxWindowsInstallResult | typeof UNAUTHORIZED_FRAME | { ok: false; error: string; message: string }> => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.sandboxWindowsInstall, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.sandboxWindowsInstall); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
@@ -592,7 +586,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(PERMISSIONS.homeTrustReview, async (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.homeTrustReview, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.homeTrustReview); return UNAUTHORIZED_FRAME; }
     const review = getAveHomeTrustReview();
     if (review === undefined) return null;
     // Forced confinement needs a backend: without one, extensions run unconfined and the card must not claim otherwise.
@@ -601,7 +595,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(PERMISSIONS.homeTrustApprove, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.homeTrustApprove, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.homeTrustApprove); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
@@ -610,21 +604,21 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       || (keys !== undefined && (!Array.isArray(keys) || keys.length === 0 || !keys.every((key) => typeof key === "string")))) {
       return { ok: false, error: "invalid-payload", message: "snapshotId and an optional non-empty keys list are required" };
     }
-    return homeTrustAction(auditLogger, "home_content_approved", () => {
+    return homeTrustAction("home_content_approved", () => {
       const approved = approveAveHomeTrustItems(body.snapshotId as string, keys as string[] | undefined);
       return { ok: true as const, approved, detail: { keys: keys ?? "all", approved } };
     });
   });
 
   ipcMain.handle(PERMISSIONS.homeTrustRemove, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.homeTrustRemove, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.homeTrustRemove); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
     if (typeof body.snapshotId !== "string" || typeof body.key !== "string") {
       return { ok: false, error: "invalid-payload", message: "snapshotId and key are required" };
     }
-    return homeTrustAction(auditLogger, "home_content_removed", () => {
+    return homeTrustAction("home_content_removed", () => {
       removeAveHomeTrustItem(body.snapshotId as string, body.key as string);
       return { ok: true as const, detail: { key: body.key } };
     });
@@ -633,7 +627,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   let securitySettingsWrite: Promise<unknown> = Promise.resolve();
   ipcMain.handle(PERMISSIONS.updateSecuritySettings, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event) || !isNativeApprovalFrame(event)) {
-      auditUnauthorized(auditLogger, PERMISSIONS.updateSecuritySettings, event);
+      auditUnauthorized(PERMISSIONS.updateSecuritySettings);
       return UNAUTHORIZED_FRAME;
     }
     const body = payloadRecord(payload);
@@ -665,7 +659,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(PERMISSIONS.setMode, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.setMode, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.setMode); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
@@ -677,20 +671,20 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(PERMISSIONS.listRules, async (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.listRules, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.listRules); return UNAUTHORIZED_FRAME; }
     const pm = conversationLoop.permissionManager;
     if (!pm) return [];
     return pm.listPersistedRules();
   });
 
   ipcMain.handle(PERMISSIONS.listScopedRules, async (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.listScopedRules, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.listScopedRules); return UNAUTHORIZED_FRAME; }
     const pm = conversationLoop.permissionManager;
     return pm ? pm.listScopedRules() : { rules: [], errors: [] };
   });
 
   ipcMain.handle(PERMISSIONS.removeScopedRule, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.removeScopedRule, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.removeScopedRule); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
@@ -713,7 +707,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(PERMISSIONS.addRule, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.addRule, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.addRule); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
@@ -754,7 +748,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(PERMISSIONS.removeRule, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.removeRule, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.removeRule); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
@@ -778,7 +772,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
 
   // ave:approval:request direction is main→renderer (webContents.send); no ipcMain.handle needed
   ipcMain.handle(PERMISSIONS.approvalRespond, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalRespond, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(PERMISSIONS.approvalRespond); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     if (typeof body.requestId !== "string" ||
       body.browserSite !== undefined || body.userOwnedSurface !== undefined || body.userOwnedSurfaceReviewFallback !== undefined ||
@@ -806,7 +800,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
 
   // Reloads and conversation moves recover only the live owner's signed cards.
   ipcMain.handle(PERMISSIONS.approvalPending, (e) => {
-    if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalPending, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(PERMISSIONS.approvalPending); return UNAUTHORIZED_FRAME; }
     return approvalGate ? approvalGate.listPendingRendererRequests(e.sender) : [];
   });
 
@@ -814,7 +808,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
    * Read identity and paths from the host pending entry, not renderer claims. */
   ipcMain.handle(PERMISSIONS.approvalSentenceSelect, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) {
-      auditUnauthorized(auditLogger, PERMISSIONS.approvalSentenceSelect, e);
+      auditUnauthorized(PERMISSIONS.approvalSentenceSelect);
       return UNAUTHORIZED_FRAME;
     }
     const body = payloadRecord(payload);
@@ -897,7 +891,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(PERMISSIONS.policyGet, async (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.policyGet, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.policyGet); return UNAUTHORIZED_FRAME; }
     const policy = await loadPolicy();
     // `editable` is host-derived, never re-derived in the renderer: it is the same predicate that decides whether `savePolicy` will accept a write.
     return { ...policy, editable: isPolicyUserEditable(policy) };
@@ -907,7 +901,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     PERMISSIONS.dirDispatch,
     async (e, args: { rawArgs: string }) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, PERMISSIONS.dirDispatch, e);
+        auditUnauthorized(PERMISSIONS.dirDispatch);
         return UNAUTHORIZED_FRAME;
       }
       const { parsePermissionDirCommand, dispatchPermissionDirCommand } =
@@ -942,7 +936,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     PERMISSIONS.reviewerDispatch,
     async (e, args: { rawArgs: string }) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, PERMISSIONS.reviewerDispatch, e);
+        auditUnauthorized(PERMISSIONS.reviewerDispatch);
         return UNAUTHORIZED_FRAME;
       }
       const { parsePermissionReviewerCommand, dispatchPermissionReviewerCommandWithRewire } =
@@ -975,7 +969,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // Denial history is host-only display data; reruns require a fresh user gesture and executor admission.
   ipcMain.handle(PERMISSIONS.recentlyDeniedList, async (event) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, PERMISSIONS.recentlyDeniedList, event);
+      auditUnauthorized(PERMISSIONS.recentlyDeniedList);
       return UNAUTHORIZED_FRAME;
     }
     const entries = await conversationLoop.permissionManager?.getRecentlyDenied()?.list() ?? [];
@@ -984,7 +978,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(PERMISSIONS.recentlyDeniedRerun, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, PERMISSIONS.recentlyDeniedRerun, event);
+      auditUnauthorized(PERMISSIONS.recentlyDeniedRerun);
       return UNAUTHORIZED_FRAME;
     }
     if (!isNativeApprovalFrame(event)) return UNAUTHORIZED_FRAME;
@@ -1003,7 +997,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(PERMISSIONS.hookTrustList, async (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, PERMISSIONS.hookTrustList, e);
+      auditUnauthorized(PERMISSIONS.hookTrustList);
       return UNAUTHORIZED_FRAME;
     }
     const state = deps.scriptHookManager
@@ -1020,7 +1014,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(PERMISSIONS.hookTrustReview, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event) || !isNativeApprovalFrame(event)) {
-      auditUnauthorized(auditLogger, PERMISSIONS.hookTrustReview, event);
+      auditUnauthorized(PERMISSIONS.hookTrustReview);
       return UNAUTHORIZED_FRAME;
     }
     const body = payloadRecord(payload);
@@ -1054,7 +1048,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
 
 
   ipcMain.handle(PERMISSIONS.policySet, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.policySet, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.policySet); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
@@ -1073,7 +1067,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // ── User-Approval Store handlers ──────────────────────────
 
   ipcMain.handle(PERMISSIONS.userApprovalRecord, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.userApprovalRecord, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(PERMISSIONS.userApprovalRecord); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     // parity with peer mutating handlers (addRule, removeRule, setMode, dirDispatch, reviewerDispatch, recentlyDeniedRerun, policySet).
     // Gates on user-keyboard freshness so a synthetic record submission from a compromised renderer cannot record without an active gesture.
@@ -1152,7 +1146,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         return { ok: false, error: "not-request-owner", message: "This request is answered from the window that owns its terminal tab" };
       }
       const manager = conversationLoop.permissionManager;
-      const auditRuleSave: NonNullable<Parameters<typeof saveApprovalCardRule>[5]> = async (rule) => {
+      const logRuleSaved = (rule: Extract<Awaited<ReturnType<typeof saveApprovalCardRule>>, { ok: true }>): void => {
         logPermissionEvent("approval_remembered", {
           sessionId: permissionLogId(snapshot.sessionId), requestId: permissionLogId(requestId),
           tool: permissionLogId(snapshot.toolName), source: snapshot.source, decision: rule.action,
@@ -1162,14 +1156,15 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       if (defersAllowSave && manager !== undefined) {
         const plan = planApprovalCardRule(snapshot, rulePayload, { decision, scope, displayedVerdictAtApproval }, manager);
         if (!plan.ok) return plan;
-        const checked = await plan.persist(authority, undefined, true);
+        const checked = await plan.persist(authority, true);
         if (!checked.ok) return checked.error === "project-scope-changed" ? settleChangedProjectScope() : checked;
         const refusal = plan.saved.scope === "project" || plan.saved.scope === "always" ? homeFolderRefusal() : undefined;
         if (refusal !== undefined) return refusal;
         const staged = approvalGate.stageAllowSave(requestId, async (controller) => {
           const from = manager.getPolicyEpoch();
-          const saved = await plan.persist(guardFor(controller), auditRuleSave);
+          const saved = await plan.persist(guardFor(controller));
           if (!saved.ok) return { ok: false, error: saved.message === undefined ? saved.error : `${saved.error}: ${saved.message}` };
+          logRuleSaved(saved);
           broadcastPermissionConfigChanged(deps);
           return { ok: true, store: "rules", from, to: manager.getPolicyEpoch(), scope: saved.scope };
         });
@@ -1179,9 +1174,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       const saveToken = manager === undefined ? undefined : approvalGate.beginApprovalRuleSave(requestId, manager.getPolicyEpoch());
       let savedScope: "session" | "run" | "project" | "always" | undefined;
       try {
-        const saved = await saveApprovalCardRule(snapshot, rulePayload, { decision, scope, displayedVerdictAtApproval }, manager, authority, auditRuleSave);
+        const saved = await saveApprovalCardRule(snapshot, rulePayload, { decision, scope, displayedVerdictAtApproval }, manager, authority);
         if (!saved.ok) return saved.error === "project-scope-changed" ? settleChangedProjectScope() : saved;
         savedScope = saved.scope;
+        logRuleSaved(saved);
         broadcastPermissionConfigChanged(deps);
         return saved.warning === undefined ? { ok: true } : { ok: true, warning: saved.warning };
       } finally {
@@ -1247,14 +1243,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       }
       // Authority fields come from the main-process snapshot, never the renderer body. The renderer
       // contribution is reduced to decision metadata; the exact tool/input identity remains host-owned.
-      const store = async (guard: ApprovalPersistenceGuard, audited?: () => void): Promise<void> => {
+      const store = async (guard: ApprovalPersistenceGuard, beginSave?: () => void): Promise<void> => {
         if (readjudicate) {
           logPermissionEvent("approval_readjudication", {
             sessionId: permissionLogId(snapshot.sessionId), requestId: permissionLogId(requestId),
             tool: permissionLogId(snapshot.toolName), scope, rawVerdict: "high", effectiveVerdict: "medium",
           });
         }
-        audited?.();
+        beginSave?.();
         await recordApproval(snapshot.toolName, canonicalArgs, snapshot.source, {
           decision,
           scope,
@@ -1306,7 +1302,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(PERMISSIONS.userApprovalRevoke, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.userApprovalRevoke, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.userApprovalRevoke); return UNAUTHORIZED_FRAME; }
     // revoke is destructive (forces re-approval). Gate on user-keyboard intent for parity with peer mutating handlers. Payload contract: object `{ key, intent
     // }`. The preload bridge auto-injects `intent`; untrusted callers that submit a raw string key will fail the `payloadRecord` narrow and return `invalid-key`.
     const body = payloadRecord(payload);
@@ -1327,7 +1323,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(PERMISSIONS.userApprovalList, async (e, payload?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.userApprovalList, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(PERMISSIONS.userApprovalList); return UNAUTHORIZED_FRAME; }
     if (payloadRecord(payload).scope === "session") return listSessionApprovals();
     return listApprovals();
   });

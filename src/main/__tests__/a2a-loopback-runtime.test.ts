@@ -52,7 +52,6 @@ function makeOptions(
     services: {
       agentProfileStore: { list: vi.fn(async () => profiles) } as never,
       getSubAgentRunner: () => runner as never,
-      auditLogger: { log: vi.fn() } as never,
     },
     project: PROJECT,
     appVersion: "1.2.3",
@@ -135,7 +134,6 @@ describe("A2A production loopback runtime", () => {
       services: {
         agentProfileStore: { list: vi.fn(async () => [profile("alpha", "C:/profiles/alpha.md")]) } as never,
         getSubAgentRunner: () => makeRunner() as never,
-        auditLogger: { log: auditLog } as never,
       },
       approveAgentAction,
       advertisedOrigin: "https://receiver-a2a-383a1d70.com/",
@@ -233,7 +231,6 @@ describe("A2A production loopback runtime", () => {
           list: vi.fn(async () => [profile("alpha", "C:/profiles/alpha.md")]),
         } as never,
         getSubAgentRunner: () => runner as never,
-        auditLogger: { log: vi.fn() } as never,
       },
     });
     const runtime = await createA2ALoopbackRuntime(options);

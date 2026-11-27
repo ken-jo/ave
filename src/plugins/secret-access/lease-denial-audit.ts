@@ -1,5 +1,6 @@
 import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
+
+type LeaseDenialCode = "lease-unavailable" | "lease-audience-denied" | "credential-conflict";
 
 interface Bucket { count: number; timer: ReturnType<typeof setTimeout> | null }
 
@@ -7,10 +8,8 @@ interface Bucket { count: number; timer: ReturnType<typeof setTimeout> | null }
 export class LeaseDenialAudit {
   private readonly buckets = new Map<string, Bucket>();
 
-  constructor(_audit: Pick<AuditLogger, "log">) {}
-
-  record(pluginId: string, method: string, error: {
-    code: "lease-unavailable" | "lease-audience-denied" | "credential-conflict";
+  record(pluginId: string, method: "hostFetch", error: {
+    code: LeaseDenialCode;
     detail?: Record<string, string | number>;
   }): void {
     const key = `${pluginId}\0${method}\0${error.code}`;
@@ -31,27 +30,20 @@ export class LeaseDenialAudit {
 
   private write(
     pluginId: string,
-    _method: string,
-    code: string,
-    _count: number,
+    method: "hostFetch",
+    code: LeaseDenialCode,
+    count: number,
     detail?: Record<string, string | number>,
   ): void {
-    const safe: string[] = [];
-    if (code === "lease-unavailable" && ["before-send", "redirect", "after-await"].includes(String(detail?.stage))) {
-      safe.push(`stage=${detail?.stage}`);
-    }
-    if (code === "lease-audience-denied") {
-      if (typeof detail?.origin === "string" && detail.origin.length <= 256) safe.push(`origin=${detail.origin}`);
-      if (typeof detail?.hop === "number" && Number.isInteger(detail.hop) && detail.hop >= 0 && detail.hop <= 10) {
-        safe.push(`hop=${detail.hop}`);
-      }
-    }
-    if (code === "credential-conflict" && typeof detail?.header === "string"
-      && ["authorization", "proxy-authorization", "cookie", "api-key", "x-api-key", "ocp-apim-subscription-key"].includes(detail.header)) {
-      safe.push(`header=${detail.header}`);
-    }
-    try {
-      logPermissionEvent("plugin_secret_lease_denied", { sessionId: permissionLogId("plugin"), pluginId: permissionLogId(pluginId) }, "warn");
-    } catch { /* audit failure cannot change the refusal */ }
+    const stage = detail?.stage;
+    const hop = detail?.hop;
+    const header = detail?.header;
+    logPermissionEvent("plugin_secret_lease_denied", {
+      pluginId: permissionLogId(pluginId), method, code, count,
+      stage: code === "lease-unavailable" && (stage === "before-send" || stage === "redirect" || stage === "after-await") ? stage : undefined,
+      hop: code === "lease-audience-denied" && typeof hop === "number" && Number.isInteger(hop) && hop >= 0 && hop <= 10 ? hop : undefined,
+      header: code === "credential-conflict" && typeof header === "string"
+        && ["authorization", "proxy-authorization", "cookie", "api-key", "x-api-key", "ocp-apim-subscription-key"].includes(header) ? header : undefined,
+    }, "warn");
   }
 }

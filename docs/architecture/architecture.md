@@ -2664,7 +2664,7 @@ never reaches `round-cap`.
 
 The [owner-approved permission decision tree](permission-decision-tree.md) is the sole source of decision order and the action-by-mode matrix. This document specifies evidence, execution boundaries and approval delivery; it does not define a second decision sequence.
 
-All builtin, plugin and MCP tools enter the same normalized decision pipeline. Callers supply evidence and execute the returned outcome; they do not own additional mode matrices. Argument rewriting finishes before authorization, and user script PreToolUse blocks before any target approval. The source affects display/audit, not authority. Remote user equivalence additionally requires a current owner-identity match; the [decision tree](permission-decision-tree.md) owns pairing, existing-binding revalidation and live identity admission.
+All builtin, plugin and MCP tools enter the same normalized decision pipeline. Callers supply evidence and execute the returned outcome; they do not own additional mode matrices. Argument rewriting finishes before authorization, and user script PreToolUse blocks before any target approval. The source affects display and diagnostics. Remote user equivalence additionally requires a current owner-identity match; the [decision tree](permission-decision-tree.md) owns pairing, existing-binding revalidation and live identity admission.
 
 Builtin approval cards describe the requested action and its subject through one
 presentation mapping, checked against actual core and workflow tool registration.
@@ -3898,7 +3898,7 @@ checklist in PR #22).
 Security-sensitive areas are intentionally centralized:
 
 - `src/permissions` for policy and approval decisions;
-- `src/audit` for durable audit records;
+- `src/lib/logger.ts` for structured application logging;
 - `src/ipc` and `src/preload` for process boundary contracts;
 - `src/boot` for startup wiring and policy initialization;
 - tool executor and sandbox helpers for runtime enforcement.
@@ -3908,8 +3908,7 @@ review is advisory, never a merge gate.
 
 ### Invocation terminal rows and denials
 
-Each tool invocation ends with one terminal allow or deny row in the permission
-audit. Only the invocation ledger (`src/tools/invocation-ledger.ts`) commits
+Each tool invocation ends with one terminal allow or deny outcome. Only the invocation ledger (`src/tools/invocation-ledger.ts`) commits
 that row. Whoever ends the call writes it through the ledger's row writer: the
 rule, the unknown-tool check, a human answer, a hook input mutation, the host
 on an integrity failure, cancellation, or the shutdown deadline. Records beside
@@ -3939,38 +3938,25 @@ host is writing a replacement integrity refusal. The abort's reason
 follows. The rule covers a hook cancelled by Stop, an escaped `AbortError` that
 reaches admission settlement, and a shell preparation that throws after abort.
 
-If the invocation or rationale writer throws or rejects before enqueue, the
-host clears any selected answer and attempts one replacement integrity denial.
-The scope includes a missing or invalid deny kind and any other failure before
-the writer claims the row. That replacement remains `denied` after abort and
-fires `PermissionDenied` for a non-governed call. The attempt ends failed.
-If the host's own writer fails before enqueue, the ledger records an audit
-failure. An append failure after enqueue marks the attempt failed without a
-replacement row.
-
-The terminal writer queues general tool-call telemetry before enforcing chain
-readiness. A record made while the required chain is unavailable carries
-`permissionAuditChainUnavailable`. The invocation and its host replacement
-share one general write attempt, and a failed general write is an audit failure.
-
-The ledger persists the kind on every terminal deny row as `terminalKind`.
-`terminalDenyKindOf` (`src/audit/audit-schema.ts`) reads it and falls back to
-the first reason for older rows that omit the field. An invalid explicit kind
-is an audit integrity error and its row contributes no entries to the audit
-view or verification counts. Chain and seal checks still use the raw lines.
+If the invocation or rationale writer fails before the ledger claims the row,
+the host clears any selected answer and attempts one replacement integrity
+denial. That replacement remains `denied` after abort and fires
+`PermissionDenied` for a non-governed call. The attempt ends failed. After
+claiming the row, the ledger emits its terminal kind and other allowlisted
+fields to the app logger. Delivery is best effort.
 
 The ledger fires one `PermissionDenied` lifecycle event for each `denied` row
 it commits, including a human denial the rationale gate settled before Stop.
 A `cancelled` row fires none. Governed tools
 fire none either: a tool with an operation policy, or a call under a plugin
 authorization lifecycle, still gets its deny row but no event. This one rule
-lives in the ledger's row writer and uses the persisted kind and invocation state.
+lives in the ledger's row writer and uses the claimed kind and invocation state.
 No call site emits `PermissionDenied` itself, and a source guard test enforces
 this. The guard also flags any lifecycle dispatch whose event is not a literal.
-The audit writer fires the event only for a denial that the ledger created, and
+The lifecycle writer fires the event only for a denial that the ledger created, and
 the type system enforces that rule.
 
-### Permission audit during shutdown
+### Permission decisions during shutdown
 
 Desktop and headless shutdown share the same service teardown. The early
 running-turn interruption waits up to three seconds for turn journals to
@@ -3984,18 +3970,15 @@ Late admissions have an already-aborted signal. The approval gate records
 `host-shutdown` for cancelled requests, then service teardown disposes
 question requests, stops MCP policy refresh, and disconnects MCP.
 
-The invocation ledger joins terminal audit appends, including the late
-settlement record of an interrupted governed operation. Then the audit logger
-closes and drains its accepted writes. A cancelled tool approval records a
-deny row with the same tool-use ID as its ask. Lifecycle HTTP hooks and script
-hooks observe the invocation signal. Broker calls cancel through their request
-connection.
+The invocation ledger joins terminal settlement, including interrupted governed
+operations. A cancelled tool approval keeps the same tool-use ID as its ask.
+Lifecycle HTTP hooks and script hooks observe the invocation signal. Broker
+calls cancel through their request connection.
 
-The existing hard shutdown deadline also bounds the join. Join or append
-failure marks cleanup as failed. Failed and timed-out cleanup force-kills
-managed children and starts a best-effort audit logger close before exit.
-That path still seals admission first and starts queued tools, so their
-host-shutdown rows are written before the close.
+The existing hard shutdown deadline bounds the join. Failed or timed-out
+cleanup force-kills managed children. That path seals invocation admission
+first. Logging uses the ordinary app sink and is independent of shutdown
+status.
 
 ### Query credential masking
 

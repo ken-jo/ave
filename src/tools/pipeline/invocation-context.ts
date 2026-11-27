@@ -11,7 +11,7 @@ import {
   type EffectLedger,
 } from "../../permissions/effect-ledger.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
-import type { ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
+import type { ToolExecutionAuditMetadata } from "./permission-decision.js";
 import { t } from "../../i18n/index.js";
 import type { ToolSource, TrustLevel, ToolCategory } from "../types.js";
 import type {

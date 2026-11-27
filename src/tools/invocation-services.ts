@@ -13,7 +13,6 @@ import type { PermissionCheckResult, PermissionManager } from "../permissions/pe
 import { HOST_PROVENANCE, RULE_PROVENANCE } from "../permissions/decision-provenance.js";
 import type { HookDispatchResult, ScriptHookManager } from "../hooks/script-hook-manager.js";
 import type { HookTrustOrigin, ScriptHookType } from "../hooks/script-hook-types.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import type { BashAstValidator } from "../main/bash-ast-validator.js";
 import type { ExecuteOptions, ToolPermissionContext, ToolResult, ToolUseBlock } from "./executor-contract.js";
 import type { HookRunner } from "../hooks/hook-runner.js";
@@ -41,7 +40,6 @@ export interface InvocationRunnerServices {
   readonly hookRunner: HookRunner;
   readonly permissionManager?: PermissionManager;
   readonly approvalGate?: ApprovalGate;
-  readonly auditLogger: AuditLogger;
   readonly rateLimiter: RateLimiter;
   readonly bashAstValidator?: BashAstValidator;
   readonly scriptHookManager?: ScriptHookManager;

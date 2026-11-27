@@ -6,14 +6,12 @@ import { watchPermissionEvents } from "../../../__tests__/support/permission-eve
 import type { BootContext } from "../../context.js";
 import { wireRationaleHost } from "../rationale-host-wiring.js";
 
-const temp = useTempDirs("ave-rationale-boot-");
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
-function makeContext() {
-  const home = temp();
+function makeContext(home: string) {
   vi.stubEnv("AVE_HOME", home);
   const encryption = {
     isAsyncEncryptionAvailable: async () => true,
@@ -33,8 +31,9 @@ function makeContext() {
 }
 
 describe("wireRationaleHost", () => {
+  const temp = useTempDirs("ave-rationale-boot-");
   it("opens new execution state while leaving a corrupt previous journal in place", async () => {
-    const { ctx, home } = makeContext();
+    const { ctx, home } = makeContext(temp());
     const oldDir = join(home, "rationale");
     mkdirSync(oldDir);
     const legacy = join(oldDir, "invocation-journal-v1.json");
@@ -49,7 +48,7 @@ describe("wireRationaleHost", () => {
   });
 
   it("leaves rationale authority unavailable when execution recovery fails", async () => {
-    const { ctx } = makeContext();
+    const { ctx } = makeContext(temp());
     const createHostService = vi.fn();
 
     await wireRationaleHost(ctx, {

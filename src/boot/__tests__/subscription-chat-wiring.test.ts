@@ -107,9 +107,7 @@ describe("subscription chat boot wiring", () => {
   });
 
   it("injects the subscription runtime into main, side, and routine loops", async () => {
-    const bindings = createSubscriptionChatLoopBindings({
-      auditLogger: { log: vi.fn() },
-    });
+    const bindings = createSubscriptionChatLoopBindings();
     const shared = sharedLoopDeps();
 
     const main = createConversationLoop({
@@ -154,7 +152,7 @@ describe("subscription chat boot wiring", () => {
 
   it("rejects unsafe login URLs and keeps audit metadata redacted", async () => {
     const auditLogger = { log: vi.fn() };
-    const bindings = createSubscriptionChatLoopBindings({ auditLogger });
+    const bindings = createSubscriptionChatLoopBindings();
 
     bindings.subscriptionProviderFactory(selection);
     const options = h.createSubscriptionLlmProvider.mock.calls[0]?.[0] as SubscriptionProviderFactoryOptions;

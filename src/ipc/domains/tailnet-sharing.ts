@@ -42,7 +42,7 @@ export function registerTailnetSharingHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.tailnetSharing.snapshot, async (event) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.tailnetSharing.snapshot, event);
+      auditUnauthorized(CHANNELS.tailnetSharing.snapshot);
       return UNAUTHORIZED_FRAME;
     }
     if (!owner) return DISABLED;
@@ -57,7 +57,7 @@ export function registerTailnetSharingHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.tailnetSharing.createInvitation, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.tailnetSharing.createInvitation, event);
+      auditUnauthorized(CHANNELS.tailnetSharing.createInvitation);
       return UNAUTHORIZED_FRAME;
     }
     if (!owner) return DISABLED;
@@ -77,7 +77,7 @@ export function registerTailnetSharingHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.tailnetSharing.activatePairing, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.tailnetSharing.activatePairing, event);
+      auditUnauthorized(CHANNELS.tailnetSharing.activatePairing);
       return UNAUTHORIZED_FRAME;
     }
     if (!owner) return DISABLED;
@@ -95,7 +95,7 @@ export function registerTailnetSharingHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.tailnetSharing.createCurrentConversationShare, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.tailnetSharing.createCurrentConversationShare, event);
+      auditUnauthorized(CHANNELS.tailnetSharing.createCurrentConversationShare);
       return UNAUTHORIZED_FRAME;
     }
     if (!owner) return DISABLED;
@@ -117,7 +117,7 @@ export function registerTailnetSharingHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.tailnetSharing.revokeShare, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.tailnetSharing.revokeShare, event);
+      auditUnauthorized(CHANNELS.tailnetSharing.revokeShare);
       return UNAUTHORIZED_FRAME;
     }
     if (!owner) return DISABLED;
@@ -135,7 +135,7 @@ export function registerTailnetSharingHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.tailnetSharing.revokePairing, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.tailnetSharing.revokePairing, event);
+      auditUnauthorized(CHANNELS.tailnetSharing.revokePairing);
       return UNAUTHORIZED_FRAME;
     }
     if (!owner) return DISABLED;

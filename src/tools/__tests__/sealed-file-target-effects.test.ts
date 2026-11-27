@@ -46,7 +46,6 @@ vi.mock("../../shared/chat-origin.js", async (original) => {
   } };
 });
 
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
@@ -66,7 +65,7 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
   let root: string;
   let project: string;
   let outside: string;
-  let audit: AuditLogger;
+
   let manager: PermissionManager;
 
   beforeEach(() => {
@@ -79,7 +78,6 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     mkdirSync(outside);
     writeFileSync(join(project, "sub", "note.txt"), "before");
     vi.stubEnv("AVE_HOME", join(root, "profile"));
-    audit = new AuditLogger(join(root, "audit"));
     manager = new PermissionManager(join(root, "permissions.json"));
     manager.setMode("default");
   });
@@ -90,7 +88,7 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     hooks.beforeRename = undefined;
     hooks.unlinks.length = 0;
     hooks.opens.length = 0;
-    await audit.close();
+
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     setWindowsDriveQueryForTest();
@@ -103,7 +101,7 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     const registry = new ToolRegistry();
     registry.register(tool);
     const gate = { requestAndWait };
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined);
     const [result] = await executor.executeAll([{ id: "sealed-target", name: tool.name, input: { path, content: "changed" } }], {
       executionCwd: cwd, sessionId: "sealed-target", permissionContext: { trustOrigin: "user-keyboard" },
     });
@@ -135,7 +133,7 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     const tool = new ReadFileTool();
     const registry = new ToolRegistry();
     registry.register(tool);
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined);
     const [result] = await executor.executeAll([{ id: "read-target", name: tool.name, input: { path: "sub/note.txt" } }], {
       executionCwd: project, sessionId: "read-target", permissionContext: { trustOrigin: "user-keyboard", projectDirectories: [anchor] },
     });
@@ -161,7 +159,7 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     });
     const registry = new ToolRegistry();
     registry.register(tool);
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined);
     const [result] = await executor.executeAll([{ id: "read-target", name: tool.name, input: { path: operand } }], {
       executionCwd: project, sessionId: "read-target", permissionContext: { trustOrigin: "user-keyboard" },
     });
@@ -192,7 +190,7 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     const tool = new WriteFileTool();
     const registry = new ToolRegistry();
     registry.register(tool);
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined, audit);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined);
     const [result] = await executor.executeAll([{ id: "write-target", name: tool.name, input: { path: target, content: "new" } }], {
       executionCwd: project, sessionId: "write-target", permissionContext: { trustOrigin: "user-keyboard" },
     });

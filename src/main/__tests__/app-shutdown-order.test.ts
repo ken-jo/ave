@@ -16,6 +16,7 @@ const hostExit = vi.fn();
 
 const unregisterAllGlobalShortcuts = vi.fn(() => calls.push("unregister"));
 const closeFileLogSink = vi.fn(() => calls.push("closeFileLogSink"));
+const logInfo = vi.fn();
 const logWarn = vi.fn();
 const logError = vi.fn();
 const stopLocalApiServer = vi.fn(async () => { calls.push("stopLocalApi"); });
@@ -57,7 +58,7 @@ const stopAllHeldShells = vi.fn(async (_signal: AbortSignal) => {});
 
 vi.mock("electron", () => ({ app: { exit: vi.fn() }, ipcMain: { handle: vi.fn() } }));
 vi.mock("../../lib/logger.js", () => ({
-  createLogger: () => ({ info: vi.fn(), warn: (...a: unknown[]) => logWarn(...a), error: (...a: unknown[]) => logError(...a), debug: vi.fn() }),
+  createLogger: () => ({ info: (...a: unknown[]) => logInfo(...a), warn: (...a: unknown[]) => logWarn(...a), error: (...a: unknown[]) => logError(...a), debug: vi.fn() }),
   logger: { flush: (cb: () => void) => cb() },
   closeFileLogSink: (...a: unknown[]) => closeFileLogSink(...a),
 }));
@@ -147,7 +148,6 @@ async function configuredShutdown() {
 function makeServices() {
   return {
     shutdown: vi.fn(async () => { calls.push("servicesShutdown"); }),
-    auditLogger: { close: vi.fn(async () => { calls.push("closeAudit"); }) },
     approvalGate: { disposeAll: vi.fn(() => { calls.push("cancelApprovals"); }) },
     askUserQuestionGate: { disposeAll: vi.fn(() => { calls.push("cancelQuestions"); }) },
     pluginRuntime: {
@@ -170,25 +170,21 @@ beforeEach(() => {
 });
 
 describe("OS sandbox release at quit", () => {
-  it("reports a failed audit join and finishes quit even if the fallback close remains pending", async () => {
+  it("reports a failed invocation join and closes the ordinary log on quit", async () => {
     const services = makeServices();
-    services.shutdown.mockRejectedValueOnce(new Error("shutdown invocation audit failed"));
-    services.auditLogger.close.mockImplementationOnce(() => {
-      calls.push("closeAudit");
-      return new Promise<void>(() => {});
-    });
+    services.shutdown.mockRejectedValueOnce(new Error("shutdown invocation settlement failed"));
     getServices.mockReturnValue(services);
     vi.resetModules();
     const shutdown = await configuredShutdown();
     expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })).toBe("failed");
-    expect(calls.indexOf("forceKillManagedChildren")).toBeLessThan(calls.indexOf("closeAudit"));
+    expect(calls.indexOf("forceKillManagedChildren")).toBeLessThan(calls.indexOf("closeFileLogSink"));
     expect(shutdownCompleted).toBe(true);
     expect(logError).toHaveBeenCalledWith(
-      expect.anything(), "%s: shutdown cleanup failed: %s", "before-quit", "shutdown invocation audit failed",
+      expect.anything(), "%s: shutdown cleanup failed: %s", "before-quit", "shutdown invocation settlement failed",
     );
   });
 
-  it.each(["timed-out", "failed"] as const)("cancels parked cards before the fallback audit close (%s cleanup)", async (status) => {
+  it.each(["timed-out", "failed"] as const)("cancels parked cards before the app log closes (%s cleanup)", async (status) => {
     const services = makeServices();
     if (status === "failed") services.shutdown.mockRejectedValueOnce(new Error("Earlier shutdown stage failed"));
     services.approvalGate.disposeAll.mockImplementationOnce(() => {
@@ -205,9 +201,9 @@ describe("OS sandbox release at quit", () => {
       hardTimeoutFires = false;
     }
     expect(calls.indexOf("cancelApprovals")).toBeGreaterThan(-1);
-    expect(calls.indexOf("cancelApprovals")).toBeLessThan(calls.indexOf("closeAudit"));
+    expect(calls.indexOf("cancelApprovals")).toBeLessThan(calls.indexOf("closeFileLogSink"));
     expect(calls.indexOf("cancelQuestions")).toBeGreaterThan(-1);
-    expect(calls.indexOf("cancelQuestions")).toBeLessThan(calls.indexOf("closeAudit"));
+    expect(calls.indexOf("cancelQuestions")).toBeLessThan(calls.indexOf("closeFileLogSink"));
   });
 
   it("completes a quit before its deadline while ceiling-detached work never settles", async () => {
@@ -220,7 +216,8 @@ describe("OS sandbox release at quit", () => {
     services.shutdown.mockImplementation(async () => {
       calls.push("servicesShutdown");
       ledger.sealToolInvocations();
-      await ledger.closeToolInvocationAudit(async () => { calls.push("closeAudit"); });
+      await ledger.closeToolInvocations();
+      calls.push("joinedInvocations");
     });
     getServices.mockReturnValue(services);
     const shutdown = await configuredShutdown();
@@ -230,9 +227,9 @@ describe("OS sandbox release at quit", () => {
       const stopping = shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false });
       try {
         // The deadline fires only if the join never reaches close, as it would when waiting on the detached work.
-        await vi.waitFor(() => expect(calls).toContain("closeAudit"), { timeout: 10_000 });
+        await vi.waitFor(() => expect(calls).toContain("joinedInvocations"), { timeout: 10_000 });
       } finally {
-        if (!calls.includes("closeAudit")) deadline.resolve();
+        if (!calls.includes("joinedInvocations")) deadline.resolve();
         status = await stopping;
       }
     } finally {
@@ -246,22 +243,19 @@ describe("OS sandbox release at quit", () => {
   it("writes a real parked card's host-shutdown cancel row before the fallback audit close", async () => {
     vi.resetModules();
     await import("../../__tests__/vitest-approval-presentation.js");
-    const { AuditLogger } = await import("../../audit/audit-logger.js");
     const { ApprovalGate } = await import("../../permissions/approval-gate.js");
     const { makeMockWebContents } = await import("../../__tests__/test-helpers.js");
     const root = mkdtempSync(join(tmpdir(), "ave-shutdown-fallback-"));
     let parkedGate: { disposeAll(): void } | undefined;
     try {
-      const audit = new AuditLogger(join(root, "audit"));
-      const gate = new ApprovalGate(makeMockWebContents() as never, undefined, undefined, audit);
+      const gate = new ApprovalGate(makeMockWebContents() as never, undefined, undefined);
       parkedGate = gate;
       const decision = gate.requestAndWait({
         id: "parked-card", category: "tool", toolName: "write_file", toolCategory: "write", args: {},
         reason: "fallback probe", source: "builtin", createdAt: Date.now(), trustOrigin: "user-keyboard",
       });
       await vi.waitFor(() => expect(gate.pendingCount).toBe(1));
-      const close = vi.spyOn(audit, "close");
-      getServices.mockReturnValue({ ...makeServices(), auditLogger: audit, approvalGate: gate });
+      getServices.mockReturnValue({ ...makeServices(), approvalGate: gate });
       const shutdown = await configuredShutdown();
       hardTimeoutFires = true;
       try {
@@ -271,26 +265,22 @@ describe("OS sandbox release at quit", () => {
       }
       expect(gate.pendingCount).toBe(0);
       expect(await decision).toMatchObject({ choice: "deny-once" });
-      expect(close).toHaveBeenCalled();
-      await close.mock.results[0]?.value;
-      const rows = readdirSync(join(root, "audit"), { recursive: true, withFileTypes: true })
-        .filter((entry) => entry.isFile())
-        .flatMap((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8").split("\n"));
-      expect(rows.filter((row) => row.includes("[approval:cancelled] parked-card") && row.includes("reason=host-shutdown")))
-        .toHaveLength(1);
+      expect(logInfo.mock.calls.filter(([fields]) =>
+        fields?.event === "approval_cancelled" && fields.requestId === "parked-card",
+      )).toHaveLength(1);
     } finally {
       parkedGate?.disposeAll();
       await cleanupTmpDir(root);
     }
   });
 
-  it("starts claimed queued tools at the force-kill seal, before the audit closes in the same tick", async () => {
+  it("starts claimed queued tools at the force-kill seal, before the app log closes", async () => {
     vi.resetModules();
     const ledger = await import("../../tools/invocation-ledger.js");
-    let admitted: ReturnType<typeof ledger.admitToolInvocationWhileAuditOpen>;
+    let admitted: ReturnType<typeof ledger.admitToolInvocationWhileOpen>;
     const claim = vi.fn(() => {
       calls.push("sealClaim");
-      admitted = ledger.admitToolInvocationWhileAuditOpen("probe");
+      admitted = ledger.admitToolInvocationWhileOpen("probe");
       admitted?.settle();
     });
     const withdraw = ledger.claimAtToolInvocationSeal(claim);
@@ -305,21 +295,17 @@ describe("OS sandbox release at quit", () => {
     }
     expect(claim).toHaveBeenCalledOnce();
     expect(admitted).toBeDefined();
-    expect(calls).toContain("closeAudit");
-    expect(calls.indexOf("sealClaim")).toBeLessThan(calls.indexOf("closeAudit"));
+    expect(calls).toContain("closeFileLogSink");
+    expect(calls.indexOf("sealClaim")).toBeLessThan(calls.indexOf("closeFileLogSink"));
   });
 
-  it("writes a parked invocation's host terminal row before the force-kill closes the audit", async () => {
+  it("writes a parked invocation's host terminal row before the app log closes", async () => {
     vi.resetModules();
     const ledger = await import("../../tools/invocation-ledger.js");
     const parked = ledger.admitToolInvocation("parked-probe");
     parked.terminal.hostTerminal((cause, _detail, _selected, row) => {
       calls.push(`hostTerminal:${cause}`);
-      return row({ entry: { ...PROBE_ROW, tool: "parked-probe" }, kind: "cancelled", logger: { appendPermissionAuditEntry: async () => {
-        await afterQueuedCallbacks();
-        calls.push("rowCommitted");
-        return {} as never;
-      } } });
+      return row({ entry: { ...PROBE_ROW, tool: "parked-probe" }, kind: "cancelled" }).then(() => { calls.push("rowCommitted"); });
     }, NO_DENIAL);
     getServices.mockReturnValue(makeServices());
     const shutdown = await configuredShutdown();
@@ -331,46 +317,17 @@ describe("OS sandbox release at quit", () => {
       parked.settle();
     }
     expect(calls.filter((call) => call.startsWith("hostTerminal"))).toEqual(["hostTerminal:host-shutdown"]);
-    expect(calls.indexOf("rowCommitted")).toBeLessThan(calls.indexOf("closeAudit"));
-    expect(calls.indexOf("closeAudit")).toBeLessThan(calls.indexOf("closeFileLogSink"));
+    expect(calls.indexOf("rowCommitted")).toBeLessThan(calls.indexOf("closeFileLogSink"));
     expect(parked.terminal.state).toBe("committed");
-    // The late continuation meets the closed sink and writes nothing.
+    // The settled invocation refuses a second terminal claim.
     const late = vi.fn(async () => {});
     await expect(parked.terminal.commit(late)).resolves.toBeUndefined();
     expect(late).not.toHaveBeenCalled();
-    expect(logError).toHaveBeenCalledWith("%s", "terminal row of parked-probe refused: the audit sink is closed");
-  });
-
-  it("logs the audit failure before exit when the forced-quit commit misses its reserve", async () => {
-    vi.resetModules();
-    const ledger = await import("../../tools/invocation-ledger.js");
-    const parked = ledger.admitToolInvocation("stuck-probe");
-    const stuckLogger = { appendPermissionAuditEntry: () => new Promise<never>(() => {}) };
-    parked.terminal.hostTerminal((_cause, _detail, _selected, row) => row({ logger: stuckLogger, entry: { ...PROBE_ROW, tool: "stuck-probe" }, kind: "cancelled" }), NO_DENIAL);
-    const unwritten = ledger.admitToolInvocation("unwritten-probe");
-    unwritten.terminal.hostTerminal(() => new Promise(() => {}), NO_DENIAL);
-    const services = makeServices();
-    services.auditLogger.close = vi.fn(() => new Promise<void>(() => {}));
-    getServices.mockReturnValue(services);
-    const shutdown = await configuredShutdown();
-    hardTimeoutFires = true;
-    try {
-      expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false, auditCommitReserveMs: 5 }))
-        .toBe("timed-out");
-    } finally {
-      hardTimeoutFires = false;
-      parked.settle();
-      unwritten.settle();
-    }
-    const deadlineRecords = logError.mock.calls.filter(([, message]) => message === "permission audit terminal rows did not commit before exit");
-    expect(deadlineRecords).toEqual([[{ outcome: "timed-out", open: ["unwritten-probe"], enqueued: ["stuck-probe"] }, "permission audit terminal rows did not commit before exit"]]);
-    expect(calls).toContain("closeFileLogSink");
   });
 
   it.each(["timed-out", "failed"] as const)("commits one host row per real parked card before the sink closes at the exit boundary (%s cleanup)", async (status) => {
     vi.resetModules();
     await import("../../__tests__/vitest-approval-presentation.js");
-    const { AuditLogger } = await import("../../audit/audit-logger.js");
     const { ApprovalGate, IPC_APPROVAL_REQUEST } = await import("../../permissions/approval-gate.js");
     const { PermissionManager } = await import("../../permissions/permission-manager.js");
     const { RULE_PROVENANCE } = await import("../../permissions/decision-provenance.js");
@@ -379,8 +336,7 @@ describe("OS sandbox release at quit", () => {
     const { createDynamicTool } = await import("../../tools/base.js");
     const root = mkdtempSync(join(tmpdir(), "ave-shutdown-parked-"));
     try {
-      const audit = new AuditLogger(join(root, "audit"));
-      await audit.setupPermissionAuditChain("ab".repeat(32));
+
       const cards: string[] = [];
       const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, card: { id: string }) => {
         if (channel === IPC_APPROVAL_REQUEST) cards.push(card.id);
@@ -393,21 +349,20 @@ describe("OS sandbox release at quit", () => {
         name: "parked_write", description: "parked_write", source: "builtin", category: "write", isReadOnly: () => false,
         jsonSchema: { type: "object", properties: {} }, execute: async () => ({ output: await execute(), isError: false }),
       }));
-      const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
+      const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined);
       const ids = ["parked-a", "parked-b"];
       const running = ids.map((id) => executor.executeAll([{ id, name: "parked_write", input: {} }], {
         sessionId: `session-${id}`, permissionContext: { trustOrigin: "llm-tool-arg" },
       }));
       await vi.waitFor(() => expect(cards).toHaveLength(2));
-      const rows = () => readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
-        .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => ids.includes(String(row.toolUseId)) && row.decision !== "ask");
-      const close = audit.close.bind(audit);
-      vi.spyOn(audit, "close").mockImplementation(async () => { calls.push("closeAudit"); await close(); calls.push("auditClosed"); });
+      const rows = () => logInfo.mock.calls.map(([fields]) => fields as Record<string, unknown>).filter((fields) =>
+        fields?.event === "permission_decision" && ids.includes(String(fields.toolUseId)) && fields.decision !== "ask",
+      );
       // The timed-out quit hard-exits, so its boundary is the host exit; the failed cleanup returns after the last sink closes.
       let rowsAtExit: Array<Record<string, unknown>> = [];
       closeFileLogSink.mockImplementationOnce(() => { if (status === "failed") rowsAtExit = rows(); return calls.push("closeFileLogSink"); });
       hostExit.mockImplementationOnce(() => { rowsAtExit = rows(); calls.push("hostExit"); });
-      const services = { ...makeServices(), auditLogger: audit, approvalGate: gate };
+      const services = { ...makeServices(), approvalGate: gate };
       if (status === "failed") services.shutdown.mockRejectedValueOnce(new Error("Earlier shutdown stage failed"));
       getServices.mockReturnValue(services);
       const shutdown = await configuredShutdown();
@@ -419,12 +374,10 @@ describe("OS sandbox release at quit", () => {
         hostExit.mockReset();
       }
       const boundary = status === "timed-out" ? "hostExit" : "closeFileLogSink";
-      expect(calls.indexOf("auditClosed")).toBeGreaterThan(-1);
-      expect(calls.indexOf("auditClosed")).toBeLessThan(calls.indexOf(boundary));
       expect(calls.at(-1)).toBe(boundary);
       for (const id of ids) {
         expect(rowsAtExit.filter((row) => row.toolUseId === id)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
-        expect(JSON.stringify(rowsAtExit.find((row) => row.toolUseId === id)?.denyReasons)).toContain("host-shutdown");
+        expect(rowsAtExit.find((row) => row.toolUseId === id)).toMatchObject({ terminalKind: "cancelled" });
       }
       // The continuations resume after the real quit closed the sink: no effect and no further row.
       const results = (await Promise.all(running)).flat();
@@ -436,7 +389,7 @@ describe("OS sandbox release at quit", () => {
     }
   });
 
-  it("still cancels parked cards and closes the audit when the fallback seal throws", async () => {
+  it("still cancels parked cards and closes the app log when the fallback seal throws", async () => {
     getServices.mockReturnValue(makeServices());
     vi.resetModules();
     vi.doMock("../../tools/invocation-ledger.js", async (importOriginal) => ({
@@ -451,7 +404,7 @@ describe("OS sandbox release at quit", () => {
       hardTimeoutFires = false;
       vi.doUnmock("../../tools/invocation-ledger.js");
     }
-    expect(calls).toEqual(expect.arrayContaining(["cancelApprovals", "cancelQuestions", "closeAudit"]));
+    expect(calls).toEqual(expect.arrayContaining(["cancelApprovals", "cancelQuestions", "closeFileLogSink"]));
   });
 
   // The private srt-win copy is removed by an exit handler; every quit path must reset the runtime first, once its confined children are down.
@@ -547,7 +500,7 @@ describe("OS sandbox release at quit", () => {
       }
     }
     expect(await stopping).toBe("timed-out");
-    expect(calls.indexOf("forceKillManagedChildren")).toBeLessThan(calls.indexOf("closeAudit"));
+    expect(calls.indexOf("forceKillManagedChildren")).toBeLessThan(calls.indexOf("closeFileLogSink"));
     expect(logError).toHaveBeenCalledWith(
       expect.objectContaining({ pendingToolInvocations: 0 }), "shutdown cleanup timed out",
     );

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { answeredApprovalDecision } from "../../../__tests__/support/answering-approval-gate.js";
 import { HookRunner } from "../../../hooks/hook-runner.js";
 import { captureRationalePolicySnapshot, type RationalePolicySnapshot } from "../rationale-policy-epoch.js";
-import { answeredProvenanceRecord, ApprovalGate, isHostApprovalCancelledDecision } from "../../../permissions/approval-gate.js";
+import { answeredProvenanceRecord, ApprovalGate, } from "../../../permissions/approval-gate.js";
 import type {
   ApprovalChoice,
   ApprovalDecision,
@@ -30,7 +30,6 @@ import {
   verifyRationaleExecutionControl,
   createRequestAnchor,
   createTriggeringBatchDisposition,
-  type ActionIdentity,
   type RationaleRequiredControl,
   type RequestAnchor,
 } from "../rationale-control.js";
@@ -44,7 +43,6 @@ import { createReviewerScopeReevaluation } from "../rationale-pr1-contract.js";
 import {
   InMemoryHostInvocationStartCasStore,
 } from "../rationale-ticket-lifecycle.js";
-import type { RationaleUiAuditProjection } from "../rationale-resume-contract.js";
 import {
   InProcessRationaleTicketStore,
 } from "../rationale-ticket-store.js";

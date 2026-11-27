@@ -93,7 +93,6 @@ function makeDeps(appWindows: ReturnType<typeof makeWindow>[], vendorBaseUrl?: s
     sideChatConversationLoop: {
       refreshProvider: vi.fn(),
     },
-    auditLogger: { log: vi.fn() },
     getAppWindows: vi.fn(() => appWindows),
     // Main's Chromium-stack transport; the handler is expected to hand it to the engine rather than let the engine reach for ambient `fetch`.
     singleHopNetworkFetch: vi.fn() as unknown as typeof fetch,

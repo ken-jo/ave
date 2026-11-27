@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BrowserWindow } from "electron";
 import { createAutoUpdater, type UpdaterLike } from "../auto-updater.js";
 import { hostFrameEvent, foreignFrameEvent } from "../../__tests__/test-helpers.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
+
 
 const stops: Array<() => void> = [];
 afterEach(() => { for (const stop of stops.splice(0)) stop(); });
@@ -14,7 +14,6 @@ function updateCheckHarness() {
   const service = createAutoUpdater({
     getWindows: () => [], getDialogParent: () => null as BrowserWindow | null,
     isEnabled: () => false, updaterFactory: () => updater,
-    auditLogger: { log } as unknown as AuditLogger,
   });
   stops.push(service.stop);
   return { service, checkForUpdates, log, updater };

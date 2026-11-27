@@ -56,7 +56,6 @@ async function setup(cards?: unknown[]) {
   vi.clearAllMocks();
   const send = vi.fn();
   const deps = {
-    auditLogger: { log: vi.fn() },
     pluginRuntime: {
       listPluginCards: vi.fn(() =>
         cards ?? [

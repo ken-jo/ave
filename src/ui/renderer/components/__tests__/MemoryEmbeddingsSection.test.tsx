@@ -72,7 +72,6 @@ describe('memory embeddings settings', () => {
     });
     const transport = vi.fn();
     registerMemoryMapHandlers({
-      auditLogger: { log: vi.fn() },
       settingsService: {
         get: (key: string) => key === 'memoryEmbedding' ? config : key === 'llm' ? {
           vendors: { openai: { baseUrl } },

@@ -8,7 +8,7 @@ import {
   type SandboxEgressFailureAuditEntry,
   type SandboxEgressDenyAuditEntry,
   type SandboxEgressDenyInvocation,
-} from "../audit/sandbox-audit.js";
+} from "./egress-observation.js";
 import type { SandboxCapability } from "./sandbox-capability.js";
 import {
   decodeEgressAttributionKey,

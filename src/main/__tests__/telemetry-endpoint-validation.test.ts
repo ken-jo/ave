@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { describe, it, expect, onTestFinished } from "vitest";
 import { MockAgent, fetch as undiciFetch } from "undici";
 import {
   DEFAULT_TELEMETRY_ALLOWLIST,
@@ -145,54 +146,40 @@ describe("sanitizeUrlForAudit", () => {
 
 describe("TelemetryService — audit log uses warn + sanitized url", () => {
   it("logs type=warn (not error) and strips query string when endpoint rejected", () => {
-    const entries: Array<Record<string, unknown>> = [];
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const svc = new TelemetryService({
       fetchImpl: unusedNetworkFetch,
       settings: () => ({ enabled: true, endpoint: "http://bad.example/x?secret=abc" } as TelemetrySettings),
       isPackaged: true,
-      auditLogger: { log: (e) => { entries.push(e); } },
     });
     expect(svc.isActive()).toBe(false);
-    expect(entries.length).toBe(1);
-    expect(entries[0].type).toBe("warn");
-    expect(String(entries[0].output)).toBe("http://bad.example/x");
-    expect(String(entries[0].output)).not.toContain("secret");
+    expect(capture.events).toEqual([{ event: "telemetry_endpoint_refused", sessionId: "telemetry" }]);
   });
 });
 
 describe("TelemetryService — isActive() + audit on invalid endpoint", () => {
-  function makeLogger() {
-    const entries: Array<Record<string, unknown>> = [];
-    return {
-      entries,
-      logger: { log: (e: Record<string, unknown>) => entries.push(e) },
-    };
-  }
-
   function makeSettings(over: Partial<TelemetrySettings>): () => TelemetrySettings {
     return () => ({ enabled: true, ...over } as TelemetrySettings);
   }
 
   it("isActive() is false when endpoint is http://", () => {
-    const { logger, entries } = makeLogger();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const svc = new TelemetryService({
       fetchImpl: unusedNetworkFetch,
       settings: makeSettings({ endpoint: "http://telemetry.example.com/x" }),
       isPackaged: true,
-      auditLogger: logger,
     });
     expect(svc.isActive()).toBe(false);
-    expect(entries.length).toBe(1);
-    expect(String(entries[0].input)).toMatch(/endpoint rejected/);
+    expect(capture.events).toEqual([{ event: "telemetry_endpoint_refused", sessionId: "telemetry" }]);
   });
 
   it("isActive() is false when host not in allowlist", () => {
-    const { logger } = makeLogger();
     const svc = new TelemetryService({
       fetchImpl: unusedNetworkFetch,
       settings: makeSettings({ endpoint: "https://evil.example.com/x" }),
       isPackaged: true,
-      auditLogger: logger,
     });
     expect(svc.isActive()).toBe(false);
   });
@@ -216,18 +203,18 @@ describe("TelemetryService — isActive() + audit on invalid endpoint", () => {
   });
 
   it("session-disables after first invalid endpoint — no retries", () => {
-    const { logger, entries } = makeLogger();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const svc = new TelemetryService({
       fetchImpl: unusedNetworkFetch,
       settings: makeSettings({ endpoint: "http://bad/x" }),
       isPackaged: true,
-      auditLogger: logger,
     });
     expect(svc.isActive()).toBe(false);
     expect(svc.isActive()).toBe(false);
     expect(svc.isActive()).toBe(false);
     // exactly one audit entry — session-disabled after first check.
-    expect(entries.length).toBe(1);
+    expect(capture.events).toEqual([{ event: "telemetry_endpoint_refused", sessionId: "telemetry" }]);
   });
 
   it("flush() is a no-op when endpoint is invalid", async () => {

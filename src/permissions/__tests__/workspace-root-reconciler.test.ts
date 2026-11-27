@@ -111,7 +111,6 @@ describe("reconcileWorkspaceRoots", () => {
         settingsPath: path,
         statFn,
         permissionManager: { prunePathGrantsUnderRoot },
-        auditLogger: { log: auditLog },
       });
 
       expect(result.retained[0]).toMatchObject({ storedPath: dir, reason: "transient-error", code });
@@ -227,7 +226,6 @@ describe("reconcileWorkspaceRoots", () => {
       beforeRemove,
       permissionManager: { prunePathGrantsUnderRoot },
       onRemoved,
-      auditLogger: { log: auditLog },
     });
 
     expect(beforeRemove).toHaveBeenCalledWith(runtimePath, {
@@ -373,7 +371,6 @@ describe("reconcileWorkspaceRoots", () => {
         throw codedError("ENOENT");
       }),
       permissionManager: { prunePathGrantsUnderRoot },
-      auditLogger: { log: auditLog },
     });
 
     expect(result.removed).toEqual([]);

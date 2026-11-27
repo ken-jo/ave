@@ -48,7 +48,6 @@ async function makeManager() {
     new (ToolRegistry as new () => InstanceType<typeof ToolRegistry>)(),
     unusedNetworkFetch,
     join(testDir, "mcp-servers.json"),
-    { log: vi.fn() } as never,
     undefined,
     vi.fn(),
     { getSecret: async () => null, setSecret: async () => undefined, deleteSecret: async () => undefined },

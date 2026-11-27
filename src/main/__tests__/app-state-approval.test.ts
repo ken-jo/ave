@@ -32,7 +32,7 @@ function fixture() {
   registerMainWindow(second.window, "secondary");
   markMainWindowFocused(first.window);
   const audit = { log: vi.fn() };
-  const gate = new ApprovalGate(approvalSurfaceResolver(), undefined, undefined, audit as never);
+  const gate = new ApprovalGate(approvalSurfaceResolver(), undefined, undefined);
   gates.push(gate);
   const pending = gate.requestAndWait({ id: "panel-request", category: "tool", toolName: "panel_status", toolCategory: "write",
     source: "plugin", sourcePluginId: "sample-panel", args: {}, reason: "Panel request", createdAt: Date.now() });

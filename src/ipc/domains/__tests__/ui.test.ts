@@ -77,7 +77,6 @@ async function setup() {
   uiOriginMock.mockReturnValue({ x: 4, y: 4 });
   const { registerUiHandlers } = await import("../ui.js");
   registerUiHandlers({
-    auditLogger: { log: auditLogMock },
     getMainWindow: vi.fn(),
   } as never);
 }

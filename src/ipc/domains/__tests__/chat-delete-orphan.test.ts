@@ -59,7 +59,6 @@ describe("ave:chat:sessionDelete", () => {
         },
       },
       routinesStore: { markOrphaned },
-      auditLogger: { log: vi.fn() },
       getMainWindow: vi.fn(() => null),
     } as unknown as Parameters<typeof registerChatHandlers>[0]);
     const remove = () => invokeNativeChatHandler<Promise<unknown>>(handlers, CHANNELS.chat.sessionDelete, { sessionId: DELETED });

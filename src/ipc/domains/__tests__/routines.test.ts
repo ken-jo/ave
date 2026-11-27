@@ -68,7 +68,6 @@ function makeDeps(
         touchSessionTranscript: vi.fn(),
       },
     },
-    auditLogger: { log: vi.fn() },
     getMainWindow: vi.fn(() => null),
   };
 }

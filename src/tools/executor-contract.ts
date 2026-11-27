@@ -214,5 +214,7 @@ export type ConversationBatchExecutionOutcome =
     };
 
 export const RATIONALE_TERMINAL_STATE_UNKNOWN_RESULT =
-  "Rationale-authorized action ran, but its terminal audit could not be committed. " +
+  "Rationale-authorized action ran, but its terminal execution state could not be committed. " +
   "The execution outcome is unknown; the action will not be retried automatically.";
+
+export type ToolAuditTerminationReason = "ok" | "ceiling" | "user-abort" | "host-shutdown" | "error" | "indeterminate";

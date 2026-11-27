@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConversationLoop } from "../conversation-loop.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
@@ -64,9 +63,6 @@ function stubbedRunner(metadataById: MetadataById) {
     },
     parentDirectiveMailbox: mailbox,
     parentDeps: {
-      auditLogger: {
-        log: (entry: { input: string }) => audited.push(entry.input),
-      },
       settingsService: { get: () => ({ subAgentMaxRounds: 60 }) },
     },
   } as never);
@@ -367,18 +363,15 @@ describe("parent directive delivery into a live sub-agent run", () => {
   let tmpHome: string;
   let previousHome: string | undefined;
   let stores: MemoryManager[] = [];
-  let auditLoggers: AuditLogger[] = [];
 
   beforeEach(() => {
     previousHome = process.env.AVE_HOME;
     tmpHome = mkdtempSync(join(tmpdir(), "ave-parent-directive-"));
     process.env.AVE_HOME = tmpHome;
     stores = [];
-    auditLoggers = [];
   });
 
   afterEach(async () => {
-    await Promise.all(auditLoggers.map((logger) => logger.close()));
     for (const store of stores) store.sessions.closeSearchIndex();
     if (previousHome === undefined) delete process.env.AVE_HOME;
     else process.env.AVE_HOME = previousHome;
@@ -394,8 +387,6 @@ describe("parent directive delivery into a live sub-agent run", () => {
   }
 
   function runnerDeps(toolRegistry: ToolRegistry) {
-    const auditLogger = new AuditLogger();
-    auditLoggers.push(auditLogger);
     return {
       settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
       systemPromptBuilder: {
@@ -412,7 +403,6 @@ describe("parent directive delivery into a live sub-agent run", () => {
         }),
       },
       toolRegistry,
-      auditLogger,
       memoryManager: { sessions: { saveSession: () => Promise.resolve(), listSessions: () => [] } },
       ...makeConversationPermissionDeps(),
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0];

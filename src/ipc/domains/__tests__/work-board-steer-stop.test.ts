@@ -53,7 +53,6 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
     },
     workBoardEngine: { steerRun, cancelRun, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} },
     settingsService: { get: (key: string) => (key === "privacy" ? privacy : undefined) },
-    auditLogger: { log: vi.fn() },
     getMainWindow: () => window,
     getAppWindows: () => [window],
   } as unknown as IpcDeps);
@@ -175,7 +174,6 @@ function setupDecide(opts: { privacy?: { piiRedactEnabled: boolean }; continuati
     },
     workBoardEngine: { decidePlan, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} },
     settingsService: { get: (key: string) => (key === "privacy" ? (opts.privacy ?? { piiRedactEnabled: false }) : undefined) },
-    auditLogger: { log },
     getMainWindow: () => window,
     getAppWindows: () => [window],
   } as unknown as IpcDeps);

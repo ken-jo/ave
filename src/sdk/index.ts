@@ -67,7 +67,7 @@ export type UsageSummaryResult = Awaited<ReturnType<typeof handleUsageSummary>>;
 /** Usage aggregated over an explicit date range ({@link handleUsageRange}). */
 export type UsageRangeResult = Awaited<ReturnType<typeof handleUsageRange>>;
 /** Explicit date range for {@link AveClient.getUsageRange}. */
-export type UsageRangeQuery = Parameters<typeof handleUsageRange>[0];
+export type UsageRangeQuery = Parameters<typeof handleUsageRange>[1];
 
 /**
  * Raised when the dispatcher rejects a facade call (non-public channel, gated

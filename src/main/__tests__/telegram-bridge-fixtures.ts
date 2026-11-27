@@ -1,5 +1,5 @@
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
-import type { SecretStore } from "../../audit/hmac-chain.js";
+import type { SecretStore } from "../../lib/protected-secret-store.js";
 import type { TelegramBotApiResult, TelegramPolledUpdate } from "../telegram-bot-api-client.js";
 import {
   createTelegramActorDigester,

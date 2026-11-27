@@ -1,3 +1,4 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { mkdtemp, readFile, writeFile, rm, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../../main/host-resources.js";
@@ -5,7 +6,7 @@ import { tmpdir } from "node:os";
 import * as fileMentionContext from "../../handlers/file-mention-context.js";
 import { formatFileMentionReference } from "../../../shared/file-mention-reference.js";
 import { checkpointFileMutation, withCodeCheckpoint } from "../../../memory/code-checkpoints.js";
-import { beforeAll, describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { beforeAll, describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
 import { sessionUuid } from "../../../__tests__/support/session-uuid.js";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../../../contract/app-contract.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
@@ -224,7 +225,7 @@ async function registerWithGroups(
     load: (sessionId) => goalDisk.get(sessionId) ?? null,
     save: async (sessionId, goal) => { goalDisk.set(sessionId, goal); },
   });
-  const auditLogger = { log: vi.fn() };
+
   registerChatHandlers({
     conversationLoop: main,
     conversationSurfaceRuntime: createConversationSurfaceRuntime(),
@@ -236,11 +237,10 @@ async function registerWithGroups(
     },
     memoryManager,
     sessionGoalStore,
-    auditLogger,
     getMainWindow: vi.fn(() => window ?? null),
   } as unknown as Parameters<typeof registerChatHandlers>[0]);
   const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!(nativeChatFrameEvent(), ...args);
-  return { main, groups, resolveChatGroupLoop, releaseChatGroupLoop, invoke, memoryManager, sessionGoalStore, auditLogger };
+  return { main, groups, resolveChatGroupLoop, releaseChatGroupLoop, invoke, memoryManager, sessionGoalStore };
 }
 
 function fakeRenderer(): {
@@ -847,7 +847,6 @@ describe("ave:chat:* with chat groups", () => {
       resolveChatGroupLoop: vi.fn((id: string) => fakeLoop(id)),
       settingsService: { get: vi.fn(() => fakeLlmSettings()), patch: vi.fn(async () => undefined) },
       memoryManager: {},
-      auditLogger: { log: vi.fn() },
       getMainWindow: vi.fn(() => null),
     } as unknown as Parameters<typeof registerChatHandlers>[0]);
     const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!(nativeChatFrameEvent(), ...args);
@@ -954,10 +953,12 @@ describe("ave:chat:* across several main windows", () => {
   });
 
   it.each(["subframe", "unregistered window"] as const)("refuses %s group reads and mutations before they can assign approval ownership", async (kind) => {
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const appState = await import("../../../main/app-state.js");
     const primary = fakeMainWindow(1);
     appState.registerMainWindow(primary.window as never, "primary");
-    const { main, resolveChatGroupLoop, auditLogger } = await registerWithGroups(primary.window);
+    const { main, resolveChatGroupLoop } = await registerWithGroups(primary.window);
     const owner = primary.window.webContents;
     const unregistered = fakeMainWindow(99).window.webContents;
     const invalid = kind === "subframe"
@@ -976,7 +977,7 @@ describe("ave:chat:* across several main windows", () => {
       expect(main.newConversation).not.toHaveBeenCalled();
       expect(main.resetAndResume).not.toHaveBeenCalled();
       for (const channel of [CHANNELS.chat.hasProvider, CHANNELS.chat.getHistory, CHANNELS.chat.new, CHANNELS.chat.sessionResume, CHANNELS.chat.groupRelease]) {
-        expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ type: "warn", input: expect.stringContaining(channel) }));
+        expect(capture.events).toContainEqual({ event: "ipc_sender_refused", channel });
       }
       expect(approvalSurfaceRegistry.resolve(main.getSessionId())).toBe(owner);
       // A native surface adopting a cached conversation refreshes delivery.

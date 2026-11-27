@@ -1,6 +1,5 @@
 import { logPermissionEvent, permissionLogId } from "../../../lib/permission-log.js";
 /** Share the gate’s rate, dedupe, and denial state across HostApi instances. */
-import type { AuditEntry } from "../../../audit/audit-logger.js";
 import type {
   ConversationTriggerResult,
   ConversationTriggerSpec,
@@ -185,7 +184,6 @@ export interface EvaluateTriggerSpecInput {
     declared: readonly string[];
     ledger: Pick<SuggestionLedger, "isLimited" | "record">;
   };
-  auditLogger: { log(entry: AuditEntry): void };
   now?: () => number;
 }
 

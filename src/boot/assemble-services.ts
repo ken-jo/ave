@@ -65,8 +65,6 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     memoryConsolidationService: ctx.memoryConsolidationService,
     memoryMaintenanceCoordinator: ctx.memoryMaintenanceCoordinator,
     bashAstValidator: ctx.bashAstValidator,
-    auditService: ctx.auditService,
-    auditLogger: ctx.bootAuditLogger,
     postTurnHookChain: ctx.postTurnHookChain,
     approvalGate: ctx.approvalGate,
     rewireReviewerAgent: ctx.rewireReviewerAgent,
@@ -79,7 +77,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     workBoardStore: ctx.workBoardStore,
     alertsService: ctx.alertsService,
     workBoardEngine: ctx.workBoardEngine,
-    tailnetWorkDecisions: createTailnetWorkDecisions({ ...ctx, auditLogger: ctx.bootAuditLogger }),
+    tailnetWorkDecisions: createTailnetWorkDecisions(ctx),
     workBoardReport: ctx.workBoardReporter,
     sessionTasksStore: ctx.sessionTasksStore,
     sessionGoalStore: ctx.sessionGoalStore,
@@ -151,7 +149,6 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
         attempt(() => ctx.mcpGovernance.stopPolicyRefresh());
         await attemptAsync(() => ctx.mcpManager.disconnectAll());
         await attemptAsync(async () => { await closeToolInvocations(); });
-        await attemptAsync(() => ctx.auditService.stop());
         await attemptAsync(() => ctx.tracing.shutdown());
 
         if (errors.length > 0) {

@@ -10,7 +10,6 @@ import type { ApprovalGate } from "../permissions/approval-gate.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
 import { HookRunner } from "../hooks/hook-runner.js";
 import type { ScriptHookManager } from "../hooks/script-hook-manager.js";
-import { AuditLogger } from "../audit/audit-logger.js";
 import type { BashAstValidator } from "../main/bash-ast-validator.js";
 import type { PermissionDirectoryLifecycle } from "../permissions/permission-slash.js";
 import { RateLimiter } from "./pipeline/rate-limiter.js";
@@ -103,7 +102,7 @@ export class ToolExecutor {
   private readonly hookRunner: HookRunner;
   private readonly permissionManager?: PermissionManager;
   private readonly approvalGate?: ApprovalGate;
-  private readonly auditLogger: AuditLogger;
+
   private readonly rateLimiter = new RateLimiter();
   private readonly bashAstValidator?: BashAstValidator;
   private readonly scriptHookManager?: ScriptHookManager;
@@ -121,7 +120,6 @@ export class ToolExecutor {
     bashAstValidator?: BashAstValidator,
     approvalGate?: ApprovalGate,
     scriptHookManager?: ScriptHookManager,
-    auditLogger?: AuditLogger,
     sandboxFsContainedProvider?: (tool: Tool) => boolean,
     workspaceRootLifecycleProvider?: () => PermissionDirectoryLifecycle | undefined,
     pluginOperationGrants?: PluginOperationGrantCoordinator,
@@ -132,7 +130,6 @@ export class ToolExecutor {
     this.hookRunner = hookRunner ?? new HookRunner();
     this.permissionManager = permissionManager;
     this.approvalGate = approvalGate;
-    this.auditLogger = auditLogger ?? new AuditLogger();
     this.bashAstValidator = bashAstValidator;
     this.scriptHookManager = scriptHookManager;
     this.sandboxFsContainedProvider = sandboxFsContainedProvider ?? (() => false);
@@ -141,11 +138,7 @@ export class ToolExecutor {
     this.pluginGenerationAccessProvider = pluginGenerationAccessProvider ?? (() => undefined);
     this.pluginOperationIdentityProvider =
       pluginOperationIdentityProvider ?? (() => undefined);
-    this.auditWriter = new AuditWriter(
-      this.auditLogger,
-      this.toolRegistry,
-      this.scriptHookManager,
-    );
+    this.auditWriter = new AuditWriter(this.scriptHookManager);
   }
 
   getHookRunner(): HookRunner {
@@ -720,7 +713,6 @@ export class ToolExecutor {
           hookRunner: this.hookRunner,
           permissionManager: this.permissionManager,
           approvalGate: this.approvalGate,
-          auditLogger: this.auditLogger,
           rateLimiter: this.rateLimiter,
           bashAstValidator: this.bashAstValidator,
           scriptHookManager: this.scriptHookManager,

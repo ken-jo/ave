@@ -1,6 +1,5 @@
 import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
 import { randomUUID } from "node:crypto";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import type { SettingsService } from "../data/settings-store.js";
 import type { A2AMessage } from "../shared/a2a.js";
 import type { ConversationLoop } from "./conversation-loop.js";
@@ -76,7 +75,6 @@ export class A2ASubAgentMessageBus {
       parentLoop: ConversationLoop;
       mailbox: SubAgentMessageMailbox;
       settingsService: SettingsService;
-      auditLogger: AuditLogger;
       resolveChildAddress: (
         parentSessionId: string,
         childSessionId: string,

@@ -39,7 +39,7 @@ beforeEach(() => {
   Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
   vi.clearAllMocks(); state.handles.clear(); state.localConfined = true;
   state.status.mockReset().mockResolvedValue({ status: 'unconfigured' });
-  registerMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: { get: () => undefined, set: vi.fn(), hasStoredSecret: vi.fn(async () => false) } } as unknown as IpcDeps,
+  registerMemoryMapHandlers({ settingsService: { get: () => undefined, set: vi.fn(), hasStoredSecret: vi.fn(async () => false) } } as unknown as IpcDeps,
     raw => (raw as { projectRoot?: string } | undefined)?.projectRoot === '/denied' ? { ok: false, error: 'project-not-allowed' } : { ok: true, options: {} });
 });
 afterEach(() => { Object.defineProperty(process, 'platform', originalPlatform); });
@@ -55,7 +55,6 @@ describe('memory map host boundary', () => {
     let config: MemoryEmbeddingConfig = { source: 'local', localModelPath };
     const set = vi.fn(async (_key: string, value: MemoryEmbeddingConfig) => { config = value; });
     registerMemoryMapHandlers({
-      auditLogger: { log: state.audit },
       settingsService: {
         get: (key: string) => key === 'memoryEmbedding' ? config : undefined,
         hasStoredSecret: async (name: string) => name === 'llm.apiKey.openai',
@@ -89,7 +88,6 @@ describe('memory map host boundary', () => {
     const options = { projectRoot: 'D:/workspace/example' };
     let authorized = true;
     const readSource = registerMemoryMapHandlers({
-      auditLogger: { log: state.audit },
       settingsService: { get: () => undefined },
       memoryManager: { readMemoryPanelCatalog, readManagedMemoryAt },
     } as unknown as IpcDeps, () => authorized ? { ok: true, options } : { ok: false, error: 'project-not-allowed' });
@@ -107,7 +105,7 @@ describe('memory map host boundary', () => {
   it('persists only host-versioned consent and clears it when returning to local', async () => {
     let config: unknown;
     const set = vi.fn(async (_key: string, value: unknown) => { config = value; });
-    registerMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: {
+    registerMemoryMapHandlers({ settingsService: {
       get: (key: string) => key === 'memoryEmbedding' ? config : key === 'llm' ? {} : {}, set,
       hasStoredSecret: async (key: string) => key === 'llm.apiKey.openai',
     } } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
@@ -124,7 +122,7 @@ describe('memory map host boundary', () => {
     let config: unknown; let release!: () => void; let started!: () => void;
     const waiting = new Promise<void>(resolve => { release = resolve; }); const entered = new Promise<void>(resolve => { started = resolve; });
     const set = vi.fn(async (_key: string, value: { source: string }) => { if (value.source === 'provider') { started(); await waiting; } config = value; });
-    registerMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: { get: (key: string) => key === 'memoryEmbedding' ? config : {}, set, hasStoredSecret: async (key: string) => key === 'llm.apiKey.openai' } } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+    registerMemoryMapHandlers({ settingsService: { get: (key: string) => key === 'memoryEmbedding' ? config : {}, set, hasStoredSecret: async (key: string) => key === 'llm.apiKey.openai' } } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
     const old = invoke('settingsSet', { source: 'provider', providerId: 'openai', modelId: 'text-embedding-3-small', endpointId: await providerEndpointId(), consent: true }); await entered;
     const local = invoke('settingsSet', { source: 'local' }); release();
     expect(await old).toEqual({ ok: false, error: 'request-stale' }); expect(await local).toMatchObject({ ok: true });
@@ -139,7 +137,7 @@ describe('memory map host boundary', () => {
     const entered = new Promise<void>(resolve => { started = resolve; });
     const set = vi.fn();
     const transport = vi.fn();
-    registerMemoryMapHandlers({ auditLogger: { log: state.audit }, singleHopNetworkFetch: transport, settingsService: {
+    registerMemoryMapHandlers({ singleHopNetworkFetch: transport, settingsService: {
       get: (key: string) => key === 'llm' ? { vendors: { openai: { baseUrl } } } : undefined,
       set,
       hasStoredSecret: async (name: string) => {
@@ -162,7 +160,6 @@ describe('memory map host boundary', () => {
     const set = vi.fn();
     const transport = vi.fn();
     registerMemoryMapHandlers({
-      auditLogger: { log: state.audit },
       singleHopNetworkFetch: transport,
       settingsService: {
         get: (key: string) => key === 'llm' ? {

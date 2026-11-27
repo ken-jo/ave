@@ -24,7 +24,7 @@ import { configureHostResources, getConfiguredHostResources } from "./main/host-
  *
  *   steps/network-fetch-setup     Electron fetch surface (net + private + plugin
  *                                 egress chooser + SSRF-guarded LLM fetch).
- *   steps/audit-notification      shared AuditLogger + NotificationService +
+ *   steps/notifications            NotificationService +
  *                                 plugin auth-partition tracker seeding.
  *   steps/terminal-scrollback-setup  the run's one sweep of closed terminal
  *                                 tabs' kept output, then the store.
@@ -101,7 +101,7 @@ import {
 import { assertBootContextReady, createBootContext } from "./boot/context.js";
 import { assembleAppServices } from "./boot/assemble-services.js";
 import { setupNetworkFetch } from "./boot/steps/network-fetch-setup.js";
-import { setupAuditAndNotification } from "./boot/steps/audit-notification.js";
+import { setupNotifications } from "./boot/steps/notifications.js";
 import { notifyHomeBoundaryRepairs, notifyHomeConfigurationPreserved, notifyHomeTrustPending } from "./boot/steps/home-privacy-notice.js";
 import { setupTerminalScrollback } from "./boot/steps/terminal-scrollback-setup.js";
 import { setupWorkBoard } from "./boot/steps/work-board-setup.js";
@@ -294,7 +294,6 @@ export async function bootstrap(
     pythonPath,
     pythonRuntime,
     bashAstValidator,
-    auditService,
     settingsService,
     memoryManager,
     memoryUsageLog,
@@ -305,27 +304,25 @@ export async function bootstrap(
   ctx.pythonPath = pythonPath;
   ctx.pythonRuntime = pythonRuntime;
   ctx.bashAstValidator = bashAstValidator;
-  ctx.auditService = auditService;
   ctx.settingsService = settingsService;
   ctx.memoryManager = memoryManager;
   ctx.memoryCaptureService = memoryCaptureService;
   ctx.memorySaveNotices = memorySaveNotices;
   ctx.toolRegistry = toolRegistry;
 
-  // Shared AuditLogger + NotificationService + plugin auth-partition seeding.
-  await setupAuditAndNotification(ctx);
-  recordBootPhase("audit-notifications");
+  // Notification service and plugin authentication partitions.
+  await setupNotifications(ctx);
+  recordBootPhase("notifications");
   notifyHomeBoundaryRepairs(homePrivacy, ctx);
   notifyHomeConfigurationPreserved(configurationDiagnostics, ctx);
   notifyHomeTrustPending(homeTrust, ctx);
   // With the layout as settings loaded it, before any window can save another.
   setupTerminalScrollback(ctx);
 
-  // Construct the audited approval gate before services bind effect permissions.
+  // Construct the approval gate before services bind effect permissions.
   const approvalGate = await createApprovalGate(
     // Resolve the current conversation owner on delivery, listing and response.
     mainWindow === null ? null : approvalSurfaceResolver(undefined, () => host.desktop?.getAppWindows() ?? []),
-    ctx.bootAuditLogger,
     ctx.notificationService,
 
   );
@@ -515,7 +512,6 @@ export async function bootstrap(
     appVersion: getAveAppVersion(),
     home: aveHome(),
     pluginRegistryPath: resolvePluginPaths().registryPath,
-    bootAuditLogger: ctx.bootAuditLogger,
   });
 
   // PermissionManager is built BEFORE initPluginRuntime
@@ -552,7 +548,6 @@ export async function bootstrap(
   // metadata is detached and reindexed before the interactive loop is created.
   const rootReconciliation = await reconcileWorkspaceRoots({
     source: "boot",
-    auditLogger: ctx.bootAuditLogger,
     permissionManager,
     beforeRemove: async (runtimeRoot, context) => {
       const pruneOptions = { preserveRoots: context.preserveRoots };
@@ -606,7 +601,6 @@ export async function bootstrap(
     toolRegistry,
     pythonPath,
     pythonRuntime,
-    bootAuditLogger: ctx.bootAuditLogger,
     mainWindow,
     networkFetch: ctx.singleHopNetworkFetch,
     getMainWindow,
@@ -740,9 +734,7 @@ export async function bootstrap(
       }
     },
   });
-  ctx.subscriptionProviderFactory = createSubscriptionChatLoopBindings({
-    auditLogger: ctx.bootAuditLogger,
-  }).subscriptionProviderFactory;
+  ctx.subscriptionProviderFactory = createSubscriptionChatLoopBindings().subscriptionProviderFactory;
 
   // Permission policy P4 — reviewer agent + PermissionManager broadcast wiring.
   await wireReviewerAndPermissions(ctx);
@@ -884,7 +876,6 @@ export async function bootstrap(
   const { telemetry, pluginTelemetry, autoUpdaterStop } = wireReleasePrep({
     mainWindow,
     settingsService,
-    bootAuditLogger: ctx.bootAuditLogger,
     networkFetch: ctx.singleHopNetworkFetch,
     tracing: ctx.tracing,
     serviceClient,

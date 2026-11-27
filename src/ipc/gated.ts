@@ -1,6 +1,5 @@
 import { logPermissionEvent } from "../lib/permission-log.js";
 import type { IpcMainInvokeEvent } from "electron";
-import type { AuditLogger } from "../audit/audit-logger.js";
 
 
 // Accept only trusted packaged or local-dev frames; missing frames fail closed after navigation or destruction.
@@ -28,9 +27,7 @@ export const UNAUTHORIZED_FRAME = { ok: false, error: "unauthorized-frame" as co
 
 // Only log the channel for a rejected frame.
 export function auditUnauthorized(
-  _auditLogger: AuditLogger,
   channel: string,
-  _event: IpcMainInvokeEvent,
 ): void {
   logPermissionEvent("ipc_sender_refused", { channel }, "warn");
 }

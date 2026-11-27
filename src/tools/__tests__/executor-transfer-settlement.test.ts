@@ -1,3 +1,4 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -5,7 +6,6 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
 import { HookRunner } from "../../hooks/hook-runner.js";
 import { t } from "../../i18n/index.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -30,16 +30,19 @@ function deferred<T>() {
 type Interruption = "ceiling" | "user-abort";
 const INTERRUPTIONS: readonly Interruption[] = ["ceiling", "user-abort"];
 const scratch = createTmpDirTracker();
-const auditLoggers: AuditLogger[] = [];
+let logs: ReturnType<typeof collectPermissionEvents>;
 const releaseTasks: Array<() => void> = [];
 
-beforeEach(() => vi.useFakeTimers());
+beforeEach(() => {
+  vi.useFakeTimers();
+  logs = collectPermissionEvents();
+});
 
 afterEach(async () => {
   for (const release of releaseTasks.splice(0)) release();
   vi.useRealTimers();
   initPiiRedactionPolicy(() => false);
-  await Promise.all(auditLoggers.splice(0).map((logger) => logger.close()));
+  logs.restore();
   await scratch.cleanup();
 });
 
@@ -87,9 +90,6 @@ async function startInvocation(options: {
     decision: "allow", provenance: RULE_PROVENANCE,
     reason: "test invocation admitted",
     });
-  const auditLogger = new AuditLogger(join(directory, "audit"));
-  auditLoggers.push(auditLogger);
-  const auditLog = vi.spyOn(auditLogger, "log");
   const onToolEnd = vi.fn<NonNullable<ToolExecutorCallbacks["onToolEnd"]>>(
     () => { events.push("end"); },
   );
@@ -98,7 +98,7 @@ async function startInvocation(options: {
     vi.spyOn(hookRunner, "runPostHooks").mockResolvedValue(options.postFeedback);
   }
   const executor = new ToolExecutor(
-    registry, hookRunner, permissions, undefined, undefined, undefined, auditLogger,
+    registry, hookRunner, permissions, undefined, undefined, undefined,
   );
   const controller = new AbortController();
   let returned = false;
@@ -123,8 +123,7 @@ async function startInvocation(options: {
     signal,
     onToolEnd,
     returned: () => returned,
-    terminalAudits: () => auditLog.mock.calls.map(([entry]) => entry)
-      .filter((entry) => entry.toolCalls?.some((call) => call.terminationReason !== undefined)),
+    terminalLogs: () => logs.events.filter((entry) => entry.event === "permission_decision" && entry.toolUseId === "settlement-invocation" && entry.terminationReason !== undefined),
     async interrupt(reason: Interruption) {
       if (reason === "ceiling") {
         await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs);
@@ -147,13 +146,13 @@ function interruptionText(reason: Interruption): string {
 }
 
 describe.each(INTERRUPTIONS)("builtin cancellation settlement after %s", (reason) => {
-  it("waits for cleanup before result, terminal audit, and tool-end, retaining incomplete cleanup", async () => {
+  it("waits for cleanup before result, terminal log, and tool-end, retaining incomplete cleanup", async () => {
     const invocation = await startInvocation();
     await invocation.interrupt(reason);
     expect(invocation.signal.aborted).toBe(true);
     expect(invocation.returned()).toBe(false);
     expect(invocation.onToolEnd).not.toHaveBeenCalled();
-    expect(invocation.terminalAudits()).toEqual([]);
+    expect(invocation.terminalLogs()).toEqual([]);
 
     const cleanupReport = {
       ok: false,
@@ -176,11 +175,9 @@ describe.each(INTERRUPTIONS)("builtin cancellation settlement after %s", (reason
     expect(end[1]).toBe(result.content);
     expect(end[2]).toBe(true);
     expect(end[3].cancelled).toBe(reason === "user-abort" ? true : undefined);
-    const [audit] = invocation.terminalAudits();
-    expect(audit.output).toContain('"cleanup":"incomplete"');
-    // The audit carries the report as JSON, which escapes win32 separators.
-    expect(audit.output).toContain(JSON.stringify(cleanupReport.residualPaths[0]));
-    expect(audit.toolCalls?.[0]).toMatchObject({ terminationReason: reason, isError: true });
+    const terminal = invocation.terminalLogs();
+    expect(terminal).toEqual([expect.objectContaining({ terminationReason: reason, isError: true })]);
+    expect(JSON.stringify(terminal)).not.toContain("foreign.txt");
   });
 
   it("retains a reported rollback without manufacturing a cleanup status", async () => {
@@ -213,7 +210,7 @@ describe.each(INTERRUPTIONS)("builtin cancellation settlement after %s", (reason
     expect(result).not.toHaveProperty("uiPayload");
     expect(result).not.toHaveProperty("image");
     expect(invocation.onToolEnd.mock.calls[0]?.[4]).toBeUndefined();
-    expect(invocation.terminalAudits()[0].toolCalls?.[0].terminationReason).toBe(reason);
+    expect(invocation.terminalLogs()[0].terminationReason).toBe(reason);
   });
 
   it("reports the actual late thrown error while preserving the interruption", async () => {
@@ -229,7 +226,7 @@ describe.each(INTERRUPTIONS)("builtin cancellation settlement after %s", (reason
     expect(result.is_error).toBe(true);
     expect(result.content).not.toContain("private-stack-only");
     expect(result.content).not.toContain('"cleanup":"removed"');
-    expect(invocation.terminalAudits()[0].toolCalls?.[0].terminationReason).toBe(reason);
+    expect(invocation.terminalLogs()[0].terminationReason).toBe(reason);
   });
 
   it.each(["result", "error"] as const)("bounds oversized settled %s details", async (kind) => {
@@ -243,7 +240,7 @@ describe.each(INTERRUPTIONS)("builtin cancellation settlement after %s", (reason
     expect(result.content.startsWith(prefix)).toBe(true);
     expect(result.content.length - prefix.length).toBe(TOOL_RESULT_READ_MAX_CHARS);
     expect(result.content.endsWith("[Settled detail truncated]")).toBe(true);
-    expect(invocation.terminalAudits()[0].output?.length).toBeLessThanOrEqual(1024);
+    expect(invocation.terminalLogs()[0]).not.toHaveProperty("output");
   });
 
   it("keeps a settled result's notice after the cut, inside the same bound", async () => {
@@ -273,8 +270,10 @@ describe.each(INTERRUPTIONS)("builtin cancellation settlement after %s", (reason
     const [result] = await invocation.execution;
     expect(result.content).toContain(detail);
     const display = invocation.onToolEnd.mock.calls[0]?.[1];
-    const audit = invocation.terminalAudits()[0].output;
-    for (const surface of [display, audit]) {
+    const output = JSON.stringify(invocation.terminalLogs());
+    expect(output).not.toContain(credential);
+    expect(output).not.toContain("transfer.user@example.com");
+    for (const surface of [display]) {
       expect(surface).not.toContain(credential);
       expect(surface).toContain("[REDACTED:TOKEN]");
       if (pii) {
@@ -302,7 +301,6 @@ describe.each(INTERRUPTIONS)("builtin cancellation settlement after %s", (reason
     else expect(result.content).not.toContain(postFeedback);
     for (const surface of [
       invocation.onToolEnd.mock.calls[0]?.[1],
-      invocation.terminalAudits()[0].output,
     ]) {
       expect(surface).not.toContain("testcredential");
       expect(surface).toContain("[REDACTED:TOKEN]");
@@ -338,7 +336,7 @@ describe.each(INTERRUPTIONS)("an ordinary handler still settling after %s", (rea
     const [result] = await invocation.execution;
     invocation.task.resolve({ output: "late success", isError: false });
     expect(result.is_error).toBe(true);
-    expect(invocation.terminalAudits()[0].toolCalls?.[0]).toMatchObject({ terminationReason: reason, isError: true });
+    expect(invocation.terminalLogs()[0]).toMatchObject({ terminationReason: reason, isError: true });
   });
 });
 
@@ -349,7 +347,7 @@ describe("builtin cancellation marker boundary", () => {
     const [result] = await invocation.execution;
     expect(result.content).toBe("completed");
     expect(result.is_error).toBeUndefined();
-    expect(invocation.terminalAudits()[0].toolCalls?.[0].terminationReason).toBe("ok");
+    expect(invocation.terminalLogs()[0].terminationReason).toBe("ok");
   });
 
   it("leaves an ordinary thrown task classified as an error", async () => {
@@ -358,7 +356,7 @@ describe("builtin cancellation marker boundary", () => {
     const [result] = await invocation.execution;
     expect(result.content).toBe("task failed before interruption");
     expect(result.is_error).toBe(true);
-    expect(invocation.terminalAudits()[0].toolCalls?.[0].terminationReason).toBe("error");
+    expect(invocation.terminalLogs()[0].terminationReason).toBe("error");
   });
 
   it.each(["plugin", "mcp"] as const)("does not copy a %s descriptor's forged marker", (source) => {

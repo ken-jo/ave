@@ -35,7 +35,6 @@ function invoke(channel: string, event: unknown, ...args: unknown[]): unknown {
   return invokeRegisteredHandlerWithEvent(handlers, channel, event, ...args);
 }
 
-const mockAuditLogger = { log: vi.fn(), search: vi.fn(), getStats: vi.fn(), flush: vi.fn(async (): Promise<void> => {}) };
 const mockSessions = { listSessions: vi.fn(), loadSession: vi.fn() };
 const mockGenerateText = vi.fn(async () => "AI daily summary");
 const noCorrections = (key: string) => (key === "llm" ? {} : undefined);
@@ -43,7 +42,6 @@ const mockSettingsGet = vi.fn(noCorrections);
 
 function makeMinimalDeps() {
   return {
-    auditLogger: mockAuditLogger,
     memoryManager: { sessions: mockSessions },
     conversationLoop: { generateText: mockGenerateText },
     getMainWindow: () => null,

@@ -1,7 +1,6 @@
 import { logPermissionEvent } from "../lib/permission-log.js";
 import { admitToolInvocationWhileOpen } from "../tools/invocation-ledger.js";
 import { randomUUID } from "node:crypto";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import { t } from "../i18n/index.js";
 import { isExternalOrigin, type ExternalOrigin, type TrustOrigin } from "../contract/trust-origin.js";
 import { admitApprovalAnswer, approvalFailureKind, type ApprovalGate, type ApprovalRequestInput } from "./approval-gate.js";
@@ -97,7 +96,6 @@ const EXTERNAL_CHANNEL_FORBIDDEN_MODES: readonly ExecutionMode[] = ["allow"];
 interface PermissionModeApplyDeps {
     permissionManager: PermissionManager;
     approvalGate?: ApprovalGate;
-    auditLogger?: Pick<AuditLogger, "isPermissionAuditChainReady" | "appendPermissionAuditEntry">;
     approvalBypass?: PermissionModeApprovalBypass;
     rewireReviewerAgent?: () => Promise<void>;
     reviewerSettingsPath?: string;

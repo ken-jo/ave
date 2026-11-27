@@ -1,4 +1,3 @@
-import { logPermissionEvent } from "../../lib/permission-log.js";
 /** Build before plugins start so registration and uninstall replay see the alert service; main starts expiry later. */
 import { AlertsService } from "../../alerts/service.js";
 import { predecessorBlocks } from "../../alerts/gate.js";
@@ -109,7 +108,6 @@ export async function setupAlerts(ctx: BootContext): Promise<() => void> {
     },
     notifications: notificationService,
     emit: emitEvent,
-    audit: (_entry) => logPermissionEvent("alert_transition", {}),
     kindsChanged: () => {
       try {
         liveWindow()?.webContents.send(ALERTS.kindsChanged);

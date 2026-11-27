@@ -1,13 +1,10 @@
 import { watchPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { makeMcpTrustManager } from "../../__tests__/support/mcp-trust.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promises as fileSystem } from "node:fs";
-import { McpManager } from "../mcp-manager.js";
-import { McpGovernance } from "../mcp-governance.js";
-import { ToolRegistry } from "../../tools/registry.js";
-import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { userServerApproval, userServerFingerprint, userServerTrustSecretId } from "../user-server-trust.js";
 import { bundledCredentialKey } from "../bundled-credential.js";
 import type { McpServerConfig } from "../types.js";
@@ -33,8 +30,7 @@ const secrets = { getSecret: vi.fn(async (key: string) => stored.get(key) ?? nul
   deleteSecret: vi.fn(async (key: string) => { stored.delete(key); }) };
 const config: McpServerConfig = { id: "local-notes", transport: "stdio", command: "notes-server", args: ["--profile", "team alpha"], env: { PROFILE: "team" } };
 function manager() {
-  return new McpManager(new McpGovernance(policyPath), new ToolRegistry(), unusedNetworkFetch, configPath,
-    undefined, undefined, undefined, secrets);
+  return makeMcpTrustManager(policyPath, configPath, secrets);
 }
 
 beforeEach(async () => {
@@ -259,7 +255,7 @@ describe("user server configuration transactions", () => {
     await owner.addConfig(config);
     const trusted = vi.fn(() => { throw new Error("Log sink unavailable"); });
     const capture = watchPermissionEvents((entry) => {
-      if (entry.event === "mcp_server_trust_requested") trusted(entry);
+      if (entry.event === "mcp_server_trust_requested") trusted();
     });
     try {
       await expect(owner.startServer(config.id, "stale-fingerprint")).rejects.toThrow("mcp-trust-stale");

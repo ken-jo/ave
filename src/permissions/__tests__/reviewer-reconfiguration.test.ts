@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
-import { judgeSettings, scriptedStage, collectingAudit } from "../judge/__tests__/judge-request-fixture.js";
+import { judgeSettings, scriptedStage } from "../judge/__tests__/judge-request-fixture.js";
 import { dispatchPermissionReviewerCommandWithRewire } from "../permission-slash.js";
 import { readPermissionSettings } from "../permission-settings-store.js";
 import { PermissionTestResources } from "./test-resources.js";
@@ -27,7 +27,7 @@ function subject(customJudge = false) {
     const stage = scriptedStage("old-custom");
     manager.setJudge({ settings: judgeSettings({ chain: customJudge ? [stage] : [], categories: { shell: true, write: true, network: true } }),
       chain: customJudge ? [{ settings: stage, judge: { id: "old-custom", version: "fixture", judge } }] : [],
-      breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger });
+      breaker: manager.getJudgeBreaker() });
   };
   configure();
   let invocation = 0;

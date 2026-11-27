@@ -19,7 +19,7 @@ function unattended<T>(run: () => T): T {
 async function withLiveGate(run: (gate: ApprovalGate) => Promise<void>): Promise<void> {
   const surface = makeMockWebContents();
   const audit = { log: vi.fn() };
-  const gate = new ApprovalGate(surface as never, undefined, 25, audit as never);
+  const gate = new ApprovalGate(surface as never, undefined, 25);
   const remote = { onPending: vi.fn(), onSettled: vi.fn() };
   const unobserve = gate.observePendingApprovals(remote);
   try {

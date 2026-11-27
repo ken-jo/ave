@@ -16,15 +16,6 @@ function limiterOf(executor: ToolExecutor): RateCheck {
   return (executor as unknown as { rateLimiter: RateCheck }).rateLimiter;
 }
 
-const noopAuditLogger = {
-  log: vi.fn(),
-  isPermissionAuditChainReady: vi.fn(() => false),
-  assertPermissionAuditWritable: vi.fn(),
-  appendPermissionAuditEntry: vi.fn(async (entry: Record<string, unknown>) => ({ ...entry, prevHash: "h" })),
-  isShadowChannelWritable: vi.fn(() => true),
-  getPermissionShadowLogFile: vi.fn(() => "/tmp/shadow.jsonl"),
-};
-
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -80,7 +71,6 @@ describe("rate limiting observable through ToolExecutor.executeAll", () => {
       undefined,
       undefined,
       undefined,
-      noopAuditLogger as never,
     );
 
     // Drain the executor's own bucket to exercise its rate-limit gate.

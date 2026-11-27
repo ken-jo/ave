@@ -65,7 +65,7 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
   const handle = <T>(channel: string, run: (...args: unknown[]) => Promise<T>): void => {
     ipcMain.handle(channel, async (event: IpcMainInvokeEvent, ...args: unknown[]) => {
       if (!validateHostRendererSender(event)) {
-        auditUnauthorized(deps.auditLogger, channel, event);
+        auditUnauthorized(channel);
         return UNAUTHORIZED_FRAME;
       }
       return result(() => run(...args));

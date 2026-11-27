@@ -99,7 +99,7 @@ import {
   dispatchPermissionDirCommand,
   type PermissionDirectoryLifecycle,
 } from "../permissions/permission-slash.js";
-import type { HookResult, ToolExecutionAuditMetadata } from "../audit/audit-schema.js";
+import type { HookResult, ToolExecutionAuditMetadata } from "./pipeline/permission-decision.js";
 import type { EffectLedger } from "../permissions/effect-ledger.js";
 import { currentToolExecutionCwd, runWithToolExecutionCwd } from "./execution-context.js";
 import { withShellSessionCwd } from "./shell-session-cwd.js";

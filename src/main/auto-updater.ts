@@ -4,7 +4,6 @@ import { createRequire } from "node:module";
 import { app, shell } from "electron";
 import { showNativeMessage } from "./desktop-approval-presentation.js";
 import type { BaseWindow, IpcMain, IpcMainInvokeEvent } from "electron";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import { auditUnauthorized, validateHostRendererSender } from "../ipc/gated.js";
 import { createLogger } from "../lib/logger.js";
 import { t } from "../i18n/index.js";
@@ -28,8 +27,6 @@ export interface AutoUpdaterDeps {
   getWindows: () => Array<BaseWindow & { readonly webContents: import("electron").WebContents }>;
   // The window the install confirmation is parented to — the one in use — or null.
   getDialogParent: () => BaseWindow | null;
-  auditLogger: AuditLogger;
-  // Settings accessor — re-read on every tick so user can toggle at runtime.
   isEnabled: () => boolean;
   // Injectable updater (test seam). In production we dynamically require `electron-updater` so unit tests don't need the native dep.
   updaterFactory?: () => UpdaterLike;
@@ -274,9 +271,9 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
   // Remove IPC handlers on stop to avoid duplicate registration after restart; commands are inert when the updater is unavailable.
   const rejectUnauthorizedIpc = (
     channel: typeof CHANNELS.update.checkNow | typeof CHANNELS.update.downloadNow | typeof CHANNELS.update.installNow | typeof CHANNELS.update.skipVersion,
-    event: IpcMainInvokeEvent,
+    _event: IpcMainInvokeEvent,
   ): { ok: false; reason: "unauthorized-frame" } => {
-    auditUnauthorized(deps.auditLogger, channel, event);
+    auditUnauthorized(channel);
     return { ok: false, reason: "unauthorized-frame" };
   };
 

@@ -71,7 +71,6 @@ function makeBus(options: {
       acknowledge: vi.fn(options.acknowledge ?? (async () => 0)),
     } as unknown as SubAgentMessageMailbox,
     settingsService: { get: () => ({ subAgentAutonomousWake: true }) } as never,
-    auditLogger: { log: options.audit } as never,
     resolveChildAddress: async () => ({
       parentSessionId: PARENT,
       childSessionId: "sub-child",

@@ -42,7 +42,6 @@ function makeBus(overrides: {
     settingsService: {
       get: () => ({ subAgentAutonomousWake: overrides.wakeFlag ?? true }),
     } as never,
-    auditLogger: { log: overrides.audit } as never,
     resolveChildAddress: vi.fn(async () => address),
   });
   if (overrides.registerHandler !== false) {

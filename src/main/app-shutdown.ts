@@ -255,13 +255,13 @@ async function finishIncompleteBootShutdown(result: { status: "completed" | "fai
   return result.status;
 }
 
-const FORCED_AUDIT_COMMIT_RESERVE_MS = 2_000;
+const FORCED_INVOCATION_COMMIT_RESERVE_MS = 2_000;
 
 export async function runAppShutdownCleanup(options: {
   reason: "before-quit" | "app-update-install";
   exitOnTimeout: boolean;
   resourceStartup?: { settled: Promise<void>; cancel(): void };
-  auditCommitReserveMs?: number;
+  invocationCommitReserveMs?: number;
 }): Promise<AppShutdownCleanupOutcome> {
   let svc = getServices();
   if ((!svc && !options.resourceStartup) || isAppShutdownCompleted()) return "skipped";
@@ -408,8 +408,7 @@ export async function runAppShutdownCleanup(options: {
 
     const cardGates = [svc.approvalGate, svc.askUserQuestionGate];
     const drainAfterForceKill = async (): Promise<void> => {
-      // The graceful deadline also bounds audit draining. Claimed queued tools start inside the seal and queue their
-      // host-shutdown rows before the close below, which drains them; dropping the claims would lose those rows.
+      // Start queued tool claims at the seal so the host can settle them.
       try { sealToolInvocations(); } catch (error) {
         log.warn("shutdown: tool invocation seal failed: %s", errorMessage(error));
       }
@@ -419,10 +418,9 @@ export async function runAppShutdownCleanup(options: {
           log.warn("shutdown: parked card cancel failed: %s", errorMessage(error));
         }
       }
-      // Executors still parked cannot resume: the host enqueues their terminal rows, the sink closes after every enqueued
-      // append, and a commit the reserve cannot cover is logged as its own audit failure before exit.
+      // Claim terminal outcomes for executors that are still parked.
       const outcome = await drainToolInvocationsForExit(
-        options.auditCommitReserveMs ?? FORCED_AUDIT_COMMIT_RESERVE_MS,
+        options.invocationCommitReserveMs ?? FORCED_INVOCATION_COMMIT_RESERVE_MS,
       );
       if (outcome !== "committed") {
         log.error({ outcome, ...unsettledTerminalTools() }, "permission terminal rows did not settle before exit");

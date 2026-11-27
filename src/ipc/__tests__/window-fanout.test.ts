@@ -1,3 +1,4 @@
+import { collectPermissionEvents, watchPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { describe, expect, it, vi } from "vitest";
 import { fanOutToAllWindows } from "../window-fanout.js";
 import { liveWindow, type FakeBrowserWindow } from "../../__tests__/test-helpers.js";
@@ -56,55 +57,25 @@ describe("fanOutToAllWindows", () => {
     );
   });
 
-  it("emits one info audit row with channel + delivered count", () => {
-    const auditLogger = { log: vi.fn() };
-    const w1 = liveWindow();
-    const w2 = liveWindow();
-
-    fanOutToAllWindows([w1, w2] as never, "ave:test", undefined, {
-      auditLogger,
-    });
-
-    expect(auditLogger.log).toHaveBeenCalledTimes(1);
-    expect(auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "info",
-        sessionId: "ipc",
-        input: "[broadcast] channel=ave:test delivered=2/2",
-      }),
-    );
+  it("emits channel and inbox count for an observed broadcast", () => {
+    const capture = collectPermissionEvents();
+    try {
+      const windows = [liveWindow(), liveWindow()];
+      expect(fanOutToAllWindows(windows as never, "ave:test", { payload: "secret-canary" }, { auditSessionId: "auth" })).toBe(2);
+      expect(capture.events).toEqual([{ event: "ipc_broadcast", sessionId: "auth", channel: "ave:test", delivered: 2 }]);
+    } finally {
+      capture.restore();
+    }
   });
 
-  it("uses the supplied auditSessionId", () => {
-    const auditLogger = { log: vi.fn() };
-
-    fanOutToAllWindows([liveWindow()] as never, "ave:test", undefined, {
-      auditLogger,
-      auditSessionId: "auth",
-    });
-
-    expect(auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: "auth" }),
-    );
-  });
-
-  it("does not break the broadcast when the audit logger throws", () => {
-    const auditLogger = {
-      log: () => {
-        throw new Error("audit sink down");
-      },
-    };
-    const w1 = liveWindow();
-
-    const delivered = fanOutToAllWindows([w1] as never, "ave:test", { x: 1 }, { auditLogger });
-
-    expect(delivered).toBe(1);
-    expect(w1.webContents.send).toHaveBeenCalledWith("ave:test", { x: 1 });
-  });
-
-  it("does not emit an audit row when no auditLogger is supplied", () => {
-    const w1 = liveWindow();
-    const delivered = fanOutToAllWindows([w1] as never, "ave:test", undefined);
-    expect(delivered).toBe(1);
+  it("delivers the broadcast when logging throws", () => {
+    const sink = watchPermissionEvents(() => { throw new Error("Log sink unavailable"); });
+    try {
+      const window = liveWindow();
+      expect(fanOutToAllWindows([window] as never, "ave:test", { x: 1 }, { auditSessionId: "auth" })).toBe(1);
+      expect(window.webContents.send).toHaveBeenCalledWith("ave:test", { x: 1 });
+    } finally {
+      sink.mockRestore();
+    }
   });
 });

@@ -18,7 +18,6 @@ import {
 import { errorMessage } from "../../shared/error-message.js";
 import { createLogger } from "../../lib/logger.js";
 import type { IpcDeps } from "../types.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 
 const log = createLogger("home-docs-ipc");
 
@@ -41,18 +40,18 @@ export interface HomeDocsStatus {
   mergedContent: string | null;
 }
 
-function auditHomeDocs(_auditLogger: AuditLogger, _detail: Record<string, unknown>): void {
+function auditHomeDocs(_detail: Record<string, unknown>): void {
   logPermissionEvent("home_docs_action", { sessionId: permissionLogId("home-docs") });
 }
 
 export function registerHomeDocsHandlers(deps: IpcDeps): void {
-  const { auditLogger, memoryManager, settingsService } = deps;
+  const { memoryManager, settingsService } = deps;
 
   const keepLatest = (): boolean => settingsService.get("homeDocs").keepLatest;
 
   ipcMain.handle(CHANNELS.homeDocs.upgradeMarkersList, (event) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, CHANNELS.homeDocs.upgradeMarkersList, event);
+      auditUnauthorized(CHANNELS.homeDocs.upgradeMarkersList);
       return UNAUTHORIZED_FRAME;
     }
     // Re-scan markers on each request; the user may have resolved offers since boot.
@@ -73,7 +72,7 @@ export function registerHomeDocsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.homeDocs.markerRead, (event, markerPath: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, CHANNELS.homeDocs.markerRead, event);
+      auditUnauthorized(CHANNELS.homeDocs.markerRead);
       return UNAUTHORIZED_FRAME;
     }
     if (typeof markerPath !== "string") {
@@ -90,7 +89,7 @@ export function registerHomeDocsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.homeDocs.packagedApply, async (event, markerPath: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, CHANNELS.homeDocs.packagedApply, event);
+      auditUnauthorized(CHANNELS.homeDocs.packagedApply);
       return UNAUTHORIZED_FRAME;
     }
     if (typeof markerPath !== "string") {
@@ -114,7 +113,7 @@ export function registerHomeDocsHandlers(deps: IpcDeps): void {
       }
       await memoryManager.updateAgentsMd(content);
       retireAppliedAveHomeDocUpgradeMarkers(markerPath, content);
-      auditHomeDocs(auditLogger, {
+      auditHomeDocs({
         action: "apply-packaged",
         markerPath,
         keepLatest: keepLatest(),
@@ -129,7 +128,7 @@ export function registerHomeDocsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.homeDocs.markerKeepMine, (event, markerPath: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, CHANNELS.homeDocs.markerKeepMine, event);
+      auditUnauthorized(CHANNELS.homeDocs.markerKeepMine);
       return UNAUTHORIZED_FRAME;
     }
     if (typeof markerPath !== "string") {
@@ -137,13 +136,13 @@ export function registerHomeDocsHandlers(deps: IpcDeps): void {
     }
     const removed = discardAveHomeDocUpgradeMarker(markerPath);
     if (!removed) return { ok: false, error: "unknown-upgrade-marker" } as const;
-    auditHomeDocs(auditLogger, { action: "keep-mine", markerPath });
+    auditHomeDocs({ action: "keep-mine", markerPath });
     return { ok: true } as const;
   });
 
   ipcMain.handle(CHANNELS.homeDocs.customGet, (event) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, CHANNELS.homeDocs.customGet, event);
+      auditUnauthorized(CHANNELS.homeDocs.customGet);
       return UNAUTHORIZED_FRAME;
     }
     return memoryManager.getAgentsCustomMd();
@@ -151,7 +150,7 @@ export function registerHomeDocsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.homeDocs.customUpdate, async (event, content: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, CHANNELS.homeDocs.customUpdate, event);
+      auditUnauthorized(CHANNELS.homeDocs.customUpdate);
       return UNAUTHORIZED_FRAME;
     }
     if (typeof content !== "string") {
@@ -163,7 +162,7 @@ export function registerHomeDocsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.homeDocs.mergeRun, async (event, markerPath: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, CHANNELS.homeDocs.mergeRun, event);
+      auditUnauthorized(CHANNELS.homeDocs.mergeRun);
       return UNAUTHORIZED_FRAME;
     }
     const mergeService = deps.agentsDocMergeService;
@@ -186,7 +185,7 @@ export function registerHomeDocsHandlers(deps: IpcDeps): void {
 
     try {
       const result = await mergeService.merge({ packaged, custom });
-      auditHomeDocs(auditLogger, {
+      auditHomeDocs({
         action: "merge",
         ...(typeof markerPath === "string" ? { markerPath } : {}),
         keepLatest: keepLatest(),
@@ -207,7 +206,7 @@ export function registerHomeDocsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.homeDocs.mergeApply, async (event, expectedContent: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, CHANNELS.homeDocs.mergeApply, event);
+      auditUnauthorized(CHANNELS.homeDocs.mergeApply);
       return UNAUTHORIZED_FRAME;
     }
     const mergeService = deps.agentsDocMergeService;
@@ -225,13 +224,13 @@ export function registerHomeDocsHandlers(deps: IpcDeps): void {
     if (!applied) return { ok: false, error: "agents-doc-changed" } as const;
 
     mergeService.discardMerged();
-    auditHomeDocs(auditLogger, { action: "apply-merged", keepLatest: keepLatest() });
+    auditHomeDocs({ action: "apply-merged", keepLatest: keepLatest() });
     return { ok: true } as const;
   });
 
   ipcMain.handle(CHANNELS.homeDocs.mergeDiscard, (event) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(auditLogger, CHANNELS.homeDocs.mergeDiscard, event);
+      auditUnauthorized(CHANNELS.homeDocs.mergeDiscard);
       return UNAUTHORIZED_FRAME;
     }
     deps.agentsDocMergeService?.discardMerged();

@@ -130,7 +130,6 @@ interface TextPreviewRequest {
 
 export function registerPreviewHandlers(deps: IpcDeps): void {
   registerDocumentOpenHandlers(deps);
-  const { auditLogger } = deps;
   const observation = installDocumentObservation(deps);
   const finishPreview = (e: IpcMainInvokeEvent, sessionId: unknown, resolved: string, bytes: Buffer | undefined,
     document: ObservedDocument | undefined, recordAccess: boolean): (() => ObservationBinding | undefined) => {
@@ -152,14 +151,14 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
   const textRequests = new Map<string, TextPreviewRequest>();
   ipcMain.handle(CHANNELS.preview.observationAck, (e, request: unknown) => {
     if (!validateAppWindowMainFrameSender(e, deps)) {
-      auditUnauthorized(auditLogger, CHANNELS.preview.observationAck, e);
+      auditUnauthorized(CHANNELS.preview.observationAck);
       return { ok: false, error: "unauthorized" };
     }
     return observation.acknowledge(e, request);
   });
   ipcMain.handle(CHANNELS.preview.observationPreview, (e, request: unknown) => {
     if (!validateAppWindowMainFrameSender(e, deps)) {
-      auditUnauthorized(auditLogger, CHANNELS.preview.observationPreview, e);
+      auditUnauthorized(CHANNELS.preview.observationPreview);
       return { ok: false, error: "unauthorized" };
     }
     return observation.browserPreview(e, request);
@@ -169,7 +168,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
     CHANNELS.preview.readFile,
     async (e, rawPath: string, rawWindow?: unknown): Promise<PreviewReadFileResult> => {
       if (!validateAppWindowMainFrameSender(e, deps)) {
-        auditUnauthorized(auditLogger, CHANNELS.preview.readFile, e);
+        auditUnauthorized(CHANNELS.preview.readFile);
         return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
       }
       if (typeof rawPath !== "string" || rawPath.length === 0) {
@@ -271,7 +270,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
           // — a file left the sandbox boundary for display. The path is redacted
           // (username stripped) via the shared DLP filter, consistent with the
           // frame-guard audit above.
-          logPermissionEvent("preview_read_allowed", { sessionId: permissionLogId("preview-read"), channel: permissionLogId(CHANNELS.preview.readFile) });
+          logPermissionEvent("preview_read_allowed", { sessionId: permissionLogId("preview-read"), channel: CHANNELS.preview.readFile });
           if (request && (request.controller.signal.aborted || textRequests.get(ownerKey!) !== request)) {
             return { ok: false, error: "read-failed", message: "Preview read was superseded." };
           }
@@ -306,7 +305,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
     CHANNELS.preview.readDocument,
     async (e, rawPath: unknown, sheetIndex: unknown, sessionId?: unknown): Promise<PreviewReadDocumentResult> => {
       if (!validateAppWindowMainFrameSender(e, deps)) {
-        auditUnauthorized(auditLogger, CHANNELS.preview.readDocument, e);
+        auditUnauthorized(CHANNELS.preview.readDocument);
         return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
       }
       const frame = e.senderFrame;
@@ -352,7 +351,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
             const bytes = await readJudgedDocumentInput(resolved, slot.signal);
             inputBytes = bytes.length;
             if (!validateAppWindowMainFrameSender(e, deps)) {
-              auditUnauthorized(auditLogger, CHANNELS.preview.readDocument, e);
+              auditUnauthorized(CHANNELS.preview.readDocument);
               return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
             }
             engine = observation.acquirePreviewEngine(e, sessionId, resolved, async (input, inputFormat, index, signal) => {
@@ -364,10 +363,10 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
             });
             const document = await engine.parse(bytes, format, sheetIndex, slot.signal);
             if (!validateAppWindowMainFrameSender(e, deps)) {
-              auditUnauthorized(auditLogger, CHANNELS.preview.readDocument, e);
+              auditUnauthorized(CHANNELS.preview.readDocument);
               return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
             }
-            logPermissionEvent("preview_read_allowed", { sessionId: permissionLogId("preview-read"), channel: permissionLogId(CHANNELS.preview.readDocument) });
+            logPermissionEvent("preview_read_allowed", { sessionId: permissionLogId("preview-read"), channel: CHANNELS.preview.readDocument });
             const judge = (): PreviewReadDocumentResult | (() => ObservationBinding | undefined) => {
               const currentVerdict = checkPreviewReadPath(resolved);
               if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {

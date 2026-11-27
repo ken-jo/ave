@@ -30,7 +30,7 @@ function getHandler(channel: string) {
 async function register() {
   const { registerPluginsHandlers } = await import("../plugins.js");
   registerPluginsHandlers({ pluginRuntime: { subscribePluginStateChange: vi.fn(() => () => undefined) },
-    mcpManager: { startServer, undoRemove, clearApiKey, clearBundledApiKey, bundledCredentialRefForConfigId }, auditLogger: { log: audit } } as unknown as IpcDeps);
+    mcpManager: { startServer, undoRemove, clearApiKey, clearBundledApiKey, bundledCredentialRefForConfigId } } as unknown as IpcDeps);
   const contents = Object.assign(new EventEmitter(), { mainFrame: hostFrameEvent().senderFrame });
   securitySettingsGestures.observe(contents as never);
   return { contents, event: { sender: contents, senderFrame: contents.mainFrame } };

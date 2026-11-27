@@ -21,15 +21,6 @@ function turn(partial: Partial<UsageTurnEntry>): UsageTurnEntry {
   };
 }
 
-function summaryWithInput(inputTokens = 100): ReturnType<typeof computeUsageSummary> {
-  return computeUsageSummary([
-    turn({
-      timestamp: "2026-07-04T01:00:00Z",
-      tokenUsage: { inputTokens, outputTokens: 10 },
-    }),
-  ], new Date("2026-07-04T12:00:00Z"));
-}
-
 it("classifies label-only usage as unpriced in totals and projections", () => {
   const summary = computeUsageSummary([turn({
     route: "openai/gpt-5.4",

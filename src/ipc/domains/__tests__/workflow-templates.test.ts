@@ -47,7 +47,7 @@ function setup(extra: Partial<IpcDeps> = {}) {
     writeTemplateAttachment: vi.fn(async (_id: string, _scope: TemplateScope, write: () => Promise<unknown>) => write()),
     withTemplateSchedule: vi.fn(async (_id: string, action: (remove: () => Promise<boolean>) => Promise<unknown>) => action(remove)),
   };
-  const deps = { workflowTemplateStore: store, toolRegistry: new ToolRegistry(), routinesStore, auditLogger: { log: auditLog }, getMainWindow: () => window, getAppWindows: () => [window], ...extra } as unknown as IpcDeps;
+  const deps = { workflowTemplateStore: store, toolRegistry: new ToolRegistry(), routinesStore, getMainWindow: () => window, getAppWindows: () => [window], ...extra } as unknown as IpcDeps;
   registerWorkBoardHandlers(deps);
   registerRoutineHandlers(deps);
   return { store, auditLog, remove, event: { sender, senderFrame: sender.mainFrame } };

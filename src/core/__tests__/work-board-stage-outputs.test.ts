@@ -10,7 +10,7 @@ import { deferred } from "../../__tests__/support/deferred.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 import { governedWorkflowOutput } from "../../boot/steps/workflow-output-invocation.js";
-import { AuditLogger } from "../../audit/audit-logger.js";
+
 import { makeConversationLoopSettings } from "../../engine/__tests__/conversation-loop-test-helpers.js";
 import { makeSubagentLoopDeps, patchLoopProvider } from "../../engine/__tests__/support/subagent-loop-fixtures.js";
 import { PARENT_ALL_TOOL_SCOPE, exactToolScope, SubAgentRunner } from "../../engine/subagent-runner.js";
@@ -116,7 +116,7 @@ async function withRunner(body: (fixture: {
   permissionManager.setMode("strict");
   const runner = new SubAgentRunner({
     parentDeps: makeSubagentLoopDeps(registry, { approvalGate: gate, permissionManager, settingsService: makeConversationLoopSettings(false),
-      auditLogger: new AuditLogger(), networkFetch: unusedNetworkFetch }),
+      networkFetch: unusedNetworkFetch }),
     toolRegistry: registry, subAgentMemoryManager: new MemoryManager({ aveDir: join(h.dir, "children") }),
   });
   try { await body({ runner, registry, cwd: h.dir, tools, approval: approval.promise, gate, execute }); }
@@ -243,7 +243,7 @@ async function withOutputExecutor(
     if (channel === IPC_APPROVAL_SETTLED && "requestId" in request) settled.resolve(request.requestId);
   });
   const gate = new ApprovalGate(sessionId => approvalSurfaceRegistry.resolve(sessionId));
-  const audit = new AuditLogger(join(h.dir, "audit"));
+
   const registry = new ToolRegistry();
   const handler = vi.fn(async (_name: string, _input: Record<string, unknown>) => {
     events.push("handler");
@@ -275,9 +275,8 @@ async function withOutputExecutor(
       acquireExact: async () => ({ generation: { state: { runtime: { instance: { handlers: {} } } } }, release: vi.fn() }),
       runWithLease: async (_lease: unknown, invoke: () => Promise<unknown>) => invoke(),
     };
-    await audit.setupPermissionAuditChain("a".repeat(64));
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, new ScriptHookManager(), audit,
-      undefined, undefined, undefined, () => generationAccess as never, (_tool, sessionId) => ({
+
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, new ScriptHookManager(), undefined, undefined, undefined, () => generationAccess as never, (_tool, sessionId) => ({
         ownerVersion: "1.0.0", generationId, appSessionId: sessionId ?? "test-session",
         accountScopeHash: "sample-account-scope", accountHash: "sample-account", appGrantRequired: false,
       }));
@@ -299,7 +298,7 @@ async function withOutputExecutor(
     gate.disposeAll();
     await h.drainRunWork();
     await plugin?.dispose();
-    await audit.close();
+
     await h.cleanup();
   }
 }

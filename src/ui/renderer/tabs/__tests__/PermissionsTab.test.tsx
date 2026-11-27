@@ -2372,7 +2372,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         mainHandlers.clear();
         registerPermissionsHandlers({
           conversationLoop: { permissionManager: { getMode: () => "default" } },
-          approvalGate: {}, auditLogger: { log: vi.fn() }, toolRegistry: { setDenyRules: vi.fn() },
+          approvalGate: {}, toolRegistry: { setDenyRules: vi.fn() },
           settingsService: { get: () => ({ osToolSandbox: false }) }, getAppWindows: () => [],
         } as never);
         ipcInvoke.mockImplementation((channel: string, payload?: unknown) => mainHandlers.get(channel)!(hostFrameEvent(), payload));

@@ -111,7 +111,6 @@ function createHarness(options: {
   const bus = new A2AAgentMessageBus({
     parentBus: { deliverToParent: parentDeliver } as never,
     mailbox,
-    auditLogger: { log: audit } as never,
     resolveSender,
     resolvePeer,
   });

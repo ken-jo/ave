@@ -1,3 +1,4 @@
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
@@ -8,7 +9,7 @@ import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -67,8 +68,6 @@ import {
   partialWindowsAsrt,
   requestedSandboxUnavailable,
 } from "../../__tests__/support/host-shell-sandbox-fixtures.js";
-import type { AuditEntry, AuditLogger } from "../../audit/audit-logger.js";
-import type { PermissionAuditEntryInput } from "../../audit/audit-schema.js";
 import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host-shell-execution-plan.js";
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
@@ -133,7 +132,6 @@ function explicitlySandboxOff(platform: "darwin" | "linux" | "win32"): void {
 }
 function gateResolving(
   choice: "allow-once" | "deny-once",
-  auditLogger?: AuditLogger,
 ) {
   let gate: ApprovalGate;
   const send = vi.fn((_channel: string, request: ApprovalRequest) => {
@@ -148,31 +146,8 @@ function gateResolving(
     { isDestroyed: vi.fn(() => false), send } as never,
     undefined,
     undefined,
-    auditLogger,
   );
   return { gate, send };
-}
-
-function recordingAuditLogger(): {
-  auditLogger: AuditLogger;
-  telemetryEntries: AuditEntry[];
-  permissionEntries: PermissionAuditEntryInput[];
-} {
-  const telemetryEntries: AuditEntry[] = [];
-  const permissionEntries: PermissionAuditEntryInput[] = [];
-  const auditLogger = {
-    log: vi.fn((entry: AuditEntry) => telemetryEntries.push(entry)),
-    logShadow: vi.fn(),
-    isPermissionAuditChainReady: vi.fn(() => true),
-    assertPermissionAuditWritable: vi.fn(),
-    appendPermissionAuditEntry: vi.fn(async (entry: PermissionAuditEntryInput) => {
-      permissionEntries.push(entry);
-      return { ...entry, prevHash: "test-chain" };
-    }),
-    isShadowChannelWritable: vi.fn(() => true),
-    getPermissionShadowLogFile: vi.fn(() => "test-shadow.jsonl"),
-  } as unknown as AuditLogger;
-  return { auditLogger, telemetryEntries, permissionEntries };
 }
 
 // Windows host shell cwds are pinned through the shipped path-kind helper; boot configures its resources first.
@@ -217,7 +192,8 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const justification = executionMode === "host" ? "Use the host execution environment" : undefined;
     const pm = new PermissionManager(join(testRoot, "child-host-consent.json"));
     pm.setMode("strict");
-    const audit = recordingAuditLogger();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     let base: ApprovalGate;
     const send = vi.fn((channel: string, request: ApprovalRequest) => {
       if (channel !== "ave:approval:request") return;
@@ -225,7 +201,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
         nonce: request.nonce, hmac: request.hmac }, native as never);
     });
     const native = { isDestroyed: () => false, send };
-    base = new ApprovalGate(native as never, undefined, undefined, audit.auditLogger);
+    base = new ApprovalGate(native as never, undefined, undefined);
     const originalRequest = base.requestAndWait.bind(base);
     let altered = false;
     const relay = vi.spyOn(base, "requestAndWait").mockImplementation(request => originalRequest(altered
@@ -254,7 +230,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       { sessionId: child, permissionContext: permissionContext() }));
     try {
       const allowed = await run("child-host-allow");
-      expect(audit.telemetryEntries.filter(entry => entry.output?.includes("[approval:host-shell-binding-mismatch]"))).toEqual([]);
+      expect(capture.events.filter(entry => entry.event === "approval_host_shell_binding_mismatch")).toEqual([]);
       expect(allowed[0]?.is_error, JSON.stringify(allowed[0])).toBeUndefined();
       expect(execute).toHaveBeenCalledOnce();
       expect(relay.mock.calls[0]?.[0]).toMatchObject({ sessionId: child, toolName: name, toolCategory: "shell",
@@ -268,7 +244,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       expect((await run("child-host-altered"))[0]?.is_error).toBe(true);
       expect(execute).toHaveBeenCalledOnce();
       expect(sentApprovalCards({ send })).toHaveLength(1);
-      expect(audit.telemetryEntries.some(entry => entry.output?.includes("[approval:host-shell-binding-mismatch]"))).toBe(true);
+      expect(capture.events.some(entry => entry.event === "approval_host_shell_binding_mismatch")).toBe(true);
     } finally { base.disposeAll(); }
   });
 
@@ -280,7 +256,8 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const pm = new PermissionManager(join(testRoot, "card-rule-transition.json"));
     pm.setMode("strict");
     const execute = vi.fn();
-    const audit = recordingAuditLogger();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const saves: Array<Awaited<ReturnType<typeof saveApprovalCardRule>>> = [];
     let firstSaved!: () => void;
     const firstSave = new Promise<void>((resolve) => { firstSaved = resolve; });
@@ -306,7 +283,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     } };
     gate = new ApprovalGate(webContents as never);
     const run = (id: string, command: string) => runWithToolExecutionCwd(testRoot, () =>
-      new ToolExecutor(shellProbeRegistry(execute), undefined, pm, undefined, gate, undefined, audit.auditLogger).executeAll(
+      new ToolExecutor(shellProbeRegistry(execute), undefined, pm, undefined, gate, undefined).executeAll(
         [{ id, name: "bash", input: { command } }],
         { sessionId: `session-${id}`, permissionContext: permissionContext({ trustOrigin: "llm-tool-arg" }) }));
     const first = run("card-rule", "mkdir consent-output");
@@ -320,7 +297,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(result?.is_error).toBeUndefined();
     expect(second.map((entry) => entry.is_error)).toEqual(competing ? [undefined] : []);
     expect(execute).toHaveBeenCalledTimes(competing ? 2 : 1);
-    const rows = (id: string) => audit.permissionEntries.filter((entry) => entry.toolUseId === id && entry.decision !== "ask");
+    const rows = (id: string) => capture.events.filter((entry) => entry.toolUseId === id && entry.decision !== "ask");
     expect(rows("card-rule")).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
     if (competing) {
       expect(rows("competing-card-rule")).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
@@ -404,20 +381,21 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
 
   it("allows and audits a headless explicit host request under a real allow-mode policy", async () => {
     fullDarwinAsrt();
-    const audit = recordingAuditLogger();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const executed = vi.fn();
     const registry = shellProbeRegistry(executed);
-    const { gate, send } = gateResolving("allow-once", audit.auditLogger);
+    const { gate, send } = gateResolving("allow-once");
     const pm = new PermissionManager("/tmp/nonexistent-headless-host-allow.json");
     pm.setMode("allow");
-    const executor = new ToolExecutor(registry, undefined, pm, undefined, gate, undefined, audit.auditLogger);
+    const executor = new ToolExecutor(registry, undefined, pm, undefined, gate, undefined);
     const result = await executor.executeAll([{ id: "headless-host", name: "bash", input: { command: "echo host", executionMode: "host", justification: "Use the host environment" } }], { sessionId: "executor-windows-partial-shell-session", permissionContext: permissionContext({ headless: true }) });
     expect(result[0].is_error).toBeUndefined();
     expect(send).not.toHaveBeenCalled();
     expect(executed).toHaveBeenCalledOnce();
     expect(executed.mock.calls[0][0].hostShellExecutionPermit).toBeDefined();
-    expect(audit.permissionEntries.some((entry) => entry.decision === "allow")).toBe(true);
-    expect(audit.permissionEntries.some((entry) => entry.decision === "deny")).toBe(false);
+    expect(capture.events.some((entry) => entry.decision === "allow")).toBe(true);
+    expect(capture.events.some((entry) => entry.decision === "deny")).toBe(false);
   });
 
   it("returns a recoverable tool error for malformed explicit host input", async () => {
@@ -487,9 +465,9 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       outcome: "fresh" as const, judge: reviewerJudgeOutcomeForTest("allow", "Bounded host effect") })) as never;
     return pm;
   };
-  const partialRun = (pm: PermissionManager, gate: ApprovalGate, registry: ToolRegistry, options: { sessionId?: string; command?: string; host?: boolean; headless?: boolean; auditLogger?: AuditLogger } = {}) => {
+  const partialRun = (pm: PermissionManager, gate: ApprovalGate, registry: ToolRegistry, options: { sessionId?: string; command?: string; host?: boolean; headless?: boolean; } = {}) => {
     const command = options.command ?? "echo no-run";
-    return new ToolExecutor(registry, undefined, pm, undefined, gate, undefined, options.auditLogger).executeAll(
+    return new ToolExecutor(registry, undefined, pm, undefined, gate, undefined).executeAll(
       [{ id: "partial-shell-floor", name: "bash", input: options.host ? { command, executionMode: "host", justification: "Retry outside the OS sandbox" } : { command } }],
       { sessionId: options.sessionId ?? "partial-shell", permissionContext: { ...permissionContext(), ...(options.headless ? { headless: true } : {}) } },
     );
@@ -631,8 +609,9 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       const registry = shellProbeRegistry(execute);
       const pm = partialManager(mode, rules);
       const approvals = cardGate("allow-once");
-      const audit = recordingAuditLogger();
-      const result = await partialRun(pm, approvals.gate, registry, { host, headless: true, auditLogger: audit.auditLogger });
+      const capture = collectPermissionEvents();
+      onTestFinished(capture.restore);
+      const result = await partialRun(pm, approvals.gate, registry, { host, headless: true });
 
       expect(approvals.cards()).toHaveLength(0);
       expect(pm.dispatchReviewer).not.toHaveBeenCalled();
@@ -640,10 +619,9 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       expect(result[0]?.is_error).toBe(true);
       expect(result[0]?.content).toContain(NO_APPROVER_MESSAGE);
       // The no-approver denial is audited: a deny row on the permission chain, no allow row, and a denied tool-call row.
-      expect(audit.permissionEntries.some((entry) => entry.decision === "deny")).toBe(true);
-      expect(audit.permissionEntries.some((entry) => entry.decision === "allow")).toBe(false);
-      const call = audit.telemetryEntries.find((entry) => entry.type === "tool_call");
-      expect(call?.toolCalls?.[0]).toMatchObject({ permissionDecision: "deny" });
+      expect(capture.events.some((entry) => entry.decision === "deny")).toBe(true);
+      expect(capture.events.some((entry) => entry.decision === "allow")).toBe(false);
+      expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", decision: "deny" }));
     });
 
   it("does not accept forged input authorization for a headless partial-plan shell", async () => {
@@ -664,7 +642,8 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
 
   it("passes the same sealed none-plan to an allow-once shell invocation", async () => {
     partialWindowsAsrt();
-    const audit = recordingAuditLogger();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     let observedPlan: import("../../permissions/host-shell-execution-plan.js").HostShellExecutionPlan | undefined;
     let observedPermit: unknown;
     let permitConsumed = false;
@@ -695,7 +674,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       });
     }));
 
-    const { gate, send } = gateResolving("allow-once", audit.auditLogger);
+    const { gate, send } = gateResolving("allow-once");
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -703,7 +682,6 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       undefined,
       gate,
       undefined,
-      audit.auditLogger,
     );
 
     const endMetas: ToolCallMeta[] = [];
@@ -758,32 +736,26 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(resultPlanJson).not.toContain("echo one-shot");
     expect(resultPlanJson).not.toContain("The active OS sandbox does not prove containment for this shell.");
     expect(resultPlanJson).not.toContain("hostShellExecutionPermit");
-    const ask = audit.permissionEntries.find((entry) => entry.decision === "ask");
-    const terminal = audit.permissionEntries.find((entry) => entry.decision === "allow");
-    const telemetry = audit.telemetryEntries.find(
-      (entry) => entry.type === "tool_call" && entry.toolCalls?.[0]?.name === "bash",
-    )?.toolCalls?.[0];
-    for (const surface of [ask, terminal, telemetry]) {
+    const ask = capture.events.find((entry) => entry.event === "permission_decision" && entry.decision === "ask");
+    const terminal = capture.events.find((entry) => entry.event === "permission_decision" && entry.decision === "allow");
+    for (const surface of [ask, terminal]) {
       expect(surface).toBeDefined();
       expect(surface?.toolUseId).toBe("partial-shell-allow");
-      expect(surface?.executionPlan).toBe(auditPlan);
+      expect(surface?.sandboxRoute).toBe("host");
     }
-    const approvalAuditText = audit.telemetryEntries
-      .filter((entry) => entry.type === "approval")
-      .map((entry) => entry.input ?? entry.output ?? "")
-      .join("\n");
-    expect(approvalAuditText).toContain(`executionPlan.identity=${auditPlan.identity}`);
+    const approvalAuditText = JSON.stringify(capture.events);
     expect(approvalAuditText).not.toContain("echo one-shot");
     expect(approvalAuditText).not.toContain("requestedCwd");
     expect(JSON.stringify(auditPlan)).not.toContain("reason");
   });
 
-  it("preserves the Plan-B projection across ask, deny terminal audit, and telemetry", async () => {
+  it("preserves the Plan-B projection in results and emits both decisions", async () => {
     partialWindowsAsrt();
     const executed = vi.fn();
     const registry = shellProbeRegistry(executed);
-    const audit = recordingAuditLogger();
-    const { gate } = gateResolving("deny-once", audit.auditLogger);
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
+    const { gate } = gateResolving("deny-once");
 
     const executor = new ToolExecutor(
       registry,
@@ -792,7 +764,6 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       undefined,
       gate,
       undefined,
-      audit.auditLogger,
     );
 
     const endMetas: ToolCallMeta[] = [];
@@ -809,13 +780,10 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
 
     expect(executed).not.toHaveBeenCalled();
     expect(result[0]?.is_error).toBe(true);
-    const ask = audit.permissionEntries.find((entry) => entry.decision === "ask");
-    const terminal = audit.permissionEntries.find((entry) => entry.decision === "deny");
-    const telemetry = audit.telemetryEntries.find(
-      (entry) => entry.type === "tool_call" && entry.toolCalls?.[0]?.name === "bash",
-    )?.toolCalls?.[0];
-    expect(ask?.executionPlan).toBeDefined();
-    const expectedPlan = ask!.executionPlan;
+    const ask = capture.events.find((entry) => entry.event === "permission_decision" && entry.decision === "ask");
+    const terminal = capture.events.find((entry) => entry.event === "permission_decision" && entry.decision === "deny");
+    const expectedPlan = result[0]?.executionPlan;
+    expect(expectedPlan).toBeDefined();
     expect(result[0]?.executionPlan).toBe(expectedPlan);
     expect(endMetas).toHaveLength(1);
     expect(endMetas[0]?.executionPlan).toBe(expectedPlan);
@@ -823,16 +791,12 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(deniedResultPlanJson).not.toContain("echo denied");
     expect(deniedResultPlanJson).not.toContain("The active OS sandbox does not prove containment for this shell.");
     expect(deniedResultPlanJson).not.toContain("hostShellExecutionPermit");
-    for (const surface of [ask, terminal, telemetry]) {
+    for (const surface of [ask, terminal]) {
       expect(surface).toBeDefined();
       expect(surface?.toolUseId).toBe("partial-shell-audit-deny");
-      expect(surface?.executionPlan).toBe(expectedPlan);
+      expect(surface?.sandboxRoute).toBe("host");
     }
-    const approvalAuditText = audit.telemetryEntries
-      .filter((entry) => entry.type === "approval")
-      .map((entry) => entry.input ?? entry.output ?? "")
-      .join("\n");
-    expect(approvalAuditText).toContain(`executionPlan.identity=${expectedPlan.identity}`);
+    const approvalAuditText = JSON.stringify(capture.events);
     expect(approvalAuditText).not.toContain("echo denied");
   });
   it("keeps the safe projection on a permitless requested-sandbox error", async () => {

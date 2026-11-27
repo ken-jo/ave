@@ -1,6 +1,5 @@
 import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
-import { type AuditDenyKind, type PermissionAuditEntryInput } from "../audit/audit-schema.js";
+import type { AuditDenyKind, PermissionAuditEntryInput } from "./pipeline/permission-decision.js";
 import { createLogger } from "../lib/logger.js";
 import { answeredApprovalProvenance, isAnsweredApprovalDenial, type ApprovalDecision } from "../permissions/approval-gate.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -203,14 +202,13 @@ class TerminalLedger implements InvocationTerminal {
       this.#take();
       this.#denyKind = denyKind;
       emitToolDecision(entry, { ...terminal.fields, terminalKind: denyKind, attempt: this.attempt });
+      this.#track(Promise.resolve());
       const lifecycle = this.#lifecycle;
-      const completion = (async () => {
+      return (async () => {
         if (entry.decision === "deny" && denyKind === "denied" && lifecycle !== undefined && !lifecycle.governed()) {
           await lifecycle.fire(new LedgerDenial(reason ?? entry.denyReasons[0]?.reason ?? ""));
         }
       })();
-      this.#track(completion);
-      return completion;
     };
     let written: Promise<T>;
     try {
@@ -367,12 +365,12 @@ export function admitToolInvocation(tool: string, parent?: AbortSignal, resumeOf
   };
 }
 
-/** Forced shutdown: before the sink closes, the host enqueues the terminal row of every admitted attempt that has none. */
+/** Forced shutdown: the host claims the terminal row of every admitted attempt that has none. */
 function commitParkedHostTerminals(): void {
   for (const ledger of [...openTerminals]) void ledger.endByHost("host-shutdown", "host-shutdown")?.catch(() => {});
 }
 
-/** Bounded exit commit: the host's rows are enqueued, the sink closes after draining every enqueued append, and the deadline caps the wait. */
+/** Bounded exit commit for terminal outcomes. Hook work can outlive the forced reserve. */
 export async function drainToolInvocationsForExit(
   deadlineMs: number,
 ): Promise<"committed" | "timed-out" | "failed"> {
@@ -457,38 +455,10 @@ function isPluginOperationRecord(entry: PermissionAuditEntryInput): boolean {
  * any deny that is not a plugin operation's record, with or without a tool-use id.
  */
 export async function appendToolInvocationAudit(
-  _logger: Pick<AuditLogger, "appendPermissionAuditEntry">,
   entry: PermissionAuditEntryInput,
 ): Promise<void> {
-  if (isTerminalRow(entry)) refuseSideRecord(`terminal row of ${"tool" in entry ? entry.tool : entry.decision} must be written through its invocation's ledger`);
+  if (isTerminalRow(entry)) refuseSideRecord(`terminal row of ${entry.tool} must be written through its invocation's ledger`);
   if (entry.decision === "deny" && !isPluginOperationRecord(entry)) refuseSideRecord(`deny row of ${entry.tool} is no plugin operation record`);
-  emitToolDecision(entry);
-}
-
-/** The quit's refusal of a permission mode change: a deny that belongs to no invocation, so it carries no tool-use id. */
-export type ModeChangeRefusal = Extract<PermissionAuditEntryInput, { decision: "deny" }> & { category: "meta"; toolUseId?: never; pluginOperation?: never };
-
-export async function appendModeChangeRefusal(
-  _logger: Pick<AuditLogger, "appendPermissionAuditEntry">,
-  entry: ModeChangeRefusal,
-): Promise<void> {
-  if (entry.decision !== "deny" || "toolUseId" in entry || isPluginOperationRecord(entry)) {
-    refuseSideRecord(`mode change refusal of ${entry.tool} must belong to no invocation`);
-  }
-  emitToolDecision(entry);
-}
-
-/** A directory grant: the allow beside an invocation's outcome naming the folder and exactly one lifetime or policy rule. */
-export type DirectoryGrantRecord = Extract<PermissionAuditEntryInput, { decision: "allow" }> & { directory: string; directoryAllowed: true };
-
-export async function appendDirectoryGrantRecord(
-  _logger: Pick<AuditLogger, "appendPermissionAuditEntry">,
-  entry: DirectoryGrantRecord,
-): Promise<void> {
-  if (entry.decision !== "allow" || entry.directoryAllowed !== true || typeof entry.directory !== "string"
-    || (entry.grantLifetime === undefined) === (entry.policyRule === undefined)) {
-    refuseSideRecord(`directory grant of ${entry.tool} must name its folder and exactly one lifetime or policy rule`);
-  }
   emitToolDecision(entry);
 }
 

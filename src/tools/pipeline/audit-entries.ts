@@ -1,62 +1,19 @@
-// Pure permission-audit and hook-chain builders; AuditWriter owns persistence.
+// Terminal permission metadata and hook observations.
 import { randomUUID } from "node:crypto";
-import type { Tool } from "../base.js";
-import type { ToolSource, ToolCategory } from "../types.js";
+import type { ToolSource } from "../types.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import { answeredRecordForAction, HOST_PROVENANCE, provenanceTrustOrigin } from "../../permissions/approval-gate.js";
-import type { AuditToolCategory, PermissionAuditEntryInput, HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
+import type { AuditToolCategory, PermissionAuditEntryInput, HookResult, ToolExecutionAuditMetadata } from "./permission-decision.js";
 import { hookInvocationFailureReason, type HookTrustOrigin, type ScriptHookType } from "../../hooks/script-hook-types.js";
 import type { HookDispatchResult } from "../../hooks/script-hook-manager.js";
 import type { ToolPermissionContext } from "../executor.js";
-import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
-import { redactFsPath } from "../../audit/dlp-filter.js";
-
-// Redact nonempty answers[].freeText before audit while retaining choices and dismissal.
-// Non-JSON error responses pass through unchanged.
-export function redactAskUserAuditOutput(rawOutput: string): string {
-  try {
-    const parsed = JSON.parse(rawOutput) as Record<string, unknown>;
-    const answers = Array.isArray(parsed.answers) ? (parsed.answers as unknown[]) : null;
-    if (!answers) return rawOutput;
-    let touched = false;
-    const redacted = answers.map((entry) => {
-      if (!entry || typeof entry !== "object") return entry;
-      const a = entry as Record<string, unknown>;
-      if (typeof a.freeText === "string" && a.freeText.length > 0) {
-        touched = true;
-        return { ...a, freeText: `[redacted ${a.freeText.length} chars]` };
-      }
-      return a;
-    });
-    if (!touched) return rawOutput;
-    return JSON.stringify({ ...parsed, answers: redacted });
-  } catch {
-    return rawOutput;
-  }
-}
 
 export function auditTrustOrigin(context?: ToolPermissionContext): HookTrustOrigin {
   return context?.trustOrigin ?? "unknown";
 }
 
-function auditDirectoryForInput(
-  tool: Tool | undefined,
-  input: Record<string, unknown>,
-  cwd: string | undefined,
-  canonicalTargetFilePath?: string,
-): string | undefined {
-  if (tool) {
-    if (canonicalTargetFilePath) return canonicalTargetFilePath;
-    if (cwd !== undefined && tool.category === "shell" && typeof input.cwd === "string" && input.cwd.length > 0) {
-      return resolveToolPathForPermission(input.cwd, cwd);
-    }
-  }
-  return undefined;
-}
-
 function permissionAuditBase(args: {
   toolName: string;
-  tool?: Tool;
   source: ToolSource;
   category: AuditToolCategory;
   trustOrigin: HookTrustOrigin;
@@ -122,15 +79,10 @@ export function mergeHookChains(
 
 export function permissionAuditEntryFromToolCall(args: {
   toolName: string;
-  tool?: Tool;
   source: ToolSource;
   category: AuditToolCategory;
-  input: Record<string, unknown>;
   permission: PermissionCheckResult;
-  rateLimitRemaining: number;
   trustOrigin: HookTrustOrigin;
-  cwd: string | undefined;
-  auditDirectory?: string;
   hookChain?: HookResult[];
   audit?: ToolExecutionAuditMetadata;
 }): PermissionAuditEntryInput {
@@ -155,12 +107,10 @@ export function permissionAuditEntryFromToolCall(args: {
       ...base,
       decision: "deny",
       denyReasons,
-      cwd: args.cwd === undefined ? "unknown" : redactFsPath(args.cwd),
       ...(permission.answer ? { answerTrustOrigin: provenanceTrustOrigin(permission.answer, "allow", args.trustOrigin) } : {}),
       ...(args.hookChain ? { hookChain: args.hookChain } : {}),
     };
   }
-  const auditDirectory = auditDirectoryForInput(args.tool, args.input, args.cwd, args.auditDirectory);
   const allowEntry: Extract<PermissionAuditEntryInput, { decision: "allow" }> = {
     ...base,
     decision: "allow",
@@ -168,39 +118,8 @@ export function permissionAuditEntryFromToolCall(args: {
   if (permission.reviewer?.verdict) {
     allowEntry.reviewer = permission.reviewer.verdict;
   }
-  if (auditDirectory) {
-    allowEntry.directory = auditDirectory;
-    allowEntry.directoryAllowed = true;
-  }
-  if (Number.isFinite(args.rateLimitRemaining)) {
-    allowEntry.rateLimitRemaining = args.rateLimitRemaining;
-  }
   if (args.hookChain) {
     allowEntry.hookChain = args.hookChain;
   }
   return allowEntry;
-}
-
-export function permissionAuditAskEntryFromToolCall(args: {
-  toolName: string;
-  tool?: Tool;
-  source: ToolSource;
-  category: ToolCategory;
-  input: Record<string, unknown>;
-  permission: PermissionCheckResult;
-  trustOrigin: HookTrustOrigin;
-  cwd: string;
-  auditDirectory?: string;
-  audit?: ToolExecutionAuditMetadata;
-}): PermissionAuditEntryInput {
-  const auditDirectory = auditDirectoryForInput(args.tool, args.input, args.cwd, args.auditDirectory);
-  const askEntry: Extract<PermissionAuditEntryInput, { decision: "ask" }> = {
-    ...permissionAuditBase(args),
-    decision: "ask",
-    reason: args.permission.reason,
-  };
-  if (auditDirectory) {
-    askEntry.directory = auditDirectory;
-  }
-  return askEntry;
 }

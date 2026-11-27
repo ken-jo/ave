@@ -237,7 +237,7 @@ export async function tryUserApprovalMemorySkip(
 
   logPermissionEvent("permission_approval_memory_hit", {
     tool: permissionLogId(toolName), source, trustOrigin: context.trustOrigin,
-    sandboxKind: ctx.sandboxCapability.kind, scope: approval.scope,
+    sandboxKind: ctx.sandboxCapability.kind, sandboxConfidence: ctx.sandboxCapability.confidence, scope: approval.scope,
     ruleRisk: ruleVerdict.level, modelRisk: freshReviewLevel ?? undefined, reviewerRisk: composed.level,
   });
 

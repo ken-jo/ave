@@ -376,7 +376,6 @@ export async function handlePermissionCommand(
       const result = await applyPermissionModeCommand(outcome.cmd, {
         permissionManager: pm,
         approvalGate: self.deps.approvalGate,
-        auditLogger: self.deps.auditLogger,
         rewireReviewerAgent: self.deps.rewireReviewerAgent,
         approvalBypass: {
           source: "builtin-slash",

@@ -1,5 +1,4 @@
 import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import { redactForLLM } from "../audit/dlp-filter.js";
 import { hasUnsafeDirectiveControlChars } from "../engine/parent-directive.js";
 import type { TailnetWorkDecisionHandler } from "../api/tailnet-surface-server.js";
@@ -26,7 +25,6 @@ interface TailnetWorkDecisionServices {
   workBoardEngine: WorkBoardEngine;
   workflowTemplateStore: WorkflowTemplateStore;
   routinesStore: RoutinesStore;
-  auditLogger: Pick<AuditLogger, "log">;
   settingsService: Pick<SettingsService, "get">;
   toolRegistry: Pick<ToolRegistry, "findByName">;
 }
@@ -62,12 +60,12 @@ function withProjectAuthority(evidence: RemoteWorkDecisionEvidence, projectRoot:
 
 export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecisionServices>): TailnetWorkDecisions | undefined {
   if (!services.workBoardStore || !services.workBoardEngine || !services.workflowTemplateStore
-    || !services.routinesStore || !services.auditLogger || !services.settingsService || !services.toolRegistry) return undefined;
+    || !services.routinesStore || !services.settingsService || !services.toolRegistry) return undefined;
   const board = services.workBoardStore;
   const engine = services.workBoardEngine;
   const templates = services.workflowTemplateStore;
   const routines = services.routinesStore;
-  const auditLogger = services.auditLogger;
+
   const settingsService = services.settingsService;
   const effects = createToolEffectResolver(services.toolRegistry);
   let outputRegistration: RequestedOutputDecisions | undefined;
@@ -247,7 +245,7 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
       const scope = request.input.expectedScope;
       const scoped = withProjectAuthority(evidence, scope.kind === "project" ? scope.projectRoot : undefined);
       const { attachment: result } = await attachWorkflowSchedule(templates, routines, request.input,
-        () => mintProof(scoped), auditLogger);
+        () => mintProof(scoped));
       return { ok: true, kind: request.kind, attachmentId: result.id, scheduleId: result.scheduleId };
     }
 

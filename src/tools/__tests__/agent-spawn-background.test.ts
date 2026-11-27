@@ -308,7 +308,6 @@ describe("agent_spawn background routing", () => {
     const bus = new A2AAgentMessageBus({
       parentBus: { deliverToParent: parentDeliver } as never,
       mailbox,
-      auditLogger: { log: audit } as never,
       resolveSender: vi.fn(async () => ({
         originSessionId: "parent-session",
         childSessionId: "sub-question",

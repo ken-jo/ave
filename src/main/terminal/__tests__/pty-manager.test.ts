@@ -2949,7 +2949,7 @@ describe("host tabs and conversation-owned isolation", () => {
     updateApprovalSurface({ kind: "attach", sessionId, surface: surface as never });
     const terminal = await initializedConversation(sessionId);
     const gate = new ApprovalGate((requestingSessionId, terminalTabId) => approvalSurfaceRegistry.resolve(requestingSessionId, terminalTabId),
-      undefined, undefined, { log: vi.fn() } as never);
+      undefined, undefined);
     try {
       expect(approvalSurfaceRegistry.resolve(undefined, terminal.tabId)).toBe(surface);
       const pending = gate.requestAndWait({

@@ -36,7 +36,7 @@ function remoteStart(h: Harness) {
   routines.bindTemplateAttachments(h.templates);
   const runtime = createTailnetWorkDecisions({
     workBoardStore: h.board, workBoardEngine: h.engine, workflowTemplateStore: h.templates, routinesStore: routines,
-    settingsService: { get: key => DEFAULT_SETTINGS[key] }, auditLogger: { log }, toolRegistry: new ToolRegistry(),
+    settingsService: { get: key => DEFAULT_SETTINGS[key] }, toolRegistry: new ToolRegistry(),
   });
   if (!runtime) throw new Error("Work decision runtime unavailable");
   return {

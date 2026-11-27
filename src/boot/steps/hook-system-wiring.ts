@@ -8,7 +8,6 @@ import {
 } from "../../hooks/hook-trust-prompt.js";
 import { HOOKS_CONFIG_FILENAME } from "../../hooks/hook-config-trust.js";
 import { createLogger } from "../../lib/logger.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 
 import type { HookCommandAuthorizer } from "../../hooks/hook-command-policy.js";
 import { collectHookMatcherDiagnostics } from "../../hooks/hook-matcher-diagnostics.js";
@@ -32,7 +31,6 @@ export interface WireHookSystemDeps {
   disabledDir?: string;
   /** Tests may inject trust decisions; production quarantines all new or changed hooks. */
   promptDispatcher?: TrustPromptDispatcher;
-  auditLogger?: Pick<AuditLogger, "log" | "isPermissionAuditChainReady" | "appendPermissionAuditEntry">;
 }
 
 export interface HookSystemBootResult {

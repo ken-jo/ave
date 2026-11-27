@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import { telemetryLevel, telemetryEndpointHosts, validateTelemetryEndpoint } from "../shared/telemetry-policy.js";
 export { DEFAULT_TELEMETRY_ALLOWLIST, validateTelemetryEndpoint } from "../shared/telemetry-policy.js";
 import type { TelemetrySettings } from "../data/settings-store.js";
-import type { AuditLogger } from "../audit/audit-logger.js";
 import { createLogger } from "../lib/logger.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 const log = createLogger("telemetry");
@@ -56,7 +55,6 @@ export interface TelemetryDeps {
   flushIntervalMs?: number;
   // Reject localhost endpoints in packaged builds.
   isPackaged?: boolean;
-  auditLogger?: Pick<AuditLogger, "log">;
   allowlistEnv?: string;
 }
 

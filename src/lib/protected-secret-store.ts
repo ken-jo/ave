@@ -144,7 +144,7 @@ export class FileSecretStore implements SecretStore {
 
   private path(name: string): string {
     // Reject traversal characters to keep the keystore flat.
-    if (/[\/\\]|\.\./.test(name)) {
+    if (/[/\\]|\.\./.test(name)) {
       throw new Error(`invalid secret name: ${name}`);
     }
     return join(this.dir, name);
@@ -208,7 +208,7 @@ export class SafeStorageSecretStore implements SecretStore {
   }
 
   private path(name: string): string {
-    if (/[\/\\]|\.\./.test(name)) {
+    if (/[/\\]|\.\./.test(name)) {
       throw new Error(`invalid secret name: ${name}`);
     }
     return join(this.dir, `${name}${SAFE_STORAGE_ENTRY_SUFFIX}`);

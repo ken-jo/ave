@@ -47,7 +47,7 @@ On Windows, the shared reader also verifies administrative ownership and DACLs
 on the file and its parent using pinned, non-following handles. The
 [architecture contract](architecture.md#tool-governance) describes that trust
 boundary. Untrusted input follows the invalid-file path; Settings displays the
-path and sanitized cause, and audit records the failure.
+path and sanitized cause, and the app logger records the failure category.
 An invalid user file cannot supply grants or bypass admission denial.
 Administrative edit locking remains separate from tool admission.
 
@@ -3023,7 +3023,7 @@ The [decision tree](permission-decision-tree.md) owns reviewer eligibility and o
 
 Reviewer configuration accepts only `llm` and `disabled`. Disabled means unavailable, never a synthetic LOW verdict: reviewer-bound requests in auto use a normal card, and without a human they deny with no-retry guidance. Choosing disabled during fault repair grants no execution authority. A persisted unsupported reviewer mode reports `reviewer-mode-invalid` without rewriting the file or discarding valid directories and unrelated settings. Automatic review remains unavailable; a placeholder value is not a selected reviewer mode or an execution grant. Permissions settings shows the fault and lets the user explicitly choose `llm` or `disabled` with one action. Explicit recovery changes only the reviewer setting. If reconnecting then fails, that explicit supported choice remains saved, the UI reloads the actual setting and keeps the reconnect error visible, and automatic review remains unavailable until the runtime reconnects. Existing valid settings still use the normal rollback behavior on refresh failure. There is no silent migration or extra tool-approval step for this settings repair. The judge settings and transport contract remains in the [judge design](../design/permissions-always-allow-and-judge.md#p2-judge-slot). Configuration and shadow observations cannot override this permission contract. Shadow stages do not grant authority or count breaker denials. Explicit model selections do not silently switch providers; unset reviewer selection follows the active chat model. Invalid settings writes fail before persistence and valid writes preserve unrelated settings, with compare-and-swap rollback on refresh failure. The judge subtree remains user-only configuration under the protected-path floor.
 
-Review requires a host-created invocation identity and conversation/task identity. The host supplies normalized input and host policy facts; external projections are DLP-redacted. Tool results are not review instructions. Audit records the redacted request, final outcome, model, invocation identity, reason and fallback. Review cannot persist a rule. Required audit failures remain terminal.
+Review requires a host-created invocation identity and conversation/task identity. The host supplies normalized input and host policy facts; external projections are DLP-redacted. Tool results are not review instructions. The app logger records the final outcome, invocation identity and fallback category. Review cannot persist a rule.
 
 The breaker counts one denial per request after its model choice resolves, rather than counting both the first and repeated HIGH assessments. Errors, aborted assessments and shadow observations do not count: three consecutive denials or twenty total denials send subsequent reviewer-bound requests in that turn to normal human cards. In headless execution those human fallbacks deny. Rule allows, remembered grants, ordinary reads, sandbox-auto and checkpoint-backed project writes retain their earlier pipeline outcomes. An allowed assessment resets only the consecutive count. Human consent does not reopen reviewer automation during that turn; a fresh turn resets the breaker. Parent/child identity, settings refresh and shadow observation must not reset or double-count the active turn.
 
@@ -3075,7 +3075,7 @@ returns malformed output, the host fails closed:
 
 - foreground calls ask the user with explicit reviewer-unavailable context;
 - headless calls deny only after review falls back to a human card, with no-retry guidance;
-- audit records include the reviewer failure path.
+- structured reviewer events identify the failure category.
 
 A windowless host reports `authorization-required` only after a completed
 policy outcome actually needs human consent. Missing reviewer wiring, timeout,

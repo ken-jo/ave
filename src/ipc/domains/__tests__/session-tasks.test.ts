@@ -31,7 +31,6 @@ async function setup() {
   registerSessionTasksHandlers({
     sessionTasksStore: store,
     conversationLoop: { getSessionId },
-    auditLogger: { log: vi.fn() },
     getMainWindow: () => null,
   } as never);
   return { store, getSessionId };

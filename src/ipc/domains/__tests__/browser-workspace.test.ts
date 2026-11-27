@@ -18,7 +18,7 @@ import { BrowserSitePermissions } from "../../../permissions/browser-site-permis
 
 function setup() {
   const service = { onPageShortcut: vi.fn((handler: (windowId: number, shortcut: unknown) => void) => { pageShortcut.handler = handler; }), setPageShortcuts: vi.fn(() => null), onFindResult: vi.fn((handler: (windowId: number, result: unknown) => void) => { findResult.handler = handler; }), onChanged: vi.fn((handler: (windowId: number, state: unknown) => void) => { changed.handler = handler; }), onOpenTab: vi.fn((handler: (windowId: number, request: unknown) => void) => { openTab.handler = handler; }), getState: vi.fn(async () => ({ revision: 1 })), setBookmark: vi.fn(), clearHistory: vi.fn(), setSitePermission: vi.fn(), find: vi.fn(), stopFind: vi.fn(), zoom: vi.fn(), preview: vi.fn(), capture: vi.fn() };
-  registerBrowserWorkspaceHandlers({ auditLogger: {} } as IpcDeps, service as unknown as BrowserWorkspaceService);
+  registerBrowserWorkspaceHandlers({  } as IpcDeps, service as unknown as BrowserWorkspaceService);
   return service;
 }
 beforeEach(() => { handlers.clear(); vi.clearAllMocks(); authorize.mockReturnValue(true); mainWindow.mockReturnValue({ id: 1, isDestroyed: () => false }); });
@@ -84,7 +84,7 @@ describe("private browser workspace IPC", () => {
     const browserSites = new BrowserSitePermissions();
     browserSites.allow("session-1", "https://site.example/", "this-site");
     const agentSessionForSite = vi.fn((): string | null => "session-1");
-    registerBrowserWorkspaceHandlers({ auditLogger: {}, conversationLoop: { permissionManager: { browserSites } } } as unknown as IpcDeps,
+    registerBrowserWorkspaceHandlers({ conversationLoop: { permissionManager: { browserSites } } } as unknown as IpcDeps,
       { onChanged: vi.fn(), onOpenTab: vi.fn(), onFindResult: vi.fn(), onPageShortcut: vi.fn(), agentSessionForSite } as unknown as BrowserWorkspaceService);
     const request = { tabId: "browser:one", documentGeneration: 1, origin: "https://site.example" };
     expect(await invoke("agentSiteGrant", request)).toEqual({ ok: true, value: { grant: "this-site" } });

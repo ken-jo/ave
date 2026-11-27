@@ -9,7 +9,7 @@ function subject() {
   const requestAndWait = vi.fn(async (_request: { reason: string }) => ({ choice: "deny-once" }));
   const deliver = vi.fn((_notice: { body: string }) => {});
   const log = vi.fn((_row: unknown) => {});
-  const asker = bootExtensionStartAsker({ approvalGate: { requestAndWait }, bootAuditLogger: { log }, notificationService: { deliver } } as never);
+  const asker = bootExtensionStartAsker({ approvalGate: { requestAndWait }, notificationService: { deliver } } as never);
   return { asker, requestAndWait, deliver, log };
 }
 

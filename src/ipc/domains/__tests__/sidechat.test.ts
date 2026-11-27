@@ -159,7 +159,6 @@ function register(
     sideChatConversationLoop: sideLoop,
     paneChatLoops,
     sideChatMemoryManager,
-    auditLogger: { log: vi.fn() },
     getMainWindow: () => ({ webContents: focusedContents }),
     settingsService: {
       get: vi.fn((key: string) => (key === "privacy" ? { piiRedactEnabled } : undefined)),

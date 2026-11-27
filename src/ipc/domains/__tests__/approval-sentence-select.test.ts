@@ -79,7 +79,6 @@ async function harness(
   registerPermissionsHandlers({
     conversationLoop: { permissionManager: undefined },
     approvalGate: gate,
-    auditLogger: { log: vi.fn() },
     toolRegistry: { setDenyRules: vi.fn() },
     getMainWindow: () => window,
     getAppWindows: () => [window, otherWindow],

@@ -51,7 +51,6 @@ import {
 import { validateExternalUrl } from "../../shared/external-url.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
 import type { SubscriptionChatRuntimeSelection } from "../../shared/subscription-runtime.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { BootContext } from "../context.js";
 import type { ConversationLoop } from "../../engine/conversation-loop.js";
 import { captureRationalePolicyEpoch, captureRationalePolicySnapshot } from "../../tools/pipeline/rationale-policy-epoch.js";
@@ -83,9 +82,7 @@ export interface SubscriptionChatLoopBindings {
 }
 
 /** Accept normalized settings only; the shared runtime owns credentials and transport. */
-export function createSubscriptionChatLoopBindings(_input: {
-  readonly auditLogger: Pick<AuditLogger, "log">;
-}): SubscriptionChatLoopBindings {
+export function createSubscriptionChatLoopBindings(): SubscriptionChatLoopBindings {
   const openAuthorizationUrl: OpenOAuthLogin = async (url, options) => {
     const validated = validateExternalUrl(url);
     if (!validated.ok) {
@@ -185,7 +182,6 @@ export async function wireConversation(
     pluginRuntime,
     pluginOperationGrants,
     pluginOperationIdentityProvider,
-    bootAuditLogger,
     llmFetch,
     singleHopNetworkFetch,
     idleScheduler,
@@ -227,7 +223,6 @@ export async function wireConversation(
     pluginRuntime,
     pluginOperationGrants,
     pluginOperationIdentityProvider,
-    auditLogger: bootAuditLogger,
     llmFetch,
     networkFetch: singleHopNetworkFetch,
     subscriptionProviderFactory,
@@ -258,7 +253,6 @@ export async function wireConversation(
     idleScheduler,
     settingsService,
     memoryCaptureService,
-    auditLogger: bootAuditLogger,
   });
 
   let conversationLoop!: ConversationLoop;
@@ -301,7 +295,6 @@ export async function wireConversation(
     skillOverlay,
     isSkillName,
     notificationService,
-    auditLogger: bootAuditLogger,
     rewireReviewerAgent,
     llmFetch,
     networkFetch: singleHopNetworkFetch,
@@ -339,7 +332,6 @@ export async function wireConversation(
     pluginRuntime,
     pluginOperationGrants,
     pluginOperationIdentityProvider,
-    auditLogger: bootAuditLogger,
     llmFetch,
     networkFetch: singleHopNetworkFetch,
     sideChatMemoryManager,
@@ -416,7 +408,6 @@ export async function wireConversation(
     const { postTurnHookChain: groupPostTurnHookChain } = createPostTurnHookChain({
       memoryManager,
       settingsService,
-      ...(bootAuditLogger ? { auditLogger: bootAuditLogger } : {}),
     });
     groupLoop = createConversationLoop({
       settingsService,
@@ -442,7 +433,6 @@ export async function wireConversation(
       skillOverlay,
       isSkillName,
       notificationService,
-      auditLogger: bootAuditLogger,
       rewireReviewerAgent,
       llmFetch,
       networkFetch: singleHopNetworkFetch,
@@ -477,7 +467,7 @@ export async function wireConversation(
   lateBinding.conversationLoopRef.fn = conversationLoop;
   lateBinding.llmCallerRef.fn = createCallLlm(conversationLoop);
   memoryCaptureService.setMemoryReviewer(memoryReviewer);
-  lateBinding.pluginCallLlmRef.fn = createCallLlmForPlugin(conversationLoop, bootAuditLogger,
+  lateBinding.pluginCallLlmRef.fn = createCallLlmForPlugin(conversationLoop,
   );
   log.info("boot: plugin callLlm ready (rate-limited)");
 
@@ -514,7 +504,6 @@ export async function wireConversation(
     parentLoop: conversationLoop,
     mailbox: subAgentMessageMailbox,
     settingsService,
-    auditLogger: bootAuditLogger,
     resolveChildAddress: async (parentSessionId, childSessionId, messageId) => {
       const runner = subAgentRunnerRef.fn;
       return runner
@@ -544,7 +533,6 @@ export async function wireConversation(
   const agentMessageBus = new A2AAgentMessageBus({
     parentBus: subAgentMessageBus,
     mailbox: agentMessageMailbox,
-    auditLogger: bootAuditLogger,
     isOriginActive: (originSessionId) =>
       subAgentRunnerRef.fn?.isSubAgentOriginActive(originSessionId) ?? true,
     resolveSender: async (senderChildSessionId) => {
@@ -580,7 +568,6 @@ export async function wireConversation(
       scriptHookManager,
       pluginOperationGrants,
       pluginOperationIdentityProvider,
-      auditLogger: bootAuditLogger,
       getAdditionalDirectories: () => readPermissionSettings().permissions.additionalDirectories,
       ...(conversationLoop.deps?.isDefaultProjectRoot
         ? { isDefaultProjectRoot: conversationLoop.deps.isDefaultProjectRoot }

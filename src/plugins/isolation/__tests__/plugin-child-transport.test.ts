@@ -1,8 +1,9 @@
+import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 /** The transport owns framing, call settlement and one termination sequence; faults are not terminal exits. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -14,7 +15,6 @@ import { evaluateHostFetch } from "../../../main/host-fetch-guard.js";
 import { currentEffectGateContext, enforceMutatingEffects, GATED_EFFECT_PATHS, gateMutatingEffect, runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
 import { runWithInvocationOrigin } from "../../runtime/origin-chain.js";
 import { ApprovalGate, type ApprovalRequest } from "../../../permissions/approval-gate.js";
-import { AuditLogger } from "../../../audit/audit-logger.js";
 import { instrumentEffectsByPath } from "../../../permissions/hostapi-effect-recorder.js";
 import { PluginOperationGrantCoordinator } from "../../../permissions/plugin-operation-grant.js";
 import { createDynamicTool } from "../../../tools/base.js";
@@ -396,7 +396,6 @@ interface InvocationRig {
 /** Construct inside a marker to test spawn-context isolation. */
 function invocationRig(options: {
   pluginId?: string; teardown?: () => void; terminate?: () => void; table?: Record<string, HostApiPathHandler>;
-  effectAudit?: Pick<AuditLogger, "logShadow">;
 } = {}): InvocationRig {
   const { link, childToHost, sent, fireGone, fireFault } = recordedLink();
   const pluginId = options.pluginId ?? "transportprobe";
@@ -406,7 +405,6 @@ function invocationRig(options: {
     const transport = new PluginChildTransport({
       pluginId,
       reportBudgetAudit: audit,
-      effectAudit: options.effectAudit,
       isActive: () => true,
       reportUnknownField: () => undefined,
       link: options.terminate === undefined ? link : { ...link, terminate: options.terminate },
@@ -1010,8 +1008,8 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
     const manager = new PermissionManager(join(root, "permissions.json"));
     manager.setMode("default");
     await manager.addAlwaysAllowedPersist("overlap_probe");
-    const audit = new AuditLogger(join(root, "audit"));
-    await audit.setupPermissionAuditChain("aa".repeat(32));
+    const logs = collectPermissionEvents();
+
     const cards: ApprovalRequest[] = [];
     const desk = { isDestroyed: () => false, send: (channel: string, card: ApprovalRequest) => {
       if (channel === "ave:approval:request") cards.push(card);
@@ -1022,8 +1020,7 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
       pluginId: PLUGIN, approvalGate: gate, permissionManager: manager,
       resolveStoragePath: (relativePath) => join(root, relativePath), assertActive: vi.fn(),
     });
-    const shadowLog = vi.spyOn(audit, "logShadow");
-    const rig = invocationRig({ pluginId: PLUGIN, effectAudit: audit, table: {
+    const rig = invocationRig({ pluginId: PLUGIN, table: {
       raiseAlert: defineHostApiPath("raiseAlert", async () => {
         await api.storage.write("overlap.txt", "effect");
         return { status: "raised", alertId: "alert" } as never;
@@ -1054,8 +1051,7 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
       acquireExact: async () => ({ generation: { state: { runtime: { instance: { handlers: {} } } } }, release: () => {} }),
       runWithLease: async (_lease: unknown, run: () => Promise<unknown>) => run(),
     };
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit,
-      undefined, undefined, operationGrants, () => generationAccess as never,
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, undefined, undefined, operationGrants, () => generationAccess as never,
       () => ({ ownerVersion: "1.0.0", generationId, appSessionId: SESSION,
         accountScopeHash: "scope", accountHash: "account", appGrantRequired: false }));
     const pending: Promise<unknown>[] = [];
@@ -1085,18 +1081,16 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
       });
       return reply;
     };
-    const terminal = (id: string) => readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
-      .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.toolUseId === id && row.decision !== "ask");
+    const terminal = (id: string) => logs.events.filter((row) => row.event === "permission_decision" && row.toolUseId === id && row.decision !== "ask");
     const close = async () => {
+      logs.restore();
       gate.disposeAll();
       rig.transport.close("case over");
       await Promise.allSettled(pending);
-      await audit.close();
+
       rmSync(root, { recursive: true, force: true });
     };
-    const observations = () => shadowLog.mock.calls
-      .map(([row]) => JSON.parse(row.output ?? "{}") as Record<string, unknown>)
-      .filter((row) => row.event === "effect-shadow");
+    const observations = () => logs.events.filter((row) => row.event === "permission_effect_observed");
     const standaloneWrite = (id: string, relPath: string) => rig.deliver({
       jsonrpc: "2.0", id, method: hostApiMethodOf("storage.write"),
       params: { relPath, data: { kind: "text", text: "effect" } },
@@ -1140,14 +1134,15 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
       const unattributed = observed.filter((row) => row.hostApiPath === "raiseAlert");
       expect(unattributed).toEqual([expect.objectContaining({
         source: "plugin", pluginId: PLUGIN, hasMutatingEffect: true,
-        effects: [expect.objectContaining({ kind: "storageWrite", effect: "write", target: "overlap.txt" })],
+        effectCount: 1,
       })]);
-      expect(unattributed[0]).not.toHaveProperty("toolName");
+      expect(unattributed[0].tool).toBeUndefined();
+      expect(JSON.stringify(unattributed)).not.toContain("overlap.txt");
       const expectedTools = topology === "framed" ? ["overlap_probe", "overlap_read"] : ["overlap_read"];
-      const invocationRows = observed.filter((row) => row.toolName !== undefined);
-      expect(invocationRows.map((row) => row.toolName).sort()).toEqual(expectedTools);
+      const invocationRows = observed.filter((row) => row.tool !== undefined);
+      expect(invocationRows.map((row) => row.tool).sort()).toEqual(expectedTools);
       for (const row of invocationRows) {
-        expect(row).toMatchObject({ hasMutatingEffect: false, effects: [], observationIncomplete: true });
+        expect(row).toMatchObject({ hasMutatingEffect: false, effectCount: 0, observationIncomplete: true });
       }
     } finally {
       await t.close();
@@ -1172,12 +1167,13 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
       const independent = observations.find((row) => row.hostApiPath === "storage.write");
       expect.soft(independent).toMatchObject({
         pluginId: PLUGIN, hasMutatingEffect: true,
-        effects: [expect.objectContaining({ kind: "storageWrite", effect: "write", target: "own.txt" })],
+        effectCount: 1,
       });
-      expect.soft(independent).not.toHaveProperty("toolName");
-      expect.soft(observations.filter((row) => row.toolName !== undefined)).toEqual(expect.arrayContaining([
-        expect.objectContaining({ toolName: "overlap_read", effects: [], observationIncomplete: true }),
-        expect.objectContaining({ toolName: "overlap_probe", effects: [], observationIncomplete: true }),
+      expect.soft(independent?.tool).toBeUndefined();
+      expect(JSON.stringify(observations)).not.toContain("own.txt");
+      expect.soft(observations.filter((row) => row.tool !== undefined)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ tool: "overlap_read", effectCount: 0, observationIncomplete: true }),
+        expect.objectContaining({ tool: "overlap_probe", effectCount: 0, observationIncomplete: true }),
       ]));
       expect(t.readReceipt).not.toHaveBeenCalled();
       expect(t.cards).toEqual([]);
@@ -1214,10 +1210,9 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
       expect(t.readReceipt).not.toHaveBeenCalled();
       const observed = t.observations();
       expect(observed).toEqual([expect.objectContaining({
-        toolName: "overlap_read", hasMutatingEffect: true,
-        effects: [expect.objectContaining({ kind: "storageWrite", effect: "write" })],
+        tool: "overlap_read", hasMutatingEffect: true, effectCount: 1,
       })]);
-      expect(observed[0]).not.toHaveProperty("observationIncomplete");
+      expect(observed[0].observationIncomplete).toBeUndefined();
 
       const clean = await t.call("lone-clean-read", "overlap_read");
       clean.finish();

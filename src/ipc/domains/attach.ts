@@ -453,7 +453,7 @@ export type ReleaseAttachmentsResult =
   | { ok: false; error: "unauthorized" | "invalid-payload" };
 
 export function registerAttachHandlers(deps: IpcDeps): void {
-  const { auditLogger, getMainWindow } = deps;
+  const { getMainWindow } = deps;
 
   withdrawChosenFileInspection?.();
   withdrawChosenFileInspection = allowKeyMaterialInspection(personChoseFile);
@@ -471,7 +471,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.attach.openFile, async (e): Promise<OpenFileResult> => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.attach.openFile, e);
+      auditUnauthorized(CHANNELS.attach.openFile);
       return { canceled: true, files: [], rejected: [] };
     }
     const win = getMainWindow();
@@ -518,7 +518,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
     CHANNELS.attach.registerDrop,
     async (e, rawPaths: unknown): Promise<RegisterDropResult> => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.attach.registerDrop, e);
+        auditUnauthorized(CHANNELS.attach.registerDrop);
         return { ok: false, error: "unauthorized" };
       }
       const senderId = senderIdOf(e);
@@ -554,7 +554,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
     CHANNELS.attach.redeemDrop,
     async (e, rawToken: unknown): Promise<RedeemDropResult> => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.attach.redeemDrop, e);
+        auditUnauthorized(CHANNELS.attach.redeemDrop);
         return { ok: false, error: "unauthorized" };
       }
       if (typeof rawToken !== "string" || rawToken.length === 0) {
@@ -578,7 +578,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
     CHANNELS.attach.readImage,
     async (e, filePath: string): Promise<ReadImageResult> => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.attach.readImage, e);
+        auditUnauthorized(CHANNELS.attach.readImage);
         return { ok: false, error: "unauthorized" };
       }
       try {
@@ -655,7 +655,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
     CHANNELS.attach.saveClipboardImage,
     async (e, input: SaveClipboardImageInput): Promise<SaveClipboardImageResult> => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.attach.saveClipboardImage, e);
+        auditUnauthorized(CHANNELS.attach.saveClipboardImage);
         return { ok: false, error: "unauthorized" };
       }
       try {
@@ -723,7 +723,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
     CHANNELS.attach.release,
     async (e, rawPaths: unknown): Promise<ReleaseAttachmentsResult> => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.attach.release, e);
+        auditUnauthorized(CHANNELS.attach.release);
         return { ok: false, error: "unauthorized" };
       }
       if (
@@ -766,7 +766,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
     CHANNELS.attach.openExternal,
     async (e, filePath: string): Promise<{ ok: boolean; error?: string }> => {
       if (!validateAppWindowMainFrameSender(e, deps)) {
-        auditUnauthorized(auditLogger, CHANNELS.attach.openExternal, e);
+        auditUnauthorized(CHANNELS.attach.openExternal);
         return { ok: false, error: "unauthorized" };
       }
       try {

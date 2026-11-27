@@ -1,6 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { MemorySecretStore } from "../../audit/hmac-chain.js";
+import { MemorySecretStore } from "../../lib/protected-secret-store.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import type {
   PlatformBridgeInboundAuthorization,

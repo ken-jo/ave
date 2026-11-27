@@ -5,7 +5,7 @@ useConfigurationOwner();
 import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { buildChainedEntries } from "../../../audit/hmac-chain.js";
+import { collectPermissionEvents, watchPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { aveHome, ensureAveHomePrivate } from "../../../shared/ave-home.js";
@@ -90,8 +90,6 @@ function invoke(channel: string, ...args: unknown[]): unknown {
 
 function makeDeps(options: {
   approvalChoice?: "allow-once" | "allow-session" | "allow-always" | "deny-once";
-  auditReady?: boolean;
-  auditAppendError?: Error;
   queue?: Record<string, unknown> | null;
   mode?: string;
   hasReviewer?: boolean;
@@ -210,21 +208,6 @@ function makeDeps(options: {
         readjudication: options.snapshotReadjudication,
       })),
     },
-    auditLogger: {
-      log: vi.fn(),
-      append: vi.fn(async () => undefined),
-      isPermissionAuditChainReady: vi.fn(() => options.auditReady ?? true),
-      appendPermissionAuditEntry: vi.fn(async (entry: Record<string, unknown>) => {
-        if (options.auditAppendError) throw options.auditAppendError;
-        return {
-          ...entry,
-          prevHash: "h",
-        };
-      }),
-      getAuditDir: vi.fn(() => mkdtempSync(join(tmpdir(), "ave-permission-audit-"))),
-      getPermissionAuditSecret: vi.fn(() => "secret"),
-      getPermissionAuditSealStore: vi.fn(() => undefined),
-    },
     toolRegistry: {
       setDenyRules: vi.fn(),
     },
@@ -247,32 +230,11 @@ async function setup(options: Parameters<typeof makeDeps>[0] = {}) {
     makeDeps(options);
   const { registerPermissionsHandlers } = await import("../permissions.js");
   registerPermissionsHandlers(deps as never);
+  const capture = collectPermissionEvents();
+  onTestFinished(capture.restore);
   nativeApprovalEvent = { sender: appWindows[0].webContents, senderFrame: appWindows[0].webContents.mainFrame } as unknown as ReturnType<typeof hostFrameEvent>;
-  return { deps, permissionManager, appWindows, workspaceRootLifecycle, askUserQuestionGate };
+  return { deps, permissionManager, appWindows, workspaceRootLifecycle, askUserQuestionGate, events: capture.events };
 }
-
-it("passes cancellation and terminal kind integrity errors to the audit panel", async () => {
-  const { deps } = await setup();
-  const dir = deps.auditLogger.getAuditDir();
-  onTestFinished(() => cleanupTmpDir(dir));
-  deps.auditLogger.getAuditDir.mockReturnValue(dir);
-  const row = {
-    decision: "deny", auditId: "legacy", denyReasons: [{ reason: "host-shutdown", source: "tool-executor" }],
-  };
-  const rows = buildChainedEntries(deps.auditLogger.getPermissionAuditSecret(), [
-    row,
-    { ...row, auditId: "invalid", terminalKind: "refused" },
-  ]);
-  writeFileSync(join(dir, "2026-05-09.permission-audit.jsonl"), `${rows.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
-  expect(await invoke(PERMISSIONS.auditShow, { last: 10 })).toMatchObject({
-    ok: true, total: 1, invalidTerminalKinds: 1,
-    entries: [{ auditId: "legacy", decision: "deny", terminalKind: "cancelled" }],
-  });
-  expect(await invoke(PERMISSIONS.auditVerify)).toMatchObject({
-    ok: true, intact: false, totalEntries: 1, invalidTerminalKinds: 1,
-    perDay: [{ totalLines: 1, chainOk: true }],
-  });
-});
 
 /**
  * A durable mode change also writes the reviewer settings store. The file's shared home is not owned by the test account on
@@ -356,24 +318,17 @@ describe("permissions IPC handlers", () => {
     await expect(invoke(PERMISSIONS.sandboxWindowsStatus)).rejects.toBe(error);
   });
 
-  it("setMode persists internal durable mode changes with audit but no approval prompt", async () => {
+  it("setMode persists internal durable mode changes with a log event but no approval prompt", async () => {
     useOwnedAveHome();
-    const { deps, permissionManager } = await setup({ approvalChoice: "allow-once" });
+    const { deps, permissionManager, events } = await setup({ approvalChoice: "allow-once" });
 
     const result = await invoke(PERMISSIONS.setMode, { mode: "auto", intent: USER_INTENT });
 
     expect(result).toEqual({ ok: true, mode: "auto" });
     expect(deps.approvalGate.requestAndWait).not.toHaveBeenCalled();
     expect(permissionManager.setModePersist).toHaveBeenCalledWith("auto");
-    expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        decision: "mode_change",
-        fromMode: "default",
-        toMode: "auto",
-        durable: true,
-        confirmationSource: "settings-ui",
-      }),
-    );
+    expect(events).toContainEqual(expect.objectContaining({ event: "permission_mode_changed",
+      fromMode: "default", toMode: "auto", durable: true }));
   });
 
   it("broadcasts successful durable mode changes to all app windows", async () => {
@@ -419,16 +374,14 @@ describe("permissions IPC handlers", () => {
     expect(permissionManager.setModePersist).not.toHaveBeenCalled();
   });
 
-  it("setMode fails closed before persisting when permission audit append fails", async () => {
-    const { permissionManager } = await setup({
-      approvalChoice: "allow-once",
-      auditAppendError: new Error("audit disk full"),
-    });
-
-    const result = await invoke(PERMISSIONS.setMode, { mode: "auto", intent: USER_INTENT });
-
-    expect(result).toMatchObject({ ok: false, error: "permission-audit-write-failed" });
-    expect(permissionManager.setModePersist).not.toHaveBeenCalled();
+  it("persists a durable mode change when the log sink throws", async () => {
+    useOwnedAveHome();
+    const { permissionManager } = await setup({ approvalChoice: "allow-once" });
+    const sink = watchPermissionEvents(() => { throw new Error("Log sink unavailable"); });
+    onTestFinished(() => sink.mockRestore());
+    expect(await invoke(PERMISSIONS.setMode, { mode: "auto", intent: USER_INTENT }))
+      .toEqual({ ok: true, mode: "auto" });
+    expect(permissionManager.setModePersist).toHaveBeenCalledWith("auto");
   });
 
   it("suggests LLM permission review after repeated default-mode approvals", async () => {
@@ -455,7 +408,7 @@ describe("permissions IPC handlers", () => {
   });
 
   it("accepts only a registered app window main-frame response as native", async () => {
-    const { deps, appWindows } = await setup();
+    const { deps, appWindows, events } = await setup();
     const fn = handlers.get(PERMISSIONS.approvalRespond)!;
     const sender = appWindows[0].webContents;
     const frame = { url: "file:///application/index.html" };
@@ -469,7 +422,7 @@ describe("permissions IPC handlers", () => {
     expect(await fn({ sender: { ...sender, mainFrame: frame }, senderFrame: frame }, decision)).toEqual(UNAUTHORIZED_FRAME);
     expect(deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity).not.toHaveBeenCalled();
     expect(deps.approvalGate.resolve).not.toHaveBeenCalled();
-    expect(deps.auditLogger.log.mock.calls.filter(([entry]) => entry.sessionId === "ipc-guard")).toHaveLength(2);
+    expect(events.filter(({ event }) => event === "ipc_sender_refused")).toHaveLength(2);
   });
 
   it.each(["allow", "auto", "ask"])("passes the literal surface choice %s only through the native gate", async (userOwnedSurfaceChoice) => {
@@ -490,7 +443,7 @@ describe("permissions IPC handlers", () => {
   });
 
   it("passes a registered main-frame recipient to pending-card filtering", async () => {
-    const { deps, appWindows } = await setup();
+    const { deps, appWindows, events } = await setup();
     expect(await invoke(PERMISSIONS.approvalPending)).toEqual([]);
     expect(deps.approvalGate.listPendingRendererRequests).toHaveBeenCalledWith(appWindows[0].webContents);
     deps.approvalGate.listPendingRendererRequests.mockClear();
@@ -499,7 +452,7 @@ describe("permissions IPC handlers", () => {
     expect(await handler({ sender, senderFrame: { url: sender.mainFrame.url } })).toEqual(UNAUTHORIZED_FRAME);
     expect(await handler({ sender: { ...sender }, senderFrame: sender.mainFrame })).toEqual(UNAUTHORIZED_FRAME);
     expect(deps.approvalGate.listPendingRendererRequests).not.toHaveBeenCalled();
-    expect(deps.auditLogger.log.mock.calls.filter(([entry]) => entry.sessionId === "ipc-guard")).toHaveLength(2);
+    expect(events.filter(({ event }) => event === "ipc_sender_refused")).toHaveLength(2);
   });
 
   it("suggests LLM permission review immediately after allow-always in default mode", async () => {
@@ -809,7 +762,7 @@ describe("human plugin re-adjudication records", () => {
   };
 
   it.each(["session", "persistent", "global"] as const)("records the human's %s scope with host evidence and effective MEDIUM", async scope => {
-    const { deps } = await setup({ ...eligible, snapshotApprovalCacheKey: "ordinary-policy-key",
+    const { deps, events } = await setup({ ...eligible, snapshotApprovalCacheKey: "ordinary-policy-key",
       snapshotApprovalMemory: { kind: "key", key: "ordinary-all-inputs", scope: { kind: "path", path: "/srv/project/document" } },
     });
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope,
@@ -823,8 +776,7 @@ describe("human plugin re-adjudication records", () => {
     const recorded = (recordApprovalMock.mock.calls[0] as unknown[])[3] as Record<string, unknown>;
     expect(recorded).not.toHaveProperty("riskCeilingAtApproval");
     expect(deps.approvalGate.completeExactApprovalSave).toHaveBeenCalledWith(expect.any(Object), expect.any(String), scope);
-    expect(deps.auditLogger.append).toHaveBeenCalledWith(expect.objectContaining({ type: "approval",
-      output: expect.stringContaining("rawVerdict=high effectiveVerdict=medium") }));
+    expect(events).toContainEqual(expect.objectContaining({ event: "approval_readjudication", rawVerdict: "high", effectiveVerdict: "medium" }));
   });
 
   it("leaves an ordinary HIGH save unchanged unless the person selects re-adjudication", async () => {
@@ -910,23 +862,23 @@ describe("human plugin re-adjudication records", () => {
     expect(deps.approvalGate.resolve).not.toHaveBeenCalled();
   });
 
-  it("records no grant when the re-adjudication audit write fails", async () => {
+  it("records a valid re-adjudicated grant when the log sink throws", async () => {
     const { deps } = await setup(eligible);
-    deps.auditLogger.append.mockRejectedValueOnce(new Error("Approval audit write failed"));
+    const sink = watchPermissionEvents(() => { throw new Error("Log sink unavailable"); });
+    onTestFinished(() => sink.mockRestore());
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent" }))
-      .toMatchObject({ ok: false, error: "managed" });
-    expect(recordApprovalMock).not.toHaveBeenCalled();
-    expect(deps.approvalGate.beginExactApprovalSave).not.toHaveBeenCalled();
-    expect(deps.approvalGate.completeExactApprovalSave).not.toHaveBeenCalled();
+      .toEqual({ ok: true });
+    expect(recordApprovalMock).toHaveBeenCalledOnce();
+    expect(deps.approvalGate.completeExactApprovalSave).toHaveBeenCalledWith(expect.any(Object), expect.any(String), "persistent");
   });
 
-  it("refuses deeply nested exact input before appending audit or recording a grant", async () => {
+  it("refuses deeply nested exact input before logging re-adjudication or recording a grant", async () => {
     let args: Record<string, unknown> = { value: "different past the nesting boundary" };
     for (let depth = 0; depth < 105; depth += 1) args = { nested: args };
-    const { deps } = await setup({ ...eligible, snapshotArgs: args });
+    const { deps, events } = await setup({ ...eligible, snapshotArgs: args });
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent" }))
       .toMatchObject({ ok: false, error: "args-not-json" });
-    expect(deps.auditLogger.append).not.toHaveBeenCalled();
+    expect(events).not.toContainEqual(expect.objectContaining({ event: "approval_readjudication" }));
     expect(recordApprovalMock).not.toHaveBeenCalled();
     expect(deps.approvalGate.beginExactApprovalSave).not.toHaveBeenCalled();
   });
@@ -1366,24 +1318,24 @@ describe("rules recorded from live approval cards", () => {
   const pm = (deps: Awaited<ReturnType<typeof setup>>["deps"]) => deps.conversationLoop.permissionManager;
 
   it("writes only the host's exact project rule and never also records an exact decision", async () => {
-    const { deps } = await setup(live);
+    const { deps, events } = await setup(live);
     const result = await invoke(PERMISSIONS.userApprovalRecord, { ...body, projectCwd: "/different/project" });
     expect(result).toEqual({ ok: true });
     expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, projectScope, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
     expect(recordApprovalMock).not.toHaveBeenCalled();
-    expect(deps.auditLogger.append).toHaveBeenCalledWith({
-      timestamp: expect.any(String), sessionId: "conversation-1", type: "approval",
-      output: `[approval:remembered] store=rules decision=allow scope=project rule=${JSON.stringify(exactRule)} edited=false toolName="bash_run" source="user-keyboard"`,
-    });
+    expect(events).toContainEqual(expect.objectContaining({ event: "approval_remembered", store: "rules",
+      decision: "allow", scope: "project", edited: false }));
+    expect(JSON.stringify(events)).not.toContain(exactRule);
   });
 
-  it("does not persist a card rule when the audit append fails and completes its save token", async () => {
+  it("persists a valid card rule when the log sink throws", async () => {
     const { deps } = await setup(live);
-    deps.auditLogger.append.mockRejectedValueOnce(new Error("Audit disk is unavailable"));
-    expect(await invoke(PERMISSIONS.userApprovalRecord, body)).toMatchObject({ ok: false, error: "rule-save-failed" });
-    expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+    const sink = watchPermissionEvents(() => { throw new Error("Log sink unavailable"); });
+    onTestFinished(() => sink.mockRestore());
+    expect(await invoke(PERMISSIONS.userApprovalRecord, body)).toEqual({ ok: true });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledOnce();
     expect(deps.approvalGate.completeApprovalRuleSave).toHaveBeenCalledWith(
-      deps.approvalGate.beginApprovalRuleSave.mock.results[0].value, "0:0:default", undefined,
+      deps.approvalGate.beginApprovalRuleSave.mock.results[0].value, expect.any(String), "project",
     );
   });
 
@@ -1408,11 +1360,11 @@ describe("rules recorded from live approval cards", () => {
   });
 
   it("stores an edited wildcard allow and warns about its broader scope", async () => {
-    const { deps } = await setup(live);
+    const { deps, events } = await setup(live);
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Bash(printf %s *)" } }))
       .toEqual({ ok: true, warning: "wildcard-allow-broader-scope" });
     expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf %s *)", action: "allow" }, projectScope, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
-    expect(deps.auditLogger.append).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("edited=true") }));
+    expect(events).toContainEqual(expect.objectContaining({ event: "approval_remembered", edited: true }));
   });
 
   it.each([
@@ -1484,10 +1436,10 @@ describe("rules recorded from live approval cards", () => {
   });
 
   it("reports a storage failure apart from an invalid rule", async () => {
-    const { deps } = await setup(live);
+    const { deps, events } = await setup(live);
     pm(deps).addRulePersist.mockRejectedValueOnce(new Error("permissions.json is corrupt"));
     expect(await invoke(PERMISSIONS.userApprovalRecord, body)).toMatchObject({ ok: false, error: "rule-save-failed", message: "permissions.json is corrupt" });
-    expect(deps.auditLogger.log).not.toHaveBeenCalledWith(expect.objectContaining({ type: "approval" }));
+    expect(events).not.toContainEqual(expect.objectContaining({ event: "approval_remembered" }));
   });
 
   it.each(["session", "project", "always"])("refuses an allow at %s when the host offered no saveable rule, edited or not", async (ruleScope) => {
@@ -1683,8 +1635,8 @@ describe("shell egress grants in Settings", () => {
     });
   });
 
-  it("revokes exactly the named grant, closes what it let through, and audits it", async () => {
-    const { deps } = await setup();
+  it("revokes exactly the named grant, closes what it let through, and logs the outcome", async () => {
+    const { events } = await setup();
     egressRuntimeMock.revokeEgressGrant.mockResolvedValueOnce({ removed: true, closed: 2 });
     expect(await invoke(PERMISSIONS.egressGrantRevoke, {
       scope: "project", origin: "shell", projectRoot: "/work/project", host: "pypi.org", port: 443, intent: USER_INTENT,
@@ -1692,9 +1644,7 @@ describe("shell egress grants in Settings", () => {
     expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenCalledWith({
       scope: "project", origin: "shell", projectRoot: "/work/project", host: "pypi.org", port: 443,
     });
-    expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
-      output: "[egress-grant:revoke] scope=project origin=shell host=pypi.org port=443 removed=true closedConnections=2",
-    }));
+    expect(events).toContainEqual(expect.objectContaining({ event: "egress_grant_revoked", scope: "project", removed: true, closed: 2 }));
     expect(await invoke(PERMISSIONS.egressGrantRevoke, {
       scope: "always", origin: "terminal", host: "pypi.org", port: 443, intent: USER_INTENT,
     })).toEqual({ ok: true });
@@ -1713,14 +1663,12 @@ describe("shell egress grants in Settings", () => {
   });
 
   it("reports a removed grant with a durability sync warning", async () => {
-    const { deps } = await setup();
+    const { events } = await setup();
     egressRuntimeMock.revokeEgressGrant.mockResolvedValueOnce({ removed: true, closed: 1, durabilitySyncFailed: true });
     expect(await invoke(PERMISSIONS.egressGrantRevoke, {
       scope: "always", origin: "shell", host: "pypi.org", port: 443, intent: USER_INTENT,
     })).toEqual({ ok: true, durabilitySyncFailed: true });
-    expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
-      output: "[egress-grant:revoke] scope=always origin=shell host=pypi.org port=443 removed=true closedConnections=1 durabilitySyncFailed=true",
-    }));
+    expect(events).toContainEqual(expect.objectContaining({ event: "egress_grant_revoked", scope: "always", removed: true, closed: 1, durabilitySyncFailed: true }));
   });
 
   it("refuses a revoke without user intent or with a malformed grant, before touching the store", async () => {
@@ -1828,7 +1776,7 @@ describe("upstream proxy in Settings", () => {
   });
 
   it("stores a manual URL without its credentials, keeps them in the secret store, and never answers them", async () => {
-    const { service, secrets, deps } = await setupUpstream();
+    const { service, secrets, events } = await setupUpstream();
     const result = await fromAppWindow(PERMISSIONS.upstreamProxySet, {
       mode: "manual", manualUrl: "http://alice:p%40ss@Proxy.Test:3128", bypass: " .lan, 10.0.0.0/8 ", intent: USER_INTENT,
     });
@@ -1843,9 +1791,8 @@ describe("upstream proxy in Settings", () => {
     expect(JSON.stringify(result)).not.toMatch(/alice|p%40ss|p@ss/u);
     expect(service.set).toHaveBeenCalledWith("upstreamProxy", { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: " .lan, 10.0.0.0/8 ", resolvesNames: false });
     expect(JSON.parse(secrets.get("upstreamProxy.manualCredentials")!)).toEqual({ username: "alice", password: "p@ss", origin: "http://proxy.test:3128" });
-    const audit = JSON.stringify((deps.auditLogger.log as ReturnType<typeof vi.fn>).mock.calls);
-    expect(audit).toContain("[upstream-proxy:set] mode=manual manual=http://proxy.test:3128 credentials=replaced bypassEntries=2 resolvesNames=false");
-    expect(audit).not.toMatch(/alice|p@ss/u);
+    expect(events).toContainEqual({ event: "upstream_proxy_changed", mode: "manual" });
+    expect(JSON.stringify(events)).not.toMatch(/alice|p@ss|proxy\.test/u);
     // The same origin spelled again (and other changes) keeps them; clearCredentials removes them.
     expect(await fromAppWindow(PERMISSIONS.upstreamProxySet, { manualUrl: "http://PROXY.test:3128", bypass: "", intent: USER_INTENT }))
       .toMatchObject({ ok: true, view: { hasCredentials: true } });
@@ -1866,13 +1813,13 @@ describe("upstream proxy in Settings", () => {
 
   it("removes stored credentials when the manual proxy's host, port or scheme changes, and says so", async () => {
     for (const changed of ["http://other.test:3128", "http://proxy.test:8080", "https://proxy.test:3128", ""]) {
-      const { secrets, deps } = await setupUpstream();
+      const { secrets, events } = await setupUpstream();
       await fromAppWindow(PERMISSIONS.upstreamProxySet, { mode: "manual", manualUrl: "http://alice:pw@proxy.test:3128", intent: USER_INTENT });
       expect(secrets.has("upstreamProxy.manualCredentials")).toBe(true);
       const result = await fromAppWindow(PERMISSIONS.upstreamProxySet, { mode: changed === "" ? "system" : "manual", manualUrl: changed, intent: USER_INTENT });
       expect(result, changed).toMatchObject({ ok: true, credentialsRemoved: true, view: { hasCredentials: false } });
       expect(secrets.has("upstreamProxy.manualCredentials"), changed).toBe(false);
-      expect(JSON.stringify((deps.auditLogger.log as ReturnType<typeof vi.fn>).mock.calls)).toContain("credentials=removed");
+      expect(events).toContainEqual({ event: "upstream_proxy_changed", mode: changed === "" ? "system" : "manual" });
     }
   });
 
@@ -1981,7 +1928,7 @@ describe("home content review IPC", () => {
   it("serves the review only to the host renderer and approves only with a user gesture", async () => {
     const parent = await pendingHome();
     try {
-      const { deps } = await setup();
+      const { events } = await setup();
       for (const channel of [PERMISSIONS.homeTrustReview, PERMISSIONS.homeTrustApprove, PERMISSIONS.homeTrustRemove]) {
         expect(await invokeRegisteredHandlerWithEvent(handlers, channel, isolatedAppFrameEvent(), { intent: USER_INTENT })).toEqual(UNAUTHORIZED_FRAME);
         expect(await invokeRegisteredHandlerWithEvent(handlers, channel, framelessEvent(), { intent: USER_INTENT })).toEqual(UNAUTHORIZED_FRAME);
@@ -1996,8 +1943,7 @@ describe("home content review IPC", () => {
         .toMatchObject({ ok: false, error: "stale" });
       expect(await invoke(PERMISSIONS.homeTrustApprove, { snapshotId: review.snapshotId, keys: ["AGENTS.md"], intent: USER_INTENT }))
         .toEqual({ ok: true, approved: 1 });
-      expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ type: "approval",
-        output: expect.stringContaining('"action":"home_content_approved"') }));
+      expect(events).toContainEqual({ event: "home_trust_action", action: "home_content_approved" });
     } finally {
       (await import("../../../shared/ave-home-trust.js"))._resetAveHomeTrustForTest();
       await cleanupTmpDir(parent);

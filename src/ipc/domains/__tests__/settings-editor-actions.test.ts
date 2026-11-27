@@ -32,7 +32,7 @@ async function register() {
   actionEvent = { sender: contents, senderFrame: frame };
   const settingsService = new SettingsService({ userDataPath, encryption: unavailableSecretEncryption });
   const { registerSettingsHandlers } = await import("../settings.js");
-  registerSettingsHandlers({ settingsService, conversationLoop: { refreshProvider: vi.fn() }, auditLogger: { log: vi.fn() }, getAppWindows: () => [{ webContents: contents, isDestroyed: () => false }], singleHopNetworkFetch: vi.fn() } as never);
+  registerSettingsHandlers({ settingsService, conversationLoop: { refreshProvider: vi.fn() }, getAppWindows: () => [{ webContents: contents, isDestroyed: () => false }], singleHopNetworkFetch: vi.fn() } as never);
   return settingsService;
 }
 describe("settings editor actions IPC", () => {

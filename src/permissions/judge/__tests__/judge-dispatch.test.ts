@@ -3,9 +3,6 @@ import { randomUUID } from "node:crypto";
 import { setReviewerForTest } from "../../../__tests__/support/reviewer-judge.js";
 import { ApprovalGate, type ApprovalRequest } from "../../approval-gate.js";
 import { sentApprovalCards } from "../../../__tests__/test-helpers.js";
-import { AuditLogger } from "../../../audit/audit-logger.js";
-import { verifyChain } from "../../../audit/hmac-chain.js";
-import * as sandboxAuditSink from "../../../audit/sandbox-audit-sink.js";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../../main/host-resources.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -34,7 +31,7 @@ import { BuiltinLlmJudge, type TracingRiskClassifier } from "../builtin-llm-judg
 import { JudgeFailure, type JudgeRequest, type JudgeVerdict, type PermissionJudge } from "../judge-contract.js";
 import { POLICY_REDACTED, type JudgeChainStage, type JudgeHooks } from "../judge-engine.js";
 import { normalizeJudgeSettings, type JudgeSettings, type JudgeStageSettings } from "../judge-settings.js";
-import { collectingAudit, judgeRecords, judgeSettings, scriptedStage } from "./judge-request-fixture.js";
+import { collectJudgeEvents, judgeRecords, judgeSettings, scriptedStage } from "./judge-request-fixture.js";
 
 const resources = new PermissionTestResources();
 afterEach(async () => {
@@ -52,7 +49,7 @@ function makeSubject(classifier: RiskClassifier = new RuleBasedRiskClassifier())
   const manager = new PermissionManager(join(root, "permissions.json"));
   const cache = resources.makeVerdictCache(join(root, "reviewer-cache.jsonl"));
   const queue = makeRecentlyDeniedStore(join(root, "denied.json"));
-  const audit = collectingAudit();
+  const audit = collectJudgeEvents();
   manager.setMode("auto");
   setReviewerForTest(manager, { classifier, cache, recentlyDenied: queue });
   return { root, manager, cache, queue, audit };
@@ -85,7 +82,7 @@ function wire(
     settings,
     chain,
     breaker: subject.manager.getJudgeBreaker(settings.breaker),
-    audit: subject.audit.logger,
+
     ...(hooks ? { hooks } : {}),
     ...(chainRejected ? { chainRejected: true } : {}),
     ...(settingsUnreadable ? { settingsUnreadable: true } : {}),
@@ -363,10 +360,10 @@ describe("configured judge dispatch lanes", () => {
     expect(lookup).not.toHaveBeenCalled();
     expect(reviewer.calls()).toBe(1);
     expect(statuses).not.toContain("auto_approved");
-    expect(judgeRecords(subject.audit)).toEqual([expect.objectContaining({
-      mode: "active", applied: true, fallback: "unavailable", stages: [], session: "child-session",
+    expect(judgeRecords(subject.audit).at(-1)).toMatchObject({
+      mode: "active", applied: true, fallback: "unavailable", stages: [], sessionId: "child-session",
       decision: lane === "foreground" ? "ask" : "deny",
-    })]);
+    });
     expect((await subject.queue.list())).toEqual([]);
     expect(subject.manager.getJudgeBreaker().snapshot("child-session")).toEqual({ consecutive: 0, total: 0, open: false });
   });
@@ -427,10 +424,10 @@ describe("configured judge dispatch lanes", () => {
     expect(lookup).not.toHaveBeenCalled();
     expect(reviewer.calls()).toBe(1);
     expect(statuses).not.toContain("auto_approved");
-    expect(judgeRecords(subject.audit)).toEqual([expect.objectContaining({
-      fallback: "unavailable", stages: [], applied: true, session: "child-session",
+    expect(judgeRecords(subject.audit).at(-1)).toMatchObject({
+      fallback: "unavailable", stages: [], applied: true, sessionId: "child-session",
       decision: lane === "foreground" ? "ask" : "deny",
-    })]);
+    });
     expect(subject.manager.getJudgeBreaker().snapshot("child-session")).toEqual({ consecutive: 0, total: 0, open: false });
     expect((await subject.queue.list())).toEqual([]);
     const off = normalizeJudgeSettings({ provider: "off" });
@@ -468,7 +465,7 @@ describe("configured judge dispatch lanes", () => {
     // Reviewer refusal requests a normal human card; it is not an immutable deny rule.
     expect(await checkAndDispatch(subject)).toMatchObject({ decision: decision === "deny" ? "ask" : decision });
     expect(provider.requests).toHaveLength(1);
-    expect(judgeRecords(subject.audit)[0]).toMatchObject({ decision, applied: true, session: "session-root" });
+    expect(judgeRecords(subject.audit)[0]).toMatchObject({ decision, applied: true, sessionId: "session-root" });
   });
 
   it("escalates an ambiguous external stage into the existing reviewer", async () => {
@@ -526,7 +523,7 @@ describe("configured judge dispatch lanes", () => {
     expect(result).toMatchObject({ decision: lane === "foreground" ? "ask" : "deny" });
     expect((await subject.queue.list())).toHaveLength(0);
     expect(judgeRecords(subject.audit)[0]).toMatchObject({
-      fallback: "unavailable", rationale: "Execution sandbox changed during judge review",
+      fallback: "unavailable",
       decision: lane === "foreground" ? "ask" : "deny",
     });
   });
@@ -542,7 +539,7 @@ describe("configured judge dispatch lanes", () => {
       decision: "deny", reasonCode: "policy-changed",
     });
     expect(judgeRecords(subject.audit)[0]).toMatchObject({
-      fallback: "unavailable", rationale: "Permission policy changed during judge review",
+      fallback: "unavailable",
       decision: lane === "foreground" ? "ask" : "deny", applied: true,
     });
     expect(subject.manager.getMode()).toBe("strict");
@@ -562,41 +559,10 @@ describe("configured judge dispatch lanes", () => {
       decision: "deny", reasonCode: "policy-changed",
     });
     expect(judgeRecords(subject.audit)[0]).toMatchObject({
-      fallback: "unavailable", rationale: "Permission policy changed during judge review",
+      fallback: "unavailable",
       decision: lane === "foreground" ? "ask" : "deny", applied: false, mode: "shadow",
     });
     expect(subject.manager.getMode()).toBe("strict");
-  });
-
-  it.each(["foreground", "headless"] as const)("revalidates policy after the active audit sink awaits in %s", async (lane) => {
-    const subject = makeSubject();
-    const reachedAudit = barrier();
-    const resumeAudit = barrier();
-    const append = subject.audit.logger.appendPermissionAuditEntry;
-    let firstAppend = true;
-    subject.audit.logger.appendPermissionAuditEntry = async (entry) => {
-      if (firstAppend) {
-        firstAppend = false;
-        reachedAudit.release();
-        await resumeAudit.pending;
-      }
-      return append(entry);
-    };
-    const provider = external(subject, { decision: "allow", rationale: "Permission policy changed during judge review" });
-    const statuses: string[] = [];
-    const pending = dispatch(subject, lane, "session-root", "echo hello", statuses);
-    await reachedAudit.pending;
-    subject.manager.setMode("strict");
-    resumeAudit.release();
-    expect(await pending).toMatchObject({ decision: "deny", reasonCode: "policy-changed" });
-    expect(provider.requests).toHaveLength(1);
-    expect(judgeRecords(subject.audit)).toHaveLength(2);
-    expect(judgeRecords(subject.audit).at(-1)).toMatchObject({
-      fallback: "unavailable", rationale: "Permission policy changed during judge review",
-      decision: lane === "foreground" ? "ask" : "deny", applied: true,
-    });
-    expect(statuses).not.toContain("auto_approved");
-    expect(subject.manager.getJudgeBreaker().snapshot("session-root").total).toBe(0);
   });
 
   it.each(["foreground", "headless"] as const)("revalidates policy after the shadow baseline reviewer awaits in %s", async (lane) => {
@@ -623,8 +589,8 @@ describe("configured judge dispatch lanes", () => {
     expect(await pending).toMatchObject({ decision: "deny", reasonCode: "policy-changed" });
     expect(reviewerCalls).toBe(1);
     expect(judgeRecords(subject.audit)).toHaveLength(3);
-    expect(judgeRecords(subject.audit).at(-1)).toMatchObject({
-      fallback: "unavailable", rationale: "Permission policy changed during judge review",
+    expect(judgeRecords(subject.audit).filter((record) => record.applied).at(-1)).toMatchObject({
+      fallback: "unavailable",
       decision: lane === "foreground" ? "ask" : "deny", applied: true, mode: "active",
     });
     expect(statuses).not.toContain("auto_approved");
@@ -648,7 +614,7 @@ describe("configured judge dispatch lanes", () => {
     expect((await subject.queue.list())).toEqual([]);
     expect(await dispatch(subject, "foreground", "independent-session")).toMatchObject({ decision: "ask" });
     expect(provider.requests).toHaveLength(4);
-    expect(judgeRecords(subject.audit).slice(0, 3).every((record) => record.session === "root-session")).toBe(true);
+    expect(judgeRecords(subject.audit).slice(0, 3).every((record) => record.sessionId === "root-session")).toBe(true);
   });
 
   it("defaults configured providers to shadow and retains the ordinary user ask", async () => {
@@ -911,8 +877,8 @@ describe("builtin reviewer parity through real dispatch lanes", () => {
     expect(first.reviewer?.approvalBasis).toBeUndefined();
     expect(second.reviewer?.approvalBasis).toBeUndefined();
     const records = judgeRecords(subject.audit);
-    expect(records[0]?.argsHash).not.toBe(records[1]?.argsHash);
-    expect(records.every((record) => JSON.stringify(record.policyRedactedKeys) === '["command"]')).toBe(true);
+    expect(records).toHaveLength(2);
+    expect(records.every((record) => !("redactedRequest" in record))).toBe(true);
   });
 
   it("retains the raw host risk floor when the redacted builtin view grades lower", async () => {
@@ -1047,51 +1013,38 @@ describe("automatic review pause and evidence", () => {
     expect(provider.requests).toHaveLength(4);
   });
 
-  it("preserves raw classification trace fields in sandbox audit and nulls LLM evidence on a cache hit", async () => {
+  it("records the fresh and cached review outcomes", async () => {
     const reviewer = llm("medium");
     const subject = makeSubject(reviewer.classifier);
     const classify = vi.spyOn(reviewer.classifier, "classifyWithTrace");
-    const audit = vi.spyOn(sandboxAuditSink, "emitSandboxAudit");
+    const reviewEvents = () => subject.audit.events.filter((event) => event.event === "permission_reviewer_decision");
     expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "allow", reviewer: { outcome: "fresh" } });
     expect(classify).toHaveBeenCalledTimes(1);
     expect(classify.mock.calls[0]?.[1]?.abortSignal).toBeInstanceOf(AbortSignal);
-    expect(audit.mock.calls.at(-1)?.[0]).toMatchObject({ reviewer: { ruleVerdict: "low", llmVerdict: "medium", finalVerdict: "medium" } });
+    expect(reviewEvents().at(-1)).toMatchObject({ outcome: "fresh", ruleRisk: "low", modelRisk: "medium", reviewerRisk: "medium" });
     expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "allow", reviewer: { outcome: "cache" } });
     expect(classify).toHaveBeenCalledTimes(1);
-    expect(audit.mock.calls.at(-1)?.[0]).toMatchObject({ reviewer: { ruleVerdict: "low", llmVerdict: null, finalVerdict: "medium" } });
+    expect(reviewEvents().at(-1)).toMatchObject({ outcome: "cache", ruleRisk: "low", modelRisk: undefined, reviewerRisk: "medium" });
   });
 
-  it("writes default automated decisions to the real HMAC channel and keeps shadow rows separate", async () => {
+  it("emits default automated decisions without making shadow results authoritative", async () => {
     const subject = makeSubject(llm("low").classifier);
     subject.manager.setMode("auto");
-    const logger = new AuditLogger(join(subject.root, "audit"));
-    const secret = "ab".repeat(32);
-    try {
-      await logger.setupPermissionAuditChain(secret);
-      const settings = judgeSettings({ chain: [] });
-      subject.manager.setJudge({ settings, chain: [], breaker: subject.manager.getJudgeBreaker(), audit: logger });
-      expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "allow" });
-      const observer = answering({ decision: "deny", rationale: "shadow observation" });
-      const shadow = judgeSettings({ mode: "shadow" });
-      subject.manager.setJudge({ settings: shadow, chain: [{ settings: shadow.chain[0]!, judge: observer.judge }], breaker: subject.manager.getJudgeBreaker(), audit: logger });
-      expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "allow" });
-      await logger.flush();
-      const lines = readFileSync(logger.getPermissionAuditLogFile(), "utf8").trim().split("\n");
-      expect(lines).toHaveLength(2);
-      expect(verifyChain(secret, lines)).toEqual({ ok: true });
-      expect(lines.map((line) => JSON.parse(line).judgeRecord)).toEqual([
-        expect.objectContaining({ applied: true, mode: "active", decision: "allow" }),
-        expect.objectContaining({ applied: true, mode: "active", decision: "allow" }),
-      ]);
-      const changed = JSON.parse(lines[0]!);
-      changed.judgeRecord.decision = "deny";
-      expect(verifyChain(secret, [JSON.stringify(changed), lines[1]!])).toMatchObject({ ok: false });
-      const append = vi.spyOn(logger, "appendPermissionAuditEntry").mockRejectedValueOnce(new Error("audit unavailable"));
-      await expect(dispatch(subject, "foreground")).rejects.toThrow("audit unavailable");
-      expect(append).toHaveBeenCalled();
-    } finally {
-      await logger.close();
-    }
+    const settings = judgeSettings({ chain: [] });
+    subject.manager.setJudge({ settings, chain: [], breaker: subject.manager.getJudgeBreaker() });
+    expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "allow" });
+    const observer = answering({ decision: "deny", rationale: "shadow observation" });
+    const shadow = judgeSettings({ mode: "shadow" });
+    subject.manager.setJudge({
+      settings: shadow,
+      chain: [{ settings: shadow.chain[0]!, judge: observer.judge }],
+      breaker: subject.manager.getJudgeBreaker(),
+    });
+    expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "allow" });
+    expect(judgeRecords(subject.audit)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ applied: true, mode: "active", decision: "allow" }),
+      expect.objectContaining({ applied: false, mode: "shadow", decision: "deny" }),
+    ]));
   });
 });
 
@@ -1107,7 +1060,7 @@ describe("shadow baseline isolation", () => {
     external(subject, { decision: "deny", rationale: "shadow observation" }, { mode: "shadow", timeoutMs: 500 });
     const result = await dispatch(subject, "foreground");
     expect(result).toMatchObject({ decision: "allow", reviewer: { outcome: "fresh" } });
-    expect(judgeRecords(subject.audit).at(-1)).toMatchObject({ decision: "allow", applied: true, fallback: null });
+    expect(judgeRecords(subject.audit).at(-1)).toMatchObject({ decision: "allow", applied: true, fallback: undefined });
   });
 
   it("retains authoritative failure provenance behind a shadow observer", async () => {

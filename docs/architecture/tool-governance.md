@@ -51,7 +51,6 @@ tool call to `tool.execute`. The stages, as marked in code:
 | Step 2.6: allowed directories | `src/tools/invocation-runner.ts` | Filesystem scope check against the working directory and authorized extra roots |
 | Step 3: permission | `src/tools/invocation-authorization.ts` | Source-aware permission decision (section 4) |
 | Step 5: rate limit | `src/tools/invocation-execution.ts` | Trust-based token bucket (section 9) |
-| Audit-chain check | `src/tools/invocation-execution.ts` | When the permission audit chain is required and not writable, the call is blocked |
 | Step 6: execute | `src/tools/invocation-execution.ts` | Runs the tool |
 | Step 7: PostToolUse hooks | `src/tools/invocation-execution.ts` | Post hooks and feedback merge |
 | Step 7b: DLP | `src/tools/invocation-execution.ts` | Masks display and audit surfaces (section 11) |
@@ -208,27 +207,13 @@ Tests: `src/tools/__tests__/terminal-read.test.ts`,
 `src/tools/__tests__/terminal-run.test.ts`,
 `src/tools/__tests__/terminal-run-permission.test.ts`.
 
-## 8. Audit log
+## 8. Permission logging
 
-`AuditLogger` (`src/audit/audit-logger.ts`) writes JSONL under
-`<ave home>/audit/`, partitioned by UTC day:
-
-- `<date>.jsonl` - telemetry channel (turns, tool calls, approvals, kill
-  switch, DLP, errors).
-- `<date>.permission-audit.jsonl` - hash-chained permission audit channel.
-- `<date>.permission-shadow.jsonl`, `<date>.sandbox-gate.jsonl` - dedicated
-  channels.
-
-Tool calls are recorded as `AuditEntry` rows with `type: "tool_call"` and a
-`toolCalls[]` element carrying `name`, `isError`, `source`, `trust`,
-`executionTimeMs`, `toolUseId`, `permissionDecision`, `permissionReason`,
-`rateLimitRemaining`, and `terminationReason`
-(`ok | ceiling | user-abort | error | indeterminate`). Input is sanitized before
-it is written.
-
-Rotation defaults: active file rotated at 10 MB or 7 days, archives deleted
-after 30 days. Querying and dashboards are covered in the
-[Observability Guide](../references/observability-guide.md).
+The invocation ledger claims each terminal outcome once and emits a structured
+event to the app logger. Permission asks, grants, approvals, and sandbox
+decisions emit related events. Producers include bounded identifiers and
+decision metadata. The console and file sinks receive the same field
+projection. See the [Observability Guide](../references/observability-guide.md#application-logs).
 
 ## 9. Rate limiting
 

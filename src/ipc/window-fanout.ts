@@ -5,19 +5,9 @@ import type { MainWindow } from "../main/main-window-host.js";
 import { sendToWindow, type SafeSendLogger } from "./safe-send.js";
 import type { IpcDeps } from "./types.js";
 
-interface BroadcastAuditLogger {
-  log: (entry: {
-    timestamp: string;
-    sessionId: string;
-    type: "info";
-    input: string;
-  }) => void;
-}
-
 export interface FanOutOptions {
   logger?: SafeSendLogger;
   // Optional audit records channel and delivered count; audit failures must not interrupt fan-out.
-  auditLogger?: BroadcastAuditLogger;
   auditSessionId?: string;
 }
 
@@ -34,11 +24,8 @@ export function fanOutToAllWindows(
       delivered += 1;
     }
   }
-  if (options.auditLogger) {
-    try {
-      logPermissionEvent("ipc_broadcast", { sessionId: permissionLogId(options.auditSessionId ?? "ipc") });
-    } catch {
-    }
+  if (options.auditSessionId) {
+    logPermissionEvent("ipc_broadcast", { sessionId: permissionLogId(options.auditSessionId), channel, delivered });
   }
   return delivered;
 }

@@ -458,7 +458,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     memoryManager,
     memorySaveNotices,
     starredStore,
-    auditLogger,
     askUserQuestionGate,
     preferenceRefreshService,
     memoryConsolidationService,
@@ -844,7 +843,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   };
   const groupOf = (event: IpcMainInvokeEvent, chatGroupId: unknown, channel: string): ChatGroupContext => {
     if (!validateHostRendererSender(event) || !isNativeGroupFrame(event)) {
-      auditUnauthorized(auditLogger, channel, event);
+      auditUnauthorized(channel);
       throw new Error("unauthorized-frame");
     }
     if (typeof chatGroupId !== "string" || !chatGroupId.trim()) {
@@ -919,8 +918,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   // Closing a tile releases its loop and leases to prevent hidden live conversations.
   ipcMain.handle(CHANNELS.chat.groupRelease, async (e, chatGroupId?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.groupRelease, e); return UNAUTHORIZED_FRAME; }
-    if (!isNativeGroupFrame(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.groupRelease, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.groupRelease); return UNAUTHORIZED_FRAME; }
+    if (!isNativeGroupFrame(e)) { auditUnauthorized(CHANNELS.chat.groupRelease); return UNAUTHORIZED_FRAME; }
     if (typeof chatGroupId !== "string" || !chatGroupId.trim()) return { ok: false, error: "chat-group-required" };
     const id = scopedGroupKey(ownerOf(e.sender), chatGroupId.trim());
     if (id === MAIN_CHAT_GROUP_ID) {
@@ -943,8 +942,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.chat.hasProvider, async (e, chatGroupId?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.hasProvider, e); return false; }
-    if (!isNativeGroupFrame(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.hasProvider, e); return false; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.hasProvider); return false; }
+    if (!isNativeGroupFrame(e)) { auditUnauthorized(CHANNELS.chat.hasProvider); return false; }
     const { loop } = groupOf(e, chatGroupId, CHANNELS.chat.hasProvider);
     await loop.whenProviderReady();
     return loop.hasProvider();
@@ -952,7 +951,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   // Commands read disk; validate the sender and derive the project from the tile session.
   ipcMain.handle(CHANNELS.chat.listCustomCommands, async (e, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.chat.listCustomCommands, e);
+      auditUnauthorized(CHANNELS.chat.listCustomCommands);
       return UNAUTHORIZED_FRAME;
     }
     const { projectRoot } = groupOf(e, chatGroupId, CHANNELS.chat.listCustomCommands).loop.getSessionProjectContext();
@@ -960,7 +959,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
   ipcMain.handle(CHANNELS.llm.getModelCatalog, async (e): Promise<ModelCatalogIpcResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.llm.getModelCatalog, e);
+      auditUnauthorized(CHANNELS.llm.getModelCatalog);
       return UNAUTHORIZED_FRAME;
     }
     try {
@@ -1062,7 +1061,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     && (payload as { interrupt?: unknown }).interrupt === true;
 
   ipcMain.handle(CHANNELS.chat.send, async (e, payload: unknown, chatGroupId?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.send, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.send); return UNAUTHORIZED_FRAME; }
     const group = groupOf(e, chatGroupId, CHANNELS.chat.send);
     // Abort inside the interrupt send so a separate round-trip cannot expire keyboard activation.
     let interrupted = false;
@@ -1093,7 +1092,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.chat.guide, async (e, input: string, chatGroupId?: unknown, intent?: unknown) => {
     const group = groupOf(e, chatGroupId, CHANNELS.chat.guide);
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.chat.guide, e);
+      auditUnauthorized(CHANNELS.chat.guide);
       return UNAUTHORIZED_FRAME;
     }
     if (typeof input !== "string" || input.trim().length === 0) {
@@ -1123,7 +1122,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.chat.abort, async (e, chatGroupId?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.abort, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.abort); return UNAUTHORIZED_FRAME; }
     const group = groupOf(e, chatGroupId, CHANNELS.chat.abort);
     // Pause the goal on Stop so it cannot immediately revive; retain the goal for explicit resume.
     const goalSessionId = group.loop.getSessionId();
@@ -1139,13 +1138,13 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.chat.listShellTasks, (e, chatGroupId: unknown, expectedSessionId: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.listShellTasks, e); return []; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.listShellTasks); return []; }
     const sessionId = groupOf(e, chatGroupId, CHANNELS.chat.listShellTasks).loop.getSessionId();
     return sessionId === expectedSessionId ? listShellTasks(sessionId) : [];
   });
 
   ipcMain.handle(CHANNELS.chat.controlShellTask, (e, chatGroupId: unknown, expectedSessionId: unknown, action: unknown, shellId?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.controlShellTask, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.controlShellTask); return UNAUTHORIZED_FRAME; }
     if ((action !== "background" && action !== "stop") ||
         (shellId !== undefined && (typeof shellId !== "string" || shellId.length === 0 || shellId.length > 128))) {
       return { ok: false, error: "invalid-shell-action" };
@@ -1158,7 +1157,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.chat.new, async (e, rawProject?: unknown, chatGroupId?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.new, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.new); return UNAUTHORIZED_FRAME; }
     const group = groupOf(e, chatGroupId, CHANNELS.chat.new);
     const conversationLoop = group.loop;
     const mutation = group.turns.trackSessionMutation(async () => {
@@ -1183,14 +1182,14 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
   ipcMain.handle(CHANNELS.chat.sessions, (e, opts?: Partial<Record<keyof SessionListQuery, unknown>>) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.chat.sessions, e);
+      auditUnauthorized(CHANNELS.chat.sessions);
       return { current: conversationLoop.getSessionId(), sessions: [] };
     }
     return handleChatSessions(deps, opts);
   });
 
   ipcMain.handle(CHANNELS.chat.compact, (e, chatGroupId?: unknown, focus?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.compact, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.compact); return UNAUTHORIZED_FRAME; }
     if (focus !== undefined && typeof focus !== "string") throw new Error("invalid compact focus");
     const group = groupOf(e, chatGroupId, CHANNELS.chat.compact);
     // Wire compact callbacks for slash-triggered compaction too; no stream id exists outside a turn.
@@ -1225,7 +1224,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.chat.sessionResume, async (e, sessionId: string, chatGroupId?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.sessionResume, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.sessionResume); return UNAUTHORIZED_FRAME; }
     if (!isValidSessionId(sessionId)) {
       return { ok: false, compacted: false, compactedAt: null, removedMessageCount: 0 };
     }
@@ -1259,14 +1258,14 @@ export function registerChatHandlers(deps: IpcDeps): void {
     };
   });
   ipcMain.handle(CHANNELS.chat.getHistory, (e, chatGroupId?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.getHistory, e); return []; }
-    if (!isNativeGroupFrame(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.getHistory, e); return []; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.getHistory); return []; }
+    if (!isNativeGroupFrame(e)) { auditUnauthorized(CHANNELS.chat.getHistory); return []; }
     return handleChatGetHistory(groupOf(e, chatGroupId, CHANNELS.chat.getHistory).deps);
   });
 
   ipcMain.handle(CHANNELS.chat.mainActiveState, (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.chat.mainActiveState, e);
+      auditUnauthorized(CHANNELS.chat.mainActiveState);
       return null;
     }
     return memoryManager.sessions.loadMainActiveSessionState();
@@ -1274,7 +1273,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.chat.sessionHistory, (e, sessionId: string) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.chat.sessionHistory, e);
+      auditUnauthorized(CHANNELS.chat.sessionHistory);
       // Unauthorized history replies must retain messages and ok fields expected by callers.
       return { ok: false, messages: [], error: "unauthorized-frame" as const };
     }
@@ -1282,7 +1281,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.chat.editResend, async (e, messageId: string, newText: string, chatGroupId?: unknown, intent?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.editResend, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.editResend); return UNAUTHORIZED_FRAME; }
     // Resending edited text is the user's own turn only with the click's consumed gesture intent; without one it is refused.
     const userKeyboardIntent = mintUserKeyboardIntent(intent);
     if (userKeyboardIntent === undefined) return USER_KEYBOARD_REQUIRED;
@@ -1371,7 +1370,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   };
 
   ipcMain.handle(CHANNELS.chat.getTurnReview, async (e, expectedSessionId: unknown, chatGroupId?: unknown): Promise<TurnReviewResult> => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.getTurnReview, e); return { ok: false, error: "unauthorized-frame" }; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.getTurnReview); return { ok: false, error: "unauthorized-frame" }; }
     const scope = turnReviewScope(e, expectedSessionId, chatGroupId, CHANNELS.chat.getTurnReview);
     if (!scope.ok) return scope;
     const review = await getTurnChangeReview(scope.sessionId, scope.turnId, scope.context, { currentDetails: true });
@@ -1381,7 +1380,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   // Keep or undo is the person's own action on their files: the host window sends it, and no card is shown.
   ipcMain.handle(CHANNELS.chat.decideTurnReview, async (e, expectedSessionId: unknown, decision: unknown, chatGroupId?: unknown): Promise<TurnReviewResult> => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.decideTurnReview, e); return { ok: false, error: "unauthorized-frame" }; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.decideTurnReview); return { ok: false, error: "unauthorized-frame" }; }
     const parsed = parseTurnReviewDecision(decision);
     if (!parsed) return { ok: false, error: "invalid-input" };
     const scope = turnReviewScope(e, expectedSessionId, chatGroupId, CHANNELS.chat.decideTurnReview);
@@ -1393,7 +1392,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   // Restore code before history mutation; code-only restore leaves history intact and rewind persists its own truncation.
   ipcMain.handle(CHANNELS.chat.rewindTo, async (e, messageId: string, chatGroupId?: unknown, mode: unknown = "conversation") => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.rewindTo, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.rewindTo); return UNAUTHORIZED_FRAME; }
     if (!isRewindMode(mode)) return { ok: false, error: "invalid-rewind-mode" };
     const group = groupOf(e, chatGroupId, CHANNELS.chat.rewindTo);
     const conversationLoop = group.loop;
@@ -1441,7 +1440,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.chat.fork, async (e, messageId: unknown, chatGroupId?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.fork, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.fork); return UNAUTHORIZED_FRAME; }
     const group = groupOf(e, chatGroupId, CHANNELS.chat.fork);
     const conversationLoop = group.loop;
     const mutation = group.turns.trackSessionMutation(async () => {
@@ -1490,7 +1489,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return mutation ?? { ok: false, sessionId: null, error: STREAMING_ACTIVE };
   });
   ipcMain.handle(CHANNELS.chat.continueLastUser, async (e, payload: unknown, chatGroupId?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.continueLastUser, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.continueLastUser); return UNAUTHORIZED_FRAME; }
     const group = groupOf(e, chatGroupId, CHANNELS.chat.continueLastUser);
     const p = payload as { sessionId?: unknown; intent?: unknown; branchContinuation?: unknown };
     if (typeof p?.sessionId !== "string") return { ok: false, error: "invalid-args" };
@@ -1512,7 +1511,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     chatGroupId?: unknown,
     intent?: unknown,
   ) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.retryEffort, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.retryEffort); return UNAUTHORIZED_FRAME; }
     // Retrying replays the user's request: their turn only with the click's consumed gesture intent.
     const userKeyboardIntent = mintUserKeyboardIntent(intent);
     if (userKeyboardIntent === undefined) return USER_KEYBOARD_REQUIRED;
@@ -1543,7 +1542,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     format: "markdown" | "json",
     targetSessionId?: unknown,
   ) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.export, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.export); return UNAUTHORIZED_FRAME; }
     const { writeFile } = await import("node:fs/promises");
     const win = mainWindowForContents(e.sender) ?? getMainWindow();
     if (format !== "markdown" && format !== "json") return { ok: false, error: "invalid-format" };
@@ -1606,7 +1605,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   // Row edits share one channel so title, archive, and other row changes address the same conversation.
   ipcMain.handle(CHANNELS.chat.sessionUpdate, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.sessionUpdate, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.sessionUpdate); return UNAUTHORIZED_FRAME; }
     const raw = (payload ?? {}) as {
       sessionId?: unknown;
       title?: unknown;
@@ -1645,7 +1644,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.chat.sessionDelete, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.sessionDelete, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.sessionDelete); return UNAUTHORIZED_FRAME; }
     const sessionId = (payload as { sessionId?: unknown } | null)?.sessionId;
     if (!isValidSessionId(sessionId)) return { ok: false, error: "invalid-session" };
     // Confirm in main so callers cannot bypass a renderer-only dialog.
@@ -1693,7 +1692,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   // Import is internal and always creates a fresh DLP-safe session id.
   ipcMain.handle(CHANNELS.chat.import, async (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.import, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.import); return UNAUTHORIZED_FRAME; }
     const { open } = await import("node:fs/promises");
     const win = mainWindowForContents(e.sender) ?? getMainWindow();
     const dialogOptions = {
@@ -1743,7 +1742,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.chat.enterCheckpointView, (e, payload: unknown, chatGroupId?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.enterCheckpointView, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.enterCheckpointView); return UNAUTHORIZED_FRAME; }
     const group = groupOf(e, chatGroupId, CHANNELS.chat.enterCheckpointView);
     const p = payload as { sessionId?: unknown; compactNum?: unknown };
     if (typeof p?.sessionId !== "string" || !Number.isSafeInteger(p?.compactNum) || (p.compactNum as number) < 0) {
@@ -1758,14 +1757,14 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.chat.exitCheckpointView, (e, chatGroupId?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.exitCheckpointView, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.exitCheckpointView); return UNAUTHORIZED_FRAME; }
     const group = groupOf(e, chatGroupId, CHANNELS.chat.exitCheckpointView);
     group.loop.exitViewMode();
     return { ok: true };
   });
 
   ipcMain.handle(CHANNELS.chat.branchFromCheckpoint, async (e, payload: unknown, chatGroupId?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.branchFromCheckpoint, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.chat.branchFromCheckpoint); return UNAUTHORIZED_FRAME; }
     const group = groupOf(e, chatGroupId, CHANNELS.chat.branchFromCheckpoint);
     const p = payload as { sessionId?: unknown; compactNum?: unknown; intent?: unknown };
     // Minted now, from the click preload just reported; held below only for a fork that will auto-continue.
@@ -1814,13 +1813,13 @@ export function registerChatHandlers(deps: IpcDeps): void {
     };
   };
   ipcMain.handle(CHANNELS.memory.summariesGet, async (e, opts?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.summariesGet, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.summariesGet); return UNAUTHORIZED_FRAME; }
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return PROJECT_NOT_ALLOWED;
     return readMemorySummaries(memoryManager, project.options, memoryConversationStores(), defaultWorkspaceProject().projectRoot);
   });
   ipcMain.handle(CHANNELS.memory.detailGet, async (e, id: unknown, opts?: unknown, contentRevision?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.detailGet, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.detailGet); return UNAUTHORIZED_FRAME; }
     if (typeof id !== "string") return { ok: false, error: "invalid-input" };
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return PROJECT_NOT_ALLOWED;
@@ -1833,7 +1832,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return readMemoryDetail(memoryManager, id, project.options, memoryConversationStores(), source);
   });
   ipcMain.handle(CHANNELS.memory.entriesDelete, async (e, filename: unknown, opts?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.entriesDelete, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.entriesDelete); return UNAUTHORIZED_FRAME; }
     if (typeof filename !== "string") return { ok: false, error: "invalid-input" };
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return PROJECT_NOT_ALLOWED;
@@ -1848,7 +1847,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     }
   });
   ipcMain.handle(CHANNELS.memory.undo, async (e, token: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.undo, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.undo); return UNAUTHORIZED_FRAME; }
     if (typeof token !== "string" || !UNDO_TOKEN_PATTERN.test(token)) return { ok: false, error: "invalid-input" };
     try {
       return await memorySaveNotices.undo(token);
@@ -1857,7 +1856,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     }
   });
   ipcMain.handle(CHANNELS.memory.entriesSearch, (e, query: string, opts?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.entriesSearch, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.entriesSearch); return UNAUTHORIZED_FRAME; }
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return [];
     return memoryManager.searchMemoryEntries(query, project.options).map((note) => ({
@@ -1872,17 +1871,17 @@ export function registerChatHandlers(deps: IpcDeps): void {
     }));
   });
   ipcMain.handle(CHANNELS.memory.indexGet, (e, opts?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.indexGet, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.indexGet); return UNAUTHORIZED_FRAME; }
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return "";
     return memoryManager.getMemoryIndex(project.options);
   });
   ipcMain.handle(CHANNELS.memory.indexUpdateIfUnchanged, async (e, expectedContent: string, nextContent: string) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.indexUpdateIfUnchanged, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.indexUpdateIfUnchanged); return UNAUTHORIZED_FRAME; }
     return memoryManager.updateMemoryIndexIfUnchanged(expectedContent, nextContent);
   });
   ipcMain.handle(CHANNELS.memory.indexSectionsUpdate, async (e, sections: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.indexSectionsUpdate, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.indexSectionsUpdate); return UNAUTHORIZED_FRAME; }
     if (!sections || typeof sections !== "object" || Array.isArray(sections)) {
       return { ok: false, error: "invalid-memory-sections" };
     }
@@ -1900,35 +1899,35 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return { ok: true };
   });
   ipcMain.handle(CHANNELS.memory.sessionsList, (e, opts?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.sessionsList, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.sessionsList); return UNAUTHORIZED_FRAME; }
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return [];
     return memoryManager.sessions.listSessionEntries(50, project.options);
   });
   ipcMain.handle(CHANNELS.memory.sessionsSearch, (e, query: string, opts?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.sessionsSearch, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.sessionsSearch); return UNAUTHORIZED_FRAME; }
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return [];
     return memoryManager.sessions.searchSessions(query, project.options);
   });
   ipcMain.handle(CHANNELS.memory.agentsMdGet, (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.agentsMdGet, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.agentsMdGet); return UNAUTHORIZED_FRAME; }
     return memoryManager.getAgentsMd();
   });
   ipcMain.handle(CHANNELS.memory.agentsMdUpdate, async (e, content: string) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.agentsMdUpdate, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.agentsMdUpdate); return UNAUTHORIZED_FRAME; }
     return memoryManager.updateAgentsMd(content);
   });
   ipcMain.handle(CHANNELS.memory.userPrefsGet, (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.userPrefsGet, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.userPrefsGet); return UNAUTHORIZED_FRAME; }
     return memoryManager.getUserPreferences();
   });
   ipcMain.handle(CHANNELS.memory.userPrefsUpdate, async (e, content: string) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.userPrefsUpdate, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.userPrefsUpdate); return UNAUTHORIZED_FRAME; }
     return memoryManager.updateUserPreferences(content);
   });
   ipcMain.handle(CHANNELS.memory.userPrefsRefresh, async (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.userPrefsRefresh, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.memory.userPrefsRefresh); return UNAUTHORIZED_FRAME; }
     if (!preferenceRefreshService) {
       return { ok: false, error: "preference-refresh-service-unavailable" };
     }
@@ -1947,7 +1946,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.memory.longTermRefresh, async (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.memory.longTermRefresh, e);
+      auditUnauthorized(CHANNELS.memory.longTermRefresh);
       return UNAUTHORIZED_FRAME;
     }
     if (!memoryConsolidationService) {
@@ -1973,7 +1972,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return starredStore.list();
   });
   ipcMain.handle(CHANNELS.starred.add, (e, entry: { sessionId?: string; messageIndex: number; role: string; text: string }) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.starred.add, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.starred.add); return UNAUTHORIZED_FRAME; }
     if (!starredStore) return { ok: false, error: "no-starred-store" };
     if (typeof entry?.messageIndex !== "number" || entry.messageIndex < -1) return { ok: false, error: "invalid-index" };
     if (typeof entry?.text !== "string") return { ok: false, error: "invalid-text" };
@@ -1982,7 +1981,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return { ok: true, entry: record };
   });
   ipcMain.handle(CHANNELS.starred.remove, (e, opts: { id?: string; sessionId?: string; messageIndex?: number }) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.starred.remove, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.starred.remove); return UNAUTHORIZED_FRAME; }
     if (!starredStore) return { ok: false, error: "no-starred-store" };
     if (opts?.id) return { ok: starredStore.remove(opts.id) };
     if (opts?.sessionId && typeof opts.messageIndex === "number") {
@@ -1992,7 +1991,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(CHANNELS.feedback.submit, async (e, payload: { sessionId: string; messageIndex: number; rating: "up" | "down"; reason?: string }) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.feedback.submit, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.feedback.submit); return UNAUTHORIZED_FRAME; }
     const { sessionId, messageIndex, rating } = payload ?? {};
     if (
       typeof sessionId !== "string" ||
@@ -2019,7 +2018,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     CHANNELS.chat.getVerbatimToolResult,
     (e, { sessionId, toolUseId }: { sessionId: string; toolUseId: string }, chatGroupId?: unknown) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.chat.getVerbatimToolResult, e);
+        auditUnauthorized(CHANNELS.chat.getVerbatimToolResult);
         return null;
       }
       const group = groupOf(e, chatGroupId, CHANNELS.chat.getVerbatimToolResult);
@@ -2051,7 +2050,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     CHANNELS.chat.getSubAgentTranscript,
     (e, payload: unknown, chatGroupId?: unknown) => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.chat.getSubAgentTranscript, e);
+        auditUnauthorized(CHANNELS.chat.getSubAgentTranscript);
         return { ok: false, error: "unauthorized-frame" };
       }
       const group = groupOf(e, chatGroupId, CHANNELS.chat.getSubAgentTranscript);
@@ -2095,7 +2094,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     CHANNELS.chat.getWriteDiff,
     async (e, payload: unknown): Promise<WriteDiffRecord | null> => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.chat.getWriteDiff, e);
+        auditUnauthorized(CHANNELS.chat.getWriteDiff);
         return null;
       }
       const p = (payload ?? {}) as Record<string, unknown>;
@@ -2111,7 +2110,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   // Reload pending questions only into the window holding their session.
   ipcMain.handle(ASK_USER_QUESTION_PENDING_CHANNEL, (e) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ASK_USER_QUESTION_PENDING_CHANNEL, e);
+      auditUnauthorized(ASK_USER_QUESTION_PENDING_CHANNEL);
       return UNAUTHORIZED_FRAME;
     }
     return askUserQuestionGate ? askUserQuestionGate.listPending(e.sender) : [];
@@ -2119,7 +2118,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(ASK_USER_QUESTION_RESPOND_CHANNEL, (e, response: unknown) => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ASK_USER_QUESTION_RESPOND_CHANNEL, e);
+      auditUnauthorized(ASK_USER_QUESTION_RESPOND_CHANNEL);
       return UNAUTHORIZED_FRAME;
     }
     if (!askUserQuestionGate) {

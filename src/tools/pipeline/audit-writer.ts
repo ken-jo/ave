@@ -1,14 +1,12 @@
 import { logPermissionEvent, permissionLogId } from "../../lib/permission-log.js";
-import { type KindedTerminalRowWriter, type TerminalDenial, type TerminalLifecycleEvent } from "../invocation-ledger.js";
-import type { ToolAuditTerminationReason } from "../../audit/audit-logger.js";
+import type { KindedTerminalRowWriter, TerminalDenial, TerminalLifecycleEvent } from "../invocation-ledger.js";
+import type { ToolAuditTerminationReason } from "../executor-contract.js";
 // Tool terminal rows go through auditToolCall with a row writer only the ledger hands out and the kind its writer named;
 // the ledger fires one PermissionDenied per permission-denial row, except for a governed tool, and none for a cancellation.
-import type { ToolRegistry } from "../registry.js";
 import type { ToolSource, ToolCategory, TrustLevel } from "../types.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import { answeredProvenanceRecord, answeredRecordForAction, provenanceTrustOrigin, type DecisionProvenance } from "../../permissions/approval-gate.js";
-import type { AuditLogger } from "../../audit/audit-logger.js";
-import type { HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
+import type { HookResult, ToolExecutionAuditMetadata } from "./permission-decision.js";
 import type {
   ScriptHookManager,
   HookDispatchResult,
@@ -40,8 +38,6 @@ export interface LifecycleDispatchObservation {
 
 export class AuditWriter {
   constructor(
-    private readonly auditLogger: AuditLogger,
-    private readonly toolRegistry: ToolRegistry,
     private readonly scriptHookManager: ScriptHookManager | undefined,
   ) {}
 
@@ -84,7 +80,7 @@ export class AuditWriter {
         { cwd: currentToolExecutionCwd() ?? process.cwd(), abortSignal },
       );
       recordHookContext(result.results);
-      recordHookExecutionAudit(this.auditLogger, sessionId ?? "unknown", result.results);
+      recordHookExecutionAudit(sessionId ?? "unknown", result.results);
       if (result.results.length > 0) {
         return { status: "executed", result };
       }
@@ -116,7 +112,7 @@ export class AuditWriter {
     // A grant records only the answer that allowed this action.
     if (args.provenance.kind === "answered") answeredRecordForAction(args.provenance, "allow", args.toolName, args.audit?.toolUseId);
     logPermissionEvent("permission_directory_grant", {
-      tool: permissionLogId(args.toolName), source: args.source, category: args.category,
+      tool: permissionLogId(args.toolName), source: args.source, category: args.category, decision: "allow",
       toolUseId: permissionLogId(args.audit?.toolUseId), grantLifetime: args.grantLifetime,
       policyRule: permissionLogId(args.policyRule),
       trustOrigin: provenanceTrustOrigin(args.provenance, "allow", auditTrustOrigin(args.permissionContext)),
@@ -148,16 +144,16 @@ export class AuditWriter {
     toolName: string,
     source: ToolSource,
     trust: TrustLevel,
-    input: Record<string, unknown>,
+    _input: Record<string, unknown>,
     _output: string,
     isError: boolean,
     startTime: number,
     permission: PermissionCheckResult,
-    rateLimitRemaining: number,
+    _rateLimitRemaining: number,
     permissionContext?: ToolPermissionContext,
     category?: ToolCategory,
-    cwd?: string,
-    auditDirectory?: string,
+    _cwd?: string,
+    _auditDirectory?: string,
     terminationReason?: ToolAuditTerminationReason,
     hookChain?: HookResult[],
     audit?: ToolExecutionAuditMetadata,
@@ -165,18 +161,12 @@ export class AuditWriter {
   ): Promise<void> {
     if (!terminal) throw new Error(`terminal row of ${toolName} has no ledger writer`);
     // Every terminal row is written; what the host could not resolve is recorded as unknown.
-    const tool = this.toolRegistry.findByName(toolName);
     const entry = permissionAuditEntryFromToolCall({
       toolName,
-      tool,
       source,
       category: category ?? "unknown",
-      input,
       permission,
-      rateLimitRemaining,
       trustOrigin: auditTrustOrigin(permissionContext),
-      cwd,
-      auditDirectory,
       ...(hookChain ? { hookChain } : {}),
       audit,
     });

@@ -4,7 +4,7 @@ vi.mock("../../shared/windows-path-facts.js", async original => (await import(".
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
-import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,7 +41,7 @@ import { t } from "../../i18n/runtime.js";
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
 import { cardGate, defined, probe, sessionGate } from "../../__tests__/support/forced-shell-card.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
-import type { AuditEntry, AuditLogger } from "../../audit/audit-logger.js";
+import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 let testRoot: string;
@@ -53,16 +53,6 @@ const DIALECTS = [
 
 const PLATFORMS = (["win32", "linux", "darwin"] as const).map(platform => ({ platform }));
 const FIXTURE_HOME = "C:\\Users\\alice\\.ave";
-
-function recordingAuditLogger(): { auditLogger: AuditLogger; entries: AuditEntry[] } {
-  const entries: AuditEntry[] = [];
-  const auditLogger = {
-    log: vi.fn((entry: AuditEntry) => entries.push(entry)), logShadow: vi.fn(), isPermissionAuditChainReady: vi.fn(() => true),
-    assertPermissionAuditWritable: vi.fn(), appendPermissionAuditEntry: vi.fn(async (entry: object) => ({ ...entry, prevHash: "test-chain" })),
-    isShadowChannelWritable: vi.fn(() => true), getPermissionShadowLogFile: vi.fn(() => "test-shadow.jsonl"),
-  } as unknown as AuditLogger;
-  return { auditLogger, entries };
-}
 
 function rulesFile(mode: string): string {
   return join(testRoot, `permissions-${mode}.json`);
@@ -111,8 +101,8 @@ describe.each(PLATFORMS)("host shells when the requested sandbox is unavailable 
   const run = (dialect: (typeof DIALECTS)[number], sessionId: string, command: string = dialect.command, host = false) => {
     const input = host ? { command, executionMode: "host", justification: "Retry outside the OS sandbox" } : { command };
     let serial = 0;
-    return (pm: PermissionManager, gate: ApprovalGate, registry: ToolRegistry, headless = false, auditLogger?: AuditLogger) => runWithToolExecutionCwd(testRoot, () =>
-      new ToolExecutor(registry, undefined, pm, undefined, gate, undefined, auditLogger).executeAll(
+    return (pm: PermissionManager, gate: ApprovalGate, registry: ToolRegistry, headless = false) => runWithToolExecutionCwd(testRoot, () =>
+      new ToolExecutor(registry, undefined, pm, undefined, gate, undefined).executeAll(
         [{ id: `${sessionId}-${++serial}`, name: dialect.toolName, input }],
         { sessionId, permissionContext: permissionContext(headless ? { headless: true } : {}) },
       ));
@@ -208,7 +198,7 @@ describe.each(PLATFORMS)("host shells when the requested sandbox is unavailable 
   };
   const routes = DIALECTS.flatMap(dialect => [{ dialect, host: false, route: "default" }, { dialect, host: true, route: "explicit-host" }]);
 
-  it.each(routes)("$dialect.toolName ($route) runs on its exact saved rule without a card, saves nothing and audits the rule", async ({ dialect, host }) => {
+  it.each(routes)("$dialect.toolName ($route) runs on its exact saved rule without a card, saves nothing and emits an allow event", async ({ dialect, host }) => {
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
     const codeSet = cardGate("deny-once");
@@ -217,9 +207,10 @@ describe.each(PLATFORMS)("host shells when the requested sandbox is unavailable 
     expect(execute).not.toHaveBeenCalled();
     const pm = await savedManager("default", [exactRule(dialect)]);
     const rulesBefore = existsSync(rulesFile("default")) ? readFileSync(rulesFile("default"), "utf8") : undefined;
-    const audit = recordingAuditLogger();
+    const capture = collectPermissionEvents();
+    onTestFinished(capture.restore);
     const cards = cardGate("deny-once");
-    const ran = await run(dialect, "exact-rule", dialect.command, host)(pm, cards.gate, registry, false, audit.auditLogger);
+    const ran = await run(dialect, "exact-rule", dialect.command, host)(pm, cards.gate, registry);
     expect(cards.cards()).toHaveLength(0);
     expect(pm.dispatchReviewer).not.toHaveBeenCalled();
     expect(execute).toHaveBeenCalledOnce();
@@ -227,9 +218,8 @@ describe.each(PLATFORMS)("host shells when the requested sandbox is unavailable 
     const ctx = defined(execute.mock.calls[0], "execute call")[0] as ToolExecutionContext;
     expect(ctx.hostShellExecutionPermit).toBeDefined();
     expect(ctx.hostShellExecutionPlan).toMatchObject({ mode: "plain", sandboxed: false, substrate: "none", executionRequest: host ? "host" : "default", requiresExplicitUserApproval: true });
-    const call = audit.entries.find(entry => entry.type === "tool_call")?.toolCalls?.[0];
-    expect(call).toMatchObject({ permissionDecision: "allow" });
-    expect(call?.permissionReason).toContain(exactRule(dialect));
+    expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", toolUseId: "exact-rule-1", decision: "allow", provenance: "rule" }));
+    expect(JSON.stringify(capture.events)).not.toContain(exactRule(dialect));
     // No grant was written and none is held: the rule file is unchanged, and a command the rule does not name asks.
     expect(existsSync(rulesFile("default")) ? readFileSync(rulesFile("default"), "utf8") : undefined).toBe(rulesBefore);
     const other = cardGate("deny-once");

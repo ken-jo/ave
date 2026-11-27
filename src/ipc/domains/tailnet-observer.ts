@@ -37,7 +37,7 @@ export function registerTailnetObserverHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.tailnetObserver.snapshot, async (event) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.tailnetObserver.snapshot, event);
+      auditUnauthorized(CHANNELS.tailnetObserver.snapshot);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;
@@ -51,7 +51,7 @@ export function registerTailnetObserverHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.tailnetObserver.apply, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.tailnetObserver.apply, event);
+      auditUnauthorized(CHANNELS.tailnetObserver.apply);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;
@@ -69,7 +69,7 @@ export function registerTailnetObserverHandlers(deps: IpcDeps): void {
   // Derive executable and port from host probes; renderer targets must never publish arbitrary listeners.
   ipcMain.handle(CHANNELS.tailnetObserver.configureServe, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.tailnetObserver.configureServe, event);
+      auditUnauthorized(CHANNELS.tailnetObserver.configureServe);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;
@@ -84,7 +84,7 @@ export function registerTailnetObserverHandlers(deps: IpcDeps): void {
   // Quick setup requires both apply and command authority and derives all configuration in the host.
   ipcMain.handle(CHANNELS.tailnetObserver.guidedSetup, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.tailnetObserver.guidedSetup, event);
+      auditUnauthorized(CHANNELS.tailnetObserver.guidedSetup);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;
@@ -99,7 +99,7 @@ export function registerTailnetObserverHandlers(deps: IpcDeps): void {
   // Accept only the boolean choice; derive own-account identity from the desktop probe.
   ipcMain.handle(CHANNELS.tailnetObserver.setOwnDeviceAdmission, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.tailnetObserver.setOwnDeviceAdmission, event);
+      auditUnauthorized(CHANNELS.tailnetObserver.setOwnDeviceAdmission);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;

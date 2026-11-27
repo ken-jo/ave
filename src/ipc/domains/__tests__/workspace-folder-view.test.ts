@@ -62,7 +62,6 @@ const appWindows: Array<{ isDestroyed: () => boolean; webContents: unknown }> = 
 const auditLog = vi.fn();
 const editorCommand = { value: "" };
 const deps = {
-  auditLogger: { log: auditLog },
   settingsService: { get: (section: string) => (section === "documents" ? { openMode: "direct", editorCommand: editorCommand.value } : undefined) },
   pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
   getMainWindow: () => appWindows[0] ?? null,

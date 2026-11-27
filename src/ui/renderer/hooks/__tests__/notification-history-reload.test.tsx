@@ -4,7 +4,7 @@ import type { BrowserWindow, WebContents } from "electron";
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { NotificationService, IPC_NOTIFICATION_TOAST } from "../../../../main/notification-service.js";
-import type { AuditLogger } from "../../../../audit/audit-logger.js";
+
 import type { NotificationToastPayload } from "../../../../shared/notification-types.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import type { AveApi } from "../../types.js";
@@ -26,7 +26,6 @@ function sessionTransport() {
     getMainWindow: () => window as unknown as BrowserWindow,
     isReady: () => true, isTestEnv: () => false,
     notificationFactory: () => ({ show, on: () => {} }),
-    auditLogger: { log: audit } as unknown as AuditLogger,
   });
   const { api } = makeMockAveApi();
   api.onNotificationToast = vi.fn((listener: (record: NotificationToastPayload) => void) => {

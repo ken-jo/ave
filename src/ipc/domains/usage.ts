@@ -7,29 +7,28 @@ import { handleUsageSummary, handleUsageRange, handleUsageDailySummary, type Usa
 import { resolvePricingOverrides, type PricingOverride } from "../../shared/pricing-overrides.js";
 
 export function registerUsageHandlers(deps: IpcDeps): void {
-  const { auditLogger } = deps;
   const pricingOverrides = () => deps.settingsService.get("llm")?.pricingOverrides;
 
   ipcMain.handle(CHANNELS.usage.summary, async (_e, days?: number) => handleUsageSummary(deps.memoryManager.sessions, days));
 
   ipcMain.handle(CHANNELS.usage.range, async (e, opts: { dateFrom: string; dateTo: string }) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.usage.range, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.usage.range); return UNAUTHORIZED_FRAME; }
     return handleUsageRange(deps.memoryManager.sessions, opts);
   });
 
   // Resolve shared pricing corrections in main, where environment overrides are authoritative.
   ipcMain.handle(CHANNELS.usage.pricingOverrides, (e): readonly PricingOverride[] | typeof UNAUTHORIZED_FRAME => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.usage.pricingOverrides, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.usage.pricingOverrides); return UNAUTHORIZED_FRAME; }
     return resolvePricingOverrides(pricingOverrides());
   });
 
   ipcMain.handle(CHANNELS.usage.dailySummary, async (e, input: UsageDailySummaryInput) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.usage.dailySummary, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.usage.dailySummary); return UNAUTHORIZED_FRAME; }
     return handleUsageDailySummary(deps.conversationLoop, input);
   });
 
   ipcMain.handle(CHANNELS.usage.exportCsv, async (e, rows: Array<Record<string, string | number>>) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.usage.exportCsv, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e)) { auditUnauthorized(CHANNELS.usage.exportCsv); return UNAUTHORIZED_FRAME; }
     const { BaseWindow } = await import("electron");
     const win = BaseWindow.getFocusedWindow() ?? undefined;
     const result = win
