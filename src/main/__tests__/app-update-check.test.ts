@@ -1,8 +1,11 @@
+import { trackPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BrowserWindow } from "electron";
 import { createAutoUpdater, type UpdaterLike } from "../auto-updater.js";
 import { hostFrameEvent, foreignFrameEvent } from "../../__tests__/test-helpers.js";
 
+
+const permissionEvents = trackPermissionEvents();
 
 const stops: Array<() => void> = [];
 afterEach(() => { for (const stop of stops.splice(0)) stop(); });
@@ -10,13 +13,12 @@ afterEach(() => { for (const stop of stops.splice(0)) stop(); });
 function updateCheckHarness() {
   const checkForUpdates = vi.fn(async () => undefined);
   const updater = { on: vi.fn(), checkForUpdates, downloadUpdate: vi.fn(), quitAndInstall: vi.fn() } as unknown as UpdaterLike;
-  const log = vi.fn();
   const service = createAutoUpdater({
     getWindows: () => [], getDialogParent: () => null as BrowserWindow | null,
     isEnabled: () => false, updaterFactory: () => updater,
   });
   stops.push(service.stop);
-  return { service, checkForUpdates, log, updater };
+  return { service, checkForUpdates, updater };
 }
 
 describe("manual app update checks", () => {
@@ -36,9 +38,9 @@ describe("manual app update checks", () => {
   });
 
   it("rejects a foreign sender before network access and records the refusal", async () => {
-    const { service, checkForUpdates, log } = updateCheckHarness();
+    const { service, checkForUpdates } = updateCheckHarness();
     await expect(service._testOnly.ipcCheckNow(foreignFrameEvent("https://untrusted.example/"))).resolves.toEqual({ ok: false, reason: "unauthorized-frame" });
     expect(checkForUpdates).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith(expect.objectContaining({ input: expect.stringContaining("ave:update:check-now") }));
+    expect(permissionEvents()).toContainEqual(expect.objectContaining({ event: "ipc_sender_refused", channel: "ave:update:check-now" }));
   });
 });

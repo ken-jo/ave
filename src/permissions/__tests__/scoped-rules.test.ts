@@ -1,4 +1,4 @@
-import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { captureInvocationCorrelations, collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
@@ -496,7 +496,7 @@ describe("scoped permission rules", () => {
     expect(() => readFileSync(sibling, "utf8")).toThrow();
   });
 
-  it("audits and propagates the turn grant for a session-bound remote saved Edit", async () => {
+  it("logs and propagates the turn grant for a session-bound remote saved Edit", async () => {
     const capture = collectPermissionEvents();
     onTestFinished(capture.restore);
     const external = join(directory, "external");
@@ -510,6 +510,8 @@ describe("scoped permission rules", () => {
     const onTurnDirectoryGrant = vi.fn();
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined);
     const sessionId = "remote-edit";
+    const correlations = await captureInvocationCorrelations();
+    onTestFinished(correlations.restore);
     const remoteControllerAuthority = bindRemoteControllerToSession({
       kind: "tailnet-controller", actorId: "tailnet:alice",
       pairedShare: { pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
@@ -525,7 +527,8 @@ describe("scoped permission rules", () => {
     expect(requestAndWait).not.toHaveBeenCalled();
     expect.soft(onTurnDirectoryGrant).toHaveBeenCalledExactlyOnceWith(target);
     const grants = capture.events.filter((event) => event.event === "permission_directory_grant");
-    expect(grants).toEqual([expect.objectContaining({ grantLifetime: "turn", tool: "write_file", toolUseId: "remote-edit" })]);
+    expect(correlations.get("remote-edit")).toEqual(expect.any(String));
+    expect(grants).toEqual([expect.objectContaining({ grantLifetime: "turn", tool: "write_file", correlationId: correlations.get("remote-edit"), trustOrigin: "tailnet-surface" })]);
     expect(JSON.stringify(grants)).not.toContain(target);
   });
 

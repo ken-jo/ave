@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../__tests__/support/permission-events.js";
 // Resume rehydrates frozen history and scope; it never reauthorizes against the live parent registry.
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -116,6 +117,8 @@ function noopTool(name: string) {
 }
 
 const SESSION_ID_REGEX = /^(?:(?:sub|a2a-wire)-[a-z0-9]+-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+const permissionEvents = trackPermissionEvents();
 
 describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   let tmpHome: string;
@@ -3106,7 +3109,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const subStore = makeSubStore();
     const namespace = openFeatureNamespace("subagent-messaging");
     const mailbox = new A2AAgentMessageMailbox(namespace);
-    const audit = vi.fn();
     const parentDeliver = vi.fn(
       async (input: {
         childSessionId: string;
@@ -3188,9 +3190,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       }>("agent-mailbox.json", { trees: [] });
       expect(stored.trees).toEqual([{ originSessionId, messageCount: 1 }]);
       expect(
-        audit.mock.calls.filter(([entry]) =>
-          String(entry.input).includes("delivered:parent"),
-        ),
+        permissionEvents().filter((entry) => entry.event === "agent_message_delivery"
+          && entry.sessionId === originSessionId && entry.outcome === "delivered" && entry.reasonCode === "parent"),
       ).toHaveLength(1);
     } finally {
       restore();

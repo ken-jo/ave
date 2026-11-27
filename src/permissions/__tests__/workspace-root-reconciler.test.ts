@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 
 useConfigurationOwner();
@@ -30,6 +31,8 @@ function codedError(code: string, message = "sensitive filesystem detail"): Erro
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+const permissionEvents = trackPermissionEvents();
 
 describe("reconcileWorkspaceRoots", () => {
   it("keeps a confirmed directory without mutating settings or grants", async () => {
@@ -100,11 +103,10 @@ describe("reconcileWorkspaceRoots", () => {
   });
 
   it.each(["EACCES", "EPERM", "EBUSY", "EHOSTUNREACH"])(
-    "retains a root on transient %s and audits only stable/redacted details",
+    "retains a root on transient %s and logs only stable/redacted details",
     async (code) => {
       const { dir, path } = tempSettings();
       await seed(path, [dir]);
-      const auditLog = vi.fn();
       const prunePathGrantsUnderRoot = vi.fn();
       const statFn = vi.fn(async () => {
         throw codedError(code);
@@ -120,11 +122,11 @@ describe("reconcileWorkspaceRoots", () => {
       expect(result.retained[0]).toMatchObject({ storedPath: dir, reason: "transient-error", code });
       expect(readPermissionSettings(path).permissions.additionalDirectories).toEqual([dir]);
       expect(prunePathGrantsUnderRoot).not.toHaveBeenCalled();
-      const serializedAudit = JSON.stringify(auditLog.mock.calls);
-      expect(serializedAudit).toContain(code);
-      expect(serializedAudit).not.toContain("sensitive filesystem detail");
-      expect(serializedAudit).not.toContain(dir);
-      if (process.platform !== "win32") expect(serializedAudit).not.toContain("/tmp");
+      const serializedEvents = JSON.stringify(permissionEvents().filter((entry) => entry.event === "workspace_root_reconciliation"));
+      expect(serializedEvents).toContain(code);
+      expect(serializedEvents).not.toContain("sensitive filesystem detail");
+      expect(serializedEvents).not.toContain(dir);
+      if (process.platform !== "win32") expect(serializedEvents).not.toContain("/tmp");
     },
   );
 
@@ -214,7 +216,6 @@ describe("reconcileWorkspaceRoots", () => {
     const { dir, path } = tempSettings();
     await seed(path, [dir]);
     const runtimePath = sanitizeRuntimeAllowedDirectories([dir])[0]!;
-    const auditLog = vi.fn();
     const prunePathGrantsUnderRoot = vi.fn(async () => [] as unknown[]);
     const onRemoved = vi.fn(async () => {});
     const beforeRemove = vi.fn(async () => {
@@ -247,11 +248,11 @@ describe("reconcileWorkspaceRoots", () => {
     expect(readPermissionSettings(path).permissions.pendingWorkspaceRootRemovals).toHaveLength(1);
     expect(prunePathGrantsUnderRoot).not.toHaveBeenCalled();
     expect(onRemoved).not.toHaveBeenCalled();
-    const serializedAudit = JSON.stringify(auditLog.mock.calls);
-    expect(serializedAudit).toContain("cleanup-pending");
-    expect(serializedAudit).toContain("EACCES");
-    expect(serializedAudit).not.toContain("private lifecycle failure");
-    expect(serializedAudit).not.toContain(dir);
+    const serializedEvents = JSON.stringify(permissionEvents().filter((entry) => entry.event === "workspace_root_reconciliation"));
+    expect(serializedEvents).toContain("cleanup-pending");
+    expect(serializedEvents).toContain("EACCES");
+    expect(serializedEvents).not.toContain("private lifecycle failure");
+    expect(serializedEvents).not.toContain(dir);
   });
 
   it("passes a separately retained child root to parent cleanup and finalization", async () => {
@@ -402,7 +403,6 @@ describe("reconcileWorkspaceRoots", () => {
   it("keeps removal pending when grant pruning fails without leaking the error", async () => {
     const { dir, path } = tempSettings();
     await seed(path, [dir]);
-    const auditLog = vi.fn();
     const prunePathGrantsUnderRoot = vi.fn(async () => {
       throw codedError("EIO", "private grant-store failure");
     });
@@ -420,9 +420,9 @@ describe("reconcileWorkspaceRoots", () => {
     expect(result.pending?.[0]).toMatchObject({ storedPath: dir, prunedGrants: 0, code: "EIO" });
     expect(readPermissionSettings(path).permissions.additionalDirectories).toEqual([]);
     expect(readPermissionSettings(path).permissions.pendingWorkspaceRootRemovals).toHaveLength(1);
-    const serializedAudit = JSON.stringify(auditLog.mock.calls);
-    expect(serializedAudit).toContain("cleanup-pending");
-    expect(serializedAudit).toContain("EIO");
-    expect(serializedAudit).not.toContain("private grant-store failure");
+    const serializedEvents = JSON.stringify(permissionEvents().filter((entry) => entry.event === "workspace_root_reconciliation"));
+    expect(serializedEvents).toContain("cleanup-pending");
+    expect(serializedEvents).toContain("EIO");
+    expect(serializedEvents).not.toContain("private grant-store failure");
   });
 });

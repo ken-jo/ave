@@ -1,5 +1,5 @@
 import * as approvalPersistence from "../../../permissions/approval-persistence-guard.js";
-import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
+import { captureInvocationCorrelations, collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
 import { openPendingAnswerCard, type PendingAnswerCard, personAnswerStands, saveStandingAnswerRule } from "../../../permissions/pending-answer-policy.js";
@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { withSourceHostResources } from "../../../__tests__/support/source-host-resources.js";
 import { t } from "../../../i18n/runtime.js";
 import { makeSubAgentApprovalAdapter } from "../../../engine/subagent-runner.js";
@@ -1328,6 +1328,8 @@ describe("live native approval ownership", () => {
     const execute = vi.spyOn(bash, "execute").mockResolvedValue({ output: "unexpected execution", isError: false });
     f.registry.register(bash);
     const held = f.holdNextPreToolUse();
+    const correlations = await captureInvocationCorrelations();
+    onTestFinished(correlations.restore);
     const running = f.executeAll([{
       id: "host-approval-during-cleanup", name: "bash",
       input: { command: "printf approval", executionMode: "host", justification: "Check approval cleanup" },
@@ -1347,7 +1349,9 @@ describe("live native approval ownership", () => {
     expect(await running).toMatchObject([{ is_error: true }]);
     expect(f.cards(f.windowA)).toEqual([]);
     expect(execute).not.toHaveBeenCalled();
-    expect(f.logs.events.filter(({ toolUseId }) => toolUseId === "host-approval-during-cleanup")).toEqual([
+    const correlationId = correlations.get("host-approval-during-cleanup");
+    expect(correlationId).toEqual(expect.any(String));
+    expect(f.logs.events.filter((entry) => entry.correlationId === correlationId && entry.event === "permission_decision")).toEqual([
       expect.objectContaining({ event: "permission_decision", decision: "ask", tool: "bash" }),
       expect.objectContaining({ event: "permission_decision", decision: "deny", tool: "bash" }),
     ]);

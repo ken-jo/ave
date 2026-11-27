@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { describe, expect, it, vi } from "vitest";
 import type { TurnResult } from "../../../engine/conversation-loop.js";
 import type { IpcDeps } from "../../types.js";
@@ -20,7 +21,6 @@ function makeDeps(entries: Array<ReturnType<typeof mailboxEntry>>) {
   let sessionId = "parent-1";
   const peekParentMailbox = vi.fn(async () => entries);
   const acknowledgeParentMailbox = vi.fn(async () => entries.length);
-  const log = vi.fn();
   const deps = {
     conversationLoop: {
       getSessionKind: () => "main",
@@ -32,10 +32,11 @@ function makeDeps(entries: Array<ReturnType<typeof mailboxEntry>>) {
     deps,
     peekParentMailbox,
     acknowledgeParentMailbox,
-    log,
     switchSession: (next: string) => { sessionId = next; },
   };
 }
+
+const permissionEvents = trackPermissionEvents();
 
 const completedTurn = { text: "done", toolCalls: [], route: "default", stopReason: "end_turn" } satisfies TurnResult;
 
@@ -105,16 +106,13 @@ describe("parent sub-agent mailbox turns", () => {
     expect(fixture.acknowledgeParentMailbox).not.toHaveBeenCalled();
   });
 
-  it("keeps the mailbox durable and audits when reading fails", async () => {
+  it("keeps the mailbox durable and logs when reading fails", async () => {
     const fixture = makeDeps([mailboxEntry("message-1", "first", "[Sub-Agent: One]")]);
     fixture.peekParentMailbox.mockRejectedValue(new Error("storage-unavailable"));
 
     await expect(prepareParentMailboxTurn(fixture.deps)).resolves.toBeNull();
-    expect(fixture.log).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "parent-1",
-      type: "error",
-      input: "subagent-mailbox-peek-failed:storage-unavailable",
-    }));
+    const events = permissionEvents().filter((entry) => entry.event === "subagent_mailbox_peek_failed");
+    expect(events).toEqual([{ event: "subagent_mailbox_peek_failed", sessionId: "parent-1" }]);
   });
 
   it("acknowledges exactly the snapshot ids after a completed receiving turn", async () => {
@@ -173,17 +171,14 @@ describe("parent sub-agent mailbox turns", () => {
     expect(fixture.acknowledgeParentMailbox).not.toHaveBeenCalled();
   });
 
-  it("preserves the mailbox and audits an acknowledgement failure", async () => {
+  it("preserves the mailbox and logs an acknowledgement failure", async () => {
     const fixture = makeDeps([mailboxEntry("message-1", "first", "[Sub-Agent: One]")]);
     const mailboxTurn = await prepareParentMailboxTurn(fixture.deps);
     fixture.acknowledgeParentMailbox.mockRejectedValue(new Error("storage-unavailable"));
 
     await acknowledgeParentMailboxAfterTurn(fixture.deps, mailboxTurn, completedTurn);
 
-    expect(fixture.log).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "parent-1",
-      type: "error",
-      input: "subagent-mailbox-ack-failed:storage-unavailable",
-    }));
+    const events = permissionEvents().filter((entry) => entry.event === "subagent_mailbox_ack_failed");
+    expect(events).toEqual([{ event: "subagent_mailbox_ack_failed", sessionId: "parent-1" }]);
   });
 });

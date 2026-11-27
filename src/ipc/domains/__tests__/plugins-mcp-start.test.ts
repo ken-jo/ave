@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { EventEmitter } from "node:events";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../../contract/app-contract.js";
@@ -18,7 +19,7 @@ const undoRemove = vi.fn(async () => undefined);
 const clearApiKey = vi.fn(async () => undefined);
 const clearBundledApiKey = vi.fn(async () => undefined);
 const bundledCredentialRefForConfigId = vi.fn(() => null as { packageRef: { kind: "plugin"; name: string }; server: string } | null);
-const audit = vi.fn();
+const permissionEvents = trackPermissionEvents();
 const activeIntent = { inputOrigin: "user-keyboard", userActivation: true };
 
 function getHandler(channel: string) {
@@ -48,7 +49,7 @@ describe("MCP server start authority", () => {
     await expect(start(event, "local-notes", "a".repeat(64), activeIntent)).resolves.toEqual({ connected: true });
     expect(startServer).toHaveBeenCalledExactlyOnceWith("local-notes", "a".repeat(64));
     await expect(start(event, "local-notes", undefined, activeIntent)).rejects.toThrow("user-keyboard-required");
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ type: "approval", input: expect.stringContaining("mcp_server_start_refused") }));
+    expect(permissionEvents().filter((entry) => entry.event === "mcp_server_start_refused")).toHaveLength(2);
   });
 
   it("refuses a stale native input although the renderer asserts an active intent", async () => {
