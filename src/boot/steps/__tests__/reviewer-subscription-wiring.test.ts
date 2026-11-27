@@ -6,6 +6,8 @@ import { configureHostResources } from "../../../main/host-resources.js";
 
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import type { LLMProvider } from "../../../engine/llm/types.js";
+import { deferred } from "../../../__tests__/support/deferred.js";
+import { DEFAULT_SETTINGS } from "../../../data/settings-defaults.js";
 import { requiredFixture } from "../../../__tests__/support/required-fixture.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
@@ -298,6 +300,98 @@ it.each(["live disconnect", "model discovery account probe failure"] as const)("
     await runtime.stop();
     vi.doUnmock("electron");
     vi.doUnmock("../reviewer-wiring.js");
+    vi.resetModules();
+    await cleanupTmpDir(tempDir);
+  }
+});
+
+it.each([true, false])("projects the winning focus observation for held settings and reviewer reads (connected=%s)", async (connected) => {
+  const tempDir = mkdtempSync(join(tmpdir(), "reviewer-focus-"));
+  vi.resetModules();
+  const resources = await import("../../../main/host-resources.js");
+  resources.configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+  const reviewer = reviewerResult(tempDir);
+  const wireReviewerAgent = vi.fn((_input: Parameters<typeof import("../reviewer-wiring.js").wireReviewerAgent>[0]) => reviewer);
+  vi.doMock("electron", () => ({ BrowserWindow: { getAllWindows: () => [] } }));
+  vi.doMock("../reviewer-wiring.js", async importOriginal => ({
+    ...await importOriginal<typeof import("../reviewer-wiring.js")>(), wireReviewerAgent,
+  }));
+  const { SubscriptionRuntimeService } = await import("../../../main/subscription-runtime-service.js");
+  const ready = claudeCodeSubscriptionStatus("ready", "connected", "fixture");
+  const signedOut = claudeCodeSubscriptionStatus("unverified", "signed-out", "fixture");
+  const getStatus = vi.fn(async () => ready);
+  const runtime = await SubscriptionRuntimeService.create(async () => {}, {
+    namespace: createSubscriptionRuntimeNamespace(),
+    claimRuntimeDirectories: claimFakeRuntimeDirectories,
+    claudeCodeClient: { getStatus, stop: vi.fn() } as never,
+    codexClient: { stop: vi.fn() } as never,
+    acpRegistry: { stopAll: vi.fn() } as never,
+  });
+  vi.doMock("../../../main/subscription-runtime-service.js", async importOriginal => ({
+    ...await importOriginal<typeof import("../../../main/subscription-runtime-service.js")>(),
+    getSubscriptionRuntimeService: async () => runtime,
+  }));
+  const clock = vi.spyOn(Date, "now");
+  let dispose: (() => void) | undefined;
+  const held = deferred<typeof ready>();
+  try {
+    const { createSubscriptionChatLoopBindings } = await import("../conversation-wiring.js");
+    const { rendererSettingsSnapshot } = await import("../../../ipc/domains/settings.js");
+    const { wireReviewerAndPermissions } = await import("../reviewer-permission-wiring.js");
+    const { isSubscriptionConnected } = createSubscriptionChatLoopBindings({ auditLogger: { log: vi.fn() } });
+    const selection = { kind: "subscription", provider: "claude-code", model: "fixture-model" } as const;
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.llm.activeChatRuntime = selection;
+    const settingsService = {
+      onChanged: vi.fn(),
+      get: <K extends keyof typeof settings>(key: K) => settings[key],
+      getAll: () => settings,
+      getSecret: vi.fn(),
+    };
+    const provider: LLMProvider = { vendor: "claude", async *streamTurn() {} };
+    const subscriptionProviderFactory = vi.fn(() => provider);
+    const context = {
+      host: createBootHostFixture(), toolRegistry: { setDenyRules: vi.fn() },
+      permissionManager: new PermissionManager(join(tempDir, "permissions.json")),
+      approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() }, settingsService,
+      singleHopNetworkFetch: vi.fn(), getMainWindow: () => null, bootAuditLogger: { log: vi.fn() },
+      subscriptionProviderFactory, isSubscriptionConnected,
+      rewireReviewerAgent: undefined as (() => Promise<void>) | undefined,
+    };
+    dispose = await wireReviewerAndPermissions(context as never);
+    const reviewerProvider = () => {
+      const [wiring] = requiredFixture(wireReviewerAgent.mock.lastCall);
+      return wiring.streamProviderFor("subscription:claude-code");
+    };
+    expect(reviewerProvider()).toBe(provider);
+    clock.mockReturnValue(Date.now() + 6 * 60_000);
+    const projectionStarted = deferred<void>();
+    const reviewerStarted = deferred<void>();
+    getStatus
+      .mockImplementationOnce(() => { projectionStarted.resolve(); return held.promise; })
+      .mockImplementationOnce(() => { reviewerStarted.resolve(); return held.promise; })
+      .mockResolvedValue(connected ? ready : signedOut);
+    const snapshot = rendererSettingsSnapshot(settingsService, undefined, isSubscriptionConnected);
+    await projectionStarted.promise;
+    const rewire = requiredFixture(context.rewireReviewerAgent)();
+    await reviewerStarted.promise;
+    await runtime.getStatus(selection.provider);
+    held.resolve(ready);
+    await rewire;
+    const expectedModel = connected ? selection : { kind: "none", reason: "no-connected-provider" };
+    expect({
+      model: (await snapshot).activeChatModel,
+      reviewerAvailable: reviewerProvider() === provider,
+    }).toEqual({ model: expectedModel, reviewerAvailable: connected });
+  } finally {
+    held.resolve(ready);
+    dispose?.();
+    clock.mockRestore();
+    await reviewer.cache.flush();
+    await runtime.stop();
+    vi.doUnmock("electron");
+    vi.doUnmock("../reviewer-wiring.js");
+    vi.doUnmock("../../../main/subscription-runtime-service.js");
     vi.resetModules();
     await cleanupTmpDir(tempDir);
   }

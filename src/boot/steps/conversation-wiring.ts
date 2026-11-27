@@ -119,7 +119,7 @@ export function createSubscriptionChatLoopBindings(input: {
     isSubscriptionConnected: async (provider: SubscriptionRuntimeId) => {
       try {
         const runtime = await getSubscriptionRuntimeService(openAuthorizationUrl, { audit });
-        return (await runtime.getStatus(provider, { allowCached: true })).connection === "connected";
+        return await runtime.isConnected(provider);
       } catch {
         return false;
       }

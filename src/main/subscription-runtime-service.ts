@@ -1253,6 +1253,19 @@ export class SubscriptionRuntimeService {
     }, (status) => status, true));
   }
 
+  async isConnected(runtimeId: SubscriptionRuntimeId): Promise<boolean> {
+    try {
+      return (await this.getStatus(runtimeId, { allowCached: true })).connection === "connected";
+    } catch (error) {
+      if (!(error instanceof SubscriptionRuntimeServiceError) || error.code !== "subscription-status-superseded") throw error;
+      this.assertRunning();
+      const latest = this.observedConnections.get(runtimeId);
+      return !this.mutationsInFlight.has(runtimeId)
+        && latest?.connected === true
+        && latest.revision >= (this.authChangeRevisionByProvider.get(runtimeId) ?? 0);
+    }
+  }
+
   /** Drop settled reads kept for settings surfaces, e.g. after a settings change for this provider. */
   invalidateCachedReads(runtimeId: SubscriptionRuntimeId): void {
     this.cachedStatuses.delete(runtimeId);
