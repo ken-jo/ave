@@ -132,7 +132,7 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId, paneChatGr
       const attached = await (paneChatGroupId === undefined
         ? attachImageToComposer(base64, composerGroupId)
         : imageTarget?.(base64));
-      if (attached !== true) setFailure(attached === "target-changed" ? "browserCapture.failed" : failureKey);
+      if (attached !== true) setFailure(failureKey);
     } catch { setFailure(failureKey); }
     finally { setBusy(false); }
   };

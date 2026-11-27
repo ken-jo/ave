@@ -148,7 +148,7 @@ describe("browser user captures", () => {
     expect.soft(result.current.attachments).toEqual([]);
     expect.soft(result.current.draft).toBe("");
     expect(attachReplacement).not.toHaveBeenCalled();
-    if (change !== "replace browser") expect(screen.getByRole("alert")).toHaveTextContent(t("browserCapture.failed"));
+    if (change !== "replace browser") expect(screen.getByRole("alert")).toHaveTextContent(t("browserCapture.attachmentFailed"));
   });
 
   it("normalizes a host drag rectangle by the guest zoom without injecting an overlay", async () => {

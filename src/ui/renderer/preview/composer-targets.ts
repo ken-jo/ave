@@ -102,7 +102,7 @@ export async function attachImageToComposer(base64: string, groupId?: string): P
 }
 
 export function pinPaneChatImageTarget(paneChatGroupId: string, sourceCurrent: () => boolean):
-  ((base64: string) => Promise<boolean | "target-changed">) | null {
+  ((base64: string) => Promise<boolean>) | null {
   const registration = sideChatOf(paneChatGroupId);
   if (!registration) return null;
   const [key, target] = registration;
@@ -117,16 +117,7 @@ export function pinPaneChatImageTarget(paneChatGroupId: string, sourceCurrent: (
       && target.available() && target.element() === dock && isElementShown(dock);
     return current;
   };
-  return async (base64) => {
-    if (!canCommit()) return "target-changed";
-    try {
-      const attached = await attachImage(base64, canCommit);
-      return attached || (canCommit() ? false : "target-changed");
-    } catch (error) {
-      if (!canCommit()) return "target-changed";
-      throw error;
-    }
-  };
+  return async (base64) => canCommit() && attachImage(base64, canCommit);
 }
 
 /** Test-only. */
