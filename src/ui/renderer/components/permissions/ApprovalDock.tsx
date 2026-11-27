@@ -1,5 +1,5 @@
 import { chatSurface } from "../chat-surface.js";
-import { useCallback, useEffect, useId, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { canonicalStringify } from "../../../../shared/canonical-json.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import type { ApprovalDecisionExtras } from "../../hooks/use-approval.js";
@@ -12,6 +12,67 @@ import { ToolApprovalContent } from "../ToolApprovalContent.js";
 import { FLOATING_LANE_ITEM_WIDTH } from "../FloatingRightLane.js";
 import { MODAL_DIALOG_SELECTOR, TEST_IDS, testIdSelector } from "../../../../shared/test-ids.js";
 import { resolveConversationTitle } from "../../../../shared/conversation-title.js";
+
+const APPROVAL_ARMING_DELAY_MS = 500;
+const APPROVAL_PANEL_SELECTOR = '[data-testid="tool-approval-panel"]';
+
+function isTextField(element: Element): boolean {
+  if (element instanceof HTMLInputElement) {
+    return ["text", "search", "email", "password", "tel", "url", "number"].includes(element.type);
+  }
+  return element.closest('textarea, [role="textbox"], [contenteditable]:not([contenteditable="false"])') !== null;
+}
+
+function focusedTextField(): Element | null {
+  const active = document.activeElement;
+  return active && isTextField(active) ? active : null;
+}
+
+function useApprovalKeyboard(requestId: string | null) {
+  const armedAtRef = useRef(Infinity);
+  const spaceTargetRef = useRef<EventTarget | null>(null);
+
+  useLayoutEffect(() => {
+    // Use the same clock as the keydown so a queued event cannot age into a decision.
+    armedAtRef.current = requestId === null ? Infinity : new Event("keydown").timeStamp + APPROVAL_ARMING_DELAY_MS;
+    spaceTargetRef.current = null;
+  }, [requestId]);
+
+  function onKeyDownCapture(event: ReactKeyboardEvent<HTMLElement>) {
+    const key = event.key.toLowerCase();
+    if (key !== "enter" && key !== " " && key !== "a" && key !== "d" && key !== "escape") return;
+    const { target } = event;
+    const startedFocused = target instanceof Element && target === document.activeElement;
+    if (startedFocused && isTextField(target) && (key === " " || key === "a" || key === "d" || event.nativeEvent.isComposing)) return;
+    if (
+      !startedFocused || event.repeat || event.nativeEvent.isComposing
+      || event.nativeEvent.timeStamp < armedAtRef.current
+    ) {
+      if (key === " " && !event.repeat) spaceTargetRef.current = null;
+      event.preventDefault();
+      event.stopPropagation();
+    } else if (key === " ") {
+      spaceTargetRef.current = target;
+    }
+  }
+
+  function onKeyUpCapture(event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.key !== " ") return;
+    const pressedTarget = spaceTargetRef.current;
+    spaceTargetRef.current = null;
+    if (event.target instanceof Element && isTextField(event.target)) return;
+    if (pressedTarget !== event.target || event.target !== document.activeElement) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  return {
+    onKeyDownCapture,
+    onKeyUpCapture,
+    onBlurCapture: () => { spaceTargetRef.current = null; },
+  };
+}
 
 /** A covered pane keeps its requesting conversation visible and reachable. */
 export function CoveredConversationApprovalDock({
@@ -108,6 +169,7 @@ export function ApprovalDock({
   const descriptionId = useId();
   const request = queue[0] ?? null;
   const requestId = request?.id ?? null;
+  const approvalKeyboard = useApprovalKeyboard(requestId);
   const activeRequestIdRef = useRef<string | null>(requestId);
   activeRequestIdRef.current = requestId;
   const rootRef = useRef<HTMLElement>(null);
@@ -123,22 +185,9 @@ export function ApprovalDock({
   const dockHadFocusBeforeRender =
     requestId === null && rootRef.current?.contains(document.activeElement) === true;
 
-  const focusPreferredDecision = useCallback(() => {
+  const focusApprovalCard = useCallback(() => {
     const root = rootRef.current;
-    if (!root) return;
-    // One decision row for every request kind; fail-closed Reject first.
-    const selectors = [
-      `${testIdSelector(TEST_IDS.denyButton)}:not(:disabled)`,
-      `${testIdSelector(TEST_IDS.approveButton)}:not(:disabled)`,
-      `${testIdSelector(TEST_IDS.allowSessionButton)}:not(:disabled)`,
-    ];
-    for (const selector of selectors) {
-      const target = root.querySelector<HTMLElement>(selector);
-      if (target) {
-        target.focus();
-        return;
-      }
-    }
+    (root?.querySelector<HTMLElement>(APPROVAL_PANEL_SELECTOR) ?? root)?.focus();
   }, []);
 
   useEffect(() => () => {
@@ -158,7 +207,7 @@ export function ApprovalDock({
           activeElement instanceof HTMLElement && activeElement !== document.body
             ? activeElement
             : null;
-        focusPreferredDecision();
+        if (!focusedTextField()) focusApprovalCard();
       } else {
         returnFocusRef.current = null;
       }
@@ -168,9 +217,7 @@ export function ApprovalDock({
       requestId !== null &&
       previousRequestId !== requestId
     ) {
-      // Keep keyboard interaction live on FIFO advance by focusing the next request's real
-      // enabled decision, never a non-activating container; under the same rule: never across surfaces.
-      if (focusIsFreeFor(rootRef.current)) focusPreferredDecision();
+      if (focusIsFreeFor(rootRef.current) && !focusedTextField()) focusApprovalCard();
       previousRequestIdRef.current = requestId;
     } else if (previousRequestId !== null && requestId === null) {
       const returnTarget = returnFocusRef.current;
@@ -203,15 +250,15 @@ export function ApprovalDock({
     }
 
     previousRequestIdRef.current = requestId;
-  }, [dockHadFocusBeforeRender, focusPreferredDecision, requestId]);
+  }, [dockHadFocusBeforeRender, focusApprovalCard, requestId]);
 
-  // The card covers the composer of ITS surface; that composer is inert while the card is up. Composers of other surfaces are
-  // outside the scope and are not touched; a tile waiting on approval is not a reason to stop typing in the tile next to it.
+  // Leave an active draft editable until its text field loses focus.
   useEffect(() => {
     if (requestId === null) return;
     const canvas = approvalScopeOf(rootRef.current);
     if (!canvas) return;
 
+    const retainedField = focusedTextField();
     const snapshots = new Map<HTMLElement, {
       ariaHidden: string | null;
       hadInertAttribute: boolean;
@@ -219,6 +266,7 @@ export function ApprovalDock({
     }>();
     const obscureCoveredComposer = () => {
       for (const composer of canvas.querySelectorAll<HTMLElement>('[data-composer-placement]')) {
+        if (retainedField && retainedField === document.activeElement && composer.contains(retainedField)) continue;
         if (!snapshots.has(composer)) {
           snapshots.set(composer, {
             ariaHidden: composer.getAttribute("aria-hidden"),
@@ -226,7 +274,7 @@ export function ApprovalDock({
             inert: composer.inert,
           });
         }
-        if (composer.contains(document.activeElement)) focusPreferredDecision();
+        if (composer.contains(document.activeElement)) focusApprovalCard();
         composer.inert = true;
         composer.setAttribute("inert", "");
         composer.setAttribute("aria-hidden", "true");
@@ -236,9 +284,11 @@ export function ApprovalDock({
     obscureCoveredComposer();
     const observer = new MutationObserver(obscureCoveredComposer);
     observer.observe(canvas, { childList: true, subtree: true });
+    document.addEventListener("focusin", obscureCoveredComposer);
 
     return () => {
       observer.disconnect();
+      document.removeEventListener("focusin", obscureCoveredComposer);
       for (const [composer, snapshot] of snapshots) {
         composer.inert = snapshot.inert;
         if (snapshot.hadInertAttribute) composer.setAttribute("inert", "");
@@ -247,7 +297,7 @@ export function ApprovalDock({
         else composer.setAttribute("aria-hidden", snapshot.ariaHidden);
       }
     };
-  }, [focusPreferredDecision, requestId]);
+  }, [focusApprovalCard, requestId]);
 
   if (!request) return null;
 
@@ -271,6 +321,8 @@ export function ApprovalDock({
   return (
     <section
       ref={rootRef}
+      {...approvalKeyboard}
+      tabIndex={-1}
       data-pip-reservation
       className={`${chatSurface({ elevation: "floating" })} pointer-events-auto absolute z-40 mx-auto flex min-w-0 max-w-(--reading-column-max) flex-col overflow-hidden text-input-bar-foreground`}
       style={{
@@ -360,12 +412,14 @@ export function ApprovalLaneCard({
   const { t } = useTranslation();
   const titleId = useId();
   const request = queue[0];
+  const approvalKeyboard = useApprovalKeyboard(request?.id ?? null);
   if (!request) return null;
   const title = approvalAction(request, t).title;
   const remaining = Math.max(0, queue.length - 1);
   return (
     <section
       className={`${chatSurface({ elevation: "floating" })} pointer-events-auto flex ${FLOATING_LANE_ITEM_WIDTH} max-h-[min(100%,60dvh,28rem)] min-w-0 flex-col overflow-hidden @max-[14rem]:max-h-[min(60dvh,28rem)] @max-[14rem]:overflow-y-auto text-input-bar-foreground`}
+      {...approvalKeyboard}
       data-testid="approval-lane-card"
       data-approval-request-id={request.id}
       data-approval-tool-name={request.toolName}

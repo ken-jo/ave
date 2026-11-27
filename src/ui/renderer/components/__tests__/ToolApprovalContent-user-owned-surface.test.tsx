@@ -29,13 +29,13 @@ describe("shared user-owned surface approval card", () => {
     renderApproval(card, decide);
     const panel = [...document.querySelectorAll<HTMLElement>('[data-testid="tool-approval-panel"]')]
       .find((element) => element.dataset.approvalRequestId === card.id && !element.closest('[data-visible="false"]'));
-    expect(panel).toBeDefined();
+    if (!panel) throw new Error("Missing approval panel");
     expect(panel).toHaveAttribute("tabindex", "-1");
     expect(panel).toHaveAttribute("data-approval-tool-name", card.toolName);
-    panel!.focus();
+    panel.focus();
     expect(document.activeElement).toBe(panel);
     expect(decide).not.toHaveBeenCalled();
-    fireEvent.keyDown(panel!, { key: "Escape" });
+    fireEvent.keyDown(panel, { key: "Escape" });
     expect(decide).toHaveBeenCalledExactlyOnceWith("deny-once");
   });
 
@@ -72,7 +72,11 @@ describe("shared user-owned surface approval card", () => {
     renderApproval(request(), decide);
     fireEvent.click(screen.getByTestId("user-owned-surface-allow"));
     if (method === "cancel") fireEvent.click(screen.getByTestId("user-owned-surface-dismiss"));
-    else fireEvent.keyDown(screen.getByTestId("user-owned-surface-allow"), { key: "Escape" });
+    else {
+      const allow = screen.getByTestId("user-owned-surface-allow");
+      allow.focus();
+      fireEvent.keyDown(allow, { key: "Escape" });
+    }
     expect(decide).toHaveBeenCalledExactlyOnceWith("deny-once");
   });
 
@@ -215,7 +219,7 @@ describe("shared user-owned surface approval card", () => {
     }
   });
 
-  describe("accepting from the keyboard without the card taking focus", () => {
+  describe("accepting from the keyboard with focus in the card", () => {
     const ctrlEnter = (init: KeyboardEventInit = {}) => new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true, ...init });
 
     it("shows the accept keys on the confirm button", () => {
@@ -227,7 +231,7 @@ describe("shared user-owned surface approval card", () => {
       expect(confirm).toHaveAttribute("title", t("toolApprovalDialog.surfaceAcceptHint", { keys: "Ctrl+↵" }));
     });
 
-    it("accepts Ctrl+Enter typed in the composer of the card's own surface, with the selected choice, exactly once", () => {
+    it("accepts Ctrl+Enter only inside the card, with the selected choice, exactly once", () => {
       const decide = vi.fn();
       const surface = document.createElement("div");
       surface.setAttribute("data-approval-scope", "");
@@ -238,22 +242,26 @@ describe("shared user-owned surface approval card", () => {
         render(<ToolApprovalContent open request={request("host-terminal")} conversationLabel="conversation" onDecide={decide} />, { container: surface.appendChild(document.createElement("div")) });
         composer.focus();
         expect(document.activeElement).toBe(composer);
-        // Plain Enter, Cmd+Enter off macOS, a held key and an IME commit are the composer's own.
-        for (const init of [{ ctrlKey: false }, { ctrlKey: false, metaKey: true }, { repeat: true }, { isComposing: true }, { shiftKey: true }]) composer.dispatchEvent(ctrlEnter(init));
+        const outsideKey = ctrlEnter();
+        composer.dispatchEvent(outsideKey);
+        expect(outsideKey.defaultPrevented).toBe(false);
         expect(decide).not.toHaveBeenCalled();
+
         fireEvent.click(screen.getByTestId("user-owned-surface-auto"));
-        composer.focus();
+        const confirm = screen.getByTestId("user-owned-surface-confirm");
+        confirm.focus();
+        for (const init of [{ ctrlKey: false }, { ctrlKey: false, metaKey: true }, { repeat: true }, { isComposing: true }, { shiftKey: true }]) confirm.dispatchEvent(ctrlEnter(init));
+        expect(decide).not.toHaveBeenCalled();
         const accepted = ctrlEnter();
-        composer.dispatchEvent(accepted);
+        confirm.dispatchEvent(accepted);
         expect(decide).toHaveBeenCalledExactlyOnceWith("allow-once", undefined, { userOwnedSurfaceChoice: "auto" });
-        // The key does not also reach the composer as a send.
         expect(accepted.defaultPrevented).toBe(true);
-        composer.dispatchEvent(ctrlEnter());
+        confirm.dispatchEvent(ctrlEnter());
         expect(decide).toHaveBeenCalledOnce();
       } finally { surface.remove(); }
     });
 
-    it("ignores the key while the user is typing in another surface, and while a dialog is open", () => {
+    it("ignores the key in another surface, a dialog, or the document body", () => {
       const decide = vi.fn();
       const own = document.createElement("div");
       own.setAttribute("data-approval-scope", "");
@@ -273,9 +281,8 @@ describe("shared user-owned surface approval card", () => {
         document.body.dispatchEvent(ctrlEnter());
         expect(decide).not.toHaveBeenCalled();
         dialog.remove();
-        // Focus is nowhere and this is the only card: the key is the card's.
         document.body.dispatchEvent(ctrlEnter());
-        expect(decide).toHaveBeenCalledExactlyOnceWith("allow-once", undefined, { userOwnedSurfaceChoice: "ask" });
+        expect(decide).not.toHaveBeenCalled();
       } finally { own.remove(); other.remove(); }
     });
 
@@ -308,7 +315,9 @@ describe("shared user-owned surface approval card", () => {
     it("does not answer a locked card", () => {
       const decide = vi.fn();
       render(<ToolApprovalContent open request={request("host-terminal")} conversationLabel="conversation" interactionLocked onDecide={decide} />);
-      document.body.dispatchEvent(ctrlEnter());
+      const panel = screen.getByTestId("tool-approval-panel");
+      panel.focus();
+      panel.dispatchEvent(ctrlEnter());
       expect(decide).not.toHaveBeenCalled();
     });
   });

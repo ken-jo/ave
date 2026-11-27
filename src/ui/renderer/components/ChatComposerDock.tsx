@@ -350,7 +350,8 @@ export function ChatComposerDock({
     || runtimePending
     || !question.trimStart().startsWith("/")
   ));
-  const composerSendDisabled = !attachmentInputsReady
+  const composerSendDisabled = pendingApprovals.length > 0
+    || !attachmentInputsReady
     || composerInputDisabled
     || draftHasUnsupportedAttachment;
   return (
