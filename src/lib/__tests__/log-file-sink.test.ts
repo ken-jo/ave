@@ -275,7 +275,7 @@ describe("createLogFileSink — size-based sequence rolling", () => {
     const clock = vi.spyOn(performance, "now").mockReturnValue(0);
     try {
       if (obstruction === "directory") fs.mkdirSync(rolled);
-      const line = "x".repeat(maxBytes - 1) + "\n";
+      const line = `${"x".repeat(maxBytes - 1)}\n`;
       for (let i = 0; i < 8; i++) {
         sink.write(line);
         await sink.flush();
