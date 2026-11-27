@@ -16,6 +16,8 @@ const useJsonFormat =
 
 /** The mutable file target permits boot attachment without reconstructing the logger. */
 let fileSink: LogFileSink | null = null;
+let fileSinkUnavailable = false;
+let unavailableFileDrops = 0;
 let reportingLoss = false;
 let lossReportScheduled = false;
 let flushing = false;
@@ -50,7 +52,13 @@ export const transport = !isTest && !useJsonFormat
 
 const fileStream = {
   write(chunk: string): void {
-    try { fileSink?.write(chunk, !reportingLoss); } catch { /* Logging cannot affect the caller. */ }
+    try {
+      if (fileSink) fileSink.write(chunk, !reportingLoss);
+      else if (fileSinkUnavailable && !reportingLoss) {
+        unavailableFileDrops++;
+        scheduleLossReport();
+      }
+    } catch { /* Logging cannot affect the caller. */ }
   },
 };
 
@@ -90,9 +98,11 @@ export function initFileLogSink(options: LogFileSinkOptions = {}): LogFileSink |
       fileSink = null;
     }
     fileSink = createLogFileSink(options, scheduleLossReport);
+    fileSinkUnavailable = false;
     return fileSink;
   } catch {
     fileSink = null;
+    fileSinkUnavailable = true;
     return null;
   }
 }
@@ -100,6 +110,7 @@ export function initFileLogSink(options: LogFileSinkOptions = {}): LogFileSink |
 export function closeFileLogSink(): void {
   const sink = fileSink;
   fileSink = null;
+  fileSinkUnavailable = false;
   try { sink?.destroy(); } catch { /* Logging cannot affect shutdown. */ }
 }
 
@@ -125,7 +136,7 @@ function getBestEffortLogger(): pino.Logger {
 }
 
 function scheduleLossReport(): void {
-  if (flushing || lossReportScheduled || (!fileSink?.dropped && !permissionConsole?.dropped)) return;
+  if (flushing || lossReportScheduled || (!unavailableFileDrops && !fileSink?.dropped && !permissionConsole?.dropped)) return;
   lossReportScheduled = true;
   setImmediate(() => {
     lossReportScheduled = false;
@@ -135,7 +146,8 @@ function scheduleLossReport(): void {
 
 function reportLogLoss(consoleUnconfirmed = 0, fileUnconfirmed = 0): boolean {
   const consoleDropped = permissionConsole?.takeDropped() ?? 0;
-  const fileDropped = fileSink?.takeDropped() ?? 0;
+  const fileDropped = (fileSink?.takeDropped() ?? 0) + unavailableFileDrops;
+  unavailableFileDrops = 0;
   if (!consoleDropped && !fileDropped && !consoleUnconfirmed && !fileUnconfirmed) return false;
   reportingLoss = true;
   try {

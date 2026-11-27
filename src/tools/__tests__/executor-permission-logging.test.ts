@@ -112,7 +112,7 @@ it("does not change execution or repeat an effect when the logger throws", async
   expect(failing).toHaveBeenCalledWith(expect.objectContaining({ event: "permission_decision", decision: "allow" }));
 });
 
-it.each(["normal", "slow", "blocked", "sync-race"])("logs safely to production console, file and support bundle with %s storage", async (storage) => {
+it.each(["normal", "slow", "blocked", "sync-race", "unavailable"])("logs safely to production console, file and support bundle with %s storage", async (storage) => {
   const root = mkdtempSync(join(tmpdir(), "ave-permission-log-sink-"));
   roots.push(root);
   const logsDir = join(root, "logs");
@@ -136,7 +136,9 @@ it.each(["normal", "slow", "blocked", "sync-race"])("logs safely to production c
     "import { configureHostResources } from \"./src/main/host-resources.ts\";",
     "configureHostResources({ resourcePath: join(process.cwd(), \"resources\"), isPackaged: false });",
     "const [root, logs, canary, toolUseId, storage] = process.argv.slice(1);",
-    "if (!initFileLogSink({ dir: logs, ...(storage === \"slow\" ? { maxBytes: 1 } : {}) })) throw new Error(\"Missing file sink\");",
+    'if (storage === "unavailable") fs.writeFileSync(logs, "blocked path");',
+    'const sink = initFileLogSink({ dir: logs, ...(storage === "slow" ? { maxBytes: 1 } : {}) });',
+    'if (Boolean(sink) === (storage === "unavailable")) throw new Error("Unexpected file sink state");',
     "let asyncReads = 0, syncReads = 0, release;",
     "const held = new Promise((resolve) => { release = resolve; });",
     "const syncRead = fs.readdirSync, asyncRead = fs.promises.readdir;",
@@ -210,6 +212,14 @@ it.each(["normal", "slow", "blocked", "sync-race"])("logs safely to production c
   const { stdout, stderr } = await promisify(execFile)(process.execPath, [
     "--import", "tsx", "--input-type=module", "-e", script, "--", root, logsDir, CANARY, OPAQUE_PROVIDER_ID, storage,
   ], { env: { ...inherited, AVE_HOME: root, ELECTRON_RUN_AS_NODE: "1", NODE_ENV: "production", LOG_LEVEL: "info" }, windowsHide: true, timeout: 10_000 });
+  if (storage === "unavailable") {
+    expect(stdout).toContain('"event":"permission_decision"');
+    expect(stdout).toContain('"event":"shutdown_probe"');
+    const losses = stdout.split("\n").filter((line) => line.includes('"event":"app_log_loss"'));
+    expect(losses.length).toBeGreaterThan(0);
+    expect(losses.reduce((sum, line) => sum + JSON.parse(line).fileDropped, 0)).toBe(stdout.split("\n").filter((line) => line.startsWith("{") && !line.includes('"event":"app_log_loss"')).length);
+    return;
+  }
   const file = readdirSync(logsDir).map((name) => readFileSync(join(logsDir, name), "utf8")).join("\n");
   const bundle = new AdmZip(await buildDiagnosticsBundle({
     settings: DEFAULT_SETTINGS, appVersion: "test", crashDumpsDir: join(root, "crashes"), logsDir,
