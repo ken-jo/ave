@@ -4,14 +4,14 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type { FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { normalizeCaseForComparison, stripExtendedPathPrefix } from "./sandbox-path-spelling.js";
 import { settingsFilePath } from "../data/settings-store.js";
-import { AVE_HOME_CONFIGURATION_DIRECTORY, aveHome } from "../shared/ave-home.js";
+import { AVE_HOME_CONFIGURATION_DIRECTORY, aveHome, aveHomeConfigurationDirectory } from "../shared/ave-home.js";
 import { inspectPhysicalFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { routeLocality, withLocalityDecision } from "../shared/local-path-io.js";
 import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
-import { permissionSettingsPath } from "./permission-settings-store.js";
+import { PERMISSION_SETTINGS_FILENAME, permissionSettingsPath } from "./permission-settings-store.js";
 import { egressGrantFilePath } from "./egress-grants.js";
 import { userApprovalFilePath } from "./user-approval-store.js";
-import { getAdminPolicyPath, userPolicyPath } from "./policy-store.js";
+import { getAdminPolicyPath, USER_POLICY_FILENAME, userPolicyPath } from "./policy-store.js";
 import { permissionsFilePath } from "./permissions-store.js";
 import { projectRulesDirectory } from "./rules/project-rule-files.js";
 import { PROTECTED_ROOT_ENTRIES, canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
@@ -1043,15 +1043,16 @@ export function buildMandatorySandboxWritePolicy(
       }
     }
   }
+  const configurationDirectory = process.platform === "win32" ? aveHomeConfigurationDirectory() : undefined;
   const paths = new Set([
     ...rootSpellings.flatMap((root) => rootEntries.map((entry) => join(root, entry))),
     ...windowsNamedEntries.keys(),
     // The configuration directory is a control boundary, including future files.
     join(aveHome(), AVE_HOME_CONFIGURATION_DIRECTORY),
-    permissionSettingsPath(),
+    configurationDirectory === undefined ? permissionSettingsPath() : resolve(configurationDirectory, PERMISSION_SETTINGS_FILENAME),
     userApprovalFilePath(),
     egressGrantFilePath(),
-    userPolicyPath(),
+    configurationDirectory === undefined ? userPolicyPath() : resolve(configurationDirectory, USER_POLICY_FILENAME),
     getAdminPolicyPath(),
     permissionsFilePath(),
     sandboxQuarantineRoot(),

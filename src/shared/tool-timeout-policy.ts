@@ -31,6 +31,7 @@ export const TOOL_TIMEOUT_POLICY = {
   browserDownloadHelperStallMs: 30_000,
   // A fresh local identity probe bounds synchronous remote authority checks.
   tailnetIdentityProbeMs: 5_000,
+  tailnetPortHintMs: 2_000,
   // The path-kind helper answers drive and Documents queries from the OS in milliseconds; this bound only ends a stalled start.
   windowsPathKindQueryMs: 15_000,
   windowsDriveLocalityMs: 5_000,
@@ -46,6 +47,8 @@ export const TOOL_TIMEOUT_POLICY = {
   mxcRequestTransportMs: 15_000,
   // The canary uses a short native request deadline before the shell watchdog.
   mxcMacShellProbeMs: 5_000,
+  // The canary's raw-IP measurement: three seconds per target inside this whole-probe budget, added to the canary's deadline.
+  mxcRawIpProbeMs: 12_000,
   mxcMacShellStopMs: 12_000,
   mxcMacShellOutputDrainMs: 1_000,
   mxcLinuxShellProbeMs: 5_000,

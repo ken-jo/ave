@@ -1,3 +1,4 @@
+import { resolveTailnetObserverApply } from "./tailnet-observer-apply.js";
 import { runTailscaleCommand, tailscaleCliPath, type TailscaleCommandRunner } from "./tailnet-cli.js";
 export type { TailscaleCommandResult, TailscaleCommandRunner } from "./tailnet-cli.js";
 import { tailnetOwnerLoginFromStatus } from "./tailnet-owner-identity.js";
@@ -20,10 +21,13 @@ import {
 } from "../api/tailnet-surface-server.js";
 import type { TailnetWorkDecisions } from "./tailnet-work-decisions.js";
 import {
+  DEFAULT_TAILNET_OBSERVER_PORT,
   isTailnetAppCapabilityKey,
   parseTailnetAuthorization,
+  TAILNET_OBSERVER_PORT_BLOCKED,
   TAILNET_PORT_CONFINED_WORKER_RANGE,
   type TailnetAuthorization,
+  type TailnetObserverPortBlock,
 } from "../shared/tailnet-observer-config.js";
 import type { ConversationSurfaceRuntime } from "../engine/conversation-surface-runtime.js";
 import { isRecord } from "../shared/is-record.js";
@@ -46,8 +50,7 @@ import {
 import { TAILNET_WORK_DECISION_PATH } from "../shared/tailnet-work-decisions.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { assertTailnetListenerPortAllowed, readTailnetListenerPortPolicy } from "../permissions/tailnet-listener-policy.js";
-
-export const DEFAULT_TAILNET_OBSERVER_PORT = 46_173;
+import { getWindowsTailnetPortHint } from "./tailnet-port-hint.js";
 
 export interface TailnetObserverConfig {
   readonly port: number;
@@ -99,6 +102,7 @@ export interface TailnetObserverConfigFile {
 const TAILNET_FEATURE_NAMESPACE = "tailnet";
 const TAILNET_OBSERVER_CONFIG_FILE = "observer.json";
 const TAILNET_OWN_DEVICE_ADMISSION_FILE = "own-device-admission.json";
+export const IMPLICIT_TAILNET_OBSERVER_PORT = 46_173;
 
 const CONFIG_KEYS: readonly TailnetObserverConfigKey[] = [
   "enabled",
@@ -251,7 +255,7 @@ function resolveFromLayers(file: RawLayer, env: RawLayer): TailnetObserverResolu
 
   const rawPort = merged.port;
   const port = rawPort === undefined
-    ? DEFAULT_TAILNET_OBSERVER_PORT
+    ? IMPLICIT_TAILNET_OBSERVER_PORT
     : parseFixedPort(rawPort);
   const rawController = merged.controllerEnabled;
   if (rawController !== undefined && rawController !== "1") {
@@ -361,6 +365,7 @@ let stopped = false;
 
 let activeConfig: TailnetObserverConfig | null = null;
 let lastStartError: string | null = null;
+let portBlock: TailnetObserverPortBlock | null = null;
 // Retain composition inputs so saved configuration can restart the listener without requiring an app relaunch.
 let compositionOptions: StartTailnetObserverServerOptions | null = null;
 // Serializes restarts against each other; boot's own latch handles the first.
@@ -379,6 +384,7 @@ export interface TailnetObserverRuntimeState {
   // The kebab-case code of the last failed start. Boot logs this and continues, which is why "the observer is not up and I cannot tell why" used to
   // require reading the main-process log. It is kept here so a diagnostics surface can answer the question in the app.
   readonly lastStartError: string | null;
+  readonly portBlock: TailnetObserverPortBlock | null;
 }
 
 export function getTailnetObserverRuntimeState(): TailnetObserverRuntimeState {
@@ -386,12 +392,12 @@ export function getTailnetObserverRuntimeState(): TailnetObserverRuntimeState {
     listeningPort: activeServer?.port ?? null,
     activeConfig,
     lastStartError,
+    portBlock,
   });
 }
 
-// Probe the exact desired port before persisting; zero asks the OS for a free port and null reports bind refusal.
 function probeLoopbackBind(port: number): Promise<number | null> {
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     const probe = createPortProbe();
     probe.once("error", () => resolve(null));
     probe.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
@@ -404,14 +410,19 @@ function probeLoopbackBind(port: number): Promise<number | null> {
 
 // Persist the selected port so restart cannot move the serve target.
 // Probe-to-bind races remain explicit start failures, never silent fallback to a different port.
-export async function chooseObserverPort(preferred: number | null): Promise<number | null> {
+export async function chooseObserverPort(
+  preferred: number,
+  { explicit, listeningPort }: { explicit: boolean; listeningPort: number | null },
+): Promise<number | null> {
   const isAllowed = await readTailnetListenerPortPolicy();
-  if (preferred !== null) {
-    if (!isAllowed(preferred)) throw new Error(TAILNET_PORT_CONFINED_WORKER_RANGE);
-    if (await probeLoopbackBind(preferred) !== null) return preferred;
+  const canBind = async (port: number) => port === listeningPort || await probeLoopbackBind(port) !== null;
+  if (isAllowed(preferred)) {
+    if (await canBind(preferred)) return preferred;
+  } else if (explicit) {
+    throw new Error(TAILNET_PORT_CONFINED_WORKER_RANGE);
   }
   if (preferred !== DEFAULT_TAILNET_OBSERVER_PORT && isAllowed(DEFAULT_TAILNET_OBSERVER_PORT)) {
-    if (await probeLoopbackBind(DEFAULT_TAILNET_OBSERVER_PORT) !== null) return DEFAULT_TAILNET_OBSERVER_PORT;
+    if (await canBind(DEFAULT_TAILNET_OBSERVER_PORT)) return DEFAULT_TAILNET_OBSERVER_PORT;
   }
 
   const bound = await probeLoopbackBind(0);
@@ -604,17 +615,28 @@ function ownDeviceAdmissionAudit(
   };
 }
 
+function recordTailnetObserverStartError(error: unknown): void {
+  lastStartError = error instanceof Error ? error.message : "tailnet-observer-start-failed";
+}
+
 async function startForBoot(
   options: StartTailnetObserverServerOptions,
   generation: number,
+  mode?: "apply",
 ): Promise<TailnetObserverServer | null> {
-  // This must run before listener construction. A disabled observer opens no port and starts no Tailnet-specific transport side effect.
+  // Resolve before listener construction so a disabled observer opens no port.
   const resolved = dependencies(options.dependencies);
-  const { config } = await loadTailnetObserverConfig({
-    ...(options.env === undefined ? {} : { env: options.env }),
-    readConfigFile: resolved.readConfigFile,
-  });
-  if (!config) return null;
+  const env = options.env ?? process.env;
+  const file = await resolved.readConfigFile();
+  const { config } = await loadTailnetObserverConfig({ env, readConfigFile: async () => file });
+  if (!config) {
+    if (mode === "apply" && generation === lifecycleGeneration) {
+      ({ portBlock, lastStartError } = resolveTailnetObserverApply(file?.enabled === true, tailnetObserverEnableOverride(env), null, {
+        boundPort: activeServer?.port ?? null, portBlock, lastStartError,
+      }));
+    }
+    return null;
+  }
   await assertTailnetListenerPortAllowed(config.port);
   if (config.controllerEnabled && options.conversationCommandPort === undefined) {
     throw new Error("tailnet-controller-command-port-unavailable");
@@ -678,6 +700,20 @@ async function startForBoot(
       } } : {}),
     } }),
     log: (message) => options.log?.("[tailnet-observer] " + message),
+  }).catch(async (error: unknown) => {
+    const code = isRecord(error) ? error.code : undefined;
+    let failure = error;
+    if (code === "EADDRINUSE" || code === "EACCES") {
+      const port = config.port;
+      const hint = await getWindowsTailnetPortHint(port);
+      if (generation === lifecycleGeneration) portBlock = Object.freeze({ code, port, hint });
+      failure = new Error(TAILNET_OBSERVER_PORT_BLOCKED, { cause: error });
+    } else if (mode === "apply" && isRecord(error) && error.syscall === "listen") {
+      failure = new Error("tailnet-observer-start-failed", { cause: error });
+    } else {
+      throw error;
+    }
+    throw failure;
   });
   if (generation !== lifecycleGeneration) {
     await server.close();
@@ -685,6 +721,9 @@ async function startForBoot(
   }
 
   activeServer = server;
+  ({ portBlock, lastStartError } = resolveTailnetObserverApply(file?.enabled === true, tailnetObserverEnableOverride(env), config.port, {
+    boundPort: server.port, boundNow: true, portBlock, lastStartError,
+  }));
   activeConfig = config;
   activePairedSharingRuntime = pairedSharingRuntime ?? null;
   options.log?.(
@@ -710,16 +749,11 @@ export async function maybeStartTailnetObserverServer(
   activeStartAttempt = attempt;
   // Record why a start failed. Boot logs the throw and carries on, so without this the only account of a misconfigured observer is a main-process log line
   // the user of a packaged app never sees.
-  const pending = startForBoot(options, lifecycleGeneration).then(
-    (started) => {
-      lastStartError = null;
-      return started;
-    },
-    (err: unknown) => {
-      lastStartError = err instanceof Error ? err.message : "tailnet-observer-start-failed";
-      throw err;
-    },
-  );
+  const generation = lifecycleGeneration;
+  const pending = startForBoot(options, generation).catch((error: unknown) => {
+    if (generation === lifecycleGeneration) recordTailnetObserverStartError(error);
+    throw error;
+  });
   startPromise = pending;
   try {
     return await pending;
@@ -731,8 +765,10 @@ export async function maybeStartTailnetObserverServer(
   }
 }
 
+type TailnetObserverRestartResult = TailnetObserverServer | null | "startup-failed";
+
 // Advance the lifecycle generation before restart so an earlier in-flight start cannot install stale configuration.
-async function restartOnce(): Promise<TailnetObserverServer | null> {
+async function restartOnce(mode?: "apply"): Promise<TailnetObserverRestartResult> {
   if (stopped) throw new Error("tailnet-observer-stopped");
   const options = compositionOptions;
   if (options === null) throw new Error("tailnet-observer-not-composed");
@@ -748,19 +784,21 @@ async function restartOnce(): Promise<TailnetObserverServer | null> {
   if (current) await current.close();
 
   try {
-    const started = await startForBoot(options, generation);
-    lastStartError = null;
-    return started;
-  } catch (err) {
-    lastStartError = err instanceof Error ? err.message : "tailnet-observer-start-failed";
-    throw err;
+    return await startForBoot(options, generation, mode);
+  } catch (error) {
+    if (generation === lifecycleGeneration) recordTailnetObserverStartError(error);
+    if (mode === "apply") return "startup-failed";
+    throw error;
   }
 }
 
 // Apply a saved configuration to the running process. Callers are the owner-facing configuration service; a restart is the whole reason "takes effect
 // the next time the app starts" is gone.
-export function restartTailnetObserverServer(): Promise<TailnetObserverServer | null> {
-  const next = lifecycleChain.then(restartOnce, restartOnce);
+export function restartTailnetObserverServer(mode?: undefined): Promise<TailnetObserverServer | null>;
+export function restartTailnetObserverServer(mode: "apply" | undefined): Promise<TailnetObserverRestartResult>;
+export function restartTailnetObserverServer(mode?: "apply"): Promise<TailnetObserverRestartResult> {
+  const restart = () => restartOnce(mode);
+  const next = lifecycleChain.then(restart, restart);
   lifecycleChain = next.then(() => undefined, () => undefined);
   return next;
 }
@@ -827,6 +865,7 @@ export function resetTailnetObserverServerForTests(): void {
   stopped = false;
   activeConfig = null;
   lastStartError = null;
+  portBlock = null;
   activePairedSharingRuntime = null;
   compositionOptions = null;
   lifecycleChain = Promise.resolve();

@@ -158,7 +158,7 @@ export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
     if (workflowRows.some(item => item.runId !== undefined) && !workBoardEngine) {
       return { ok: false, error: "work-approvals-source-unavailable", source: "stage-gate" };
     }
-    const workflowItems = workBoardEngine && workflowRows.length ? await workBoardEngine.readTemplateRuns(workflowRows) : [];
+    const workflowItems = workBoardEngine && workflowRows.length ? await workBoardEngine.readTemplateRuns(workflowRows, "local-desktop") : [];
     const planViews = scopedRows.flatMap(item => {
       const view = planView(item, projects);
       return view ? [canReadRun(item) ? view : toNavigation(view)] : [];

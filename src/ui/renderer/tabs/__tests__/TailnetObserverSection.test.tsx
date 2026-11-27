@@ -1,8 +1,10 @@
 import "../../../../../test/renderer/setup.js";
+import { DEFAULT_TAILNET_OBSERVER_PORT } from "../../../../shared/tailnet-observer-config.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import type {
+  TailnetObserverApplyResult,
   TailnetObserverConfigView,
   TailnetObserverSnapshot,
   TailnetServeResult,
@@ -33,7 +35,7 @@ const CAPABILITY = "ave.example.com/cap/conversation-observer";
 const OFF: TailnetObserverConfigView = {
   enabled: false,
   authorization: { kind: "tailnet-identity" },
-  port: 46_173,
+  port: DEFAULT_TAILNET_OBSERVER_PORT,
   controllerEnabled: false,
   pairedSharingEnabled: false,
   webEnabled: false,
@@ -67,6 +69,7 @@ function snapshotOf(overrides: Partial<TailnetObserverSnapshot> = {}): TailnetOb
     },
     listeningPort: null,
     lastStartError: null,
+    portBlock: null,
     pairedSharingBootstrapFailed: false,
     ownDeviceAdmission: false,
     environment: READY_ENVIRONMENT,
@@ -79,7 +82,7 @@ function snapshotOf(overrides: Partial<TailnetObserverSnapshot> = {}): TailnetOb
 
 function makeApi(
   snapshot: TailnetObserverSnapshot,
-  applyResult: { ok: true } | { ok: false; error: string } = { ok: true },
+  applyResult: TailnetObserverApplyResult = { ok: true, outcome: "applied", restartNeeded: false },
   serveResult: TailnetServeResult = { ok: true, url: "https://" + DNS_NAME + "/" },
 ) {
   const apply = vi.fn(async () => applyResult);
@@ -167,6 +170,69 @@ describe("TailnetObserverSection", () => {
     // The refresh that follows a save clears feedback, so a confirmation set before it never reached the screen.
     const feedback = await screen.findByTestId("tailnet-observer-feedback");
     expect(feedback.textContent).toContain("saved and applied");
+  });
+
+  it.each([
+    { locale: "en", restartText: "Restart the app" },
+    { locale: "ko", restartText: "앱을 다시 시작" },
+  ] as const)("shows restart guidance and keeps the blocked port visible in $locale", async ({ locale, restartText }) => {
+    setLocale(locale);
+    const initial = snapshotOf({
+      saved: { ...OFF, port: 46_173 },
+      effective: { ...OFF, enabled: true, port: 46_173 },
+      provenance: { ...snapshotOf().provenance, enabled: "env-override" },
+      lastStartError: "tailnet-observer-port-blocked",
+      portBlock: { code: "EADDRINUSE", port: 46_173, hint: null },
+    });
+    const deferredSave = { ok: true, outcome: "restart-needed", restartNeeded: true } as const;
+    const { api, apply } = makeApi(initial, deferredSave);
+    vi.mocked(api.tailnetObserver.snapshot).mockResolvedValueOnce({ ok: true, snapshot: initial });
+    vi.mocked(api.tailnetObserver.snapshot).mockResolvedValue({
+      ok: true,
+      snapshot: {
+        ...initial,
+        saved: { ...OFF, port: DEFAULT_TAILNET_OBSERVER_PORT },
+        effective: { ...initial.effective, port: DEFAULT_TAILNET_OBSERVER_PORT },
+        provenance: { ...initial.provenance, port: "file" },
+      },
+    });
+    render(<TailnetObserverSection api={api} />);
+
+    const port = await screen.findByTestId("tailnet-observer-port");
+    expect(screen.getByRole("alert").textContent).toContain("46173");
+    fireEvent.change(port, { target: { value: String(DEFAULT_TAILNET_OBSERVER_PORT) } });
+    fireEvent.click(screen.getByTestId("tailnet-observer-apply"));
+
+    const feedback = await screen.findByTestId("tailnet-observer-feedback");
+    expect(apply).toHaveBeenCalledWith(OFF);
+    expect(screen.getByRole("alert").textContent).toContain("46173");
+    expect(feedback.textContent).toContain(restartText);
+  });
+
+  it.each([
+    { locale: "en", outcome: "observer-off", text: "Listener settings saved. The observer is off." },
+    { locale: "ko", outcome: "observer-off", text: "리스너 설정을 저장했습니다. 옵저버가 꺼져 있습니다." },
+    { locale: "en", outcome: "saved", text: "Listener settings saved." },
+  ] as const)("shows $outcome feedback in $locale", async ({ locale, outcome, text }) => {
+    setLocale(locale);
+    const initial = snapshotOf({
+      effective: { ...OFF, enabled: outcome === "saved" },
+      listeningPort: outcome === "saved" ? OFF.port : null,
+      lastStartError: "tailnet-observer-port-blocked",
+      portBlock: { code: "EADDRINUSE", port: 46_173, hint: null },
+    });
+    const { api } = makeApi(initial, { ok: true, outcome, restartNeeded: false });
+    vi.mocked(api.tailnetObserver.snapshot).mockResolvedValueOnce({ ok: true, snapshot: initial });
+    vi.mocked(api.tailnetObserver.snapshot).mockResolvedValue({
+      ok: true,
+      snapshot: outcome === "observer-off" ? snapshotOf() : initial,
+    });
+    render(<TailnetObserverSection api={api} />);
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("tailnet-observer-apply"));
+
+    expect((await screen.findByTestId("tailnet-observer-feedback")).textContent).toBe(text);
+    expect(screen.queryByRole("alert") !== null).toBe(outcome === "saved");
   });
 
   it("renders the host's rejection code as guidance, not as a code", async () => {
@@ -340,8 +406,8 @@ describe("TailnetObserverSection", () => {
 
   describe("putting the listener on the tailnet", () => {
     const listening = (overrides: Partial<TailnetObserverSnapshot> = {}) => snapshotOf({
-      listeningPort: 46_173,
-      serveCommand: "tailscale serve --bg --https=443 http://127.0.0.1:46173",
+      listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
+      serveCommand: `tailscale serve --bg --https=443 http://127.0.0.1:${DEFAULT_TAILNET_OBSERVER_PORT}`,
       ...overrides,
     });
 
@@ -352,7 +418,7 @@ describe("TailnetObserverSection", () => {
 
       const command = await screen.findByTestId("tailnet-observer-serve-command");
       expect(command.textContent)
-        .toBe("tailscale serve --bg --https=443 http://127.0.0.1:46173");
+        .toBe(`tailscale serve --bg --https=443 http://127.0.0.1:${DEFAULT_TAILNET_OBSERVER_PORT}`);
       // Shown, not run: nothing executes until the owner asks for it.
       expect(configureServe).not.toHaveBeenCalled();
     });
@@ -378,7 +444,7 @@ describe("TailnetObserverSection", () => {
     });
 
     it("shows what Tailscale printed when the command fails", async () => {
-      const { api } = makeApi(listening(), { ok: true }, {
+      const { api } = makeApi(listening(), { ok: true, outcome: "applied", restartNeeded: false }, {
         ok: false,
         error: "tailnet-serve-command-failed",
         output: "HTTPS is not enabled on this tailnet",

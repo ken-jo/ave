@@ -122,6 +122,13 @@ export function isPolicyFloorRow(row: PolicyRow): row is PolicyFloorRow {
   return FLOOR_REASONS.has(row.reason);
 }
 
+const GRANT_REASONS: ReadonlySet<string> = new Set<PolicyGrantReason>(["user-grant", "extension-manifest", "launch-grant", "floor-pierce"]);
+
+/** A row whose reason is one of the closed grant reasons. A row that is neither this nor a floor row is outside the model. */
+export function isPolicyGrantRow(row: PolicyRow): row is PolicyGrantRow {
+  return GRANT_REASONS.has(row.reason);
+}
+
 function refuse(row: PolicyRow, detail: string): never {
   throw new Error(`Policy model row is invalid (${detail}): ${row.reason} ${row.access}`);
 }

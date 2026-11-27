@@ -4,7 +4,9 @@ import { connect, createServer } from "node:net";
 import { networkInterfaces } from "node:os";
 import { posix } from "node:path";
 import { createLogger } from "../lib/logger.js";
-import type { ContainerRawIpUnknownReason, ContainerRawIpVerdict } from "../shared/sandbox-capability-info.js";
+import type {
+  LinuxRawIpTarget, LinuxRawIpUnknownReason, LinuxRawIpVerdict, MxcRawIpUdpArrival,
+} from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 /**
@@ -83,8 +85,8 @@ export interface LinuxRawIpMeasurement {
   readonly nonceRecorded: boolean;
   /** TL ran: the host had a primary non-loopback IPv4 to aim at. */
   readonly tlRan: boolean;
-  /** The UDP nonce reached the host-side listener. */
-  readonly udpArrived: boolean;
+  /** Whether the UDP nonce reached the host-side listener; `unmeasured` when no listener could be opened. */
+  readonly udpArrival: MxcRawIpUdpArrival;
   /**
    * The host-side TCP arrival listener on the host's primary IPv4, absent when it could not be opened: whether an
    * unconfined connect from this process reached it before the run, and whether anything else connected to it.
@@ -94,13 +96,11 @@ export interface LinuxRawIpMeasurement {
   readonly firewallDrops: boolean;
 }
 
-function unknown(reason: ContainerRawIpUnknownReason): ContainerRawIpVerdict {
-  return { verdict: "unknown", reason };
-}
-
 /** The verdict, in the rules' order. `blocked` needs this boot's measurement with the control passed. */
-export function linuxRawIpVerdict(measurement: LinuxRawIpMeasurement): ContainerRawIpVerdict {
-  const { output } = measurement;
+export function linuxRawIpVerdict(measurement: LinuxRawIpMeasurement): LinuxRawIpVerdict {
+  const { output, udpArrival } = measurement;
+  const reachableTargets: (LinuxRawIpTarget | "udp")[] = [];
+  const unknown = (reason: LinuxRawIpUnknownReason): LinuxRawIpVerdict => ({ rawIp: "unknown", reason, reachableTargets, udpArrival });
   // Rule 1: probe not run, nothing printed, or the control did not pass on both sides.
   if (!measurement.ran || output === undefined) return unknown("no-evidence");
   const control = output.control;
@@ -112,12 +112,13 @@ export function linuxRawIpVerdict(measurement: LinuxRawIpMeasurement): Container
   const tl = measurement.tlRan ? classifyLinuxRawIpTarget(output.targets.TL) : undefined;
   const ta = measurement.arrival === undefined ? undefined : classifyLinuxRawIpTarget(output.targets.TA);
   // Rule 2: anything that reached a peer, by TCP, by the TCP arrival listener or by the UDP arrival check.
-  const reached = ([["T4", t4], ["T6", t6], ["TL", tl], ["TA", ta]] as const).filter(([, result]) => result?.class === "allowed")
-    .map(([name]) => name as string);
-  if (measurement.arrival?.arrived === true) reached.push("tcp-arrival");
-  if (measurement.udpArrived) reached.push("udp");
-  if (reached.length > 0) {
-    log.warn(`raw-ip-reachable (${reached.join(", ")})`);
+  // The arrival listener is `ta`: the container reached it whether the connect reported success or the listener saw it.
+  reachableTargets.push(...([["t4", t4], ["t6", t6], ["tl", tl], ["ta", ta]] as const)
+    .filter(([name, result]) => result?.class === "allowed" || (name === "ta" && measurement.arrival?.arrived === true))
+    .map(([name]) => name));
+  if (udpArrival === "arrived") reachableTargets.push("udp");
+  if (reachableTargets.length > 0) {
+    log.warn(`raw-ip-reachable (${reachableTargets.join(", ")})`);
     return unknown("raw-ip-reachable");
   }
   // Owner ruling: with no IPv6 route, a network namespace holding nothing but `lo` is structural evidence for T6.
@@ -139,7 +140,7 @@ export function linuxRawIpVerdict(measurement: LinuxRawIpMeasurement): Container
     const evidenceKind = t4.class !== "refused-local" || (t6.class !== "refused-local" && !t6Structural) ? "arrival"
       : t6.class === "refused-local" ? "measured" : "structural";
     log.info(`raw-ip blocked, evidence ${evidenceKind}`);
-    return { verdict: "blocked", evidenceKind };
+    return { rawIp: "blocked", reason: "blocked", evidenceKind, reachableTargets, udpArrival };
   }
   if (measurement.arrival !== undefined && (t4.class === "inconclusive" || t6.class === "inconclusive")) {
     log.info(`raw-ip arrival evidence incomplete (control ${measurement.arrival.controlPassed ? "passed" : "failed"}, `

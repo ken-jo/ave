@@ -9,10 +9,7 @@ import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
 import { appOwnedSandboxPrivateRoots, aveHomeReadBoundaryCovering, getProtectedReadDenyFloor, getUserReadDenies, insideOwnWindowsSandboxHome, protectedReadDenyMatcher } from "../permissions/asrt-sandbox.js";
 import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "../permissions/confinement-state-paths.js";
-import { openInvocationProxyListener } from "../permissions/egress-invocation-listener.js";
-import { openHostEgressListener } from "../permissions/egress-host-listener.js";
-import { egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../permissions/egress-invocations.js";
-import { detectMxcShellCapability, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
+import { detectMxcShellCapability } from "../permissions/sandbox-capability.js";
 import {
   buildMxcShellRequest,
   mxcRankedGrantIdentity,
@@ -26,6 +23,7 @@ import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js
 import { assertIssuedContainerHomeInPlace, heldIssuedContainerHome, isIssuedContainerHome, issuedContainerHome } from "../permissions/sandbox-home-registry.js";
 import { claimMxcWatchedRows, hasWatchedWork, sweepWatchedRows, WatchedQuarantineError } from "../permissions/windows-watched-rows.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
+import { openShellEgressAdmission } from "./shell-egress-admission.js";
 
 export interface MxcShellLaunch extends Pick<MxcRequestTransport, "bindChild" | "bindHeldPolicy"> {
   /** `wxc-exec.exe` followed by its arguments; spawn with `shell: false`. */
@@ -82,6 +80,7 @@ export function shellPolicyModel(lists: MxcShellPolicyLists, literalAndPatternFl
 }
 
 export type MxcShellPreparationStage = "sandbox-prep" | "egress-prep" | "inline-policy-ready" | "policy-pipe-ready";
+export type MxcParserPreparationStage = MxcShellPreparationStage | "launcher-verified" | "seal-verified" | "seal-verified-at-activation";
 
 export interface PrepareMxcShellLaunchInput {
   /** The invocation's egress token (`egress-invocations.ts`): the identity its listener stamps. */
@@ -98,6 +97,7 @@ export interface PrepareMxcShellLaunchInput {
   readonly directoryHeld?: boolean;
   readonly exists: (path: string) => boolean;
   readonly markTiming?: (stage: MxcShellPreparationStage) => void;
+  readonly markParserTiming?: (stage: MxcParserPreparationStage) => void;
 }
 
 /** Margin MXC's own timeout keeps behind the host's lifetime watch. */
@@ -109,6 +109,7 @@ const MXC_TIMEOUT_MARGIN_MS = 30_000;
  * change) revokes the lifecycle, which stops all forwarding at once.
  */
 export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle): Promise<MxcShellLaunch> {
+  const markTiming = input.markParserTiming ?? input.markTiming;
   // The HOME issuance this launch holds through every wait below.
   const issuedHome = issuedContainerHome(input.sandboxHome);
   const capability = detectMxcShellCapability();
@@ -116,38 +117,9 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   // Before anything is allocated: a runtime root that was not proved private refuses every container start.
   requireMxcContainerStartRoot();
   const token = input.egressToken;
-  const owner = egressInvocationOwner(token);
-  if (owner?.kind !== "shell" || owner.requiresListener !== true) {
-    throw new Error("Container egress requires a live shell invocation");
-  }
-  lifecycle.onRevoke(() => releaseEgressInvocation(token));
-  const invocationSignal = egressInvocationAbortSignal(token);
-  let active = false;
   const isRouteCurrent = (): boolean => detectMxcShellCapability() === capability;
-  // The invocation's own end (cancellation or release) is reported before what it caused.
-  const assertAdmission = (): void => {
-    invocationSignal?.throwIfAborted();
-    if (!isRouteCurrent()) throw new Error("Container shell route is unavailable");
-    if (egressInvocationOwner(token) !== owner) throw new Error("Container egress requires a live shell invocation");
-    lifecycle.signal.throwIfAborted();
-  };
-  const admission = {
-    signal: lifecycle.signal,
-    assertCanBind: assertAdmission,
-    acceptsConnections: () => active && !lifecycle.signal.aborted,
-    adopt: (close: () => Promise<void>) => lifecycle.defer(close),
-  };
-  // Watched for the whole invocation: any of these ends it, before spawn or while the job runs.
-  lifecycle.defer(onEgressInvocationReleased((released) => {
-    if (released === token) lifecycle.revoke();
-  }));
-  lifecycle.defer(onSandboxStatusChanged(() => {
-    if (!isRouteCurrent()) lifecycle.revoke();
-  }));
-  const revokeOnAbort = (): void => lifecycle.revoke();
-  invocationSignal?.addEventListener("abort", revokeOnAbort, { once: true });
-  lifecycle.defer(() => invocationSignal?.removeEventListener("abort", revokeOnAbort));
-  if (invocationSignal?.aborted === true) lifecycle.revoke();
+  const egress = openShellEgressAdmission({ token, lifecycle, isRouteCurrent, releaseOnRevoke: true });
+  const { assertAdmission } = egress;
   assertAdmission();
   let wxcExec: string;
   try {
@@ -159,6 +131,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   if (!input.exists(wxcExec)) {
     throw new Error("Contained shell launcher is missing from this installation");
   }
+  input.markParserTiming?.("launcher-verified");
   // The invocation's own HOME lies in the runtime root's state; it is passed only while live and still the issuance held.
   const ownHome = (): string | undefined => {
     if (issuedHome === undefined) return undefined;
@@ -198,20 +171,11 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     };
   }, JSON.stringify);
   assertAdmission();
-  input.markTiming?.("sandbox-prep");
-  const relay = await openHostEgressListener(token, admission);
-  assertAdmission();
-  const listener = await openInvocationProxyListener({
-    admission,
-    upstream: () => admission.acceptsConnections()
-      ? { host: "127.0.0.1", port: relay.port, proxyAuthorization: relay.proxyAuthorization }
-      : undefined,
-    onRefused: relay.recordRefusal,
-  });
-  assertAdmission();
-  relay.registerPort(listener.port);
-  input.markTiming?.("egress-prep");
+  markTiming?.("sandbox-prep");
+  const listener = await egress.openProxy();
+  markTiming?.("egress-prep");
   seal.verify();
+  input.markParserTiming?.("seal-verified");
   const systemRoot = windowsSystemRoot();
   const env: Record<string, string> = { ...input.env };
   if (!Object.keys(env).some((key) => key.toUpperCase() === "SYSTEMROOT")) env["SYSTEMROOT"] = systemRoot;
@@ -226,12 +190,12 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   const transport = await openMxcRequestTransport(request, wxcExec, input.directoryHeld);
   lifecycle.defer(() => transport.release());
   assertAdmission();
-  input.markTiming?.(transport.args[0] === "--config" ? "policy-pipe-ready" : "inline-policy-ready");
+  markTiming?.(transport.args[0] === "--config" ? "policy-pipe-ready" : "inline-policy-ready");
   let watchedNotice: string | undefined;
   const claim = grants.watched === undefined ? undefined : claimMxcWatchedRows(grants.watched, { commandId: token });
   // Command end is a detection point: this launch's own names first, then every watched name and the receipts no result carried yet.
   lifecycle.defer(async () => {
-    if (!active) return;
+    if (!egress.active) return;
     const notices: string[] = [];
     let failure: unknown;
     for (const check of [() => claim?.release(), () => hasWatchedWork() ? sweepWatchedRows({ commandId: token }) : undefined]) {
@@ -260,7 +224,8 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
       };
       if (claim === undefined) withLocalityDecision(assertStillValid);
       else claim.start(assertStillValid);
-      active = true;
+      egress.activate();
+      input.markParserTiming?.("seal-verified-at-activation");
     },
     bindChild: transport.bindChild,
     ...(transport.bindHeldPolicy !== undefined && { bindHeldPolicy: transport.bindHeldPolicy }),

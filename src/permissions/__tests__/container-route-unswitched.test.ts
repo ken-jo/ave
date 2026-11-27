@@ -34,20 +34,28 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
     publishWrap();
     expect(isContainerShellRouteEnabled(platform)).toBe(true);
     expect(isContainerHolderRouteEnabled(platform)).toBe(false);
+    // Unmeasured raw IP is unknown; only this boot's measured verdict publishes blocked, on the plan and in Settings.
     setContainerShellSubstrate("darwin", { state: "available" });
-    // No measurement this boot: raw IP is unknown, never a constant.
     expect(getHostShellExecutionPlan()).toMatchObject({
       identity: "host-shell-execution-plan/v4:darwin:mxc", sandboxed: true,
-      egressProtocolCoverage: { dns: "blocked", rawIp: "unknown" },
+      egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" },
     });
+    const measured = { state: "available", rawIpProbe: { rawIp: "blocked", reason: "blocked", evidenceKind: "measured", reachableTargets: [], udpArrival: "absent" } } as const;
+    setContainerShellSubstrate("darwin", measured);
+    expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "blocked" });
     expect(getHostShellExecutionPlan("default", "hook").identity).toBe("host-shell-execution-plan/v4:darwin:asrt");
-    expect(getContainerShellInfo()).toEqual({ state: "available", egressProtocolCoverage: { dns: "blocked", rawIp: "unknown" } });
+    expect(getHostShellExecutionPlan("default", "hook").egressProtocolCoverage.rawIp).toBe("unknown");
+    expect(getContainerShellInfo()).toEqual({ ...measured, egressProtocolCoverage: { dns: "unknown", rawIp: "blocked" } });
+    setContainerShellSubstrate("darwin", { state: "available", rawIpProbe: { rawIp: "unknown", reason: "ipv6-unmeasured", reachableTargets: [], udpArrival: "absent" } });
+    expect(getHostShellExecutionPlan().egressProtocolCoverage.rawIp).toBe("unknown");
     // An explicit host request on a host whose backend is ready keeps ordinary rules and modes (tree: host-shell row).
     expect(getHostShellExecutionPlan("host")).toMatchObject({
       mode: "plain", executionRequest: "host", identity: "host-shell-execution-plan/v4:darwin:explicit-host",
     });
     setContainerShellSubstrate("darwin", { state: "unavailable", reason: "shell-start-failed" });
-    expect(getContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "shell-start-failed" });
+    expect(getContainerShellInfo()).toEqual({
+      state: "unavailable", reason: "shell-start-failed", egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" },
+    });
     expect(getHostShellExecutionPlan()).toMatchObject({
       mode: "plain", substrate: "none", requiresExplicitUserApproval: true, fallbackReason: "active-sandbox-not-shell-contained",
     });
@@ -75,10 +83,11 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
     setContainerShellSubstrate("linux", { state: "available" });
     expect(getHostShellExecutionPlan()).toMatchObject({ identity: "host-shell-execution-plan/v4:linux:mxc", sandboxed: true,
       egressProtocolCoverage: { dns: "blocked", rawIp: "unknown" } });
-    setContainerShellSubstrate("linux", { state: "available", rawIp: { verdict: "unknown", reason: "timeout" } });
+    setContainerShellSubstrate("linux", { state: "available", rawIpProbe: { rawIp: "unknown", reason: "timeout", reachableTargets: [], udpArrival: "absent" } });
     expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "unknown" });
-    expect(getContainerShellInfo()).toMatchObject({ rawIp: { verdict: "unknown", reason: "timeout" } });
-    setContainerShellSubstrate("linux", { state: "available", rawIp: { verdict: "blocked", evidenceKind: "measured" } });
+    expect(getContainerShellInfo()).toMatchObject({ rawIpProbe: { rawIp: "unknown", reason: "timeout" } });
+    setContainerShellSubstrate("linux", { state: "available",
+      rawIpProbe: { rawIp: "blocked", reason: "blocked", evidenceKind: "arrival", reachableTargets: [], udpArrival: "absent" } });
     expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "blocked" });
     expect(getContainerShellInfo()?.egressProtocolCoverage).toEqual({ dns: "blocked", rawIp: "blocked" });
     // The hook wrap is not the container, so it never carries the container's measurement.

@@ -6,7 +6,7 @@ import { Button } from "../../../../components/ui/button.js";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../../../../components/ui/dialog.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { revealHiddenCharacters } from "../../../../shared/display-safe-text.js";
-import type { WorkBoardCancelIpcResult, WorkItemResolved } from "../../../../shared/work-board-types.js";
+import type { StageOutputRetryInput, WorkBoardCancelIpcResult, WorkItemResolved } from "../../../../shared/work-board-types.js";
 import { workflowDecisionHistoryKey } from "../../../../shared/workflow-run-view.js";
 import type { TemplateVersion } from "../../../../shared/workflow-template-types.js";
 import type { WorkItemRunState, WorkflowStageUpdate } from "../../hooks/use-work-board-run.js";
@@ -22,7 +22,7 @@ const STAGE_STATE_KEYS = {
   stage_failed: "workflowTemplates.stageFailed",
 } as const;
 
-export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals, parkedApprovals, onStop, onRetry, onComplete, onHistory, onClose, restoreFocus }: {
+export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals, parkedApprovals, onStop, onRetry, onRetryOutput, onComplete, onHistory, onClose, restoreFocus }: {
   api: Pick<AveApi, "getWorkBoardItem" | "getWorkflowTemplate" | "onWorkBoardItemChanged" | "decideWorkStage" | "decideWorkJoin" | "openWorkBoardJoin">;
   item: WorkItemResolved;
   run?: WorkItemRunState;
@@ -31,6 +31,7 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
   parkedApprovals: ReactNode;
   onStop: (id: number) => Promise<WorkBoardCancelIpcResult | { ok: false; error: string }>;
   onRetry: AveApi["retryWorkStage"];
+  onRetryOutput?: AveApi["retryWorkStageOutput"];
   onComplete: (id: number) => Promise<void>;
   onHistory: () => void;
   onClose: () => void;
@@ -46,6 +47,26 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
   const [readError, setReadError] = useState(false);
   const refreshRun = useRef<() => void>(() => {});
   const [resolvedVersion, setResolvedVersion] = useState<TemplateVersion>();
+
+  async function handleRetryOutput(input: StageOutputRetryInput) {
+    if (!onRetryOutput || busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const result = await onRetryOutput(item.id, input);
+      if (!result.ok) {
+        const code = "reason" in result ? result.reason : result.error;
+        const key = code === "user-gesture-required" ? "workflowTemplates.retryFailed"
+          : `reasonCodes.${code.replaceAll("_", "-")}`;
+        setError(t(key) !== key ? key : "workflowTemplates.retryFailed");
+      }
+    } catch {
+      setError("workflowTemplates.retryFailed");
+    } finally {
+      setBusy(false);
+      refreshRun.current();
+    }
+  }
   const activeDetail = detail?.inspectedRun === inspectedRun && detail?.item.runId === item.runId ? detail : undefined;
   const readItem = activeDetail?.item ?? item;
   const showingHistory = inspectedRun !== undefined;
@@ -214,6 +235,7 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
           </div>
           <DialogDescription>{[item.projectName, item.runId].flatMap(value => value ? [stageDisplayName(value)] : []).join(" · ") || t("workflowTemplates.openRun")}</DialogDescription>
         </DialogHeader>
+        {approvals && <section aria-label={t("workBoard.liveRowToolApproval")} className="grid min-w-0 gap-3 sm:grid-cols-2">{approvals}</section>}
         {showParkedApprovals && (
           <section ref={parkedApprovalSection} tabIndex={-1} aria-label={t("workApprovals.stageToolApprovals")} className="space-y-2 rounded-lg focus-visible:ring-2 focus-visible:ring-ring">
             <h2 className="text-sm font-semibold">{t("workApprovals.stageToolApprovals")}</h2>
@@ -266,7 +288,14 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
                     ...selectedSnapshot,
                     activity: liveActivity?.activity ?? selectedSnapshot.activity ?? selectedSaved?.activity,
                     breaker: selectedSnapshot.status === "running" ? liveActivity?.breaker ?? selectedSnapshot.breaker ?? selectedSaved?.breaker : undefined,
-                  }} stageName={stageName} />
+                  }} stageName={stageName} retry={(outputId, outputHash) => {
+                    if (!item.runId || showingHistory || !onRetryOutput) return null;
+                    const input = { runId: item.runId, stageId: selectedSnapshot.stageId, attempt: selectedSnapshot.attempt, outputId, outputHash };
+                    return <Button type="button" size="sm" variant="outline" disabled={busy}
+                      {...workBoardDecisionProps(WORK_BOARD.retryOutput, item.id, input)} onClick={() => void handleRetryOutput(input)}>
+                      {t("workflowTemplates.retryOutput")}
+                    </Button>;
+                  }} />
                   {selectedSnapshot.status === "failed" && canStop && item.runId && (
                     <Button type="button" size="sm" variant="outline" disabled={busy || run?.stopping || retried === `${item.runId}:${selectedSnapshot.stageId}:${selectedSnapshot.attempt}`}
                       {...workBoardDecisionProps(WORK_BOARD.retryStage, item.id, { runId: item.runId, stageId: selectedSnapshot.stageId, attempt: selectedSnapshot.attempt })}
@@ -301,7 +330,6 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
           </section>
         )}
         {snapshot && <WorkflowRunEvidence run={snapshot} stageName={stageName} />}
-        {!showingHistory && approvals && <section aria-label={t("workBoard.liveRowToolApproval")} className="grid min-w-0 gap-3 sm:grid-cols-2">{approvals}</section>}
         {!showingHistory && item.runStatus === "completed" && (
           <section className="space-y-2 rounded-lg border bg-background p-3 text-sm">
             <h2 className="font-semibold">{t("workBoard.reviewInspector")}</h2>

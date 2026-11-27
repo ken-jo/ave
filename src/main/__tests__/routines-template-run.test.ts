@@ -12,7 +12,7 @@ import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-wo
 import { deferred } from "../../__tests__/support/deferred.js";
 import { untilAsserted } from "../../__tests__/support/signal-wait.js";
 import { autoStageOf, runScopePermissions, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
-import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
+import { stageRunHarness, unavailableOutputAdapter } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import { mayFire } from "../../work-board/workflow/schedule-breaker.js";
 import { RoutinesScheduler } from "../routines-scheduler.js";
 import { RoutinesStore, removeRoutineWithRuns, type TemplateRoutineFire } from "../routines-store.js";
@@ -672,7 +672,7 @@ it("pauses a schedule after registry qualification refuses two fires", async () 
     }
   }, {
     wiring: (store, { templates, workspace }) => ({
-      ...workflowEngineExtensions(store, templates, runScopePermissions(), effects), workspace,
+      ...workflowEngineExtensions(store, templates, runScopePermissions(), unavailableOutputAdapter, effects), workspace,
     }),
   });
 });

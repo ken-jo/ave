@@ -234,7 +234,7 @@ export type EgressIdentityStrength = "kernel-channel" | "shared";
 /** Protocol coverage is independent of proxy endpoint scoping and identity. */
 export interface EgressProtocolCoverage {
   readonly dns: "host-resolver" | "brokered" | "blocked" | "unknown";
-  /** Every platform's boot measurement checks UDP by arrival only (`ContainerRawIpVerdict`). */
+  /** Every platform's boot measurement checks UDP by arrival only (`MxcRawIpProbeVerdict`). */
   readonly rawIp: "unknown" | "blocked";
 }
 
@@ -246,46 +246,57 @@ export function egressProtocolCoverageFor(substrate: "mxc" | "asrt" | "srt-win" 
   return substrate === "mxc" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
 }
 
-const POSIX_UNMEASURED_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "unknown" });
-const POSIX_MEASURED_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "blocked" });
+// No constant `blocked`: a POSIX container's raw IP is `blocked` only when this boot's canary measured it
+// (`acceptMeasuredContainerEgress`). A seatbelt container's DNS is not measured, so it stays `unknown`.
+const MEASURED_SEATBELT_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "unknown", rawIp: "blocked" });
+const UNMEASURED_BUBBLEWRAP_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "unknown" });
+const MEASURED_BUBBLEWRAP_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "blocked" });
 
 /**
- * The coverage a boot measurement may publish for a container backend, or undefined when it may publish none. Only the
- * host's own backend counts, and only the exact measured-blocked shape: Windows MXC (`process-container`) resolves
- * names on the host, and a POSIX container's only egress is its proxy endpoint, so DNS does not leave it.
+ * A container start's own measured coverage, accepted only in the exact shape its platform's probe publishes:
+ * Windows MXC (`dns` from the host resolver), the macOS seatbelt container (`dns` unmeasured) or the Linux bubblewrap
+ * container. Only the host's own backend counts; anything else is not a measurement and the backend's unmeasured
+ * coverage applies.
  */
 export function acceptMeasuredContainerEgress(
   platform: NodeJS.Platform, backend: ContainerBackend, coverage: EgressProtocolCoverage | undefined,
 ): EgressProtocolCoverage | undefined {
   const accepted = platform === "win32" && backend === "process-container" ? MEASURED_MXC_EGRESS_PROTOCOL_COVERAGE
-    : (platform === "linux" && backend === "bubblewrap") || (platform === "darwin" && backend === "seatbelt")
-      ? POSIX_MEASURED_EGRESS_PROTOCOL_COVERAGE : undefined;
+    : platform === "darwin" && backend === "seatbelt" ? MEASURED_SEATBELT_EGRESS_PROTOCOL_COVERAGE
+      : platform === "linux" && backend === "bubblewrap" ? MEASURED_BUBBLEWRAP_EGRESS_PROTOCOL_COVERAGE : undefined;
   if (accepted === undefined || typeof coverage !== "object" || coverage === null
       || Reflect.ownKeys(coverage).length !== 2 || !Object.hasOwn(coverage, "dns") || !Object.hasOwn(coverage, "rawIp")
       || coverage.dns !== accepted.dns || coverage.rawIp !== accepted.rawIp) return undefined;
   return accepted;
 }
 
-/**
- * A container backend's coverage when this boot published no accepted measurement. A POSIX container has no raw-IP
- * constant: its `rawIp` is `blocked` only through `acceptMeasuredContainerEgress`, so anything unmeasured is `unknown`.
- */
+/** A container backend's coverage before any measurement: its raw IP is not `blocked` until a start measured it. */
 export function containerEgressProtocolCoverage(backend: ContainerBackend): EgressProtocolCoverage {
   if (backend === "process-container") return MXC_EGRESS_PROTOCOL_COVERAGE;
-  return POSIX_UNMEASURED_EGRESS_PROTOCOL_COVERAGE;
+  return backend === "bubblewrap" ? UNMEASURED_BUBBLEWRAP_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
 }
-
-/** The coverage a container raw-IP verdict measures for a POSIX backend, for `acceptMeasuredContainerEgress`. */
-export function posixContainerMeasuredEgress(rawIp: ContainerRawIpVerdict): EgressProtocolCoverage {
-  return rawIp.verdict === "blocked" ? POSIX_MEASURED_EGRESS_PROTOCOL_COVERAGE : POSIX_UNMEASURED_EGRESS_PROTOCOL_COVERAGE;
-}
-
-/** Why a container's raw-IP verdict is not `blocked`: the reasons the shared verdict rules name. */
-export type ContainerRawIpUnknownReason =
-  | "raw-ip-reachable" | "ipv6-unmeasured" | "no-route" | "timeout" | "unclassified" | "no-evidence" | "control-failed";
 
 /**
- * What a `blocked` raw-IP verdict rests on, shared by every platform's boot measurement:
+ * The coverage a POSIX container start's raw-IP verdict measured, in the shape `acceptMeasuredContainerEgress` takes,
+ * or undefined when it measured no `blocked` raw IP.
+ */
+export function posixContainerMeasuredEgress(
+  backend: "seatbelt" | "bubblewrap", rawIpProbe: ContainerRawIpProbeVerdict | undefined,
+): EgressProtocolCoverage | undefined {
+  if (rawIpProbe?.rawIp !== "blocked") return undefined;
+  return backend === "seatbelt" ? MEASURED_SEATBELT_EGRESS_PROTOCOL_COVERAGE : MEASURED_BUBBLEWRAP_EGRESS_PROTOCOL_COVERAGE;
+}
+
+/** The raw-IP probe's targets: an IPv4 and an IPv6 documentation address, and a closed port on the host's own IPv4. */
+export type MxcRawIpTarget = "t4" | "t6" | "tl";
+/** Whether the probe's UDP datagram reached the host-side listener (`mxc-raw-ip-udp.ts`). */
+export type MxcRawIpUdpArrival = "arrived" | "absent" | "unmeasured";
+/** Why a raw-IP verdict is not `blocked`, by the verdict rules the container platforms share. */
+export type MxcRawIpUnknownReason = "listener-unavailable" | "no-evidence" | "control-failed" | "raw-ip-reachable"
+  | "ipv6-unmeasured" | "udp-unmeasured" | "no-route" | "timeout" | "unclassified" | "cleanup-failed";
+
+/**
+ * What a `blocked` raw-IP verdict rests on, by the verdict rules the container platforms share:
  * - `measured`: every target was refused locally;
  * - `structural`: IPv6 had no route and the container's own structure stood in for its measurement;
  * - `arrival`: on a backend that drops direct connects, a host-side listener proven reachable by an unconfined control
@@ -294,14 +305,41 @@ export type ContainerRawIpUnknownReason =
 export type ContainerRawIpEvidenceKind = "measured" | "structural" | "arrival";
 
 /**
- * Whether a process in the shell container can reach an IP address directly, as this boot's canary measured it inside
- * a real container. TCP is classified by its connect result, or by arrival on a drop-type backend. UDP is checked by
- * arrival only: a datagram that reaches a host-side listener makes the verdict `unknown`; one that does not arrive
- * leaves the TCP verdict standing. Memory only, never persisted, re-measured every boot.
+ * A container start's raw-IP verdict, in the shape the Windows MXC start probe gives (`mxc-windows.ts`):
+ * `reachableTargets` names what reached a peer (a TCP target, or `udp` when the datagram arrived), and `blocked`
+ * carries what its evidence rests on (`ContainerRawIpEvidenceKind`; only a drop-type backend has `arrival`).
+ * Memory only, never persisted, re-measured every boot.
  */
-export type ContainerRawIpVerdict =
-  | { readonly verdict: "blocked"; readonly evidenceKind: ContainerRawIpEvidenceKind }
-  | { readonly verdict: "unknown"; readonly reason: ContainerRawIpUnknownReason };
+export type MxcRawIpProbeVerdict<
+  Reason extends MxcRawIpUnknownReason = MxcRawIpUnknownReason,
+  Evidence extends ContainerRawIpEvidenceKind = Exclude<ContainerRawIpEvidenceKind, "arrival">,
+  Target extends string = MxcRawIpTarget,
+> = {
+  readonly reachableTargets: readonly (Target | "udp")[];
+  readonly udpArrival: MxcRawIpUdpArrival;
+} & ({ readonly rawIp: "blocked"; readonly reason: "blocked"; readonly evidenceKind: Evidence }
+  | { readonly rawIp: "unknown"; readonly reason: Reason });
+
+/**
+ * The reasons the macOS shell container's canary gives. It has no `listener-unavailable` or `cleanup-failed`:
+ * a host-side bind failure drops the targets that needed it (`no-evidence`), and staging cleanup failing fails
+ * the canary itself.
+ */
+export type MacRawIpUnknownReason = Exclude<MxcRawIpUnknownReason, "listener-unavailable" | "cleanup-failed">;
+/** Whether a process in the macOS shell container can reach an IP address directly, as this boot's canary measured it. */
+export type MacRawIpVerdict = MxcRawIpProbeVerdict<MacRawIpUnknownReason>;
+
+/**
+ * The reasons the Linux shell container's canary gives: the macOS ones less `udp-unmeasured`, since a UDP datagram that
+ * did not arrive (or could not be sent for) leaves the TCP verdict standing.
+ */
+export type LinuxRawIpUnknownReason = Exclude<MacRawIpUnknownReason, "udp-unmeasured">;
+/** The Linux probe's targets: the shared ones plus `ta`, the TCP arrival listener on the host's primary IPv4. */
+export type LinuxRawIpTarget = MxcRawIpTarget | "ta";
+/** Whether a process in the Linux shell container can reach an IP address directly, as this boot's canary measured it. */
+export type LinuxRawIpVerdict = MxcRawIpProbeVerdict<LinuxRawIpUnknownReason, ContainerRawIpEvidenceKind, LinuxRawIpTarget>;
+/** A POSIX shell container's raw-IP verdict. */
+export type ContainerRawIpProbeVerdict = MacRawIpVerdict | LinuxRawIpVerdict;
 
 /** The scopes an egress grant can be given. A shell tool call's card offers Deny plus once, session, project, always (owner 2026-10-25, five-choice network card); a workspace terminal
  * tab's ladder is once, tab, always (`tab` takes the place of `session`: a terminal belongs to no conversation, design F). */
@@ -333,7 +371,7 @@ export type SandboxContainerShellUnavailableReason = Extract<SandboxMxcUnavailab
 
 export type SandboxContainerShellSupport =
   // An available shell container without a measurement has an unknown raw-IP verdict. The unavailable arm has no field.
-  | { readonly state: "available"; readonly rawIp?: ContainerRawIpVerdict }
+  | { readonly state: "available"; readonly rawIpProbe?: ContainerRawIpProbeVerdict }
   | { readonly state: "unavailable"; readonly reason: SandboxContainerShellUnavailableReason; readonly detail?: readonly string[] };
 
 export type SandboxContainerShellInfo = SandboxContainerShellSupport & {

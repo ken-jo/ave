@@ -1,4 +1,4 @@
-import { outputHashOf, resultHashOf } from "../../shared/workflow-template-output.js";
+import { resultHashOf } from "../../shared/workflow-template-output.js";
 import type { WorkItemResolved } from "../../shared/work-board-types.js";
 import type { SerializedHistoryMessage } from "../../shared/chat-history.js";
 import { redactHomePathsInText } from "../../audit/dlp-filter.js";
@@ -9,6 +9,8 @@ import type { PendingWorkflowDecision, WorkflowDecisionHistoryEntry, WorkflowRun
 import { toolStepsOf } from "../tool-steps.js";
 import { boundedStageInputs, stageInputsOf } from "./stage-prompt.js";
 import { isAwaitingStageReview } from "./run-state.js";
+import { requestedOutputHash, requestedOutputsMatchStage } from "./requested-outputs.js";
+import { isWorkflowPush } from "./host-git.js";
 
 const TURN_TEXT_LIMIT = 4_000;
 const RECENT_TURN_LIMIT = 40;
@@ -26,18 +28,33 @@ export function withoutWorkflowProjection<T extends WorkItemResolved>(item: T): 
   return clean;
 }
 
-export function pendingWorkflowDecisions(run: WorkflowRunRecord): PendingWorkflowDecision[] {
+export type WorkflowRunReadSurface = "local-desktop" | "tailnet";
+
+export function pendingWorkflowDecisions(run: WorkflowRunRecord, surface?: WorkflowRunReadSurface, version?: TemplateVersion): PendingWorkflowDecision[] {
   if (!isAwaitingStageReview(run)) return [];
   const pending: PendingWorkflowDecision[] = [];
   for (const stage of run.stageRuns) {
     if (stage.status !== "awaiting_gate" || stage.gate?.type !== "human" || stage.gate.status !== "pending"
-      || stage.output === undefined || stage.resultHash === undefined || resultHashOf(stage.output) !== stage.resultHash
-      || (stage.requestedOutputs?.length && outputHashOf(stage.output, stage.requestedOutputs) !== stage.outputHash)) continue;
+      || stage.output === undefined || stage.resultHash === undefined || resultHashOf(stage.output) !== stage.resultHash) continue;
+    const outputs = stage.requestedOutputs;
+    if (outputs?.length) {
+      const definition = version?.stages.find(candidate => candidate.id === stage.stageId);
+      if (!definition || !requestedOutputsMatchStage(definition, outputs)) continue;
+    }
+    const outputHash = requestedOutputHash(stage);
     pending.push({
       kind: "stage-gate",
-      binding: { runId: run.runId, stageId: stage.stageId, attempt: stage.attempt, resultHash: stage.resultHash, ...(stage.outputHash !== undefined && { outputHash: stage.outputHash }) },
+      binding: { runId: run.runId, stageId: stage.stageId, attempt: stage.attempt, resultHash: stage.resultHash, ...(outputHash !== undefined && { outputHash }) },
       result: maskWorkflowText(stage.output),
-      ...(stage.requestedOutputs?.length && { outputs: stage.requestedOutputs.map(output => ({ id: output.id, summary: maskWorkflowText(output.summary) })) }),
+      ...(surface === "local-desktop" && outputs?.length && { outputs: outputs.map(output => {
+        const pushRunBranch = isWorkflowPush(output.decl);
+        const args = JSON.parse(output.args);
+        return {
+          id: output.id, summary: maskWorkflowText(output.summary), pushRunBranch,
+          httpsAccountsHelp: pushRunBranch && /^https?:/iu.test(args.url),
+          payload: JSON.stringify({ ...output.decl, args }, null, 2),
+        };
+      }) }),
       arrivedAt: stage.endedAt ?? null,
     });
   }
@@ -98,11 +115,12 @@ export function projectWorkflowRun(
   run: WorkflowRunRecord,
   version: TemplateVersion | undefined,
   sessionFacts?: (stage: WorkItemStageRun) => Pick<WorkflowStageView, "activity" | "breaker">,
+  localOutputRetry = false,
 ): WorkflowRunView {
   return {
     runId: run.runId, pin: { ...run.pin }, startedAt: run.startedAt,
     stages: run.stageRuns.map(stage => {
-      const { stageId, attempt, status, childSessionId, startedAt, endedAt, failure, gate, output, resultHash } = stage;
+      const { stageId, attempt, status, childSessionId, startedAt, endedAt, failure, gate, output, resultHash, outputExecutions } = stage;
       const definition = version?.stages.find(candidate => candidate.id === stageId);
       const receivedInputs = childSessionId && version && definition
         ? boundedStageInputs(stageInputsOf(version, definition, run.stageRuns))
@@ -110,8 +128,17 @@ export function projectWorkflowRun(
         : undefined;
       const shownGate = gate?.type === "auto" ? { ...gate, evidence: maskWorkflowText(gate.evidence) }
         : gate && { ...gate, ...(gate.note !== undefined && { note: maskWorkflowText(gate.note) }) };
+      const hash = localOutputRetry ? requestedOutputHash(stage) : undefined;
+      const retryIds = hash && status === "passed" && gate?.type === "human" && gate.status === "approved"
+        ? outputExecutions?.flatMap(entry => {
+          const request = stage.requestedOutputs?.find(candidate => candidate.id === entry.id);
+          return request && !isWorkflowPush(request.decl) && (entry.status === "failed" || entry.status === "denied") ? [entry.id] : [];
+        }) : undefined;
       return {
         stageId, attempt, status, childSessionId, startedAt, endedAt, failure, gate: shownGate, receivedInputs,
+        ...(outputExecutions?.length && { outputExecutions: outputExecutions.map(({ id, status, detail }) => ({ id, status, ...(detail !== undefined && { detail: maskWorkflowText(detail) }) })) }),
+        ...(hash && retryIds?.length && { outputRetry: { hash, ids: retryIds } }),
+        ...(stage.failureReason !== undefined && { failureReason: stage.failureReason }),
         ...(stage.deniedCalls?.length ? { deniedCalls: stage.deniedCalls.map(({ toolName, code }) => ({ toolName: maskWorkflowText(toolName), code })) } : {}),
         ...(output !== undefined && { result: maskWorkflowText(output) }), resultHash, ...sessionFacts?.(stage),
       };

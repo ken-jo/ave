@@ -1,4 +1,5 @@
 import "../../../../../test/renderer/setup.js";
+import { DEFAULT_TAILNET_OBSERVER_PORT, TAILNET_OBSERVER_PORT_BLOCKED } from "../../../../shared/tailnet-observer-config.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
@@ -17,7 +18,7 @@ const WEB_ORIGIN = "https://" + DNS_NAME;
 const OFF: TailnetObserverConfigView = {
   enabled: false,
   authorization: { kind: "tailnet-identity" },
-  port: 46_173,
+  port: DEFAULT_TAILNET_OBSERVER_PORT,
   controllerEnabled: false,
   pairedSharingEnabled: false,
   webEnabled: false,
@@ -57,6 +58,7 @@ function snapshotOf(overrides: Partial<TailnetObserverSnapshot> = {}): TailnetOb
     },
     listeningPort: null,
     lastStartError: null,
+    portBlock: null,
     pairedSharingBootstrapFailed: false,
     ownDeviceAdmission: false,
     environment: READY_ENVIRONMENT,
@@ -72,9 +74,9 @@ function configuredSnapshot(overrides: Partial<TailnetObserverSnapshot> = {}): T
   return snapshotOf({
     saved: ON,
     effective: ON,
-    listeningPort: 46_173,
-    serveCommand: "tailscale serve --bg --https=443 http://127.0.0.1:46173",
-    environment: { ...READY_ENVIRONMENT, serveConfigured: true, serveTargetPort: 46_173 },
+    listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
+    serveCommand: `tailscale serve --bg --https=443 http://127.0.0.1:${DEFAULT_TAILNET_OBSERVER_PORT}`,
+    environment: { ...READY_ENVIRONMENT, serveConfigured: true, serveTargetPort: DEFAULT_TAILNET_OBSERVER_PORT },
     ...overrides,
   });
 }
@@ -98,10 +100,10 @@ function makeApi(options: {
     ok: true as const,
     snapshot: configuredSnapshot(),
     webOrigin: WEB_ORIGIN,
-    port: 46_173,
+    port: DEFAULT_TAILNET_OBSERVER_PORT,
     serve: "configured" as const,
   }));
-  const apply = vi.fn(async () => ({ ok: true as const }));
+  const apply = vi.fn(async () => ({ ok: true as const, outcome: "applied" as const, restartNeeded: false }));
   const configureServe = vi.fn(async () => ({ ok: true as const, url: WEB_ORIGIN + "/" }));
   const setOwnDeviceAdmission = vi.fn(async (_enabled: boolean) => (
     options.setOwnDeviceAdmission ?? { ok: true as const }
@@ -164,6 +166,24 @@ describe("TailnetSetupCard", () => {
       );
     });
 
+    it("shows the selected alternate port on the completed setup", async () => {
+      const port = 28_999;
+      const { api } = makeApi({
+        guidedSetup: {
+          ok: true,
+          snapshot: configuredSnapshot({ listeningPort: port }),
+          webOrigin: WEB_ORIGIN,
+          port,
+          serve: "configured",
+        },
+      });
+      render(<TailnetSetupCard api={api} onCreateInvitation={() => undefined} />);
+
+      fireEvent.click(await screen.findByTestId("tailnet-setup-connect"));
+
+      expect(await screen.findByTestId("tailnet-setup-done")).toHaveTextContent("Local port: 28999");
+    });
+
     it("holds the button disabled and labelled in progress for the whole call", async () => {
       let release = (): void => undefined;
       const inFlight = new Promise<void>((resolve) => { release = () => resolve(); });
@@ -175,7 +195,7 @@ describe("TailnetSetupCard", () => {
           ok: true as const,
           snapshot: configuredSnapshot(),
           webOrigin: WEB_ORIGIN,
-          port: 46_173,
+          port: DEFAULT_TAILNET_OBSERVER_PORT,
           serve: "configured" as const,
         };
       });
@@ -238,19 +258,33 @@ describe("TailnetSetupCard", () => {
       await waitFor(() => expect(screen.getByTestId("tailnet-setup-connect")).toBeEnabled());
     });
 
-    it("keeps the manual escape hatch beside the sentence when no port can be opened", async () => {
-      const { api } = makeApi({
-        guidedSetup: { ok: false, error: "tailnet-guided-setup-port-unavailable", output: null },
+    it("shows the failed port and opens the editable port field", async () => {
+      const port = DEFAULT_TAILNET_OBSERVER_PORT;
+      const blocked = snapshotOf({
+        lastStartError: TAILNET_OBSERVER_PORT_BLOCKED,
+        portBlock: { code: "EACCES", port, hint: "excluded-range" },
+      });
+      const { api, apply } = makeApi({
+        snapshots: [snapshotOf(), snapshotOf(), blocked, blocked, configuredSnapshot()],
+        guidedSetup: { ok: false, error: TAILNET_OBSERVER_PORT_BLOCKED, output: null },
       });
       render(<TailnetSetupCard api={api} onCreateInvitation={() => undefined} />);
 
       fireEvent.click(await screen.findByTestId("tailnet-setup-connect"));
 
-      expect(await screen.findByTestId("tailnet-setup-error")).toHaveTextContent(
-        "No local port could be opened",
-      );
-      fireEvent.click(screen.getByTestId("tailnet-setup-manual-toggle"));
-      expect(await screen.findByTestId("tailnet-observer-apply")).toBeInTheDocument();
+      const notice = await screen.findByTestId("tailnet-setup-port-blocked");
+      expect(notice).toHaveTextContent(`Port ${port} is blocked or in use by another program.`);
+      expect(notice).toHaveTextContent("The operating system has reserved this port.");
+      fireEvent.click(screen.getByRole("button", { name: "Change port" }));
+      const portInput = await screen.findByTestId("tailnet-observer-port");
+      expect(portInput).toHaveValue(port);
+      fireEvent.change(portInput, { target: { value: String(port + 1) } });
+      fireEvent.click(screen.getByTestId("tailnet-observer-apply"));
+
+      await waitFor(() => expect(apply).toHaveBeenCalledWith(expect.objectContaining({ port: port + 1 })));
+      await screen.findByTestId("tailnet-setup-status");
+      expect(screen.queryByTestId("tailnet-setup-port-blocked")).toBeNull();
+      expect(screen.queryByTestId("tailnet-setup-error")).toBeNull();
     });
 
     // The sentence for a failed Serve says its output is below. Dropping what Tailscale printed leaves that promise with
@@ -404,12 +438,27 @@ describe("TailnetSetupCard", () => {
       expect(screen.queryByTestId("tailnet-setup-not-ready")).toBeNull();
     });
 
+    it("shows both ports when Serve and an environment override disagree", async () => {
+      const { api } = makeApi({
+        snapshot: configuredSnapshot({
+          provenance: { ...configuredSnapshot().provenance, port: "env-override" },
+          listeningPort: 28_999,
+          environment: { ...READY_ENVIRONMENT, serveConfigured: true, serveTargetPort: 46_173 },
+        }),
+      });
+      render(<TailnetSetupCard api={api} onCreateInvitation={() => undefined} />);
+
+      expect(await screen.findByTestId("tailnet-setup-status-serve")).toHaveTextContent(
+        "Serve forwards to port 46173. The listener is on port 28999.",
+      );
+    });
+
     it("says a port nobody named was chosen for them", async () => {
       const { api } = makeApi({ snapshot: configuredSnapshot() });
       render(<TailnetSetupCard api={api} onCreateInvitation={() => undefined} />);
 
       expect(await screen.findByTestId("tailnet-setup-status-port")).toHaveTextContent(
-        "46173 (chosen automatically)",
+        `${DEFAULT_TAILNET_OBSERVER_PORT} (chosen automatically)`,
       );
     });
 

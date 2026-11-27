@@ -12,7 +12,7 @@ import type { HostResources } from "../main/host-resources.js";
 import { containerTarget } from "../shared/container-platform.js";
 import { errorMessage } from "../shared/error-message.js";
 import { isRecord } from "../shared/is-record.js";
-import type { ContainerRawIpVerdict, SandboxContainerShellSupport, SandboxContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
+import type { LinuxRawIpVerdict, MxcRawIpUdpArrival, SandboxContainerShellSupport, SandboxContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { INVOCATION_PROXY_REFUSED_STATUS, openInvocationProxyListener } from "./egress-invocation-listener.js";
 import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
@@ -139,7 +139,7 @@ function trustedTool(path: string): boolean {
 }
 
 type LinuxCanaryResult =
-  | { readonly state: "available"; readonly rawIp: ContainerRawIpVerdict }
+  | { readonly state: "available"; readonly rawIpProbe: LinuxRawIpVerdict }
   | { readonly state: "request-rejected" | "shell-start-failed" };
 
 interface LinuxShellProbeDependencies {
@@ -165,7 +165,7 @@ async function detectMxcLinuxShellSupport(deps: LinuxShellProbeDependencies): Pr
   if (!Array.isArray(backends) || !backends.some((entry: unknown) => isRecord(entry) && entry.backend === "bubblewrap"
     && Array.isArray(entry.capabilities) && entry.capabilities.includes("proxyEnforcement"))) return unavailable("namespaces-unavailable");
   const verdict = await deps.canary(root);
-  return verdict.state === "available" ? { state: "available", rawIp: verdict.rawIp } : unavailable(verdict.state);
+  return verdict.state === "available" ? { state: "available", rawIpProbe: verdict.rawIpProbe } : unavailable(verdict.state);
 }
 
 export interface MxcLinuxShellPrograms {
@@ -471,12 +471,14 @@ async function runLinuxCanary(
         return undefined;
       });
       const udpArrived = udp !== undefined && output?.targets.UA === "0" ? await udp.settle() : udp?.arrived === true;
-      const rawIp = linuxRawIpVerdict({
+      // Without a host-side UDP listener nothing could arrive, so arrival was not measured.
+      const udpArrival: MxcRawIpUdpArrival = udpArrived ? "arrived" : udp === undefined ? "unmeasured" : "absent";
+      const rawIpProbe = linuxRawIpVerdict({
         ran: true, ...(output === undefined ? {} : { output }), expectedStatus: INVOCATION_PROXY_REFUSED_STATUS,
-        nonceRecorded, tlRan: targets !== undefined, udpArrived, firewallDrops,
+        nonceRecorded, tlRan: targets !== undefined, udpArrival, firewallDrops,
         ...(targets === undefined ? {} : { arrival: { controlPassed: arrivalControl, arrived: targets.tcp.arrived } }),
       });
-      return { state: "available", rawIp };
+      return { state: "available", rawIpProbe };
     } finally {
       await held.release();
     }

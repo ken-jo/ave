@@ -455,8 +455,7 @@ export function admitObligations(request: ObligationRequest): ObligationSet {
       return out;
     };
 
-    const allows = admitBatch(pending.filter(entry => entry.row.polarity.effect === "allow"));
-    admitted.push(...allows);
+    const allowLiterals = pending.filter(entry => entry.row.polarity.effect === "allow");
     const denyLiterals = pending.filter(entry => entry.row.polarity.effect === "deny");
     const coversUnstampableRoot = (base: string): boolean => {
       const prefix = fold(base);
@@ -467,7 +466,13 @@ export function admitObligations(request: ObligationRequest): ObligationSet {
       if (isVolumeRoot(base) || coversUnstampableRoot(base)) { unresolve(row, "glob-not-subtree", glob); continue; }
       denyLiterals.push({ row, literal: { path: base, directory: true, extent: "subtree", glob } });
     }
-    for (const obligation of admitBatch(denyLiterals)) {
+    // Container rules share one native observation of the allow and deny paths in this judgment.
+    const combined = process.platform === "win32" && scope.purpose === "mxc-launch"
+      ? admitBatch([...allowLiterals, ...denyLiterals]) : undefined;
+    const allows = combined?.filter(entry => entry.polarity.effect === "allow") ?? admitBatch(allowLiterals);
+    const denies = combined?.filter(entry => entry.polarity.effect === "deny") ?? admitBatch(denyLiterals);
+    admitted.push(...allows);
+    for (const obligation of denies) {
       if (obligation.origin.glob !== undefined && (coversUnstampableRoot(obligation.target)
         || allows.some(grant => (obligation.polarity.access === "read" || grant.polarity.access === "write")
           && obligationWithin(obligation, grant)))) {

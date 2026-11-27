@@ -1,13 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { closeSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
 import { isWindowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
-import { admitWindowsReparse, decodeWindowsPathFacts, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, windowsPathKey, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
+import { admitWindowsReparse, decodeWindowsPathFacts, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, readWindowsFileDacls, windowsObjectKey, windowsOwnerRules, windowsPathKey, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -215,6 +216,230 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     expect(row!.parent).toBeTruthy();
     expect(evaluateWindowsReadDacl(row!).status).toMatch(/private|readable/);
     expect(execFileSync(icacls, [fixture, "/T"], { encoding: "utf8", windowsHide: true })).toBe(before);
+  });
+
+  it("reads a writable file's DACL with identity, inheritance flags and ordered ACE bytes", () => {
+    const file = join(fixture, "directory", "file with spaces [é]");
+    writeFileSync(file, "", { flag: "wx" });
+    const opened = openSync(file, "r");
+    try {
+      const expected = fstatSync(opened, { bigint: true });
+      const [row] = readWindowsFileDacls([file]);
+      if (!row?.aclHex) throw new Error("No file access list was read");
+      expect(vi.mocked(execFileSync).mock.lastCall?.[1]).toEqual(["--dacl", "--file-access", file]);
+      expect(BigInt(row.volumeSerialNumber)).toBe(expected.dev);
+      expect(BigInt(row.fileIndex)).toBe(expected.ino);
+      expect((BigInt(row.changeTime) - 116444736000000000n) * 100n).toBe(expected.ctimeNs);
+      expect(row.dynamicAccessControl).toBe(false);
+      expect(row.control & 0x1000).toBe(0);
+
+      const bytes = Buffer.from(row.aclHex, "hex");
+      const aceHeaders = [];
+      for (let offset = 1; offset < bytes.length;) {
+        aceHeaders.push({ type: bytes.readUInt8(offset), flags: bytes.readUInt8(offset + 1), mask: bytes.readUInt32LE(offset + 4) });
+        const size = bytes.readUInt16LE(offset + 2);
+        expect(size).toBeGreaterThanOrEqual(8);
+        offset += size;
+      }
+      expect(row.aceCount).toBe(aceHeaders.length);
+      const [facts] = readWindowsDacls([file]);
+      expect(row.ownerSid).toBe(facts?.dacl?.owner);
+      expect(aceHeaders).toEqual(facts?.dacl?.aces.map(({ type, flags, mask }) => ({ type, flags, mask })));
+    } finally {
+      closeSync(opened);
+    }
+
+    const [inherited] = readWindowsFileDacls([file]);
+    const systemRoot = process.env.SystemRoot;
+    if (!systemRoot) throw new Error("No Windows system directory");
+    const icacls = join(systemRoot, "System32", "icacls.exe");
+    execFileSync(icacls, [file, "/inheritance:d"], { stdio: "ignore" });
+    const [protectedDacl] = readWindowsFileDacls([file]);
+    if (!protectedDacl || !inherited) throw new Error("No file access list was read");
+    expect(protectedDacl.control & 0x1000).toBe(0x1000);
+    expect(protectedDacl.aclHex).not.toBe(inherited.aclHex);
+    expect(() => readWindowsFileDacls([file, join(fixture, "missing")])).toThrow(/helper failed/);
+    expect(() => readWindowsFileDacls([join(fixture, "junction")])).toThrow(/helper failed/);
+  });
+
+  it("refuses to read the descriptor of a file below a junction", () => {
+    const throughJunction = join(fixture, "junction", "file");
+    const [facts] = readWindowsDacls([throughJunction], { parent: true, access: true });
+    expect(facts).toMatchObject({ exists: null, dacl: null });
+    expect(() => readWindowsFileDacls([throughJunction])).toThrow(expect.objectContaining({ status: 4 }));
+  });
+
+  it("refuses a file DACL batch when a later path is a directory", () => {
+    const parent = join(fixture, "directory");
+    expect(() => readWindowsFileDacls([join(parent, "file"), parent])).toThrow(expect.objectContaining({ status: 4 }));
+  });
+
+  it("reads the mandatory label and policy from the same file as the owner and DACL", () => {
+    const file = join(fixture, "directory", "mandatory-label");
+    const ffi = createRequire(import.meta.url)("koffi") as typeof import("koffi");
+    const advapi = ffi.load("advapi32.dll");
+    const kernel = ffi.load("kernel32.dll");
+    const convert = advapi.func("int __stdcall ConvertStringSecurityDescriptorToSecurityDescriptorW(str16, uint32_t, _Out_ void **, void *)");
+    const attributes = ffi.struct("FixtureSecurityAttributes", { length: "uint32_t", descriptor: "void *", inherit: "int" });
+    const create = kernel.func("intptr_t __stdcall CreateFileW(str16, uint32_t, uint32_t, FixtureSecurityAttributes *, uint32_t, uint32_t, void *)");
+    const close = kernel.func("int __stdcall CloseHandle(intptr_t)");
+    const free = kernel.func("void * __stdcall LocalFree(void *)");
+    const descriptor = [null];
+    expect(convert("S:(ML;;NWNR;;;LW)", 1, descriptor, null)).toBe(1);
+    try {
+      const handle = create(file, 0x80000000, 7, { length: ffi.sizeof(attributes), descriptor: descriptor[0], inherit: 0 }, 1, 0, null);
+      expect(Number(handle)).not.toBe(-1);
+      expect(close(handle)).toBe(1);
+    } finally {
+      free(descriptor[0]);
+    }
+    const [ordinary, labelled] = readWindowsFileDacls([join(fixture, "directory", "file"), file]);
+    const stat = lstatSync(file, { bigint: true });
+    expect(ordinary).toHaveProperty("integrityLabel", null);
+    expect(labelled).toEqual({
+      ...ordinary, fileIndex: `0x${stat.ino.toString(16).padStart(16, "0")}`,
+      changeTime: `0x${(stat.ctimeNs / 100n + 116444736000000000n).toString(16).padStart(16, "0")}`,
+      integrityLabel: { sid: "S-1-16-4096", policy: 3, flags: 0 },
+    });
+  });
+
+  it("refuses a file DACL batch when a file has a second hard link", () => {
+    const file = join(fixture, "directory", "linked file");
+    const alias = join(fixture, "directory", "hard link");
+    writeFileSync(file, "file data");
+    linkSync(file, alias);
+    const paths = [join(fixture, "directory", "file"), file];
+    try {
+      expect(() => readWindowsFileDacls(paths)).toThrow(expect.objectContaining({ status: 4 }));
+    } finally {
+      unlinkSync(alias);
+    }
+    expect(readWindowsFileDacls(paths)).toHaveLength(2);
+  });
+
+  it("rejects incomplete or malformed file DACL replies", () => {
+    const file = join(fixture, "directory", "file");
+    const identity = { volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex, changeTime: ORDINARY.changeTime };
+    const row = { ...identity, ownerSid: "S-1-5-18", control: 4, aceCount: 0, aclHex: "02", integrityLabel: null, dynamicAccessControl: false };
+    for (const rows of [[], [identity], [{ ...row, changeTime: undefined }], [{ ...row, dynamicAccessControl: "false" }], [{ ...row, aclHex: "abc" }], [{ ...row, control: 2, aclHex: null }],
+      [{ ...row, aclHex: "05" }], [{ ...row, aclHex: "0200" }], [{ ...row, aceCount: 1, aclHex: null }],
+      [{ ...row, aceCount: 1, aclHex: "0200000000" }], [{ ...row, aceCount: 1, aclHex: "020000050000" }]]) {
+      vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify(rows)));
+      expect(() => readWindowsFileDacls([file])).toThrow("Invalid Windows file DACL response");
+    }
+  });
+
+  const mask = "89001200";
+  const everyone = "010100000000000100000000";
+  const ace = (type: number, body: string) => `${type.toString(16).padStart(2, "0")}00${(4 + body.length / 2).toString(16).padStart(2, "0")}00${body}`;
+  const fileDacl = (aclHex: string | null, aceCount = 1) => ({
+    volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex,
+    changeTime: ORDINARY.changeTime, ownerSid: "S-1-5-18", control: 4, aceCount, aclHex,
+    integrityLabel: null, dynamicAccessControl: false,
+  });
+
+  it.each([
+    ["a header-only ACE", "0200000400"],
+    ["a mask without a SID", "020000080089001200"],
+    ["a header-only audit ACE", "0202000400"],
+    ["an audit mask without a SID", "020200080089001200"],
+    ["an object ACE in a revision 3 ACL", `03${ace(0x05, `${mask}01000000${"00".repeat(16)}${everyone}`)}`],
+    ["a label ACE", `02${ace(0x11, mask + everyone)}`],
+    ["a SID revision other than 1", `02${ace(0x00, `${mask}020100000000000100000000`)}`],
+    ["16 SID sub-authorities", `02${ace(0x00, `${mask}0110000000000001${"00000000".repeat(16)}`)}`],
+    ["SID sub-authorities beyond the ACE", `02${ace(0x00, `${mask}010200000000000100000000`)}`],
+    ["an object ACE without its flags", `04${ace(0x05, mask)}`],
+    ["an object ACE in a revision 2 ACL", `02${ace(0x05, `${mask}01000000${"00".repeat(16)}${everyone}`)}`],
+    ["an object ACE without its declared GUID", `04${ace(0x05, `${mask}01000000${everyone}`)}`],
+    ["an audit object ACE in a revision 3 ACL", `03${ace(0x07, `${mask}01000000${"11".repeat(16)}${everyone}`)}`],
+    ["an audit callback object ACE in a revision 2 ACL", `02${ace(0x0f, `${mask}00000000${everyone}`)}`],
+    ["an alarm object ACE without its declared GUID", `04${ace(0x08, `${mask}02000000${everyone}`)}`],
+    ["an alarm callback object ACE without its flags", `04${ace(0x10, mask)}`],
+    ["an audit callback mask without a SID", `02${ace(0x0d, mask)}`],
+    ["a header-only alarm ACE", "0203000400"],
+    ["a compound ACE", `02${ace(0x04, mask + everyone)}`],
+    ["a resource attribute ACE", `04${ace(0x12, mask + everyone)}`],
+    ["a scoped policy ACE", `04${ace(0x13, mask + everyone)}`],
+  ])("rejects a file DACL reply with %s", (_name, aclHex) => {
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([fileDacl(aclHex)])));
+    expect(() => readWindowsFileDacls([join(fixture, "directory", "file")])).toThrow("Invalid Windows file DACL response");
+  });
+
+  it.each([
+    ["an allow ACE", `02${ace(0x00, mask + everyone)}`],
+    ["a revision 3 allow ACE", `03${ace(0x00, mask + everyone)}`],
+    ["a revision 3 deny callback ACE", `03${ace(0x0a, `${mask}${everyone}61727478`)}`],
+    ["an audit ACE", `02${ace(0x02, mask + everyone)}`],
+    ["a deny ACE with 15 sub-authorities", `02${ace(0x01, `${mask}010f000000000005${"00000000".repeat(15)}`)}`],
+    ["an allow ACE with slack after its SID", `02${ace(0x00, `${mask}${everyone}00000000`)}`],
+    ["an object ACE with one GUID", `04${ace(0x05, `${mask}01000000${"00".repeat(16)}${everyone}`)}`],
+    ["a callback ACE with application data", `04${ace(0x09, `${mask}${everyone}61727478`)}`],
+    ["an audit object ACE with one GUID", `04${ace(0x07, `${mask}01000000${"11".repeat(16)}${everyone}`)}`],
+    ["an audit object ACE without GUIDs", `04${ace(0x07, `${mask}00000000${everyone}`)}`],
+    ["a revision 2 audit callback ACE", `02${ace(0x0d, `${mask}${everyone}61727478`)}`],
+    ["a revision 3 audit callback ACE", `03${ace(0x0d, `${mask}${everyone}61727478`)}`],
+    ["an audit callback object ACE with two GUIDs", `04${ace(0x0f, `${mask}03000000${"11".repeat(16)}${"22".repeat(16)}${everyone}61727478`)}`],
+    ["an alarm ACE", `02${ace(0x03, mask + everyone)}`],
+    ["an alarm object ACE with its inherited GUID", `04${ace(0x08, `${mask}02000000${"22".repeat(16)}${everyone}`)}`],
+    ["a revision 3 alarm callback ACE", `03${ace(0x0e, `${mask}${everyone}61727478`)}`],
+    ["an alarm callback object ACE", `04${ace(0x10, `${mask}01000000${"11".repeat(16)}${everyone}61727478`)}`],
+  ])("accepts a file DACL reply with %s", (_name, aclHex) => {
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([fileDacl(aclHex)])));
+    expect(readWindowsFileDacls([join(fixture, "directory", "file")])).toEqual([fileDacl(aclHex)]);
+  });
+
+  it.each([[65524, true], [65528, false], [65532, false]])("bounds ACE bytes by the native ACL size (%i ACE bytes accepted: %s)", (total, accepted) => {
+    const sized = (size: number) => `0900${(size & 0xff).toString(16).padStart(2, "0")}${(size >> 8).toString(16).padStart(2, "0")}${mask}${everyone}${"00".repeat(size - 20)}`;
+    const reply = fileDacl(`04${sized(total)}`);
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([reply])));
+    const read = () => readWindowsFileDacls([join(fixture, "directory", "file")]);
+    if (accepted) expect(read()).toEqual([reply]);
+    else expect(read).toThrow("Invalid Windows file DACL response");
+  });
+
+  it.each([
+    ["unknown object flags", fileDacl(`04${ace(0x05, `${mask}05000000${"00".repeat(16)}${everyone}`)}`)],
+    ["an extra property", { ...fileDacl("02", 0), extra: true }],
+  ])("refuses a file DACL batch when its later row has %s", (_name, invalid) => {
+    const file = join(fixture, "directory", "file");
+    const paths = [file, join(fixture, "directory", "another")];
+    const valid = fileDacl("02", 0);
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([valid, invalid])));
+    expect(() => readWindowsFileDacls(paths)).toThrow("Invalid Windows file DACL response");
+  });
+
+  it.each([undefined, "", "S-1---", "S-1-5-4294967296"])("refuses invalid file owner SID %s", (ownerSid) => {
+    const reply = { ...fileDacl("02", 0), ownerSid };
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([reply])));
+    expect(() => readWindowsFileDacls([join(fixture, "directory", "file")])).toThrow("Invalid Windows file DACL response");
+  });
+
+  it.each([
+    undefined, "null", {}, { sid: "S-1-5-18", policy: 1, flags: 0 },
+    { sid: "S-1-16-4294967296", policy: 1, flags: 0 },
+    { sid: "S-1-16-08192", policy: 1, flags: 0 },
+    { sid: "S-1-16-8192", policy: 8, flags: 0 },
+    { sid: "S-1-16-8192", policy: 1 },
+    { sid: "S-1-16-8192", policy: 1, flags: 32 },
+    { sid: "S-1-16-8192", policy: 1, flags: 0, extra: true },
+  ])("refuses a batch with invalid mandatory integrity evidence %j", integrityLabel => {
+    const valid = fileDacl("02", 0);
+    const reply = [valid, { ...valid, integrityLabel }];
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify(reply)));
+    expect(() => readWindowsFileDacls([join(fixture, "directory", "file"), join(fixture, "directory", "another")]))
+      .toThrow("Invalid Windows file DACL response");
+  });
+
+  it("accepts allow and audit ACEs in one file DACL", () => {
+    const reply = fileDacl(`02${ace(0x00, mask + everyone)}${ace(0x02, mask + everyone)}`, 2);
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([reply])));
+    expect(readWindowsFileDacls([join(fixture, "directory", "file")])).toEqual([reply]);
+  });
+
+  it.each(["02", "03", "04", null])("accepts a zero-ACE file DACL with ACL bytes %s", (aclHex) => {
+    const row = fileDacl(aclHex, 0);
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([row])));
+    expect(readWindowsFileDacls([join(fixture, "directory", "file")])).toEqual([row]);
   });
 
   it("distinguishes missing paths from native failures and returns no partial batch", () => {

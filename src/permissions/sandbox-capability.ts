@@ -338,7 +338,7 @@ export function getContainerShellInfo(): SandboxContainerShellInfo | undefined {
   // raw IP only from an available container's own measurement; an unavailable container has no coverage.
   const backend = platform === "darwin" ? "seatbelt" : "bubblewrap";
   const egressProtocolCoverage = support.state === "available"
-    ? acceptMeasuredContainerEgress(platform, backend, support.rawIp === undefined ? undefined : posixContainerMeasuredEgress(support.rawIp))
+    ? acceptMeasuredContainerEgress(platform, backend, posixContainerMeasuredEgress(backend, support.rawIpProbe))
       ?? containerEgressProtocolCoverage(backend)
     : egressProtocolCoverageFor("none");
   return { ...support, egressProtocolCoverage };
@@ -446,7 +446,7 @@ export function getHostShellExecutionPlan(
   const privacyFailure = getAveHomePrivacyFailure();
   // Only a live POSIX container route carries its own measurement; every other route is unmeasured.
   const recorded = posix && mxc !== undefined ? containerShellSubstrates[process.platform as "darwin" | "linux"] : undefined;
-  const containerRawIp = recorded?.state === "available" ? recorded.rawIp : undefined;
+  const containerRawIpProbe = recorded?.state === "available" ? recorded.rawIpProbe : undefined;
   const plan = buildHostShellExecutionPlan({
     platform: process.platform,
     requestedSandbox: isShellSandboxRequestedAtBoot(),
@@ -454,7 +454,7 @@ export function getHostShellExecutionPlan(
     shellSubstrate: mxc !== undefined ? "mxc" : selectsPosixContainer ? "none" : "asrt",
     measuredContainerEgress: process.platform === "win32" && _windowsSubstrate?.shells === "mxc"
       ? getWindowsMxcShellEgressMeasurement()?.coverage
-      : containerRawIp === undefined ? undefined : posixContainerMeasuredEgress(containerRawIp),
+      : posixContainerMeasuredEgress(process.platform === "darwin" ? "seatbelt" : "bubblewrap", containerRawIpProbe),
     executionMode,
     unavailableCauses: _bootOutcome?.causes,
     unavailableSandboxRequiresAsk: privacyFailure !== undefined || windowsDenyUnenforceableAtBoot() !== undefined,

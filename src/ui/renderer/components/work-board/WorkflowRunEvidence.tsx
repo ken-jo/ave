@@ -1,11 +1,25 @@
+import type { ReactNode } from "react";
 import { useTranslation } from "../../../../i18n/react.js";
 import { revealHiddenCharacters } from "../../../../shared/display-safe-text.js";
 import { workflowDecisionHistoryKey, type WorkflowRunView, type WorkflowStageView } from "../../../../shared/workflow-run-view.js";
 import { stageDisplayName } from "./workflow-template-graph.js";
 
-export function WorkflowStageEvidence({ stage, stageName }: {
+function outputReason(detail: string | undefined): { code?: string; message?: string } {
+  if (!detail?.startsWith("{")) return { code: detail };
+  try {
+    const { exit } = JSON.parse(detail) as { exit?: unknown };
+    if (typeof exit === "string" && exit !== "ok") return { code: exit };
+    if (exit && typeof exit === "object" && "code" in exit && exit.code === "push-authentication") {
+      return { code: exit.code, message: "message" in exit && typeof exit.message === "string" ? exit.message : undefined };
+    }
+  } catch { /* A malformed receipt has no displayable diagnostic. */ }
+  return {};
+}
+
+export function WorkflowStageEvidence({ stage, stageName, retry }: {
   stage: WorkflowStageView;
   stageName: (id: string) => string;
+  retry?: (outputId: string, hash: string) => ReactNode;
 }) {
   const { t } = useTranslation();
   const gate = stage.gate;
@@ -18,6 +32,7 @@ export function WorkflowStageEvidence({ stage, stageName }: {
   });
   return (
     <div className="space-y-3">
+      {stage.failureReason && <p className="text-destructive">{t(stage.failureReason)}</p>}
       {stage.breaker && <p>
         {t(stage.breaker.open ? "workflowTemplates.breakerOpen" : "workflowTemplates.breakerClosed", {
           consecutive: stage.breaker.consecutive, total: stage.breaker.total,
@@ -31,6 +46,19 @@ export function WorkflowStageEvidence({ stage, stageName }: {
         <summary className="cursor-pointer font-semibold">{t("workflowTemplates.stageResult")}</summary>
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{revealHiddenCharacters(stage.result, { lineBreaks: false })}</pre>
       </details>}
+      {!!stage.outputExecutions?.length && <section className="space-y-1">
+        <h4 className="font-semibold">{t("workflowTemplates.requestedOutputs")}</h4>
+        <ul className="space-y-1">{stage.outputExecutions.map(output => {
+          const reason = outputReason(output.detail);
+          return <li key={output.id}>
+            {stageDisplayName(output.id)} · {t(`workflowTemplates.outputStatus.${output.status}`)}
+            {reason.code && ` · ${t(`reasonCodes.${reason.code}`)}`}
+            {reason.message && <p>{revealHiddenCharacters(reason.message, { lineBreaks: false })}</p>}
+            {reason.code === "push-authentication" && <p>{t("workflowTemplates.pushHttpsAccountsHelp")}</p>}
+            {stage.outputRetry?.ids.includes(output.id) && retry?.(output.id, stage.outputRetry.hash)}
+          </li>;
+        })}</ul>
+      </section>}
       {!!stage.receivedInputs?.length && <section className="space-y-1">
         <h4 className="font-semibold">{t("workflowTemplates.receivedInputs")}</h4>
         {stage.receivedInputs.map(input => <details key={input.stageId}>

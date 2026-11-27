@@ -59,8 +59,8 @@ export function registerTailnetObserverHandlers(deps: IpcDeps): void {
     const config = isRecord(payload) ? parseTailnetObserverConfigView(payload.config) : null;
     if (config === null) return INPUT_INVALID;
     try {
-      await service.apply(config);
-      return { ok: true as const };
+      const result = await service.apply(config);
+      return { ok: true as const, ...result };
     } catch (err) {
       return rejection(err);
     }

@@ -4,7 +4,6 @@ import { setupCommittedAveHome } from "../../__tests__/support/committed-ave-hom
 import { deferred } from "../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { parseTailnetWorkDecision } from "../../api/tailnet-work-decision-input.js";
-import { outputHashOf } from "../../shared/workflow-template-output.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import * as allowedDirectories from "../../permissions/allowed-directories.js";
 import { foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
@@ -12,6 +11,8 @@ import type { TailnetRequestedOutputDecision, TailnetWorkDecisionRequest } from 
 import { ToolRegistry } from "../../tools/registry.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
+import { createHostGit } from "../../work-board/workflow/host-git.js";
+import { createRequestedOutputHooks, requestedOutputHash } from "../../work-board/workflow/requested-outputs.js";
 import { RoutinesStore } from "../routines-store.js";
 import { createTailnetWorkDecisions } from "../tailnet-work-decisions.js";
 import { itemDigestOf, planHashOf } from "../work-board-store.js";
@@ -224,33 +225,97 @@ it("withholds the prior schedule pin after its current template scope leaves the
   });
 });
 
-it("dispatches requested outputs only while their owner is registered", async () => {
-  const { h, decide, runtime, log } = await fixture();
+it("approves an ordinary stage gate through the authenticated remote dispatcher", async () => {
+  const { h, decide, runtime } = await fixture();
   await h.runThenEnd(async () => {
-    const version = await h.confirm([stageOf("a")]);
+    const version = await h.confirm([stageOf("review")]);
+    const itemId = await h.addItem(version);
+    const start = h.start(itemId, h.local(version));
+    (await h.untilLive(1, itemId))[0].finish();
+    await start;
+    const offered = (await runtime.list(evidence)).find(review => review.kind === "stage" && review.binding.itemId === itemId);
+    if (offered?.kind !== "stage") throw new Error("Missing stage review");
+    expect(offered.binding.input).not.toHaveProperty("outputHash");
+    await expect(decide(fromWire({ ...base, kind: "stage", itemId, input: { ...offered.binding.input, decision: "approve" } })))
+      .resolves.toEqual({ ok: true, kind: "stage", status: "approved" });
+    await h.until(itemId, row => row.runStatus === "completed");
+  });
+});
+
+it.each(["reject", "request_changes"] as const)("requires a local approver for an output-bearing gate and permits remote %s", async decision => {
+  const invoke = vi.fn();
+  const { h, decide, runtime, log } = await fixture({
+    workflow: { outputs: createRequestedOutputHooks(createHostGit(), { invoke }, process.cwd()) },
+  });
+  await h.runThenEnd(async () => {
+    const decl = { kind: "external-write", toolName: "publish_note", owner: "plugin", ownerId: "notes" } as const;
+    const version = await h.confirm([stageOf("a", { requestedOutputs: [decl] })]);
+    const itemId = await h.addItem(version);
+    const start = h.start(itemId, h.local(version));
+    const [child] = await h.untilLive(1, itemId);
+    const { stageOutputTool, projectRoot } = child.input;
+    if (!stageOutputTool || !projectRoot) throw new Error("Missing stage output intake");
+    await expect(stageOutputTool.execute({
+      toolName: decl.toolName, owner: decl.owner, ownerId: decl.ownerId, args: { body: "Local only" }, summary: "Publish note",
+    }, { cwd: projectRoot, metadata: {}, extraAllowedDirectories: [] })).resolves.toMatchObject({ isError: false });
+    child.finish();
+    await start;
+
+    const { runId, stageRuns: [stage] } = await h.item(itemId);
+    const outputHash = requestedOutputHash(stage);
+    if (!runId || !stage.resultHash || !outputHash) throw new Error("Missing pending output binding");
+    const binding = { runId, stageId: stage.stageId, attempt: stage.attempt, resultHash: stage.resultHash, outputHash };
+    const request = { ...base, kind: "stage", itemId, input: { ...binding, decision: "approve" } } as const;
+    await expect(decide(fromWire(request))).resolves.toEqual({ ok: false, error: "outputs-need-local-approver" });
+    await expect(decide({ ...request, input: { ...request.input, outputHash: staleHash } }))
+      .resolves.toEqual({ ok: false, error: "output_mismatch" });
+    expect((await h.item(itemId)).stageRuns[0]).toMatchObject({ gate: { status: "pending" } });
+    expect((await h.item(itemId)).stageRuns[0].outputExecutions).toBeUndefined();
+    expect(log).not.toHaveBeenCalled();
+
+    const offered = (await runtime.list(evidence)).find(offer => offer.kind === "stage");
+    expect(offered).toMatchObject({ binding: { itemId, input: binding } });
+    expect(offered?.review).not.toHaveProperty("outputs");
+    await expect(decide(fromWire({ ...request, input: { ...binding, decision, note: "Revise the note" } })))
+      .resolves.toEqual({ ok: true, kind: "stage", status: decision === "reject" ? "rejected" : "changes_requested" });
+    expect(invoke).not.toHaveBeenCalled();
+    if (decision === "request_changes") (await h.untilLive(1, itemId))[0].finish();
+  });
+});
+
+it("dispatches requested outputs only while their owner is registered", async () => {
+  const { h, decide, runtime, log } = await fixture({
+    workflow: { outputs: createRequestedOutputHooks(createHostGit(), { invoke: vi.fn() }, process.cwd()) },
+  });
+  await h.runThenEnd(async () => {
+    const decl = { kind: "external-write", toolName: "publish_note", owner: "plugin", ownerId: "notes" } as const;
+    const version = await h.confirm([stageOf("a", { requestedOutputs: [decl] })]);
     const itemId = await h.addItem(version);
     const start = h.start(itemId, h.local(version));
     (await h.untilLive(1, itemId))[0].finish();
     await start;
     const { runId } = await h.item(itemId);
     if (!runId) throw new Error("No pending run");
-    const decl = { kind: "external-write", toolName: "publish_note", owner: "plugin", ownerId: "notes" } as const;
     const outputs = [
       { id: "first", decl, args: "{}", summary: "First output" },
       { id: "second", decl, args: "{}", summary: "Second output" },
     ];
     const stored = await h.board.updateRun(itemId, runId, run => ({
       ...run, stageRuns: run.stageRuns.map(stage => ({
-        ...stage, requestedOutputs: outputs, outputHash: outputHashOf(stage.output ?? "", outputs),
+        ...stage, requestedOutputs: outputs,
       })),
     }));
     if (stored.status !== "stored") throw new Error("Could not store pending outputs");
     const stage = stored.run.stageRuns[0];
-    const input = { itemId, runId, stageId: "a", attempt: 1, outputHash: stage.outputHash ?? "", decision: "approve" } as const;
+    const outputHash = requestedOutputHash(stage);
+    if (!outputHash) throw new Error("Missing pending output binding");
+    const input = { itemId, runId, stageId: "a", attempt: 1, outputHash, decision: "approve" } as const;
     const request = { ...base, kind: "requested-output", input } as const;
     expect(parseTailnetWorkDecision(request)).toEqual(request);
     expect(parseTailnetWorkDecision({ ...request, input: { ...input, outputId: "first" } })).toBeNull();
-    await expect(decide(request)).resolves.toEqual({ ok: false, error: "requested-output-unavailable" });
+    await expect(decide(request)).resolves.toEqual({ ok: false, error: "outputs-need-local-approver" });
+    const reject = { ...request, input: { ...input, decision: "reject" } } as const;
+    await expect(decide(reject)).resolves.toEqual({ ok: false, error: "requested-output-unavailable" });
     const handler = vi.fn(async (_decision: TailnetRequestedOutputDecision) => ({ ok: true as const }));
     const list = vi.fn(async () => ({ outputs }));
     const remove = runtime.registerRequestedOutputDecision({ decide: handler, list });
@@ -263,18 +328,20 @@ it("dispatches requested outputs only while their owner is registered", async ()
     await expect(decide({ ...request, input: { ...input, runId: "stale-run" } })).resolves.toEqual({ ok: false, error: "run_mismatch" });
     await expect(decide({ ...request, input: { ...input, outputHash: staleHash } })).resolves.toEqual({ ok: false, error: "output_mismatch" });
     await expect(decide(fromWire({ ...base, kind: offered.kind, input: { ...offered.binding.input, decision: "approve" } })))
+      .resolves.toEqual({ ok: false, error: "outputs-need-local-approver" });
+    await expect(decide(fromWire({ ...base, kind: offered.kind, input: { ...offered.binding.input, decision: "reject" } })))
       .resolves.toEqual({ ok: true, kind: "requested-output" });
     const { itemId: _itemId, ...stageBinding } = input;
     await expect(decide({ ...base, kind: "stage", itemId, input: { ...stageBinding, resultHash: stage.resultHash ?? "" } }))
-      .resolves.toEqual({ ok: true, kind: "stage", status: "approved" });
-    expect(handler).toHaveBeenLastCalledWith(input, expect.objectContaining({ login, conversationId: evidence.conversationId }), undefined);
+      .resolves.toEqual({ ok: false, error: "outputs-need-local-approver" });
+    expect(handler).toHaveBeenLastCalledWith(reject.input, expect.objectContaining({ login, conversationId: evidence.conversationId }), undefined);
     expect((await h.item(itemId)).stageRuns[0].gate).toMatchObject({ status: "pending" });
     expect(h.children).toHaveLength(1);
     remove();
     expect(await runtime.list(evidence)).not.toContainEqual(expect.objectContaining({ kind: "requested-output" }));
-    await expect(decide(request)).resolves.toEqual({ ok: false, error: "requested-output-unavailable" });
-    expect(handler).toHaveBeenCalledTimes(2);
-    expect(log).toHaveBeenCalledTimes(2);
+    await expect(decide(reject)).resolves.toEqual({ ok: false, error: "requested-output-unavailable" });
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledTimes(1);
   });
 });
 

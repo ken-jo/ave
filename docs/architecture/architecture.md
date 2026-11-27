@@ -1549,6 +1549,38 @@ resuming (`templateRunState`, added by the host on every list and get, never
 taken from a row) until the scheduler has taken it over; nothing starts by
 itself, and the user continues, decides or stops it. Deleting a run's row
 cancels the run and interrupts its live stage children.
+
+A stage with pinned output declarations can use `stage_request_output` to
+record a request for its human gate. The host matches the tool and its owner
+exactly and records canonical arguments that the ordinary approval card can
+show in full. Tool operand declarations are display only. The desktop stage
+gate shows the full request and binds the decision to a native gesture, the
+stage result digest and the output digest. A click or keyboard gesture can
+approve the gate or retry a tool output. The host computes the output digest
+from the stored stage result and requests and keeps it in memory.
+
+After recording approval, the host invokes each declared tool through the
+ordinary permission tree as another principal, with the deciding window as the
+approver. The call uses the authorized project root or the default workspace.
+The ordinary card shows the arguments the handler receives. A hook that changes
+those arguments prevents dispatch. The tool reads any file named in the
+arguments when it runs, under its ordinary permissions and confinement. The
+host records the path as text and does not bind file contents to the approval.
+A Stop cancels the open output card and records the output as interrupted. Row
+removal cancels the card and leaves no output outcome. An execution left pending
+is never replayed at startup. A user can retry a failed or denied tool output
+under the same approval binding.
+
+A push request binds a configured remote's one resolved, sanitized push URL
+and the run ref's commit. The host accepts HTTPS and SSH destinations and
+refuses local transports at intake and launch. The resolved URL and locked
+run ref must still match the approved URL and commit. The host checks configuration
+rewrites and effective URL-scoped HTTP settings, and suppresses inherited push
+options. It holds the run ref during transport and cancels transport if the
+lock process exits early. The push uses the approved commit as its source
+and the same-named run branch as its sole destination, without force or
+tags. A subsequent push requires a new request and approval.
+
 `ave:work-board:decide-plan` (internal, sender-validated board-window main
 frame, `CHANNEL_GESTURE: "required"`) carries the run id, the hash of the plan
 the card showed and the decision, never the plan text. The store checks all of
@@ -3382,8 +3414,43 @@ A carved deny exempts only admitted descendants and metadata for exact
 chain folders. Protected names, linked targets, access-time patterns and
 ancestor create and unlink pins preserve the write floor after start,
 including names created during the command. Shells ship with an empty
-Unix-socket allowlist. Direct IP and DNS are blocked and the proxy
-resolves names. Egress retains shared identity for approval scopes.
+Unix-socket allowlist. The profile's only outbound allow is the proxy
+port and the proxy resolves names. DNS from inside the container is not
+measured, so its published coverage is `unknown`, never a constant `blocked`.
+Egress retains shared identity for approval scopes.
+
+Raw-IP coverage is measured, not assumed. After the availability checks pass,
+the same canary start runs a prober inside the container. The shared verdict
+rules for macOS and Windows define what each result means. The prober runs
+these checks:
+
+- A positive control: a CONNECT through a real invocation listener to a
+  per-boot `<nonce>.localhost`. The container must read the listener's
+  refusal, and the host must record the same nonce.
+- TCP connects to `192.0.2.1:443` and `[2001:db8::1]:443`.
+- A TCP connect to a just-closed port on the host's primary non-loopback IPv4.
+- A UDP datagram carrying the nonce, sent to a host-side listener.
+
+Each TCP result is classified by its `connect(2)` code. UDP is checked by
+arrival only: a datagram that arrives makes the verdict `unknown`, one
+that does not arrive leaves the TCP verdict standing, and one that nothing
+measured leaves it `unknown` (`udp-unmeasured`), as on Windows.
+
+`rawIp` is `blocked` only when all of these hold: the control passed, both
+documentation addresses were refused by Seatbelt itself, and the host's own
+address was not reached. With no IPv6 route, the profile's default deny with
+its single proxy-port allow is structural evidence for IPv6. The published
+verdict has the Windows start probe's shape: `rawIp`, `reason`,
+`evidenceKind` (measured or structural), `reachableTargets` and
+`udpArrival`. Every other
+outcome is `unknown` with a reason. That includes an unavailable container,
+an unmeasured one, a probe that printed nothing and a reachable address. A
+host-side target that cannot bind (the host's address went away, say) drops
+both host targets and gives `no-evidence`; it never changes availability.
+
+The verdict lives in memory for one boot and is never persisted. The prober
+writes only to its own file, after availability is decided, so it cannot
+change availability.
 
 Boot checks architecture, library presence and the private runtime root
 in order. It then runs one canary through the same supervisor and profile

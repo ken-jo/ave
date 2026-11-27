@@ -19,7 +19,7 @@ afterEach(async () => { vi.restoreAllMocks(); await rm(dir, { recursive: true, f
 const pin = { templateId: "template-1", version: 1, graphHash: "b".repeat(64) };
 const run = (patch: Partial<WorkflowRunRecord> = {}): WorkflowRunRecord => ({
   runId: "run-1", itemId: 1, pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: "2026-01-01T00:00:00.000Z",
-  stageRuns: [{ stageId: "plan", attempt: 1, status: "awaiting_gate", output: "result", resultHash: "a".repeat(64), outputHash: "c".repeat(64), gate: { type: "human", status: "pending", revision: 0 } }],
+  stageRuns: [{ stageId: "plan", attempt: 1, status: "awaiting_gate", output: "result", resultHash: "a".repeat(64), gate: { type: "human", status: "pending", revision: 0 } }],
   ...patch,
 });
 const stored = async (): Promise<{ version: number; runs: unknown[] }> => JSON.parse(await readFile(file, "utf8"));

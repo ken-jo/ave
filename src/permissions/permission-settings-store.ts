@@ -139,8 +139,10 @@ const REVIEWER_MODES: ReadonlySet<ReviewerMode> = new Set([
 ]);
 const REVIEWER_FALLBACKS: ReadonlySet<ReviewerFallbackOnError> = new Set(["deny", "rule"]);
 
+export const PERMISSION_SETTINGS_FILENAME = "settings.json";
+
 export function permissionSettingsPath(home = aveHome()): string {
-  return pathResolve(aveHomeConfigurationDirectory(home), "settings.json");
+  return pathResolve(aveHomeConfigurationDirectory(home), PERMISSION_SETTINGS_FILENAME);
 }
 
 // Unreadable settings and invalid reviewer modes expose faults without rewriting the file.

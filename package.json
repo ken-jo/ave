@@ -447,6 +447,7 @@
     ],
     "mac": {
       "files": [
+        "package.json",
         "!node_modules/onnxruntime-node/bin/napi-v6/!(darwin){,/**/*}",
         {
           "from": ".",
@@ -500,7 +501,10 @@
       ]
     },
     "linux": {
-      "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(linux){,/**/*}"],
+      "files": [
+        "package.json",
+        "!node_modules/onnxruntime-node/bin/napi-v6/!(linux){,/**/*}"
+      ],
       "category": "Office",
       "icon": "build/icons",
       "target": [

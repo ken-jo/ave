@@ -704,11 +704,11 @@ function mutationRevision(item: WorkItem): string {
 // A template row names its run by runId alone. The run file decides whether that run can be read and whether it belongs to this row;
 // while the file awaits review no template run can be vouched for. Ordinary rows and unstarted template rows have no run in that file and
 // are never marked.
-// What a settled run keeps once its row names a newer run: how it ended and each stage's status, times, result hash and output hash.
+// What a settled run keeps once its row names a newer run: how it ended and each stage's status, times, result hash.
 function runSummary(run: WorkflowRunRecord): WorkflowRunRecord {
   const { runId, itemId, pin, runStartedBy, startedAt, settled } = run;
-  const stageRuns = run.stageRuns.map(({ stageId, attempt, status, startedAt, endedAt, resultHash, outputHash }) =>
-    ({ stageId, attempt, status, ...(startedAt === undefined ? {} : { startedAt }), ...(endedAt === undefined ? {} : { endedAt }), ...(resultHash === undefined ? {} : { resultHash }), ...(outputHash === undefined ? {} : { outputHash }) }));
+  const stageRuns = run.stageRuns.map(({ stageId, attempt, status, startedAt, endedAt, resultHash }) =>
+    ({ stageId, attempt, status, ...(startedAt === undefined ? {} : { startedAt }), ...(endedAt === undefined ? {} : { endedAt }), ...(resultHash === undefined ? {} : { resultHash }) }));
   return { runId, itemId, pin, runStartedBy, startedAt, stageRuns, ...(settled === undefined ? {} : { settled }) };
 }
 
@@ -776,6 +776,14 @@ function runStatusActivityKind(
   }
 }
 
+/** The reason a run's effect authority carries once revoked (see WorkBoardStore.runAuthority). */
+class WorkflowRunRevoked extends Error {
+  constructor() {
+    super("the run was stopped or its row was removed");
+    this.name = "WorkflowRunRevoked";
+  }
+}
+
 export class WorkBoardStore {
   // Fires after every proposals.json write, including briefing, accept and dismiss.
   readonly proposalsChanged = new ChangeSignal((err) => log.warn("[work-board-proposals] change listener threw: %s", (err as Error).message));
@@ -784,7 +792,12 @@ export class WorkBoardStore {
   // Fires as a listed row the user deleted is written gone, before boardChanged, with the run that row named, and after a failed write of
   // such a delete that leaves its intent stored. Only a cue to read the delete intents again: no run ends by it (see runClasses).
   readonly rowDeleted = new ChangeSignal<{ itemId: number; runId: string }>((err) => log.warn("[work-board] delete listener threw: %s", (err as Error).message));
+  // A confirmed failed delete left its entry on disk. Stop its run even if that entry is an unreadable card.
+  readonly revokedRowKept = new ChangeSignal<{ itemId: number; runId: string }>((err) => log.warn("[work-board] revoked-run listener threw: %s", (err as Error).message));
   private cache: BoardFile = emptyBoard();
+  // Each run's effect authority by `itemId#runId` (see runAuthority). Kept for the process: a revoked one must stay revoked after the run settles.
+  private readonly authorities = new Map<string, AbortController>();
+  private readonly settledOutputAuthorities = new Map<string, AbortController>();
   private loaded = false;
   // No legacy board copy is left started and not done; it never is again.
   private legacyCopySettled = false;
@@ -825,6 +838,16 @@ export class WorkBoardStore {
   // (`deleted`) with its intent stored; one that removes an entry or the user's text (`drops`) is refused while the run file cannot be
   // read (see assertKeepsRunIds).
   private async commit(board: BoardRead, change: BoardChange = {}, canCommit?: () => boolean, didCommit?: () => void): Promise<void> {
+    if (!change.deleted) return this.write(board, change, canCommit, didCommit);
+    const { itemId, runId } = change.deleted;
+    // A delete takes the run's authority as it is decided, before anything is written: the row may be gone on disk before this write
+    // returns, and no effect may start in between. A delete that fails with the row still standing leaves the run revoked, as Stop does.
+    this.revokeRun(itemId, runId);
+    this.authorityOf(itemId, runId, this.settledOutputAuthorities).abort(new WorkflowRunRevoked());
+    await this.write(board, change, canCommit, didCommit);
+  }
+
+  private async write(board: BoardRead, change: BoardChange, canCommit?: () => boolean, didCommit?: () => void): Promise<void> {
     if (board.unread) throw new WorkBoardWriteRefusal("work-board-unread");
     if (await this.legacyCopyHolds(false)) throw new WorkBoardWriteRefusal("work-board-legacy-copy-unfinished");
     const file = cacheOf(board);
@@ -858,23 +881,28 @@ export class WorkBoardStore {
         log.warn("Provisional board change committed with a directory sync failure: %s", error.message);
       } else {
         if (error instanceof WorkBoardWriteRefusal && error.code === "work-board-runs-unreadable") this.runsUnreadable = true;
-        if (!(error instanceof WorkBoardWriteRefusal || error instanceof WorkDecisionAuthorityError)) await this.landedAnyway(file, text);
+        if (!(error instanceof WorkBoardWriteRefusal || error instanceof WorkDecisionAuthorityError)) await this.landedAnyway(file, text, change);
         throw error;
       }
     }
     this.repeatedKey = false;
     this.cache = file;
-    if (change.deleted) this.rowDeleted.emit(change.deleted);
+    if (change.deleted) {
+      this.revokeRun(change.deleted.itemId, change.deleted.runId);
+      this.rowDeleted.emit(change.deleted);
+    }
     this.boardChanged.emit();
   }
 
   // A board write that failed may still have replaced the file (a failed directory sync after the rename). While the file on disk is the
   // text it wrote, the cache takes that board and listeners hear of it as after any write; the failure is still reported.
-  private async landedAnyway(file: BoardFile, text: string): Promise<void> {
+  private async landedAnyway(file: BoardFile, text: string, change: BoardChange): Promise<void> {
     const input = await readAveHomeInput(this.filePath).catch(() => undefined);
     if (input?.status !== "trusted" || !input.bytes.equals(Buffer.from(text, "utf8"))) return;
     this.repeatedKey = false;
     this.cache = file;
+    // A delete that landed takes the run's authority with the board that shows the row gone.
+    if (change.deleted) this.revokeRun(change.deleted.itemId, change.deleted.runId);
     this.boardChanged.emit();
   }
 
@@ -916,7 +944,16 @@ export class WorkBoardStore {
     if (!(await this.runs.hasUnknown())) return;
     await withInProcessFileQueue(this.filePath, async () => {
       const onDisk = await readBoardOnDisk(this.filePath).catch(() => undefined);
-      if (onDisk) await this.runs.resolveUnknown(marker => markerOutcome(marker.operation, markerBoard(onDisk, marker)));
+      if (!onDisk) return;
+      const withdrawn = await this.runs.resolveUnknown(marker => markerOutcome(marker.operation, markerBoard(onDisk, marker)));
+      for (const intent of withdrawn) {
+        const key = `${intent.itemId}#${intent.runId}`;
+        // A marker restored at startup carries no in-process revocation.
+        if (this.authorities.get(key)?.signal.aborted
+          && (onDisk.standing(intent) === "named" || intent.operation?.op === "card")) {
+          this.finishKeptDelete(intent);
+        }
+      }
     });
   }
 
@@ -1057,7 +1094,9 @@ export class WorkBoardStore {
   }
 
   async load(): Promise<void> {
-    this.cache = cacheOf(await this.readBoard());
+    const beforeRead = this.cache;
+    const board = await this.readBoard();
+    if (this.cache === beforeRead) this.cache = cacheOf(board);
     this.loaded = true;
     // The run file's row-id floor starts from the first board read: every id it shows. One that cannot take it now gets it with the next new row.
     try { await this.runs.raiseRowIdFloor(this.cache.nextId - 1); }
@@ -1072,9 +1111,11 @@ export class WorkBoardStore {
   async runBoardSnapshot(): Promise<(BoardOnDisk & { provisionalWorkspaces: ReadonlyMap<string, RemovedRunProject> }) | undefined> {
     await this.ensureLoaded();
     await this.resolveUnknownDeletes();
+    const beforeRead = this.cache;
     const snapshot = await readBoardOnDisk(this.filePath);
     if (!snapshot) return undefined;
-    this.cache = snapshot.board;
+    // A read begun before a commit must not restore the row that commit removed.
+    if (this.cache === beforeRead) this.cache = snapshot.board;
     return { ...snapshot, provisionalWorkspaces: provisionalWorkspaces(snapshot.board) };
   }
 
@@ -1167,6 +1208,42 @@ export class WorkBoardStore {
     return { status: "found", itemId: id, item: decorate(cloneItem(item), this.now(), runError) };
   }
 
+  /** The run's authority to start an outward effect: one signal per run, handed to every final launch point of its effects. It is
+   * aborted synchronously, and never restored, by Stop or a delete that reaches its board write, even if that write fails. */
+  runAuthority(itemId: number, runId: string): AbortSignal {
+    return this.authorityOf(itemId, runId).signal;
+  }
+
+  /** Revoke a run's authority for good: Stop, or its row removed. */
+  revokeRun(itemId: number, runId: string): void {
+    this.authorityOf(itemId, runId).abort(new WorkflowRunRevoked());
+  }
+
+  /** Synchronous effect admission: the run's authority stands and the board the last commit published still names it on its row. */
+  admitsRunEffect(itemId: number, runId: string, authority = this.runAuthority(itemId, runId)): boolean {
+    return !authority.aborted && this.names(itemId, runId);
+  }
+
+  /** A fresh approval for a settled run has its own lifetime, bounded by deletion of the row. */
+  settledOutputAuthority(itemId: number, runId: string): AbortSignal {
+    return this.authorityOf(itemId, runId, this.settledOutputAuthorities).signal;
+  }
+
+  /** Whether the board the last commit published names the run on its row. */
+  private names(itemId: number, runId: string): boolean {
+    return this.cache.items.some(item => item.id === itemId && item.runId === runId);
+  }
+
+  private authorityOf(itemId: number, runId: string, authorities = this.authorities): AbortController {
+    const key = `${itemId}#${runId}`;
+    let authority = authorities.get(key);
+    if (!authority) {
+      authority = new AbortController();
+      authorities.set(key, authority);
+    }
+    return authority;
+  }
+
   /** The template run a row names, read from the run file only. A run stored for another row is refused. */
   async getRun(id: number): Promise<WorkflowRunReadResult> {
     await this.ensureLoaded();
@@ -1184,7 +1261,10 @@ export class WorkBoardStore {
   async updateRun(id: number, runId: string, mutate: (run: WorkflowRunRecord) => WorkflowRunRecord | RunEnd | null, authority?: WorkDecisionAuthority): Promise<WorkflowRunWriteResult | { status: "board-unread" | "row-lost" | "cause-refused" }> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const row = (await readBoardOnDisk(this.filePath))?.standing({ itemId: id, runId });
+      const snapshot = await readBoardOnDisk(this.filePath);
+      // Publish a repaired row from the same locked read that authorizes the run update.
+      if (snapshot) this.cache = snapshot.board;
+      const row = snapshot?.standing({ itemId: id, runId });
       if (row === "gone" || row === "moved") return { status: "not-found" };
       if (row === "unnamed" || row === "lost") return { status: "row-lost" };
       if (row !== "named") return { status: "board-unread" };
@@ -1913,7 +1993,7 @@ export class WorkBoardStore {
     try {
       await this.commit(board, { drops: true, deleted: intent, ...(item.remoteProvisional && { provisionalRetraction: true }) });
     } catch (error) {
-      if (intent !== undefined && marked === "marked") await this.settleFailedDelete(intent, error, (onDisk) => listsRow(onDisk, intent), operation);
+      if (intent !== undefined) await this.settleFailedDelete(intent, error, (onDisk) => listsRow(onDisk, intent), operation, marked === "marked");
       throw error;
     }
     if (item.templateId !== undefined) await this.pruneAfterWrite(this.retention(boardStanding(board)));
@@ -1948,15 +2028,25 @@ export class WorkBoardStore {
   // the intents again; a board that shows nothing leaves the outcome unknown, stored as a marker of `operation` (see
   // WorkflowRunStore.markUnknown). An intent this delete did not store (`ownIntent` false) is another delete's: it is never taken back or
   // marked, only told again.
-  private async settleFailedDelete(intent: DeleteIntent, error: unknown, unlanded: (onDisk: BoardOnDisk) => boolean, operation: MarkerOp): Promise<void> {
+  private async settleFailedDelete(intent: DeleteIntent, error: unknown, unlanded: (onDisk: BoardOnDisk) => boolean, operation: MarkerOp, hasIntent = true): Promise<void> {
     const refused = error instanceof WorkBoardWriteRefusal;
     const onDisk = refused ? undefined : await readBoardOnDisk(this.filePath).catch(() => undefined);
     if (refused || (onDisk && unlanded(onDisk))) {
-      if (operation.ownIntent && !(await this.runs.withdrawIntent(intent, operation))) log.warn("[work-board-store] a delete intent was not taken back: its outcome is held as unknown");
+      if (hasIntent && operation.ownIntent && !(await this.runs.withdrawIntent(intent, operation))) log.warn("[work-board-store] a delete intent was not taken back: its outcome is held as unknown");
+      this.finishKeptDelete(intent);
       return;
     }
+    if (!hasIntent) return;
     if (!onDisk && operation.ownIntent) await this.runs.markUnknown(intent, operation);
+    this.revokeRun(intent.itemId, intent.runId);
     this.rowDeleted.emit(intent);
+  }
+
+  private finishKeptDelete({ itemId, runId }: DeleteIntent): void {
+    // Existing retry cards retain the aborted signal. A new gesture can authorize a settled output again.
+    const key = `${itemId}#${runId}`;
+    if (this.settledOutputAuthorities.get(key)?.signal.aborted) this.settledOutputAuthorities.delete(key);
+    this.revokedRowKept.emit({ itemId, runId });
   }
 
   // The intent an invalid card's delete goes through, for the one open run bound to the entry's row id: the intent of that row's delete,

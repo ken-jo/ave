@@ -1,3 +1,4 @@
+import { STAGE_TOOL_CALLS_REFUSED } from "../../../../shared/workflow-template-types.js";
 import { useState } from "react";
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
@@ -11,6 +12,8 @@ import { TEST_IDS } from "../../../../shared/test-ids.js";
 import type { RunProgressEventPayload, WorkItemResolved } from "../../../../shared/work-board-types.js";
 import type { TemplateVersion, WorkflowTemplate, WorkflowTemplateDraftInput } from "../../../../shared/workflow-template-types.js";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
+import { WorkflowDecisionCard } from "../work-board/WorkflowDecisionCard.js";
+import { WorkflowStageEvidence } from "../work-board/WorkflowRunEvidence.js";
 import type { ApprovalRequest, AveApi } from "../../types.js";
 
 const at = "2026-11-26T05:00:00.000Z";
@@ -57,6 +60,7 @@ function SwitchableBoard({ api, projects, onOpened, initiallyAll, opened }: {
 function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [template], queue: ApprovalRequest[] = [], projects = [project], initiallyAll = false) {
   const opened = { all: initiallyAll };
   let progress: (event: RunProgressEventPayload) => void = () => {};
+  let finished: Parameters<AveApi["onWorkBoardRunFinished"]>[0] = () => {};
   const api = {
     listWorkBoard: vi.fn(async (_filter?: { projectRoot?: string }) => ({ status: "ok", items })),
     getWorkBoardRunTranscript: vi.fn(async () => ({ events: [] })),
@@ -80,13 +84,15 @@ function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [
     openWorkBoardJoin: vi.fn(async () => ({ ok: true })),
     retryWorkStage: vi.fn(async () => ({ ok: true })),
     onWorkBoardItemChanged: () => () => {},
-    onWorkBoardRunFinished: () => () => {},
+    onWorkBoardRunFinished: (callback: typeof finished) => { finished = callback; return () => {}; },
     onWorkBoardRunProgress: (callback: typeof progress) => { progress = callback; return () => {}; },
   };
   const surface = { ...approvalSurfaceStub(), queue };
   const openProject = vi.fn();
-  render(withApprovalSurface(<SwitchableBoard api={api as unknown as AveApi} projects={projects} onOpened={openProject} initiallyAll={initiallyAll} opened={opened} />, surface));
-  return { api, surface, openProject, opened, emit: (event: RunProgressEventPayload) => act(() => progress(event)) };
+  const board = <SwitchableBoard api={api as unknown as AveApi} projects={projects} onOpened={openProject} initiallyAll={initiallyAll} opened={opened} />;
+  const view = render(withApprovalSurface(board, surface));
+  const setQueue = (queue: ApprovalRequest[]) => view.rerender(withApprovalSurface(board, { ...surface, queue }));
+  return { api, surface, setQueue, openProject, opened, finish: (event: Parameters<typeof finished>[0]) => act(() => finished(event)), emit: (event: RunProgressEventPayload) => act(() => progress(event)) };
 }
 
 async function templates() {
@@ -347,6 +353,69 @@ it("moves focus to the run heading when the keyboard decision removes its card",
   expect(view.getByRole("heading", { name: item.title })).toHaveFocus();
 });
 
+it("shows and answers the requested-output approval while the gate call is pending", async () => {
+  const binding = { runId: "run-a", stageId: "summarize", attempt: 1, resultHash: graphHash, outputHash: "b".repeat(64) };
+  const payload = JSON.stringify({ kind: "send-message", owner: "plugin", ownerId: "delivery", toolName: "send", args: { recipient: "Review team", text: "Exact body" } }, null, 2);
+  const row: WorkItemResolved = { ...item, runPin: pin, pendingWorkflowDecisions: [
+    { kind: "stage-gate", binding, result: "Ready", outputs: [{ id: "send", summary: "Notify", payload }], arrivedAt: at },
+  ] };
+  const { api, surface, setQueue } = mount([row]);
+  let finishGate!: () => void;
+  api.decideWorkStage.mockImplementation(() => new Promise(resolve => {
+    finishGate = () => resolve({ ok: true, status: "approved" });
+  }));
+  fireEvent.click(await screen.findByRole("button", { name: t("workflowTemplates.openRun") }));
+  const view = within(await screen.findByRole("dialog", { name: item.title }));
+  expect(await view.findByText(payload, { normalizer: value => value })).toBeInTheDocument();
+  expect(view.getByText(t("workflowTemplates.outputPathsAsArguments"))).toBeInTheDocument();
+  const approve = view.getByRole("button", { name: t("workflowTemplates.approveStage") });
+  approve.focus();
+  await userEvent.keyboard("{Enter}");
+  expect(api.decideWorkStage).toHaveBeenCalledExactlyOnceWith(item.id, { ...binding, decision: "approve" });
+  const output: ApprovalRequest = {
+    ...approvalRequest(), id: "output-tool", category: "tool", createdAt: Date.now(), reason: "Send the requested output", sessionId: `workflow-output:${item.id}:${binding.runId}:invocation`, toolName: "send",
+    args: {}, requireExplicit: true, allowedChoices: ["allow-once", "deny-once"],
+  };
+  vi.mocked(surface.decide).mockImplementationOnce(async () => { finishGate(); });
+  setQueue([{ ...output, id: "old-output", sessionId: `workflow-output:${item.id}:old-run:invocation` }, output]);
+  expect(approve).toBeDisabled();
+  const answer = await view.findByTestId(TEST_IDS.approveButton);
+  expect(answer).toBeEnabled();
+  await act(async () => { fireEvent.click(answer); });
+  expect(vi.mocked(surface.decide).mock.calls.map(call => call[0])).toEqual(["output-tool"]);
+  expect(screen.getByRole("dialog", { name: item.title })).toBeVisible();
+});
+
+it("the gate card of a push to an https remote shows the help text, and the card of a push to an ssh remote does not", () => {
+  const binding = { runId: "run-a", stageId: "summarize", attempt: 1, resultHash: graphHash, outputHash: "b".repeat(64) };
+  const card = (url: string) => <WorkflowDecisionCard itemId={item.id} onChanged={vi.fn()}
+    api={{ decideWorkStage: vi.fn(), decideWorkJoin: vi.fn(), openWorkBoardJoin: vi.fn() }}
+    review={{ kind: "stage-gate", binding, result: "Ready", arrivedAt: at, outputs: [{
+      id: "push", summary: "Publish", payload: JSON.stringify({ args: { url } }), pushRunBranch: true, httpsAccountsHelp: url.startsWith("https:"),
+    }] }} />;
+  const view = render(card("https://example.test/repo"));
+  expect(view.getByText(t("workflowTemplates.pushRunBranchAsRequested"))).toBeVisible();
+  expect(view.getByText(t("workflowTemplates.pushHttpsAccountsHelp"))).toBeVisible();
+  view.rerender(card("ssh://git@example.test/repo"));
+  expect(view.queryByText(t("workflowTemplates.pushHttpsAccountsHelp"))).toBeNull();
+});
+
+it.each(["en", "ko"] as const)("renders the saved stage refusal reason in %s", async locale => {
+  await loadLocaleMessages(locale);
+  setLocale(locale);
+  render(<WorkflowStageEvidence stageName={id => id}
+    stage={{ stageId: "summarize", attempt: 1, status: "failed", failure: "error", failureReason: STAGE_TOOL_CALLS_REFUSED }} />);
+  expect(screen.getByText(t(STAGE_TOOL_CALLS_REFUSED))).toBeVisible();
+});
+
+it("the authentication failure shows the https accounts help text", () => {
+  const detail = JSON.stringify({ exit: { code: "push-authentication", message: "Authentication failed" } });
+  const view = render(<WorkflowStageEvidence stageName={id => id}
+    stage={{ stageId: "summarize", attempt: 1, status: "passed", outputExecutions: [{ id: "push", status: "failed", detail }] }} />);
+  expect(view.getByText(t("workflowTemplates.pushHttpsAccountsHelp"))).toBeVisible();
+  expect(view.getByText("Authentication failed")).toBeVisible();
+});
+
 it("presents enabled controls for a reissued join conflict of the same files", async () => {
   const first = { runId: "run-a", joinId: "step-1", generation: 1, conflictHash: graphHash };
   const next = { ...first, generation: 2, conflictHash: "e".repeat(64) };
@@ -458,4 +527,35 @@ it("focuses the parked stage tool approval inside the run opened in another proj
   expect(approve).toBeEnabled();
   fireEvent.click(approve);
   expect(vi.mocked(surface.decide).mock.calls.map(call => call[0])).toEqual(["parked-tool"]);
+});
+
+it("uses the decision gesture message when no gesture accompanies approval", async () => {
+  const binding = { runId: "run-a", stageId: "summarize", attempt: 1, resultHash: graphHash };
+  const view = render(<WorkflowDecisionCard itemId={item.id} onChanged={vi.fn()}
+    api={{ decideWorkStage: vi.fn().mockResolvedValue({ ok: false, reason: "user-gesture-required" }), decideWorkJoin: vi.fn(), openWorkBoardJoin: vi.fn() }}
+    review={{ kind: "stage-gate", binding, result: "Ready", arrivedAt: at }} />);
+  fireEvent.click(view.getByRole("button", { name: t("workflowTemplates.approveStage") }));
+  expect(await view.findByText(t("workflowTemplates.decideWithGesture"))).toBeVisible();
+  expect(view.queryByText(t("reasonCodes.user-gesture-required"))).toBeNull();
+});
+
+it.each(["running", "resuming"] as const)("keeps a %s template run in progress when its launch returns parked", async templateRunState => {
+  const { finish } = mount([{ ...item, runPin: pin, templateRunState }]);
+  await screen.findByRole("button", { name: item.title });
+  finish({ itemId: item.id, status: "awaiting_approval", at });
+  const chip = await screen.findByTestId("work-board-live-chip");
+  expect(chip).toHaveAttribute("data-phase", "executing");
+  expect(screen.queryByText(t("workBoard.liveChipAwaitingApproval"), { exact: false })).toBeNull();
+  expect(screen.queryByText(t("workBoard.liveNarrationWaiting"))).toBeNull();
+});
+
+it("shows the review waiting chip when a template run parks at a human gate", async () => {
+  const { finish } = mount([{ ...item, runPin: pin, templateRunState: "awaiting_review" }]);
+  await screen.findByRole("button", { name: item.title });
+  finish({ itemId: item.id, status: "awaiting_approval", at });
+  const chip = await screen.findByTestId("work-board-live-chip");
+  expect(chip).toHaveAttribute("data-state", "awaiting-review");
+  expect(chip).toHaveClass("text-warning");
+  expect(chip).toHaveTextContent(t("workBoard.liveChipAwaitingReview"));
+  expect(chip).not.toHaveTextContent(t("workBoard.liveChipExecuting"));
 });

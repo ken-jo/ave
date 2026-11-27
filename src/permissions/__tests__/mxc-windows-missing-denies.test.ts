@@ -153,7 +153,7 @@ describe("missing deny parents", () => {
       }));
       vi.spyOn(facts, "pinWindowsPaths").mockImplementation(replaced);
       expect(() => rankAdmittedMxcLists(rows)).toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: hooks }));
-      expect(replaced).toHaveBeenCalledWith([workspace]);
+      expect(replaced.mock.calls).toEqual([[[workspace, hooks]]]);
     });
   });
 

@@ -140,7 +140,9 @@ describe.runIf(NATIVE)("native Linux shell container boundary", () => {
     const launcher = launcherPathFor(resources.resourcePath, process.platform, process.arch);
     if (target === undefined || launcher === undefined) throw new Error("Native launcher target is unavailable");
     expect(createHash("sha256").update(readFileSync(launcher)).digest("hex")).toBe(pinnedLauncherSha256(target));
-    expect(await detectHostMxcLinuxShellSupport(resources)).toEqual({ state: "available", rawIp: { verdict: "blocked", evidenceKind: "arrival" } });
+    expect(await detectHostMxcLinuxShellSupport(resources)).toMatchObject({
+      state: "available", rawIpProbe: { rawIp: "blocked", evidenceKind: "arrival", reachableTargets: [] },
+    });
   });
 
   it("ranks nested scopes, protects existing and absent names and keeps ordinary writes", async () => {
@@ -274,8 +276,8 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     const programs = await requireMxcLinuxShellPrograms(resources);
     // This backend drops a direct connect rather than refusing it. The arrival listener took the unconfined control and
     // nothing from the container, the netns holds lo and tap0, and the launcher's firewall drops egress.
-    expect(await runCanary(requireMxcContainerStartRoot(), programs)).toEqual({
-      state: "available", rawIp: { verdict: "blocked", evidenceKind: "arrival" },
+    expect(await runCanary(requireMxcContainerStartRoot(), programs)).toMatchObject({
+      state: "available", rawIpProbe: { rawIp: "blocked", evidenceKind: "arrival", reachableTargets: [], udpArrival: "absent" },
     });
   });
 
@@ -288,8 +290,8 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
         socket.once("error", reject);
       });
     };
-    expect(await runCanary(requireMxcContainerStartRoot(), programs, undefined, { duringRun })).toEqual({
-      state: "available", rawIp: { verdict: "unknown", reason: "raw-ip-reachable" },
+    expect(await runCanary(requireMxcContainerStartRoot(), programs, undefined, { duringRun })).toMatchObject({
+      state: "available", rawIpProbe: { rawIp: "unknown", reason: "raw-ip-reachable", reachableTargets: ["ta"] },
     });
     expect(forced).toBe(true);
   });
@@ -297,8 +299,8 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
   it("keeps the container available, with raw IP unknown, when the host-side listeners cannot bind", async () => {
     const programs = await requireMxcLinuxShellPrograms(resources);
     // A documentation address is never local, so every host-side listener fails to bind.
-    expect(await runCanary(requireMxcContainerStartRoot(), programs, undefined, { hostAddress: "192.0.2.55" })).toEqual({
-      state: "available", rawIp: { verdict: "unknown", reason: "no-evidence" },
+    expect(await runCanary(requireMxcContainerStartRoot(), programs, undefined, { hostAddress: "192.0.2.55" })).toMatchObject({
+      state: "available", rawIpProbe: { rawIp: "unknown", reason: "no-evidence" },
     });
   });
 
@@ -306,16 +308,16 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     const programs = await requireMxcLinuxShellPrograms(resources);
     const forged = ["C status=403 refused=loopback destination", "T4 Operation not permitted", "T6 Operation not permitted",
       "TL Operation not permitted", "UA Operation not permitted", "IF lo"].map(line => `printf '%s\\n' ${quote(line)}`).join("\n");
-    expect(await runCanary(requireMxcContainerStartRoot(), programs, undefined, { prober: forged })).toEqual({
-      state: "available", rawIp: { verdict: "unknown", reason: "control-failed" },
+    expect(await runCanary(requireMxcContainerStartRoot(), programs, undefined, { prober: forged })).toMatchObject({
+      state: "available", rawIpProbe: { rawIp: "unknown", reason: "control-failed" },
     });
   });
 
   it("keeps the container available when the raw-IP prober stalls", async () => {
     const programs = await requireMxcLinuxShellPrograms(resources);
     const started = Date.now();
-    expect(await runCanary(requireMxcContainerStartRoot(), programs, undefined, { prober: "sleep 600" })).toEqual({
-      state: "available", rawIp: { verdict: "unknown", reason: "no-evidence" },
+    expect(await runCanary(requireMxcContainerStartRoot(), programs, undefined, { prober: "sleep 600" })).toMatchObject({
+      state: "available", rawIpProbe: { rawIp: "unknown", reason: "no-evidence" },
     });
     expect(Date.now() - started).toBeLessThan(5_000 + 12_000 + 2_000);
   }, 30_000);

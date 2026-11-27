@@ -462,6 +462,13 @@ export interface StageRetryInput {
   attempt: number;
 }
 
+export interface StageOutputRetryInput extends StageRetryInput {
+  outputId: string;
+  outputHash: string;
+}
+export type StageOutputRetryResult = { ok: true } | { ok: false; reason: StageRunRefusal | "output_mismatch" | "push-retry-forbidden" | "user-gesture-required" };
+export type StageOutputRetryIpcResult = StageOutputRetryResult | { ok: false; reason: "invalid-input" | StageStoreRefusal };
+
 export interface StageGateDecideInput {
   runId: string;
   stageId: string;
@@ -476,7 +483,7 @@ export interface StageGateDecideInput {
 type StageStoreRefusal = WorkBoardRefusalCode | "invalid-template-run";
 /** Decision refusals are snake_case. One with text shows reasonCodes.<the refusal with "-" for "_">, as run reason codes do. */
 type StageGateRefusal = "not_found" | "not_pending" | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "attempt_mismatch" | "result_mismatch" | "output_mismatch" | "attempts_exhausted"
-  | "note_required" | "note_too_long" | "note_invalid" | "version_missing" | "graph_mismatch" | "remote-controller-authority-revoked";
+  | "note_required" | "note_too_long" | "note_invalid" | "version_missing" | "graph_mismatch" | "user-gesture-required" | "outputs-need-local-approver" | "remote-controller-authority-revoked";
 export type StageGateDecideResult = { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending"> } | { ok: false; reason: StageGateRefusal };
 export type StageGateDecideIpcResult =
   | { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending">; redactedCount?: number }
@@ -489,11 +496,11 @@ export interface StageJoinDecideInput { runId: string; joinId: string; conflictH
 type StageRunRefusal = "not_found" | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "not_pending" | "version_missing" | "graph_mismatch";
 export type StageJoinDecideResult = { ok: true } | { ok: false; reason: StageRunRefusal | "conflict_mismatch" | "remote-controller-authority-revoked" };
 export type OpenJoinResult = StageJoinDecideResult | { ok: false; reason: "join-folder-unavailable" };
-export type OpenJoinIpcResult = OpenJoinResult | { ok: false; reason: "user-gesture-required" | "invalid-input" | StageStoreRefusal };
-export type StageJoinDecideIpcResult = StageJoinDecideResult | { ok: false; reason: "user-gesture-required" | "invalid-input" | StageStoreRefusal };
+export type OpenJoinIpcResult = OpenJoinResult | { ok: false; reason: "user-gesture-required" | "user-keyboard-required" | "invalid-input" | StageStoreRefusal };
+export type StageJoinDecideIpcResult = StageJoinDecideResult | { ok: false; reason: "user-gesture-required" | "user-keyboard-required" | "invalid-input" | StageStoreRefusal };
 /** Retry of a failed stage, or continuing a run that has only ready stages after a restart. not_idle: a child of the run is still live. */
 export type StageRetryResult = { ok: true } | { ok: false; reason: StageRunRefusal | "attempts_exhausted" | "not_idle" };
-export type StageRetryIpcResult = StageRetryResult | { ok: false; reason: "user-gesture-required" | "invalid-input" | StageStoreRefusal };
+export type StageRetryIpcResult = StageRetryResult | { ok: false; reason: "user-gesture-required" | "user-keyboard-required" | "invalid-input" | StageStoreRefusal };
 
 /** Steering a running execution (permission-decision-tree.md S→T): accepted means queued for the execute child's next round boundary,
  * not delivered; a steer still queued when the child's turn ends is dropped and recorded only in the audit.

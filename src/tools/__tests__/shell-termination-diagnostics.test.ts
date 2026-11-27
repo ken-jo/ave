@@ -31,7 +31,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
 const containerLaunch = vi.hoisted(() => ({
   settle: undefined as undefined | ((outcome: {
     code: number | null; timedOut: boolean; cancelled: boolean; rejected: boolean; cleanupUnverified: boolean;
-    failure?: { type: "error"; code: string; message: string };
+    startFailed?: true; transportFailed?: true; failure?: { type: "error"; code: string; message: string };
   }) => void),
   child: undefined as undefined | import("node:child_process").ChildProcess & { stdout: import("node:stream").PassThrough; stderr: import("node:stream").PassThrough },
   // Runs once the launch is prepared: after the permit is consumed, before the supervisor starts.
@@ -418,6 +418,9 @@ describe.each(["darwin", "linux"] as const)("%s container shell completion", (pl
     ["cancelled", { code: null, cancelled: true }, "sandboxPolicy.containerShellCancelled"],
     ["timed out", { code: null, timedOut: true }, "sandboxPolicy.containerShellTimedOut"],
     ["cleanup unverified", { code: null, cleanupUnverified: true }, "sandboxPolicy.containerShellCleanupUnverified"],
+    ["failed start", { code: null, cleanupUnverified: true, startFailed: true }, "sandboxPolicy.containerShellStartFailed"],
+    ["lost control channel", { code: null, transportFailed: true, failure: { type: "error", code: "contract", message: "x" } },
+      "sandboxPolicy.containerShellTransportFailed"],
   ] as const)("reports a %s stop as an error with its own ending", async (_name, outcome, key) => {
     const result = await run(outcome, "partial\n");
     expect(result.isError).toBe(true);
@@ -450,12 +453,12 @@ describe.runIf(HOST_PLATFORM !== "win32").each(["darwin", "linux"] as const)("%s
     await cleanupTmpDir(directory);
   });
 
-  function permitted(cwd: string, toolUseId: string) {
+  function permitted(cwd: string, toolUseId: string, toolName: "bash" | "powershell" = "bash") {
     const plan = getHostShellExecutionPlan();
     expect(plan).toMatchObject({ platform, substrate: "mxc" });
-    const input = { command: "echo ready", timeoutSeconds: 1 };
+    const input = { command: toolName === "bash" ? "echo ready" : "Write-Output ready", timeoutSeconds: 1 };
     const binding = buildHostShellExecutionPermitBinding({
-      plan, toolName: "bash", toolUseId, rawInput: input, executionCwd: cwd, extraAllowedDirectories: [],
+      plan, toolName, toolUseId, rawInput: input, executionCwd: cwd, extraAllowedDirectories: [],
     });
     if (binding === undefined) throw new Error("no permit binding");
     recordHostShellPolicyAuthorization(binding, undefined);
@@ -473,7 +476,37 @@ describe.runIf(HOST_PLATFORM !== "win32").each(["darwin", "linux"] as const)("%s
       mkdirSync(approved);
     };
     const result = await new BashTool().execute(input, context);
-    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } });
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, sandboxAttempted: true } });
+    // Revoked, as the wrap route words it: not a container refusal, and no isolation claim for a run that never started.
+    expect(result.output).toBe(`spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`);
+    expect(result.metadata).not.toHaveProperty("isolation");
+    expect(vi.mocked(assertHostShellSpawnDirectory)).toHaveBeenCalledOnce();
+    expect(vi.mocked(assertHostShellSpawnDirectory).mock.calls[0]?.[0]).toMatchObject({ cwdIdentity: { realpath: approved } });
+    expect(containerLaunch.child).toBeUndefined();
+    expect(containerLaunch.settle).toBeUndefined();
+  });
+
+  it("refuses an approved PowerShell command whose directory was replaced before launch, and starts no supervisor", async () => {
+    vi.mocked(spawn).mockImplementation((_command, args) => {
+      if (!args?.some((arg) => arg.endsWith(POWER_SHELL_AST_PARSER))) throw new Error("only the AST parser runs on the host");
+      const parser = childProcess();
+      queueMicrotask(() => {
+        parser.stdout.write(JSON.stringify({ errors: [], commands: [], redirections: [], unsupported: [] }));
+        close(parser, 0, null);
+      });
+      return parser;
+    });
+    const approved = join(directory, "work");
+    mkdirSync(approved);
+    const { input, context } = permitted(approved, "mxc-replaced-cwd-powershell", "powershell");
+    containerLaunch.prepared = () => {
+      renameSync(approved, join(directory, "former-work"));
+      mkdirSync(approved);
+    };
+    const pending = new PowerShellTool().execute(input, context);
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await pending;
+    expect(result.isError).toBe(true);
     expect(result.output).toContain(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
     expect(vi.mocked(assertHostShellSpawnDirectory)).toHaveBeenCalledOnce();
     expect(vi.mocked(assertHostShellSpawnDirectory).mock.calls[0]?.[0]).toMatchObject({ cwdIdentity: { realpath: approved } });

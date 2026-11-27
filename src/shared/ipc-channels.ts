@@ -99,6 +99,7 @@ export const WORK_BOARD = {
   openJoin: "ave:work-board:open-join",
   captureDecisionIntent: "ave:work-board:capture-decision-intent",
   retryStage: "ave:work-board:retry-stage",
+  retryOutput: "ave:work-board:retry-output",
   // Renderer → main: the user's work approval of a stored plan (approve / request changes / reject). Internal, sender-validated,
   // board-owner frame, CHANNEL_GESTURE "required"; bound to the run id and the hash of the stored plan (permission-decision-tree.md
   // "Work approvals").

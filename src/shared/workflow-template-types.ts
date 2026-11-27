@@ -70,6 +70,7 @@ export interface WorkflowTemplateDraftInput extends TemplateGraph {
   description?: string;
   basedOn?: number;
 }
+export const STAGE_REQUEST_OUTPUT_TOOL = "stage_request_output";
 export const WORKFLOW_TEMPLATE_PROPOSE_TOOL = "workflow_template_propose";
 
 /** An in-memory draft that can be saved only through template confirmation. */
@@ -113,16 +114,19 @@ export type WorkflowTemplateErrorCode =
   | "invalid-input" | "template-not-found" | "unknown-version" | "graph-hash-mismatch"
   | "confirmed-version-immutable" | "stale-draft" | "no-draft" | "template-archived"
   | "bad-stage-id" | "too-many-entries" | "envelope-refused" | "not-current-version" | "routine-not-found"
-  | "scope-changed" | "project-mismatch" | "scope-not-authorised" | "output-not-declared"
+  | "scope-changed" | "project-mismatch" | "scope-not-authorised" | "output-not-declared" | "remote-not-configured"
   | "outward-effect-tool" | "tool-effect-unknown"
   | "invalid-template-file" | "invalid-template-run" | "schedule-requires-read-only" | "gate-check-unsupported";
 export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; refusals?: EnvelopeRefusal[]; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "user-keyboard-required" | "storage-error" };
+
+export const STAGE_TOOL_CALLS_REFUSED = "be_workBoard.stageToolCallsRefused";
 
 export interface WorkItemStageRun {
   stageId: string;
   attempt: number;
   status: "waiting" | "running" | "awaiting_gate" | "passed" | "failed" | "cancelled" | "rejected";
   failure?: "error" | "gate" | "interrupted" | "denied-tool" | "workspace-lost" | "workspace-revoked" | "budget" | "seed";
+  failureReason?: typeof STAGE_TOOL_CALLS_REFUSED;
   taint?: "file-content" | "agent-message";
   workspace?: { root: string; kind: "git" | "folder"; baseCommit?: string; sealCommit?: string; manifest?: OutputFile[] };
   blocked?: { code: LaneBlockCode; at: string };
@@ -136,7 +140,6 @@ export interface WorkItemStageRun {
   /** At most 48,000 characters; the engine truncates before storing. */
   output?: string;
   resultHash?: string;
-  outputHash?: string;
   gate?: { type: "human"; status: "pending" | "approved" | "changes_requested" | "rejected"; note?: string; decidedAt?: string; revision: number; judgedBy?: "host" | "model" }
     | { type: "auto"; passed: boolean; evidence: string; evaluatedAt: string; judgedBy?: "host" | "model" };
 }

@@ -224,10 +224,16 @@ export interface TurnInputRequired {
   prompt: string;
 }
 
+export interface TurnToolCall {
+  name: string;
+  input: Record<string, unknown>;
+  result: string;
+}
+
 export interface TurnResult {
   text: string;
-  toolCalls: Array<{ name: string; input: Record<string, unknown>; result: string;
-  }>;
+  toolCalls: TurnToolCall[];
+  allToolCallsRefused?: true;
   route: string;
   usage?: TokenUsage;
   usageByModel?: TokenUsageByModel[];
