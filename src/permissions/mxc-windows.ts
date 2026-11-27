@@ -167,15 +167,16 @@ function isRawIpTargetResult(value: unknown): value is MxcRawIpTargetResult {
     || (typeof value === "number" && Number.isSafeInteger(value) && value > 0);
 }
 
-export function parseMxcRawIpProbeEvidence(stdout: string): MxcRawIpProbeEvidence | undefined {
-  const lines = stdout.split(/\r?\n/).filter(line => line.startsWith(MXC_RAW_IP_EVIDENCE_MARKER));
-  const [line] = lines;
-  if (line === undefined || lines.length !== 1) return undefined;
+export function parseMxcRawIpProbeEvidence(stdout: string, probeId: string, stderr = ""): MxcRawIpProbeEvidence | undefined {
+  const prefix = `${MXC_RAW_IP_EVIDENCE_MARKER}${probeId} `;
+  if (stderr !== "" || !stdout.startsWith(prefix) || !stdout.endsWith("\n")) return undefined;
+  const payload = stdout.slice(prefix.length, stdout.endsWith("\r\n") ? -2 : -1);
   try {
-    const evidence = JSON.parse(line.slice(MXC_RAW_IP_EVIDENCE_MARKER.length)) as Partial<MxcRawIpProbeEvidence> | null;
-    if (evidence === null || Object.keys(evidence).length !== 4 || typeof evidence.control !== "boolean"
+    const evidence = JSON.parse(payload) as Partial<MxcRawIpProbeEvidence> | null;
+    if (evidence === null || typeof evidence.control !== "boolean"
         || !isRawIpTargetResult(evidence.t4) || !isRawIpTargetResult(evidence.t6) || !isRawIpTargetResult(evidence.tl)) return undefined;
-    return { control: evidence.control, t4: evidence.t4, t6: evidence.t6, tl: evidence.tl };
+    const frame = { control: evidence.control, t4: evidence.t4, t6: evidence.t6, tl: evidence.tl };
+    return payload === JSON.stringify(frame) ? frame : undefined;
   } catch {
     return undefined;
   }
@@ -206,7 +207,7 @@ export function classifyMxcRawIpProbe(evidence: MxcRawIpProbeEvidence | undefine
   return reason === undefined ? { rawIp: "blocked", reason: "blocked", reachableTargets } : unknown(reason);
 }
 
-function buildMxcRawIpProbeScript(port: number, controlHost: string, lan: MxcLanProbeTarget | undefined): string {
+function buildMxcRawIpProbeScript(probeId: string, port: number, controlHost: string, lan: MxcLanProbeTarget | undefined): string {
   return String.raw`
 $ErrorActionPreference = 'Stop'
 $probeClock = [Diagnostics.Stopwatch]::StartNew()
@@ -269,8 +270,8 @@ try {
   $t4 = Invoke-Tcp '192.0.2.1' 443
   $t6 = Invoke-Tcp '2001:db8::1' 443
   $tl = ${lan === undefined ? "'other'" : `Invoke-Tcp '${lan.address}' ${lan.port}`}
-  $evidence = @{ control = $control; t4 = $t4; t6 = $t6; tl = $tl } | ConvertTo-Json -Compress
-  [Console]::WriteLine('${MXC_RAW_IP_EVIDENCE_MARKER}' + $evidence)
+  $evidence = [ordered]@{ control = $control; t4 = $t4; t6 = $t6; tl = $tl } | ConvertTo-Json -Compress
+  [Console]::WriteLine('${MXC_RAW_IP_EVIDENCE_MARKER}${probeId} ' + $evidence)
 } catch {} finally { exit 0 }
 `;
 }
@@ -403,6 +404,7 @@ export async function probeMxcPowerShellStart(
   const wxcExec = wxcExecPathFor(deps.resourcePath, deps.arch);
   if (wxcExec === undefined) return unavailable("unsupported-arch", `arch ${deps.arch}`);
   const measure = deps.platform === "win32" && openListener !== undefined;
+  const probeId = randomBytes(16).toString("hex");
   const controlHost = `127.${[...randomBytes(3)].join(".")}`;
   let controlRefused = false;
   const listener = measure ? await openListener({
@@ -410,7 +412,7 @@ export async function probeMxcPowerShellStart(
     onRefused: (destination) => { if (destination === controlHost) controlRefused = true; },
   }).catch(() => undefined) : undefined;
   try {
-    const script = listener === undefined ? "exit 0" : buildMxcRawIpProbeScript(listener.port, controlHost, await findMxcLanProbeTarget(deps));
+    const script = listener === undefined ? "exit 0" : buildMxcRawIpProbeScript(probeId, listener.port, controlHost, await findMxcLanProbeTarget(deps));
     const startRequest = buildMxcShellRequest({
       commandLine: powerShellMxcCommandLine(deps.systemRoot, script, deps.probeDirectory),
       cwd: deps.probeDirectory,
@@ -430,7 +432,7 @@ export async function probeMxcPowerShellStart(
     if (!start.ok) return unavailable(start.reason, start.detail);
     const available = { state: "available", windowsBuild: deps.windowsBuild } as const;
     if (!measure) return available;
-    const evidence = listener === undefined ? undefined : parseMxcRawIpProbeEvidence(started.stdout);
+    const evidence = listener === undefined ? undefined : parseMxcRawIpProbeEvidence(started.stdout, probeId, started.stderr);
     const rawIpProbe: MxcRawIpProbeVerdict = listener === undefined
       ? { rawIp: "unknown", reason: "listener-unavailable", reachableTargets: [] }
       : classifyMxcRawIpProbe(evidence, controlRefused);

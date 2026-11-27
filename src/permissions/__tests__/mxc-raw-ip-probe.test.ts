@@ -10,7 +10,12 @@ import {
 } from "../mxc-windows.js";
 
 const REFUSED = { control: true, t4: 10013, t6: 10013, tl: 10013 };
-const EVIDENCE_LINE = `AVE_MXC_RAW_IP ${JSON.stringify(REFUSED)}`;
+const PROBE_ID = "a".repeat(32);
+const EVIDENCE_LINE = evidenceFrame(PROBE_ID);
+
+function evidenceFrame(id: string, evidence = REFUSED): string {
+  return `AVE_MXC_RAW_IP ${id} ${JSON.stringify(evidence)}\r\n`;
+}
 
 describe("Windows raw IP probe classification", () => {
   it.each([
@@ -47,15 +52,23 @@ describe("additional raw IP blocking requirements", () => {
   });
 });
 
-describe("raw IP evidence marker", () => {
-  it("reads one complete evidence line among launcher output", () => {
-    expect(parseMxcRawIpProbeEvidence(`launcher\r\n${EVIDENCE_LINE}\r\nexit 0`)).toEqual(REFUSED);
+describe("raw IP evidence frame", () => {
+  it("reads a single complete frame for the probe", () => {
+    expect(parseMxcRawIpProbeEvidence(EVIDENCE_LINE, PROBE_ID)).toEqual(REFUSED);
   });
 
-  it.each(["", "AVE_MXC_RAW_IP {", "AVE_MXC_RAW_IP null", "AVE_MXC_RAW_IP {\"control\":true}",
-    EVIDENCE_LINE.replace('"t4":10013', '"t4":"10013"'), `${EVIDENCE_LINE}\n${EVIDENCE_LINE}`,
+  it.each([
+    "", "AVE_MXC_RAW_IP {", EVIDENCE_LINE.trimEnd(),
+    evidenceFrame("b".repeat(32)), evidenceFrame("").replace("  ", " "),
+    EVIDENCE_LINE.replace('"t4":10013', '"t4":"10013"'),
+    EVIDENCE_LINE.replace('"t4":10013', '"t4":10013,"t4":10013'),
+    EVIDENCE_LINE + EVIDENCE_LINE, `launcher\r\n${EVIDENCE_LINE}`, EVIDENCE_LINE + "other\r\n",
   ])("treats invalid or absent evidence as unknown (%j)", (stdout) => {
-    expect(classifyMxcRawIpProbe(parseMxcRawIpProbeEvidence(stdout), true).reason).toBe("no-evidence");
+    expect(classifyMxcRawIpProbe(parseMxcRawIpProbeEvidence(stdout, PROBE_ID), true).reason).toBe("no-evidence");
+  });
+
+  it("rejects extra output on stderr", () => {
+    expect(parseMxcRawIpProbeEvidence(EVIDENCE_LINE, PROBE_ID, "launcher warning")).toBeUndefined();
   });
 });
 
@@ -66,24 +79,53 @@ function makeDeps(run: DetectMxcSupportDeps["run"]): DetectMxcSupportDeps {
   };
 }
 
+function probeScriptInputs(args: readonly string[]) {
+  const request = JSON.parse(Buffer.from(args[1] ?? "", "base64").toString("utf8"));
+  const script = Buffer.from(request.process.commandLine.split(" ").at(-1), "base64").toString("utf16le");
+  const id = /'AVE_MXC_RAW_IP ([a-f0-9]{32}) '/.exec(script)?.[1];
+  const controlHost = /Invoke-Tcp '127\.0\.0\.1' \d+ '(127\.[\d.]+)'/.exec(script)?.[1];
+  if (controlHost === undefined) throw new Error("Missing proxy control destination");
+  return { id: id ?? "", controlHost, proxyUrl: new URL(request.runtimeConfig.networkProxy) };
+}
+
+function requestProxyRefusal(proxy: URL, host: string): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    get(proxy, { path: `http://${host}/` }, (res) => { res.resume(); resolve(res.statusCode); }).on("error", reject);
+  });
+}
+
 describe("raw IP startup observation", () => {
-  it("requires the exact nonce recorded by the invocation listener", async () => {
-    const runProbe = async (matchesNonce: boolean) => await probeMxcPowerShellStart(makeDeps(async (_file, args) => {
+  it("requires the exact control destination and a fresh evidence ID for each launch", async () => {
+    const ids = new Set<string>();
+    const runProbe = async (matchesControl: boolean) => await probeMxcPowerShellStart(makeDeps(async (_file, args) => {
       if (args[0] !== "--config-base64") return { code: 0, stdout: "192.0.2.2:49152", stderr: "" };
-      const request = JSON.parse(Buffer.from(args[1] ?? "", "base64").toString("utf8"));
-      const script = Buffer.from(request.process.commandLine.split(" ").at(-1), "base64").toString("utf16le");
-      const nonce = /Invoke-Tcp '127\.0\.0\.1' \d+ '(127\.[\d.]+)'/.exec(script)?.[1];
-      if (nonce === undefined) throw new Error("Missing proxy control destination");
-      const response = await new Promise<number | undefined>((resolve, reject) => {
-        const proxy = new URL(request.runtimeConfig.networkProxy);
-        const host = matchesNonce ? nonce : nonce === "127.0.0.1" ? "127.0.0.2" : "127.0.0.1";
-        get(proxy, { path: `http://${host}/` }, (res) => { res.resume(); resolve(res.statusCode); }).on("error", reject);
-      });
-      expect(response).toBe(403);
-      return { code: 0, stdout: EVIDENCE_LINE, stderr: "" };
+      const { id, controlHost, proxyUrl } = probeScriptInputs(args);
+      ids.add(id);
+      const host = matchesControl ? controlHost : controlHost === "127.0.0.1" ? "127.0.0.2" : "127.0.0.1";
+      expect(await requestProxyRefusal(proxyUrl, host)).toBe(403);
+      return { code: 0, stdout: evidenceFrame(id), stderr: "" };
     }), openInvocationProxyListener);
     await expect(runProbe(true)).resolves.toMatchObject({ state: "available", rawIpProbe: { rawIp: "blocked" } });
     await expect(runProbe(false)).resolves.toMatchObject({ state: "available", rawIpProbe: { reason: "control-failed" } });
+    expect(ids.size).toBe(2);
+  });
+
+  it.each([
+    ["wrong ID", () => evidenceFrame("wrong")],
+    ["missing ID", () => `AVE_MXC_RAW_IP ${JSON.stringify(REFUSED)}\r\n`],
+    ["missing frame", () => ""],
+    ["duplicate frame", (id: string) => evidenceFrame(id).repeat(2)],
+    ["unrelated output", (id: string) => evidenceFrame(id) + "exit 0\r\n"],
+  ] as const)("keeps coverage unknown with a %s after the host refused the control", async (_label, output) => {
+    const run = async (_file: string, args: readonly string[]) => {
+      if (args[0] !== "--config-base64") return { code: 0, stdout: "", stderr: "" };
+      const { id, controlHost, proxyUrl } = probeScriptInputs(args);
+      expect(await requestProxyRefusal(proxyUrl, controlHost)).toBe(403);
+      return { code: 0, stdout: output(id), stderr: "" };
+    };
+    await expect(probeMxcPowerShellStart(makeDeps(run), openInvocationProxyListener)).resolves.toMatchObject({
+      state: "available", rawIpProbe: { rawIp: "unknown", reason: "no-evidence" },
+    });
   });
 
   it("checks availability with the original proxy placeholder when the listener cannot open", async () => {
