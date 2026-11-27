@@ -3,17 +3,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { writeTimedFile } from "./fixtures/timed-file.js";
 import { buildMacosDirOps, MACOS_DIR_OPS_EXECUTABLE, MACOS_DIR_OPS_TEST_BUILDS, macosDirOpsOutput } from "../../scripts/build-macos-dir-ops.mjs";
 
 const roots: string[] = [];
 const OLD = new Date("2026-01-01T00:00:00Z");
 const NEW = new Date("2026-02-01T00:00:00Z");
 
-function write(root: string, relative: string, time: Date, content = relative): void {
-  mkdirSync(dirname(join(root, relative)), { recursive: true });
-  writeFileSync(join(root, relative), content);
-  utimesSync(join(root, relative), time, time);
-}
+const write = writeTimedFile;
 
 function fixtureRoot({ helpers }: { helpers?: Date } = {}): string {
   const root = mkdtempSync(join(tmpdir(), "ave-macos-dir-ops-"));

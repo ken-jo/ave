@@ -37,5 +37,11 @@ describe("native extension spawn callers", () => {
     const call = text.split("await spawnMxcExtensionProcess(request, {")[1];
     const boundary = call?.split("beforeSpawn: () => {")[1]?.split("watchRelease:")[0];
     expect(boundary).toMatch(/assertNesting\(\);[\s\S]*consumeMxcExtensionAdmission\(admission,/u);
+    // The macOS arm asserts nesting at its launch gate through the shared recheck.
+    const recheckAt = text.indexOf("const recheck = (when: string): void => {");
+    expect(recheckAt).toBeGreaterThan(-1);
+    const recheck = text.slice(recheckAt);
+    expect(recheck.slice(0, recheck.indexOf("\n    };"))).toContain("assertNesting();");
+    expect(text.slice(text.indexOf("starting = startSeatbeltHolder(launch, {"))).toContain('recheck("before native creation");');
   });
 });

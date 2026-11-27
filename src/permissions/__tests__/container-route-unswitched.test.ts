@@ -127,8 +127,9 @@ describe("container route call sites", () => {
   });
 
   it("shares the request builder between boot verification and the POSIX shell launch", () => {
+    // The macOS holder launch ranks its rows with the same function, never a copy.
     expect(callers(/\brankPosixContainerRows\b/u, "src/permissions/mxc-posix.ts"))
-      .toEqual(["src/permissions/mxc-linux.ts", "src/permissions/mxc-macos.ts", "src/tools/mxc-posix-shell-launch.ts"]);
+      .toEqual(["src/permissions/mxc-linux.ts", "src/permissions/mxc-macos.ts", "src/permissions/seatbelt-holder-launch.ts", "src/tools/mxc-posix-shell-launch.ts"]);
     expect(callers(/\bmxc-macos\.[jt]s\b|\bdetectHostMxcMacShellSupport\b/u, "src/permissions/mxc-macos.ts"))
       .toEqual(["src/boot/steps/sandbox-init.ts", "src/permissions/mxc-shell-supervisor-service.ts", "src/tools/mxc-posix-shell-launch.ts"]);
     expect(callers(/\bsetContainerShellSubstrate\s*\(/u, "src/permissions/sandbox-capability.ts"))
@@ -156,6 +157,9 @@ describe("container route call sites", () => {
       "src/boot/steps/sandbox-init.ts", "src/permissions/asrt-sandbox.ts", "src/permissions/sandbox-capability.ts",
     ]);
     expect(callers(/\bisContainerHolderRouteEnabled\s*\(/u, definition))
-      .toEqual(["src/permissions/asrt-sandbox.ts", "src/sandbox/wrap-bundled-command.ts"]);
+      // Boot runs the macOS holder route check only once the holder route is on.
+      // Row 2 admits a macOS user hook on the proven holder route; the hook plan puts it there only on that route.
+      .toEqual(["src/boot/steps/sandbox-init.ts", "src/permissions/asrt-sandbox.ts", "src/permissions/confined-child.ts",
+        "src/permissions/sandbox-capability.ts", "src/sandbox/wrap-bundled-command.ts"]);
   });
 });

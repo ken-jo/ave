@@ -1,9 +1,10 @@
-import { win32 as winPath } from "node:path";
+import { posix as posixPath, win32 as winPath } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
-import type { OwnedMxcExtensionProcess } from "../../permissions/mxc-extension-process.js";
+import type { MxcHolderProcess } from "../../permissions/confined-child.js";
 import { isMxcConfinedChildLive, spawnMxcConfinedChild, type MxcConfinedChildSpawn } from "../../permissions/confined-child.js";
 import { assertMxcHolderStaging, type MxcExtensionFilesystemOwnership } from "../../permissions/mxc-filesystem-ownership.js";
 import { mxcStagingParent } from "../../permissions/mxc-runtime-root.js";
+import { atOrUnder } from "../../permissions/mxc-posix.js";
 import { registerMxcPluginChildHolder } from "../../permissions/mxc-holder-lifetime.js";
 import { isWindowsPathAtOrUnder } from "../../permissions/mxc-windows.js";
 import { MxcProcessCleanupError, MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
@@ -35,6 +36,9 @@ export interface MxcPluginChildLaunch {
 export interface MxcPluginChild {
   readonly link: ChildLink;
   readonly pid: number;
+  /** The container it runs in, reported only after native spawn and transport setup. Not named `confinement`: that
+   * key marks the legacy confined child. */
+  readonly containerConfinement: MxcConfinedChildSpawn["confinement"];
   /** Rejecting means termination is unverified; the owner must refuse replacement. */
   waitForExit(): Promise<void>;
   /** Told synchronously, once, when termination begins for any reason; replayed to late listeners. */
@@ -42,7 +46,8 @@ export interface MxcPluginChild {
 }
 
 /** Adapt the owned streams without letting stream payloads or the supervisor PID select the recipient. */
-export function attachMxcPluginChild(owned: OwnedMxcExtensionProcess, launch: Pick<MxcPluginChildLaunch, "signal" | "release">, pluginId: string): MxcPluginChild {
+export function attachMxcPluginChild(owned: MxcHolderProcess, launch: Pick<MxcPluginChildLaunch, "signal" | "release">, pluginId: string,
+  confinement: MxcConfinedChildSpawn["confinement"]): MxcPluginChild {
   // Always take diagnostics, even when protocol construction has not begun.
   capturePluginStderr(owned.stderr, pluginId);
   let cleanup: Promise<void> | undefined;
@@ -94,6 +99,7 @@ export function attachMxcPluginChild(owned: OwnedMxcExtensionProcess, launch: Pi
   if (launch.signal.aborted) abort();
   return {
     pid: owned.id,
+    containerConfinement: confinement,
     waitForExit: async () => { await exited; },
     onTerminating: (handler) => {
       terminatingHandlers.add(handler);
@@ -136,11 +142,14 @@ export function assertLaunchMatchesIntent(request: ContainerRequest, intent: Pic
 /** The envelope reads, the runtime's directory, and the entry's directory unless another read root already covers it or
  * it lies inside an archive: a packaged entry sits in `app.asar`, a file, which the runtime's own directory covers. */
 function pluginChildReadRoots(envelopeReads: readonly string[], command: string, entry: string | undefined): string[] {
-  const roots = [...new Set([...envelopeReads, winPath.dirname(command)])];
+  const windows = process.platform === "win32";
+  const path = windows ? winPath : posixPath;
+  const roots = [...new Set([...envelopeReads, path.dirname(command)])];
   if (entry === undefined) return roots;
-  const entryDirectory = winPath.dirname(entry);
+  const entryDirectory = path.dirname(entry);
   const inArchive = entryDirectory.split(/[\\/]/u).some((segment) => segment.toLowerCase().endsWith(".asar"));
-  if (inArchive || roots.some((root) => isWindowsPathAtOrUnder(entryDirectory, root))) return roots;
+  const contains = windows ? isWindowsPathAtOrUnder : (path: string, root: string) => atOrUnder(path, root, true);
+  if (inArchive || roots.some((root) => contains(entryDirectory, root))) return roots;
   return [...roots, entryDirectory];
 }
 
@@ -159,7 +168,7 @@ export async function spawnMxcPluginChild(
   try {
     launch.assertCurrent();
     if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
-    const staging = assertMxcHolderStaging({ stagingParent: mxcStagingParent("win32"), home: launch.home, temp: launch.temp });
+    const staging = assertMxcHolderStaging({ stagingParent: mxcStagingParent(process.platform), home: launch.home, temp: launch.temp });
     const args = Object.freeze([...intent.args]);
     const allowRead = pluginChildReadRoots(intent.envelope.read, intent.command, args[0]);
     admitted = await spawnMxcConfinedChild({
@@ -183,8 +192,9 @@ export async function spawnMxcPluginChild(
         launch.assertCurrent();
         if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
       },
-      // Checked on a snapshot of the exact request admission later consumes, so this is the request that runs.
-      assertRequest: (request, cwd) => assertLaunchMatchesIntent(request, { ...intent, cwd }),
+      // Checked on a snapshot of the exact request admission later consumes, so this is the request that runs. A macOS
+      // launch is composed from these very command, arguments and directory, so there is no request to compare.
+      ...(process.platform === "win32" ? { assertRequest: (request: ContainerRequest, cwd: string) => assertLaunchMatchesIntent(request, { ...intent, cwd }) } : {}),
     });
   } catch (error) {
     // Unverified startup cleanup keeps the planner's state: the process may still exist.
@@ -199,7 +209,7 @@ export async function spawnMxcPluginChild(
       await admitted.release();
       await launch.release();
     },
-  }, intent.pluginId);
+  }, intent.pluginId, admitted.confinement);
   // This plugin's contained workers bind to this incarnation, and to none once its termination begins.
   child.onTerminating(registerMxcPluginChildHolder(intent.pluginId, admitted, () => isMxcConfinedChildLive(admitted)));
   if (onTerminating) child.onTerminating(onTerminating);

@@ -354,7 +354,7 @@ vi.mock("../sandbox-capability.js", async (original) => {
   const actual = await original<typeof import("../sandbox-capability.js")>();
   const { planWindowsExtensionHolder } = await import("../mxc-extension-readiness.js");
   const ready = planWindowsExtensionHolder({ requested: true, mxc: { state: "available" }, fallback: { version: "0.0.80", ready: false } });
-  return { ...actual, getWindowsExtensionBackendPlan: () => (runtime.containerBackend ? ready : actual.getWindowsExtensionBackendPlan()) };
+  return { ...actual, getExtensionBackendPlan: () => (runtime.containerBackend ? ready : actual.getExtensionBackendPlan()) };
 });
 vi.mock("../mxc-windows.js", async (original) => ({
   ...await original<typeof import("../mxc-windows.js")>(),

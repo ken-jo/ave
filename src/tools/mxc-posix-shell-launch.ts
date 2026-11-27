@@ -1,8 +1,6 @@
-import { lstatSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { sameFileIdentity } from "../lib/file-identity.js";
 import { getHostResources } from "../main/host-resources.js";
 import {
   aveHomeReadBoundaryCovering, getDefaultSensitiveWriteDenyEntries, getProtectedReadDenyFloor,
@@ -11,7 +9,7 @@ import {
 import { buildSeatbeltShellRequest } from "../permissions/mxc-macos.js";
 import { buildBubblewrapShellRequest, projectLinuxSavedSessionDenies, requireMxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
 import { holdMxcLinuxPlaceholders } from "../permissions/mxc-linux-placeholders.js";
-import { atOrUnder, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants } from "../permissions/mxc-posix.js";
+import { atOrUnder, posixPathFoldsCase, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants } from "../permissions/mxc-posix.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
 import { MxcCwdChangedError, stageMxcShellRequest, startMxcShellSupervisor, writeMxcShellRequest, type MxcShellRunAuthorizer } from "../permissions/mxc-shell-supervisor-client.js";
 import { captureShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
@@ -33,21 +31,6 @@ interface PreparePosixShellInput extends Pick<PrepareMxcShellLaunchInput, "egres
   readonly floorPierces: readonly string[];
   /** An identity already bound to this cwd, such as the approved directory of a permit; the staged one must equal it. */
   readonly cwdIdentity?: ShellWorkingDirectoryIdentity;
-}
-
-function pathFoldsCase(path: string): boolean {
-  const device = lstatSync(path, { bigint: true }).dev;
-  for (let entry = path; entry !== "/"; entry = dirname(entry)) {
-    const original = lstatSync(entry, { bigint: true });
-    if (original.dev !== device) break;
-    const name = basename(entry);
-    const variant = name.replace(/[a-z]/iu, letter => letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase());
-    if (variant === name) continue;
-    const other = lstatSync(join(dirname(entry), variant), { bigint: true, throwIfNoEntry: false });
-    return other !== undefined && sameFileIdentity(original, other);
-  }
-  // Unknown volumes retain case-sensitive path keys and the extra write-floor variants.
-  return false;
 }
 
 export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, lifecycle: ContainedShellLifecycle) {
@@ -106,7 +89,7 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
       policyFloorRow(dirname(path), "ro", "protected-name", true))),
   ]);
   const roots = [hostHome, input.cwd, ...mandatory.allowWrite];
-  const foldsCase = !linux && roots.every(path => pathFoldsCase(lookups.canonical(path)));
+  const foldsCase = !linux && roots.every(path => posixPathFoldsCase(lookups.canonical(path)));
 
   const listener = await egress.openProxy();
 

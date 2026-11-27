@@ -1,7 +1,7 @@
 // Reviewer relaxation requires live OS isolation; none forbids intent-only downgrades from MEDIUM/HIGH to LOW. Inactive gates publish verified none; audit stores the resulting verdict rather than the full capability (docs/architecture/permission-policy-design.md).
 
-import { acceptMeasuredContainerEgress, assertSandboxWindowsExtensionPlan, containerEgressProtocolCoverage, egressProtocolCoverageFor, posixContainerMeasuredEgress } from "../shared/sandbox-capability-info.js";
-import { isContainerShellRouteEnabled } from "../shared/container-platform.js";
+import { acceptMeasuredContainerEgress, assertSandboxMacExtensionPlan, assertSandboxWindowsExtensionPlan, containerEgressProtocolCoverage, egressProtocolCoverageFor, posixContainerMeasuredEgress } from "../shared/sandbox-capability-info.js";
+import { isContainerHolderRouteEnabled, isContainerShellRouteEnabled } from "../shared/container-platform.js";
 import { getAveHomePrivacyFailure, isAveHomePrivacyApprovable, isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
 import { windowsDenyUnenforceableAtBoot } from "./admitted-obligation.js";
 import { t } from "../i18n/index.js";
@@ -9,11 +9,14 @@ import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
   ContainerRawIpEvidenceKind,
   EgressProtocolCoverage,
+  SandboxMacExtensionReason,
   SandboxBootOutcome,
   SandboxConfinement,
   SandboxContainerShellInfo,
   SandboxContainerShellSupport,
   SandboxWindowsSubstrateInfo,
+  SandboxExtensionPlan,
+  SandboxMacExtensionPlan,
   SandboxWindowsExtensionPlan,
 } from "../shared/sandbox-capability-info.js";
 import {
@@ -288,9 +291,49 @@ export function getWindowsMxcShellEgressMeasurement(): WindowsMxcShellEgressMeas
   return _windowsMxcShellEgressMeasurement;
 }
 
-/** Selected extension plan; absent records confer no MXC authority. Per-process markers remain mandatory. */
-export function getWindowsExtensionBackendPlan(): SandboxWindowsExtensionPlan | undefined {
-  return _windowsSubstrate?.extensionPlan;
+/** Selected extension plan of this platform; absent records confer no container authority. Per-process markers remain
+ * mandatory. Windows boot publishes its plan with the substrate; macOS boot publishes its own. Each boot publishes one. */
+export function getExtensionBackendPlan(): SandboxExtensionPlan | undefined {
+  return _windowsSubstrate?.extensionPlan ?? _macExtensionPlan;
+}
+
+let _macExtensionPlan: SandboxMacExtensionPlan | undefined;
+
+/** Publish the macOS extension plan (`sandbox-init.ts`). Admissions and live holders are bound to the plan object, so an
+ * identical plan keeps its identity; changed content starts a new generation. @internal — boot and tests only. */
+export function setMacExtensionPlan(plan: SandboxMacExtensionPlan): void {
+  assertSandboxMacExtensionPlan(plan);
+  const previous = _macExtensionPlan;
+  if (previous !== undefined && (Object.keys(plan) as (keyof SandboxMacExtensionPlan)[]).every((key) => previous[key] === plan[key])) return;
+  _macExtensionPlan = Object.freeze({ ...plan });
+  _sandboxGeneration += 1;
+  notifySandboxStatusChanged();
+}
+
+// @internal — test teardown only.
+export function __resetMacExtensionPlanForTest(): void {
+  if (_macExtensionPlan !== undefined) _sandboxGeneration += 1;
+  _macExtensionPlan = undefined;
+  _macHolderCapability = undefined;
+}
+
+/** Whether this app run proved the macOS holder route (the boot check, boot sweep and watcher), whatever the extension
+ * setting: a user hook follows the shell setting and runs as a holder when this is ready. */
+export type MacHolderCapability = { readonly state: "checking" } | { readonly state: "ready" }
+  | { readonly state: "unavailable"; readonly reason: SandboxMacExtensionReason };
+let _macHolderCapability: MacHolderCapability | undefined;
+
+/** @internal — boot (`sandbox-init.ts`) and tests only. A change starts a new generation, as a plan change does. */
+export function setMacHolderCapability(capability: MacHolderCapability): void {
+  if (_macHolderCapability?.state === capability.state
+    && (capability.state !== "unavailable" || (_macHolderCapability as { reason?: string }).reason === capability.reason)) return;
+  _macHolderCapability = Object.freeze({ ...capability });
+  _sandboxGeneration += 1;
+  notifySandboxStatusChanged();
+}
+
+export function getMacHolderCapability(): MacHolderCapability | undefined {
+  return _macHolderCapability;
 }
 
 const containerShellSubstrates: Partial<Record<"darwin" | "linux", SandboxContainerShellSupport>> = {};
@@ -440,9 +483,15 @@ export function getHostShellExecutionPlan(
   consumer: "shell" | "hook" = "shell",
 ): HostShellExecutionPlan {
   const generation = getSandboxGeneration();
-  const posix = process.platform === "darwin" || process.platform === "linux";
-  const selectsPosixContainer = posix && consumer === "shell" && isContainerShellRouteEnabled(process.platform);
-  const mxc = posix && consumer === "hook" ? undefined : detectMxcShellCapability();
+  const darwin = process.platform === "darwin";
+  const posix = darwin || process.platform === "linux";
+  // A macOS hook runs in a container once the holder route is on: as its own holder, so only when the shell container
+  // AND the holder capability are both proven. Otherwise its plan has no substrate (the no-confinement floor), never
+  // the wrap. Before the route is on, a hook stays on the existing sandbox. A Linux hook never selects the container.
+  const holderHook = darwin && consumer === "hook" && isContainerHolderRouteEnabled("darwin");
+  const selectsPosixContainer = posix && (consumer === "shell" || holderHook) && isContainerShellRouteEnabled(process.platform);
+  const shellContainer = posix && consumer === "hook" && !holderHook ? undefined : detectMxcShellCapability();
+  const mxc = holderHook && _macHolderCapability?.state !== "ready" ? undefined : shellContainer;
   const privacyFailure = getAveHomePrivacyFailure();
   // Only a live POSIX container route carries its own measurement; every other route is unmeasured.
   const recorded = posix && mxc !== undefined ? containerShellSubstrates[process.platform as "darwin" | "linux"] : undefined;

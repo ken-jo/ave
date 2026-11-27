@@ -1699,6 +1699,15 @@ jobs:
         run: |
           bun run check:mxc-pins
           bun run check:mxc-packaging
+      # The holder label sweep helper is built from source with the pinned toolchain, then run once on a label no
+      # process carries, which must find nothing and exit 0.
+      - name: Build and run the macOS holder helper
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: |
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --no-self-update --target aarch64-apple-darwin
+          node scripts/build-macos-holder-sweep.mjs --test-builds
+          resources/macos-holder-sweep/arm64/ave-holder-sweep sweep dev.ave.holder.ci.nobody dev.ave.holder.ctl
       # Publisher verification is proven against the real codesign and a real
       # official Anthropic release, pinned by version and SHA-256. The binary
       # is read as data by the test and never executed.
@@ -1798,6 +1807,12 @@ jobs:
           src/main/browser/__tests__/browser-download-staging.test.ts
           src/main/__tests__/side-browser-webview.test.ts
           test/scripts/build-macos-dir-ops.test.ts
+          test/scripts/build-macos-holder-sweep.test.ts
+          src/permissions/__tests__/seatbelt-holder-start.test.ts
+          src/permissions/__tests__/seatbelt-holder-boot.test.ts
+          src/permissions/__tests__/seatbelt-holder-boundary.native.test.ts
+          src/permissions/__tests__/mac-holder-route-unproven.test.ts
+          test/scripts/macho-image-digest.test.ts
 
   linux-confinement-tests:
     name: Linux confinement path tests

@@ -5,7 +5,7 @@ import { type FileHandle, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
-import { cleanupAsrtSandboxAfterCommand } from '../../permissions/asrt-sandbox.js';
+import { cleanupAsrtSandboxAfterCommand, isOfflineHolderConfinementActive } from '../../permissions/asrt-sandbox.js';
 import { NODE_PRESERVE_SYMLINK_FLAGS, spawnConfinedChild, srtWinTargetEnv } from '../../permissions/confined-child.js';
 import { createSandboxProcessHome, isSandboxHomeUnavailable } from '../../permissions/sandbox-process-home.js';
 import { CHILD_LOOPBACK_TRANSPORT_ARG, connectToAnnouncedChild, encodeChildEnv } from '../../plugins/isolation/child-loopback-link.js';
@@ -13,6 +13,8 @@ import type { MemoryMapProgress } from '../../shared/memory-map.js';
 import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import { win32SystemBinary } from '../../shared/windows-system-path.js';
 import { buildSafeChildEnv } from '../../tools/safe-env.js';
+import { spawnSeatbeltOfflineHolder } from '../../sandbox/wrap-bundled-command.js';
+import { createLogger } from '../../lib/logger.js';
 import { mainDir } from '../main-paths.js';
 import { MemoryMapHostError } from './errors.js';
 import { checkedInferenceFrameBytes, INFERENCE_FILES, INFERENCE_PREFIX_BYTES } from './inference-request.js';
@@ -82,7 +84,25 @@ function sandboxHomeOrRefusal(): ReturnType<typeof createSandboxProcessHome> {
   }
 }
 
-async function spawnInferenceChild(): Promise<{ child: ChildProcess; input: Readable; output: Writable; release: () => void }> {
+const log = createLogger('memory-map-inference');
+
+/** The running child as the request loop sees it: its two pipes and one way to end it, idempotent. */
+interface InferenceChild { readonly input: Readable; readonly output: Writable; stop(): void }
+
+async function spawnInferenceChild(): Promise<InferenceChild> {
+  if (isOfflineHolderConfinementActive()) {
+    // macOS with its holder route on: an offline holder, its own HOME and temp, no network and no consent.
+    const holder = await spawnSeatbeltOfflineHolder({
+      label: 'memory-map-inference', command: process.execPath, args: [join(mainDir, 'memory-map-child.js')],
+      baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: '1', ...TELEMETRY_OPT_OUT }), holderEnv: { ...TELEMETRY_OPT_OUT },
+    });
+    holder.process.stderr.resume();
+    void holder.process.completion.then(() => holder.release()).catch(() => {});
+    return {
+      input: holder.process.stdout, output: holder.process.stdin,
+      stop: () => { void holder.release().catch((error: unknown) => log.warn(`offline holder release failed: ${String(error)}`)); },
+    };
+  }
   const windows = process.platform === 'win32';
   const home = windows ? sandboxHomeOrRefusal() : undefined;
   let wrapped = false;
@@ -121,13 +141,14 @@ async function spawnInferenceChild(): Promise<{ child: ChildProcess; input: Read
     running.stderr?.resume();
     const { stdout, stdin } = running;
     if (!stdout || !stdin) throw new Error('[memory-map-inference] the child has no pipes');
-    if (!home) return { child: running, input: stdout, output: stdin, release };
+    const stop = () => { if (running.exitCode === null && running.signalCode === null) running.kill(); };
+    if (!home) return { input: stdout, output: stdin, stop };
     const exited = new Promise<string>(resolve => {
       running.once('exit', (code, signal) => resolve(`code=${String(code)} signal=${String(signal)}`));
       running.once('error', error => resolve(error.message));
     });
     const socket = await connectToAnnouncedChild({ stdout, exited, timeoutMs: TOOL_TIMEOUT_POLICY.windowsInferenceChildConnectMs });
-    return { child: running, input: socket, output: socket, release };
+    return { input: socket, output: socket, stop };
   } catch (error) {
     child?.kill();
     release();
@@ -142,13 +163,13 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
   const taskJson = JSON.stringify(task);
   const lengths = [Buffer.byteLength(taskJson, 'utf8'), ...INFERENCE_FILES.map(file => file.bytes)];
   checkedInferenceFrameBytes(lengths);
-  const { child, input, output } = await spawnInferenceChild();
+  const { input, output, stop } = await spawnInferenceChild();
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const finish = (error?: Error, value?: T) => {
       if (settled) return; settled = true;
       signal.removeEventListener('abort', abort);
-      if (child.exitCode === null && child.signalCode === null) child.kill();
+      stop();
       if (error) reject(error); else resolve(value as T);
     };
     const abort = () => finish(new Error('Memory worker cancelled'));

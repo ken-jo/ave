@@ -4,8 +4,14 @@ import { commitUnderAdmission } from "../shared/admission-commit.js";
 import { openInvocationProxyListener, type InvocationProxyAdmission, type InvocationProxyListener } from "./egress-invocation-listener.js";
 import { openEgressRelay } from "./egress-relay/relay.js";
 
-/** One endpoint-scoped egress lease; control traffic belongs on native streams. */
-export async function openMxcEgressLease(token: string, assertStillValid?: () => void): Promise<InvocationProxyListener> {
+/**
+ * One endpoint-scoped egress lease; control traffic belongs on native streams. By default the lease closes when its
+ * invocation is released. `holdPortAfterRelease` keeps the port bound and refusing every request instead, until the
+ * owner closes it: a macOS holder whose stop was not verified may have a process left whose profile allows this port,
+ * so the number must not go to another listener while Ave runs.
+ */
+export async function openMxcEgressLease(token: string, assertStillValid?: () => void,
+  options: { readonly holdPortAfterRelease?: boolean } = {}): Promise<InvocationProxyListener> {
   const owner = egressInvocationOwner(token);
   const signal = egressInvocationAbortSignal(token);
   if (!owner || !signal) throw new Error("Container egress requires a live invocation");
@@ -43,9 +49,12 @@ export async function openMxcEgressLease(token: string, assertStillValid?: () =>
     });
     return commitUnderAdmission(assertCanBind, () => {
       relay.registerPort(listener.port);
-      unsubscribe = onEgressInvocationReleased((released) => {
-        if (released === token) void close().catch(() => {});
-      });
+      // Held: the invocation's abort revokes the relay and the listener, which refuse every request while the port stays bound.
+      if (!options.holdPortAfterRelease) {
+        unsubscribe = onEgressInvocationReleased((released) => {
+          if (released === token) void close().catch(() => {});
+        });
+      }
       ready = true;
       return { port: listener.port, url: listener.url, close };
     });

@@ -499,7 +499,7 @@ it('streams verified bytes through the container holder and releases it', async 
   const { child, completed } = serveReply();
   const release = vi.fn(async () => {});
   const fenceInput = vi.fn<(admit: () => void) => void>();
-  spawnMxc.mockResolvedValue({ process: Object.assign(child, { fenceInput }), release });
+  spawnMxc.mockResolvedValue({ confinement: 'windows-mxc', process: Object.assign(child, { fenceInput }), release });
   const signal = new AbortController().signal;
   await expect(runInferenceChild(folder, TASK, signal)).resolves.toBe('embedded');
   // The holder's own frames take the request's admission: it refuses once the route is superseded.
@@ -537,7 +537,7 @@ it('keeps the container cleanup refusal when Cancel stops an active inference', 
   const { child } = serveReply(() => { writing.resolve(); return new Promise(() => {}); });
   const failure = new MxcProcessCleanupError('Container exit unconfirmed');
   const release = vi.fn().mockRejectedValue(failure);
-  spawnMxc.mockResolvedValue({ process: Object.assign(child, { fenceInput: vi.fn() }), release });
+  spawnMxc.mockResolvedValue({ confinement: 'windows-mxc', process: Object.assign(child, { fenceInput: vi.fn() }), release });
   const controller = new AbortController();
   const outcome = runInferenceChild(folder, TASK, controller.signal).catch((error: unknown) => error);
   await writing.promise;
@@ -572,7 +572,7 @@ it.each([true, false])('drains container output queued before the exit frame (re
     await terminalFrame.promise;
     if (!receivedExit) throw failure;
   });
-  spawnMxc.mockResolvedValue({ process: Object.assign(child, { fenceInput: vi.fn() }), release });
+  spawnMxc.mockResolvedValue({ confinement: 'windows-mxc', process: Object.assign(child, { fenceInput: vi.fn() }), release });
   const controller = new AbortController();
   const onProgress = vi.fn();
   const confirmed = vi.fn();
@@ -776,6 +776,7 @@ describe('inference dispatch and delivery under a superseded receipt', () => {
     const releasing = deferred<void>();
     const released = deferred<void>();
     spawnMxc.mockResolvedValue({
+      confinement: 'windows-mxc',
       process: Object.assign(child, { fenceInput: vi.fn() }),
       release: vi.fn(() => { releasing.resolve(); return released.promise; }),
     });

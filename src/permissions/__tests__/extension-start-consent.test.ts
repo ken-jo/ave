@@ -15,7 +15,7 @@ import {
   type ExtensionStartAsker, type ExtensionStartAuthority, type PendingExtensionStart,
 } from "../extension-start-consent.js";
 import {
-  __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest, getWindowsExtensionBackendPlan,
+  __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest, getExtensionBackendPlan,
   setPluginWorkerConfinementRequestedAtBoot, setWindowsSandboxSubstrate,
 } from "../sandbox-capability.js";
 
@@ -202,7 +202,7 @@ describe("extension start states a consent does not answer", () => {
     const authority = await requestExtensionStartConsent(start("plugin-child:a"), ATTENDED);
     __resetWindowsSandboxSubstrateForTest();
     publish({ state: "unavailable", reason: "runtime-start-failed" }, "srt-win");
-    expect(getWindowsExtensionBackendPlan()).toMatchObject({ readiness: "rejected", reason: "ancestor-already-admitted" });
+    expect(getExtensionBackendPlan()).toMatchObject({ readiness: "rejected", reason: "ancestor-already-admitted" });
     expect(gate("plugin-child:a", undefined)).toBe("extension-readiness-refused");
     expect(gate("plugin-child:a", authority, true)).toBe("extension-readiness-refused");
   });
@@ -618,7 +618,7 @@ describe("extension start after the backend readiness deadline expired", () => {
   });
 
   it("is the no-backend plan with its own reason, and every other no-backend start keeps its cause", () => {
-    expect(getWindowsExtensionBackendPlan()).toMatchObject({ selectedBackend: "none", readiness: "unavailable", reason: "readiness-deadline" });
+    expect(getExtensionBackendPlan()).toMatchObject({ selectedBackend: "none", readiness: "unavailable", reason: "readiness-deadline" });
     expect(probeExtensionStart()).toBe("readiness-deadline");
     __resetWindowsSandboxSubstrateForTest();
     publish({ state: "unavailable", reason: "runtime-start-failed" });

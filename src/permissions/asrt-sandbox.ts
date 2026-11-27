@@ -75,7 +75,8 @@ import {
 } from "./egress-relay/relay.js";
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
 import {
-  getWindowsExtensionBackendPlan,
+  getExtensionBackendPlan,
+  getMacHolderCapability,
   isPluginWorkerConfinementRequestedAtBoot,
   isShellSandboxRequestedAtBoot,
 } from "./sandbox-capability.js";
@@ -1406,8 +1407,10 @@ async function loadWindowsSandboxRuntime() {
 let active = false;
 let sandboxInitializationPending = false;
 let sandboxResetPending: Promise<void> | undefined;
-// Set with `active` when boot initialized ASRT as the Windows proxy only.
-let windowsExternalConfinement = false;
+// Set with `active` when extensions run in containers and the wrap is only the egress proxy (and, on macOS, the
+// terminal's sandbox): Windows under its container plan, macOS once its holder route is on. The wrap then never counts
+// as extension or offline-child confinement, so an unproven container asks instead of falling to the wrap.
+let holderConfinementIsExternal = false;
 
 // Whether the ASRT runtime is initialized in this process. ASRT activates when the shell sandbox OR plugin-worker confinement was requested, so this alone does not say a given substrate is confined: a spawn path asks isShellSandboxActive or isPluginWorkerConfinementActive. The raw state is for the runtime's own plumbing (wrap self-gates, the shared network config refresh) and for paths that serve both kinds.
 export function isAsrtSandboxActive(): boolean {
@@ -1416,7 +1419,14 @@ export function isAsrtSandboxActive(): boolean {
 
 /** Offline host processes always require OS isolation, independently of shell and extension routing. */
 export function isOfflineProcessConfinementActive(): boolean {
-  return active && !windowsExternalConfinement && getAveHomePrivacyFailure() === undefined;
+  return active && !holderConfinementIsExternal && getAveHomePrivacyFailure() === undefined;
+}
+
+/** macOS once its holder route is on: an offline host process runs in an offline holder, never on the wrap, and only on
+ * the boot check's proof. Like the wrap it needs the shared Ave home privacy floor; it follows neither setting. */
+export function isOfflineHolderConfinementActive(): boolean {
+  return process.platform === "darwin" && active && holderConfinementIsExternal && getMacHolderCapability()?.state === "ready"
+    && getAveHomePrivacyFailure() === undefined;
 }
 
 function requireWindowsSandboxUserSid(user: ReturnType<WindowsAccountRuntime["getWindowsSandboxUserStatus"]>): string {
@@ -1477,7 +1487,7 @@ export function isShellSandboxActive(): boolean {
 // Extension confinement status: ASRT is active AND plugin-worker confinement (`features.pluginWorkerConfinement`) was requested at boot. The shell sandbox setting never decides this.
 export function isPluginWorkerConfinementActive(): boolean {
   if (getAveHomePrivacyFailure() !== undefined) return false;
-  return active && isPluginWorkerConfinementRequestedAtBoot() && !windowsExternalConfinement;
+  return active && isPluginWorkerConfinementRequestedAtBoot() && !holderConfinementIsExternal;
 }
 
 /** What the gate answers a waiting start now, with no consent: a backend that became ready after boot confines it. */
@@ -1493,13 +1503,22 @@ export function probeExtensionStart(holder?: "worker"): ExtensionStartRecheck {
 // Refuse an extension start that nothing would confine unless a person consented to this one start.
 // `backend: "mxc"` is the native entry. A legacy adapter may declare `holder: "worker"` so a selected container backend refuses it with the worker transport code (D1); every other legacy holder gets the holder-neutral native-entry refusal.
 // `start` carries the per-start consent. `hostOwned` is a host process (the inference child): outside this floor, so it has no consent route and keeps its own gate.
-export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" } | {
+export function assertExtensionStartAllowed(options?: { readonly backend: "mxc"; readonly userHook?: true } | {
   readonly holder?: "worker";
   readonly start?: ExtensionStartPresentation;
   readonly hostOwned?: true;
 }): void {
-  const plan = process.platform === "win32" ? getWindowsExtensionBackendPlan() : undefined;
+  // The platforms whose extensions run in containers: Windows, and macOS once its holder route is on.
+  const containerPlatform = process.platform === "win32" || (process.platform === "darwin" && isContainerHolderRouteEnabled("darwin"));
+  const plan = containerPlatform ? getExtensionBackendPlan() : undefined;
   const nativeEntry = options !== undefined && "backend" in options;
+  // A macOS user hook follows the shell setting: its native entry needs this run's holder route, not the extension plan.
+  if (nativeEntry && options.userHook === true && process.platform === "darwin") {
+    if (!containerPlatform || getMacHolderCapability()?.state !== "ready") {
+      throw new MxcProcessContractError("Native extension backend is not ready for this start");
+    }
+    return;
+  }
   const legacy = options !== undefined && "backend" in options ? undefined : options;
   if (plan?.readiness === "checking" || plan?.readiness === "rejected") {
     throw new MxcExtensionReadinessRefusedError();
@@ -1511,7 +1530,7 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" 
     throw new MxcProcessContractError("Native extension backend is not ready for this start");
   }
   // Intentionally gated by the boot request: a user who turned isolation off is not asked.
-  if (process.platform !== "win32" || !isPluginWorkerConfinementRequestedAtBoot()) return;
+  if (!containerPlatform || !isPluginWorkerConfinementRequestedAtBoot()) return;
   const waivable = !nativeEntry && legacy?.hostOwned !== true;
   const failure = getAveHomePrivacyFailure();
   // An unpublished home, a helper that gave no answer, and every start with no consent route are refused here.
@@ -1870,6 +1889,24 @@ function getProtectedReadDenyPaths(
 
 // The MXC admitted rank uses this floor to withhold reads under protected paths
 // and recognize the reviewed exceptions carried by the policy.
+/**
+ * The floors every macOS holder profile restates, whatever its caller asked for (`seatbelt-holder-launch.ts`): the
+ * sensitive read floor, the Ave home's read boundary and the sandbox private roots as read boundaries a holder's own
+ * grant may re-open beneath, the protected read floor as secrets, the user's own read denies, and the sensitive write
+ * floor. The write-root protections are added per start from the holder's write roots.
+ */
+export function seatbeltHolderFloorRows(): readonly PolicyFloorRow[] {
+  const userDenies = getUserReadDenies();
+  return Object.freeze([
+    ...[...getDefaultSensitiveReadDenyPaths(), ...aveHomeReadBoundaryRoots(), ...appOwnedSandboxPrivateRoots()]
+      .map((path) => policyFloorRow(path, "denied", "read-boundary", false)),
+    ...getProtectedReadDenyFloor().filter((path) => !userDenies.includes(path)).map((path) => policyFloorRow(path, "denied", "secrets", false)),
+    ...userDenies.map((path) => policyFloorRow(path, "denied", "user-deny", false)),
+    ...getDefaultSensitiveWriteDenyEntries().map((entry) =>
+      policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", typeof entry !== "string")),
+  ]);
+}
+
 export function getProtectedReadDenyFloor(): readonly string[] {
   return getProtectedReadDenyPaths();
 }
@@ -3194,7 +3231,7 @@ async function discardFailedAsrtInitialization(
   active = false;
   loadedSandboxManagerForRelease = undefined;
   containerOnlyConfig = undefined;
-  windowsExternalConfinement = false;
+  holderConfinementIsExternal = false;
   await stopEgressRelayService().catch((error: unknown) => {
     log.error("discarding a failed initialization: egress relay stop failed: %s", errorMessage(error));
   });
@@ -3363,7 +3400,7 @@ async function initializeSandboxRuntime(
     if (SandboxManager === undefined) {
       checkWindowsSandboxStampTargets(config.filesystem);
       containerOnlyConfig = config;
-      windowsExternalConfinement = true;
+      holderConfinementIsExternal = true;
       active = true;
       return { isCurrent: (): boolean => active && sandboxSession === session };
     }
@@ -3409,8 +3446,9 @@ async function initializeSandboxRuntime(
     await discardFailedAsrtInitialization(SandboxManager);
     throw windowsAclBudgetError(error, configuredDenies);
   }
-  windowsExternalConfinement =
-    process.platform === "win32" && initialSettings.windows?.externalConfinement === true;
+  holderConfinementIsExternal = process.platform === "win32"
+    ? initialSettings.windows?.externalConfinement === true
+    : process.platform === "darwin" && isContainerHolderRouteEnabled("darwin");
   loadedSandboxManagerForRelease = SandboxManager;
   active = true;
   const isCurrent = (): boolean => active && sandboxSession === session;
@@ -3421,7 +3459,7 @@ async function initializeSandboxRuntime(
       try { publishRequiredWindowsWriteDenies(protectedRows); }
       catch (error) { return { status: "failed", error }; }
       _baseTrustedSettings = trustedSettings;
-      windowsExternalConfinement = false;
+      holderConfinementIsExternal = false;
       return { status: "ready" };
     },
     (error: unknown): WindowsIsolationResult =>
@@ -4396,7 +4434,7 @@ async function resetSandboxRuntime(): Promise<void> {
   // The host owns the processes. Their invocation release, after termination, still owns bare-layout cleanup even if the runtime is reset first.
   active = false;
   loadedSandboxManagerForRelease = undefined;
-  windowsExternalConfinement = false;
+  holderConfinementIsExternal = false;
   const containerOnly = containerOnlyConfig !== undefined;
   containerOnlyConfig = undefined;
   // Reset base settings and live socket holders so reinitialization cannot inherit stale allowances.

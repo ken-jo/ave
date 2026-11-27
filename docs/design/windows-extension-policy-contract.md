@@ -8,7 +8,7 @@ it grants no permission and never replaces the actual effect's admission.
 `SandboxWindowsSubstrateInfo.extensionPlan` is the shared disclosure contract.
 New boot producers always emit it; absence in an older snapshot conveys no
 MXC readiness. The shell `mxc` probe and extension request readiness are
-independent. `getWindowsExtensionBackendPlan()` returns the sealed boot selection. This
+independent. `getExtensionBackendPlan()` returns the sealed boot selection. This
 snapshot is a boot admission policy, not an active-holder registry. The pure
 holder selector and readiness resolver describe a candidate exact request;
 they do not publish or mutate the boot snapshot. The holder adapters and native

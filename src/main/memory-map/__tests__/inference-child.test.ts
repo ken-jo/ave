@@ -5,7 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { duplexPair, PassThrough, Writable } from 'node:stream';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { setProcessPlatform } from '../../../__tests__/support/process-platform.js';
 import type { ConfinedChildSpec } from '../../../permissions/confined-child.js';
 import { parseChildLaunchArgs } from '../../../plugins/isolation/child-loopback-link.js';
@@ -13,8 +13,9 @@ import { runInferenceChild } from '../inference-child.js';
 import { MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
 import { MODEL_FILES } from '../model-manifest.js';
 
-const { spawn, grant, createHome, connectLoopback } = vi.hoisted(() => ({
+const { spawn, grant, createHome, connectLoopback, offline, holderRoute } = vi.hoisted(() => ({
   spawn: vi.fn<(spec: ConfinedChildSpec) => unknown>(), grant: vi.fn(), createHome: vi.fn(), connectLoopback: vi.fn(),
+  offline: vi.fn(), holderRoute: { on: false },
 }));
 vi.mock('../../../permissions/confined-child.js', () => ({
   spawnConfinedChild: spawn, NODE_PRESERVE_SYMLINK_FLAGS: [], srtWinTargetEnv: (_base: unknown, extra: unknown) => extra,
@@ -28,7 +29,8 @@ vi.mock('../../../permissions/sandbox-process-home.js', () => ({
   createSandboxProcessHome: createHome,
   isSandboxHomeUnavailable: (error: unknown) => (error as { code?: unknown } | undefined)?.code === 'sandbox-home-unavailable',
 }));
-vi.mock('../../../permissions/asrt-sandbox.js', () => ({ cleanupAsrtSandboxAfterCommand: vi.fn() }));
+vi.mock('../../../permissions/asrt-sandbox.js', () => ({ cleanupAsrtSandboxAfterCommand: vi.fn(), isOfflineHolderConfinementActive: () => holderRoute.on }));
+vi.mock('../../../sandbox/wrap-bundled-command.js', () => ({ spawnSeatbeltOfflineHolder: offline }));
 vi.mock('../local-runtime.js', () => ({ assertLocalEmbeddingRuntime: vi.fn() }));
 vi.mock('../model-manifest.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../model-manifest.js')>();
@@ -84,6 +86,21 @@ function serveReply(beforeWrite?: (received: number) => void) {
 }
 
 describe('inference model stream', () => {
+  it('runs in an offline holder on macOS with the holder route proven, never on the wrap, and releases it at the end', async () => {
+    setProcessPlatform('darwin');
+    holderRoute.on = true;
+    onTestFinished(() => { holderRoute.on = false; });
+    const { child, completed } = serveReply();
+    const release = vi.fn(async () => {});
+    offline.mockResolvedValueOnce({ process: { stdin: child.stdin, stdout: child.stdout, stderr: new PassThrough(), completion: new Promise(() => {}) }, release });
+    await expect(runInferenceChild(folder, TASK, new AbortController().signal)).resolves.toBe('embedded');
+    expect(completed).toHaveBeenCalledOnce();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(offline).toHaveBeenCalledWith(expect.objectContaining({ label: 'memory-map-inference', command: process.execPath,
+      baseEnv: expect.objectContaining({ ELECTRON_RUN_AS_NODE: '1' }) }));
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it('refuses an oversized UTF-8 task before allocating its wire buffer or launching the child', async () => {
     const batch = { kind: 'embed-batch' as const, texts: ['한글'], jobId: 'job' };
     const taskJson = JSON.stringify(batch);

@@ -1974,7 +1974,8 @@ class StdioTransport implements McpTransport {
     const label = `mcp:${id}`;
     await terminatingContainedMcpServers.get(id);
     if (quarantinedContainedMcpServers.has(id)) throw new MxcHolderQuarantinedError(label);
-    assertMxcHolderNotBashForm(spawnCommand.command);
+    // Git Bash cannot start in a Windows container; a POSIX shell is an ordinary macOS holder command.
+    if (process.platform === "win32") assertMxcHolderNotBashForm(spawnCommand.command);
     const allowWrite = [...(this.config.sandboxRoot ? [this.config.sandboxRoot] : []),
       ...(this.config.pluginDataDir ? [this.config.pluginDataDir] : [])];
     const payload = this.config.bundledPayloadRoot ? [this.config.bundledPayloadRoot] : [];

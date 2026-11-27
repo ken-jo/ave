@@ -226,6 +226,10 @@ jobs:
       - name: Install the pinned path helper toolchain
         if: matrix.target == 'win'
         run: node .github/scripts/install-windows-path-kind-rust.mjs x64
+      # The main bundle pins the macOS holder label sweep helper, so building it needs the pinned toolchain.
+      - name: Install the pinned holder helper toolchain
+        if: matrix.target == 'mac'
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --no-self-update --target aarch64-apple-darwin
       - name: Verify native owner token flow
         if: matrix.target == 'win'
         run: node test/scripts/probes/windows-owner-flow.mjs

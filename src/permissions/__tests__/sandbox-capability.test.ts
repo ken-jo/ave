@@ -33,7 +33,7 @@ import {
   unmarkPluginWorkerWrapped,
   setWindowsSandboxSubstrate,
   getWindowsSandboxSubstrate,
-  getWindowsExtensionBackendPlan,
+  getExtensionBackendPlan,
   detectMxcShellCapability,
   getSandboxGeneration,
   detectPluginWorkerSandboxCapability,
@@ -801,14 +801,14 @@ describe("extension selection is not per-process confinement evidence", () => {
       extensionMxc: { state: "available" }, windowsBuild: null, srtWinReady: false } as const;
     setWindowsSandboxSubstrate(windowsSubstrateFor(inputs, "proxy-only"));
     const recorded = getWindowsSandboxSubstrate();
-    const plan = getWindowsExtensionBackendPlan();
+    const plan = getExtensionBackendPlan();
     const settled = windowsSubstrateFor({ ...inputs, mxc: { state: "available" } }, "proxy-only");
     setWindowsSandboxSubstrate(settled, mxcShellCapability());
     expect(getWindowsSandboxSubstrate()).not.toBe(recorded);
-    expect(getWindowsExtensionBackendPlan()).toBe(plan);
+    expect(getExtensionBackendPlan()).toBe(plan);
     setWindowsSandboxSubstrate(windowsSubstrateFor({ ...inputs, extensionMxc: { state: "unavailable", reason: "runtime-start-failed" } }, "proxy-only"));
-    expect(getWindowsExtensionBackendPlan()).not.toBe(plan);
-    expect(getWindowsExtensionBackendPlan()).toMatchObject({ readiness: "unavailable" });
+    expect(getExtensionBackendPlan()).not.toBe(plan);
+    expect(getExtensionBackendPlan()).toMatchObject({ readiness: "unavailable" });
   });
 
   it("rejects a container extension claim without dedicated ready evidence", () => {

@@ -56,11 +56,38 @@ describe("packaged launcher inventory", () => {
     const binary = path.join(resources, "app.asar.unpacked/node_modules", PINS.package, library.member);
     mkdirSync(path.dirname(binary), { recursive: true });
     copyFileSync(path.join("node_modules", PINS.package, library.member), binary);
-    const afterSign = createRequire(import.meta.url)("../../../scripts/electron-after-sign.cjs");
-    const context = { appOutDir, electronPlatformName: "darwin", packager: { appInfo: { productFilename } } };
-    await expect(afterSign(context)).resolves.toBeUndefined();
+    // The holder helper's own signing checks have their unit test (macos-holder-sweep-package); here the hook must
+    // reach them with this package's paths, after the library check, which runs for real.
+    const require = createRequire(import.meta.url);
+    const script = `
+      import { createRequire, registerHooks } from "node:module";
+      const [hook, appOutDir, productFilename] = process.argv.slice(1);
+      const calls = [];
+      globalThis.recordCall = (...args) => calls.push(args);
+      registerHooks({ load(url, context, nextLoad) {
+        if (url.endsWith("/scripts/lib/macos-holder-sweep-package.mjs")) return {
+          format: "module", shortCircuit: true,
+          source: 'export const assertSignedMacosHolderSweep = (...args) => globalThis.recordCall("holder-sweep", ...args);',
+        };
+        return nextLoad(url, context);
+      }});
+      try {
+        await createRequire(import.meta.url)(hook)({ electronPlatformName: "darwin", appOutDir, packager: { appInfo: { productFilename } } });
+        console.log(JSON.stringify({ calls }));
+      } catch (error) {
+        console.log(JSON.stringify({ calls, message: error.message }));
+      }
+    `;
+    const run = () => {
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, require.resolve("../../../scripts/electron-after-sign.cjs"), appOutDir, productFilename],
+        { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8", windowsHide: true });
+      expect(result.status, result.stderr).toBe(0);
+      return JSON.parse(result.stdout) as { calls: unknown[][]; message?: string };
+    };
+    const app = path.join(appOutDir, `${productFilename}.app`);
+    expect(run()).toEqual({ calls: [["holder-sweep", appOutDir, resources, app, "arm64"]] });
     writeFileSync(binary, "changed");
-    await expect(afterSign(context)).rejects.toThrow(/hash mismatch/u);
+    expect(run()).toEqual({ calls: [], message: expect.stringMatching(/hash mismatch/u) });
   });
 });
 

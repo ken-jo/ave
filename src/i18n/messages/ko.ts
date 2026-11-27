@@ -4707,6 +4707,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "pluginConfigTab.confinementLinuxBubblewrap": "Linux 샌드박스(bubblewrap)",
   "pluginConfigTab.confinementWindowsSrt": "Windows 샌드박스",
   "pluginConfigTab.confinementWindowsMxc": "Windows 컨테이너(MXC)",
+  "pluginConfigTab.confinementMacosSeatbelt": "macOS 컨테이너(Seatbelt)",
   "pluginConfigTab.confinementUnconfined": "OS 샌드박스 없음",
   "pluginConfigTab.confinementNotSpawned": "프로세스 시작 전",
   "pluginConfigTab.doctorLifecycleQuarantined": "이 익스텐션이 멈췄는지 확인하지 못해 Ave 를 재시작할 때까지 다시 시작할 수 없습니다.",

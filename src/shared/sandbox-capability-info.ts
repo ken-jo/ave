@@ -435,6 +435,60 @@ export function assertSandboxWindowsExtensionPlan(value: unknown): asserts value
       || plan.egressIdentity !== (plan.selectedBackend === "mxc" ? "kernel-channel" : "shared")) fail();
 }
 
+/** Why the macOS holder route is not proven this app run. The container capability's own reasons, plus the holder
+ * boot check's: the label sweep was not proven, the label watcher could not be kept running, or a holder start failed. */
+export type SandboxMacExtensionReason =
+  | "not-requested" | "checking" | "ready"
+  | Extract<SandboxMxcUnavailableReason, "unsupported-arch" | "binary-missing" | "runtime-root-unproved" | "request-rejected">
+  | "integrity" | "holder-start-failed" | "sweep-unproven" | "watcher-unavailable";
+
+const MAC_EXTENSION_UNAVAILABLE_REASONS: ReadonlySet<SandboxMacExtensionReason> = new Set([
+  "unsupported-arch", "binary-missing", "integrity", "runtime-root-unproved", "request-rejected",
+  "holder-start-failed", "sweep-unproven", "watcher-unavailable",
+]);
+
+/** The macOS arm of the extension plan. There is one backend and no fallback; the Windows-only fields (UI policy,
+ * ancestor access, host loopback) have no macOS meaning and are not given one. The proxy port is the identity. */
+export interface SandboxMacExtensionPlan {
+  readonly platform: "darwin";
+  readonly requestedBackend: "mxc" | "none";
+  readonly selectedBackend: "mxc" | "none";
+  readonly readiness: "off" | "checking" | "ready" | "unavailable";
+  readonly reason: SandboxMacExtensionReason;
+  readonly egressIdentity: "shared";
+}
+
+/** One extension plan per platform whose extensions run in containers. The Windows arm is unchanged and has no
+ * `platform` key; `isMacExtensionPlan` tells the arms apart. */
+export type SandboxExtensionPlan = SandboxWindowsExtensionPlan | SandboxMacExtensionPlan;
+
+export function isMacExtensionPlan(plan: SandboxExtensionPlan | undefined): plan is SandboxMacExtensionPlan {
+  return plan !== undefined && "platform" in plan && plan.platform === "darwin";
+}
+
+/** The Windows extension plan, or undefined when the published plan is the macOS one: a Windows-only reader never takes
+ * a macOS plan's container authority. */
+export function windowsExtensionPlan(plan: SandboxExtensionPlan | undefined): SandboxWindowsExtensionPlan | undefined {
+  return isMacExtensionPlan(plan) ? undefined : plan;
+}
+
+/** Validate a macOS plan before it is published. */
+export function assertSandboxMacExtensionPlan(value: unknown): asserts value is SandboxMacExtensionPlan {
+  const fail = (): never => { throw new Error("Invalid macOS extension backend plan"); };
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail();
+  const plan = value as SandboxMacExtensionPlan;
+  const keys: readonly (keyof SandboxMacExtensionPlan)[] = ["platform", "requestedBackend", "selectedBackend", "readiness", "reason", "egressIdentity"];
+  if (Object.keys(plan).length !== keys.length || Object.keys(plan).some(key => !keys.includes(key as keyof SandboxMacExtensionPlan))
+      || plan.platform !== "darwin" || plan.egressIdentity !== "shared") fail();
+  switch (plan.readiness) {
+    case "off": if (plan.requestedBackend !== "none" || plan.selectedBackend !== "none" || plan.reason !== "not-requested") fail(); break;
+    case "checking": if (plan.requestedBackend !== "mxc" || plan.selectedBackend !== "none" || plan.reason !== "checking") fail(); break;
+    case "ready": if (plan.requestedBackend !== "mxc" || plan.selectedBackend !== "mxc" || plan.reason !== "ready") fail(); break;
+    case "unavailable": if (plan.requestedBackend !== "mxc" || plan.selectedBackend !== "none" || !MAC_EXTENSION_UNAVAILABLE_REASONS.has(plan.reason)) fail(); break;
+    default: fail();
+  }
+}
+
 /** Windows only: which substrate carries each kind of process this boot, and how strongly their egress is attributed. Sealed at boot, like the gate. */
 export interface SandboxWindowsSubstrateInfo {
   /** Whether MXC can confine agent shells here, with the stable reason when not. `checking`: the boot-path

@@ -59,13 +59,16 @@ export function assertMxcHolderPrivateDirectories(input: {
   readonly temp: string;
   readonly ownership: MxcExtensionFilesystemOwnership;
   readonly sharedPrivateRoots: readonly string[];
+  /** The platform's path containment; Windows spelling rules unless given. */
+  readonly contains?: (path: string, root: string) => boolean;
 }): void {
+  const contains = input.contains ?? isWindowsPathAtOrUnder;
   for (const directory of [input.home, input.temp]) {
-    if (!input.ownership.writeRoots.some(root => isWindowsPathAtOrUnder(directory, root))) {
+    if (!input.ownership.writeRoots.some(root => contains(directory, root))) {
       throw new MxcProcessContractError("Container HOME and temp must lie inside this holder's captured write roots");
     }
     // Ancestor enumerate grants on a shared private root would list every other holder's leaf there.
-    if (input.sharedPrivateRoots.some(root => isWindowsPathAtOrUnder(directory, root))) {
+    if (input.sharedPrivateRoots.some(root => contains(directory, root))) {
       throw new MxcProcessContractError("Container HOME and temp must use a dedicated staging tree, not the shared private roots");
     }
   }

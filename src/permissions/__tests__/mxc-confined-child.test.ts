@@ -65,7 +65,7 @@ vi.mock("../asrt-sandbox.js", () => ({
 }));
 vi.mock("../sandbox-capability.js", async (original) => {
   const actual = await original<typeof import("../sandbox-capability.js")>();
-  return { ...actual, getWindowsExtensionBackendPlan: () => state.realPlan ? actual.getWindowsExtensionBackendPlan() : state.plan,
+  return { ...actual, getExtensionBackendPlan: () => state.realPlan ? actual.getExtensionBackendPlan() : state.plan,
     // A host-issued shell plan of the live generation, for the user-hook shell-plan route.
     getHostShellExecutionPlan: () => state.shellPlan ?? actual.getHostShellExecutionPlan(),
     isIssuedHostShellExecutionPlan: (plan: object) => state.issued.has(plan),

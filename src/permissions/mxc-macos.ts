@@ -102,6 +102,15 @@ export function mapSeatbeltShellRequest(wire: ReturnType<typeof buildSeatbeltShe
   };
 }
 
+// What the prober's UDP send code means. Only EPERM (1) and EACCES (13) are the profile refusing the send; any other
+// failure (no route, address unavailable, …) means nothing was sent, which is unmeasured, as on Windows (10013 only).
+const UDP_POLICY_REFUSALS = new Set(["1", "13"]);
+
+export function udpSendOutcome(printed: string | undefined): MxcRawIpUdpSend {
+  if (printed === "0") return "sent";
+  return printed !== undefined && UDP_POLICY_REFUSALS.has(printed) ? "refused-local" : "unmeasured";
+}
+
 type CanaryVerdict = "available" | "request-rejected" | "shell-start-failed" | "launcher-mismatch";
 
 /** What one canary start found: availability, and the raw-IP verdict measured in the same start. */
@@ -377,9 +386,7 @@ async function runSeatbeltCanary(
     const output = existsSync(rawIpOutput) ? parseRawIpProbeOutput(await readFile(rawIpOutput, "utf8")) : undefined;
     // An arrival counts whatever the prober printed. A datagram that was sent is waited for up to its own window; a
     // send refused in the container leaves nothing to wait on; no send at all is unmeasured.
-    const udpPrinted = output?.targets.UA;
-    const udpSend: MxcRawIpUdpSend = udpPrinted === "0" ? "sent"
-      : udpPrinted !== undefined && /^\d+$/u.test(udpPrinted) ? "refused-local" : "unmeasured";
+    const udpSend = udpSendOutcome(output?.targets.UA);
     const udpArrival: MxcRawIpUdpArrival = host === undefined ? "unmeasured"
       : await host.udp.observe(udpSend, RAW_IP_TARGET_DEADLINE_S * 1_000);
     return {

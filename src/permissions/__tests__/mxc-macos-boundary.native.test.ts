@@ -506,6 +506,34 @@ describe.runIf(NATIVE)("native product shell launch", () => {
     return typeof address === "object" && address !== null ? address.port : 0;
   }
 
+  it("keeps a deny when the read base's carve hits its entry limit, and says which folder was limited", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const crowded = join(home, "crowded");
+    // A deny with a grant inside it puts `crowded` on the carve's chain; `keys` is only reached through that carve.
+    const vault = join(crowded, "vault");
+    const open = join(vault, "open");
+    const deny = join(crowded, "keys");
+    mkdirSync(open, { recursive: true });
+    mkdirSync(deny, { recursive: true });
+    writeFileSync(join(open, "readable"), "granted");
+    writeFileSync(join(deny, "secret"), "not admitted");
+    // More entries than the carve may enumerate, in a folder this test owns.
+    for (let index = 0; index < 2_100; index += 1) writeFileSync(join(crowded, `f${index}`), "");
+    const launch = await prepare([
+      `if cat ${quote(join(deny, "secret"))}; then exit 39; fi`,
+      `if cat ${quote(join(crowded, "f0"))}; then exit 40; fi`,
+      `test "$(cat ${quote(join(open, "readable"))})" = granted`,
+      "printf '%s' limited-control",
+    ].join("\n"), { allowRead: [open], denyRead: [vault, deny] });
+    expect(launch.carvedReadLimitedAt).toContain(crowded);
+    const runDir = readdirSync(runtime).find(name => name.startsWith("shell-"));
+    if (runDir === undefined) throw new Error("Expected a private shell request directory");
+    const request = JSON.parse(readFileSync(join(runtime, runDir, "request.json"), "utf8"));
+    expect(request.seatbelt.profileOverride).toContain(`(subpath ${JSON.stringify(deny)})`);
+    const result = await run(launch);
+    expect(result, result.stderr).toMatchObject({ code: 0, rejected: false, stdout: "limited-control" });
+  });
+
   it("holds the parent, socket, late name and stat boundaries beside admitted operations", async () => {
     startEgressRelayService({ ask: async () => false });
     const socket = join(project, "host.sock");
@@ -548,7 +576,9 @@ describe.runIf(NATIVE)("native product shell launch", () => {
       `test "$(cat ${quote(join(grant, "readable"))})" = granted`,
       `test "$(cat ${quote(join(library, "readable"))})" = library`,
       "printf '%s' boundary-control",
-    ].join("\n"), { allowRead: [grant], denyRead: [vault, libraryDeny, "/private/etc/hosts"] });
+    // `library` is granted outright, so the deny beneath it is reached whatever the read base's carve does; the case
+    // below drives the carve limit on purpose.
+    ].join("\n"), { allowRead: [grant, library], denyRead: [vault, libraryDeny, "/private/etc/hosts"] });
     const runDir = readdirSync(runtime).find(name => name.startsWith("shell-"));
     if (runDir === undefined) throw new Error("Expected a private shell request directory");
     const config = join(runtime, runDir, "request.json");

@@ -353,3 +353,82 @@ describe("user hook follows its admitted host-shell plan", () => {
     expect(state.legacySpawn.mock.calls[0]![0]).not.toHaveProperty("userHookShellPlan");
   });
 });
+
+describe("macOS user hook under its admitted shell plan", () => {
+  function darwinPlan(requestedSandbox: boolean, shellSubstrate?: "asrt" | "mxc"): HostShellExecutionPlan {
+    return __issueHostShellExecutionPlanForTest(buildHostShellExecutionPlan({
+      platform: "darwin", requestedSandbox, ...(shellSubstrate === undefined ? {} : { shellSubstrate }),
+      activeCapability: { kind: "asrt", confidence: "verified", platform: "darwin", reason: "confined shell fixture",
+        confines: { filesystem: true, process: true, network: true } },
+    }));
+  }
+  const macHook = (command: [string, ...string[]]): RunnableHook => ({ ...userHook(command), hookPath: command[0] });
+
+  beforeEach(() => {
+    setProcessPlatform("darwin");
+    state.shell = { cmd: "/bin/sh", shellArgs: (script: string) => ["-c", script], windowsFlavor: undefined as unknown as string };
+  });
+  afterEach(() => {
+    state.shell = { cmd: "C:\\Program Files\\Git\\bin\\bash.exe", shellArgs: (script: string) => ["-c", script], windowsFlavor: "msys" };
+  });
+
+  it("is a holder of its own on a container plan, whatever the extension setting, and a POSIX shell script is not refused", async () => {
+    state.selected = false;
+    state.holderSpawn.mockResolvedValue(fakeHolder({ stdout: '{"action":"deny","reason":"mac"}' }).holder);
+    const options = admitUnder(darwinPlan(true, "mxc"));
+    expect(options.authorizeCommand).toBeTypeOf("function");
+    const result = await runOneHookScript(macHook([join(configDir, "pre.sh")]), PAYLOAD, options);
+    expect(result).toMatchObject({ decision: "deny", reason: "mac" });
+    expect(state.holderSpawn).toHaveBeenCalledTimes(1);
+    expect(state.holderSpawn.mock.calls[0]?.[0]).toMatchObject({ label: "hook:user", command: "/bin/sh", cwd: configDir,
+      allowWrite: [projectDir], workspaceRoots: [projectDir], egressOwner: { kind: "worker", role: "hook", pluginId: undefined } });
+    expect(state.legacySpawn).not.toHaveBeenCalled();
+  });
+
+  it("denies, never falls back, when the macOS holder cannot start", async () => {
+    state.holderSpawn.mockRejectedValue(new Error("holder start refused"));
+    const result = await runOneHookScript(macHook(["/usr/bin/true"]), PAYLOAD, admitUnder(darwinPlan(true, "mxc")));
+    expect(result).toMatchObject({ decision: "deny" });
+    expect(result.reason).toMatch(/^sandbox unavailable.*holder start refused/u);
+    expect(state.legacySpawn).not.toHaveBeenCalled();
+  });
+
+  it.runIf(REAL_PLATFORM !== "win32")("runs plain, never as a holder, on a plan that confines nothing", async () => {
+    const plan = darwinPlan(false);
+    expect(plan).toMatchObject({ mode: "plain", sandboxed: false });
+    const result = await runOneHookScript(macHook(["/usr/bin/true"]), PAYLOAD, admitUnder(plan));
+    expect(result.decision).not.toBe("deny");
+    expect(state.holderSpawn).not.toHaveBeenCalled();
+    expect(state.legacySpawn).not.toHaveBeenCalled();
+  });
+
+  it.runIf(REAL_PLATFORM !== "win32")("is never a holder when the sandbox is requested but nothing confines the hook", async () => {
+    const plan = __issueHostShellExecutionPlanForTest(buildHostShellExecutionPlan({
+      platform: "darwin", requestedSandbox: true,
+      activeCapability: { kind: "asrt", confidence: "verified", platform: "darwin", reason: "partial wrap fixture",
+        confines: { filesystem: false, process: false, network: false } },
+    }));
+    expect(plan.sandboxed).toBe(false);
+    // The shell card's floor is the admission's: this runner only follows the plan it was admitted under.
+    await runOneHookScript(macHook(["/usr/bin/true"]), PAYLOAD, admitUnder(plan));
+    expect(state.holderSpawn).not.toHaveBeenCalled();
+    expect(state.legacySpawn).not.toHaveBeenCalled();
+  });
+
+  it("keeps today's route on the plan a real macOS hook is issued, which never names the container", async () => {
+    const plan = darwinPlan(true, "asrt");
+    expect(plan.identity).toBe("host-shell-execution-plan/v4:darwin:asrt");
+    await runOneHookScript(macHook(["/usr/bin/true"]), PAYLOAD, admitUnder(plan));
+    expect(state.holderSpawn).not.toHaveBeenCalled();
+    expect(state.legacySpawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses a macOS plan on the Windows user-hook route by name", async () => {
+    const { _isAdmittedUserHookShellRouteForTest } = await import("../../permissions/confined-child.js");
+    for (const plan of [darwinPlan(true, "mxc"), darwinPlan(true, "asrt")]) {
+      expect(() => _isAdmittedUserHookShellRouteForTest({
+        userHookShellPlan: plan, egressOwner: { kind: "worker", role: "hook", pluginId: undefined },
+      } as never)).toThrow("A macOS user hook plan never follows the Windows srt-win route");
+    }
+  });
+});

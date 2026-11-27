@@ -97,7 +97,11 @@ export function rawIpVerdict(measurement: RawIpMeasurement): MacRawIpVerdict {
   const control = output.control;
   if (control === undefined && Object.keys(output.targets).length === 0) return unknown("no-evidence");
   if (control === undefined || control.status !== String(measurement.expectedStatus) || control.refusal === "none"
-    || control.refusal === "" || !measurement.nonceRecorded) return unknown("control-failed");
+    || control.refusal === "" || !measurement.nonceRecorded) {
+    // As on Windows, a reachable target is reported even when the control did not pass.
+    if (reachableTargets.length > 0) log.warn(`raw-ip-reachable (${reachableTargets.join(", ")}) with the control failed`);
+    return unknown("control-failed");
+  }
   // Rule 2: anything that reached a peer by TCP.
   if (reachableTargets.length > 0) {
     log.warn(`raw-ip-reachable (${reachableTargets.join(", ")})`);
@@ -109,7 +113,9 @@ export function rawIpVerdict(measurement: RawIpMeasurement): MacRawIpVerdict {
   if (t4.class === "refused-local" && (t6.class === "refused-local" || t6Structural) && tl !== undefined) {
     if (udpArrival === "unmeasured") return unknown("udp-unmeasured");
     const evidenceKind = t6.class === "refused-local" ? "measured" : "structural";
-    log.info(`raw-ip blocked, evidence ${evidenceKind}`);
+    // A no-route answer under a default-deny profile is unusual if Seatbelt checks before routing: keep it visible.
+    if (evidenceKind === "structural") log.warn("raw-ip blocked on structural IPv6 evidence: T6 answered no-route under the profile");
+    else log.info("raw-ip blocked, evidence measured");
     return { rawIp: "blocked", reason: "blocked", evidenceKind, reachableTargets, udpArrival };
   }
   // Rule 4.
