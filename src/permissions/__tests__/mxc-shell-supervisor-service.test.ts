@@ -12,6 +12,13 @@ import { mxcShellLibraryCheck } from "../mxc-shell-supervisor-bootstrap.js";
 import { serveMxcShellSupervisor } from "../mxc-shell-supervisor-service.js";
 
 let harness: ReturnType<typeof createPosixSupervisorHarness> | undefined;
+
+// The service restats the staged cwd with captureShellWorkingDirectoryIdentity before every spawn. On a Windows host
+// that capture is the volume serial and file id, while the harness stages the POSIX realpath and stat dev and inode, so
+// every start there is refused as cwd-changed before the fake SDK runs. Cases that need a spawn therefore run only on a
+// POSIX host; the service itself runs only on macOS. Cases decided before the restat run everywhere.
+const POSIX_CWD_IDENTITY = process.platform !== "win32";
+const POSIX_ONLY = " (POSIX cwd identity; not run on a Windows host)";
 afterEach(() => { harness?.dispose(); harness = undefined; });
 
 async function runToReady(warnings: readonly string[]) {
@@ -31,15 +38,15 @@ async function runToReady(warnings: readonly string[]) {
 }
 
 describe("macOS shell supervisor cleanup receipts", () => {
-  it.each(SEATBELT_CLEANUP_WARNINGS.map((warning) => [warning]))("reports a zero exit with %s as cleanup unverified", async (warning) => {
+  it.runIf(POSIX_CWD_IDENTITY).each(SEATBELT_CLEANUP_WARNINGS.map((warning) => [warning]))(`reports a zero exit with %s as cleanup unverified${POSIX_ONLY}`, async (warning) => {
     expect(await runToReady([warning])).toMatchObject({ type: "error", code: "cleanup-unverified" });
   });
 
-  it("reports any other post-run Seatbelt warning as cleanup unverified", async () => {
+  it.runIf(POSIX_CWD_IDENTITY)(`reports any other post-run Seatbelt warning as cleanup unverified${POSIX_ONLY}`, async () => {
     expect(await runToReady(["Seatbelt: a cleanup phrase this build does not name"])).toMatchObject({ code: "cleanup-unverified" });
   });
 
-  it("reports a clean zero exit as an exit", async () => {
+  it.runIf(POSIX_CWD_IDENTITY)(`reports a clean zero exit as an exit${POSIX_ONLY}`, async () => {
     expect(await runToReady([])).toEqual({ type: "exit", exitCode: 0, timedOut: false });
   });
 
@@ -75,7 +82,7 @@ describe("macOS shell outcome wording", () => {
 });
 
 describe("macOS shell supervisor working directory check before spawn", () => {
-  it("refuses a working directory replaced at the same path after staging, and never calls the SDK", async () => {
+  it.runIf(POSIX_CWD_IDENTITY)(`refuses a working directory replaced at the same path after staging, and never calls the SDK${POSIX_ONLY}`, async () => {
     harness = createPosixSupervisorHarness();
     const h = harness;
     const cwd = join(h.directory, "cwd");
@@ -90,7 +97,7 @@ describe("macOS shell supervisor working directory check before spawn", () => {
     expect(h.spawned).toEqual([]);
   });
 
-  it("stages the cwd's physical identity, and refuses a path that is not physical or not the expected directory", async () => {
+  it.runIf(POSIX_CWD_IDENTITY)(`stages the cwd's physical identity, and refuses a path that is not physical or not the expected directory${POSIX_ONLY}`, async () => {
     harness = createPosixSupervisorHarness();
     const h = harness;
     const cwd = join(h.directory, "cwd");
@@ -131,7 +138,7 @@ describe("macOS shell supervisor working directory check before spawn", () => {
     return { served, native, stdin: () => Buffer.concat(stdin).toString("latin1") };
   }
 
-  it("prefixes the staged command with the workload's cwd check for the staged identity", async () => {
+  it.runIf(POSIX_CWD_IDENTITY)(`prefixes the staged command with the workload's cwd check for the staged identity${POSIX_ONLY}`, async () => {
     harness = createPosixSupervisorHarness();
     const { served, native } = await startUntilSpawned(harness);
     const command = (harness.spawned[0] as { command: string }).command;
@@ -146,7 +153,7 @@ describe("macOS shell supervisor working directory check before spawn", () => {
     await served;
   });
 
-  it("writes the grant only after the host's spawn-authorized frame, and reports ready only then", async () => {
+  it.runIf(POSIX_CWD_IDENTITY)(`writes the grant only after the host's spawn-authorized frame, and reports ready only then${POSIX_ONLY}`, async () => {
     harness = createPosixSupervisorHarness();
     harness.withholdGrant();
     const h = harness;
@@ -168,7 +175,7 @@ describe("macOS shell supervisor working directory check before spawn", () => {
     expect(h.stdout.read()?.toString()).toBe("output");
   });
 
-  it("reports the workload's cwd refusal from its verdict byte, grants nothing and forwards no verdict", async () => {
+  it.runIf(POSIX_CWD_IDENTITY)(`reports the workload's cwd refusal from its verdict byte, grants nothing and forwards no verdict${POSIX_ONLY}`, async () => {
     harness = createPosixSupervisorHarness();
     harness.reportVerdict("C");
     const h = harness;
@@ -184,7 +191,7 @@ describe("macOS shell supervisor working directory check before spawn", () => {
     expect(h.stdout.read()).toBeNull();
   });
 
-  it("reports a workload that ended before its check as a refused start, and a forged verdict as a broken contract", async () => {
+  it.runIf(POSIX_CWD_IDENTITY)(`reports a workload that ended before its check as a refused start, and a forged verdict as a broken contract${POSIX_ONLY}`, async () => {
     for (const [forged, code] of [[undefined, "start-refused"], ["X", "contract"]] as const) {
       harness?.dispose();
       harness = createPosixSupervisorHarness();
@@ -215,7 +222,7 @@ describe("macOS shell supervisor working directory check before spawn", () => {
 });
 
 describe("macOS shell supervisor library check before spawn", () => {
-  it("refuses with integrity and never calls the SDK when the verified library changed since bootstrap", async () => {
+  it.runIf(POSIX_CWD_IDENTITY)(`refuses with integrity and never calls the SDK when the verified library changed since bootstrap${POSIX_ONLY}`, async () => {
     harness = createPosixSupervisorHarness();
     const h = harness;
     const served = serveMxcShellSupervisor(h.supervisor, h.liveness, h.stdout, h.stderr, h.bootstrap, h.onFatal);
