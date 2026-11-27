@@ -197,6 +197,7 @@ it.each([
   "sign-out batched with initialization", "prompt pipe loss", "account replacement during isolation proof", "live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog",
   "logout during failed login", "cancel detects sign-out during failed login",
   "account notification confirmation", "account notification overtaken by logout", "account notification retries after rejection",
+  "account notification retry replaced by a new account",
   "account notification retries after supersession", "account notification retry withdrawn by sign-out",
   "account notification retry withdrawn by shutdown", "matching login completion", "account read during cancel",
 ] as const)("invalidates a cached windowless reviewer verdict on %s and restores the saved route", async (scenario) => {
@@ -500,6 +501,45 @@ it.each([
       const sessionOutcome = await outcome;
       expect(invalidatedWhileHeld).toBe(true);
       expect(sessionOutcome).toBe("rejected");
+    } else if (scenario === "account notification retry replaced by a new account") {
+      const server = requiredFixture(child);
+      holdAccountReads = true;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const send = (message: object) => server.stdout.write(`${JSON.stringify(message)}\n`);
+        const replyConnected = (index: number, email: string) => send({
+          id: requiredFixture(accountReads[index]), result: { account: { type: "chatgpt", email } },
+        });
+        send({ method: "account/updated", params: { authMode: "chatgpt" } });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(accountReads).toHaveLength(1);
+        send({ id: accountReads[0], error: { code: -32603, message: "Account read temporarily unavailable" } });
+        await vi.advanceTimersByTimeAsync(0);
+
+        const readAccountA = runtime.getStatus(provider);
+        await vi.advanceTimersByTimeAsync(0);
+        replyConnected(1, "alice@example.test");
+        await expect(readAccountA).resolves.toMatchObject({ connection: "connected" });
+
+        immediate = undefined;
+        const readAccountB = runtime.getStatus(provider);
+        await vi.advanceTimersByTimeAsync(0);
+        replyConnected(2, "bob@example.test");
+        await expect(readAccountB).resolves.toMatchObject({ connection: "unknown" });
+        expect(immediate).toBeDefined();
+        expect(await immediate).toMatchObject({ result: { decision: "deny", reasonCode: "no-approver" } });
+
+        await vi.advanceTimersByTimeAsync(250);
+        expect(accountReads).toHaveLength(4);
+        replyConnected(3, "bob@example.test");
+        await vi.advanceTimersByTimeAsync(0);
+      } finally {
+        vi.useRealTimers();
+      }
+      await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
+      expect(subscriptionProviderFactory.mock.lastCall).toEqual([selection]);
+      expect(await dispatch(true)).toMatchObject({ review: { outcome: "fresh" }, result: { decision: "allow" } });
+      return;
     } else if (usesAccountNotification) {
       const server = requiredFixture(child);
       holdAccountReads = true;
