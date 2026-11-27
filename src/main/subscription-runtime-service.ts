@@ -1893,7 +1893,7 @@ export class SubscriptionRuntimeService {
         }
         if (verdict.kind === "unavailable") {
           state.failedRead = start;
-          this.latchConnection(provider, state, state.status.connection === "signed-out" ? "signed-out" : "unknown", evidence.version);
+          this.latchConnection(provider, state, state.status.connection === "signed-out" ? "signed-out" : "unknown", evidence.version, verdict.runtime);
           return true;
         }
         if (state.busy) return false;

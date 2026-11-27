@@ -420,11 +420,14 @@ describe("CodexAppServerClient", () => {
     const harness = await createHarness(standardInitialize, {
       resolveRuntime: async () => { throw new CodexUserRuntimeError("codex-runtime-not-installed"); },
     });
+    const verdict = vi.fn(() => true);
+    harness.client.connectionEvidence = () => verdict;
     await expect(harness.client.getStatus()).resolves.toMatchObject({
       runtime: "not-configured",
       connection: "signed-out",
       version: null,
     });
+    expect(verdict).toHaveBeenCalledExactlyOnceWith({ kind: "unavailable", runtime: "not-configured" });
     await expect(harness.client.startBrowserLogin()).rejects.toMatchObject({ code: "codex-runtime-not-configured" });
     expect(harness.spawnCalls).toHaveLength(0);
   });
@@ -467,6 +470,7 @@ describe("CodexAppServerClient", () => {
       },
     });
     await expect(harness.client.getStatus()).rejects.toMatchObject({ code: "codex-runtime-invalid-executable" });
+    expect(verdict).toHaveBeenCalledExactlyOnceWith({ kind: "unavailable", runtime: "not-configured" });
     expect(harness.spawnCalls).toEqual([]);
     expect(harness.client.getCachedStatus().runtime).toBe("unavailable");
   });

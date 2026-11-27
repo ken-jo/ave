@@ -7,7 +7,7 @@ export function executableEvidenceKey(artifact: CodexExecutableArtifact): string
 export type SubscriptionAccountVerdict =
   | { kind: "connected"; accountKey?: string; planType?: string | null }
   | { kind: "signed-out" }
-  | { kind: "unavailable" };
+  | { kind: "unavailable"; runtime?: "not-configured" };
 
 export type SubscriptionConnectionEvidence =
   | { kind: "read"; source: object; artifact: string | null; version: string | null }

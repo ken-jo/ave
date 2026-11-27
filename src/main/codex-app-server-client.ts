@@ -181,11 +181,11 @@ export class CodexAppServerClient {
     try {
       await this.ensureAccountRuntime();
     } catch (error) {
-      preparation?.({ kind: "unavailable" });
-      // No CLI is a state the settings card explains, not a failure.
       if (error instanceof CodexAppServerError && error.code === "codex-runtime-not-configured") {
+        preparation?.({ kind: "unavailable", runtime: "not-configured" });
         return this.currentStatus();
       }
+      preparation?.({ kind: "unavailable" });
       throw error;
     }
     const accountRevision = this.accountRevisionValue;
