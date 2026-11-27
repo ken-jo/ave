@@ -75,7 +75,7 @@ interface LaneHooks {
 
 export interface StageRunEngineDeps {
   /** The board: the row of a run carries its id, its shown status and its final output. Nothing a run is decided from is read here. */
-  store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "clearMissingRun" | "hasCommittedRun">;
+  store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "clearMissingRun" | "runAuthority" | "revokeRun" | "admitsRunEffect">;
   /** Every run-authority field: the pin, the source, the stage runs, the joins, the gates and how the run ended. */
   runs: WorkflowRunState;
   /** The authorised registry root of a project path, or null when the registry does not hold it. */
@@ -88,8 +88,10 @@ export interface StageRunEngineDeps {
   emit: (e: Omit<WorkBoardRunEvent, "at">, project?: { projectRoot?: string }) => void;
   /** What a board reader is told about the item's run changed without a board write (a gate opened, a restart's run was taken over). */
   itemChanged?: (itemId: number) => void;
-  /** Where the stages of a run work. */
-  workspace: StageWorkspaceProvider;
+  /** Where the stages of a run work. Every integration the engine starts carries the run's authority. */
+  workspace: Omit<StageWorkspaceProvider, "integrate"> & {
+    integrate(run: RunRef, joinId: string, stageIds: readonly string[], authority: AbortSignal): ReturnType<StageWorkspaceProvider["integrate"]>;
+  };
   authoriseRunSource: AuthoriseRunSource;
   /** The project-access check the template handlers use, applied to the scope an approval bound. */
   scopeAuthorised: (scope: TemplateScope) => boolean;
@@ -292,15 +294,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   const notifyItemChanged = (itemId: number): void => notify(() => deps.itemChanged?.(itemId));
   const records = deps.runs;
   const runs = new Map<number, RunState>();
-  // Checked synchronously right before an output handler, a push or an integration starts. The board a commit publishes, before its
-  // listeners run, still names this run, and no Stop or removal is under way; a run no longer live here is admitted by its row alone.
-  function canAdmitRunEffect({ itemId, runId }: RunRef): boolean {
-    const active = runs.get(itemId);
-    return store.hasCommittedRun(itemId, runId) && (active === undefined || active.runId === runId && !active.stopping);
-  }
+  // A read of the run's authority (store.runAuthority) and its committed row, made right before an output handler or integration starts.
+  const canAdmitRunEffect = ({ itemId, runId }: RunRef): boolean => store.admitsRunEffect(itemId, runId);
+  const runAuthority = ({ itemId, runId }: RunRef): AbortSignal => store.runAuthority(itemId, runId);
   const outputApprovalSurfaces = new WeakMap<RunState, Map<string, WebContents>>();
   const outputEffects = createRecordedOutputEffects({ records, outputs: deps.outputs, resolvePinned, resolveProjectRoot: deps.resolveProjectRoot, notifyItemChanged,
-    canAdmitRunEffect,
+    canAdmitRunEffect, runAuthority,
     scheduledProject: async source => {
       const approved = (await deps.attachments.getAttachment(source.attachmentId))?.approvedScope;
       return approved?.kind === "project" ? approved.projectRoot : approved?.kind === "all" ? undefined : null;
@@ -449,6 +448,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     state.rowGone = true;
     state.removedAs = cause;
     state.stopping = true;
+    store.revokeRun(state.itemId, state.runId);
     state.outputAbort?.abort();
     post(state, { type: "stop_requested" });
   }
@@ -953,7 +953,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           const surface = outputApprovalSurfaces.get(state)?.get(effect.stageId);
           if (!stage?.requestedOutputs?.length || !definition || !surface) break;
           const canExecute = () => runs.get(state.itemId) === state && !state.rowGone && !state.lost
-            && !halted(state, effect.stageId) && canShowRun(state) && !surface.isDestroyed() && canAdmitRunEffect(state.ref);
+            && !halted(state, effect.stageId) && canShowRun(state) && !surface.isDestroyed();
           const outputAbort = new AbortController();
           state.outputAbort = outputAbort;
           try {
@@ -974,10 +974,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           // A failed seal drops the open join through `seal_failed`; incomplete inputs never reach integration.
           if (!complete || !canAdmitRunEffect(state.ref)) break;
           state.integrating.add(effect.joinId);
+          const authority = runAuthority(state.ref);
           try {
-            const merged = await workspace.integrate(state.ref, effect.joinId, effect.stageIds);
+            const merged = await workspace.integrate(state.ref, effect.joinId, effect.stageIds, authority);
             post(state, merged.ok ? { type: "join_integrated", joinId: effect.joinId } : { type: "join_conflict", joinId: effect.joinId, conflict: merged.conflict });
           } catch (error) {
+            // Refused for a revoked authority: the Stop or removal that revoked it ends the run.
+            if (authority.aborted) break;
             log.warn("stage join failed (id=%d): %s", state.itemId, errorMessage(error));
             fault(state, "join-failed");
           }
@@ -1604,6 +1607,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     // A second stop while the first unwinds is the same stop.
     if (state.stopping) return { ok: true };
     state.stopping = true;
+    store.revokeRun(state.itemId, state.runId);
     state.outputAbort?.abort();
     post(state, { type: "stop_requested" });
     return { ok: true };

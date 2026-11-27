@@ -740,6 +740,14 @@ function runStatusActivityKind(
   }
 }
 
+/** The reason a run's effect authority carries once revoked (see WorkBoardStore.runAuthority). */
+class WorkflowRunRevoked extends Error {
+  constructor() {
+    super("the run was stopped or its row was removed");
+    this.name = "WorkflowRunRevoked";
+  }
+}
+
 export class WorkBoardStore {
   // Fires after every proposals.json write, including briefing, accept and dismiss.
   readonly proposalsChanged = new ChangeSignal((err) => log.warn("[work-board-proposals] change listener threw: %s", (err as Error).message));
@@ -749,6 +757,8 @@ export class WorkBoardStore {
   // such a delete that leaves its intent stored. Only a cue to read the delete intents again: no run ends by it (see runClasses).
   readonly rowDeleted = new ChangeSignal<{ itemId: number; runId: string }>((err) => log.warn("[work-board] delete listener threw: %s", (err as Error).message));
   private cache: BoardFile = emptyBoard();
+  // Each run's effect authority by `itemId#runId` (see runAuthority). Kept for the process: a revoked one must stay revoked after the run settles.
+  private readonly authorities = new Map<string, AbortController>();
   private loaded = false;
   // No legacy board copy is left started and not done; it never is again.
   private legacyCopySettled = false;
@@ -806,22 +816,27 @@ export class WorkBoardStore {
       });
     } catch (error) {
       if (error instanceof WorkBoardWriteRefusal && error.code === "work-board-runs-unreadable") this.runsUnreadable = true;
-      if (!(error instanceof WorkBoardWriteRefusal)) await this.landedAnyway(file, text);
+      if (!(error instanceof WorkBoardWriteRefusal)) await this.landedAnyway(file, text, change);
       throw error;
     }
     this.repeatedKey = false;
     this.cache = file;
-    if (change.deleted) this.rowDeleted.emit(change.deleted);
+    if (change.deleted) {
+      this.revokeRun(change.deleted.itemId, change.deleted.runId);
+      this.rowDeleted.emit(change.deleted);
+    }
     this.boardChanged.emit();
   }
 
   // A board write that failed may still have replaced the file (a failed directory sync after the rename). While the file on disk is the
   // text it wrote, the cache takes that board and listeners hear of it as after any write; the failure is still reported.
-  private async landedAnyway(file: BoardFile, text: string): Promise<void> {
+  private async landedAnyway(file: BoardFile, text: string, change: BoardChange): Promise<void> {
     const input = await readAveHomeInput(this.filePath).catch(() => undefined);
     if (input?.status !== "trusted" || !input.bytes.equals(Buffer.from(text, "utf8"))) return;
     this.repeatedKey = false;
     this.cache = file;
+    // A delete that landed takes the run's authority with the board that shows the row gone.
+    if (change.deleted) this.revokeRun(change.deleted.itemId, change.deleted.runId);
     this.boardChanged.emit();
   }
 
@@ -1108,9 +1123,31 @@ export class WorkBoardStore {
     return { status: "found", itemId: id, item: decorate(cloneItem(item), this.now(), runError) };
   }
 
-  /** Synchronous effect admission against the board published by commit before listeners run. */
-  hasCommittedRun(itemId: number, runId: string): boolean {
-    return this.cache.items.some(item => item.id === itemId && item.runId === runId);
+  /** The run's authority to start an outward effect: one signal per run, handed to every final launch point of its effects. It is
+   * aborted synchronously, and never restored, by the commit that deletes the run's row (before listeners hear of it), by a delete that
+   * landed although its write failed, and by revokeRun (Stop, or the engine finding the row removed). */
+  runAuthority(itemId: number, runId: string): AbortSignal {
+    return this.authorityOf(itemId, runId).signal;
+  }
+
+  /** Revoke a run's authority for good: Stop, or its row removed. */
+  revokeRun(itemId: number, runId: string): void {
+    this.authorityOf(itemId, runId).abort(new WorkflowRunRevoked());
+  }
+
+  /** Synchronous effect admission: the run's authority stands and the board the last commit published still names it on its row. */
+  admitsRunEffect(itemId: number, runId: string): boolean {
+    return !this.runAuthority(itemId, runId).aborted && this.cache.items.some(item => item.id === itemId && item.runId === runId);
+  }
+
+  private authorityOf(itemId: number, runId: string): AbortController {
+    const key = `${itemId}#${runId}`;
+    let authority = this.authorities.get(key);
+    if (!authority) {
+      authority = new AbortController();
+      this.authorities.set(key, authority);
+    }
+    return authority;
   }
 
   /** The template run a row names, read from the run file only. A run stored for another row is refused. */
@@ -1793,6 +1830,7 @@ export class WorkBoardStore {
       return;
     }
     if (!onDisk && operation.ownIntent) await this.runs.markUnknown(intent, operation);
+    this.revokeRun(intent.itemId, intent.runId);
     this.rowDeleted.emit(intent);
   }
 

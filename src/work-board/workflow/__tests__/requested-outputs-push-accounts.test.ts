@@ -118,7 +118,7 @@ it('a push that would need a credential prompt fails with "push failed: authenti
   const git = createHostGit({ env: { ...fixture.env, GIT_ASKPASS: "invalid-askpass-program" }, timeoutMs: 2_000 });
   const binding = await bind(git, fixture.repo);
   expect(binding?.url).toBe(endpoint);
-  const result = await executeWorkflowPush(git, fixture.repo, RUN_ID, { ...binding }, () => true);
+  const result = await executeWorkflowPush(git, fixture.repo, RUN_ID, { ...binding }, () => true, new AbortController().signal);
   expect(result.status).toBe("failed");
   expect(JSON.parse(result.detail)).toMatchObject({ exit: { code: "push-authentication" } });
   expect(requests).toEqual([""]);
@@ -129,7 +129,7 @@ it('the push of a remote whose https URL names alice asks the helper with the UR
   const runner = createHostGit({ env: fixture.env, timeoutMs: 2_000 });
   const resolved = await bind(runner, fixture.repo);
   expect(resolved?.url).toBe(endpoint);
-  const result = await executeWorkflowPush(runner, fixture.repo, RUN_ID, { ...resolved }, () => true);
+  const result = await executeWorkflowPush(runner, fixture.repo, RUN_ID, { ...resolved }, () => true, new AbortController().signal);
   const observed = readFileSync(trace, "utf8");
   expect(observed).toContain("protocol=https");
   expect(observed).not.toContain("username=");
@@ -150,7 +150,7 @@ it("after a push through a credential helper, and after a failed one, the run re
       const trace = installHelper(fixture, endpoint);
       const runner = createHostGit({ env: fixture.env, timeoutMs: 3_000 });
       const binding = await bind(runner, fixture.repo);
-      const result = await executeWorkflowPush(runner, fixture.repo, RUN_ID, { ...binding }, () => true);
+      const result = await executeWorkflowPush(runner, fixture.repo, RUN_ID, { ...binding }, () => true, new AbortController().signal);
       expect(result.status).toBe(succeeds ? "done" : "failed");
       if (succeeds) expect(fixture.userGit(join(fixture.base, "repo.git"), "rev-parse", REF)).toBe(binding?.sha);
       const receipt = JSON.parse(result.detail);
@@ -176,7 +176,7 @@ it.each([
   const runner = createHostGit({ env: { ...fixture.env, GIT_ASKPASS: "invalid-askpass-program" }, timeoutMs: 3_000 });
   const binding = await bind(runner, fixture.repo);
   const now = performance.now();
-  const result = await executeWorkflowPush(runner, fixture.repo, RUN_ID, { ...binding }, () => true);
+  const result = await executeWorkflowPush(runner, fixture.repo, RUN_ID, { ...binding }, () => true, new AbortController().signal);
   expect(result.status).toBe("failed");
   const helper = readFileSync(trace, "utf8");
   verify({ elapsed: performance.now() - now, helper, requested, hostText: JSON.stringify({ binding, result, helper }) });

@@ -16,7 +16,9 @@ function sameApprovedStage(stage: WorkItemStageRun | undefined, attempt: number,
 
 export function createRecordedOutputEffects(deps: {
   records: WorkflowRunState; outputs?: RequestedOutputHooks; resolvePinned: (pin: RunRecord["pin"]) => Promise<TemplateVersion>;
+  /** The run's effect authority and its read with the committed row (WorkBoardStore.runAuthority, admitsRunEffect). */
   canAdmitRunEffect: (run: RunRef) => boolean;
+  runAuthority: (run: RunRef) => AbortSignal;
   resolveProjectRoot: (root: string) => string | null;
   scheduledProject: (source: Extract<RunRecord["runStartedBy"], { kind: "schedule-attachment" }>) => Promise<string | undefined | null>;
   notifyItemChanged: (id: number) => void;
@@ -38,7 +40,9 @@ export function createRecordedOutputEffects(deps: {
     } else if (!workspaceRoot || !outputs) {
       result = { id: output.id, status: "failed", detail: "workspace-unavailable" };
     } else {
-      result = await outputs.execute({ run, stageId: stage.stageId, output, approvalSurface, canExecute, signal,
+      // Every launch point reads the run's authority with the caller's own liveness, right before it acts.
+      result = await outputs.execute({ run, stageId: stage.stageId, output, approvalSurface, signal, authority: deps.runAuthority(run),
+        canExecute: () => canExecute() && deps.canAdmitRunEffect(run),
         workspace: { root: workspaceRoot, repository: record.runWorkspace?.kind === "git" ? run.projectRoot : undefined },
       }).catch(() => ({ id: output.id, status: "failed", detail: signal.aborted ? "output-execution-interrupted" : "output-execution-failed" }));
     }
@@ -83,8 +87,7 @@ export function createRecordedOutputEffects(deps: {
     const stage = reserved.ok && reserved.run.stageRuns.find(row => row.stageId === stageId);
     if (!stage || !selected) return { ok: false, reason };
     const run = { itemId, runId, runKey: `work-board:${itemId}#${runId}`, projectRoot: projectRoot ?? undefined };
-    if (!await execute(record, stage, definition, selected, run, surface, () => canExecute() && deps.canAdmitRunEffect(run),
-      new AbortController().signal)) return { ok: false, reason: "run_mismatch" };
+    if (!await execute(record, stage, definition, selected, run, surface, canExecute, new AbortController().signal)) return { ok: false, reason: "run_mismatch" };
     return { ok: true };
   }
 

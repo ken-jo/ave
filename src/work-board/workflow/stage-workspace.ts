@@ -24,8 +24,10 @@ export interface StageWorkspaceProvider {
    * A non-idempotent implementation must commit its receipt atomically with the freeze. */
   seal(run: RunRef, stageId: string): Promise<{ ok: true; sealCommit?: string } | { ok: false; code: WorkspaceRefusal }>;
   /** Install one immutable result per run/join from the stage seals; repetition returns that result without another merge.
-   * A non-idempotent implementation must commit its receipt atomically with the integration. */
-  integrate(run: RunRef, joinId: string, stageIds: readonly string[]): Promise<{ ok: true } | { ok: false; conflict: JoinConflict }>;
+   * A non-idempotent implementation must commit its receipt atomically with the integration. The engine passes the run's `authority`
+   * (WorkBoardStore.runAuthority): queued behind other calls of the run, the integration rejects with its reason, merging and collecting
+   * nothing, when it is revoked by the time the call starts. */
+  integrate(run: RunRef, joinId: string, stageIds: readonly string[], authority?: AbortSignal): Promise<{ ok: true } | { ok: false; conflict: JoinConflict }>;
   /** Open the checked, owned Git join folder while serialized with workspace mutations. */
   openJoinFolder(run: RunRef, open: (path: string) => Promise<boolean>): Promise<boolean>;
   /** Stage folders only; the run branch and the output folder stay. Already absent folders are a no-op. A git run is released only

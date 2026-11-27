@@ -29,7 +29,7 @@ import { MemoryManager } from "../../memory/memory-manager.js";
 import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, IPC_APPROVAL_SETTLED, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import type { ScheduleAttachment, StageEnvelope, WorkflowTemplateRecord } from "../../shared/workflow-template-types.js";
+import type { ScheduleAttachment, StageEnvelope, TemplateStage, WorkflowTemplateRecord } from "../../shared/workflow-template-types.js";
 import { en } from "../../i18n/messages/en.js";
 import { ko } from "../../i18n/messages/ko.js";
 import { WORK_BOARD } from "../../shared/ipc-channels.js";
@@ -209,6 +209,8 @@ async function withOutputExecutor(
     gate: ApprovalGate;
     shown: Promise<ApprovalRequest>;
     nextApproval: () => Promise<ApprovalRequest>;
+    /** The run authority each output execution was handed. */
+    authorities: AbortSignal[];
     settled: Promise<string>;
     events: string[];
     handler: ReturnType<typeof vi.fn>;
@@ -218,9 +220,13 @@ async function withOutputExecutor(
 ) {
   const decl = { ...PLUGIN_OUTPUT, owner: opts.owner ?? "plugin", kind: opts.kind ?? "upload" };
   let hooks: RequestedOutputHooks;
+  const authorities: AbortSignal[] = [];
   const h = await stageRunHarness({ observeRunWork: true, workflow: { outputs: {
     accept: input => hooks.accept(input),
-    execute: input => hooks.execute(input),
+    execute: input => {
+      authorities.push(input.authority);
+      return hooks.execute(input);
+    },
   } } });
   const owner = makeMockWebContents();
   const nativeEvents = new EventEmitter();
@@ -287,7 +293,7 @@ async function withOutputExecutor(
       } }) : dispatch(calls, options);
     });
     hooks = createRequestedOutputHooks(createHostGit(), governedWorkflowOutput(registry, executor), DEFAULT_WORKSPACE);
-    await body({ h, hooks, surface, gate, shown: nextCard.promise, nextApproval: () => nextCard.promise,
+    await body({ h, hooks, surface, gate, shown: nextCard.promise, nextApproval: () => nextCard.promise, authorities,
       settled: settled.promise, events, handler, executor, registry });
   } finally {
     gate.disposeAll();
@@ -350,7 +356,7 @@ it.each(cases)("shows and executes identical args for %s after the ordinary appr
   const readFile = vi.spyOn(fs, "readFileSync").mockImplementation(observeReadFile);
   try {
     const pending = hooks.execute({ run, stageId: "review", output: request.output, approvalSurface: fixture.surface,
-      workspace: { root: h.dir }, canExecute: () => true, signal: new AbortController().signal });
+      workspace: { root: h.dir }, canExecute: () => true, signal: new AbortController().signal, authority: new AbortController().signal });
     const card = await Promise.race([shown, pending.then(() => undefined)]);
     expect(card).toBeDefined();
     if (!card) throw new Error("The tool did not ask for approval");
@@ -371,9 +377,9 @@ it.each(cases)("shows and executes identical args for %s after the ordinary appr
   }
 }));
 
-async function openOutputGate(fixture: OutputExecutorFixture, count = 1) {
+async function openOutputGate(fixture: OutputExecutorFixture, count = 1, later: TemplateStage[] = []) {
   const { h, surface } = fixture;
-  const version = await h.confirm([stageOf("review", { requestedOutputs: [PLUGIN_OUTPUT] })]);
+  const version = await h.confirm([stageOf("review", { requestedOutputs: [PLUGIN_OUTPUT] }), ...later]);
   const itemId = await h.addItem(version);
   const started = h.start(itemId, h.local(version));
   const [child] = await h.untilLive(1);
@@ -385,7 +391,8 @@ async function openOutputGate(fixture: OutputExecutorFixture, count = 1) {
   child.finish({ summary: "Ready" });
   await expect(started).resolves.toMatchObject({ status: "awaiting_approval" });
   const item = await h.item(itemId);
-  const stage = item.stageRuns[0];
+  const stage = item.stageRuns.find(run => run.stageId === "review");
+  if (!stage) throw new Error("Missing review stage");
   const outputHash = requestedOutputHash(stage);
   if (!item.runId || !stage.resultHash || !outputHash) throw new Error("Missing gate binding");
   const binding = { runId: item.runId, stageId: "review", attempt: stage.attempt, resultHash: stage.resultHash,
@@ -426,12 +433,13 @@ it("a changed tool registration prevents dispatch after the card is answered", (
 
 it.each(["Stop", "row removal"] as const)("%s cancels an unanswered output card", action => withOutputExecutor({ args: plainArgs }, async fixture => {
   const { h, settled, gate, handler } = fixture;
-  const { itemId, card, decision } = await openOutputGate(fixture, 2);
+  const { itemId, card, decision, binding: { runId } } = await openOutputGate(fixture, 2);
   expect(gate.pendingCount).toBe(1);
   const writes = vi.spyOn(h.board, "updateRun");
   try {
     if (action === "Stop") {
       expect(h.engine.cancelRun(itemId)).toEqual({ ok: true });
+      expect(h.board.runAuthority(itemId, runId).aborted).toBe(true);
     } else {
       await expect(h.board.remove(itemId)).resolves.toMatchObject({ status: "deleted" });
     }
@@ -459,7 +467,7 @@ it.each(["Stop", "row removal"] as const)("%s cancels an unanswered output card"
 
 it("refuses Allow after deletion commits while both removal subscribers are pending", () => withOutputExecutor({ args: plainArgs }, async fixture => {
   const { h, gate, handler } = fixture;
-  const { itemId, card, decision } = await openOutputGate(fixture);
+  const { itemId, card, decision, binding } = await openOutputGate(fixture);
   const release = deferred<void>();
   const classify = h.board.runClasses.bind(h.board);
   const readIntents = h.board.deleteIntentsOnDisk.bind(h.board);
@@ -475,6 +483,9 @@ it("refuses Allow after deletion commits while both removal subscribers are pend
     await expect(h.board.remove(itemId)).resolves.toMatchObject({ status: "deleted" });
     expect(classes).toHaveBeenCalled();
     expect(intents).toHaveBeenCalled();
+    // Revoked inside the deleting commit, while neither subscriber has seen the delete; the output holds that same signal.
+    expect(h.board.runAuthority(itemId, binding.runId).aborted).toBe(true);
+    expect(fixture.authorities).toEqual([h.board.runAuthority(itemId, binding.runId)]);
     expect(gate.pendingCount).toBe(1);
     answerOutput(fixture, card);
     await expect(decision).resolves.toMatchObject({ ok: true });
@@ -488,16 +499,11 @@ it("refuses Allow after deletion commits while both removal subscribers are pend
   }
 }));
 
-it("refuses Allow on a detached retry after its completed run's row is deleted", () => withOutputExecutor({ args: plainArgs }, async fixture => {
-  const { h, surface, gate, handler } = fixture;
-  const { itemId, card, decision, binding } = await openOutputGate(fixture);
-  answerOutput(fixture, card, "deny-once");
-  await expect(decision).resolves.toMatchObject({ ok: true });
-  await h.until(itemId, row => row.runStatus === "completed");
-  const [outcome] = (await h.stageRun(itemId, binding.stageId)).outputExecutions ?? [];
-  expect(outcome).toMatchObject({ status: "denied" });
+/** Retry the output `outputId` of the gated stage with a fresh gesture, up to its approval card. */
+async function openRetryCard(fixture: OutputExecutorFixture, itemId: number, binding: Awaited<ReturnType<typeof openOutputGate>>["binding"], outputId: string) {
+  const { h, surface } = fixture;
   const { runId, stageId, attempt, outputHash } = binding;
-  const input = { runId, stageId, attempt, outputHash, outputId: outcome.id };
+  const input = { runId, stageId, attempt, outputHash, outputId };
   (surface as unknown as EventEmitter).emit("before-mouse-event", {}, { type: "mouseUp" });
   const proof = securitySettingsGestures.consume(surface, { channel: WORK_BOARD.retryOutput, payload: workBoardDecisionKey(WORK_BOARD.retryOutput, itemId, input) });
   if (!proof) throw new Error("Missing retry gesture");
@@ -505,11 +511,46 @@ it("refuses Allow on a detached retry after its completed run's row is deleted",
   const retry = h.engine.retryOutput(itemId, input, { surface, proof });
   const retryCard = await Promise.race([shown, retry.then(() => undefined)]);
   if (!retryCard) throw new Error("The retry did not reach its approval card");
+  return { retry, retryCard };
+}
+
+it("refuses Allow on a detached retry after its completed run's row is deleted", () => withOutputExecutor({ args: plainArgs }, async fixture => {
+  const { h, gate, handler } = fixture;
+  const { itemId, card, decision, binding } = await openOutputGate(fixture);
+  answerOutput(fixture, card, "deny-once");
+  await expect(decision).resolves.toMatchObject({ ok: true });
+  await h.until(itemId, row => row.runStatus === "completed");
+  const [outcome] = (await h.stageRun(itemId, binding.stageId)).outputExecutions ?? [];
+  expect(outcome).toMatchObject({ status: "denied" });
+  const { retry, retryCard } = await openRetryCard(fixture, itemId, binding, outcome.id);
   await expect(h.board.remove(itemId)).resolves.toMatchObject({ status: "deleted" });
   expect(gate.pendingCount).toBe(1);
   answerOutput(fixture, retryCard);
   await expect(retry).resolves.toEqual({ ok: false, reason: "run_mismatch" });
   expect(handler).not.toHaveBeenCalled();
+}));
+
+it("keeps a retry opened during an active run revoked after Stop settles that run", () => withOutputExecutor({ args: plainArgs }, async fixture => {
+  const { h, gate, handler } = fixture;
+  const { itemId, card, decision, binding } = await openOutputGate(fixture, 1, [stageOf("build", { inputs: ["review"] })]);
+  answerOutput(fixture, card, "deny-once");
+  await expect(decision).resolves.toMatchObject({ ok: true });
+  await h.untilStage(itemId, "build", "running");
+  const [outcome] = (await h.stageRun(itemId, binding.stageId)).outputExecutions ?? [];
+  expect(outcome).toMatchObject({ status: "denied" });
+  const { retry, retryCard } = await openRetryCard(fixture, itemId, binding, outcome.id);
+  expect(h.engine.cancelRun(itemId)).toEqual({ ok: true });
+  await h.until(itemId, row => row.runStatus === "cancelled");
+  await h.drainRunWork();
+  expect(gate.pendingCount).toBe(1);
+  answerOutput(fixture, retryCard);
+  await retry;
+  expect(fixture.events.at(-1)).toBe("approvedInvocation");
+  expect(handler).not.toHaveBeenCalled();
+  expect((await h.stageRun(itemId, binding.stageId)).outputExecutions).toMatchObject([{ status: "failed" }]);
+  // The retry holds the run's own authority, which Stop revoked and the run's settlement left revoked.
+  expect(fixture.authorities.at(-1)).toBe(h.board.runAuthority(itemId, binding.runId));
+  expect(fixture.authorities.at(-1)?.aborted).toBe(true);
 }));
 
 it("refuses tool execution without an approval surface", () => withOutputExecutor({ args: plainArgs }, async fixture => {
@@ -519,7 +560,7 @@ it("refuses tool execution without an approval surface", () => withOutputExecuto
     workspaceRoot: fixture.h.dir, run, raw: { toolName, owner, ownerId, args: plainArgs, summary: "Deliver" } });
   if (!request.ok) throw new Error(request.code);
   await expect(fixture.hooks.execute({ run, stageId: "review", output: request.output, approvalSurface: null,
-    workspace: { root: fixture.h.dir }, canExecute: () => true, signal: new AbortController().signal }))
+    workspace: { root: fixture.h.dir }, canExecute: () => true, signal: new AbortController().signal, authority: new AbortController().signal }))
     .resolves.toMatchObject({ status: "denied", detail: "user-gesture-required" });
   expect(fixture.handler).not.toHaveBeenCalled();
 }));

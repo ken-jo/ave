@@ -6,6 +6,7 @@ import { deferred } from "../../../__tests__/support/deferred.js";
 import { en } from "../../../i18n/messages/en.js";
 import { ko } from "../../../i18n/messages/ko.js";
 import * as hostGitLaunch from "../../../shared/host-git.js";
+import { discoverHostGitAsync } from "../../../shared/host-git-executable.js";
 import { canonicalWorkflowJson, outputHashOf } from "../../../shared/workflow-template-output.js";
 import { configuredWorkflowPush, createHostGit, executeWorkflowPush, type HostGit } from "../host-git.js";
 import { createRequestedOutputHooks, stageOutputIntake } from "../requested-outputs.js";
@@ -46,7 +47,7 @@ function setup() {
     if (!args) throw new Error("Expected an approved push binding");
     return args;
   };
-  const push = (args: object, runner: HostGit = real) => executeWorkflowPush(runner, repo, RUN_ID, { ...args }, () => true);
+  const push = (args: object, runner: HostGit = real) => executeWorkflowPush(runner, repo, RUN_ID, { ...args }, () => true, new AbortController().signal);
   return { fixture, one, two, onePath, git, real, refs, bind, capture, push, repo };
 }
 
@@ -88,6 +89,37 @@ it("sends no configured default push option to a receiver that advertises push o
   expect(packets).toContain("push-options");
   expect(packets).not.toContain("unapproved-");
   expect(x.refs(x.one)).toBe(REF);
+});
+
+it("starts no push once the run's authority is revoked while the launcher is still finding git", async () => {
+  const x = setup();
+  const args = await x.capture();
+  const { git } = await discoverHostGitAsync(null);
+  if (git === null) throw new Error("expected fixture git");
+  const discovering = deferred<void>();
+  const release = deferred<void>();
+  let holdNext = false;
+  const paused = createHostGit({ env: x.fixture.env, resolve: async use => {
+    if (holdNext) {
+      holdNext = false;
+      discovering.resolve();
+      await release.promise;
+    }
+    return use({ path: git.path, identity: git.identity });
+  } });
+  const runner: HostGit = { ...paused, run: (cwd, gitArgs, call) => {
+    if (gitArgs[0] === "push") holdNext = true;
+    return paused.run(cwd, gitArgs, call);
+  } };
+  const spawn = vi.spyOn(hostGitLaunch, "spawnHostGitIfWorkspaceFree");
+  const authority = new AbortController();
+  const pushed = executeWorkflowPush(runner, x.repo, RUN_ID, { ...args }, () => true, authority.signal);
+  await discovering.promise;
+  authority.abort(new Error("the run was stopped"));
+  release.resolve();
+  await expect(pushed).resolves.toEqual({ status: "failed", detail: "output-execution-interrupted" });
+  expect(spawn.mock.calls.filter(([, , launched]) => launched.includes("push"))).toEqual([]);
+  empty(x);
 });
 
 it.each(["absolute", "file URL", "relative"])("shows the local transport refusal at intake for an %s remote", async shape => {
@@ -200,7 +232,7 @@ it("a push whose remote branch has diverged is not forced: it ends failed as a n
 
 it("a push request in a folder-kind run is refused at request, and an execution of one ends failed and sends nothing", async () => {
   const x = setup();
-  await expect(executeWorkflowPush(x.real, undefined, RUN_ID, { ...await x.capture() }, () => true))
+  await expect(executeWorkflowPush(x.real, undefined, RUN_ID, { ...await x.capture() }, () => true, new AbortController().signal))
     .resolves.toEqual({ status: "failed", detail: "remote-not-configured" });
   empty(x);
 });

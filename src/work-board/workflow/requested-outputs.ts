@@ -30,7 +30,9 @@ interface OutputIntake {
 export interface RequestedOutputHooks {
   accept(input: OutputIntake): Promise<Accepted>;
   execute(input: { run: RunRef; stageId: string; output: RequestedOutput; approvalSurface: WebContents | null;
-    workspace: OutputWorkspace; canExecute: () => boolean; signal: AbortSignal }): Promise<OutputExecution>;
+    workspace: OutputWorkspace; canExecute: () => boolean; signal: AbortSignal;
+    /** The run's effect authority (WorkBoardStore.runAuthority), checked by the push at process launch. */
+    authority: AbortSignal }): Promise<OutputExecution>;
 }
 
 export function declaredOutputOf(
@@ -110,12 +112,12 @@ export interface GovernedOutputAdapter {
 export function createRequestedOutputHooks(git: HostGit, adapter: GovernedOutputAdapter, defaultWorkspaceRoot: string): RequestedOutputHooks {
   return {
     accept: input => acceptRequestedOutput(input, git),
-    async execute({ run, output, approvalSurface, workspace, canExecute, signal }) {
+    async execute({ run, output, approvalSurface, workspace, canExecute, signal, authority }) {
       const { id, decl } = output;
       const args: unknown = JSON.parse(output.args);
       if (!isPlainRecord(args) || canonicalWorkflowJson(args) !== output.args) return { id, status: "failed", detail: "output-execution-failed" };
       if (signal.aborted || !canExecute()) return { id, status: "failed", detail: "output-execution-interrupted" };
-      if (isWorkflowPush(decl)) return { id, ...await executeWorkflowPush(git, workspace.repository, run.runId, args, canExecute) };
+      if (isWorkflowPush(decl)) return { id, ...await executeWorkflowPush(git, workspace.repository, run.runId, args, canExecute, authority) };
       if (!approvalSurface || approvalSurface.isDestroyed()) return { id, status: "denied", detail: "user-gesture-required" };
       if (!approvalArgsAreDisplayable(args)) return { id, status: "failed", detail: "output-args-not-displayable" };
       const status = await adapter.invoke({ output, surface: approvalSurface, signal, canExecute, cwd: run.projectRoot ?? defaultWorkspaceRoot });

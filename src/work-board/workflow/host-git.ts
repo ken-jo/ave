@@ -559,7 +559,7 @@ function pushHost(url: string): string {
 }
 
 export async function executeWorkflowPush(
-  git: HostGit, cwd: string | undefined, runId: string, args: Record<string, unknown>, canExecute: () => boolean,
+  git: HostGit, cwd: string | undefined, runId: string, args: Record<string, unknown>, canExecute: () => boolean, authority: AbortSignal,
 ): Promise<PushOutcome> {
   const failure = (code: PushCode): PushOutcome => ({ status: "failed", detail: code });
   const { remote, url, ref, sha } = args;
@@ -588,7 +588,9 @@ export async function executeWorkflowPush(
           }
           signal.throwIfAborted();
           if (!canExecute()) { outcome = failure("output-execution-interrupted"); return; }
-          const pushed = await git.run(cwd, ["push", "--porcelain", "--no-follow-tags", "--recurse-submodules=no", "--no-signed", url, `${sha}:${ref}`], lockedCall);
+          // The launcher checks both the ref lock and the run's authority as it starts the process, on every launch attempt.
+          const pushed = await git.run(cwd, ["push", "--porcelain", "--no-follow-tags", "--recurse-submodules=no", "--no-signed", url, `${sha}:${ref}`],
+            { ...lockedCall, signal: AbortSignal.any([signal, authority]) });
           // Only known diagnostic phrases are retained. A credential helper can write arbitrary secrets to either pipe.
           const authMessage = pushed.stderr.match(/authentication failed|could not read (?:username|password)|permission denied|could not read from remote|terminal prompts disabled|refusing to prompt for credentials|cannot prompt|unable to get (?:username|password)|\b(?:401|403)\b/iu)?.[0];
           const exit = pushed.code === 0 ? "ok"
@@ -596,7 +598,7 @@ export async function executeWorkflowPush(
               : /non-fast-forward|fetch first/iu.test(pushed.stdout) ? "push-non-fast-forward" : "push-failed";
           outcome = { status: pushed.code === 0 ? "done" : "failed",
             detail: canonicalWorkflowJson({ remote, host: pushHost(url).slice(0, 2048), branch: ref.slice("refs/heads/".length), sha, exit }) };
-        } catch { outcome = failure("push-failed"); }
+        } catch { outcome = failure(authority.aborted && !signal.aborted ? "output-execution-interrupted" : "push-failed"); }
       },
     });
     if (locked.code !== 0 && outcome.detail === "push-ref-changed") {

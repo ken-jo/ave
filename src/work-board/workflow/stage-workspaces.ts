@@ -837,7 +837,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     conflict: { conflictHash: resultHashOf(canonicalWorkflowJson({ runId: run.runId, joinId, reason, files, bound })), reason, files, ...(excerpt ? { excerpt } : {}) },
   });
 
-  async function integrateGit(run: RunRef, at: Held, joinId: string, stageIds: readonly string[]): ReturnType<StageWorkspaceProvider["integrate"]> {
+  async function integrateGit(run: RunRef, at: Held, joinId: string, stageIds: readonly string[], authority?: AbortSignal): ReturnType<StageWorkspaceProvider["integrate"]> {
     const { file } = at;
     const root = at.live?.root;
     const joined = file.joinDir === undefined ? undefined : at.run.child(JOIN_DIR, file.joinDir);
@@ -882,7 +882,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       file.merging = sealCommit;
       writeRunFile(at, file);
       await assertRepository(at);
-      const merged = await inJoin(["merge", "--no-edit", "--no-stat", "--no-verify", "--no-gpg-sign", "-m", `Collect stage ${stageId}\n\n${trailers(run, stageId)}`, END_OF_OPTIONS, sealCommit], { drivers });
+      // The run's authority goes to the launch itself, which checks it as it starts the process.
+      const merged = await inJoin(["merge", "--no-edit", "--no-stat", "--no-verify", "--no-gpg-sign", "-m", `Collect stage ${stageId}\n\n${trailers(run, stageId)}`, END_OF_OPTIONS, sealCommit], { drivers, ...authority ? { signal: authority } : {} });
       if (merged.code !== 0) {
         // The files are read before the abort takes the merge state away; one that could not be read refuses the join.
         const paths = await unmerged().catch((error: unknown) => error as Error);
@@ -910,7 +911,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return { ok: true };
   }
 
-  async function integrateFolder(run: RunRef, at: Held, joinId: string, stageIds: readonly string[]): ReturnType<StageWorkspaceProvider["integrate"]> {
+  async function integrateFolder(run: RunRef, at: Held, joinId: string, stageIds: readonly string[], authority?: AbortSignal): ReturnType<StageWorkspaceProvider["integrate"]> {
     const { file } = at;
     if (file.joins[joinId] === true) return { ok: true };
     if (stageIds.some(stageId => file.stages[stageId]?.sealed !== true)) throw new Error("a stage of the join is not sealed");
@@ -996,7 +997,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       if (there !== undefined && there.sha256 !== copy.sha256 && there.sha256 !== file.out[copy.path]?.sha256) next.set(copy.path, { ...there, stageId: copy.stageId });
       else wanted.push(copy);
     }
-    // Each copy is the sealed content, or it does not stay.
+    // Each copy is the sealed content, or it does not stay. Nothing is collected once the run's authority is revoked.
+    authority?.throwIfAborted();
     for (const copy of wanted) await copySeedFiles(stageDir(copy.stageId), out, [copy.path], new Map([[copy.path, copy.sha256]]));
     file.out = Object.fromEntries(next);
     file.joins[joinId] = true;
@@ -1004,11 +1006,12 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return { ok: true };
   }
 
-  function integrate(run: RunRef, joinId: string, stageIds: readonly string[]): ReturnType<StageWorkspaceProvider["integrate"]> {
+  function integrate(run: RunRef, joinId: string, stageIds: readonly string[], authority?: AbortSignal): ReturnType<StageWorkspaceProvider["integrate"]> {
     return serial(run.runId, async () => {
+      authority?.throwIfAborted();
       const found = locate(run);
       if (!found) throw new Error("the run has no workspace");
-      return found.file.kind === "git" ? integrateGit(run, found, joinId, stageIds) : integrateFolder(run, found, joinId, stageIds);
+      return found.file.kind === "git" ? integrateGit(run, found, joinId, stageIds, authority) : integrateFolder(run, found, joinId, stageIds, authority);
     });
   }
 
