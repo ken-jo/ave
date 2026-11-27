@@ -18,6 +18,12 @@ const staleHash = "b".repeat(64);
 const privateNote = "Do not put this note in the audit";
 const evidence = { login, conversationId: "active-conversation", authority: { refreshCurrent: async () => true, isCurrent: () => true } };
 
+function fromWire(request: TailnetWorkDecisionRequest): TailnetWorkDecisionRequest {
+  const parsed = parseTailnetWorkDecision(JSON.parse(JSON.stringify(request)));
+  if (!parsed) throw new Error(`Invalid listed binding for ${request.kind}`);
+  return parsed;
+}
+
 async function fixture(options: Parameters<typeof stageRunHarness>[0] = {}) {
   const h = await stageRunHarness({ observeRunWork: true, ...options });
   const routines = new RoutinesStore(join(h.dir, "routines.json"));
@@ -55,7 +61,7 @@ it("decides the current stored plan and audits the verified login without the no
 });
 
 it.each(["stage", "join"] as const)("binds a remote %s decision to the current work identity and hash", async kind => {
-  const { h, decide, log } = await fixture({
+  const { h, decide, log, runtime } = await fixture({
     integrate: () => ({ ok: false, conflict: { conflictHash: existingOutput, reason: "merge-conflict", files: [] } }),
   });
   await h.runThenEnd(async () => {
@@ -64,18 +70,21 @@ it.each(["stage", "join"] as const)("binds a remote %s decision to the current w
     const start = h.start(itemId, h.local(version));
     (await h.untilLive(1, itemId))[0].finish();
     await start;
-    const item = await h.item(itemId);
-    const runId = item.runId ?? "";
-    const decision = (hash: string): TailnetWorkDecisionRequest => kind === "stage"
-      ? { ...base, kind, itemId, input: { runId, stageId: "a", attempt: 1, resultHash: hash, decision: "reject", note: privateNote } }
-      : { ...base, kind, itemId, input: { runId, joinId: item.stageJoins[0].joinId, generation: item.stageJoins[0].conflictGeneration ?? 0, conflictHash: hash, decision: "reject" } };
-    const hash = kind === "stage" ? item.stageRuns[0].resultHash : item.stageJoins[0].conflict?.conflictHash;
-    if (!hash) throw new Error("No pending work decision");
-    await expect(decide(decision(staleHash))).resolves.toEqual({ ok: false, error: kind === "stage" ? "result_mismatch" : "conflict_mismatch" });
-    await expect(decide(decision(hash))).resolves.toMatchObject({ ok: true, kind });
+    const offered = (await runtime.list(evidence)).find(review => review.kind === kind);
+    if (!offered || (offered.kind !== "stage" && offered.kind !== "join")) throw new Error("Missing gate review");
+    const { binding } = offered;
+    if (offered.kind === "stage") {
+      const request = { ...base, kind: offered.kind, ...offered.binding, input: { ...offered.binding.input, decision: "reject", note: privateNote } } as const;
+      await expect(decide(fromWire({ ...request, input: { ...request.input, resultHash: staleHash } }))).resolves.toEqual({ ok: false, error: "result_mismatch" });
+      await expect(decide(fromWire(request))).resolves.toEqual({ ok: true, kind, status: "rejected" });
+    } else {
+      const request = { ...base, kind: offered.kind, ...offered.binding, input: { ...offered.binding.input, decision: "reject" } } as const;
+      await expect(decide(fromWire({ ...request, input: { ...request.input, conflictHash: staleHash } }))).resolves.toEqual({ ok: false, error: "conflict_mismatch" });
+      await expect(decide(fromWire(request))).resolves.toEqual({ ok: true, kind });
+    }
     expect(log).toHaveBeenCalledOnce();
     expect(JSON.stringify(log.mock.calls)).not.toContain(privateNote);
-    expect(JSON.parse(log.mock.calls[0][0].output)).toMatchObject({ origin: "tailnet-surface", login, runId, decision: kind === "join" ? "reject" : "rejected" });
+    expect(JSON.parse(log.mock.calls[0][0].output)).toMatchObject({ origin: "tailnet-surface", login, runId: binding.input.runId, decision: kind === "join" ? "reject" : "rejected" });
   });
 });
 
@@ -120,6 +129,35 @@ it("attaches a schedule with the exact pin and removes a routine created for a r
   });
 });
 
+it.each(["archived pin", "last failure"] as const)("includes the desktop schedule's %s when reviewing reattachment", async detail => {
+  const { h, decide, routines, runtime } = await fixture();
+  await h.runThenEnd(async () => {
+    const prior = h.pinOf(await h.confirm([stageOf("prior")]));
+    const next = h.pinOf(await h.confirm([stageOf("next")]));
+    const attached = await decide({ ...base, kind: "schedule-attachment", input: {
+      ...prior, expectedScope: { kind: "all" }, schedule: { repeat: { kind: "cron", expression: "0 9 * * *" } },
+    } });
+    if (!attached.ok || attached.kind !== "schedule-attachment") throw new Error("Schedule not attached");
+    if (detail === "archived pin") {
+      await h.templates.archive(prior.templateId);
+    } else {
+      const fired = await routines.markFired(attached.scheduleId);
+      if (!fired?.lastFiredAt) throw new Error("Schedule not fired");
+      await routines.recordRunOutcome(attached.scheduleId, fired.lastFiredAt, { ok: false, kind: "error", reason: "Stage failed" });
+    }
+    const offered = (await runtime.list(evidence)).find(review =>
+      review.kind === "schedule-attachment" && review.binding.input.templateId === next.templateId);
+    if (offered?.kind !== "schedule-attachment") throw new Error("Missing reattachment review");
+    if (detail === "archived pin") {
+      expect(offered.review.existingPin).toEqual(prior);
+    } else {
+      const [desktop] = (await routines.listScheduleDisplay()).routines;
+      expect(desktop.lastFailure).toMatchObject({ kind: "error", reason: "Stage failed" });
+      expect(offered.review.routine?.lastFailure).toEqual(desktop.lastFailure);
+    }
+  });
+});
+
 it("dispatches requested outputs only while their owner is registered", async () => {
   const { h, decide, runtime, log } = await fixture();
   await h.runThenEnd(async () => {
@@ -153,10 +191,13 @@ it("dispatches requested outputs only while their owner is registered", async ()
     const { decision: _decision, ...binding } = input;
     const reviews = await runtime.list(evidence);
     expect(reviews).toContainEqual({ kind: "requested-output", deny: "reject", binding: { input: binding }, review: { outputs } });
+    const offered = reviews.find(review => review.kind === "requested-output");
+    if (!offered) throw new Error("Missing requested-output review");
     expect(list).toHaveBeenCalledWith(binding, expect.objectContaining({ login, conversationId: evidence.conversationId }));
     await expect(decide({ ...request, input: { ...input, runId: "stale-run" } })).resolves.toEqual({ ok: false, error: "run_mismatch" });
     await expect(decide({ ...request, input: { ...input, outputHash: staleHash } })).resolves.toEqual({ ok: false, error: "output_mismatch" });
-    await expect(decide(request)).resolves.toEqual({ ok: true, kind: "requested-output" });
+    await expect(decide(fromWire({ ...base, kind: offered.kind, input: { ...offered.binding.input, decision: "approve" } })))
+      .resolves.toEqual({ ok: true, kind: "requested-output" });
     const { itemId: _itemId, ...stageBinding } = input;
     await expect(decide({ ...base, kind: "stage", itemId, input: { ...stageBinding, resultHash: stage.resultHash ?? "" } }))
       .resolves.toEqual({ ok: true, kind: "stage", status: "approved" });
@@ -208,7 +249,7 @@ it("shares the desktop review binding for a conversation proposal and makes owne
     expect(parseTailnetWorkDecision(confirmationRequest)).toEqual(confirmationRequest);
     expect(parseTailnetWorkDecision({ ...confirmationRequest, input: { ...confirmation.binding.input, decision: "reject" } })).toBeNull();
     expect(parseTailnetWorkDecision({ ...confirmationRequest, input: { ...confirmation.binding.input, expectedDraftRevision: "bad revision" } })).toBeNull();
-    await expect(decide(confirmationRequest)).resolves.toMatchObject({ ok: true, kind: "template-confirmation" });
+    await expect(decide(fromWire(confirmationRequest))).resolves.toMatchObject({ ok: true, kind: "template-confirmation" });
 
     const run = (await runtime.list(evidence)).find(review => review.kind === "create-and-run");
     if (!run) throw new Error("Missing run review");
@@ -216,6 +257,10 @@ it("shares the desktop review binding for a conversation proposal and makes owne
     const runRequest = { ...base, kind: run.kind, ...run.binding };
     expect(parseTailnetWorkDecision(runRequest)).toMatchObject(runRequest);
     expect(parseTailnetWorkDecision({ ...runRequest, input: { ...runRequest.input, decision: "reject" } })).toBeNull();
+    const started = await decide(fromWire(runRequest));
+    if (!started.ok || started.kind !== "create-and-run") throw new Error("Template not started");
+    expect(h.children).toHaveLength(1);
+    (await h.untilLive(1, started.itemId))[0].finish();
 
     const scheduleRequest = { ...base, kind: "schedule-attachment", input: {
       templateId: run.binding.input.templateId, version: run.binding.input.version, graphHash: run.binding.input.graphHash,
@@ -231,6 +276,6 @@ it("shares the desktop review binding for a conversation proposal and makes owne
     const reattach = { ...base, kind: schedule.kind, ...schedule.binding };
     expect(parseTailnetWorkDecision(reattach)).toEqual(reattach);
     expect(parseTailnetWorkDecision({ ...reattach, input: { ...reattach.input, decision: "reject" } })).toBeNull();
-    expect(h.children).toHaveLength(0);
+    await expect(decide(fromWire(reattach))).resolves.toMatchObject({ ok: true, kind: "schedule-attachment", scheduleId: attachment.scheduleId });
   });
 });

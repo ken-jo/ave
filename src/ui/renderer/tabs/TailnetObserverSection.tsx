@@ -9,6 +9,7 @@ import { SettingsSection, type SettingsSectionFeedback } from "../components/Pag
 import {
   DEFAULT_TAILNET_OBSERVER_VIEW_PORT,
   TAILNET_OBSERVER_CONFIG_KEYS,
+  TAILNET_PORT_CONFINED_WORKER_RANGE,
   type TailnetObserverConfigKeyView,
   type TailnetObserverConfigView,
   type TailnetObserverSnapshot,
@@ -57,6 +58,8 @@ export function tailnetObserverErrorText(code: string, t: (key: string) => strin
       return t("tailnetObserver.errorAuthorization");
     case "tailnet-observer-port-invalid":
       return t("tailnetObserver.errorPort");
+    case TAILNET_PORT_CONFINED_WORKER_RANGE:
+      return t("tailnetObserver.errorPortConfinedWorkerRange");
     case "tailnet-controller-requires-paired-sharing":
       return t("tailnetObserver.errorControllerNeedsPairing");
     case "tailnet-web-requires-paired-sharing":

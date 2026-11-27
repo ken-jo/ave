@@ -1,4 +1,5 @@
 // Revalidate renderer proposals with the boot resolver and persist in the tailnet namespace; settings cannot grant this authority.
+import { assertTailnetListenerPortAllowed } from "../permissions/tailnet-listener-policy.js";
 import {
   chooseObserverPort,
   configureTailscaleServe,
@@ -213,6 +214,7 @@ export function createTailnetObserverConfigService(
     },
 
     async apply(config: TailnetObserverConfigView): Promise<void> {
+      if (config.enabled || config.port !== DEFAULT_TAILNET_OBSERVER_PORT) assertTailnetListenerPortAllowed(config.port);
       const environment = await probeEnvironment();
       await writeConfigFile(proposalToFile(config, tailnetWebOriginFor(environment.dnsName)));
       // The listener used to wait for the next launch, which is the step nobody knew to take: a toggle that does nothing for an hour reads as broken.
@@ -261,12 +263,11 @@ export function createTailnetObserverConfigService(
       const preferred = file?.port ?? DEFAULT_TAILNET_OBSERVER_PORT;
       // A port this process is already listening on is not a conflict — the restart below releases it — and probing it would move a working setup to a new
       // port every time the owner pressed the button.
-      const port = runtimeState().listeningPort === preferred
-        ? preferred
-        : await choosePort(preferred);
-      if (port === null) return guidedFailure("tailnet-guided-setup-port-unavailable");
-
+      let port: number | null;
       try {
+        port = runtimeState().listeningPort === preferred ? preferred : await choosePort(preferred);
+        if (port === null) return guidedFailure("tailnet-guided-setup-port-unavailable");
+        assertTailnetListenerPortAllowed(port);
         await writeConfigFile(
           proposalToFile(recommendedConfig(port), tailnetWebOriginFor(environment.dnsName)),
         );

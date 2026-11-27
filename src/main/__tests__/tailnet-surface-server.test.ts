@@ -4,6 +4,7 @@ import { unavailableSecretEncryption } from "../../__tests__/support/host-runtim
 import { createServer } from "node:net";
 import { occupyLoopbackPort as occupy } from "../../__tests__/test-helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as sandbox from "../../permissions/asrt-sandbox.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import type { TailnetPairedSharingRuntime } from "../tailnet-paired-sharing-runtime.js";
 import type { FeatureNamespaceHandle } from "../storage/feature-namespace.js";
@@ -29,6 +30,7 @@ import {
   stopTailnetObserverServer,
   tailnetWebOriginFor,
   tailscaleServeCommandText,
+  writeTailnetObserverConfigFile,
   type TailnetObserverConfigFile,
   type TailscaleCommandResult,
   type TailscaleCommandRunner,
@@ -92,6 +94,34 @@ afterEach(async () => {
 });
 
 describe("Tailnet observer lifecycle", () => {
+  it("refuses a saved or overridden port in the confined-worker loopback range before starting", async () => {
+    const port = DEFAULT_TAILNET_OBSERVER_PORT;
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const range = vi.spyOn(sandbox, "getWindowsProxyPortRange").mockReturnValue([port - 1, port]);
+    const namespace = { writeJson: vi.fn() };
+    try {
+      await expect(writeTailnetObserverConfigFile({ enabled: true, authorization: TAILNET_IDENTITY, port }, namespace as unknown as FeatureNamespaceHandle))
+        .rejects.toThrow("tailnet-observer-port-confined-worker-range");
+      expect(namespace.writeJson).not.toHaveBeenCalled();
+
+      const f = options({
+        AVE_TAILNET_OBSERVER: "1",
+        AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
+        AVE_TAILNET_OBSERVER_PORT: String(port),
+      });
+      await expect(maybeStartTailnetObserverServer(f.input)).rejects.toThrow("tailnet-observer-port-confined-worker-range");
+      expect(f.startServer).not.toHaveBeenCalled();
+      expect(getTailnetObserverRuntimeState().lastStartError).toBe("tailnet-observer-port-confined-worker-range");
+
+      range.mockReturnValue(sandbox.DEFAULT_WINDOWS_PROXY_PORT_RANGE);
+      const accepted = options({ AVE_TAILNET_OBSERVER: "1", AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV });
+      await expect(maybeStartTailnetObserverServer(accepted.input)).resolves.toEqual({ port });
+    } finally {
+      range.mockRestore();
+      platform.mockRestore();
+    }
+  });
+
   it("is default OFF and has zero listener construction effect", async () => {
     const f = options({});
     await expect(maybeStartTailnetObserverServer(f.input)).resolves.toBeNull();
@@ -803,6 +833,19 @@ describe("Tailnet observer restart", () => {
 });
 
 describe("choosing a loopback port for the observer", () => {
+  it("refuses an overlapping preferred port before probing it", async () => {
+    const port = DEFAULT_TAILNET_OBSERVER_PORT - 1;
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const range = vi.spyOn(sandbox, "getWindowsProxyPortRange").mockReturnValue([port, port + 1]);
+    try {
+      await expect(chooseObserverPort(port)).rejects.toThrow("tailnet-observer-port-confined-worker-range");
+      await expect(chooseObserverPort(null)).rejects.toThrow("tailnet-observer-port-confined-worker-range");
+    } finally {
+      range.mockRestore();
+      platform.mockRestore();
+    }
+  });
+
   // A port nothing holds right now, learned from the OS rather than guessed.
   async function freePort(): Promise<number> {
     const probe = createServer();

@@ -58,7 +58,7 @@ export type TailnetWorkReview =
   | { kind: "create-and-run"; deny: "dismiss"; binding: DecisionBinding<"create-and-run">; review: TailnetTemplateRunReview }
   | { kind: "schedule-attachment"; deny: "dismiss"; binding: { input: ScheduleAttachmentRequest }; review: {
       name: string; existingPin?: TemplateVersionPin;
-      routine?: Pick<RoutineRecord, "schedule" | "title" | "templateAttention" | "pausedAt" | "lastTemplateSkip">;
+      routine?: Pick<RoutineRecord, "schedule" | "title" | "templateAttention" | "pausedAt" | "lastTemplateSkip" | "lastFailure">;
     } }
   | TailnetRequestedOutputReview;
 

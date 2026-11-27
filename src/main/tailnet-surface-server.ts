@@ -44,6 +44,7 @@ import {
 } from "./tailnet-pairing-share-store.js";
 import { TAILNET_WORK_DECISION_PATH } from "../shared/tailnet-work-decisions.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
+import { assertTailnetListenerPortAllowed } from "../permissions/tailnet-listener-policy.js";
 
 export const DEFAULT_TAILNET_OBSERVER_PORT = 46_173;
 
@@ -323,7 +324,10 @@ export async function writeTailnetObserverConfigFile(
   file: TailnetObserverConfigFile,
   namespace: FeatureNamespaceHandle = openFeatureNamespace(TAILNET_FEATURE_NAMESPACE),
 ): Promise<void> {
-  resolveFromLayers(fileLayer(parseTailnetObserverConfigFile(file)), {});
+  const parsed = parseTailnetObserverConfigFile(file);
+  const { config } = resolveFromLayers(fileLayer(parsed), {});
+  const port = config?.port ?? parsed.port;
+  if (port !== undefined) assertTailnetListenerPortAllowed(port);
   await namespace.writeJson(TAILNET_OBSERVER_CONFIG_FILE, file);
 }
 
@@ -400,12 +404,13 @@ export async function chooseObserverPort(preferred: number | null): Promise<numb
     ? [DEFAULT_TAILNET_OBSERVER_PORT]
     : [preferred, DEFAULT_TAILNET_OBSERVER_PORT];
   for (const candidate of candidates) {
-    // The bound port, not the candidate: they are the same for a fixed number, and reporting what was actually bound is what makes the `0` case mean
-    // "whatever the OS handed out" rather than the literal zero.
+    assertTailnetListenerPortAllowed(candidate);
     const bound = await probeLoopbackBind(candidate);
     if (bound !== null) return bound;
   }
-  return await probeLoopbackBind(0);
+  const bound = await probeLoopbackBind(0);
+  if (bound !== null) assertTailnetListenerPortAllowed(bound);
+  return bound;
 }
 
 function dependencies(
@@ -600,6 +605,7 @@ async function startForBoot(
     readConfigFile: resolved.readConfigFile,
   });
   if (!config) return null;
+  assertTailnetListenerPortAllowed(config.port);
   if (config.controllerEnabled && options.conversationCommandPort === undefined) {
     throw new Error("tailnet-controller-command-port-unavailable");
   }

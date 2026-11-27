@@ -726,10 +726,10 @@ Agent network isolation blocks direct access to the host listener. The macOS
 profile limits TCP egress to the invocation's proxy and denies the active
 listener port. Linux uses a separate network namespace. Windows containers use
 default-deny egress and an invocation-specific proxy endpoint. For Windows
-workers using a port-range loopback permit, the listener must be outside that
-range for the direct restriction to hold. The host egress proxies refuse the
-live listener's port before applying agent allowlists or resolving the
-destination. Host-mediated plugin fetches enforce the same port restriction
+workers using a port-range loopback permit, port selection, configuration and
+listener startup refuse ports within the effective permit range. The host
+egress proxies refuse the live listener's port before applying agent allowlists
+or resolving the destination. Host-mediated plugin fetches enforce the same port restriction
 at admission and handoff, including when the manifest allows loopback. The
 direct restriction requires OS isolation to be active.
 

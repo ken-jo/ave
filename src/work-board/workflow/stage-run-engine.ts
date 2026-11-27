@@ -117,6 +117,7 @@ export type ScheduledTemplateStart =
 interface StageRunStart {
   source: RunAuthoritySource;
   authority?: WorkDecisionAuthority;
+  /** With live authority, reports acceptance when the first child is handed to the runner. */
   onStarted?: (runId: string) => void;
 }
 
@@ -176,6 +177,8 @@ interface RunState {
   refused: { code: string; tool?: EnvelopeToolRef } | null;
   /** A fire is provisional until its first child links. Stays present through rollback and result reporting. */
   scheduledStart?: { refusal?: WorkItemRunResult };
+  /** Live authority for the initial launch, cleared when the first child is handed to the runner. */
+  pendingStart?: { authority: WorkDecisionAuthority; onStarted: StageRunStart["onStarted"] };
   /** stageId → childSessionId, set when the child links. */
   live: Map<string, string>;
   /** `${stageId}#${attempt}` the reducer asked to spawn and no launch consumed yet. */
@@ -1051,16 +1054,24 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         throw stored.reason === "row-gone" ? new WorkflowInvariantError("run-stopped") : new WorkflowInvariantError("run-state-failed", writeFault(stored.reason));
       }
 
-      // The spawn boundary. Preparing took time: the run's source is asked again, and a stop, a refusal or a fault that arrived meanwhile
-      // ends the launch here. Nothing is awaited between these checks and the spawn.
+      // Refresh the source and the live remote authority after preparing the child.
       if ((await authorise()).lane !== lane) throw new WorkflowInvariantError("run-not-authorised", "source-not-authorised");
+      const pendingStart = state.pendingStart;
+      if (pendingStart) {
+        const current = await pendingStart.authority.refreshCurrent();
+        // Another initial stage may have accepted the start while this launch waited.
+        if (state.pendingStart === pendingStart && (!current || !pendingStart.authority.isCurrent())) {
+          throw new WorkflowInvariantError("run-not-authorised", WORK_DECISION_AUTHORITY_REVOKED);
+        }
+      }
+      // Nothing is awaited after the live check and before the spawn.
       if (halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");
 
       let linked: string | undefined;
       let scoped = false;
       let activitySignature = "";
       try {
-        const result = await runner.spawn(
+        const running = runner.spawn(
           {
             title: `${stage.name}: ${item.title}`,
             instructions: prompt.instructions,
@@ -1113,6 +1124,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
             },
           },
         );
+        if (state.pendingStart) {
+          const { onStarted } = state.pendingStart;
+          state.pendingStart = undefined;
+          onStarted?.(state.runId);
+        }
+        const result = await running;
         return { result, inputTaint: prompt.taint !== undefined };
       } finally {
         state.live.delete(stageId);
@@ -1243,9 +1260,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (a.source.kind === "tailnet-create-and-run" && !a.authority) return refusedStart(WORK_DECISION_AUTHORITY_REVOKED);
       const checked = await checkStart(a.source, row.projectRoot);
       if ("status" in checked) return checked;
-      const started = await beginStart(itemId, a.source, checked, undefined, a.authority);
+      const started = await beginStart(itemId, a.source, checked, undefined, a);
       if ("status" in started) return started;
-      a.onStarted?.(started.runId);
+      if (!a.authority) a.onStarted?.(started.runId);
       return await firstResult(started);
     } finally {
       // A refused start never opened a run; the caller's in-flight mark goes with it.
@@ -1360,7 +1377,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return { itemId, runId, runKey: runKeyOf(itemId, runId), ...(projectRoot !== undefined ? { projectRoot } : {}) };
   }
 
-  async function beginStart(itemId: number, source: RunAuthoritySource, { projectRoot, version }: CheckedStart, scheduledRef?: RunRef, authority?: WorkDecisionAuthority): Promise<RunState | WorkItemRunResult> {
+  async function beginStart(itemId: number, source: RunAuthoritySource, { projectRoot, version }: CheckedStart, scheduledRef?: RunRef, start?: StageRunStart): Promise<RunState | WorkItemRunResult> {
+    const authority = start?.authority;
     const ref = scheduledRef ?? newRunRef(itemId, projectRoot);
     const pin = source.pin;
     const refused = refusedStart;
@@ -1411,6 +1429,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const state = openState(itemId, runId, projectRoot, source);
     if (scheduledRef) state.scheduledStart = {};
     if (authority) {
+      state.pendingStart = { authority, onStarted: start?.onStarted };
       // The first scheduler write reduces the start into spawn effects. Commit it under the same guard as other decisions.
       const reason = await enqueue(state, () => handle(state, { type: "started" }, () => null, undefined, undefined, authority))
         .catch(error => {

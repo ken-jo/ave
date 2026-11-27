@@ -126,8 +126,15 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
     for (const proposal of templates.listProposals(evidence.conversationId)) {
       confirmations(proposal.id, proposal.id, proposal.graphHash, proposal.draft);
     }
-    const attachments = new Map(records.filter(record => scopeAuthorised(record.template.scope)).flatMap(record => (record.scheduleAttachments ?? [])
-      .filter(attachment => attachment.detachedAt === undefined).map(attachment => [attachment.id, attachment] as const)));
+    const scheduleReviews = schedules.routines.flatMap(routine => {
+      const { schedule, projectRoot, lastFailure } = routine;
+      if (routine.execution !== "template-run" || !schedule || routine.templateAttention === "attachment-unavailable"
+        || (projectRoot !== undefined && !isAuthorizedWorkspaceProjectRoot(projectRoot))) return [];
+      return [{ routine, schedule, lastFailure }];
+    });
+    const attachedScheduleIds = new Set(scheduleReviews
+      .filter(({ routine }) => routine.attachmentId !== undefined).map(({ routine }) => routine.id));
+    const attachments = attachedScheduleIds.size === 0 ? undefined : await templates.listActiveScheduleAttachments(attachedScheduleIds);
     for (const { template, versions, draft } of records) {
       if (!scopeAuthorised(template.scope)) continue;
       if (draft) {
@@ -146,18 +153,18 @@ export function createTailnetWorkDecisions(services: Partial<TailnetWorkDecision
         binding: { input: { ...pin, title: name, ...(projectRoot === undefined ? {} : { projectRoot }) } },
         review: { name, scope, graph: { stages, edges, setupCommands }, projects: choices },
       });
-      for (const routine of schedules.routines) {
-        if (routine.execution !== "template-run" || !routine.schedule || routine.templateAttention === "attachment-unavailable"
-          || (routine.projectRoot !== undefined && !isAuthorizedWorkspaceProjectRoot(routine.projectRoot))) continue;
-        const prior = routine.attachmentId === undefined ? undefined : attachments.get(routine.attachmentId);
+      for (const { routine, schedule, lastFailure } of scheduleReviews) {
+        const active = attachments?.get(routine.id)?.attachment;
+        const prior = active?.id === routine.attachmentId ? active : undefined;
         review.push({
           kind: "schedule-attachment", deny: "dismiss",
           binding: { input: { ...pin, expectedScope: scope, scheduleId: routine.id } },
           review: {
             name, ...(prior ? { existingPin: { templateId: prior.templateId, version: prior.version, graphHash: prior.graphHash } } : {}),
             routine: {
-              schedule: routine.schedule, title: routine.title && maskWorkflowText(routine.title), templateAttention: routine.templateAttention,
+              schedule, title: routine.title && maskWorkflowText(routine.title), templateAttention: routine.templateAttention,
               pausedAt: routine.pausedAt, lastTemplateSkip: routine.lastTemplateSkip,
+              lastFailure: lastFailure?.kind === "error" ? { ...lastFailure, reason: maskWorkflowText(lastFailure.reason) } : lastFailure,
             },
           },
         });

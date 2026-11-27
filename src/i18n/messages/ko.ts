@@ -5928,6 +5928,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "tailnetObserver.sourceEnvOverride": "환경 변수로 설정됨",
   "tailnetObserver.errorAuthorization": "이 리스너에 접근할 수 있는 대상을 고르고, 앱 capability를 요구한다면 그 값을 입력하세요.",
   "tailnetObserver.errorPort": "1부터 65535 사이의 포트를 입력하세요.",
+  "tailnetObserver.errorPortConfinedWorkerRange": "이 포트는 샌드박스의 루프백 포트 범위에 포함됩니다. 범위 밖의 포트를 선택하세요.",
   "tailnetObserver.errorControllerNeedsPairing": "원격 명령을 사용하려면 페어링 공유를 켜야 합니다.",
   "tailnetObserver.errorWebNeedsPairing": "웹으로 접속하려면 페어링 공유를 켜야 합니다.",
   "tailnetObserver.errorWebOrigin": "이 컴퓨터의 MagicDNS 이름에서 파생한 오리진이 사용 가능한 테일넷 HTTPS 오리진이 아닙니다.",

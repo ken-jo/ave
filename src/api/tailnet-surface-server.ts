@@ -1,4 +1,5 @@
 import { reserveTailnetListenerPort } from "../shared/tailnet-listener-port.js";
+import { assertTailnetListenerPortAllowed } from "../permissions/tailnet-listener-policy.js";
 import { TAILNET_WORK_DECISION_CAPABILITY, TAILNET_WORK_DECISION_PATH, type TailnetWorkDecisionRequest, type TailnetWorkDecisionResponse, type TailnetWorkReview, type TailnetWorkReviewSnapshot } from "../shared/tailnet-work-decisions.js";
 import type { RemoteWorkDecisionEvidence } from "../main/workflow-template-decision.js";
 import { parseTailnetWorkDecision } from "./tailnet-work-decision-input.js";
@@ -316,7 +317,7 @@ export function isTailnetWebOrigin(value: unknown): value is string {
   }
 }
 
-export function startTailnetSurfaceServer(
+export async function startTailnetSurfaceServer(
   options: TailnetSurfaceServerOptions,
 ): Promise<TailnetSurfaceServer> {
   const host = options.host ?? LOOPBACK_HOST;
@@ -326,6 +327,7 @@ export function startTailnetSurfaceServer(
   if (!Number.isSafeInteger(options.port) || options.port < 1 || options.port > 65_535) {
     return Promise.reject(new Error("tailnet surface server port must be a nonzero TCP port"));
   }
+  assertTailnetListenerPortAllowed(options.port);
   if (typeof options.probeOwnerIdentity !== "function" || typeof options.ownerIdentityError !== "function" || (options.pairedSharing !== undefined && typeof options.pairedSharing.ownerIdentityError !== "function")) {
     return Promise.reject(new Error("tailnet-owner-identity-policy-unavailable"));
   }

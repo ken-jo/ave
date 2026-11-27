@@ -9,7 +9,12 @@ import type {
   TailscaleEnvironmentView,
 } from "../../../../shared/tailnet-observer-config.js";
 import type { AveApi } from "../../types.js";
-import { TailnetObserverSection } from "../TailnetObserverSection.js";
+import { TailnetObserverSection, tailnetObserverErrorText } from "../TailnetObserverSection.js";
+
+it("maps a confined-worker port refusal to its localized settings message", () => {
+  expect(tailnetObserverErrorText("tailnet-observer-port-confined-worker-range", key => key))
+    .toBe("tailnetObserver.errorPortConfinedWorkerRange");
+});
 
 const CAPABILITY = "ave.example.com/cap/conversation-observer";
 

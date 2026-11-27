@@ -24,12 +24,18 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
 import { openEgressRelay, startEgressRelayService, stopEgressRelayService } from "../../permissions/egress-relay/relay.js";
 import { openEgressInvocation } from "../../permissions/egress-invocations.js";
-import type { TailnetWorkReview } from "../../shared/tailnet-work-decisions.js";
+import type { TailnetWorkDecisionRequest, TailnetWorkReviewSnapshot } from "../../shared/tailnet-work-decisions.js";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
-import { resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
+import * as sandbox from "../../permissions/asrt-sandbox.js";
 import { spawnWithSandbox } from "../../tools/shell-tools.js";
 import { prepareSandboxFixture } from "../../tools/__tests__/support/prepared-shell.js";
 import { quoteSandboxWrappedWord } from "../../permissions/sandbox-wrapped-command.js";
+import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
+import { RoutinesStore } from "../../main/routines-store.js";
+import { createTailnetWorkDecisions } from "../../main/tailnet-work-decisions.js";
+import { itemDigestOf } from "../../main/work-board-store.js";
+import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 
 const CAPABILITY = "ave.example.com/cap/conversation-observer";
 const APP_CAPABILITY = Object.freeze({ kind: "app-capability" as const, capability: CAPABILITY });
@@ -52,6 +58,7 @@ afterEach(async () => {
 });
 
 interface FixtureOptions {
+  readonly port?: number;
   readonly probeOwnerIdentity?: () => Promise<import("../../main/tailnet-owner-policy.js").TailnetOwnerIdentityEvidence>;
   readonly ownerIdentityError?: (login: string, evidence: import("../../main/tailnet-owner-policy.js").TailnetOwnerIdentityEvidence) => import("../../shared/tailnet-sharing.js").TailnetOwnerIdentityErrorCode | null;
   readonly authorization?: TailnetAuthorization;
@@ -83,7 +90,7 @@ async function fixture(options: FixtureOptions = {}) {
   const server = await startTailnetSurfaceServer({
     probeOwnerIdentity: options.probeOwnerIdentity ?? (async () => ({ revision: 1, ownerLogin: "owner@example.com" })),
     ownerIdentityError: options.ownerIdentityError ?? (() => null),
-    port: await reservePort(),
+    port: options.port ?? await reservePort(),
     authorization: options.authorization ?? APP_CAPABILITY,
     projectionStore: store,
     getCurrentConversationId: options.conversationId ?? (() => CONVERSATION_ID),
@@ -356,6 +363,18 @@ describe("Tailnet observer authorization", () => {
 });
 
 describe("Tailnet observer HTTP boundary", () => {
+  it("refuses to bind inside the effective confined-worker loopback range", async () => {
+    const port = await reservePort();
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const range = vi.spyOn(sandbox, "getWindowsProxyPortRange").mockReturnValue([port, port]);
+    try {
+      await expect(fixture({ port })).rejects.toThrow("tailnet-observer-port-confined-worker-range");
+    } finally {
+      range.mockRestore();
+      platform.mockRestore();
+    }
+  });
+
   it("binds only fixed literal loopback ports", async () => {
     const timeline = createPlatformConversationTimeline();
     const store = createSharedConversationProjectionStore(timeline);
@@ -2183,52 +2202,120 @@ it("refuses the live listener through an agent egress relay while the paired Web
   }
 });
 
-it("carries pending review bindings on the paired snapshot and withholds them after revocation", async () => {
+async function pairedWorkFixture(h: Awaited<ReturnType<typeof stageRunHarness>>) {
   const sharing = pairedSharing({ observe: true, control: true });
-  const binding = { itemId: 1, input: { runId: "run", planHash: "a".repeat(64) } };
-  const list = vi.fn(async (): Promise<readonly TailnetWorkReview[]> => [{
-    kind: "plan", deny: "reject", binding,
-    review: {
-      kind: "plan", key: "plan:1", scope: { type: "unscoped" }, title: "Work", arrivedAt: "2026-11-27T00:00:00Z",
-      itemId: 1, runId: "run", planHash: binding.input.planHash, plan: "Current review",
-      revision: 0, planNumber: 1, phase: "pending", stale: false,
-    },
-  }]);
-  const decide = vi.fn(async () => ({ ok: true as const, kind: "plan" as const, status: "rejected" as const }));
+  const routines = new RoutinesStore(join(h.dir, "routines.json"));
+  routines.bindTemplateAttachments(h.templates);
+  const log = vi.fn();
+  const runtime = createTailnetWorkDecisions({
+    workBoardStore: h.board, workBoardEngine: h.engine, workflowTemplateStore: h.templates, routinesStore: routines,
+    settingsService: { get: key => DEFAULT_SETTINGS[key] }, auditLogger: { log },
+  });
+  if (!runtime) throw new Error("Work decision runtime unavailable");
+  const list = vi.fn(runtime.list);
   const { server } = await fixture({
     pairedSharing: sharing.authorizer,
-    web: { origin: WEB_ORIGIN, workDecisions: { decide, list, verifyServeTarget: async () => true, receipts: createReceiptStore() } },
+    web: { origin: WEB_ORIGIN, workDecisions: { decide: runtime.decide, list, verifyServeTarget: async () => true, receipts: createReceiptStore() } },
   });
   const snapshot = url(server, "/tailnet/v2/web/snapshot");
   const session = await openWebSession(server);
   const headers = webSessionHeaders(session.cookieToken, session.csrfToken, ["observer", "controller", "work-decision"]);
-  const unpaired = await fetch(snapshot, { headers: { ...headers, Cookie: "" } });
-  expect(unpaired.status).toBe(401);
-  expect(await unpaired.text()).not.toContain("Current review");
-  expect(list).not.toHaveBeenCalled();
+  async function readReviews(): Promise<TailnetWorkReviewSnapshot> {
+    const read = await fetch(snapshot, { headers });
+    expect(read.status).toBe(200);
+    return (await read.json()).snapshot;
+  }
+  function postDecision(request: TailnetWorkDecisionRequest): Promise<Response> {
+    return fetch(url(server, "/tailnet/v2/web/work-decisions"), {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(request),
+    });
+  }
+  return { sharing, snapshot, session, headers, list, log, readReviews, postDecision };
+}
 
-  const observer = await fetch(snapshot, { headers: webSessionHeaders(session.cookieToken, session.csrfToken) });
-  expect(observer.status).toBe(200);
-  expect(await observer.text()).not.toContain("Current review");
-  expect(list).not.toHaveBeenCalled();
+it("posts a real plan binding from the paired snapshot and withholds reviews after revocation", async () => {
+  const h = await stageRunHarness();
+  await h.runThenEnd(async () => {
+    const { sharing, snapshot, session, headers, list, log, readReviews, postDecision } = await pairedWorkFixture(h);
+    const plan = "Current review";
+    const created = await h.board.create({ title: "Work" });
+    if (created.status !== "created") throw new Error("Work item not created");
+    const { itemId } = created;
+    const runId = "plan-run";
+    await h.board.beginRun(itemId, runId, "2026-11-27T00:00:00Z");
+    await h.board.setPlanAwaitingApproval(itemId, { runId, plan, runSessionId: "plan-session", revision: 1, itemDigest: itemDigestOf(created.item) });
 
-  const read = await fetch(snapshot, { headers });
-  expect(read.status).toBe(200);
-  const { scope, workReviews } = (await read.json()).snapshot;
-  expect(workReviews).toEqual(await list.mock.results[0].value);
-  const [{ kind, binding: reviewed }] = workReviews;
-  const request = { id: crypto.randomUUID(), scope, kind, ...reviewed, input: { ...reviewed.input, decision: "reject" } };
-  const response = await fetch(url(server, "/tailnet/v2/web/work-decisions"), {
-    method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(request),
+    const unpaired = await fetch(snapshot, { headers: { ...headers, Cookie: "" } });
+    expect(unpaired.status).toBe(401);
+    expect(await unpaired.text()).not.toContain(plan);
+    expect(list).not.toHaveBeenCalled();
+
+    const observer = await fetch(snapshot, { headers: webSessionHeaders(session.cookieToken, session.csrfToken) });
+    expect(observer.status).toBe(200);
+    expect(await observer.text()).not.toContain(plan);
+    expect(list).not.toHaveBeenCalled();
+
+    const { scope, workReviews } = await readReviews();
+    const offered = workReviews?.find(review => review.kind === "plan");
+    if (!offered) throw new Error("Missing plan review");
+    expect(offered.review.plan).toBe(plan);
+    const { kind, binding } = offered;
+    const response = await postDecision({ id: crypto.randomUUID(), scope, kind, ...binding, input: { ...binding.input, decision: "reject" } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, kind, status: "rejected" });
+    expect((await h.item(itemId)).planApproval).toMatchObject({ status: "rejected" });
+    expect(log).toHaveBeenCalledOnce();
+
+    sharing.revoke();
+    const revoked = await fetch(snapshot, { headers });
+    expect(revoked.status).toBe(401);
+    expect(await revoked.text()).not.toContain(plan);
+    expect(list).toHaveBeenCalledOnce();
   });
-  expect(response.status).toBe(200);
-  expect(decide).toHaveBeenCalledWith(request, expect.objectContaining({ conversationId: CONVERSATION_ID }));
+});
 
-  sharing.revoke();
-  const revoked = await fetch(snapshot, { headers });
-  expect(revoked.status).toBe(401);
-  expect(await revoked.text()).not.toContain("Current review");
-  expect(list).toHaveBeenCalledOnce();
+it("refuses Create and run when the paired share is revoked during first-stage preparation", async () => {
+  const entered = deferred<string>();
+  const release = deferred<void>();
+  const spawn = vi.fn();
+  const h: Awaited<ReturnType<typeof stageRunHarness>> = await stageRunHarness({
+    observeRunWork: true,
+    onSpawn: spawn,
+    workspace: {
+      async prepare(ref, stage) {
+        entered.resolve(ref.runId);
+        await release.promise;
+        return { ok: true, workspace: { kind: "folder", root: join(h.dir, "runs", ref.runId, stage.id) } };
+      },
+    },
+  });
+  await h.runThenEnd(async () => {
+    await h.confirm([stageOf("a")]);
+    const { sharing, log, readReviews, postDecision } = await pairedWorkFixture(h);
+    const { scope, workReviews } = await readReviews();
+    const offered = workReviews?.find(review => review.kind === "create-and-run");
+    if (!offered) throw new Error("Missing start review");
+
+    const pending = postDecision({ id: crypto.randomUUID(), scope, kind: offered.kind, ...offered.binding });
+    try {
+      const runId = await Promise.race([entered.promise, pending.then(response => {
+        if (!response.ok) throw new Error(`Start refused before preparation: ${response.status}`);
+        return entered.promise;
+      })]);
+      expect((await h.runOf(runId))?.stageRuns).toMatchObject([{ stageId: "a", status: "running", attempt: 1 }]);
+      sharing.revoke();
+    } finally {
+      release.resolve();
+    }
+
+    const response = await pending;
+    const result = await response.json();
+    if (result.ok) (await h.untilSpawned(1))[0].finish();
+    expect.soft(response.status).toBe(403);
+    expect.soft(result).toEqual({ ok: false, error: "remote-controller-authority-revoked" });
+    expect.soft(log).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
 });
 
 it("drops review payload when the paired share is revoked while projection is pending", async () => {
@@ -2284,7 +2371,7 @@ it.runIf((process.platform === "darwin" || process.platform === "linux") && !sho
     expect(result.output).toContain("tailnet-loopback-destination");
     expect(result.output).toMatch(/403/u);
   } finally {
-    await resetAsrtSandbox();
+    await sandbox.resetAsrtSandbox();
     await cleanupTmpDir(cwd);
   }
 });
