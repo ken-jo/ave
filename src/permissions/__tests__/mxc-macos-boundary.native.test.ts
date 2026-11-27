@@ -151,9 +151,9 @@ exec "${launcher}" "$@"
     const reason = new Error("Canary cancelled");
     const outcome = _runSeatbeltCanaryForTest(wrapper, root, controller.signal).catch((error: unknown) => error);
     const childPid = await vi.waitFor(() => {
-      const staging = readdirSync(root).find(name => name.startsWith("shell-probe-"));
+      const staging = readdirSync(root).find(name => name.startsWith("p-"));
       if (staging === undefined) throw new Error("Canary staging has not started");
-      const pid = Number(readFileSync(join(root, staging, "fixture", "project", "child.pid"), "utf8"));
+      const pid = Number(readFileSync(join(root, staging, "w", "child.pid"), "utf8"));
       expect(pid).toBeGreaterThan(1);
       return pid;
     }, { interval: 10, timeout: 3_000 });
@@ -294,8 +294,8 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
       "if (echo deny > .agents/keep); then exit 38; fi",
       `if cat ${quote(join(libraryDeny, "secret"))}; then exit 39; fi`,
       `if stat ${quote(join(libraryDeny, "secret"))}; then exit 40; fi`,
-      `test \"$(cat ${quote(join(grant, "readable"))})\" = granted`,
-      `test \"$(cat ${quote(join(library, "readable"))})\" = library`,
+      `test "$(cat ${quote(join(grant, "readable"))})" = granted`,
+      `test "$(cat ${quote(join(library, "readable"))})" = library`,
       "printf '%s' boundary-control",
     ].join("\n"), { allowRead: [grant], denyRead: [vault, libraryDeny, "/private/etc/hosts"] });
     const runDir = readdirSync(runtime).find(name => name.startsWith("shell-"));
@@ -460,7 +460,7 @@ req.end();
     const python = "import ssl,sys,urllib.request; r=urllib.request.urlopen(sys.argv[1],context=ssl.create_default_context()); assert r.read() == b'tls-control'";
     const result = await run(await prepare([
       "set -eu",
-      `test \"$(curl -fsS --max-time 3 --cacert ${quote(certificate)} ${url}/)\" = tls-control`,
+      `test "$(curl -fsS --max-time 3 --cacert ${quote(certificate)} ${url}/)" = tls-control`,
       `git -c http.sslCAInfo=${quote(certificate)} ls-remote ${url}/repo | grep ${ref}`,
       `node ${quote(nodeScript)} ${hostname}`,
       `python3 -c ${quote(python)} ${url}`,

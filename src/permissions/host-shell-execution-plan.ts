@@ -401,9 +401,7 @@ export function parseHostShellExecutionInput(
 
 // Only the actual host-shell confinement plan establishes proxy-limited egress.
 // A broker guest has its own network policy and cannot inherit this authority.
-export function isWindowsContainerShell(plan: Pick<HostShellExecutionPlan, "platform" | "substrate"> | undefined): boolean {
-  return plan?.platform === "win32" && plan.substrate === "mxc";
-}
+export { isWindowsContainerShell } from "../shared/container-platform.js";
 
 export function isConfinedHostShellExecution(
   plan: HostShellExecutionPlan | undefined,

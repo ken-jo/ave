@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { existsSync, lstatSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import { raceWithTimeout } from "../shared/abortable-deadline.js";
@@ -112,6 +113,7 @@ export function detectHostMxcMacShellSupport(resourcePath: string, signal?: Abor
   });
 }
 
+const MAX_UNIX_SOCKET_PATH_BYTES = 103;
 const CANARY_CONTROL = "container-shell-control\n";
 const CANARY_HOST_TIMEOUT_MS = TOOL_TIMEOUT_POLICY.mxcMacShellProbeMs + TOOL_TIMEOUT_POLICY.mxcMacShellProbeGraceMs;
 const log = createLogger("mxc-macos");
@@ -170,6 +172,7 @@ Promise<Pick<SeatbeltCanaryEvidence, "status" | "timedOut" | "stdout"> & { stder
 
 async function runSeatbeltCanary(launcher: string, root: string, signal?: AbortSignal): Promise<CanaryVerdict> {
   let scratch: string | undefined;
+  let socketAlias: string | undefined;
   let running: ReturnType<typeof runCanaryRequest> | undefined;
   let otherPortConnected = false;
   let unixSocketConnected = false;
@@ -180,13 +183,13 @@ async function runSeatbeltCanary(launcher: string, root: string, signal?: AbortS
     proxy.close();
     other.close();
     unix.close();
+    if (socketAlias !== undefined) await rm(socketAlias, { recursive: true });
     if (scratch !== undefined) await rm(scratch, { recursive: true });
   };
   try {
-    scratch = await mkdtemp(join(root, "shell-probe-"));
-    const fixture = join(scratch, "fixture");
-    const working = join(fixture, "project");
-    const sealed = join(fixture, "sealed");
+    scratch = await mkdtemp(join(root, "p-"));
+    const working = join(scratch, "w");
+    const sealed = join(scratch, "sealed");
     const opened = join(sealed, "open");
     const parent = join(working, "control-parent");
     const protectedChild = join(parent, "protected");
@@ -196,22 +199,31 @@ async function runSeatbeltCanary(launcher: string, root: string, signal?: AbortS
     const outsideWrite = join(sealed, "new-file");
     const control = join(working, "control");
     const renamed = join(working, "renamed");
-    const unixPath = join(working, "sock");
+    let unixPath = join(working, "s");
     const laterFile = join(working, "later", "file.locked");
     await writeFile(protectedFile, "canary-sealed-file\n", { flag: "wx", mode: 0o600 });
 
-    const lookups = posixPolicyLookups(working, existsSync(join(scratch, "FIXTURE")));
+    const lookups = posixPolicyLookups(working, existsSync(join(scratch, "W")));
     const floors = [
       policyFloorRow(sealed, "denied", "read-boundary", true),
       policyFloorRow(protectedChild, "ro", "protected-name", true),
       policyFloorRow(`${working}/**/*.locked`, "ro", "protected-name", false),
     ];
+    if (Buffer.byteLength(unixPath) > MAX_UNIX_SOCKET_PATH_BYTES) {
+      // The socket still binds inside the granted project. The alias keeps its
+      // name within the kernel's Unix-address limit for deeply nested homes.
+      socketAlias = await mkdtemp(join(tmpdir(), "p-"));
+      const alias = join(socketAlias, "w");
+      await symlink(working, alias);
+      unixPath = join(alias, "s");
+    }
     const model = buildPolicyModel({
       floors, userGrants: [], extensionManifests: [],
       launchGrants: [
-        policyGrantRow(fixture, "ro", "launch-grant", true),
+        policyGrantRow(scratch, "ro", "launch-grant", true),
         policyGrantRow(working, "rw", "launch-grant", true),
         policyGrantRow(opened, "ro", "launch-grant", true),
+        ...(socketAlias === undefined ? [] : [policyGrantRow(socketAlias, "ro", "launch-grant", true)]),
       ],
     });
     const proxyPort = await listenOnLoopback(proxy);

@@ -3,7 +3,8 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
   createSandboxBootHarness,
@@ -32,6 +33,10 @@ vi.mock("electron", () => ({
 
 vi.mock("../../lib/logger.js", () => ({
   createLogger: vi.fn(() => h.logger),
+}));
+
+vi.mock("../../permissions/mxc-macos.js", () => ({
+  detectHostMxcMacShellSupport: vi.fn(async () => ({ state: "available" })),
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
@@ -76,6 +81,7 @@ let harness: SandboxBootHarness;
 
 beforeEach(() => {
   harness = createSandboxBootHarness();
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   setProcessPlatform("linux");
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();

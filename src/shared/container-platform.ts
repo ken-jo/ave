@@ -44,3 +44,7 @@ export function containerTargets(): ContainerTarget[] {
   return (Object.keys(CONTAINER_PLATFORMS) as NodeJS.Platform[]).flatMap((platform) =>
     containerPlatform(platform)?.arches.map((arch) => `${platform}-${arch}` as ContainerTarget) ?? []);
 }
+
+export function isWindowsContainerShell(plan: { readonly platform: NodeJS.Platform; readonly substrate: string } | undefined): boolean {
+  return plan?.platform === "win32" && plan.substrate === "mxc";
+}

@@ -3590,7 +3590,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     }
     let commandAst: PowerShellAstSummary;
     try {
-      const parsed = hostShellPlan.mode === "asrt" && hostShellPlan.substrate === "mxc"
+      const parsed = hostShellPlan.mode === "asrt" && isWindowsContainerShell(hostShellPlan)
         ? await parsePowerShellAstInMxc(input.command, resolvedCwd, ctx, input.timeoutSeconds)
         : await parsePowerShellAst(input.command, startupPinned || hostSpawnAuthorization !== undefined);
       if ("failure" in parsed) return parsed.failure;

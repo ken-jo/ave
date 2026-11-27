@@ -1,4 +1,5 @@
-import { isWindowsContainerShell, type HostShellExecutionPlan, type HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
+import type { HostShellExecutionPlan, HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
+import { isWindowsContainerShell } from "./container-platform.js";
 import { t } from "../i18n/runtime.js";
 import { exactRulePassesUnsandboxedShellAsk, requiresUnsandboxedShellAsk } from "./unsandboxed-shell-ask.js";
 
