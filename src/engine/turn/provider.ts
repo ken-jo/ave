@@ -97,6 +97,7 @@ export async function buildProvider(
     const activeChatRuntime = llmSettings.activeChatRuntime;
     if (activeChatRuntime?.kind === "subscription") {
       try {
+        if (deps.isSubscriptionConnected && !await deps.isSubscriptionConnected(activeChatRuntime.provider)) return null;
         const selection = selectionWithModelOverride(activeChatRuntime, deps.modelOverride);
         // Validate model candidates against the live catalog; the caller controls parent-model fallback.
         const fallbackSelection = !fallbackEnabled || selection.model === activeChatRuntime.model

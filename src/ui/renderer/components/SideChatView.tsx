@@ -364,6 +364,8 @@ function SideChatSession({
   // path to keep open.
   const composerInputDisabled = !attachmentInputsReady || runtimeUnavailable || hasApiKey === false;
   const composerSendDisabled = composerInputDisabled || draftHasUnsupportedAttachment;
+  const composerInputDisabledRef = useRef(composerInputDisabled);
+  composerInputDisabledRef.current = composerInputDisabled;
   const hasDraft = draft.trim().length > 0 || attachments.length > 0;
   const composedDraft = useMemo(
     () => composeOutgoing({ raw: draft.trim(), attachments, activePreset: null }),
@@ -407,6 +409,10 @@ function SideChatSession({
       intent?: UserKeyboardIntentSnapshot,
       opts?: ComposerSendOptions,
     ) => {
+      if (composerInputDisabledRef.current) {
+        opts?.onRefused?.();
+        return;
+      }
       const origin = {
         ...(originSessionId ? { originSessionId } : {}),
         ...(boundKind !== undefined && boundTabId !== undefined ? { surface: { kind: boundKind, tabId: boundTabId } } : {}),

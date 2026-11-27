@@ -243,6 +243,7 @@ export interface TurnResult {
 
 export interface ConversationLoopDeps {
   settingsService: SettingsService;
+  isSubscriptionConnected?: import("./active-chat-model.js").SubscriptionConnectionReader;
   // Subscription factories accept only normalized runtime selection and retain ordinary loop gates.
   subscriptionProviderFactory?: (
     selection: SubscriptionChatRuntimeSelection,

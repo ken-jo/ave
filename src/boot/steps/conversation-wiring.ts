@@ -221,6 +221,7 @@ export async function wireConversation(
     workBoardStorage,
     agentProfileStore,
     mainWindow,
+    isSubscriptionConnected,
     subscriptionProviderFactory,
   } = ctx;
   // User-typed skill names route to the model for skill_load.
@@ -617,6 +618,7 @@ export async function wireConversation(
       rewireReviewerAgent,
       llmFetch,
       networkFetch: singleHopNetworkFetch,
+      isSubscriptionConnected,
       subscriptionProviderFactory,
     },
     toolRegistry,

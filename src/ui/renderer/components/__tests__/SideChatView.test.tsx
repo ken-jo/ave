@@ -66,17 +66,19 @@ function renderView(
   chatContext?: Partial<ChatContextValue>,
   view?: Partial<React.ComponentProps<typeof SideChatView>>,
 ) {
-  return render(
+  const content = (context = chatContext) => (
     <TooltipProvider>
       <ApprovalSurfaceProvider value={approvalSurfaceStub()}>
-        {chatContext ? (
-          <ChatContextProvider value={chatContext as ChatContextValue}>
+        {context ? (
+          <ChatContextProvider value={context as ChatContextValue}>
             <SideChatView api={api} {...view} />
           </ChatContextProvider>
         ) : <SideChatView api={api} {...view} />}
       </ApprovalSurfaceProvider>
-    </TooltipProvider>,
+    </TooltipProvider>
   );
+  const result = render(content());
+  return { ...result, setRuntime: (context: Partial<ChatContextValue>) => result.rerender(content(context)) };
 }
 
 /** The side chat's own composer field and turn control, scoped to its view. */
@@ -368,6 +370,32 @@ describe("SideChatView — the main composer's input system", () => {
     emit({ type: "done", streamId: 1 });
     await waitFor(() => expect(spies.send).toHaveBeenCalledTimes(2));
     expect(spies.send.mock.calls[1][0]).toBe("second");
+    expect(spies.abort).not.toHaveBeenCalled();
+    await waitFor(() => expect(view.queryByTestId("message-queue-panel")).toBeNull());
+  });
+
+  it("releases a disconnected queue drain and sends the retained text after reconnect", async () => {
+    const { api, emit, spies, acceptTurn } = makeApi();
+    const connected = { hasApiKey: true, llmModel: "saved-model", settingsLoaded: true };
+    const { setRuntime } = renderView(api, connected);
+    await startTurn("first");
+    acceptTurn(1);
+    emit({ type: "text_delta", text: "working", streamId: 1 });
+    const { textarea, view } = sideComposer();
+    fireEvent.change(textarea, { target: { value: "retained follow-up" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(view.getByText("retained follow-up")).toBeVisible();
+
+    setRuntime({ ...connected, hasApiKey: false });
+    await act(async () => emit({ type: "done", streamId: 1 }));
+    expect(spies.send).toHaveBeenCalledTimes(1);
+    expect(view.getByText("retained follow-up")).toBeVisible();
+    expect(view.queryByTestId("message-queue-row-handoff-in-progress")).toBeNull();
+
+    setRuntime(connected);
+    fireEvent.click(view.getByTestId("message-queue-row-send-now-button"));
+    await waitFor(() => expect(spies.send).toHaveBeenCalledTimes(2));
+    expect(spies.send.mock.calls[1]?.[0]).toBe("retained follow-up");
     expect(spies.abort).not.toHaveBeenCalled();
     await waitFor(() => expect(view.queryByTestId("message-queue-panel")).toBeNull());
   });
