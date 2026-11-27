@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkflowTemplateStore } from "../workflow-template-store.js";
+import { mintHostDecisionProof } from "../workflow-template-decision.js";
 import { canonicalTemplateGraph, graphHashOf, WorkflowTemplateError } from "../../work-board/template-graph.js";
 import type { WorkflowTemplateDraftInput } from "../../shared/workflow-template-types.js";
 
@@ -120,4 +121,34 @@ describe("canonical graph hash", () => {
     expect(() => graphHashOf({ ...input(), stages: [{ ...input().stages[0], extra: true }] })).toThrow();
     const c = input(); c.edges = []; expect(() => graphHashOf(c)).toThrow();
   });
+});
+
+it("persists a host-proven remote confirmation and attachment with the owner login", async () => {
+  const auth = { refreshCurrent: async () => true, isCurrent: () => true };
+  const proof = mintHostDecisionProof("tailnet-surface", { login: "owner@example.com", conversationId: "conversation", authority: auth });
+  const record = await store.draft(null, { ...input(), stages: input().stages.slice(0, 1), edges: [], name: "Remote workflow" });
+  const draft = requiredValue(record.draft);
+  const { version, unattended } = await store.confirmDraft(record.template.id, {
+    expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision,
+  }, { who: "owner@example.com", origin: "tailnet-surface", proof }, unknownToolEffects);
+  expect(unattended).toEqual({ ok: false, code: "unattended-not-read-only" });
+  const attachProof = mintHostDecisionProof("tailnet-surface", { login: "owner@example.com", conversationId: "conversation", authority: auth });
+  const attachment = await store.attachSchedule({
+    templateId: version.templateId, version: version.version, graphHash: version.graphHash, scheduleId: "remote-schedule",
+  }, attachProof, record.template.scope);
+  expect(attachment).toMatchObject({ who: "owner@example.com", origin: "tailnet-surface" });
+  await expect(store.detachSchedule(attachment.id, proof)).rejects.toMatchObject({ code: "invalid-input" });
+  expect(await store.get(version.templateId)).toMatchObject({
+    versions: [{ confirmation: { who: "owner@example.com", origin: "tailnet-surface", auditId: proof.auditId } }],
+    scheduleAttachments: [{ id: attachment.id, who: "owner@example.com", origin: "tailnet-surface", auditId: attachProof.auditId }],
+  });
+});
+
+it("refuses remote template confirmation without host proof", async () => {
+  const record = await store.draft(null, { ...input(), stages: input().stages.slice(0, 1), edges: [], name: "Remote workflow" });
+  const draft = requiredValue(record.draft);
+  await expect(store.confirmDraft(record.template.id, {
+    expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision,
+  }, { who: "owner@example.com", origin: "tailnet-surface" }, unknownToolEffects)).rejects.toMatchObject({ code: "invalid-input" });
+  expect((await store.get(record.template.id)).template.currentVersion).toBe(0);
 });

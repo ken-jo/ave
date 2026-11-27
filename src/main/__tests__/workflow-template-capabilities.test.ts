@@ -50,7 +50,7 @@ it("binds an attachment to the exact tuple and keeps v1 after confirming v2", as
   const record = await new WorkflowTemplateStore(path).get(v.templateId); expect(record.scheduleAttachments).toEqual([attachment]); expect(record.template.currentVersion).toBe(2);
   await expect(store.attachSchedule({ ...request, graphHash: "a".repeat(64) }, mintHostDecisionProof("local-desktop"), { kind: "all" })).rejects.toMatchObject({ code: "graph-hash-mismatch" });
   await expect(store.attachSchedule({ ...request, version: 99 }, mintHostDecisionProof("local-desktop"), { kind: "all" })).rejects.toMatchObject({ code: "unknown-version" });
-  await expect(store.attachSchedule(request, mintHostDecisionProof("tailnet-surface"), { kind: "all" })).rejects.toMatchObject({ code: "invalid-input" });
+  await expect(store.attachSchedule(request, { origin: "tailnet-surface" } as never, { kind: "all" })).rejects.toMatchObject({ code: "invalid-input" });
 });
 it.each(["toolScope", "generation", "commands", "writes", "setup"])("refuses non-read-only schedule attachment: %s", async field => {
   const a = input(); if (field === "toolScope") a.stages[0].toolScope = "all"; if (field === "generation") requiredValue(a.stages[0].envelope).pluginGenerationTools = [{ name: "media.render", effect: "generate", dataSent: false }]; if (field === "commands") requiredValue(a.stages[0].envelope).commands = ["render"]; if (field === "writes") requiredValue(a.stages[0].envelope).writePaths = ["**"]; if (field === "setup") { a.setupCommands = ["prepare"]; a.stages[0].toolScope = "all"; }

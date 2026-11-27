@@ -8,6 +8,7 @@ import net from "node:net";
 import type { Duplex } from "node:stream";
 import tls from "node:tls";
 import type { InvocationProxyAdmission } from "../egress-invocation-listener.js";
+import { isTailnetListenerPort, onTailnetListenerPortsChanged, TAILNET_LOOPBACK_DESTINATION } from "../../shared/tailnet-listener-port.js";
 import { isLoopbackAddress, isLoopbackName } from "./address-set.js";
 import {
   canonicalRelayHost,
@@ -201,6 +202,10 @@ export async function stopEgressRelayService(): Promise<void> {
   const failed = results.find((result) => result.status === "rejected");
   if (failed !== undefined) throw failed.reason;
 }
+
+onTailnetListenerPortsChanged(() => {
+  if (service) service.routerInstalls++;
+});
 
 // Whether a relay of this service holds, or held, the invocation's key.
 export function egressRelayOwnsKey(token: string): boolean {
@@ -416,6 +421,7 @@ async function planDestination(current: Service, canonical: string, port: number
 async function decideDestination(lane: Lane, host: string, port: number, plainHttp: boolean, previous?: Pin): Promise<Pin> {
   const current = service;
   if (current === undefined || lane.ended) throw deny(lane, host, port, "invocation ended");
+  if (isTailnetListenerPort(port)) throw deny(lane, host, port, TAILNET_LOOPBACK_DESTINATION);
   if (!isValidRelayHost(host)) throw deny(lane, host, port, "malformed host");
   const canonical = canonicalRelayHost(host);
   if (canonical === undefined) throw deny(lane, host, port, "malformed host");
@@ -431,6 +437,7 @@ async function decideDestination(lane: Lane, host: string, port: number, plainHt
   }
   let approvedClass = previous?.approvedClass;
   for (let attempt = 0; attempt < MAX_ROUTING_ATTEMPTS; attempt++) {
+    if (isTailnetListenerPort(port)) throw deny(lane, host, port, TAILNET_LOOPBACK_DESTINATION);
     const stamp = routingStamp(current);
     const plan = await planDestination(current, canonical, port, plainHttp);
     if (!routingIsCurrent(current, stamp)) continue;
@@ -598,6 +605,7 @@ async function openRoute(lane: Lane, host: string, port: number, plainHttp: bool
   for (let attempt = 0; attempt < MAX_ROUTING_ATTEMPTS; attempt++) {
     const current = service;
     if (current === undefined || lane.ended) throw deny(lane, host, port, "invocation ended");
+    if (isTailnetListenerPort(port)) throw deny(lane, host, port, TAILNET_LOOPBACK_DESTINATION);
     if (!routingIsCurrent(current, pin.stamp)) pin = await decideDestination(lane, host, port, plainHttp, pin);
     let last: unknown = new Error("no route");
     try {
