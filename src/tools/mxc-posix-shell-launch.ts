@@ -1,11 +1,7 @@
-import { execFile, spawn, type ChildProcessByStdio } from "node:child_process";
 import { lstatSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { Readable } from "node:stream";
-import { setTimeout as delay } from "node:timers/promises";
 import { sameFileIdentity } from "../lib/file-identity.js";
-import { observeManagedProcessGroup, trackManagedChildProcess } from "../main/managed-child-processes.js";
 import {
   aveHomeReadBoundaryCovering, getDefaultSensitiveWriteDenyEntries, getProtectedReadDenyFloor,
   getUserReadDenies, protectedReadDenyMatcher, runWithSandboxWritePreflight,
@@ -15,20 +11,16 @@ import { openInvocationProxyListener } from "../permissions/egress-invocation-li
 import {
   egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased,
 } from "../permissions/egress-invocations.js";
-import { resolveHostLauncherPath } from "../permissions/mxc-launcher.js";
 import { buildSeatbeltShellRequest } from "../permissions/mxc-macos.js";
 import { posixPolicyLookups } from "../permissions/mxc-posix.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
-import { detectMxcShellCapability, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
+import { stageMxcShellRequest, startMxcShellSupervisor } from "../permissions/mxc-shell-supervisor-client.js";
 import { policyFloorRow } from "../permissions/policy-model.js";
+import { detectMxcShellCapability, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
 import { buildSeatbeltSandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
-import { sleep } from "../shared/abortable-deadline.js";
-import { isRecord } from "../shared/is-record.js";
 import { getPolicyHome } from "../shared/policy-home.js";
-import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 import { shellPolicyModel, type PrepareMxcShellLaunchInput } from "./mxc-shell-launch.js";
-import { buildSafeChildEnv } from "./safe-env.js";
 
 interface PreparePosixShellInput extends Pick<PrepareMxcShellLaunchInput, "egressToken" | "commandLine" | "cwd" | "env" | "timeoutMs"> {
   readonly allowRead: readonly string[];
@@ -36,8 +28,6 @@ interface PreparePosixShellInput extends Pick<PrepareMxcShellLaunchInput, "egres
   readonly denyRead: readonly string[];
   readonly floorPierces: readonly string[];
 }
-
-type LauncherChild = ChildProcessByStdio<null, Readable, Readable>;
 
 function pathFoldsCase(path: string): boolean {
   const device = lstatSync(path, { bigint: true }).dev;
@@ -52,117 +42,6 @@ function pathFoldsCase(path: string): boolean {
   }
   // Unknown volumes retain case-sensitive path keys and the extra write-floor variants.
   return false;
-}
-
-function readProcessList(file: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(file, args, {
-      timeout: TOOL_TIMEOUT_POLICY.mxcMacShellChildLookupMs,
-      env: buildSafeChildEnv(),
-    }, (error, stdout) => {
-      if (error) { reject(error); return; }
-      resolve(stdout);
-    });
-  });
-}
-
-async function directLauncherChild(parent: number): Promise<number | undefined> {
-  const stdout = await readProcessList("/bin/ps", ["-axo", "pid=,ppid="]);
-  const entries = stdout.split("\n").map(line => line.trim().split(/\s+/u).map(Number))
-    .filter(([pid, ppid]) => pid !== undefined && pid > 1 && ppid === parent);
-  return entries.length === 1 ? entries[0]?.[0] : undefined;
-}
-
-function signalOwnedProcess(pid: number, signal: NodeJS.Signals): void {
-  try { process.kill(pid, signal); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-}
-
-async function stopLauncher(launcher: LauncherChild, closed: Promise<unknown>, graceMs: number): Promise<void> {
-  const parent = launcher.pid;
-  if (parent === undefined) return;
-  const stillRunning = (): boolean => launcher.exitCode === null && launcher.signalCode === null;
-  const until = performance.now() + graceMs;
-  let child: number | undefined;
-  while (stillRunning() && performance.now() < until) {
-    child = await directLauncherChild(parent).catch(() => undefined);
-    if (child !== undefined) break;
-    await Promise.race([closed, sleep(TOOL_TIMEOUT_POLICY.mxcMacShellChildPollMs)]);
-  }
-  if (child === undefined && stillRunning()) {
-    const stdout = await readProcessList("/usr/bin/pgrep", ["-P", String(parent)]).catch(() => "");
-    const children = stdout.trim().split(/\s+/u).map(Number).filter(pid => Number.isSafeInteger(pid) && pid > 1);
-    if (children.length === 1) child = children[0];
-  }
-  if (child !== undefined && stillRunning()) {
-    // The child's exit lets the supervisor reap descendants in other process groups.
-    signalOwnedProcess(child, "SIGKILL");
-    await Promise.race([closed, delay(graceMs, undefined, { ref: false })]);
-  }
-  // The launcher is the leader of its own group. End that group if discovery
-  // gave up or the supervisor failed to exit inside the reaping grace period.
-  if (!stillRunning()) return;
-  const group = observeManagedProcessGroup(launcher);
-  signalOwnedProcess(-parent, "SIGKILL");
-  if (await group.confirmExit() === undefined) throw new Error("Could not confirm macOS shell process group exit");
-}
-
-function isLauncherErrorEnvelope(line: string): boolean {
-  if (!line.trimStart().startsWith('{"error":')) return false;
-  try {
-    const value: unknown = JSON.parse(line);
-    return isRecord(value) && isRecord(value.error) && value.error.code === "backend_error" && typeof value.error.message === "string";
-  } catch { return false; }
-}
-
-function superviseLauncher(
-  launcher: LauncherChild, lifecycle: ContainedShellLifecycle, timeoutMs: number,
-) {
-  const deadline = performance.now() + timeoutMs;
-  const grace = TOOL_TIMEOUT_POLICY.mxcMacShellReapGraceMs;
-  let tail = "";
-  let timedOut = false;
-  let cancelled = false;
-  let signalling: Promise<void> | undefined;
-
-  const stop = (): void => {
-    signalling ??= stopLauncher(launcher, close, grace);
-    // The close path reports any teardown failure after the launcher leaves.
-    void signalling.catch(() => {});
-  };
-  const handleAbort = (): void => {
-    cancelled = !timedOut;
-    stop();
-  };
-  const close = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
-    launcher.once("error", error => { if (launcher.pid === undefined) reject(error); });
-    launcher.once("close", (code, signal) => resolve({ code, signal }));
-  });
-  const settled = close.then(async outcome => {
-    await signalling;
-    return outcome;
-  });
-  launcher.stderr.on("data", (chunk: Buffer) => { tail = (tail + chunk.toString()).slice(-8192); });
-  lifecycle.jobStarted(settled);
-  lifecycle.signal.addEventListener("abort", handleAbort, { once: true });
-  const timer = setTimeout(() => {
-    timedOut ||= !cancelled;
-    lifecycle.revoke();
-    stop();
-  }, timeoutMs + grace);
-  const completion = settled.then(({ code, signal }) => {
-    // The backend's own deadline is earlier than the host watchdog. Its status 255 also
-    // represents a command signal or a literal exit 255.
-    const rejected = !cancelled && code === 255 && tail.split("\n").some(isLauncherErrorEnvelope);
-    timedOut ||= !cancelled && !rejected && code === 255 && performance.now() >= deadline;
-    return { code, signal, timedOut, cancelled, rejected };
-  }).finally(() => {
-    clearTimeout(timer);
-    lifecycle.signal.removeEventListener("abort", handleAbort);
-    lifecycle.revoke();
-  });
-  if (lifecycle.signal.aborted) handleAbort();
-  return completion;
 }
 
 export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, lifecycle: ContainedShellLifecycle) {
@@ -189,7 +68,6 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
     requireMxcContainerStartRoot();
   };
   assertAdmission();
-  const launcher = await resolveHostLauncherPath("darwin-arm64");
   const hostHome = getPolicyHome();
   const inRuntime = protectedReadDenyMatcher([runtimeRoot]);
   if (inRuntime(input.cwd) !== undefined) throw new Error("Container shell working directory is inside the sandbox runtime root");
@@ -234,8 +112,7 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
   });
   const staging = await mkdtemp(join(runtimeRoot, "shell-"));
   lifecycle.defer(() => rm(staging, { recursive: true }));
-  const config = join(staging, "request.json");
-  await writeFile(config, JSON.stringify(request), { flag: "wx", mode: 0o600 });
+  const staged = await stageMxcShellRequest(join(staging, "request.json"), request);
 
   return {
     carvedReadLimitedAt: grants.carvedReadLimitedAt,
@@ -244,15 +121,10 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
     start(label: string) {
       if (active) throw new Error("Container shell launch already started");
       assertAdmission();
-      launcher.assertInPlace();
       active = true;
-      const child = spawn(launcher.path, ["--config", config], {
-        cwd: dirname(launcher.path), env: buildSafeChildEnv(), shell: false, detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      const completion = superviseLauncher(child, lifecycle, input.timeoutMs);
-      trackManagedChildProcess(child, { label });
-      return { child, completion };
+      const launch = startMxcShellSupervisor(staged, input.timeoutMs, lifecycle.signal, revoke, label);
+      lifecycle.jobStarted(launch.completion);
+      return launch;
     },
   };
 }

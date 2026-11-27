@@ -45,10 +45,7 @@ export const TOOL_TIMEOUT_POLICY = {
   mxcMacShellProbeMs: 5_000,
   mxcMacShellProbeGraceMs: 2_000,
   mxcMacShellStopMs: 12_000,
-  // Give the supervisor time to reap descendants after its own deadline or a child signal.
-  mxcMacShellReapGraceMs: 2_000,
-  mxcMacShellChildLookupMs: 250,
-  mxcMacShellChildPollMs: 15,
+  mxcMacShellOutputDrainMs: 1_000,
   // A holder's own start must report its ready-frame evidence inside this bound, from supervisor start, or it is refused.
   mxcExtensionReadinessMs: 30_000,
   // Share the exact workload-identity handshake budget with the protocol.

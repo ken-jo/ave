@@ -44,6 +44,7 @@
         "src/permissions/rules/git-repository-inspection-worker-main.ts",
         // Executed as a dedicated native-process supervisor by its installed path.
         "src/permissions/mxc-extension-supervisor.ts",
+        "src/permissions/mxc-shell-supervisor.ts",
         // Diagnostic entry launched explicitly under the packaged runtime.
         "tools/mxc-probes/packaged-main.ts",
         "tools/mxc-probes/packaged.mjs",

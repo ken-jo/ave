@@ -5088,6 +5088,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "sandboxPolicy.containerShellTimedOut": "셸 명령이 {seconds}초 후 시간 초과되었습니다.",
   "sandboxPolicy.containerShellExit255": "셸이 신호를 받았거나 종료 코드 255로 끝났습니다.",
   "sandboxPolicy.containerStartRefused": "macOS 샌드박스 컨테이너가 셸 명령 시작을 거부했습니다.",
+  "sandboxPolicy.containerShellCleanupUnverified": "셸 명령을 중단했지만 관련 프로세스가 모두 종료되었는지 확인하지 못했습니다.",
   "sandboxPolicy.containerShellRefused": "macOS 샌드박스 컨테이너가 셸 명령을 거부했습니다: {reason}",
   "sandboxPolicy.scanNarrowed": "{reason}. 쓰기 허용 범위를 {roots}(으)로 축소했습니다. 스캔하지 못했거나 허용하지 않은 루트: {removed}.",
   "sandboxPolicy.scanEntryBudget": "프로젝트가 너무 커서 디렉터리 항목 예산 내에 중첩 저장소를 스캔할 수 없습니다",

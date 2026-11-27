@@ -5086,6 +5086,7 @@ export const en = {
   "sandboxPolicy.containerShellTimedOut": "Shell command timed out after {seconds} seconds.",
   "sandboxPolicy.containerShellExit255": "The shell ended by a signal or exit 255.",
   "sandboxPolicy.containerStartRefused": "The macOS sandbox container refused to start the shell command.",
+  "sandboxPolicy.containerShellCleanupUnverified": "The shell command was stopped, but its processes could not be confirmed gone.",
   "sandboxPolicy.containerShellRefused": "The macOS sandbox container refused the shell command: {reason}",
   "sandboxPolicy.scanNarrowed": "{reason}; write access narrowed to {roots}. Unscanned or withheld roots: {removed}.",
   "sandboxPolicy.scanEntryBudget": "Project too large to scan for nested repositories within the directory-entry budget",

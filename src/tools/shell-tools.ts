@@ -2598,7 +2598,7 @@ async function runPosixContainerShell(input: {
     child.stdout.on("data", collector.collect);
     child.stderr.on("data", collector.collectStderr);
     const exit = await completion;
-    const interrupted = exit.cancelled || exit.timedOut || exit.signal !== null;
+    const interrupted = exit.cancelled || exit.timedOut || exit.cleanupUnverified || exit.failure !== undefined;
     const artifact = await collector.finish(interrupted);
     collector.finishObservation(exit.code, exit.cancelled ? "cancelled" : interrupted || exit.rejected ? "failed" : undefined);
     if (exit.rejected) {
@@ -2612,10 +2612,12 @@ async function runPosixContainerShell(input: {
         ...launch.narrowedWriteRoots.map(({ root }) => t("sandboxPolicy.containerWriteWithheld", { root })),
       ];
       const format = interrupted || exit.code === 255
-        ? collector.format() : collector.format({ code: exit.code, signal: exit.signal });
+        ? collector.format() : collector.format({ code: exit.code, signal: null });
       const ending = exit.cancelled ? t("sandboxPolicy.containerShellCancelled")
         : exit.timedOut ? t("sandboxPolicy.containerShellTimedOut", { seconds: timeoutMs / 1000 })
-          : exit.code === 255 ? t("sandboxPolicy.containerShellExit255") : "";
+          : exit.cleanupUnverified ? t("sandboxPolicy.containerShellCleanupUnverified")
+            : exit.failure ? t("sandboxPolicy.containerShellRefused", { reason: exit.failure.code })
+              : exit.code === 255 ? t("sandboxPolicy.containerShellExit255") : "";
       const output = await annotateWithSandboxViolations(egress.token, [format, ending].filter(Boolean).join("\n"), undefined, policyNotices);
       result = {
         output, isError: interrupted || exit.code !== 0,
