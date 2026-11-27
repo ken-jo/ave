@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { requiredFixture } from "../../__tests__/support/required-fixture.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
-import type { SkillMemoryRunKind } from "../../shared/skill-memory-types.js";
+import { AVE_HOME_INPUT_MAX_BYTES } from "../../shared/ave-home-trust.js";
+import type { SkillMemoryGroup, SkillMemoryRunKind } from "../../shared/skill-memory-types.js";
 import { SkillMemoryStore, skillMemoryScopeId, type SkillMemoryBinding } from "../skill-memory-store.js";
 
 let home: string;
@@ -37,7 +39,90 @@ function record(scope = binding(), runKind: SkillMemoryRunKind = "attended", com
 const allow = () => true;
 const recall = (scope: SkillMemoryBinding) => store.recall([scope]).map(row => row.lesson);
 
+async function seedCapacityFixture() {
+  const scope = binding();
+  await store.record([record(scope)], allow, "activate");
+  await store.record([record(scope, "attended", "revision", "Check the type report", "Check the revised type report.")], allow, "activate");
+  await store.record([record(scope, "attended", "other", "Review the release", "Review the release.")], allow, "activate");
+  await store.record([record(scope, "headless", "staged", "Review the summary", "Review the summary.")], allow, "stage");
+  const path = join(home, "skill-memory", "lessons.json");
+  const document = JSON.parse(readFileSync(path, "utf8")) as { version: 2; groups: (Omit<SkillMemoryGroup, "scope" | "undo"> & {
+    scope: SkillMemoryGroup["scope"] & { filePath: string };
+  })[] };
+  const group = requiredFixture(document.groups[0]);
+  const staged = requiredFixture(group.staged[0]);
+  const reject = { scopeId: scope.id, action: "reject", lessonId: staged.id, digest: staged.digest } as const;
+  // Pad a stored string to exercise the real byte ceilings without thousands of writes.
+  const fill = (bytes: number) => {
+    group.scope.filePath += "x".repeat(bytes - Buffer.byteLength(JSON.stringify(document)));
+    writeFileSync(path, JSON.stringify(document));
+  };
+  return { scope, path, document, group, reject, fill };
+}
+
+function undo(lesson: SkillMemoryGroup["active"][number], group: SkillMemoryGroup) {
+  return { scopeId: group.scope.id, action: "undo", changeId: requiredFixture(group.undo[lesson.digest]), digest: lesson.digest } as const;
+}
+
 describe("managed skill memory", () => {
+  it.each(["activate", "stage"] as const)("refuses reviewer %s at the soft cap while reject and undo still write", async action => {
+    const { path, scope, reject, fill } = await seedCapacityFixture();
+    fill(AVE_HOME_INPUT_MAX_BYTES / 2 - 1);
+    const before = readFileSync(path, "utf8");
+    const candidate = record(binding("another"), action === "stage" ? "headless" : "attended", "refused");
+    await expect(store.record([candidate], allow, action)).rejects.toThrow(/capacity/i);
+    expect(readFileSync(path, "utf8")).toBe(before);
+    expect(recall(candidate.binding)).toEqual([]);
+    expect(store.hasCompletion("refused")).toBe(false);
+    expect(await store.decide(reject, allow)).toBe(true);
+    const group = requiredFixture(store.list()[0]);
+    expect(await store.decide(undo(requiredFixture(group.active[0]), group), allow)).toBe(true);
+    expect(recall(scope)[0]?.body).toBe("Check the type report before packaging.");
+  });
+
+  it("compacts retired data and old history under pressure while keeping every current undo target and a valid ledger", async () => {
+    const { group, path, reject, fill, scope } = await seedCapacityFixture();
+    group.retired = Array.from({ length: 20 }, () => group.active).flat();
+    fill(AVE_HOME_INPUT_MAX_BYTES);
+    const before = requiredFixture(store.list()[0]);
+    expect(await store.decide(reject, allow)).toBe(true);
+    const after = requiredFixture(new SkillMemoryStore().list()[0]);
+    expect(statSync(path).size).toBeLessThan(AVE_HOME_INPUT_MAX_BYTES);
+    expect(after.retired).toEqual([]);
+    expect(after.undo).toEqual(before.undo);
+    expect(after.history.map(row => row.action)).toEqual(["activate", "activate", "reject"]);
+    expect(after.history.slice(1).map(row => row.prevDigest)).toEqual(after.history.slice(0, -1).map(row => row.digest));
+    for (const lesson of before.active) expect(await store.decide(undo(lesson, after), allow)).toBe(true);
+    expect(recall(scope).map(lesson => lesson.body)).toEqual(["Check the type report before packaging."]);
+  });
+
+  it("refuses owner decisions, listing and recall together when compaction cannot leave decision headroom", async () => {
+    const { scope, reject, path, fill } = await seedCapacityFixture();
+    const before = requiredFixture(store.list()[0]);
+    fill(AVE_HOME_INPUT_MAX_BYTES);
+    const snapshot = readFileSync(path, "utf8");
+    expect(() => store.list()).toThrow(/capacity/i);
+    await expect(store.listCurrent(async () => true)).rejects.toThrow(/capacity/i);
+    expect(() => recall(scope)).toThrow(/capacity/i);
+    for (const decision of [reject, { ...reject, action: "apply" as const }, undo(requiredFixture(before.active[0]), before)]) {
+      await expect(store.decide(decision, allow)).rejects.toThrow(/capacity/i);
+    }
+    expect(readFileSync(path, "utf8")).toBe(snapshot);
+  });
+
+  it("refuses a 129th scope while keeping existing owner decisions available", async () => {
+    const { group, document, path, reject } = await seedCapacityFixture();
+    for (let index = 1; index < 128; index++) {
+      const { id, skill, projectRoot, filePath } = binding(`skill-${index}`);
+      document.groups.push({ ...group, scope: { id, skill, projectRoot, filePath }, active: [], staged: [], history: [] });
+    }
+    writeFileSync(path, JSON.stringify(document));
+    expect(store.list()).toHaveLength(128);
+    await expect(store.record([record(binding("extra"), "attended", "extra-scope")], allow, "activate")).rejects.toThrow(/capacity/i);
+    expect(await store.decide(reject, allow)).toBe(true);
+    expect(store.list()).toHaveLength(128);
+  });
+
   it("commits only to the private managed file and records before and after hashes", async () => {
     const target = binding();
     mkdirSync(target.projectRoot);

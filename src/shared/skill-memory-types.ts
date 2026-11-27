@@ -1,5 +1,5 @@
 export type SkillMemoryRunKind = "attended" | "headless" | "scheduled";
-export type SkillMemoryReviewState = "ready" | "off" | "unavailable";
+export type SkillMemoryReviewState = "ready" | "off" | "unavailable" | "capacity";
 
 export interface SkillMemoryScope {
   id: string;

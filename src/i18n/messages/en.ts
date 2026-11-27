@@ -14,6 +14,7 @@ export const en = {
   "skillMemory.storeUnavailable": "The skill lesson store is unavailable. Saved lessons will not be used until it is available again.",
   "skillMemory.reviewUnavailable": "Automatic review is unavailable. You can still manage saved lessons.",
   "skillMemory.reviewOff": "Automatic review is off. Active lessons still apply.",
+  "skillMemory.reviewCapacity": "The last automatic review dropped its proposals because skill memory reached its storage limit.",
   "skillMemory.needsReview": "Needs review",
   "skillMemory.active": "Active",
   "skillMemory.retired": "Retired",

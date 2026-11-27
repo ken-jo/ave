@@ -59,8 +59,19 @@ type Document = { version: 2; groups: StoredGroup[] };
 type NewLesson = { binding: SkillMemoryBinding; lesson: Omit<SkillMemoryLesson, "id" | "digest" | "fingerprint"> };
 
 const FILENAME = "lessons.json";
+const DOCUMENT_SCOPE_LIMIT = 128;
 const HISTORY_LIMIT = SKILL_MEMORY_SCOPE_LIMIT * 2;
+// Reserve half the trusted-file limit for owner decisions and retained ledger rows.
+const REVIEW_MAX_BYTES = AVE_HOME_INPUT_MAX_BYTES / 2;
+// A generated decision row has a UUID, millisecond timestamp and two SHA-256 digests.
+const OWNER_CHANGE_HEADER_BYTES = 512;
 const log = createLogger("skill-memory");
+
+export class SkillMemoryCapacityError extends Error {
+  constructor() {
+    super("Skill memory storage capacity exhausted");
+  }
+}
 
 function digestLesson(lesson: Omit<SkillMemoryLesson, "digest">): string {
   const { id, description, body, fingerprint, origin } = lesson;
@@ -102,15 +113,56 @@ function undoByDigest({ active, history }: StoredGroup): SkillMemoryGroup["undo"
   }));
 }
 
-function compactHistory(group: StoredGroup): void {
-  let excess = group.history.length - HISTORY_LIMIT;
+function compactHistory(group: StoredGroup, limit = HISTORY_LIMIT, keepId?: string): void {
+  let excess = group.history.length - limit;
   if (excess <= 0) return;
   const undoIds = new Set(Object.values(undoByDigest(group)));
   group.history = repairChain(group.scope.id, group.history.filter(row => {
-    if (excess <= 0 || undoIds.has(row.id)) return true;
+    if (excess <= 0 || row.id === keepId || undoIds.has(row.id)) return true;
     excess--;
     return false;
   }));
+}
+
+function compactOwnerHistory(document: Document, ownerScopeId?: string): void {
+  for (const group of document.groups) {
+    group.retired = [];
+    const keepId = group.scope.id === ownerScopeId ? group.history.at(-1)?.id : undefined;
+    compactHistory(group, 0, keepId);
+  }
+}
+
+function ownerDecisionsFit(document: Document): boolean {
+  let bytes = Buffer.byteLength(JSON.stringify({ version: document.version, groups: [] }));
+  let decisionBytes = 0;
+  for (const { scope, active, staged, history } of document.groups) {
+    bytes += Buffer.byteLength(JSON.stringify({ scope, active: [], staged: [], retired: [], history: [] })) + 1;
+    const slots = active.length + staged.length;
+    if (slots === 0) continue;
+
+    const lessons = new Map<string, SkillMemoryLesson>();
+    let headerBytes = OWNER_CHANGE_HEADER_BYTES;
+    for (const lesson of [...active, ...staged]) lessons.set(lesson.digest, lesson);
+    for (const row of history) {
+      if (row.before) lessons.set(row.before.digest, row.before);
+      if (row.after) lessons.set(row.after.digest, row.after);
+      headerBytes = Math.max(headerBytes, Buffer.byteLength(JSON.stringify({
+        ...row, prevDigest: row.digest, before: null, after: null,
+      })));
+    }
+    let contentBytes = 0;
+    let idBytes = 0;
+    for (const lesson of lessons.values()) {
+      contentBytes = Math.max(contentBytes, Buffer.byteLength(JSON.stringify({ ...lesson, id: "" })));
+      idBytes = Math.max(idBytes, Buffer.byteLength(JSON.stringify(lesson.id)));
+    }
+    const lessonBytes = contentBytes + idBytes;
+    // Each slot may become active and need one undo row with two lesson snapshots.
+    // Owner actions cannot add slots or introduce new lesson text, provenance or IDs.
+    bytes += slots * (3 * lessonBytes + headerBytes + 2);
+    decisionBytes = Math.max(decisionBytes, 2 * lessonBytes + OWNER_CHANGE_HEADER_BYTES + 1);
+  }
+  return bytes + decisionBytes <= AVE_HOME_INPUT_MAX_BYTES;
 }
 
 function addChange(group: StoredGroup, action: SkillMemoryChange["action"], before: SkillMemoryLesson | null, after: SkillMemoryLesson | null): void {
@@ -123,6 +175,7 @@ function addChange(group: StoredGroup, action: SkillMemoryChange["action"], befo
 
 function readDocument(bytes: Buffer): Document {
   const envelope = Envelope.parse(JSON.parse(bytes.toString("utf8")));
+  if (envelope.groups.length > DOCUMENT_SCOPE_LIMIT) throw new SkillMemoryCapacityError();
   const scopeIds = new Set<string>();
   const groups = envelope.groups.map(row => {
     const { scope, active, staged, retired = [], history } = Group.parse(row);
@@ -131,6 +184,7 @@ function readDocument(bytes: Buffer): Document {
     }
     scopeIds.add(scope.id);
     const group: StoredGroup = { scope, active, staged, retired, history: [] };
+    const changeIds = new Set<string>();
     let previous: string | undefined;
     for (const item of history) {
       const legacy = envelope.version === 1 ? ChangePayload.safeParse(item) : undefined;
@@ -138,17 +192,24 @@ function readDocument(bytes: Buffer): Document {
       const change = Change.parse(migrated ? { ...migrated, digest: digestChange(scope.id, migrated) } : item);
       const linked = previous === undefined || change.prevDigest === previous;
       previous = change.digest;
-      if (!linked || change.digest !== digestChange(scope.id, change)
+      if (!linked || changeIds.has(change.id) || change.digest !== digestChange(scope.id, change)
         || (change.before && !validLesson(change.before)) || (change.after && !validLesson(change.after))) {
         throw new Error("Invalid skill memory ledger");
       }
+      changeIds.add(change.id);
       group.history.push(change);
     }
     undoByDigest(group);
     compactHistory(group);
     return group;
   });
-  return { version: 2, groups };
+  const document = { version: 2, groups } as const;
+  if (!ownerDecisionsFit(document)) {
+    // Older documents may need compaction before they can reserve owner headroom.
+    compactOwnerHistory(document);
+    if (!ownerDecisionsFit(document)) throw new SkillMemoryCapacityError();
+  }
+  return document;
 }
 
 function groupFor(document: Document, binding: SkillMemoryBinding): Document["groups"][number] {
@@ -262,7 +323,7 @@ export class SkillMemoryStore {
       if (!staged || !timingSafeEqualHexDigest(staged.digest, decision.digest)) return false;
       if (decision.action === "apply") {
         const current = group.active.find(lesson => lesson.description === staged.description && lesson.fingerprint === staged.fingerprint);
-        if (!current && group.active.filter(row => row.fingerprint === staged.fingerprint).length >= SKILL_MEMORY_SCOPE_LIMIT) return false;
+        if (!current && group.active.length >= SKILL_MEMORY_SCOPE_LIMIT) return false;
         const version = { ...staged, id: current?.id ?? staged.id };
         const next = { ...version, digest: digestLesson(version) };
         if (current) group.active.splice(group.active.indexOf(current), 1, next);
@@ -274,7 +335,7 @@ export class SkillMemoryStore {
       group.staged.splice(group.staged.indexOf(staged), 1);
       target = { scope: group.scope, lesson: staged };
       return true;
-    }, () => target !== undefined && canCommit(target.scope, target.lesson));
+    }, () => target !== undefined && canCommit(target.scope, target.lesson), decision.scopeId);
   }
 
   private read(): Document {
@@ -297,14 +358,24 @@ export class SkillMemoryStore {
     return document;
   }
 
-  private mutate(change: (document: Document) => boolean, canCommit: () => boolean): Promise<boolean> {
+  private mutate(change: (document: Document) => boolean, canCommit: () => boolean, ownerScopeId?: string): Promise<boolean> {
     const file = join(this.namespace.dir, FILENAME);
     return withInProcessFileQueue(file, async () => {
       if (!plainDirectory(this.namespace.dir)) return false;
       const document = structuredClone(this.read());
       if (!change(document)) return false;
-      const contents = JSON.stringify(document);
-      if (Buffer.byteLength(contents) > AVE_HOME_INPUT_MAX_BYTES) return false;
+      let contents = JSON.stringify(document);
+      if (ownerScopeId === undefined) {
+        if (document.groups.length > DOCUMENT_SCOPE_LIMIT || Buffer.byteLength(contents) > REVIEW_MAX_BYTES
+          || !ownerDecisionsFit(document)) {
+          if (!canCommit()) return false;
+          throw new SkillMemoryCapacityError();
+        }
+      } else if (Buffer.byteLength(contents) > AVE_HOME_INPUT_MAX_BYTES) {
+        compactOwnerHistory(document, ownerScopeId);
+        contents = JSON.stringify(document);
+        if (Buffer.byteLength(contents) > AVE_HOME_INPUT_MAX_BYTES) throw new SkillMemoryCapacityError();
+      }
       const written = await writeFileAtomicAtPathIf(file, contents,
         () => plainDirectory(this.namespace.dir) && canCommit());
       if (written) this.cached = undefined;

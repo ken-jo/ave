@@ -10,7 +10,7 @@ import { SettingsService } from "../../data/settings-store.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import type { SkillMemoryRunKind } from "../../shared/skill-memory-types.js";
 import { bindSkillMemoryInvocation, SkillMemoryService } from "../skill-memory-service.js";
-import { SkillMemoryStore } from "../skill-memory-store.js";
+import { SkillMemoryCapacityError, SkillMemoryStore } from "../skill-memory-store.js";
 import { SkillMemoryPending } from "../skill-memory-pending.js";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -81,7 +81,7 @@ describe("host completion and invocation recall", () => {
     loadSkill: async () => ({ name: "review", filePath: skill, body: source, description: "", triggers: [], resources: [], sourceDigest: sha256Hex(source) }),
     isScheduledCurrent: (id, digest, projectRoot) => id === "routine" && digest === sha256Hex(body) && projectRoot === root,
   });
-  beforeEach(() => {
+  beforeEach(async () => {
     home = mkdtempSync(join(tmpdir(), "ave-skill-review-"));
     vi.stubEnv("AVE_HOME", home);
     root = join(home, "project");
@@ -93,6 +93,7 @@ describe("host completion and invocation recall", () => {
     review.mockClear();
     service = makeService();
     service.setReviewer({ review });
+    await service.onSettingChanged(true);
   });
   afterEach(async () => {
     vi.unstubAllEnvs();
@@ -124,12 +125,64 @@ describe("host completion and invocation recall", () => {
     return store.hasCompletion(completionId);
   };
 
+  it("keeps an unsynced setting unavailable without reading, enabling or draining a stale journal", async () => {
+    service = makeService();
+    service.setReviewer({ review });
+    const journal = join(home, "skill-memory", "pending.json");
+    const oldGeneration = randomUUID();
+    await new SkillMemoryPending().discard(oldGeneration);
+    const saved = readFileSync(journal, "utf8");
+    const read = vi.spyOn(SkillMemoryPending.prototype, "read");
+    const enable = vi.spyOn(SkillMemoryPending.prototype, "enable");
+    try {
+      expect(service.ensureReviewAvailable()).toBe("unavailable");
+      await invoke("attended", true, root, "early", true);
+      await invoke("headless");
+      expect(await complete("headless")).toBe(false);
+      service.resumePending();
+      await service.waitForPending();
+      expect(read).not.toHaveBeenCalled();
+      expect(enable).not.toHaveBeenCalled();
+      expect(review).not.toHaveBeenCalled();
+      expect(readFileSync(journal, "utf8")).toBe(saved);
+    } finally {
+      read.mockRestore();
+      enable.mockRestore();
+    }
+
+    const generation = randomUUID();
+    await service.onSettingChanged(true, generation);
+    expect(JSON.parse(readFileSync(journal, "utf8"))).toMatchObject({ generation, rows: [] });
+    expect(service.ensureReviewAvailable()).toBe("ready");
+  });
+
   it("OFF makes no model call and writes nothing", async () => {
     enabled = false;
+    await service.onSettingChanged(false);
     await invoke("attended");
     expect(await complete("attended")).toBe(false);
     expect(review).not.toHaveBeenCalled();
     expect(store.list()).toEqual([]);
+  });
+
+  it("reports dropped reviewer output and clears the capacity banner after a later save", async () => {
+    const record = vi.spyOn(store, "record").mockRejectedValueOnce(new SkillMemoryCapacityError());
+    try {
+      await invoke("attended", true, root, "first", true);
+      await service.waitForPending();
+      expect(record).toHaveBeenCalledOnce();
+      expect(service.ensureReviewAvailable()).toBe("capacity");
+      expect(JSON.parse(readFileSync(join(home, "skill-memory", "pending.json"), "utf8")).rows).toEqual([]);
+      expect(store.list()).toEqual([]);
+      expect(await invoke("attended", false)).toBe("");
+
+      await invoke("headless");
+      expect(await complete("headless", "later")).toBe(true);
+      expect(service.ensureReviewAvailable()).toBe("ready");
+      expect(store.list()[0]?.staged).toHaveLength(1);
+    } finally {
+      record.mockRestore();
+    }
   });
 
   it.each([
@@ -286,16 +339,18 @@ describe("host completion and invocation recall", () => {
 
   it("stages a replayed attended completion for explicit owner apply", async () => {
     service = makeService();
+    await service.onSettingChanged(true);
     await invoke("attended", true, root, "session", true);
     expect(review).not.toHaveBeenCalled();
     const headless = makeService(false);
     headless.setReviewer({ review });
+    await headless.onSettingChanged(true);
     headless.resumePending();
     await headless.waitForPending();
     expect(review).not.toHaveBeenCalled();
     const restarted = makeService();
     restarted.setReviewer({ review });
-    restarted.resumePending();
+    await restarted.onSettingChanged(true);
     await restarted.waitForPending();
     expect(review).toHaveBeenCalledOnce();
     const [group] = store.list();
@@ -350,6 +405,7 @@ describe("host completion and invocation recall", () => {
 
     review.mockClear();
     service = makeService();
+    await service.onSettingChanged(true);
     await invoke("attended", true, root, "queued", true);
     await invoke("attended", true, root, "parked");
     const journal = join(home, "skill-memory", "pending.json");
@@ -391,6 +447,7 @@ describe("host completion and invocation recall", () => {
     const desktop = service;
     const exec = makeService(false);
     exec.setReviewer({ review });
+    await exec.onSettingChanged(true);
     service = exec;
     await invoke("headless");
     await desktop.onSettingChanged(false);
@@ -405,6 +462,7 @@ describe("host completion and invocation recall", () => {
 
   it("clears old evidence before reviewing after a failed OFF discard", async () => {
     service = makeService();
+    await service.onSettingChanged(true);
     await invoke("attended", true, root, "old", true);
     const journal = join(home, "skill-memory", "pending.json");
     const discard = vi.spyOn(SkillMemoryPending.prototype, "discard").mockRejectedValueOnce(new Error("Write failed"));
@@ -531,6 +589,7 @@ describe("host completion and invocation recall", () => {
     await failed.finish(null, false);
     const restarted = makeService();
     restarted.setReviewer({ review });
+    await restarted.onSettingChanged(true);
     await restarted.queueArchive("session", root, "archive:one", isCurrent);
     await restarted.waitForPending();
     expect(review).toHaveBeenCalledOnce();

@@ -66,10 +66,10 @@ describe("skill memory IPC", () => {
     expect(await f.invokeDecision(f.event, f.change)).toEqual({ ok: false });
   });
 
-  it("keeps listing and owner decisions available while automatic review is unavailable", async () => {
+  it.each(["unavailable", "capacity"] as const)("keeps listing and owner decisions available during automatic review state %s", async review => {
     const f = fixture();
-    f.ensureReviewAvailable.mockReturnValueOnce("unavailable");
-    expect(await f.invokeList(f.event)).toEqual({ ok: true, review: "unavailable", groups: [] });
+    f.ensureReviewAvailable.mockReturnValueOnce(review);
+    expect(await f.invokeList(f.event)).toEqual({ ok: true, review, groups: [] });
     expect(f.listCurrent).toHaveBeenCalledOnce();
     const { lessonId, ...change } = f.change;
     for (const decision of [f.change, { ...f.change, action: "reject" }, { ...change, action: "undo", changeId: lessonId }]) {

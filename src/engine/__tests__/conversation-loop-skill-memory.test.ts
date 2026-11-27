@@ -43,7 +43,7 @@ afterEach(async () => {
   await cleanupTmpDir(home);
 });
 
-function fixture(turns: StreamEvent[][]) {
+async function fixture(turns: StreamEvent[][]) {
   const dir = join(home, "skills");
   mkdirSync(dir);
   writeFileSync(join(dir, "check-build.md"), `---\nname: check-build\ndescription: Build checks\n---\n${TOOL_TEXT}\n`);
@@ -71,6 +71,7 @@ function fixture(turns: StreamEvent[][]) {
     ]);
   });
   service.setReviewer({ review });
+  await service.onSettingChanged(true);
   const track = vi.spyOn(service, "trackTurn");
   const loop = new ConversationLoop(makeBasicConversationLoopDeps({
     skillMemory: service, skillOverlay: overlay, toolRegistry, memoryManager: new MemoryManager({ aveDir: home }),
@@ -83,7 +84,7 @@ function fixture(turns: StreamEvent[][]) {
 
 describe("skill memory through the host turn", () => {
   it("queues one review after output for a direct skill invocation and a later correction while the skill is loaded", async () => {
-    const { loop, service, store, review, track } = fixture([LOADED_SKILL, DONE, USED_TOOL, DONE, DONE]);
+    const { loop, service, store, review, track } = await fixture([LOADED_SKILL, DONE, USED_TOOL, DONE, DONE]);
     const send = (text: string) => runWithSkillMemoryOwnerInput(text, () => loop.runTurn(text, {
       onTurnComplete: () => expect(review).toHaveBeenCalledTimes(text.startsWith("/") ? 0 : text === "Acknowledged." ? 2 : 1),
     }, undefined, userKeyboardTurn()));
@@ -102,7 +103,7 @@ describe("skill memory through the host turn", () => {
   });
 
   it.each(["headless", "scheduled"] as const)("stages %s evidence through real turn classification", async kind => {
-    const { loop, service, store, track } = fixture([LOADED_SKILL, DONE]);
+    const { loop, service, store, track } = await fixture([LOADED_SKILL, DONE]);
     const sessionId = loop.getSessionId();
     const digest = "a".repeat(64);
     const fire = { input: LESSON, projectRoot: home, completionId: "fire", routineId: "daily", routineDigest: digest };
@@ -121,7 +122,7 @@ describe("skill memory through the host turn", () => {
   });
 
   it.each(["remote", "subagent", "withheld", "attachment", "resume", "custom-command"] as const)("does not capture %s input", async kind => {
-    const { loop, service, review, track } = fixture([LOADED_SKILL, DONE]);
+    const { loop, service, review, track } = await fixture([LOADED_SKILL, DONE]);
     if (kind === "subagent") await loop.newConversation("subagent");
     if (kind === "custom-command") {
       mkdirSync(join(home, "commands"));

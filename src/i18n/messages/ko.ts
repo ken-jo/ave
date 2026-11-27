@@ -16,6 +16,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "skillMemory.storeUnavailable": "스킬 교훈 저장소를 사용할 수 없습니다. 저장소가 복구될 때까지 저장된 교훈을 사용하지 않습니다.",
   "skillMemory.reviewUnavailable": "자동 검토를 사용할 수 없습니다. 저장된 교훈은 계속 관리할 수 있습니다.",
   "skillMemory.reviewOff": "자동 검토가 꺼져 있습니다. 적용 중인 교훈은 계속 사용합니다.",
+  "skillMemory.reviewCapacity": "스킬 교훈 저장 한도에 도달하여 마지막 자동 검토의 제안을 저장하지 않았습니다.",
   "skillMemory.needsReview": "검토 대기",
   "skillMemory.active": "적용 중",
   "skillMemory.retired": "사용 종료",

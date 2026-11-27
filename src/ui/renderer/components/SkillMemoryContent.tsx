@@ -84,6 +84,9 @@ export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
     {snapshot?.review === "off" && <div className="rounded-md border p-3">
       <p className="text-sm" role="status">{t("skillMemory.reviewOff")}</p>
     </div>}
+    {snapshot?.review === "capacity" && <div className="rounded-md border p-3">
+      <p className="text-sm" role="status">{t("skillMemory.reviewCapacity")}</p>
+    </div>}
     {snapshot === undefined && <p className="text-sm" role="status">{t("skillMemory.loading")}</p>}
     {snapshot?.groups.length === 0 && <p className="text-sm text-muted-foreground">{t("skillMemory.empty")}</p>}
     {snapshot?.groups.map(({ scope, active, staged, retired, history, undo }) => <section key={scope.id} className="space-y-4 rounded-lg border p-4">

@@ -10,7 +10,7 @@ import { projectRootEquals } from "../shared/project-identity.js";
 import { readAveHomeInputSync } from "../shared/ave-home-trust.js";
 import type { MemoryReviewerService } from "./memory-reviewer-service.js";
 import { approveSkillMemoryEvidence, parseSkillMemoryReview, type SkillMemoryEvidence } from "./skill-memory-policy.js";
-import { skillMemoryScopeId, type SkillMemoryBinding, type SkillMemoryStore } from "./skill-memory-store.js";
+import { SkillMemoryCapacityError, skillMemoryScopeId, type SkillMemoryBinding, type SkillMemoryStore } from "./skill-memory-store.js";
 import { hashSkillMaterial } from "../main/skill-approvals-store.js";
 import { skillApprovalMaterial, type LoadedSkill } from "../main/skill-store.js";
 import { escapeHtml } from "../shared/escape-html.js";
@@ -157,6 +157,7 @@ export class SkillMemoryService {
   private setting: ReviewSetting | undefined;
   private settingChange: Promise<void> | undefined;
   private reviewState: "ready" | "synchronizing" | "unavailable" = "ready";
+  private reviewCapacityRefused = false;
   private discardUnconfirmed = false;
   private discardRetry: ReturnType<typeof setTimeout> | undefined;
   private drainage: Promise<void> | undefined;
@@ -185,18 +186,17 @@ export class SkillMemoryService {
 
   // Status and retry belong to the review pipeline. Owner store access never waits on it.
   ensureReviewAvailable(): SkillMemoryReviewState {
-    if (this.setting?.enabled === false || !this.deps.enabled()) return "off";
+    const setting = this.setting;
+    if (!setting) return "unavailable";
+    if (!setting.enabled || !this.deps.enabled()) return "off";
     if (this.reviewState === "ready") {
       try {
-        if (this.isReviewJournalCurrent(this.pending.read())) return "ready";
+        if (this.isReviewJournalCurrent(this.pending.read())) return this.reviewCapacityRefused ? "capacity" : "ready";
       } catch {
         log.warn("Pending skill memory evidence could not be read");
       }
     }
-    if (this.reviewState !== "synchronizing") {
-      this.setting ??= { enabled: true, generation: undefined };
-      void this.syncSetting(this.setting);
-    }
+    if (this.reviewState !== "synchronizing") void this.syncSetting(setting);
     return "unavailable";
   }
 
@@ -234,12 +234,13 @@ export class SkillMemoryService {
   }
 
   private canReview(): boolean {
-    return this.setting?.enabled !== false && this.reviewState === "ready" && this.deps.enabled();
+    return this.setting?.enabled === true && this.reviewState === "ready" && this.deps.enabled();
   }
 
   private isReviewJournalCurrent(journal: ReturnType<SkillMemoryPending["read"]>): boolean {
-    const generation = this.setting?.generation;
-    return !journal.disabled && (generation === undefined || journal.generation === generation);
+    const setting = this.setting;
+    return setting?.enabled === true && !journal.disabled
+      && (setting.generation === undefined || journal.generation === setting.generation);
   }
 
   trackTurn(scope: Omit<SkillMemoryTurn, "bindings"> | null) {
@@ -383,9 +384,16 @@ export class SkillMemoryService {
         }
         return this.store.record(records, eligible, "stage");
       };
-      return await this.pending.withGeneration(persisted.generation, record);
-    } catch {
-      log.warn("Skill memory review did not commit");
+      const saved = await this.pending.withGeneration(persisted.generation, record);
+      if (saved) this.reviewCapacityRefused = false;
+      return saved;
+    } catch (error) {
+      if (error instanceof SkillMemoryCapacityError) {
+        this.reviewCapacityRefused = true;
+        log.warn("Skill memory review output dropped because the lesson store reached capacity");
+      } else {
+        log.warn("Skill memory review did not commit");
+      }
       return false;
     } finally {
       this.reviewing.delete(completionId);

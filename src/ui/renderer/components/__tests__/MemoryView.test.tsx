@@ -262,7 +262,9 @@ describe("skill memory control room", () => {
       review: "unavailable", banner: "Automatic review is unavailable. You can still manage saved lessons." },
     { locale: "ko", tab: "스킬", needsReview: "검토 대기", apply: "적용", reject: "거절", history: "이력", undo: "되돌리기",
       review: "off", banner: "자동 검토가 꺼져 있습니다. 적용 중인 교훈은 계속 사용합니다." },
-  ] as const)("reviews full lesson text and sends exact decisions in $locale", async labels => {
+    { locale: "ko", tab: "스킬", needsReview: "검토 대기", apply: "적용", reject: "거절", history: "이력", undo: "되돌리기",
+      review: "capacity", banner: "스킬 교훈 저장 한도에 도달하여 마지막 자동 검토의 제안을 저장하지 않았습니다." },
+  ] as const)("reviews full lesson text and sends exact decisions in $locale during $review", async labels => {
     const previous = getLocale();
     setLocale(labels.locale);
     try {
