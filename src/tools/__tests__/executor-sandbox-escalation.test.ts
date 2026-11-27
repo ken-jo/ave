@@ -26,6 +26,8 @@ import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { attachSandboxBlock, issueFilesystemSandboxBlock } from "../../shared/sandbox-block.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import { createToolEffectResolver } from "../../permissions/tool-effect-evidence.js";
+import { endUnattendedStage, onUnattendedDenied, registerUnattendedStage } from "../../permissions/unattended-lane-registry.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
@@ -201,6 +203,50 @@ it("denies a headless host escalation without a second native effect", async () 
   expect(execute).toHaveBeenCalledOnce();
   expect(requestAndWait).not.toHaveBeenCalled();
   expect(result).toMatchObject({ tool_use_id: "headless-sandbox-call", is_error: true, content: expect.stringContaining(NO_APPROVER_MESSAGE) });
+});
+
+it("returns a scheduled stage's sandbox block once without spending a lane denial on a host retry", async () => {
+  const command = "printf ordinary";
+  const sessionId = "unattended-sandbox-block";
+  const native = new BashTool();
+  const blocked = blockedResult(command, directory);
+  const execute = vi.spyOn(native, "execute").mockResolvedValue(blocked);
+  const registry = new ToolRegistry();
+  registry.register(native);
+  const permission = manager();
+  permission.setUnattendedToolEffectResolver(createToolEffectResolver(registry));
+  const audit = recordedAudit();
+  const requestAndWait = vi.fn();
+  const executor = new ToolExecutor(registry, undefined, permission, undefined, { requestAndWait } as never, undefined, audit.logger);
+  registerUnattendedStage(sessionId, {
+    runKey: "run", stageId: "stage", workspaceRoot: directory, isolation: { proven: true },
+    envelope: {
+      tools: [native.name], readRoots: [], writePaths: [], commands: [command], network: [],
+      mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+      outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 },
+    },
+  });
+  const onDenied = vi.fn();
+  const unsubscribe = onUnattendedDenied(onDenied);
+  try {
+    const results = await invoke(executor, sessionId, "bash", { command }, true);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(onDenied).not.toHaveBeenCalled();
+    expect(results).toEqual([expect.objectContaining({ tool_use_id: sessionId, is_error: true, content: expect.stringContaining(blocked.output) })]);
+    expect(audit.permissions.filter(entry => entry.decision !== "ask")).toEqual([
+      expect.objectContaining({ decision: "allow", toolUseId: sessionId, executionPlan: expect.objectContaining({ executionRequest: "default" }) }),
+    ]);
+    expect(requestAndWait).not.toHaveBeenCalled();
+
+    const [host] = await invoke(executor, sessionId, "bash", { command, executionMode: "host", justification: "Run on the host" }, true);
+    expect(host).toMatchObject({ is_error: true, content: expect.stringContaining("do not retry") });
+    expect(onDenied).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sessionId, code: "forbidden-unattended" }));
+    expect(execute).toHaveBeenCalledOnce();
+    expect(requestAndWait).not.toHaveBeenCalled();
+  } finally {
+    unsubscribe();
+    endUnattendedStage(sessionId);
+  }
 });
 
 it("requires a normal card before expanding sandbox filesystem scope", async () => {

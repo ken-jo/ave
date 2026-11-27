@@ -2905,7 +2905,7 @@ async function runToolInvocationAttempt(
     const blockedSandbox = sandboxBlockForResult(executedResult);
     if (blockedSandbox !== undefined && hostShellToolName !== undefined && hostShellExecutionPlan?.mode === "asrt"
       && executedResult.is_error === true && blockedSandbox.command === finalInput.command && !abortSignal?.aborted
-      && rationaleResumeContext === undefined) {
+      && rationaleResumeContext === undefined && registeredUnattendedStageOf(sessionId) === undefined) {
       // A recorded filesystem refusal creates a new exact host request. Every permission stage runs again.
       // The retry is its own attempt with its own terminal row; this attempt already wrote one.
       const retryServices = { ...services, invocationTerminal: services.invocationTerminal.nextAttempt() };
