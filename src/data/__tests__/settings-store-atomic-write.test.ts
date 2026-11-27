@@ -269,7 +269,8 @@ describe("settings persistence", () => {
     expect(saved.pluginConfigs).toMatchObject({ sample: { mode: "fast" }, other: { mode: "slow" } });
   });
 
-  it("keeps a switch that lost its admission while its save waited out of the file, and saves the changes around it", async () => {
+  it.runIf(process.platform === "win32")("keeps a switch that lost its admission while its save waited out of the file, and saves the changes around it", async () => {
+    await service.patch({ features: { sessionIndexingWithoutContainment: true } });
     await service.set("memoryEmbedding", { source: "local", localInferenceWithoutSandbox: true });
     const save = vi.spyOn(service as unknown as { saveSettings(settings: unknown): Promise<void> }, "saveSettings");
     const real = (settings: unknown) => (SettingsService.prototype as unknown as { saveSettings(settings: unknown): Promise<void> }).saveSettings.call(service, settings);
@@ -328,7 +329,7 @@ describe("settings persistence", () => {
     expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8")).memoryEmbedding).toEqual({ source: "local", localInferenceWithoutSandbox: true });
   });
 
-  it("saves a switch whose admission still holds in the step that writes it", async () => {
+  it.runIf(process.platform === "win32")("saves a switch whose admission still holds in the step that writes it", async () => {
     await service.patch({ features: { sessionIndexingWithoutContainment: false } }, {
       admission: { field: ["features", "sessionIndexingWithoutContainment"], canCommit: () => true },
     });

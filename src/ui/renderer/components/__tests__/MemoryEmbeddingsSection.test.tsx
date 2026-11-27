@@ -26,6 +26,19 @@ beforeAll(async () => { await import('../../../../ipc/domains/memory-map-runtime
 afterEach(() => { setLocale(previousLocale); });
 
 describe('memory embeddings settings', () => {
+  it('keeps the previous model error when the runtime is lost with no inference switch', async () => {
+    setLocale('en');
+    const original = createMemoryMapApi();
+    original.modelStatus.mockResolvedValue({ ok: false, error: 'model-download-failed' });
+    const view = render(<MemoryEmbeddingsSection api={original} />);
+    expect(await screen.findByText(en['memoryMap.error.model-download-failed'])).toBeVisible();
+
+    const unavailable = createMemoryMapApi();
+    unavailable.modelStatus.mockResolvedValue({ ok: false, error: 'local-runtime-unavailable' });
+    view.rerender(<MemoryEmbeddingsSection api={unavailable} />);
+    expect(await screen.findByText(en['memoryMap.error.local-runtime-unavailable'])).toBeVisible();
+    expect(screen.getByText(en['memoryMap.error.model-download-failed'])).toBeVisible();
+  });
   it.each([['en', en], ['ko', ko]] as const)('shows the released switch and its disabled notice (%s)', async (locale, messages) => {
     setLocale(locale);
     const api = createMemoryMapApi();

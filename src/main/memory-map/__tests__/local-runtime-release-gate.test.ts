@@ -2,16 +2,16 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SessionRepository } from '../../../memory/session-repository.js';
+import { WindowsSessionRepository as SessionRepository } from '../../../memory/session-repository-win32.js';
 import { deferred } from '../../../__tests__/support/deferred.js';
 import { setProcessPlatform } from '../../../__tests__/support/process-platform.js';
 import { createTmpDirTracker } from '../../../__tests__/support/tmp-dir-teardown.js';
 import { registerMxcReleaseGateEvidence } from '../../../permissions/mxc-extension-admission.js';
 import { refreshWindowsBackgroundAdmission, sessionSearchIndexPolicySource } from '../../../permissions/windows-background-features.js';
 import { invalidateWindowsBackendEvidence, observeWindowsBackend, onWindowsContainerEvidenceChanged, reportWindowsBackendLoss } from '../../../permissions/windows-confinement-evidence.js';
-import { runInferenceChild } from '../inference-child.js';
+import { runInferenceChild } from '../inference-child-win32.js';
 import type { SandboxWindowsExtensionPlan, SandboxWindowsSubstrateInfo } from '../../../shared/sandbox-capability-info.js';
-import { assertLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from '../local-runtime.js';
+import { assertLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from '../local-runtime-win32.js';
 
 const NO_ACCOUNT = { errors: [] as string[], warnings: [] as string[], accountBackendAbsent: true as const };
 const NO_CONTAINER = { state: 'unavailable', reason: 'container-unavailable', windowsBuild: null, detail: '', baseContainerApiPresent: false, containerBackendAbsent: true };
@@ -68,6 +68,7 @@ const CONTAINER_ROUTE = { mxc: { state: 'available' }, srtWinReady: false, shell
 
 beforeEach(() => {
   setProcessPlatform('win32');
+  vi.stubEnv('SystemRoot', 'C:/example/Windows');
   state.accountHelperIdentity = 'account-helper-1';
   state.confined = false;
   state.homeVerified = true;
@@ -81,6 +82,7 @@ beforeEach(() => {
     srtWinReady: false, accountBackendAbsent: true, shells: 'none' };
 });
 afterEach(async () => {
+  vi.unstubAllEnvs();
   unregister?.();
   unregister = undefined;
   setProcessPlatform(HOST_PLATFORM);

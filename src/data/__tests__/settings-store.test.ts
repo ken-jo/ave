@@ -80,8 +80,28 @@ function currentSettingsJson(settings: Record<string, unknown>): string {
   return JSON.stringify({ ...settings, appliedMigrations: currentMigrations });
 }
 
-describe("local memory inference preference", () => {
-  it.each(["new", "existing"] as const)("defaults on and persists an explicit off choice for a %s installation", async (installation) => {
+it("persists a POSIX profile without introducing Windows-only preferences", async () => {
+  const original = Object.getOwnPropertyDescriptor(process, "platform");
+  const userDataPath = mkdtempSync(join(tmpdir(), "posix-settings-profile-"));
+  const file = join(userDataPath, "ave-settings.json");
+  try {
+    Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+    writeFileSync(file, currentSettingsJson({ features: { idlePreferenceRefresh: true } }));
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect.soft(service.get("memoryEmbedding")).toBeUndefined();
+    await service.patch({ features: { idlePreferenceRefresh: false } });
+    const saved = JSON.parse(readFileSync(file, "utf8"));
+    expect.soft(saved).not.toHaveProperty("memoryEmbedding");
+    expect.soft(saved.features).not.toHaveProperty("sessionIndexingWithoutContainment");
+    expect(saved.features.idlePreferenceRefresh).toBe(false);
+  } finally {
+    if (original) Object.defineProperty(process, "platform", original);
+    await cleanupTmpDir(userDataPath);
+  }
+});
+
+describe.runIf(process.platform === "win32")("local memory inference preference", () => {
+  it.each(["new", "existing"] as const)("persists an explicit off choice for a %s installation", async (installation) => {
     const userDataPath = mkdtempSync(join(tmpdir(), "local-inference-settings-"));
     const load = () => new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     try {
@@ -91,8 +111,8 @@ describe("local memory inference preference", () => {
       }
       const service = load();
       const config = service.get("memoryEmbedding");
-      expect(config).toMatchObject({ localInferenceWithoutSandbox: true });
-      if (installation === "existing") expect(config).toMatchObject(existingModel);
+      if (installation === "existing") expect(config).toMatchObject({ ...existingModel, localInferenceWithoutSandbox: true });
+      else expect(config).toBeUndefined();
       await service.set("memoryEmbedding", { ...config, localInferenceWithoutSandbox: false });
       const reloaded = load().get("memoryEmbedding");
       expect(reloaded).toMatchObject({ localInferenceWithoutSandbox: false });
@@ -103,8 +123,8 @@ describe("local memory inference preference", () => {
   });
 });
 
-describe("session search indexing preference", () => {
-  it.each(["new", "existing"] as const)("defaults on and persists an off choice for a %s profile", async (profile) => {
+describe.runIf(process.platform === "win32")("session search indexing preference", () => {
+  it.each(["new", "existing"] as const)("persists an off choice for a %s profile", async (profile) => {
     const userDataPath = mkdtempSync(join(tmpdir(), "session-index-settings-"));
     const load = () => new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     try {
@@ -112,7 +132,7 @@ describe("session search indexing preference", () => {
         writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ features: { idlePreferenceRefresh: true } }));
       }
       const settings = load();
-      expect(settings.get("features")?.sessionIndexingWithoutContainment).toBe(true);
+      expect(settings.get("features")?.sessionIndexingWithoutContainment).toBeUndefined();
       await settings.patch({ features: { sessionIndexingWithoutContainment: false } });
       expect(load().get("features")?.sessionIndexingWithoutContainment).toBe(false);
       if (profile === "existing") expect(load().get("features")?.idlePreferenceRefresh).toBe(true);

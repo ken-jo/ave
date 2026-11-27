@@ -15,6 +15,7 @@ import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { SECURITY_FEATURE_KEYS } from "../../../shared/security-settings.js";
+import * as backgroundFeatures from "../../../permissions/windows-background-features.js";
 import { securitySettingsGestures } from "../../security-settings-gesture.js";
 import { __resetSandboxHomesUnavailableForTest, __resetWindowsSandboxSubstrateForTest, getSandboxHomesUnavailable } from "../../../permissions/sandbox-capability.js";
 
@@ -113,6 +114,26 @@ afterEach(async () => {
 });
 
 describe("session search indexing settings", () => {
+  it("does not refresh Windows admission for a POSIX snapshot or a crafted switch patch", async () => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform");
+    const f = await setup();
+    const refresh = vi.spyOn(backgroundFeatures, "refreshWindowsBackgroundAdmission");
+    try {
+      Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+      await expect(f.invoke(CHANNELS.settings.get, undefined)).resolves.not.toHaveProperty("features.sessionIndexingWithoutContainment");
+      const result = await f.invoke(CHANNELS.settings.update, {
+        features: { sessionIndexingWithoutContainment: false, idlePreferenceRefresh: true },
+      });
+      expect.soft(result).toHaveProperty("features.idlePreferenceRefresh", true);
+      expect.soft(result).not.toHaveProperty("features.sessionIndexingWithoutContainment");
+      expect.soft(f.settingsService.get("features")?.idlePreferenceRefresh).toBe(true);
+      expect(refresh).not.toHaveBeenCalled();
+    } finally {
+      refresh.mockRestore();
+      if (original) Object.defineProperty(process, "platform", original);
+    }
+  });
+
   it.each(["projection", "write"] as const)("rechecks HOME identity before the first settings %s after loss", async (operation) => {
     const original = Object.getOwnPropertyDescriptor(process, "platform");
     const f = await setup();
@@ -120,6 +141,7 @@ describe("session search indexing settings", () => {
     backgroundState.noBackend = backgroundState.release = true;
     try {
       await expect(f.invoke(CHANNELS.settings.get, undefined)).resolves.toHaveProperty("features.sessionIndexingWithoutContainment", true);
+      await f.settingsService.patch({ features: { sessionIndexingWithoutContainment: true } });
       backgroundState.homeLost = true;
       expect(getSandboxHomesUnavailable()).toBe(false);
       if (operation === "projection") {
@@ -155,6 +177,7 @@ describe("session search indexing settings", () => {
     backgroundState.noBackend = backgroundState.release = true;
     try {
       await expect(f.invoke(CHANNELS.settings.get, undefined)).resolves.toHaveProperty("features.sessionIndexingWithoutContainment", true);
+      await f.settingsService.patch({ features: { sessionIndexingWithoutContainment: true } });
       change();
       if (operation === "projection") {
         await expect(f.invoke(CHANNELS.settings.get, undefined)).resolves.not.toHaveProperty("features.sessionIndexingWithoutContainment");
@@ -187,7 +210,7 @@ describe("session search indexing settings", () => {
       expect(await write("false")).toEqual({ ok: false, error: "invalid-input" });
       expect(await write(false)).toHaveProperty("features.sessionIndexingWithoutContainment", false);
       expect(await read()).toHaveProperty("features.sessionIndexingWithoutContainment", false);
-      expect(f.settingsService.get("memoryEmbedding")?.localInferenceWithoutSandbox).toBe(true);
+      expect(f.settingsService.get("memoryEmbedding")).toBeUndefined();
       backgroundState.noBackend = false;
       expect(await read()).not.toHaveProperty("features.sessionIndexingWithoutContainment");
       expect(await write(true)).toEqual({ ok: false, error: "invalid-input" });

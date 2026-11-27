@@ -101,11 +101,12 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
 import { initSandboxGate } from "../steps/sandbox-init.js";
 import { HOST_CONTAINER_ABSENCE_PROBE } from "../../__tests__/support/mxc-probe-report.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
-import { createMemoryMapRuntime } from "../../ipc/domains/memory-map-runtime.js";
+import { createMemoryMapRuntime } from "../../ipc/domains/memory-map-runtime-win32.js";
 import { rendererSettingsSnapshot } from "../../ipc/domains/settings.js";
 import type { IpcDeps } from "../../ipc/types.js";
-import { assertLocalEmbeddingRuntime } from "../../main/memory-map/local-runtime.js";
+import { assertLocalEmbeddingRuntime } from "../../main/memory-map/local-runtime-win32.js";
 import { SessionRepository } from "../../memory/session-repository.js";
+import { WindowsSessionRepository } from "../../memory/session-repository-win32.js";
 import { SessionSearchIndex } from "../../memory/session-search-index.js";
 import { registerMxcReleaseGateEvidence } from "../../permissions/mxc-extension-admission.js";
 import { detectMxcPrerequisites, pinnedWxcExecSha256 } from "../../permissions/mxc-windows.js";
@@ -242,8 +243,8 @@ it.each([
     const isolatedSeed = new SessionRepository({ aveDir: isolatedDir });
     await isolatedSeed.saveSession(sessionId, [{ role: "user", content: "detachment evidence" }]);
     await isolatedSeed.saveSessionMetadata(sessionId, { sessionKind: "main", projectRoot: root, title: "Session" });
-    const main = new SessionRepository({ aveDir: mainDir, ...searchIndexPolicy });
-    const isolated = new SessionRepository({ aveDir: isolatedDir, ...searchIndexPolicy });
+    const main = new WindowsSessionRepository({ aveDir: mainDir, ...searchIndexPolicy });
+    const isolated = new WindowsSessionRepository({ aveDir: isolatedDir, ...searchIndexPolicy });
     const originalMainIndex = readFileSync(mainIndex);
     const originalIsolatedIndex = readFileSync(isolatedIndex);
     const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
@@ -342,7 +343,7 @@ it.each([
   const indexPath = join(dir, "search", "index.db");
   const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
   const projectRoot = "C:/example/workspace";
-  const repository = new SessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => false) });
+  const repository = new WindowsSessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => false) });
   try {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
     h.checkDeps.mockResolvedValue(account ? ACCOUNT_DEPS_READY : SRT_WIN_MISSING);
@@ -441,7 +442,7 @@ it.each([false, true])("does no SQLite work for a superseded refresh (first inve
   const seed = new SessionRepository({ aveDir: dir });
   await seed.saveSession(sessionId, [{ role: "user", content: "indexed before overlap" }]);
   seed.closeSearchIndex();
-  const repository = new SessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => false) });
+  const repository = new WindowsSessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => false) });
   try {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
     h.checkDeps.mockResolvedValue(NO_ACCOUNT_BACKEND);
@@ -493,7 +494,7 @@ it.each(["failed", "refused"] as const)("keeps progress and other reads responsi
   const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
   const indexPath = join(dir, "search", "index.db");
   const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
-  const repository = new SessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => undefined) });
+  const repository = new WindowsSessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => undefined) });
   try {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
     h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
@@ -560,7 +561,7 @@ it("refuses index work still waiting for a native answer when the store closes, 
   const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
   const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
   const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
-  const repository = new SessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => undefined) });
+  const repository = new WindowsSessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => undefined) });
   try {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
     h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
@@ -599,7 +600,7 @@ it.each([
   const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
   const indexPath = join(dir, "search", "index.db");
   const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
-  const repository = new SessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => true) });
+  const repository = new WindowsSessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => true) });
   try {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
     h.checkDeps.mockResolvedValue(NO_ACCOUNT_BACKEND);
@@ -667,8 +668,8 @@ it.each([undefined, false])("retains indexes and recovers skipped writes across 
   try {
     await new SessionRepository({ aveDir: dir }).saveSession(beforeId, [{ role: "user", content: "retained evidence" }]);
     const originalIndex = readFileSync(index);
-    const main = new SessionRepository({ aveDir: dir, ...searchIndexPolicy });
-    const empty = new SessionRepository({ aveDir: emptyDir, ...searchIndexPolicy });
+    const main = new WindowsSessionRepository({ aveDir: dir, ...searchIndexPolicy });
+    const empty = new WindowsSessionRepository({ aveDir: emptyDir, ...searchIndexPolicy });
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
     h.checkDeps.mockResolvedValue(NO_ACCOUNT_BACKEND);
     h.detectMxc.mockResolvedValue(MXC_OLD);
@@ -695,8 +696,8 @@ it.each([undefined, false])("retains indexes and recovers skipped writes across 
       h.offlineConfinement.mockReturnValue(true);
     });
     await initSandboxGate(harness.context(true, false));
-    const restarted = new SessionRepository({ aveDir: dir, ...searchIndexPolicy });
-    const restartedEmpty = new SessionRepository({ aveDir: emptyDir, ...searchIndexPolicy });
+    const restarted = new WindowsSessionRepository({ aveDir: dir, ...searchIndexPolicy });
+    const restartedEmpty = new WindowsSessionRepository({ aveDir: emptyDir, ...searchIndexPolicy });
     await restarted.verifyOrRebuildSearchIndex();
     await restartedEmpty.verifyOrRebuildSearchIndex();
     expect(await restarted.searchSessionsWithCurrentPolicy("retained evidence")).toHaveLength(1);
@@ -822,7 +823,7 @@ it.each([
   const indexPath = join(dir, "search", "index.db");
   const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
   const searchIndexPolicy = sessionSearchIndexPolicySource(() => preference);
-  const repository = new SessionRepository({ aveDir: dir, ...searchIndexPolicy });
+  const repository = new WindowsSessionRepository({ aveDir: dir, ...searchIndexPolicy });
   const warning = "host capability query could not complete";
   try {
     await new SessionRepository({ aveDir: dir }).saveSession(sessionId, [{ role: "user", content: "retained evidence" }]);

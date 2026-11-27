@@ -4,7 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import * as journal from "../session-turn-journal.js";
-import { SessionRepository } from "../session-repository.js";
+import { WindowsSessionRepository } from "../session-repository-win32.js";
 import { SessionSearchIndex, type SessionSearchIndexPolicy } from "../session-search-index.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -60,7 +60,7 @@ describe("queued session index repair", () => {
   const makeDir = useTempDirs("ave-index-restart-");
 
   async function seed(aveDir: string): Promise<void> {
-    const repository = new SessionRepository({ aveDir });
+    const repository = new WindowsSessionRepository({ aveDir });
     await repository.saveSession(sessionId, [{ role: "user", content: "original searchable transcript" }]);
     await repository.saveSessionMetadata(sessionId, { projectRoot });
     await repository.saveSession(retainedId, [{ role: "user", content: "retained searchable transcript" }]);
@@ -73,11 +73,11 @@ describe("queued session index repair", () => {
       const aveDir = join(makeDir(), store);
       await seed(aveDir);
       const waiting = deferred<() => SessionSearchIndexPolicy>();
-      const interrupted = new SessionRepository({
+      const interrupted = new WindowsSessionRepository({
         aveDir, getSearchIndexPolicy: current, refreshSearchIndexPolicy: () => waiting.promise,
       });
       const marker = join(aveDir, "sessions", ".search-repair.json");
-      const recovered = new SessionRepository({ aveDir, getSearchIndexPolicy: current, refreshSearchIndexPolicy: async () => current });
+      const recovered = new WindowsSessionRepository({ aveDir, getSearchIndexPolicy: current, refreshSearchIndexPolicy: async () => current });
       try {
         if (mutation === "save") await interrupted.saveSession(sessionId, [{ role: "user", content: "replacement transcript" }]);
         if (mutation === "metadata") await interrupted.saveSessionMetadata(sessionId, {});
@@ -105,9 +105,9 @@ describe("queued session index repair", () => {
     const firstProbe = deferred<() => SessionSearchIndexPolicy>();
     const repairProbe = deferred<() => SessionSearchIndexPolicy>();
     const refresh = vi.fn().mockReturnValueOnce(firstProbe.promise).mockReturnValueOnce(repairProbe.promise).mockResolvedValue(current);
-    const repository = new SessionRepository({ aveDir, getSearchIndexPolicy: current, refreshSearchIndexPolicy: refresh });
+    const repository = new WindowsSessionRepository({ aveDir, getSearchIndexPolicy: current, refreshSearchIndexPolicy: refresh });
     const marker = join(aveDir, "sessions", ".search-repair.json");
-    const apply = vi.spyOn(SessionSearchIndex.prototype, "upsertSession").mockImplementationOnce(() => false);
+    const apply = vi.spyOn(SessionSearchIndex.prototype, "upsertSessionAdmitted").mockImplementationOnce(() => false);
     try {
       await repository.saveSession(sessionId, [{ role: "user", content: "saved before failed apply" }]);
       firstProbe.resolve(current);
@@ -140,14 +140,14 @@ describe("interrupted progress on a populated index", () => {
   const cases = ["main", "side-chat", "subagent"].flatMap(store => ["appended", "rewritten"].map(mode => [store, mode] as const));
   it.each(cases)("records repair for acknowledged progress in %s through %s", async (store, mode) => {
     const aveDir = join(makeDir(), store);
-    const seeded = new SessionRepository({ aveDir });
+    const seeded = new WindowsSessionRepository({ aveDir });
     const old = { role: "user", content: "old indexed message", meta: { messageId: "old-row" } };
     await seeded.saveSession(sessionId, [old]);
     expect(seeded.searchSessions("old indexed message")).toHaveLength(1);
     seeded.closeSearchIndex();
     const held = deferred<() => SessionSearchIndexPolicy>();
-    const repository = new SessionRepository({ aveDir, getSearchIndexPolicy: current, refreshSearchIndexPolicy: () => held.promise });
-    const recovered = new SessionRepository({ aveDir });
+    const repository = new WindowsSessionRepository({ aveDir, getSearchIndexPolicy: current, refreshSearchIndexPolicy: () => held.promise });
+    const recovered = new WindowsSessionRepository({ aveDir });
     try {
       const row = { role: "assistant", content: "new persisted progress", meta: { messageId: "new-row" } };
       expect(await repository.appendSessionProgress(sessionId, mode === "appended" ? [old, row] : [row])).toBe(mode);
@@ -167,12 +167,12 @@ describe("interrupted progress on a populated index", () => {
     const aveDir = makeDir();
     const old = { role: "user", content: "old indexed message", meta: { messageId: "old-row" } };
     const next = { role: "assistant", content: "content from a delayed append", meta: { messageId: "new-row" } };
-    const seeded = new SessionRepository({ aveDir });
+    const seeded = new WindowsSessionRepository({ aveDir });
     await seeded.saveSession(sessionId, [old]);
     seeded.closeSearchIndex();
     const firstProbe = deferred<() => SessionSearchIndexPolicy>();
     const probe = vi.fn().mockReturnValueOnce(firstProbe.promise).mockResolvedValue(current);
-    const repository = new SessionRepository({ aveDir, refreshSearchIndexPolicy: probe });
+    const repository = new WindowsSessionRepository({ aveDir, refreshSearchIndexPolicy: probe });
     const marker = join(aveDir, "sessions", ".search-repair.json");
     const writing = deferred<void>();
     const allowWrite = deferred<void>();
@@ -203,11 +203,11 @@ describe("interrupted progress on a populated index", () => {
 
   it("keeps a live partial sidecar recoverable after a populated index was repaired", async () => {
     const aveDir = makeDir();
-    const seeded = new SessionRepository({ aveDir });
+    const seeded = new WindowsSessionRepository({ aveDir });
     const row = { role: "user", content: "already indexed", meta: { messageId: "user-row" } };
     await seeded.saveSession(sessionId, [row]);
     seeded.closeSearchIndex();
-    const repository = new SessionRepository({ aveDir, refreshSearchIndexPolicy: async () => current });
+    const repository = new WindowsSessionRepository({ aveDir, refreshSearchIndexPolicy: async () => current });
     const marker = join(aveDir, "sessions", ".search-repair.json");
     await repository.beginTurnJournal(sessionId, 1000);
     try {
@@ -220,7 +220,7 @@ describe("interrupted progress on a populated index", () => {
       repository.endTurnJournal(sessionId);
       repository.closeSearchIndex();
     }
-    const reopened = new SessionRepository({ aveDir });
+    const reopened = new WindowsSessionRepository({ aveDir });
     try {
       await reopened.verifyOrRebuildSearchIndex();
       expect(reopened.searchSessions("recoverable partial response")).toHaveLength(1);
@@ -232,11 +232,11 @@ describe("interrupted progress on a populated index", () => {
 
   it("rebuilds the indexed timestamp after a transcript touch", async () => {
     const aveDir = makeDir();
-    const seeded = new SessionRepository({ aveDir });
+    const seeded = new WindowsSessionRepository({ aveDir });
     await seeded.saveSession(sessionId, [{ role: "user", content: "transcript with changed timestamp" }]);
     const [before] = seeded.searchSessions("changed timestamp");
     seeded.closeSearchIndex();
-    const repository = new SessionRepository({ aveDir, refreshSearchIndexPolicy: async () => current });
+    const repository = new WindowsSessionRepository({ aveDir, refreshSearchIndexPolicy: async () => current });
     try {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(new Date(before.timestamp).getTime() + 5000);

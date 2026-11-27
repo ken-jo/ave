@@ -8,13 +8,13 @@ import { setProcessPlatform } from '../../__tests__/support/process-platform.js'
 import { createTmpDirTracker } from '../../__tests__/support/tmp-dir-teardown.js';
 import { CHANNELS } from '../../contract/app-contract.js';
 import { buildGraph } from '../../main/memory-map/graph.js';
-import * as localRuntime from '../../main/memory-map/local-runtime.js';
+import * as localRuntime from '../../main/memory-map/local-runtime-win32.js';
 import type { MemoryWorkerTask } from '../../main/memory-map/worker-client.js';
 import { registerMxcReleaseGateEvidence } from '../../permissions/mxc-extension-admission.js';
 import { __resetSandboxHomesUnavailableForTest, markSandboxHomesUnavailable } from '../../permissions/sandbox-capability.js';
 import { invalidateWindowsBackendEvidence } from '../../permissions/windows-confinement-evidence.js';
 import type { SandboxWindowsExtensionPlan, SandboxWindowsSubstrateInfo } from '../../shared/sandbox-capability-info.js';
-import { registerMemoryMapHandlers } from '../domains/memory-map.js';
+import { registerWindowsMemoryMapHandlers } from '../domains/memory-map-win32.js';
 import type { IpcDeps } from '../types.js';
 
 const state = vi.hoisted(() => ({
@@ -48,9 +48,9 @@ vi.mock('../../shared/ave-home.js', async importOriginal => ({
   ...await importOriginal<typeof import('../../shared/ave-home.js')>(),
   isAveHomePrivacyVerifiedAtBoot: () => true,
 }));
-vi.mock('../../main/memory-map/worker-client.js', () => ({ runMemoryWorker: state.runWorker }));
-vi.mock('../../main/memory-map/model-manager.js', async importOriginal => ({
-  ...await importOriginal<typeof import('../../main/memory-map/model-manager.js')>(),
+vi.mock('../../main/memory-map/worker-client-win32.js', () => ({ runMemoryWorker: state.runWorker }));
+vi.mock('../../main/memory-map/model-manager-win32.js', async importOriginal => ({
+  ...await importOriginal<typeof import('../../main/memory-map/model-manager-win32.js')>(),
   LocalModelManager: class { async validatedPath() { return state.root; } },
 }));
 vi.mock('../../main/storage/feature-namespace.js', async importOriginal => {
@@ -117,7 +117,7 @@ describe.each(['account', 'container'] as const)('%s admission', backend => {
         }, () => {});
       });
       const note = { id: '11111111-1111-4111-8111-111111111111', filename: 'example.md', title: 'Example', content: 'Memory' };
-      registerMemoryMapHandlers({
+      registerWindowsMemoryMapHandlers({
         auditLogger: { log: vi.fn() },
         settingsService: { get: (key: string) => key === 'memoryEmbedding' ? { localModelPath: state.root } : undefined },
         memoryManager: { readMemoryPanelCatalog: () => ({ notes: [note] }) },

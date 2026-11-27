@@ -13,6 +13,7 @@ import {
 import { reconcileWorkspaceRoots } from "../workspace-root-reconciler.js";
 import { useTempDirFile } from "../../__tests__/test-helpers.js";
 import { SessionRepository } from "../../memory/session-repository.js";
+import { WindowsSessionRepository } from "../../memory/session-repository-win32.js";
 import { SessionSearchIndex } from "../../memory/session-search-index.js";
 import { detachWorkspaceRootSessions } from "../../memory/workspace-root-session-lifecycle.js";
 
@@ -374,7 +375,7 @@ describe("reconcileWorkspaceRoots", () => {
     await seedRepository.saveSessionMetadata(sessionId, { sessionKind: kind, projectRoot: workspace });
     expect(seedRepository.searchSessions(content, { kind, projectRoot: workspace })).toHaveLength(1);
 
-    const bootRepository = new SessionRepository({ aveDir, getSearchIndexPolicy: () => "inactive" });
+    const bootRepository = new WindowsSessionRepository({ aveDir, getSearchIndexPolicy: () => "inactive" });
     await seed(path, [workspace]);
     const result = await reconcileWorkspaceRoots({
       source: "boot",
@@ -393,7 +394,7 @@ describe("reconcileWorkspaceRoots", () => {
       retainedIndex.close();
     }
 
-    const restarted = new SessionRepository({ aveDir, getSearchIndexPolicy: () => "enabled-with-recovery" });
+    const restarted = new WindowsSessionRepository({ aveDir, getSearchIndexPolicy: () => "enabled-with-recovery" });
     await restarted.verifyOrRebuildSearchIndex();
     expect.soft(restarted.searchSessions(content, { kind, projectRoot: workspace })).toEqual([]);
     expect(restarted.searchSessions(content, { kind, projectRoot: activeProject, includeUnscoped: true })

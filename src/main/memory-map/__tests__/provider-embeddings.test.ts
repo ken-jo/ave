@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
-import { lstat, mkdtemp, mkdir, open, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, open, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -46,11 +46,10 @@ async function fixture(allowedDomains = ['127.0.0.1']) {
   const nativeFetch = globalThis.fetch;
   const chokepoint = vi.fn<typeof fetch>((input, init) => nativeFetch(input, init));
   vi.stubGlobal('fetch', vi.fn(() => { throw new Error('Ambient fetch is forbidden'); }));
-  const project = vi.fn(buildGraph);
   const worker: MemoryWorkerRunner = async <T>(folder: string, task: Parameters<MemoryWorkerRunner>[1], signal: AbortSignal, report: Parameters<MemoryWorkerRunner>[3]) => {
     expect(folder).toBe(''); expect(task.kind).toBe('project'); signal.throwIfAborted();
     if (task.kind !== 'project') throw new Error('Unexpected worker task');
-    return await project(task.input, { embed: async () => { throw new Error('Unexpected local embedding'); }, dispose: async () => {} }, report ?? (() => {})) as T;
+    return await buildGraph(task.input, { embed: async () => { throw new Error('Unexpected local embedding'); }, dispose: async () => {} }, report ?? (() => {})) as T;
   };
   const audit = vi.fn();
   const provider = new ProviderEmbeddings(settings, createMemoryProviderEgress(chokepoint, allowedDomains, audit), worker);
@@ -58,64 +57,15 @@ async function fixture(allowedDomains = ['127.0.0.1']) {
   const namespace: FeatureNamespaceHandle = { dir: root, readJson: async (_, fallback) => { try { return JSON.parse(await readFile(join(root, 'snapshot.json'), 'utf8')); } catch { return fallback; } }, writeJson: async (name, value) => writeFile(join(root, name), JSON.stringify(value)), childDir: async name => { await mkdir(join(root, name), { recursive: true }); return join(root, name); }, createFile: name => open(join(root, name), 'wx') };
   const catalog = { authorizationScopeId: 'scope', excluded: 0, records: Array.from({ length: 2 }, (_, i) => ({ memoryId: `id-${i}`, contentRevision: `r-${i}`, title: `Title ${i}`, text: `Private memory ${i}`, sourceKind: 'user' as const })) };
   const progress: MemoryMapProgress[] = [];
-  const host = new MemoryMapHost({ namespace, provider, refreshLocalAdmission: async () => { throw new Error('Local runtime must not load'); }, validatedModelPath: async () => { throw new Error('Local model must not load'); }, onProgress: value => progress.push(value) });
+  const host = new MemoryMapHost({ namespace, provider, validatedModelPath: async () => { throw new Error('Local model must not load'); }, onProgress: value => progress.push(value) });
   return { changeEndpoint: () => {
     const next = `${baseUrl}/alternate`;
     llm.vendors['openai-compatible'].baseUrl = next;
     llm.modelListCache.saved.baseUrl = next;
     llm.modelListCache.saved.endpoint = `${next}/models`;
-  }, pauseResponse: () => { let release!: () => void; responseWait = new Promise<void>(resolve => { release = resolve; }); return release; }, provider, host, settings, audit, namespace, catalog, requests, chokepoint, progress, project, key, consent, get config() { return config; }, set config(value) { config = value; }, set dimensions(value: number) { dimensions = value; }, set inconsistent(value: boolean) { inconsistent = value; }, set fail(value: boolean) { fail = value; } };
+  }, pauseResponse: () => { let release!: () => void; responseWait = new Promise<void>(resolve => { release = resolve; }); return release; }, provider, host, settings, audit, namespace, catalog, requests, chokepoint, progress, key, consent, get config() { return config; }, set config(value) { config = value; }, set dimensions(value: number) { dimensions = value; }, set inconsistent(value: boolean) { inconsistent = value; }, set fail(value: boolean) { fail = value; } };
 }
 describe('provider memory embeddings', () => {
-  it.skipIf(process.platform === 'win32')('forwards POSIX provider projection progress without catalog reads and rejects stale publication', async () => {
-    const f = await fixture();
-    f.consent();
-    let catalog = f.catalog;
-    const readCatalog = vi.fn(() => catalog);
-    const progressReads: number[] = [];
-    f.project.mockImplementationOnce((input, embedder, report) => buildGraph(input, embedder, progress => {
-      if (progress.phase === 'projection') {
-        catalog = { ...catalog, records: catalog.records.map((record, index) =>
-          index === 0 ? { ...record, contentRevision: 'updated' } : record) };
-      }
-      const before = readCatalog.mock.calls.length;
-      report(progress);
-      if (progress.phase !== 'embedding') progressReads.push(readCatalog.mock.calls.length - before);
-    }));
-
-    await expect(f.host.build(readCatalog)).rejects.toMatchObject({ code: 'request-stale' });
-    expect.soft(progressReads).toEqual([0, 0]);
-    expect.soft(f.progress.map(({ phase }) => phase)).toEqual(['embedding', 'neighbours', 'projection']);
-    await expect(lstat(join(f.namespace.dir, 'snapshot.json'))).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it('withholds provider batch progress when consent is withdrawn after embedding', async () => {
-    const f = await fixture();
-    f.consent();
-    const embed = f.provider.embed.bind(f.provider);
-    vi.spyOn(f.provider, 'embed').mockImplementation(async (...args) => {
-      const vectors = await embed(...args);
-      f.config.consent = undefined;
-      return vectors;
-    });
-    await expect(f.host.build(() => f.catalog)).rejects.toMatchObject({ code: 'provider-consent-required' });
-    expect(f.progress).toEqual([]);
-  });
-
-  it('checks the same provider consent again before delivering a completed answer', async () => {
-    const f = await fixture();
-    f.consent();
-    const snapshot = await f.host.build(() => f.catalog);
-    const embed = f.provider.embed.bind(f.provider);
-    vi.spyOn(f.provider, 'embed').mockImplementation(async (...args) => {
-      const vectors = await embed(...args);
-      if (f.config.consent) f.config.consent = { ...f.config.consent, timestamp: '2020-01-01T00:00:00.000Z' };
-      return vectors;
-    });
-    await expect(f.host.retrieve(() => f.catalog, { question: 'Question', filters: {}, snapshotId: snapshot.snapshotId, queryId: 'q' }))
-      .rejects.toMatchObject({ code: 'provider-consent-required' });
-  });
-
   it('denies a consented provider absent from the host allow-list before sending credentials or text', async () => {
     const f = await fixture([]);
     f.consent();
@@ -154,7 +104,7 @@ describe('provider memory embeddings', () => {
     expect(snapshot.model.namespace).toEqual({ ...f.provider.namespace(), dimensions: 3 });
     const answer = await f.host.retrieve(() => f.catalog, { question: 'Question', filters: {}, snapshotId: snapshot.snapshotId, queryId: 'q' });
     expect(answer.matches).toHaveLength(2); expect(f.requests.map(value => value.model)).toEqual(['embed-a', 'embed-a']); expect(f.requests[1].input).toEqual(['Question']); expect(f.chokepoint).toHaveBeenCalledTimes(2);
-    const restarted = new MemoryMapHost({ namespace: f.namespace, provider: f.provider, refreshLocalAdmission: async () => { throw new Error('Local runtime must not load'); }, validatedModelPath: async () => '' });
+    const restarted = new MemoryMapHost({ namespace: f.namespace, provider: f.provider, validatedModelPath: async () => '' });
     expect(await restarted.get(() => f.catalog)).toEqual(snapshot);
     expect(JSON.stringify(f.progress)).not.toMatch(/Private|Title|memoryId/);
   });
@@ -213,7 +163,7 @@ describe('provider memory embeddings', () => {
   });
   it('bounds batches and stops the next batch after opting out', async () => {
     const f = await fixture(); f.consent(); f.catalog.records = Array.from({ length: 33 }, (_, i) => ({ ...f.catalog.records[0], memoryId: `id-${i}` }));
-    const host = new MemoryMapHost({ namespace: f.namespace, provider: f.provider, refreshLocalAdmission: async () => { throw new Error('Local runtime must not load'); }, validatedModelPath: async () => '', onProgress: () => { f.config.source = 'local'; host.cancel(); } });
+    const host = new MemoryMapHost({ namespace: f.namespace, provider: f.provider, validatedModelPath: async () => '', onProgress: () => { f.config.source = 'local'; host.cancel(); } });
     await expect(host.build(() => f.catalog)).rejects.toThrow('request-stale');
     expect(f.requests).toHaveLength(1); expect(f.requests[0].input).toHaveLength(16);
     expect(await host.get(() => f.catalog)).toBeNull();

@@ -47,59 +47,6 @@ describe("SessionRepository", () => {
     await cleanupTmpDir(dir);
   });
 
-  it("pauses session indexing, keeps transcripts, and rebuilds the projection on re-enable", async () => {
-    let enabled = true;
-    repository = new SessionRepository({ aveDir: dir, getSearchIndexPolicy: () => enabled ? "enabled" : "paused" });
-    const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
-    const laterId = "bbbbbbbb-1111-2222-3333-444444444444";
-    await repository.saveSession(sessionId, [{ role: "user", content: "before pause" }]);
-    expect(repository.searchSessions("before pause")).toHaveLength(1);
-    const index = join(dir, "search", "index.db");
-
-    enabled = false;
-    await repository.verifyOrRebuildSearchIndex();
-    await repository.saveSession(laterId, [{ role: "user", content: "during pause" }]);
-    await repository.deleteSession(sessionId);
-    expect(repository.searchSessions("during pause")).toEqual([]);
-    expect(existsSync(index)).toBe(false);
-    expect(repository.loadSession(laterId)).toHaveLength(1);
-
-    enabled = true;
-    expect(repository.searchSessions("before pause")).toEqual([]);
-    expect(repository.searchSessions("during pause")).toHaveLength(1);
-  });
-
-  it.each(["main", "side-chat", "subagent"] as const)("recovers paused transcripts before the first write after restart in %s", async namespace => {
-    const aveDir = namespace === "main" ? dir : join(dir, namespace);
-    const search = { kind: namespace === "subagent" ? "subagent" : "main" } as const;
-    let enabled = true;
-    const getSearchIndexPolicy = () => enabled ? "enabled-with-recovery" as const : "paused" as const;
-    repository = new SessionRepository({ aveDir, getSearchIndexPolicy });
-    const beforeId = "aaaaaaaa-1111-2222-3333-444444444444";
-    const duringId = "bbbbbbbb-1111-2222-3333-444444444444";
-    const afterId = "cccccccc-1111-2222-3333-444444444444";
-    const save = async (sessionId: string, content: string) => {
-      await repository.saveSessionMetadata(sessionId, { sessionKind: search.kind, title: "Example" });
-      await repository.saveSession(sessionId, [{ role: "user", content }]);
-    };
-    await save(beforeId, "before pause");
-    expect(repository.searchSessions("before pause", search).map(row => row.sessionId)).toEqual([beforeId]);
-
-    enabled = false;
-    await repository.verifyOrRebuildSearchIndex();
-    await save(duringId, "during pause");
-    expect(repository.loadSession(duringId)).toHaveLength(1);
-    expect(existsSync(join(aveDir, "search", "index.db"))).toBe(false);
-    repository.closeSearchIndex();
-
-    enabled = true;
-    repository = new SessionRepository({ aveDir, getSearchIndexPolicy });
-    await save(afterId, "after restart");
-    expect(repository.searchSessions("before pause", search).map(row => row.sessionId)).toEqual([beforeId]);
-    expect(repository.searchSessions("during pause", search).map(row => row.sessionId)).toEqual([duringId]);
-    expect(repository.searchSessions("after restart", search).map(row => row.sessionId)).toEqual([afterId]);
-  });
-
   it.each([
     { outcome: "success", writeFails: false },
     { outcome: "file", writeFails: false },

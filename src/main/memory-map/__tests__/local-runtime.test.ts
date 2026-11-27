@@ -6,8 +6,7 @@ vi.mock('../../../permissions/sandbox-capability.js', () => ({ getWindowsExtensi
 import { assertLocalEmbeddingRuntime } from '../local-runtime.js';
 const hostPlatform = process.platform;
 function refusal(): string | undefined {
-  try { assertLocalEmbeddingRuntime(undefined, { areSwitchesAvailable: () => false, searchIndexPolicy: () => 'inactive', isBackendOperational: () => true }); }
-  catch (error) { return (error as { code?: string }).code ?? String(error); }
+  try { assertLocalEmbeddingRuntime(); } catch (error) { return (error as { code?: string }).code ?? String(error); }
   return undefined;
 }
 afterEach(() => { setProcessPlatform(hostPlatform); state.confined = true; state.plan = undefined; });

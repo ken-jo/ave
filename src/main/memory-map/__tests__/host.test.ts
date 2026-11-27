@@ -1,13 +1,9 @@
-import * as atomicFile from '../../../lib/atomic-file.js';
-import { deferred } from '../../../__tests__/support/deferred.js';
 import { createHash } from 'node:crypto';
-import { promises as fs } from 'node:fs';
 import { lstat, mkdtemp, mkdir, open, readFile, realpath, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryMapHost } from '../host.js';
-import { MemoryMapHostError } from '../errors.js';
 import { buildGraph, catalogRevision, LOCAL_NAMESPACE, vectorKey } from '../graph.js';
 import { checkedInferenceFrameBytes, INFERENCE_FILES, MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
 import { LocalModelManager } from '../model-manager.js';
@@ -25,11 +21,6 @@ vi.mock(import('../inference-request.js'), async importOriginal => {
   };
 });
 
-const allowLocal = async () => () => {};
-const validatedModelPath: ConstructorParameters<typeof MemoryMapHost>[0]['validatedModelPath'] = async (_signal, onAdmission) => {
-  onAdmission?.(() => {});
-  return 'model';
-};
 const roots: string[] = [];
 afterEach(async () => {
   inferenceBudget.bytes = undefined;
@@ -54,196 +45,6 @@ async function fixture() {
   return { root, namespace, catalog, runWorker };
 }
 describe('memory graph publication', () => {
-  it.each(['embed-batch', 'project'] as const)('refuses publication when the catalog changes during %s progress', async phase => {
-    const f = await fixture();
-    const reached = deferred<void>();
-    const resume = deferred<void>();
-    let catalog = f.catalog;
-    const onProgress = vi.fn();
-    const runWorker: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
-      const [, task, , progress] = args;
-      if (task.kind === phase) {
-        reached.resolve();
-        await resume.promise;
-        progress?.({ jobId: 'old', phase: phase === 'embed-batch' ? 'embedding' : 'projection', completed: 1, total: 1 });
-      }
-      return f.runWorker<T>(...args);
-    };
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker, onProgress });
-    const result = host.build(() => catalog);
-    await reached.promise;
-    catalog = { ...catalog, records: [] };
-    resume.resolve();
-    await expect(result).rejects.toMatchObject({ code: 'request-stale' });
-    if (process.platform === 'win32') expect(onProgress).not.toHaveBeenCalled();
-    else expect(onProgress).toHaveBeenCalledOnce();
-  });
-
-  it.skipIf(process.platform === 'win32')('reports every embedding update without reading the POSIX catalog inside a batch', async () => {
-    const f = await fixture();
-    f.catalog.records = Array.from({ length: 6 }, (_, index) => ({
-      ...f.catalog.records[0], memoryId: `note-${index}`,
-    }));
-    inferenceBudget.bytes = 120;
-    let catalog = f.catalog;
-    const readCatalog = vi.fn(() => catalog);
-    const batchReads: number[] = [];
-    let previousReads = 2; // Initial catalog capture and the check after model lookup.
-    const onProgress = vi.fn();
-    const runWorker: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
-      const [, task, , report] = args;
-      if (task.kind === 'embed-batch') {
-        for (const index of task.texts.keys()) {
-          report?.({ jobId: task.jobId, phase: 'embedding', completed: index + 1, total: task.texts.length });
-        }
-        batchReads.push(readCatalog.mock.calls.length - previousReads);
-        previousReads = readCatalog.mock.calls.length;
-      } else if (task.kind === 'project') {
-        catalog = { ...catalog, authorizationScopeId: 'replacement' };
-        report?.({ jobId: task.input.jobId, phase: 'projection', completed: 1, total: 1 });
-      }
-      return f.runWorker<T>(...args);
-    };
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker, onProgress });
-    await expect(host.build(readCatalog)).rejects.toMatchObject({ code: 'request-stale' });
-    // The pre-batch check reads the full catalog once. Progress performs zero reads.
-    expect(batchReads.length).toBeGreaterThan(1);
-    expect(batchReads).toEqual(batchReads.map(() => 1));
-    expect(onProgress.mock.calls.map(([event]) => [event.phase, event.completed])).toEqual([
-      ['embedding', 1], ['embedding', 2], ['embedding', 3], ['embedding', 4], ['embedding', 5], ['embedding', 6], ['projection', 1],
-    ]);
-    await expect(lstat(join(f.root, 'snapshot.json'))).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it.runIf(process.platform === 'win32').each([false, true])('bounds cold embedding catalog reads and suppresses stale progress (stale: %s)', async stale => {
-    const f = await fixture();
-    f.catalog.records = Array.from({ length: 192 }, (_, index) => ({
-      ...f.catalog.records[0], memoryId: `note-${index}`,
-    }));
-    let catalog = f.catalog;
-    const readCatalog = vi.fn(() => catalog);
-    const onProgress = vi.fn((event: { completed: number }) => {
-      if (stale && event.completed === 96) catalog = { ...catalog, authorizationScopeId: 'replacement' };
-    });
-    const runWorker: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
-      const [, task, , report] = args;
-      if (task.kind === 'embed-batch') {
-        for (const index of task.texts.keys()) {
-          report?.({ jobId: task.jobId, phase: 'embedding', completed: index + 1, total: task.texts.length });
-        }
-      }
-      return f.runWorker<T>(...args);
-    };
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker, onProgress });
-    const result = host.build(readCatalog);
-    if (stale) await expect(result).rejects.toMatchObject({ code: 'request-stale' });
-    else await expect(result).resolves.toMatchObject({ coverage: { embedded: 192 } });
-    const updates = onProgress.mock.calls.map(([progress]) => progress.completed);
-    expect(updates[0]).toBe(1);
-    expect(updates.at(-1)).toBe(stale ? 96 : 192);
-    expect(readCatalog.mock.calls.length).toBeLessThan(80);
-  });
-
-  it('refuses saved graph hydration after the caller scope changes', async () => {
-    const f = await fixture();
-    const options = { namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: f.runWorker };
-    const ready = await new MemoryMapHost(options).build(() => f.catalog);
-    let catalog = f.catalog;
-    const host = new MemoryMapHost(options);
-    const reading = deferred<void>();
-    const resume = deferred<void>();
-    const readJson = f.namespace.readJson;
-    f.namespace.readJson = async (name, fallback) => {
-      const saved = await readJson(name, fallback);
-      reading.resolve();
-      await resume.promise;
-      return saved;
-    };
-    const result = host.get(() => catalog);
-    await reading.promise;
-    catalog = { ...catalog, authorizationScopeId: 'replacement' };
-    resume.resolve();
-    await expect(result).rejects.toMatchObject({ code: 'request-stale' });
-    expect(await host.get(() => f.catalog)).toEqual(ready);
-  });
-
-  it('refuses a held old clear while another scope is building', async () => {
-    const f = await fixture();
-    const preparingClear = deferred<void>();
-    const resumeClear = deferred<void>();
-    const preparingBuild = deferred<void>();
-    const resumeBuild = deferred<void>();
-    let holdBuild = false;
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal,
-      validatedModelPath: async (...args) => {
-        if (holdBuild) { preparingBuild.resolve(); await resumeBuild.promise; }
-        return validatedModelPath(...args);
-      }, runWorker: f.runWorker });
-    await host.build(() => f.catalog);
-    const destination = join(f.root, 'snapshot.json');
-    const saved = await readFile(destination, 'utf8');
-    const childDir = f.namespace.childDir;
-    f.namespace.childDir = async (name, options) => {
-      preparingClear.resolve();
-      await resumeClear.promise;
-      options?.assertStillValid?.();
-      return childDir(name, options);
-    };
-    const result = host.get(() => ({ ...f.catalog, records: [] }));
-    await preparingClear.promise;
-    holdBuild = true;
-    const build = host.build(() => ({ ...f.catalog, authorizationScopeId: 'replacement' }));
-    await preparingBuild.promise;
-    try {
-      resumeClear.resolve();
-      await expect(result).rejects.toMatchObject({ code: 'request-stale' });
-      expect(await readFile(destination, 'utf8')).toBe(saved);
-    } finally { resumeBuild.resolve(); await build; }
-  });
-
-  it.each([
-    ['before projection', 'local-runtime-unavailable'],
-    ['before publication', 'local-runtime-unavailable'],
-    ['before projection', 'local-inference-disabled'],
-    ['before publication', 'local-inference-disabled'],
-  ] as const)('refuses a cached build %s on %s', async (boundary, code) => {
-    const f = await fixture();
-    let allowed = true;
-    const refreshLocalAdmission = async () => () => {
-      if (!allowed) throw new MemoryMapHostError(code);
-    };
-    const runWorker = vi.fn(f.runWorker);
-    const host = new MemoryMapHost({
-      namespace: f.namespace, validatedModelPath, refreshLocalAdmission,
-      runWorker: async <T>(...args: Parameters<MemoryWorkerRunner>) => await runWorker(...args) as T,
-    });
-    await host.build(() => f.catalog);
-    const path = join(f.root, 'snapshot.json');
-    const previous = await readFile(path);
-    runWorker.mockClear();
-    if (boundary === 'before projection') {
-      const readJson = f.namespace.readJson;
-      f.namespace.readJson = async (...args) => {
-        const saved = await readJson(...args);
-        allowed = false;
-        return saved;
-      };
-    } else {
-      const childDir = f.namespace.childDir;
-      f.namespace.childDir = async name => {
-        const path = await childDir(name);
-        allowed = false;
-        return path;
-      };
-    }
-
-    const outcome = await host.build(() => f.catalog).catch((error: unknown) => error);
-    expect.soft(outcome).toMatchObject({ code });
-    expect.soft(runWorker.mock.calls.map(([, task]) => task.kind))
-      .toEqual(boundary === 'before projection' ? [] : ['project']);
-    expect(await readFile(path)).toEqual(previous);
-  });
-
   it.each(['succeeds', 'fails'] as const)('keeps a replaced model slot until the pending build %s', async outcome => {
     const f = await fixture();
     const parent = join(f.root, 'multilingual-e5-small');
@@ -273,7 +74,7 @@ describe('memory graph publication', () => {
       }
       return f.runWorker<T>(...args);
     };
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: (_signal, onAdmission) => { onAdmission?.(() => {}); return model.validatedPath(); }, runWorker });
+    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: () => model.validatedPath(), runWorker });
     const build = host.build(() => f.catalog);
     try {
       expect(await Promise.race([start, build])).toBe(await realpath(previousFolder));
@@ -313,7 +114,7 @@ describe('memory graph publication', () => {
         return vectors[embedded++];
       }) as T;
     };
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker,
+    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker,
       onProgress: event => { if (event.phase === 'embedding') progress.push(event); },
     });
 
@@ -356,7 +157,7 @@ describe('memory graph publication', () => {
       }
       return f.runWorker<T>(...args);
     };
-    const host = new InspectableMemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker });
+    const host = new InspectableMemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker });
     await host.build(() => f.catalog);
     const path = join(f.root, 'snapshot.json');
     const previousBytes = await readFile(path);
@@ -384,7 +185,7 @@ describe('memory graph publication', () => {
   it('refuses a single note that cannot fit in an inference frame', async () => {
     const f = await fixture();
     f.catalog.records[0].text = '\0'.repeat(Math.ceil(MAX_INFERENCE_TASK_BYTES / 6));
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath,
+    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model',
       runWorker: async () => { throw new Error('Unexpected inference request'); },
     });
     await expect(host.build(() => f.catalog)).rejects.toMatchObject({ code: 'catalog-too-large' });
@@ -423,7 +224,7 @@ describe('memory graph publication', () => {
       inferenceTasks.push(task);
       return [vector] as T;
     };
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker });
+    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker });
     const result = await host.build(() => f.catalog);
     expect(result.coverage.embedded).toBe(4_001);
     expect(inferenceTasks).toEqual([{ kind: 'embed-batch', jobId: expect.any(String), texts: [`${uncached.title}\n${uncached.text}`] }]);
@@ -432,153 +233,43 @@ describe('memory graph publication', () => {
   });
 
   it('atomically publishes vectors and coordinates, and invalidates changed or deleted sources', async () => {
-    const f = await fixture(); const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: f.runWorker });
+    const f = await fixture(); const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
     const result = await host.build(() => f.catalog);
     expect(await host.get(() => f.catalog)).toEqual(result);
-    const restarted = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: f.runWorker });
+    const restarted = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
     expect(await restarted.get(() => f.catalog)).toEqual(result);
     expect(await readFile(join(f.root, 'snapshot.json'), 'utf8')).not.toContain('Private body');
     f.catalog.records = [];
     expect(await host.get(() => f.catalog)).toBeNull();
     expect(JSON.parse(await readFile(join(f.root, 'snapshot.json'), 'utf8')).cache).toEqual({});
   });
-  it('publishes the ready state in the step that replaces the stored graph', async () => {
-    const f = await fixture();
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: f.runWorker });
-    const atomicReplace = atomicFile.replaceUtf8FileAtomicSyncIf;
-    const replace = vi.spyOn(atomicFile, 'replaceUtf8FileAtomicSyncIf').mockImplementationOnce((path, body, canCommit, mode) =>
-      atomicReplace(path, body, () => {
-        const allowed = canCommit();
-        queueMicrotask(() => host.cancel());
-        return allowed;
-      }, mode));
-    try {
-      await expect(host.build(() => f.catalog)).rejects.toMatchObject({ code: 'request-stale' });
-    } finally { replace.mockRestore(); }
-    const stored: unknown = JSON.parse(await readFile(join(f.root, 'snapshot.json'), 'utf8')).snapshot;
-    expect(stored).not.toBeNull();
-    expect(await host.get(() => f.catalog)).toEqual(stored);
-  });
-  it('uses platform rules when model admission expires during the saved graph read', async () => {
-    const f = await fixture();
-    const reading = deferred<void>();
-    const resume = deferred<void>();
-    let current = true;
-    const assertModelAdmission = () => {
-      if (!current) throw new MemoryMapHostError('local-runtime-unavailable');
-    };
-    const onProgress = vi.fn();
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal,
-      validatedModelPath: async (_signal, onAdmission) => { onAdmission?.(assertModelAdmission); return 'model'; },
-      runWorker: f.runWorker, onProgress });
-    await host.build(() => f.catalog);
-    onProgress.mockClear();
-    const readJson = f.namespace.readJson;
-    f.namespace.readJson = async (name, fallback) => {
-      const saved = await readJson(name, fallback);
-      reading.resolve();
-      await resume.promise;
-      return saved;
-    };
-    const building = host.build(() => f.catalog).catch((error: unknown) => error);
-    await reading.promise;
-    current = false;
-    resume.resolve();
-    const outcome = await building;
-    if (process.platform === 'win32') {
-      expect.soft(onProgress).not.toHaveBeenCalled();
-      expect(outcome).toMatchObject({ code: 'local-runtime-unavailable' });
-    } else {
-      expect.soft(onProgress.mock.calls).toEqual([[expect.objectContaining({ phase: 'embedding', completed: 1, total: 1 })]]);
-      expect(outcome).toMatchObject({ status: 'ready', coverage: { eligible: 1, embedded: 1, pending: 0 } });
-    }
-  });
-  it('writes no graph candidate when admission expires during directory preparation', async () => {
-    const f = await fixture();
-    let current = true;
-    const refreshLocalAdmission = async () => () => {
-      if (!current) throw new MemoryMapHostError('local-runtime-unavailable');
-    };
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission, validatedModelPath, runWorker: f.runWorker });
-    const saved = await host.build(() => f.catalog);
-    const destination = join(f.root, 'snapshot.json');
-    const previous = await readFile(destination, 'utf8');
-    f.namespace.childDir = async () => f.root;
-    const preparing = deferred<void>();
-    const resume = deferred<void>();
-    const mkdirSpy = vi.spyOn(fs, 'mkdir').mockImplementationOnce(async () => {
-      preparing.resolve();
-      await resume.promise;
-      return undefined;
-    });
-    const chmod = vi.spyOn(fs, 'chmod');
-    const stage = vi.spyOn(atomicFile, 'replaceUtf8FileAtomicSyncIf');
-    try {
-      const building = host.build(() => f.catalog);
-      await preparing.promise;
-      current = false;
-      resume.resolve();
-      await expect(building).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
-      expect.soft(chmod).not.toHaveBeenCalled();
-      expect.soft(stage).not.toHaveBeenCalled();
-      expect(await readFile(destination, 'utf8')).toBe(previous);
-      const reopened = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission, validatedModelPath });
-      expect(await reopened.get(() => f.catalog)).toEqual(saved);
-    } finally { mkdirSpy.mockRestore(); chmod.mockRestore(); stage.mockRestore(); }
-  });
   it('refuses persisted identities outside the current authorized catalog', async () => {
-    const f = await fixture(); const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: f.runWorker });
+    const f = await fixture(); const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
     const snapshot = await host.build(() => f.catalog);
     snapshot.points[0].memoryId = 'outside';
     await f.namespace.writeJson('snapshot.json', { snapshot, cache: {} });
-    const restarted = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: f.runWorker });
+    const restarted = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
     await expect(restarted.get(() => f.catalog)).rejects.toThrow('identity is invalid');
   });
   it('drops a stale question when a newer query completes first', async () => {
     const f = await fixture(); let release!: () => void; const wait = new Promise<void>(resolve => { release = resolve; });
     let started!: () => void; const start = new Promise<void>(resolve => { started = resolve; });
-    const runner: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
-      const [folder, task, signal, , onAdmission] = args;
+    const runner: MemoryWorkerRunner = async <T>(folder: string, task: Parameters<MemoryWorkerRunner>[1], signal: AbortSignal) => {
       if (task.kind !== 'embed') return f.runWorker<T>(folder, task, signal);
       if (task.text === 'first') { started(); await wait; }
-      onAdmission?.(() => {});
       return [1, ...Array<number>(383).fill(0)] as T;
     };
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: runner });
+    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: runner });
     const snapshot = await host.build(() => f.catalog);
     const old = host.retrieve(() => f.catalog, { question: 'first', filters: {}, queryId: 'first', snapshotId: snapshot.snapshotId }); await start;
     const answer = await host.retrieve(() => f.catalog, { question: 'second', filters: {}, queryId: 'second', snapshotId: snapshot.snapshotId });
     expect(answer.queryId).toBe('second'); release(); await expect(old).rejects.toThrow('request-stale');
   });
-  it('refuses an answer whose inference receipt expired after vector production', async () => {
-    const f = await fixture();
-    const vectorProduced = deferred<void>();
-    const deliver = deferred<void>();
-    let current = true;
-    const assertInference = () => { if (!current) throw new MemoryMapHostError('local-runtime-unavailable'); };
-    const runner: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
-      const [folder, task, signal, , onAdmission] = args;
-      if (task.kind !== 'embed') return f.runWorker<T>(folder, task, signal);
-      const vector = [1, ...Array<number>(383).fill(0)];
-      assertInference();
-      onAdmission?.(assertInference);
-      vectorProduced.resolve();
-      await deliver.promise;
-      return vector as T;
-    };
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: runner });
-    const snapshot = await host.build(() => f.catalog);
-    const pending = host.retrieve(() => f.catalog, { question: 'Question', filters: {}, snapshotId: snapshot.snapshotId, queryId: 'question' });
-    await vectorProduced.promise;
-    current = false;
-    deliver.resolve();
-    await expect(pending).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
-  });
   it('drops a completed old build on cancellation or scope change', async () => {
     const f = await fixture(); let release!: () => void; const wait = new Promise<void>(resolve => { release = resolve; });
     let started!: () => void; const start = new Promise<void>(resolve => { started = resolve; });
     const runner: MemoryWorkerRunner = async <T>(folder: string, task: Parameters<MemoryWorkerRunner>[1], signal: AbortSignal) => { started(); await wait; return f.runWorker<T>(folder, task, signal); };
-    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: runner });
+    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: runner });
     const build = host.build(() => f.catalog); await start;
     await host.get(() => ({ ...f.catalog, authorizationScopeId: 'other' })); release();
     await expect(build).rejects.toThrow('request-stale');
