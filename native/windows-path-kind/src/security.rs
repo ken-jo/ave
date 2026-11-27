@@ -83,7 +83,11 @@ pub struct Descriptor {
 
 const OWNER_GROUP_DACL_SECURITY_INFORMATION: u32 = 7;
 const LABEL_SECURITY_INFORMATION: u32 = 0x10;
+const ATTRIBUTE_SECURITY_INFORMATION: u32 = 0x20;
+const SCOPE_SECURITY_INFORMATION: u32 = 0x40;
 const SYSTEM_MANDATORY_LABEL_ACE_TYPE: u8 = 0x11;
+const SYSTEM_RESOURCE_ATTRIBUTE_ACE_TYPE: u8 = 0x12;
+const SYSTEM_SCOPED_POLICY_ID_ACE_TYPE: u8 = 0x13;
 const SYSTEM_MANDATORY_LABEL_VALID_MASK: u32 = 0x07;
 
 pub struct IntegrityLabel {
@@ -97,13 +101,14 @@ impl Descriptor {
         Self::read_security(handle, OWNER_GROUP_DACL_SECURITY_INFORMATION)
     }
 
-    pub fn read_file_access(handle: Raw) -> Option<(Self, Option<IntegrityLabel>)> {
+    pub fn read_file_access(handle: Raw) -> Option<(Self, Option<IntegrityLabel>, bool)> {
         let descriptor = Self::read_security(
             handle,
-            OWNER_GROUP_DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
+            OWNER_GROUP_DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION
+                | ATTRIBUTE_SECURITY_INFORMATION | SCOPE_SECURITY_INFORMATION,
         )?;
-        let label = descriptor.integrity_label()?;
-        Some((descriptor, label))
+        let (label, dynamic_access_control) = descriptor.file_sacl()?;
+        Some((descriptor, label, dynamic_access_control))
     }
 
     fn read_security(handle: Raw, security_information: u32) -> Option<Self> {
@@ -174,7 +179,7 @@ impl Descriptor {
         })
     }
 
-    fn integrity_label(&self) -> Option<Option<IntegrityLabel>> {
+    fn file_sacl(&self) -> Option<(Option<IntegrityLabel>, bool)> {
         let mut present = 0;
         let mut acl = null_mut();
         let mut defaulted = 0;
@@ -182,14 +187,18 @@ impl Descriptor {
             return None;
         }
         if present == 0 || acl.is_null() {
-            return Some(None);
+            return Some((None, false));
         }
         if unsafe { IsValidAcl(acl) } == 0 {
             return None;
         }
         let mut label = None;
+        let mut dynamic_access_control = false;
         for ace in self.aces_in(acl) {
             let ace = ace?;
+            if matches!(ace.kind(), SYSTEM_RESOURCE_ATTRIBUTE_ACE_TYPE | SYSTEM_SCOPED_POLICY_ID_ACE_TYPE) {
+                dynamic_access_control = true;
+            }
             if ace.kind() != SYSTEM_MANDATORY_LABEL_ACE_TYPE {
                 continue;
             }
@@ -204,7 +213,7 @@ impl Descriptor {
             }
             label = Some(IntegrityLabel { sid: sid_text(ace.sid(8)?).ok()?, policy, flags });
         }
-        Some(label)
+        Some((label, dynamic_access_control))
     }
 }
 

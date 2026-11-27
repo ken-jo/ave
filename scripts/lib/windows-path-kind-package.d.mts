@@ -5,7 +5,6 @@ export declare function recordWindowsPathKindPackageBuild(options: {
   arch: string;
   receiptPath: string | undefined;
   bundleDir: string;
-  skillScriptsDir: string;
   build: Pick<WindowsPathKindBuild, "binarySha256" | "imageSha256">;
 }): void;
 export declare function assertPackagedWindowsPathKind(appOutDir: string, arch: string): void;

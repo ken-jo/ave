@@ -168,7 +168,7 @@ function helperLaunchFailureCode(error: unknown): string | undefined {
   return typeof code === "string" && /^E[A-Z0-9]{1,31}$/u.test(code) && code !== "ENOBUFS" ? code : undefined;
 }
 
-function requestNative(mode: "--pin" | "--dacl", flags: readonly string[], paths: readonly string[], input?: Buffer, heldHelper?: string): string {
+function requestNative(mode: "--pin" | "--dacl", flags: readonly string[], paths: readonly string[], input?: Buffer): string {
   let output: Buffer;
   try {
     const launch = (helper: string) => {
@@ -181,7 +181,7 @@ function requestNative(mode: "--pin" | "--dacl", flags: readonly string[], paths
         maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
       });
     };
-    output = runWindowsNative(() => heldHelper === undefined ? withWindowsPathKindHelper(launch) : launch(heldHelper));
+    output = runWindowsNative(() => withWindowsPathKindHelper(launch));
   } catch (error) {
     // Spawn and timeout errors name the helper's install path; only their code is kept.
     if (isWindowsPathKindHelperTimeout(error)) {
@@ -536,11 +536,13 @@ interface WindowsIntegrityLabel {
 interface WindowsFileDacl {
   readonly volumeSerialNumber: string;
   readonly fileIndex: string;
+  readonly changeTime: string;
   readonly ownerSid: string;
   readonly control: number;
   readonly aceCount: number;
   readonly aclHex: string | null;
   readonly integrityLabel: WindowsIntegrityLabel | null;
+  readonly dynamicAccessControl: boolean;
 }
 
 const DACL_PRESENT = 0x0004;
@@ -610,22 +612,24 @@ function isIntegrityLabel(value: unknown): value is WindowsIntegrityLabel | null
 }
 
 function isFileDacl(value: unknown): value is WindowsFileDacl {
-  if (value === null || typeof value !== "object" || Object.keys(value).length !== 7) return false;
+  if (value === null || typeof value !== "object" || Object.keys(value).length !== 9) return false;
   const row = value as WindowsFileDacl;
   return typeof row.volumeSerialNumber === "string" && HEX_64_PATTERN.test(row.volumeSerialNumber)
     && BigInt(row.volumeSerialNumber) <= 0xffffffffn
     && typeof row.fileIndex === "string" && HEX_64_PATTERN.test(row.fileIndex)
+    && typeof row.changeTime === "string" && HEX_64_PATTERN.test(row.changeTime)
     && isFileOwnerSid(row.ownerSid)
     && isIntegrityLabel(row.integrityLabel)
+    && typeof row.dynamicAccessControl === "boolean"
     && isUint(row.control, FILE_DACL_CONTROL_MASK) && (row.control & ~FILE_DACL_CONTROL_MASK) === 0 && (row.control & DACL_PRESENT) !== 0
     && isUint(row.aceCount, 0xffff) && isCompleteFileAcl(row.aclHex, row.aceCount);
 }
 
 /** File-only metadata for callers that bind the result to an already known identity. */
-export function readWindowsFileDacls(paths: readonly string[], heldHelper?: string): readonly WindowsFileDacl[] {
+export function readWindowsFileDacls(paths: readonly string[]): readonly WindowsFileDacl[] {
   if (paths.length === 0) return [];
   if (paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
-  const rows: unknown = JSON.parse(requestNative("--dacl", ["--file-access"], paths, undefined, heldHelper));
+  const rows: unknown = JSON.parse(requestNative("--dacl", ["--file-access"], paths));
   if (!Array.isArray(rows) || rows.length !== paths.length || !rows.every(isFileDacl)) throw new Error("Invalid Windows file DACL response");
   return rows;
 }

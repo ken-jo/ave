@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { constants, copyFileSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
   renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
@@ -12,11 +11,6 @@ import { publishWorkbookEdit, readWorkbookSnapshot } from "../../skills/xlsx-fil
 import { parseTableDocument } from "../table-document-reader.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as windowsPathFacts from "../../shared/windows-path-facts.js";
-
-vi.mock("node:child_process", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:child_process")>();
-  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
-});
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -200,6 +194,16 @@ describe("workbook file transaction", () => {
     }
   });
 
+  it.each(["darwin", "linux"])("uses the original snapshot behavior with a Windows handoff on %s", async platform => {
+    const { path, before } = await workbook();
+    vi.stubGlobal("process", Object.create(process, { platform: { value: platform } }));
+    try {
+      expect(readWorkbookSnapshot(path, "invalid Windows identity").data).toEqual(before);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it.each(["darwin", "linux"])("removes the output staging name with Unix cleanup on %s", (platform) => {
     const path = join(directory, "book.xlsx");
     const before = Buffer.from("original bytes");
@@ -256,66 +260,6 @@ describe("workbook file transaction", () => {
       if (!list?.length) throw new Error("No access list was read");
       return list.map(({ type, flags, mask, sid }) => ({ type, flags, mask, sid }));
     };
-    const grantOwnRule = (path: string) => {
-      execFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe"), [path, "/grant", "*S-1-1-0:(R)"], { stdio: "ignore" });
-    };
-    it.each([true, false])("refuses when the installed access-list reader is unavailable (large: %s)", async (large) => {
-      const { path, before, output } = await workbook(large);
-      const snapshot = readWorkbookSnapshot(path);
-      const scope = large ? "backup" : "workbook";
-      const write = vi.fn((descriptor: number, bytes: Buffer, offset: number, length: number) => writeSync(descriptor, bytes, offset, length));
-      configureHostResources({ resourcePath: join(directory, "missing-resources"), isPackaged: true });
-
-      expect(() => publishWorkbookEdit(path, snapshot, output, 1, { write }))
-        .toThrow(`[${scope}-acl-unreadable]`);
-      expect(write).not.toHaveBeenCalled();
-      expect(existsSync(`${path}.ave-bak`)).toBe(false);
-      expect(readFileSync(path)).toEqual(before);
-      expect(temporaryNames()).toEqual([]);
-    });
-
-    it.each([
-      { damage: "cut header", aceCount: 1, aclHex: "0200", large: false },
-      { damage: "cut body", aceCount: 1, aclHex: "020000140089001200", large: true },
-      { damage: "missing whole ACE", aceCount: 2, aclHex: "020000140089001200010100000000000100000000", large: false },
-      { damage: "header-only ACE", aceCount: 1, aclHex: "0200000400", large: false },
-      { damage: "mask without a SID", aceCount: 1, aclHex: "020000080089001200", large: true },
-    ])("refuses a native DACL reply with a $damage before writing", async ({ aceCount, aclHex, large }) => {
-      const { path, before, output } = await workbook(large);
-      const snapshot = readWorkbookSnapshot(path);
-      const scope = large ? "backup" : "workbook";
-      const write = vi.fn((descriptor: number, bytes: Buffer, offset: number, length: number) => writeSync(descriptor, bytes, offset, length));
-      const nativeCall = vi.mocked(execFileSync).mockImplementationOnce((_helper, args) =>
-        Buffer.from(JSON.stringify(args?.slice(2).map((file) => {
-          const { dev, ino } = lstatSync(file, { bigint: true });
-          return { volumeSerialNumber: `0x${dev.toString(16).padStart(16, "0")}`,
-            fileIndex: `0x${ino.toString(16).padStart(16, "0")}`, ownerSid: "S-1-5-18", control: 4, aceCount, aclHex, integrityLabel: null };
-        }))));
-
-      expect(() => publishWorkbookEdit(path, snapshot, output, 1, { write }))
-        .toThrow(expect.objectContaining({ code: `${scope}-acl-unreadable` }));
-      expect(nativeCall.mock.lastCall?.[1]?.slice(0, 3)).toEqual(["--dacl", "--file-access", path]);
-      expect(write).not.toHaveBeenCalled();
-      expect(existsSync(`${path}.ave-bak`)).toBe(false);
-      expect(readFileSync(path)).toEqual(before);
-      expect(temporaryNames()).toEqual([]);
-    });
-
-    it("refuses a native DACL reply bound to the wrong files", async () => {
-      const { path, before, output } = await workbook();
-      const snapshot = readWorkbookSnapshot(path);
-      const read = windowsPathFacts.readWindowsFileDacls;
-      const swap = vi.spyOn(windowsPathFacts, "readWindowsFileDacls")
-        .mockImplementationOnce((paths) => [...read(paths)].reverse());
-      try {
-        expect(() => publishWorkbookEdit(path, snapshot, output, 1)).toThrow("[workbook-acl-unreadable]");
-      } finally {
-        swap.mockRestore();
-      }
-      expect(readFileSync(path)).toEqual(before);
-      expect(temporaryNames()).toEqual([]);
-    });
-
     it("gives the recovery copy and the edited workbook the inherited access list", async () => {
       const { path, before, output } = await workbook(true);
       const original = aces(path);
@@ -331,141 +275,6 @@ describe("workbook file transaction", () => {
       publishWorkbookEdit(path, readWorkbookSnapshot(path), output, 1);
       expect(readFileSync(path).equals(output)).toBe(true);
       expect(aces(path)).toEqual(original);
-      expect(temporaryNames()).toEqual([]);
-    });
-
-    const allow = "0000140089001200010100000000000100000000";
-    const audit = "0200140089001200010100000000000100000000";
-    const everyone = "010100000000000100000000";
-    const auditCallback = (tail: string) => `0d00180089001200${everyone}${tail}`;
-    const auditObject = (guid: string) => `0700280089001200${"01000000"}${guid.repeat(16)}${everyone}`;
-    const auditCallbackObject = `0f003c0089001200${"03000000"}${"11".repeat(16)}${"22".repeat(16)}${everyone}61727478`;
-    function nativeFileDacls(aclFor: (file: string) => {
-      aceCount: number; aclHex: string; ownerSid?: string | undefined;
-      integrityLabel?: { sid: string; policy: number; flags: number } | null | undefined;
-    }) {
-      const passthrough = vi.mocked(execFileSync).getMockImplementation();
-      vi.mocked(execFileSync).mockImplementation(((helper: string, args: readonly string[] | undefined, options: unknown) => {
-        if (args?.[0] !== "--dacl" || args[1] !== "--file-access") return passthrough?.(helper, args, options as never);
-        return Buffer.from(JSON.stringify(args.slice(2).map((file) => {
-          const { dev, ino } = lstatSync(file, { bigint: true });
-          return { volumeSerialNumber: `0x${dev.toString(16).padStart(16, "0")}`,
-            fileIndex: `0x${ino.toString(16).padStart(16, "0")}`, control: 4, ownerSid: "S-1-5-18", integrityLabel: null, ...aclFor(file) };
-        })));
-      }) as typeof execFileSync);
-      return () => { vi.mocked(execFileSync).mockImplementation(passthrough as typeof execFileSync); };
-    }
-
-    it.each([
-      { form: "a revision 3 allow ACE", acl: { aceCount: 1, aclHex: `03${allow}` }, large: false },
-      { form: "allow and audit ACEs", acl: { aceCount: 2, aclHex: `02${allow}${audit}` }, large: true },
-      { form: "a revision 3 audit callback ACE", acl: { aceCount: 2, aclHex: `03${allow}${auditCallback("61727478")}` }, large: false },
-      { form: "a revision 4 audit callback object ACE", acl: { aceCount: 2, aclHex: `04${allow}${auditCallbackObject}` }, large: true },
-      { form: "a revision 4 audit object ACE", acl: { aceCount: 2, aclHex: `04${allow}${auditObject("11")}` }, large: false },
-    ])("publishes when every file keeps $form", async ({ acl, large }) => {
-      const { path, output } = await workbook(large);
-      const snapshot = readWorkbookSnapshot(path);
-      const restore = nativeFileDacls(() => acl);
-      try { publishWorkbookEdit(path, snapshot, output, 1); } finally { restore(); }
-      expect(readFileSync(path).equals(output)).toBe(true);
-    });
-
-    it.each([
-      { scope: "backup", large: true, ownerSid: "S-1-5-19", reason: "differs" },
-      { scope: "workbook", large: false, ownerSid: "S-1-5-19", reason: "differs" },
-      { scope: "backup", large: true, ownerSid: undefined, reason: "unreadable" },
-      { scope: "workbook", large: false, ownerSid: undefined, reason: "unreadable" },
-    ])("refuses a $scope with $reason owner evidence despite identical DACLs", ({ scope, large, ownerSid, reason }) => {
-      const path = join(directory, "book.xlsx");
-      const before = Buffer.alloc(large ? 8 * 1024 * 1024 + 1 : 1, 0x61);
-      writeFileSync(path, before);
-      const snapshot = readWorkbookSnapshot(path);
-      const restore = nativeFileDacls(file => ({
-        aceCount: 1, aclHex: `02${allow}`, ownerSid: file === path ? "S-1-5-18" : ownerSid,
-      }));
-      const write = vi.fn((descriptor: number, bytes: Buffer, offset: number, length: number) => writeSync(descriptor, bytes, offset, length));
-      try {
-        expect(() => publishWorkbookEdit(path, snapshot, Buffer.from("validated output"), 1, { write }))
-          .toThrow(expect.objectContaining({ code: `${scope}-acl-${reason}` }));
-        expect(write).not.toHaveBeenCalled();
-        expect(existsSync(`${path}.ave-bak`)).toBe(false);
-        expect(readFileSync(path)).toEqual(before);
-        expect(temporaryNames()).toEqual([]);
-      } finally {
-        restore();
-      }
-    });
-
-    it.each([
-      { scope: "backup", large: true, label: null, reason: "differs" },
-      { scope: "workbook", large: false, label: null, reason: "differs" },
-      { scope: "backup", large: true, label: { sid: "S-1-16-8192", policy: 1, flags: 0 }, reason: "differs" },
-      { scope: "workbook", large: false, label: { sid: "S-1-16-8192", policy: 1, flags: 0 }, reason: "differs" },
-      { scope: "backup", large: true, label: { sid: "S-1-16-4096", policy: 3, flags: 0 }, reason: "differs" },
-      { scope: "workbook", large: false, label: { sid: "S-1-16-4096", policy: 3, flags: 0 }, reason: "differs" },
-      { scope: "backup", large: true, label: undefined, reason: "unreadable" },
-      { scope: "workbook", large: false, label: undefined, reason: "unreadable" },
-    ])("refuses a $scope with $reason mandatory integrity evidence ($label)", ({ scope, large, label, reason }) => {
-      const path = join(directory, "book.xlsx");
-      const before = Buffer.alloc(large ? 8 * 1024 * 1024 + 1 : 1, 0x61);
-      writeFileSync(path, before);
-      const snapshot = readWorkbookSnapshot(path);
-      const restore = nativeFileDacls(file => ({
-        aceCount: 1, aclHex: `02${allow}`,
-        integrityLabel: file === path && label !== undefined ? { sid: "S-1-16-8192", policy: 3, flags: 0 } : label,
-      }));
-      const write = vi.fn((descriptor: number, bytes: Buffer, offset: number, length: number) => writeSync(descriptor, bytes, offset, length));
-      try {
-        expect(() => publishWorkbookEdit(path, snapshot, Buffer.from("validated output"), 1, { write }))
-          .toThrow(expect.objectContaining({ code: `${scope}-acl-${reason}` }));
-        expect(write).not.toHaveBeenCalled();
-        expect(existsSync(`${path}.ave-bak`)).toBe(false);
-        expect(readFileSync(path)).toEqual(before);
-        expect(temporaryNames()).toEqual([]);
-      } finally {
-        restore();
-      }
-    });
-
-    it.each([[true, "backup"], [false, "workbook"]])("refuses a copy that drops the source's audit ACE (large: %s)", async (large, scope) => {
-      const { path, before, output } = await workbook(large);
-      const snapshot = readWorkbookSnapshot(path);
-      const restore = nativeFileDacls((file) => file === path
-        ? { aceCount: 2, aclHex: `02${allow}${audit}` } : { aceCount: 1, aclHex: `02${allow}` });
-      try {
-        expect(() => publishWorkbookEdit(path, snapshot, output, 1)).toThrow(`[${scope}-acl-differs]`);
-      } finally {
-        restore();
-      }
-      expect(readFileSync(path).equals(before)).toBe(true);
-      expect(temporaryNames()).toEqual([]);
-    });
-
-    it.each([
-      { change: "a callback tail", source: `03${allow}${auditCallback("61727478")}`, copy: `03${allow}${auditCallback("61727479")}`, large: true, scope: "backup" },
-      { change: "a callback tail", source: `03${allow}${auditCallback("61727478")}`, copy: `03${allow}${auditCallback("61727479")}`, large: false, scope: "workbook" },
-      { change: "an object GUID", source: `04${allow}${auditObject("11")}`, copy: `04${allow}${auditObject("22")}`, large: true, scope: "backup" },
-      { change: "an object GUID", source: `04${allow}${auditObject("11")}`, copy: `04${allow}${auditObject("22")}`, large: false, scope: "workbook" },
-    ])("refuses a copy whose retained audit ACE differs in $change (large: $large)", async ({ source, copy, large, scope }) => {
-      const { path, before, output } = await workbook(large);
-      const snapshot = readWorkbookSnapshot(path);
-      const restore = nativeFileDacls((file) => ({ aceCount: 2, aclHex: file === path ? source : copy }));
-      try {
-        expect(() => publishWorkbookEdit(path, snapshot, output, 1)).toThrow(`[${scope}-acl-differs]`);
-      } finally {
-        restore();
-      }
-      expect(readFileSync(path).equals(before)).toBe(true);
-      expect(temporaryNames()).toEqual([]);
-    });
-
-    it.each([[true, "backup"], [false, "workbook"]])("refuses an edit of a workbook with its own access rules (large: %s)", async (large, scope) => {
-      const { path, before, output } = await workbook(large);
-      grantOwnRule(path);
-      const snapshot = readWorkbookSnapshot(path);
-      expect(() => publishWorkbookEdit(path, snapshot, output, 1)).toThrow(`[${scope}-acl-differs]`);
-      expect(existsSync(`${path}.ave-bak`)).toBe(false);
-      expect(readFileSync(path).equals(before)).toBe(true);
       expect(temporaryNames()).toEqual([]);
     });
   });

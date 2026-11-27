@@ -412,7 +412,7 @@ async function editPackage(data: Buffer, request: unknown, journal: WorkbookEdit
 
 /** The sandbox-shell editor alone owns document publication. */
 export async function editWorkbookFile(path: string, request: unknown, io: WorkbookEditIo = {}): Promise<WorkbookEditResult> {
-  const snapshot = readWorkbookSnapshot(path);
+  const snapshot = readWorkbookSnapshot(path, io.windowsIdentity);
   const journal = openWorkbookEditJournal(path, snapshot.data);
   try {
     const { output, editedCells } = await editPackage(snapshot.data, request, journal);

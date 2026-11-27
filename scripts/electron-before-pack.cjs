@@ -9,8 +9,7 @@ module.exports = async function beforePack(context) {
   const { assertMxcVerificationPayload } = await import("./lib/mxc-verification-build.mjs");
   assertMxcVerificationPayload(join(context.packager.projectDir, "dist", "src", "main"));
   const { assertSkillScriptInventory } = await import("./lib/skill-script-inventory.mjs");
-  const skillScriptsDir = join(projectRoot, "dist", "skill-scripts");
-  assertSkillScriptInventory(skillScriptsDir);
+  assertSkillScriptInventory(join(context.packager.projectDir, "dist", "skill-scripts"));
   if (platform === "darwin") {
     // The helper that publishes staged browser downloads through held directories (native/macos-dir-ops), built for the packaged arch.
     if (process.platform !== "darwin") throw new Error("The macOS download file helper requires a native macOS build");
@@ -46,7 +45,7 @@ module.exports = async function beforePack(context) {
   // The later hooks check the packaged and signed copies against this build.
   const { recordWindowsPathKindPackageBuild } = await import("./lib/windows-path-kind-package.mjs");
   recordWindowsPathKindPackageBuild({
-    appOutDir: context.appOutDir, arch, build: pathKind, bundleDir, skillScriptsDir,
+    appOutDir: context.appOutDir, arch, build: pathKind, bundleDir,
     receiptPath: process.env.AVE_WINDOWS_PATH_KIND_BUNDLE_RECEIPT,
   });
   const { stageMxcSdkAddon, stageMxcLauncher } = await import(pathToFileURL(join(context.packager.projectDir, "scripts", "fetch-mxc.mjs")).href);

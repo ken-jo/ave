@@ -214,7 +214,11 @@ fn file_access_row(path: &[u16]) -> Option<String> {
     if info.attributes & (DIRECTORY | REPARSE) != 0 || info.links != 1 {
         return None;
     }
-    let (descriptor, label) = Descriptor::read_file_access(file.raw())?;
+    let change = basic(file.raw()).ok()?.change;
+    let (descriptor, label, dynamic_access_control) = Descriptor::read_file_access(file.raw())?;
+    if basic(file.raw()).ok()?.change != change {
+        return None;
+    }
     let owner = json(&security::sid_text(descriptor.owner).ok()?);
     let label = match label {
         Some(label) => format!(
@@ -237,9 +241,10 @@ fn file_access_row(path: &[u16]) -> Option<String> {
         "null".into()
     };
     Some(format!(
-        r#"{{"volumeSerialNumber":"0x{:016x}","fileIndex":"0x{:016x}","ownerSid":{owner},"control":{},"aceCount":{count},"aclHex":{acl},"integrityLabel":{label}}}"#,
+        r#"{{"volumeSerialNumber":"0x{:016x}","fileIndex":"0x{:016x}","changeTime":"0x{:016x}","ownerSid":{owner},"control":{},"aceCount":{count},"aclHex":{acl},"integrityLabel":{label},"dynamicAccessControl":{dynamic_access_control}}}"#,
         info.volume,
         info.index(),
+        change as u64,
         descriptor.control & FILE_DACL_CONTROL_MASK
     ))
 }

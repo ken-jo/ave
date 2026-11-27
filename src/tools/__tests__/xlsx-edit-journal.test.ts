@@ -1,11 +1,10 @@
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync,
   symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import JSZip from "jszip";
 import * as XLSX from "xlsx";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { configureHostResources } from "../../main/host-resources.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OBSERVATION_LIMITS } from "../../shared/agent-observation.js";
 import { isDocumentEditJournalRecord, type DocumentEditJournalRecord } from "../../shared/document-edit-journal.js";
 import { WorkbookEditJournal } from "../../skills/xlsx-edit-journal.js";
@@ -15,7 +14,6 @@ import { parseTableDocument } from "../table-document-reader.js";
 let directory: string;
 let journalPath: string;
 let path: string;
-beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 beforeEach(() => {
   directory = realpathSync(mkdtempSync(join(tmpdir(), "ave-cell-journal-")));
   mkdirSync(join(directory, "document-observation"));

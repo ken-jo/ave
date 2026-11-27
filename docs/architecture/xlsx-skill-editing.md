@@ -41,12 +41,10 @@ mode-assignment prefix and one literal native command.
 
 The [shell policy](permission-policy-design.md#os-shell-sandbox-policy) grants
 read roles to the exact host runtime and verified first script operand.
-On Windows, the verified workbook script also receives read access to the
-shipped path helper for its access-list check. For pinned builds the host verifies
-the helper against the build digest and holds its image and path components
-until the shell exits. The shell policy admits that exact file and the workbook
-process launches it through the held volume path. The workbook process needs
-no native addon or helper directory grant.
+On Windows, the workbook command requires a direct PowerShell invocation with
+a literal workbook operand. The host uses the verified path helper before
+launch and supplies the observed workbook identity and change time to the
+confined editor. The editor uses only the runtime and script reads above.
 Workbook/request operands and redirections retain ordinary path, permission and
 approval checks. Runtime reads are bound to that invocation, cannot pierce
 protected read floors, and add no write roots. The host script directory remains
@@ -189,11 +187,13 @@ and removes a failed copy when it still holds the identity created by this edit.
 An existing recovery path, including a partial backup or dangling link, refuses
 the edit. Files at or below the threshold have no automatic backup.
 
-On Windows, the writer checks each newly created backup or staging file before
-writing workbook bytes. The native helper reads the owner SID, DACL control
-flags and ordered ACE bytes, and mandatory integrity label and policy from
-each file's opened handle. The writer checks both identities and requires the
-same access rules. Missing, unreadable or differing evidence refuses the edit.
+Before launching a Windows workbook edit, the host confirms that the token is
+not elevated, the source is a regular unencrypted file owned by the current
+user, and its unprotected DACL contains exactly the ACEs inherited from
+its parent in order. A reparse point, mandatory label, dynamic access control
+entry, or unreadable descriptor refuses the edit. The editor compares the
+host-observed volume serial, file index, and change time with its first
+snapshot before opening its journal or creating any recovery or staging file.
 
 A later edit above the threshold also refuses while that recovery path exists.
 The recovery copy must be preserved or moved separately before retrying; neither

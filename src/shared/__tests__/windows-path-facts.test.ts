@@ -240,6 +240,8 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
       expect(vi.mocked(execFileSync).mock.lastCall?.[1]).toEqual(["--dacl", "--file-access", file]);
       expect(BigInt(row.volumeSerialNumber)).toBe(expected.dev);
       expect(BigInt(row.fileIndex)).toBe(expected.ino);
+      expect((BigInt(row.changeTime) - 116444736000000000n) * 100n).toBe(expected.ctimeNs);
+      expect(row.dynamicAccessControl).toBe(false);
       expect(row.control & 0x1000).toBe(0);
 
       const bytes = Buffer.from(row.aclHex, "hex");
@@ -300,6 +302,7 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     expect(ordinary).toHaveProperty("integrityLabel", null);
     expect(labelled).toEqual({
       ...ordinary, fileIndex: `0x${stat.ino.toString(16).padStart(16, "0")}`,
+      changeTime: `0x${(stat.ctimeNs / 100n + 116444736000000000n).toString(16).padStart(16, "0")}`,
       integrityLabel: { sid: "S-1-16-4096", policy: 3, flags: 0 },
     });
   });
@@ -320,9 +323,9 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
 
   it("rejects incomplete or malformed file DACL replies", () => {
     const file = join(fixture, "directory", "file");
-    const identity = { volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex };
-    const row = { ...identity, ownerSid: "S-1-5-18", control: 4, aceCount: 0, aclHex: "02", integrityLabel: null };
-    for (const rows of [[], [identity], [{ ...row, aclHex: "abc" }], [{ ...row, control: 2, aclHex: null }],
+    const identity = { volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex, changeTime: ORDINARY.changeTime };
+    const row = { ...identity, ownerSid: "S-1-5-18", control: 4, aceCount: 0, aclHex: "02", integrityLabel: null, dynamicAccessControl: false };
+    for (const rows of [[], [identity], [{ ...row, changeTime: undefined }], [{ ...row, dynamicAccessControl: "false" }], [{ ...row, aclHex: "abc" }], [{ ...row, control: 2, aclHex: null }],
       [{ ...row, aclHex: "05" }], [{ ...row, aclHex: "0200" }], [{ ...row, aceCount: 1, aclHex: null }],
       [{ ...row, aceCount: 1, aclHex: "0200000000" }], [{ ...row, aceCount: 1, aclHex: "020000050000" }]]) {
       vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify(rows)));
@@ -335,7 +338,8 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
   const ace = (type: number, body: string) => `${type.toString(16).padStart(2, "0")}00${(4 + body.length / 2).toString(16).padStart(2, "0")}00${body}`;
   const fileDacl = (aclHex: string | null, aceCount = 1) => ({
     volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex,
-    ownerSid: "S-1-5-18", control: 4, aceCount, aclHex, integrityLabel: null,
+    changeTime: ORDINARY.changeTime, ownerSid: "S-1-5-18", control: 4, aceCount, aclHex,
+    integrityLabel: null, dynamicAccessControl: false,
   });
 
   it.each([

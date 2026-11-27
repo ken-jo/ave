@@ -19,7 +19,6 @@ import { rankMxcFilesystem } from "../../src/permissions/mxc-windows.js";
 import * as powerShellExecutable from "../../src/shared/powershell-executable.js";
 import { win32SystemBinary } from "../../src/shared/windows-system-path.js";
 import { PermissionManager } from "../../src/permissions/permission-manager.js";
-import { shellQuote } from "../../src/lib/shell-resolver.js";
 import { shellPolicyModel } from "../../src/tools/mxc-shell-launch.js";
 import { normalizePowerShellAstSummary, POWER_SHELL_AST_PARSER } from "../../src/tools/powershell-ast.js";
 import { preparePowerShellLaunch } from "../../src/tools/powershell-launch.js";
@@ -104,7 +103,7 @@ describe("workbook publication build", () => {
       configureHostResources({ resourcePath: join(projectRoot, "resources"), isPackaged: false });
       expect(hostScriptRuntimePaths()?.bundledScriptsDirectory).toBe(dirname(fixture.scriptPath));
       const argv = fixture.argv(process.execPath, workbookPath, requestPath);
-      const allowRead = hostScriptInvocationReadPaths(argv, { ELECTRON_RUN_AS_NODE: "1" });
+      const allowRead = hostScriptInvocationReadPaths(argv, { ELECTRON_RUN_AS_NODE: "1" }, workbookPath);
       expect(allowRead).toContain(fixture.scriptPath);
       if (process.platform === "win32") {
         const resources = join(fixture.root, "resources");
@@ -113,20 +112,20 @@ describe("workbook publication build", () => {
         const grants = rankMxcFilesystem(shellPolicyModel({
           allowRead, allowWrite: [workspace], denyWrite, denyRead: [], protectedFloor: [],
         }));
-        expect(grants.readonly).toContain(helper);
-        expect(denyWrite).toContain(helper);
+        expect(grants.readonly).not.toContain(helper);
         expect(grants.readwrite).not.toContain(helper);
         expect(grants.readonly).not.toContain(dirname(helper));
         expect(grants.readonly.filter(path => path.endsWith(".node"))).toEqual([]);
         expect([...grants.readonly, ...grants.readwrite].filter(grant => win32.parse(grant).root === grant)).toEqual([]);
       }
-      const command = `ELECTRON_RUN_AS_NODE=1 ${argv.map(shellQuote).join(" ")}`;
-      expect(findShellPathPolicyViolation(command, workspace, workspace, [], true)).toBeNull();
+      const toolName = process.platform === "win32" ? "powershell" : "bash";
+      const command = renderWorkbookCommand(process.platform, argv);
+      if (toolName === "bash") expect(findShellPathPolicyViolation(command, workspace, workspace, [], true)).toBeNull();
       const permissions = new PermissionManager(join(root, "permissions.json"));
       permissions.setMode("strict");
       permissions.setRules([]);
-      expect(permissions.checkDetailed("bash", "builtin", "shell", null, {
-        ruleSubject: { kind: "shell", dialect: "bash", command, cwd: workspace },
+      expect(permissions.checkDetailed(toolName, "builtin", "shell", null, {
+        ruleSubject: { kind: "shell", dialect: toolName, command, cwd: workspace },
         shellExecution: { runsSandboxed: true }, sessionId: "workbook-publication-session",
       })).toMatchObject({ decision: "ask" });
       const journalPath = join(home, "document-observation", "journal.jsonl");
@@ -775,7 +774,7 @@ describe("workbook publication build", () => {
     });
   });
 
-  it.runIf(process.platform === "win32")("keeps the exact helper grant through the parsed PowerShell command the E2E sends", () => {
+  it.runIf(process.platform === "win32")("grants only the runtime and script through the parsed PowerShell workbook command", () => {
     const workspace = mkdtempSync(join(root, "alice's workspace "));
     const fixture = prepareWorkbookPublicationBuild(checkout, workspace);
     // Elevated runners hold no trusted installation; the resolver suite proves that refusal on its own.
@@ -797,7 +796,7 @@ describe("workbook publication build", () => {
       const reads = powerShellHostScriptReadPaths(ast, source);
       expect(reads).toContain(fixture.scriptPath);
       const resources = join(fixture.root, "resources");
-      expect(reads).toContain(windowsPathKindHelperIn(resources));
+      expect(reads).not.toContain(windowsPathKindHelperIn(resources));
       expect(reads.filter(path => path.endsWith(".node"))).toEqual([]);
       const [invocation] = ast.commands;
       if (!invocation) throw new Error("The rendered command did not parse");

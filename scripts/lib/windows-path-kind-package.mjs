@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { extractFile, listPackage, statFile } from "@electron/asar";
-import { assertSkillScriptInventory } from "./skill-script-inventory.mjs";
 import { windowsPeImageDigest } from "./windows-path-kind-image-digest.mjs";
 
 // The before-pack build of each package, held in the packager's memory for its later hooks.
@@ -32,20 +31,8 @@ function isWithin(parent, file) {
   return !isAbsolute(nested) && nested !== ".." && !nested.startsWith(`..${sep}`);
 }
 
-function assertWindowsWorkbookBundle(directory, imageSha256, workbookSha256) {
-  assertSkillScriptInventory(directory);
-  const workbook = readFileSync(join(directory, "edit-xlsx.cjs"));
-  const declaration = windowsPathKindBundlePinDeclaration(imageSha256) + "\n";
-  if (!workbook.subarray(0, declaration.length).equals(Buffer.from(declaration))) {
-    throw new Error("The workbook bundle pin does not match the before-pack build");
-  }
-  if (typeof workbookSha256 !== "string" || sha256(workbook) !== workbookSha256) {
-    throw new Error("The workbook bundle bytes do not match the producing build");
-  }
-}
-
 /** before-pack: the fresh build must be the image pinned by the producer. */
-export function recordWindowsPathKindPackageBuild({ appOutDir, arch, receiptPath, build, bundleDir, skillScriptsDir }) {
+export function recordWindowsPathKindPackageBuild({ appOutDir, arch, receiptPath, build, bundleDir }) {
   if (!receiptPath || !isAbsolute(receiptPath)) throw new Error("Missing absolute Windows main bundle build receipt path");
   const staging = resolve(bundleDir, "../..");
   const receipt = realpathSync(receiptPath);
@@ -70,17 +57,15 @@ export function recordWindowsPathKindPackageBuild({ appOutDir, arch, receiptPath
       throw new Error("The main bundle pin does not match the before-pack build");
     }
   }
-  assertWindowsWorkbookBundle(skillScriptsDir, build.imageSha256, pin.workbookSha256);
-  builds.set(appOutDir, { arch, binarySha256: build.binarySha256, imageSha256: build.imageSha256, bundle, workbookSha256: pin.workbookSha256 });
+  builds.set(appOutDir, { arch, binarySha256: build.binarySha256, imageSha256: build.imageSha256, bundle });
 }
 
 /** after-pack: the packaged copy must be the before-pack build byte for byte. */
 export function assertPackagedWindowsPathKind(appOutDir, arch) {
-  const { binarySha256, imageSha256, bundle, workbookSha256 } = recordedBuild(appOutDir, arch);
+  const { binarySha256, bundle } = recordedBuild(appOutDir, arch);
   if (sha256(readFileSync(packagedHelper(appOutDir, arch))) !== binarySha256) {
     throw new Error("The packaged Windows path helper is not the before-pack build");
   }
-  assertWindowsWorkbookBundle(join(appOutDir, "resources", "skill-scripts"), imageSha256, workbookSha256);
   const archive = join(appOutDir, "resources", "app.asar");
   const previousNoAsar = process.noAsar;
   process.noAsar = true;

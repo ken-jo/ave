@@ -1,13 +1,15 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import * as XLSX from "xlsx";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stageWindowsPathKindHelper } from "../../__tests__/support/bundled-skill-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { createLocalApi, LOCAL_API_CHANNEL_NOT_PUBLIC } from "../../api/local-api.js";
 import { registerBuiltinTools } from "../../boot/tools.js";
 import { CHANNELS, EXTERNAL_MUTATION_CHANNELS, PUBLIC_CHANNELS, isPublicChannel } from "../../contract/app-contract.js";
+import { quotePowerShell } from "../../__tests__/support/powershell-literal.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { hostScriptInvocationReadPaths, hostScriptRuntimePaths } from "../../main/host-script-runtime.js";
@@ -30,7 +32,11 @@ beforeEach(() => {
   vi.stubEnv("AVE_HOME", home);
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
-  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+  const resources = join(directory, "resources");
+  mkdirSync(resources);
+  cpSync(process.env.AVE_TEST_SKILL_SCRIPTS_DIR ?? resolve("dist", "skill-scripts"), join(resources, "skill-scripts"), { recursive: true });
+  stageWindowsPathKindHelper(resources);
+  configureHostResources({ resourcePath: resources, isPackaged: true });
 });
 
 afterEach(async () => {
@@ -54,18 +60,21 @@ describe("agent workbook editing authority", () => {
     const original = readFileSync(workbookPath);
     const runtime = hostScriptRuntimePaths()!;
     const argv = [runtime.javascriptRuntime, join(runtime.bundledScriptsDirectory, "edit-xlsx.cjs"), workbookPath, requestPath];
-    expect(hostScriptInvocationReadPaths(argv, { ELECTRON_RUN_AS_NODE: "1" }))
+    expect(hostScriptInvocationReadPaths(argv, { ELECTRON_RUN_AS_NODE: "1" }, workbookPath))
       .toEqual(expect.arrayContaining([runtime.javascriptRuntime, argv[1]]));
-    const command = `ELECTRON_RUN_AS_NODE=1 ${argv.map(shellQuote).join(" ")}`;
-    const shell = new BashTool();
+    const windows = process.platform === "win32";
+    const toolName = windows ? "powershell" : "bash";
+    const command = windows ? `$env:ELECTRON_RUN_AS_NODE='1'; & ${argv.map(quotePowerShell).join(" ")}`
+      : `ELECTRON_RUN_AS_NODE=1 ${argv.map(shellQuote).join(" ")}`;
+    const shell = windows ? new PowerShellTool() : new BashTool();
     const execute = vi.spyOn(shell, "execute");
     const registry = new ToolRegistry();
     registry.register(shell);
     const manager = new PermissionManager(join(directory, "permissions.json"));
     manager.setMode("default");
     manager.setRules([]);
-    expect(manager.checkDetailed("bash", "builtin", "shell", null, {
-      ruleSubject: { kind: "shell", dialect: "bash", command, cwd: directory },
+    expect(manager.checkDetailed(toolName, "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: toolName, command, cwd: directory },
       shellExecution: { runsSandboxed: true }, sessionId: "workbook-agent-session",
     })).toMatchObject({ decision: "ask" });
     const check = vi.spyOn(manager, "checkDetailed");
@@ -79,7 +88,7 @@ describe("agent workbook editing authority", () => {
     };
     gate = new ApprovalGate(desktop as never);
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate);
-    const pending = executor.executeAll([{ id: "workbook-agent-save", name: "bash", input: { command } }], {
+    const pending = executor.executeAll([{ id: "workbook-agent-save", name: toolName, input: { command } }], {
       sessionId: "workbook-agent-session", executionCwd: directory,
       permissionContext: userPermissionContext({ additionalDirectories: [directory] }),
     });
@@ -87,7 +96,7 @@ describe("agent workbook editing authority", () => {
     if (!("request" in outcome)) throw new Error(`Shell execution returned before requesting approval: ${JSON.stringify(outcome.results)}`);
     const request = outcome.request;
     expect(check.mock.results[0]?.value).toMatchObject({ decision: "ask" });
-    expect(request).toMatchObject({ toolName: "bash", args: { command } });
+    expect(request).toMatchObject({ toolName, args: { command } });
     expect(gate.pendingCount).toBe(1);
     expect(execute).not.toHaveBeenCalled();
     expect(readFileSync(workbookPath)).toEqual(original);

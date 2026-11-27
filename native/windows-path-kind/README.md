@@ -297,11 +297,13 @@ Relative paths, device namespace paths and alternate streams are refused.
 
 `ave-path-kind.exe --dacl --file-access <absolute-file-path>...` opens only the
 requested files with metadata access. It returns ordered rows with
-`volumeSerialNumber`, `fileIndex`, `ownerSid`, `control` (DACL presence, protection and
-auto-inheritance bits), `aceCount`, `aclHex` (ACL revision followed by ordered,
-complete ACE bytes), and `integrityLabel`. The label contains its SID, policy
-mask, and ACE flags, or `null` when the descriptor has no explicit label.
-Owner, DACL, and label come from one descriptor read on the opened file.
+`volumeSerialNumber`, `fileIndex`, `changeTime`, `ownerSid`, `control` (DACL
+presence, protection and auto-inheritance bits), `aceCount`, `aclHex` (ACL revision
+followed by ordered, complete ACE bytes), `integrityLabel`, and
+`dynamicAccessControl`. The label carries its SID, policy mask, and ACE flags,
+or `null` when the descriptor has no explicit label. The dynamic-access field
+indicates whether a resource attribute or scoped policy ACE is present. The
+helper reads the descriptor and checks change time on the same opened file.
 A missing or null ACL reports a zero count and `null`
 bytes. The control bits distinguish missing and null ACLs. The caller checks
 the revision and ACE sizes against the count and each identity against its file

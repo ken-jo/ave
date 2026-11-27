@@ -1,12 +1,9 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
-import { basename, dirname, isAbsolute, join, relative } from "node:path";
-import { WINDOWS_WORKBOOK_HELPER_ENV } from "../shared/xlsx-edit.js";
+import { dirname, isAbsolute, join, relative } from "node:path";
+import { admitWindowsReparse, mapWindowsGenericRights, readWindowsDacls, readWindowsFileDacls } from "../shared/windows-path-facts.js";
 import { getConfiguredHostResources, type HostResources } from "./host-resources.js";
-import { holdBuiltWindowsPathKindHelper, windowsPathKindHelperIn, windowsPathKindHelperUnavailable } from "./windows-path-kind-launcher.js";
-
-declare const __AVE_WINDOWS_PATH_KIND_SHA256__: string | null;
 
 interface ScriptRuntimePaths { javascriptRuntime: string; bundledScriptsDirectory: string }
 interface ScriptRootSnapshot { device: bigint; inode: bigint; manifestDigest: string }
@@ -41,13 +38,9 @@ export function hostScriptRuntimePaths(): ScriptRuntimePaths | undefined {
 }
 
 export function hostScriptWriteDenyPaths(): readonly string[] {
-  const resources = getConfiguredHostResources();
   const paths = hostScriptRuntimePaths();
-  if (!paths || !resources) return [];
+  if (!paths) return [];
   const denied = [paths.bundledScriptsDirectory, paths.javascriptRuntime];
-  if (process.platform === "win32") {
-    denied.push(windowsPathKindHelperIn(resources.resourcePath));
-  }
   for (const path of [...denied]) {
     try { denied.push(realpathSync.native(path)); } catch { /* Missing resources stay denied by name. */ }
   }
@@ -91,10 +84,11 @@ export function isVerifiedHostScript(path: string): boolean {
   } catch { return false; }
 }
 
-/** The verified runtime/script pair receives only its shipped executable dependencies. */
+/** Exact argv roles only: command image, direct script operand, then ordinary data paths. */
 export function hostScriptInvocationReadPaths(
   argv: readonly (string | undefined)[],
   environment: Readonly<Record<string, string | undefined>> = {},
+  windowsWorkbookOperand?: string,
 ): readonly string[] {
   const paths = hostScriptRuntimePaths();
   const [runtime, script] = argv;
@@ -103,43 +97,61 @@ export function hostScriptInvocationReadPaths(
       && /^(?:NODE_|LD_|DYLD_)/i.test(name))) return [];
   if (!paths || !runtime || !script || runtime !== paths.javascriptRuntime || !isAbsolute(runtime) || !sameFile(runtime, paths.javascriptRuntime)
     || !isVerifiedHostScript(script)) return [];
-  const runtimePath = realpathSync.native(runtime);
-  const allowed = [runtime, runtimePath, dirname(runtimePath), script];
-  const resources = getConfiguredHostResources();
-  if (process.platform === "win32" && resources && basename(script) === "edit-xlsx.cjs") {
-    try {
-      const helper = windowsPathKindHelperIn(realpathSync.native(resources.resourcePath));
-      const info = lstatSync(helper);
-      if (info.isFile() && info.nlink === 1 && realpathSync.native(helper) === helper) allowed.push(helper);
-    } catch { /* Missing helper grants no read access. */ }
+  if (isWindowsWorkbookScript(script) && (windowsWorkbookOperand === undefined || windowsWorkbookOperand !== argv[2])) return [];
+  return [...new Set([runtime, realpathSync.native(runtime), dirname(realpathSync.native(runtime)), script])];
+}
+
+export function isWindowsWorkbookScript(path: string | undefined): boolean {
+  if (process.platform !== "win32" || path === undefined) return false;
+  const paths = hostScriptRuntimePaths();
+  return paths !== undefined && path === join(paths.bundledScriptsDirectory, "edit-xlsx.cjs");
+}
+
+export const WINDOWS_WORKBOOK_LITERAL_REQUIRED = "Windows workbook edits require a direct PowerShell command with a literal workbook path. [workbook-acl-unreadable]";
+const WORKBOOK_ACL_DIFFERS = "The workbook has access rules Ave cannot keep on the edited file. [workbook-acl-differs]";
+const WORKBOOK_ACL_UNREADABLE = "The workbook access rules could not be verified. [workbook-acl-unreadable]";
+const OBJECT_INHERIT_ACE = 0x01;
+const INHERITED_ACE = 0x10;
+const ENCRYPTED_FILE = 0x4000;
+const CREATOR_OWNER_SID = "S-1-3-0";
+
+export function checkWindowsWorkbookAccess(path: string): { identity: string } | { reason: string } {
+  try {
+    const route = withLocalityDecision(() => admitLocalRoute(path));
+    if (route.followedLink) return { reason: WORKBOOK_ACL_DIFFERS };
+    const [facts] = readWindowsDacls([path], { parent: true });
+    if (!facts?.exists || !facts.dacl || !facts.parent || !facts.volumeSerialNumber || !facts.fileIndex || !facts.changeTime
+      || facts.fileSystemName !== "NTFS" || [facts.volumeSerialNumber, facts.fileIndex, facts.changeTime].some(value => BigInt(value) === 0n)) {
+      return { reason: WORKBOOK_ACL_UNREADABLE };
+    }
+    const { dacl, parent } = facts;
+    if (facts.directory || admitWindowsReparse(facts) !== true || (facts.attributes & ENCRYPTED_FILE) !== 0
+      || facts.elevated || dacl.owner !== facts.currentUserSid || dacl.protected || dacl.nullDacl || parent.nullDacl) {
+      return { reason: WORKBOOK_ACL_DIFFERS };
+    }
+    const inherited = parent.aces.filter(ace => (ace.flags & OBJECT_INHERIT_ACE) !== 0);
+    if (inherited.length !== dacl.aces.length || dacl.aces.some((ace, index) => {
+      const source = inherited[index]!;
+      return ace.flags !== INHERITED_ACE || (ace.type !== 0 && ace.type !== 1) || ace.type !== source.type
+        || ace.sid === null || ace.sid === CREATOR_OWNER_SID || ace.sid !== source.sid
+        || mapWindowsGenericRights(ace.mask) !== mapWindowsGenericRights(source.mask);
+    })) return { reason: WORKBOOK_ACL_DIFFERS };
+
+    const [file] = readWindowsFileDacls([path]);
+    if (!file || file.volumeSerialNumber !== facts.volumeSerialNumber || file.fileIndex !== facts.fileIndex || file.changeTime !== facts.changeTime) {
+      return { reason: WORKBOOK_ACL_UNREADABLE };
+    }
+    if (file.integrityLabel !== null || file.dynamicAccessControl || file.ownerSid !== facts.currentUserSid
+      || file.aclHex === null || (file.control & 0x1000) !== 0 || file.aceCount !== dacl.aces.length) {
+      return { reason: WORKBOOK_ACL_DIFFERS };
+    }
+    return { identity: `${file.volumeSerialNumber}:${file.fileIndex}:${file.changeTime}` };
+  } catch {
+    return { reason: WORKBOOK_ACL_UNREADABLE };
   }
-  return [...new Set(allowed)];
 }
 
 export function isHostScriptReadPath(path: string): boolean {
   const paths = hostScriptRuntimePaths();
   return paths !== undefined && (sameFile(path, paths.javascriptRuntime) || isVerifiedHostScript(path));
-}
-
-/** Pinned workbook commands keep the verified image held until the shell has finished. */
-export async function withWindowsWorkbookHelper<T>(
-  reads: readonly string[], launch: (environment: Record<string, string>) => Promise<T>,
-): Promise<T> {
-  const resources = getConfiguredHostResources();
-  const paths = hostScriptRuntimePaths();
-  if (process.platform !== "win32" || !resources || !paths
-    || !reads.includes(join(paths.bundledScriptsDirectory, "edit-xlsx.cjs"))) return launch({});
-  if (typeof __AVE_WINDOWS_PATH_KIND_SHA256__ === "undefined" && !resources.isPackaged) return launch({});
-  if (typeof __AVE_WINDOWS_PATH_KIND_SHA256__ !== "string") {
-    throw windowsPathKindHelperUnavailable("Windows folder classifier pin is missing.");
-  }
-  const helper = windowsPathKindHelperIn(realpathSync.native(resources.resourcePath));
-  if (!reads.includes(helper)) throw windowsPathKindHelperUnavailable("Windows folder classifier path was not admitted.");
-  const executable = holdBuiltWindowsPathKindHelper(helper);
-  try {
-    // The policy admits the file by its DOS spelling. The child uses the held volume path.
-    return await launch({ [WINDOWS_WORKBOOK_HELPER_ENV]: `${__AVE_WINDOWS_PATH_KIND_SHA256__}:${executable.path}` });
-  } finally {
-    executable.close();
-  }
 }

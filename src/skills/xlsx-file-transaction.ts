@@ -2,18 +2,16 @@ import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { replaceStagedFile } from "../lib/atomic-file.js";
-import { readWindowsFileDacls } from "../shared/windows-path-facts.js";
 import { XLSX_EDIT_LIMITS } from "../shared/xlsx-edit.js";
 
 export interface WorkbookFileSnapshot { data: Buffer; identity: fs.BigIntStats }
 export interface WorkbookEditIo {
   write?: (descriptor: number, bytes: Buffer, offset: number, length: number) => number;
-  windowsAccessHelper?: string;
+  windowsIdentity?: string;
 }
 export interface WorkbookEditResult { editedCells: number; needsRecalculation: true; backup: string | null }
 
 interface WorkbookLocation { path: string; parent: string; identity: fs.BigIntStats }
-interface WorkbookFile { path: string; identity: fs.BigIntStats }
 const snapshotLocations = new WeakMap<WorkbookFileSnapshot, WorkbookLocation>();
 
 function requireCondition(condition: unknown, message: string): asserts condition {
@@ -52,13 +50,18 @@ function createWorkbookFileSnapshot(path: string, data: Buffer, identity: fs.Big
 }
 
 /** Reads bounded source bytes and binds their descriptor identity to a canonical parent. */
-export function readWorkbookSnapshot(path: string): WorkbookFileSnapshot {
+export function readWorkbookSnapshot(path: string, windowsIdentity?: string): WorkbookFileSnapshot {
   path = resolve(path);
   requireCondition(extname(path).toLowerCase() === ".xlsx", "Only .xlsx files can be edited.");
   const parent = fs.realpathSync.native(dirname(path));
   const location = { path: join(parent, basename(path)), parent, identity: fs.lstatSync(parent, { bigint: true }) };
   requireCondition(location.identity.isDirectory(), "Workbook parent must be a directory.");
   const before = fs.lstatSync(location.path, { bigint: true });
+  if (process.platform === "win32" && windowsIdentity !== undefined) {
+    const fields = /^(0x[0-9a-f]{16}):(0x[0-9a-f]{16}):(0x[0-9a-f]{16})$/u.exec(windowsIdentity);
+    if (!fields || before.dev !== BigInt(fields[1]!) || before.ino !== BigInt(fields[2]!)
+      || before.ctimeNs !== (BigInt(fields[3]!) - 116444736000000000n) * 100n) stale();
+  }
   requireCondition(before.isFile() && before.nlink === 1n, "Workbook must be a singly linked regular file.");
   requireCondition(before.size <= BigInt(XLSX_EDIT_LIMITS.maxFileBytes), "Workbook exceeds 20 MiB.");
   const descriptor = fs.openSync(location.path, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
@@ -92,11 +95,6 @@ function temporaryFile(path: string): { path: string; descriptor: number } {
   const temporary = join(dirname(path), `.ave-xlsx-${randomBytes(12).toString("hex")}.tmp`);
   return { path: temporary, descriptor: fs.openSync(temporary, "wx", 0o600) };
 }
-function temporaryWindowsFile(path: string): WorkbookFile & { descriptor: number } {
-  const staged = temporaryFile(path);
-  try { return { ...staged, identity: fs.fstatSync(staged.descriptor, { bigint: true }) }; }
-  catch (error) { fs.closeSync(staged.descriptor); fs.unlinkSync(staged.path); throw error; }
-}
 function writeAndSync(descriptor: number, bytes: Buffer, io: WorkbookEditIo): void {
   let offset = 0;
   while (offset < bytes.length) {
@@ -113,37 +111,8 @@ function verifyStagedBytes(path: string, bytes: Buffer, message: string): void {
   requireCondition(saved.length === bytes.length && sha256(saved) === sha256(bytes), message);
 }
 
-const ACCESS_RULES_REFUSALS = {
-  backup: { text: "The workbook has its own access rules; Ave cannot keep them on its backup.", differs: "backup-acl-differs", unreadable: "backup-acl-unreadable" },
-  workbook: { text: "The workbook has its own access rules; Ave cannot keep them on the edited file.", differs: "workbook-acl-differs", unreadable: "workbook-acl-unreadable" },
-} as const;
-
-function accessRulesRefusal(kind: keyof typeof ACCESS_RULES_REFUSALS, reason: "differs" | "unreadable"): Error {
-  const refusal = ACCESS_RULES_REFUSALS[kind];
-  return Object.assign(new Error(`${refusal.text} [${refusal[reason]}]`), { code: refusal[reason] });
-}
-
-/** Check the created file's access rules before writing workbook bytes. */
-function requireSameAccessRules(kind: keyof typeof ACCESS_RULES_REFUSALS, source: WorkbookFile, copy: WorkbookFile, helper?: string): void {
-  const files = [source, copy];
-  let rules: ReturnType<typeof readWindowsFileDacls>;
-  try { rules = readWindowsFileDacls(files.map(file => file.path), helper); }
-  catch { throw accessRulesRefusal(kind, "unreadable"); }
-  const [original, created] = rules;
-  if (!original || !created || rules.length !== files.length || !rules.every((rule, index) => {
-    const identity = files[index]?.identity;
-    return identity && BigInt(rule.volumeSerialNumber) === identity.dev && BigInt(rule.fileIndex) === identity.ino;
-  })) throw accessRulesRefusal(kind, "unreadable");
-  const label = original.integrityLabel;
-  const createdLabel = created.integrityLabel;
-  if (original.ownerSid !== created.ownerSid || original.control !== created.control || original.aclHex !== created.aclHex
-    || label?.sid !== createdLabel?.sid || label?.policy !== createdLabel?.policy || label?.flags !== createdLabel?.flags) {
-    throw accessRulesRefusal(kind, "differs");
-  }
-}
-
 /** Exclusive create keeps any existing entry, links included, and needs no hard-link right. A copy that fails verification is removed. */
-function writeRecoveryCopy(source: WorkbookFile, path: string, bytes: Buffer, io: WorkbookEditIo, verifySource: () => void): void {
+function writeRecoveryCopy(path: string, bytes: Buffer, io: WorkbookEditIo, verifySource: () => void): void {
   if (fs.lstatSync(path, { throwIfNoEntry: false }) !== undefined) {
     throw Object.assign(new Error(`Recovery path already exists: ${path}`), { code: "EEXIST" });
   }
@@ -155,7 +124,6 @@ function writeRecoveryCopy(source: WorkbookFile, path: string, bytes: Buffer, io
       const named = fs.lstatSync(path, { bigint: true });
       requireCondition(named.isFile() && named.dev === opened.dev && named.ino === opened.ino, "Recovery path changed while opening.");
       created = opened;
-      requireSameAccessRules("backup", source, { path, identity: opened }, io.windowsAccessHelper);
       writeAndSync(descriptor, bytes, io);
     } finally { fs.closeSync(descriptor); }
     verifyStagedBytes(path, bytes, "Backup verification failed.");
@@ -183,13 +151,12 @@ export function publishWorkbookEdit(path: string, snapshot: WorkbookFileSnapshot
   const requestedPath = path;
   const backupPath = `${path}.ave-bak`;
   path = location.path;
-  const source = { path, identity: snapshot.identity };
   let backup: string | null = null;
   const needsBackup = snapshot.data.length > XLSX_EDIT_LIMITS.backupBytes;
   if (needsBackup && process.platform === "win32") {
     backup = backupPath;
     checkSource(requestedPath, snapshot, location);
-    writeRecoveryCopy(source, `${path}.ave-bak`, snapshot.data, io, () => checkSource(requestedPath, snapshot, location));
+    writeRecoveryCopy(`${path}.ave-bak`, snapshot.data, io, () => checkSource(requestedPath, snapshot, location));
   } else if (needsBackup) {
     backup = backupPath;
     const staged = temporaryFile(path);
@@ -201,23 +168,14 @@ export function publishWorkbookEdit(path: string, snapshot: WorkbookFileSnapshot
     } finally { fs.unlinkSync(staged.path); }
   }
   checkSource(requestedPath, snapshot, location);
-  const windowsStaged = process.platform === "win32" ? temporaryWindowsFile(path) : undefined;
-  const staged = windowsStaged ?? temporaryFile(path);
+  const staged = temporaryFile(path);
   try {
-    try {
-      if (windowsStaged) requireSameAccessRules("workbook", source, windowsStaged, io.windowsAccessHelper);
-      writeAndSync(staged.descriptor, output, io);
-    } finally { fs.closeSync(staged.descriptor); }
+    try { writeAndSync(staged.descriptor, output, io); } finally { fs.closeSync(staged.descriptor); }
     verifyStagedBytes(staged.path, output, "Output verification failed.");
     fs.chmodSync(staged.path, Number(snapshot.identity.mode & 0o7777n));
     replaceStagedFile(staged.path, path, undefined, () => {
       checkSource(requestedPath, snapshot, location);
     });
-  } finally {
-    if (windowsStaged) {
-      const current = fs.lstatSync(staged.path, { bigint: true, throwIfNoEntry: false });
-      if (current?.dev === windowsStaged.identity.dev && current.ino === windowsStaged.identity.ino) fs.unlinkSync(staged.path);
-    } else { if (fs.existsSync(staged.path)) fs.unlinkSync(staged.path); }
-  }
+  } finally { if (fs.existsSync(staged.path)) fs.unlinkSync(staged.path); }
   return { editedCells, needsRecalculation: true, backup };
 }

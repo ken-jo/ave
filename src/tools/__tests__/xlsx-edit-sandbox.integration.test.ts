@@ -1,10 +1,12 @@
-import { copyFileSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { buildSkillScripts } from "../../../scripts/build-skill-scripts.mjs";
 import { windowsPeImageDigest } from "../../../scripts/lib/windows-path-kind-image-digest.mjs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import * as XLSX from "xlsx";
+import JSZip from "jszip";
 import { describe, expect, it, vi } from "vitest";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -21,6 +23,9 @@ import { establishMxcRuntimeRoot } from "../../permissions/mxc-runtime-root.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { hostScriptRuntimePaths } from "../../main/host-script-runtime.js";
 import { windowsPathKindHelperIn } from "../../main/windows-path-kind-launcher.js";
+import * as windowsPathFacts from "../../shared/windows-path-facts.js";
+import { WINDOWS_WORKBOOK_IDENTITY_ENV, XLSX_EDIT_LIMITS } from "../../shared/xlsx-edit.js";
+import * as mxcShellLaunch from "../mxc-shell-launch.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
 import { parseTableDocument } from "../table-document-reader.js";
 import { runWithAgentObservationInvocation, runWithAgentObservationTurn, setAgentObservationSink } from "../agent-observation-context.js";
@@ -61,7 +66,7 @@ describe("native governed XLSX command", () => {
     if (windowsBuild) {
       stageWindowsResources(hostResources.resourcePath);
       const pin = windowsPeImageDigest(readFileSync(windowsPathKindHelperIn(hostResources.resourcePath)));
-      await buildSkillScripts({ pathKindSha256: pin, directory: join(windowsBuild, "dist", "skill-scripts") });
+      await buildSkillScripts({ directory: join(windowsBuild, "dist", "skill-scripts") });
       vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", pin);
     }
     configureHostResources(hostResources);
@@ -71,10 +76,18 @@ describe("native governed XLSX command", () => {
     const originalRuntime = readFileSync(runtime.javascriptRuntime);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([["Budget", 12]]), "Sheet");
-    writeFileSync(path, XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer);
+    let originalWorkbook = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
+    if (windows) {
+      const zip = await JSZip.loadAsync(originalWorkbook);
+      zip.file("xl/media/opaque.bin", Buffer.alloc(XLSX_EDIT_LIMITS.backupBytes));
+      originalWorkbook = await zip.generateAsync({ type: "nodebuffer", compression: "STORE" });
+      expect(originalWorkbook.length).toBeGreaterThan(XLSX_EDIT_LIMITS.backupBytes);
+    }
+    writeFileSync(path, originalWorkbook);
     writeFileSync(request, JSON.stringify({ sheet: 0, edits: [{ cell: "B1", value: 84 }] }));
     try {
       if (process.platform === "win32") {
+        vi.stubEnv(WINDOWS_WORKBOOK_IDENTITY_ENV, "caller fixture");
         const started = await requireMxcCapability(testContext.skip);
         // Anchor the credential floor to a fixture home: the stamp guard refuses real-account deny targets.
         const policyFixture = join(directory, "policy-home");
@@ -102,8 +115,8 @@ describe("native governed XLSX command", () => {
       const hostResourcesNow = () => currentResources;
       if (mac) await proveMacContainer();
       const tool = windows ? new PowerShellTool() : new BashTool();
-      const commandFor = (target: string) => windows
-        ? `$env:ELECTRON_RUN_AS_NODE='1'; & ${[runtime.javascriptRuntime, script, target, request].map(quotePowerShell).join(" ")}`
+      const commandFor = (target: string, edits = request) => windows
+        ? `$env:ELECTRON_RUN_AS_NODE='1'; & ${[runtime.javascriptRuntime, script, target, edits].map(quotePowerShell).join(" ")}`
         : `ELECTRON_RUN_AS_NODE=1 ${[runtime.javascriptRuntime, script, target, request].map(shellQuote).join(" ")}`;
       const context = { cwd: directory, extraAllowedDirectories: [], metadata: {}, blockReadsOutsideWorkingDirectories: true,
         hostShellExecutionPlan: getHostShellExecutionPlan() };
@@ -144,15 +157,138 @@ describe("native governed XLSX command", () => {
         ),
       );
       setAgentObservationSink(undefined);
-      expect(result.isError, result.output).toBe(false);
-      expect(result.metadata?.sandboxed, result.output).toBe(true);
-      const document = await parseTableDocument(readFileSync(path), "xlsx", 0);
-      expect(document.sheet.rows).toEqual([["Budget", "84"]]);
-      expect(document.needsRecalculation).toBe(true);
-      expect(records.map((record) => record.kind)).toEqual(["begin", "cell", "commit"]);
-      expect(records[0]).toMatchObject({ v: 1, kind: "begin", target: path });
-      expect(records[1]).toMatchObject({ v: 1, kind: "cell", sheet: "Sheet", cell: "B1", before: "12", after: "84" });
-      expect(records[2]).toMatchObject({ v: 1, kind: "commit" });
+      expect.soft(result.isError, result.output).toBe(false);
+      expect.soft(result.metadata?.sandboxed, result.output).toBe(true);
+      if (!result.isError) {
+        const document = await parseTableDocument(readFileSync(path), "xlsx", 0);
+        expect(document.sheet.rows).toEqual([["Budget", "84"]]);
+        expect(document.needsRecalculation).toBe(true);
+        expect(records.map((record) => record.kind)).toEqual(["begin", "cell", "commit"]);
+        expect(records[0]).toMatchObject({ v: 1, kind: "begin", target: path });
+        expect(records[1]).toMatchObject({ v: 1, kind: "cell", sheet: "Sheet", cell: "B1", before: "12", after: "84" });
+        expect(records[2]).toMatchObject({ v: 1, kind: "commit" });
+      }
+      if (windows) {
+        if (!result.isError) expect(readFileSync(`${path}.ave-bak`).equals(originalWorkbook)).toBe(true);
+        const inHelperAncestor = join(hostResources.resourcePath, "ancestor.xlsx");
+        const ancestorRequest = join(hostResources.resourcePath, "edits.json");
+        writeFileSync(inHelperAncestor, originalWorkbook);
+        copyFileSync(request, ancestorRequest);
+        const ancestor = await tool.execute({ command: commandFor(inHelperAncestor, ancestorRequest), timeoutSeconds },
+          { ...context, cwd: hostResources.resourcePath });
+        expect.soft(ancestor.isError, ancestor.output).toBe(false);
+        expect.soft(ancestor.metadata?.sandboxed, ancestor.output).toBe(true);
+        if (!ancestor.isError) {
+          expect(readFileSync(`${inHelperAncestor}.ave-bak`).equals(originalWorkbook)).toBe(true);
+          const edited = await parseTableDocument(readFileSync(inHelperAncestor), "xlsx", 0);
+          expect(edited.sheet.rows).toEqual([["Budget", "84"]]);
+        }
+
+        const target = join(directory, "gate.xlsx");
+        writeFileSync(target, originalWorkbook);
+        const prepareMxc = mxcShellLaunch.prepareMxcShellLaunch;
+        const prepare = vi.spyOn(mxcShellLaunch, "prepareMxcShellLaunch");
+        const readDacls = windowsPathFacts.readWindowsDacls;
+        const readFileDacls = windowsPathFacts.readWindowsFileDacls;
+        const workspaceNames = readdirSync(directory).sort();
+        const refusals: Array<{
+          name: string;
+          dacl?: (facts: windowsPathFacts.WindowsDaclFacts) => windowsPathFacts.WindowsDaclFacts;
+          file?: (facts: ReturnType<typeof readFileDacls>[number]) => ReturnType<typeof readFileDacls>[number];
+          unreadable?: true;
+        }> = [
+          { name: "explicit ACE", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, aces: facts.dacl!.aces.map(ace => ({ ...ace, flags: 0 })) } }) },
+          { name: "protected DACL", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, protected: true } }) },
+          { name: "foreign owner", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, owner: "S-1-5-18" } }) },
+          { name: "mandatory label", file: facts => ({ ...facts, integrityLabel: { sid: "S-1-16-4096", policy: 1, flags: 0 } }) },
+          { name: "EFS", dacl: facts => ({ ...facts, attributes: facts.attributes | 0x4000 }) },
+          { name: "dynamic access control", file: facts => ({ ...facts, dynamicAccessControl: true }) },
+          { name: "unreadable facts", unreadable: true },
+          { name: "elevated token", dacl: facts => ({ ...facts, elevated: true }) },
+          { name: "null DACL", dacl: facts => ({ ...facts, dacl: { ...facts.dacl!, nullDacl: true, aces: [] } }) },
+          { name: "unbound file facts", unreadable: true, file: facts => ({ ...facts, fileIndex: "0x0000000000000000" }) },
+        ];
+        for (const refusal of refusals) {
+          const dacl = vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation((paths, options) => {
+            if (paths.length !== 1 || paths[0] !== target || !options?.parent) return readDacls(paths, options);
+            if (refusal.unreadable && !refusal.file) throw new Error("Unreadable fixture");
+            return readDacls(paths, options).map(facts => refusal.dacl ? refusal.dacl(facts) : facts);
+          });
+          const file = vi.spyOn(windowsPathFacts, "readWindowsFileDacls").mockImplementation(paths =>
+            readFileDacls(paths).map(facts => paths[0] === target && refusal.file ? refusal.file(facts) : facts));
+          prepare.mockClear();
+          try {
+            const denied = await tool.execute({ command: commandFor(target), timeoutSeconds }, context);
+            expect.soft(denied.output, refusal.name).toContain(refusal.unreadable ? "[workbook-acl-unreadable]" : "[workbook-acl-differs]");
+            expect.soft(denied.isError, refusal.name).toBe(true);
+            expect.soft(prepare, refusal.name).toHaveBeenCalledTimes(1);
+            expect.soft(readdirSync(directory).sort(), refusal.name).toEqual(workspaceNames);
+            expect.soft(readFileSync(target).equals(originalWorkbook), refusal.name).toBe(true);
+            if (!denied.isError) {
+              rmSync(`${target}.ave-bak`, { force: true });
+              writeFileSync(target, originalWorkbook);
+            }
+          } finally {
+            dacl.mockRestore();
+            file.mockRestore();
+          }
+        }
+
+        const oldParent = join(directory, "old-parent");
+        mkdirSync(oldParent);
+        const icacls = join(process.env.SystemRoot!, "System32", "icacls.exe");
+        execFileSync(icacls, [oldParent, "/grant", "*S-1-5-7:(OI)(R)"], { stdio: "ignore" });
+        const oldPath = join(oldParent, "moved.xlsx");
+        const movedPath = join(directory, "moved.xlsx");
+        writeFileSync(oldPath, originalWorkbook);
+        renameSync(oldPath, movedPath);
+        const movedFacts = readDacls([movedPath], { parent: true })[0]!;
+        expect(movedFacts.dacl?.aces).toContainEqual(expect.objectContaining({ sid: "S-1-5-7", flags: 0x10 }));
+        expect(movedFacts.parent?.aces).not.toContainEqual(expect.objectContaining({ sid: "S-1-5-7", flags: expect.any(Number) }));
+        const movedNames = readdirSync(directory).sort();
+        prepare.mockClear();
+        const moved = await tool.execute({ command: commandFor(movedPath), timeoutSeconds }, context);
+        expect.soft(moved.output).toContain("[workbook-acl-differs]");
+        expect.soft(moved.isError).toBe(true);
+        expect.soft(prepare).toHaveBeenCalledTimes(1);
+        expect.soft(readdirSync(directory).sort()).toEqual(movedNames);
+        expect.soft(readFileSync(movedPath).equals(originalWorkbook)).toBe(true);
+        for (const file of [movedPath, `${movedPath}.ave-bak`]) rmSync(file, { force: true });
+        rmSync(oldParent, { recursive: true });
+
+        prepare.mockClear();
+        const computedCommand = commandFor(target).replace(quotePowerShell(target), "$env:WORKBOOK");
+        const computed = await tool.execute({ command: computedCommand, timeoutSeconds }, context);
+        expect.soft(computed.isError).toBe(true);
+        expect.soft(prepare).toHaveBeenCalledTimes(1);
+        expect.soft(readdirSync(directory).sort()).toEqual(workspaceNames);
+
+        const replacement = join(directory, "replacement.xlsx");
+        const retired = join(directory, "retired.xlsx");
+        writeFileSync(replacement, originalWorkbook);
+        const [approved] = readDacls([target], { parent: true });
+        const identity = `${approved!.volumeSerialNumber}:${approved!.fileIndex}:${approved!.changeTime}`;
+        let swapped = false;
+        prepare.mockImplementation((options, lifecycle) => {
+          if (options.env[WINDOWS_WORKBOOK_IDENTITY_ENV] !== undefined) {
+            expect(options.env[WINDOWS_WORKBOOK_IDENTITY_ENV]).toBe(identity);
+            renameSync(target, retired);
+            renameSync(replacement, target);
+            swapped = true;
+          }
+          return prepareMxc(options, lifecycle);
+        });
+        try {
+          const stale = await tool.execute({ command: commandFor(target), timeoutSeconds }, context);
+          expect.soft(swapped).toBe(true);
+          expect.soft(stale.isError).toBe(true);
+          expect.soft(stale.output).toContain("Workbook changed before publication");
+          expect.soft(readdirSync(directory).sort()).toEqual([...workspaceNames, "retired.xlsx"].sort());
+          expect.soft(readFileSync(target).equals(originalWorkbook)).toBe(true);
+        } finally {
+          prepare.mockRestore();
+        }
+      }
       const outside = join(directory, "..", "outside.xlsx");
       const denied = await tool.execute({ command: commandFor(outside), timeoutSeconds }, context);
       expect(denied.isError).toBe(true);
@@ -194,6 +330,7 @@ describe("native governed XLSX command", () => {
       await resetAsrtSandbox();
       vi.restoreAllMocks();
       vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
       __resetActiveSandboxCapabilityForTest();
       __resetSandboxRequestedAtBootForTest();
       __resetWindowsSandboxSubstrateForTest();
@@ -202,5 +339,5 @@ describe("native governed XLSX command", () => {
       if (windowsBuild) rmSync(windowsBuild, { recursive: true, force: true });
       rmSync(directory, { recursive: true, force: true });
     }
-  }, TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
+  }, (TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs) * 3);
 });

@@ -38,27 +38,17 @@ export function resolveWindowsPathKindHelper(resourcePath = getHostResources().r
 /** Dispatch synchronously while the file and its parents are held. An async child is opened before spawn returns. */
 export function withWindowsPathKindHelper<T>(launch: (helper: string) => T, resourcePath = getHostResources().resourcePath): T {
   if (!pinned()) return launch(resolveWindowsPathKindHelper(resourcePath));
-  const executable = holdBuiltWindowsPathKindHelper(windowsPathKindHelperIn(resourcePath));
-  try {
-    return launch(executable.path);
-  } finally {
-    executable.close();
-  }
-}
-
-export function holdBuiltWindowsPathKindHelper(path: string): ReturnType<typeof lockWindowsExecutable> {
   let executable: ReturnType<typeof lockWindowsExecutable>;
   try {
-    executable = lockWindowsExecutable(path);
+    executable = lockWindowsExecutable(windowsPathKindHelperIn(resourcePath));
   } catch (error) {
     throw helperOpenFailure(error);
   }
   try {
     assertBuiltHelper(executable.bytes);
-    return executable;
-  } catch (error) {
+    return launch(executable.path);
+  } finally {
     executable.close();
-    throw error;
   }
 }
 

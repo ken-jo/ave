@@ -389,25 +389,13 @@ describe("Windows path helper packaging", () => {
       "...(change === 'omit-chunk' ? {} : { 'chunks/chunk-ABC.js': sha256(chunk) }) });",
     "const pin = { arch: 'x64', imageSha256: windowsPeImageDigest(readFileSync(join(root, 'pin.exe'))) };",
     "const receiptPath = join(root, 'receipt.json');",
-    "const workbook = 'const __aveWindowsPathKindPin = ' + JSON.stringify(pin.imageSha256) + ';\\nmodule.exports = true;\\n';",
-    "const skillScriptsDir = join(root, 'dist/skill-scripts');",
-    "const stageWorkbook = (dir, script) => {",
-    "  mkdirSync(dir, { recursive: true });",
-    "  writeFileSync(join(dir, 'edit-xlsx.cjs'), script);",
-    "  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ version: 1, scripts: { 'edit-xlsx.cjs': sha256(script) } }));",
-    "};",
-    "const workbookSha256 = change === 'no-workbook-receipt' ? undefined : sha256(workbook);",
-    "writeFileSync(receiptPath, JSON.stringify({ ...pin, bundleSha256: inventory(bundled), workbookSha256 }));",
-    "stageWorkbook(skillScriptsDir, change === 'unpinned-workbook' ? 'module.exports = true;'",
-    "  : change === 'wrong-workbook-pin' ? workbook.replace(pin.imageSha256, '0'.repeat(64))",
-    "  : change === 'stale-workbook' ? workbook + '// changed' : workbook);",
+    "writeFileSync(receiptPath, JSON.stringify({ ...pin, bundleSha256: inventory(bundled) }));",
     "mkdirSync(join(bundleDir, 'chunks'), { recursive: true });",
     "writeFileSync(join(bundleDir, 'main.js'), changeBytes(bundled));",
     "writeFileSync(join(bundleDir, 'chunks/chunk-ABC.js'), chunk);",
     "const manifest = { windowsPathKind: { ...pin, bundleSha256: inventory(changeBytes(bundled)) } };",
     "writeFileSync(join(bundleDir, 'bundle-manifest.json'), JSON.stringify(manifest));",
-    "packaging.recordWindowsPathKindPackageBuild({ appOutDir, arch: 'x64', manifest, receiptPath, build, bundleDir, skillScriptsDir });",
-    "stageWorkbook(join(appOutDir, 'resources', 'skill-scripts'), change === 'copied-workbook' ? workbook + '// changed' : workbook);",
+    "packaging.recordWindowsPathKindPackageBuild({ appOutDir, arch: 'x64', manifest, receiptPath, build, bundleDir });",
     "const archiveInput = join(root, 'asar-input');",
     "const archiveBundle = join(archiveInput, 'dist/src/main');",
     "mkdirSync(join(archiveBundle, 'chunks'), { recursive: true });",
@@ -493,18 +481,6 @@ describe("Windows path helper packaging", () => {
     expect(result.status).not.toBe(0);
   });
 
-  it.each([
-    ["unpinned-workbook", "pin does not match"],
-    ["wrong-workbook-pin", "pin does not match"],
-    ["stale-workbook", "bytes do not match"],
-    ["no-workbook-receipt", "bytes do not match"],
-    ["copied-workbook", "bytes do not match"],
-  ])("refuses %s even when the skill manifest agrees with the script", (change, reason) => {
-    const result = packaging("pack", { packaged: pathKindPe(), change });
-    expect(result.stderr).toContain(`The workbook bundle ${reason}`);
-    expect(result.status).not.toBe(0);
-  });
-
   it("refuses a substituted archived bundle after accepting the build", () => {
     const result = packaging("pack", { packaged: pathKindPe(), archivePin: substituted() });
     expect(result.stderr).toContain("The archived main bundle does not match the before-pack build");
@@ -526,12 +502,9 @@ describe("Windows path helper packaging", () => {
   it("wires the packaging hooks to the before-pack build and the producer receipt", () => {
     const beforePack = readFileSync(resolve("scripts/electron-before-pack.cjs"), "utf8");
     expect(beforePack).toContain("const pathKind = buildWindowsPathKind({ root: context.packager.projectDir, arch });");
-    expect(beforePack).toContain("build: pathKind, bundleDir, skillScriptsDir");
     expect(beforePack).toContain("receiptPath: process.env.AVE_WINDOWS_PATH_KIND_BUNDLE_RECEIPT");
-    const producer = readFileSync(resolve("scripts/build-main-esbuild.mjs"), "utf8");
-    expect(producer).toContain("const { scripts: skillScriptDigests } = await buildSkillScripts({ pathKindSha256 });");
-    expect(producer).toContain('workbookSha256: skillScriptDigests["edit-xlsx.cjs"]');
-    expect(producer).toContain('{ flag: "wx", mode: 0o600 }');
+    expect(readFileSync(resolve("scripts/build-main-esbuild.mjs"), "utf8"))
+      .toContain('writeFileSync(receipt, JSON.stringify({ arch: process.arch, imageSha256: pathKindSha256, bundleSha256 }), { flag: "wx", mode: 0o600 });');
   });
 });
 
