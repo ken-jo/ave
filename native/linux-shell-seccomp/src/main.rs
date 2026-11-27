@@ -188,6 +188,138 @@ fn close_other_fds(open: &[libc::c_int]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// bwrap options that take a descriptor. The record carries the bytes of `--file` and `--seccomp`; any other one
+/// cannot be replayed from a record, so the capture refuses it.
+const CAPTURED_DESCRIPTOR_OPTIONS: [&str; 2] = ["--file", "--seccomp"];
+const REFUSED_DESCRIPTOR_OPTIONS: [&str; 11] = [
+    "--args",
+    "--userns",
+    "--userns2",
+    "--pidns",
+    "--info-fd",
+    "--json-status-fd",
+    "--block-fd",
+    "--sync-fd",
+    "--add-seccomp-fd",
+    "--bind-data",
+    "--ro-bind-data",
+];
+/// The most bytes one captured descriptor may hold.
+const CAPTURED_DESCRIPTOR_LIMIT: usize = 1 << 20;
+const RECORD_MAGIC: &[u8; 8] = b"AVEBWRAP";
+
+fn push_bytes(record: &mut Vec<u8>, bytes: &[u8]) {
+    record.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    record.extend_from_slice(bytes);
+}
+
+fn read_descriptor(fd: libc::c_int) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        // SAFETY: reads into a local buffer from a descriptor the launcher handed to bwrap.
+        let read = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
+        if read < 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(error.into());
+        }
+        if read == 0 {
+            return Ok(bytes);
+        }
+        bytes.extend_from_slice(&chunk[..read as usize]);
+        if bytes.len() > CAPTURED_DESCRIPTOR_LIMIT {
+            return Err(format!("descriptor {fd} holds more than {CAPTURED_DESCRIPTOR_LIMIT} bytes").into());
+        }
+    }
+}
+
+/// The call's words, then the bytes of each captured descriptor, as one record.
+fn capture_record(args: &[OsString]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut record = RECORD_MAGIC.to_vec();
+    record.push(b'R');
+    record.extend_from_slice(&(args.len() as u32).to_le_bytes());
+    for arg in args {
+        push_bytes(&mut record, arg.as_bytes());
+    }
+    let mut descriptors = Vec::new();
+    let end = args.iter().position(|arg| arg == "--").unwrap_or(args.len());
+    for (index, arg) in args[..end].iter().enumerate() {
+        let Some(name) = arg.to_str() else { continue };
+        if REFUSED_DESCRIPTOR_OPTIONS.contains(&name) {
+            return Err(format!("{name} takes a descriptor the capture cannot replay").into());
+        }
+        if CAPTURED_DESCRIPTOR_OPTIONS.contains(&name) {
+            let fd: libc::c_int = args
+                .get(index + 1)
+                .and_then(|value| value.to_str())
+                .and_then(|text| text.parse().ok())
+                .filter(|fd| *fd > 2)
+                .ok_or_else(|| format!("{name} needs a descriptor above 2"))?;
+            descriptors.push((fd, read_descriptor(fd)?));
+        }
+    }
+    record.extend_from_slice(&(descriptors.len() as u32).to_le_bytes());
+    for (fd, bytes) in descriptors {
+        record.extend_from_slice(&(fd as u32).to_le_bytes());
+        push_bytes(&mut record, &bytes);
+    }
+    Ok(record)
+}
+
+fn write_all(fd: libc::c_int, mut bytes: &[u8]) -> io::Result<()> {
+    while !bytes.is_empty() {
+        // SAFETY: writes from a live slice to the capture descriptor Ave handed the launcher.
+        let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+        if written < 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(error);
+        }
+        bytes = &bytes[written as usize..];
+    }
+    Ok(())
+}
+
+/// Invoked as `bwrap` from the capture folder: record the launcher's call for Ave and exit, never run it. Only
+/// `--version` reaches the real bwrap, named by Ave.
+fn capture(args: Vec<OsString>) -> ExitCode {
+    if args.len() == 1 && args[0] == "--version" {
+        let error = match env::var_os("AVE_BWRAP_PATH") {
+            Some(path) if PathBuf::from(&path).is_absolute() => Command::new(path).arg("--version").exec(),
+            _ => io::Error::other("AVE_BWRAP_PATH must name the real bwrap by absolute path"),
+        };
+        eprintln!("Cannot report the bwrap version: {error}");
+        return ExitCode::from(127);
+    }
+    let Some(fd) = env::var("AVE_BWRAP_CAPTURE_FD")
+        .ok()
+        .and_then(|text| text.parse::<libc::c_int>().ok())
+        .filter(|fd| *fd > 2)
+    else {
+        eprintln!("Cannot capture the bwrap call: AVE_BWRAP_CAPTURE_FD names no descriptor");
+        return ExitCode::from(1);
+    };
+    let (record, status) = match capture_record(&args) {
+        Ok(record) => (record, ExitCode::SUCCESS),
+        Err(error) => {
+            let mut record = RECORD_MAGIC.to_vec();
+            record.push(b'E');
+            push_bytes(&mut record, error.to_string().as_bytes());
+            (record, ExitCode::from(1))
+        }
+    };
+    if let Err(error) = write_all(fd, &record) {
+        eprintln!("Cannot write the bwrap capture record: {error}");
+        return ExitCode::from(1);
+    }
+    status
+}
+
 fn run() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let first = args.next().ok_or("missing command")?;
@@ -294,6 +426,10 @@ fn forward(connection: TcpStream, socket: &PathBuf) {
 }
 
 fn main() -> ExitCode {
+    let invoked = env::args_os().next().unwrap_or_default();
+    if PathBuf::from(invoked).file_name().is_some_and(|name| name == "bwrap") {
+        return capture(env::args_os().skip(1).collect());
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

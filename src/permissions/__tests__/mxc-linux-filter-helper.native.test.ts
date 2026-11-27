@@ -4,6 +4,7 @@ import { createServer as createUnixServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Readable } from "node:stream";
+import { collectStream as collect } from "../../__tests__/support/collect-stream.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildBubblewrapShellRequest, LINUX_SHELL_ENVIRONMENT_FAILED_CODE, LINUX_SHELL_READY_FD, linuxShellExtraDescriptors, writeLinuxShellEnvironment,
@@ -13,11 +14,6 @@ import { posixPolicyLookups } from "../mxc-posix.js";
 const NATIVE = process.env.AVE_RUN_MXC_LINUX_BOUNDARY === "1";
 const HELPER = resolve("resources", "linux-shell-seccomp", process.arch, "apply-seccomp");
 
-function collect(stream: Readable | null | undefined): Promise<string> {
-  const chunks: Buffer[] = [];
-  stream?.on("data", (chunk: Buffer) => chunks.push(chunk));
-  return new Promise(done => { stream?.once("close", () => done(Buffer.concat(chunks).toString("utf8"))); });
-}
 
 describe.runIf(NATIVE)("native Linux filter helper options", () => {
   let root: string;
