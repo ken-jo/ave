@@ -70,7 +70,7 @@ export interface RunStep {
 function rerun(run: WorkItemStageRun): void {
   run.attempt += 1;
   run.status = "waiting";
-  for (const key of ["failure", "resultHash", "requestedOutputs", "outputExecutions", "childSessionId", "startedAt", "endedAt", "blocked", "usage", "deniedCalls"] as const) delete run[key];
+  for (const key of ["failure", "failureReason", "resultHash", "requestedOutputs", "outputExecutions", "childSessionId", "startedAt", "endedAt", "blocked", "usage", "deniedCalls"] as const) delete run[key];
 }
 
 export function hasRejectedWork(stageRuns: readonly WorkItemStageRun[], joins: readonly StageJoin[]): boolean {
