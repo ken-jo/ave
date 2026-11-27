@@ -605,7 +605,7 @@ describe("CodexAppServerClient", () => {
     });
   });
 
-  it("keeps overlapping account reads behind the owned initialize response", async () => {
+  it.each([false, true])("keeps overlapping account reads behind the owned initialize response, stop=%s", async (stopDuringInitialize) => {
     const harness = await createHarness((request) => {
       if (request.method === "initialize") return DEFER_RESPONSE;
       if (request.method === "account/read") return { account: null };
@@ -619,9 +619,16 @@ describe("CodexAppServerClient", () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(harness.server.requests.map(({ method }) => method)).toEqual(["initialize", "initialized"]);
     const initialize = harness.server.requests[0];
+    if (stopDuringInitialize) harness.client.stop();
     harness.server.stdout.write(`${JSON.stringify({ id: initialize?.id, result: {} })}\n`);
-    await expect(first).resolves.toMatchObject({ connection: "signed-out" });
-    await expect(second).resolves.toMatchObject({ connection: "signed-out" });
+    if (stopDuringInitialize) {
+      await expect(first).rejects.toMatchObject({ code: "codex-runtime-start-failed" });
+      await expect(second).rejects.toMatchObject({ code: "codex-runtime-start-failed" });
+      expect(harness.server.requests).toHaveLength(2);
+    } else {
+      await expect(first).resolves.toMatchObject({ connection: "signed-out" });
+      await expect(second).resolves.toMatchObject({ connection: "signed-out" });
+    }
     expect(harness.spawnCalls).toHaveLength(1);
   });
 
