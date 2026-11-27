@@ -10,7 +10,6 @@ import type { MemoryMapScopeResolver } from "./memory-map.js";
 
 export function createWindowsSessionsSearchHandler(sessions: SessionRepository, auditLogger: IpcDeps["auditLogger"], parseMemoryProjectOptions: MemoryMapScopeResolver) {
   return async (e: IpcMainInvokeEvent, query: string, opts?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.sessionsSearch, e); return UNAUTHORIZED_FRAME; }
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return [];
     if (!(sessions instanceof WindowsSessionRepository)) return [];

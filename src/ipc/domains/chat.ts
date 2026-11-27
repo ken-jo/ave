@@ -1919,7 +1919,11 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return memoryManager.sessions.listSessionEntries(50, project.options);
   });
   if (process.platform === "win32") {
-    ipcMain.handle(CHANNELS.memory.sessionsSearch, createWindowsSessionsSearchHandler(memoryManager.sessions, auditLogger, parseMemoryProjectOptions));
+    const search = createWindowsSessionsSearchHandler(memoryManager.sessions, auditLogger, parseMemoryProjectOptions);
+    ipcMain.handle(CHANNELS.memory.sessionsSearch, (e, query: string, opts?: unknown) => {
+      if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.sessionsSearch, e); return UNAUTHORIZED_FRAME; }
+      return search(e, query, opts);
+    });
   } else {
     ipcMain.handle(CHANNELS.memory.sessionsSearch, (e, query: string, opts?: unknown) => {
       if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.sessionsSearch, e); return UNAUTHORIZED_FRAME; }

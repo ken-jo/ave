@@ -236,8 +236,9 @@ describe('memory graph publication', () => {
   });
   it('embeds a first build across multiple inference frames in catalog order', async () => {
     const f = await fixture();
-    const body = '\0'.repeat(512 * 1024 - 32);
-    const records = Array.from({ length: 63 }, (_, index) => ({
+    inferenceBudget.bytes = 400;
+    const body = '\0'.repeat(16);
+    const records = Array.from({ length: 5 }, (_, index) => ({
       ...f.catalog.records[0], memoryId: `note-${index}`, title: `Note ${index}`, text: body,
     }));
     f.catalog.records = records;
@@ -248,7 +249,9 @@ describe('memory graph publication', () => {
     const runWorker: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
       const [, task, , onProgress] = args;
       if (task.kind !== 'embed-batch') return f.runWorker<T>(...args);
-      checkedInferenceFrameBytes([Buffer.byteLength(JSON.stringify(task)), ...INFERENCE_FILES.map(file => file.bytes)]);
+      const taskBytes = Buffer.byteLength(JSON.stringify(task));
+      expect(taskBytes).toBeLessThanOrEqual(MAX_INFERENCE_TASK_BYTES);
+      checkedInferenceFrameBytes([taskBytes, ...INFERENCE_FILES.map(file => file.bytes)]);
       batches.push(task.texts.length);
       return task.texts.map((text, index) => {
         const record = records[embedded];
@@ -262,7 +265,7 @@ describe('memory graph publication', () => {
     });
 
     const result = await host.build(() => f.catalog);
-    expect(batches).toHaveLength(2);
+    expect(batches).toEqual([3, 2]);
     expect(result.coverage.embedded).toBe(records.length);
     expect(progress).toEqual(records.map(({ memoryId }, index) => expect.objectContaining({
       memoryId, completed: index + 1, total: records.length,

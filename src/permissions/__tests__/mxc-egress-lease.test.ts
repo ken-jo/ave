@@ -1,8 +1,9 @@
 import http from "node:http";
 import net from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openEgressInvocation } from "../egress-invocations.js";
+import { egressInvocationAbortSignal, openEgressInvocation } from "../egress-invocations.js";
 import { openMxcEgressLease } from "../egress-host-listener.js";
+import type { InvocationProxyAdmission } from "../egress-invocation-listener.js";
 import { egressIdentityStrength } from "../egress-identity.js";
 
 const runtime = vi.hoisted(() => ({ open: vi.fn() }));
@@ -21,7 +22,10 @@ async function fixture() {
   cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
   const address = server.address() as net.AddressInfo;
   const relay = { port: address.port, proxyAuthorization: "Basic aG9zdC1vd25lZA==", registerPort: vi.fn(), recordRefusal: vi.fn(), close: vi.fn(async () => {}) };
-  runtime.open.mockResolvedValue(relay);
+  runtime.open.mockImplementation(async (_token: string, admission: InvocationProxyAdmission) => {
+    admission.adopt(relay.close);
+    return relay;
+  });
   const invocation = openEgressInvocation({ kind: "worker", role: "worker", pluginId: "fixture", instanceId: "a" });
   cleanups.push(invocation.release);
   return { relay, invocation, observed };
@@ -55,14 +59,23 @@ describe("container egress lease", () => {
     const lease = await openMxcEgressLease(invocation.token);
     cleanups.push(lease.close);
     invocation.release();
-    await lease.close();
     expect(relay.close).toHaveBeenCalledTimes(1);
+    await lease.close();
     await expect(request(lease.port)).rejects.toThrow();
   });
   it("refuses preparation when admission ends during the runtime await", async () => {
     const { invocation, relay } = await fixture();
-    runtime.open.mockImplementationOnce(async () => { invocation.release(); return relay; });
-    await expect(openMxcEgressLease(invocation.token)).rejects.toThrow("ended during preparation");
+    const signal = egressInvocationAbortSignal(invocation.token)!;
+    const open = runtime.open.getMockImplementation()!;
+    runtime.open.mockImplementationOnce(async (...args) => {
+      const opened = await open(...args);
+      invocation.release();
+      return opened;
+    });
+    const failure = await openMxcEgressLease(invocation.token).catch((error: unknown) => error);
+    expect(signal.aborted).toBe(true);
+    expect(failure).toBe(signal.reason);
+    expect(relay.registerPort).not.toHaveBeenCalled();
     expect(relay.close).toHaveBeenCalledTimes(1);
   });
   it("retains endpoint-scoped identity for both holder kinds on the native platform", () => {
