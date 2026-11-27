@@ -561,7 +561,7 @@ it.each([
       return;
     } else if (windowCancel) {
       const server = requiredFixture(child);
-      const send = (server: RuntimeProcessFixture, message: object) => server.stdout.write(JSON.stringify(message) + "\n");
+      const send = (server: RuntimeProcessFixture, message: object) => server.stdout.write(`${JSON.stringify(message)}\n`);
       const replyAccount = (server: RuntimeProcessFixture, index: number, connected: boolean) => send(server, {
         id: requiredFixture(accountReads[index]), result: { account: connected ? { type: "chatgpt", planType: "plus" } : null },
       });
