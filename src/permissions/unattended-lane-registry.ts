@@ -18,16 +18,37 @@ interface UnattendedDenial {
   call: { toolName: string; source: ToolSource; inputSummary: string };
 }
 type DeniedListener = (event: UnattendedDenial) => void;
-const stages = new Map<string, UnattendedStageEntry>();
+interface StageRegistration {
+  entry: UnattendedStageEntry;
+  stageSessionId: string;
+}
+const stages = new Map<string, StageRegistration>();
 const deniedListeners = new Set<DeniedListener>();
 
-export function registerUnattendedStage(sessionId: string, entry: UnattendedStageEntry): void {
+function registerStage(sessionId: string, registration: StageRegistration): void {
   if (stages.has(sessionId)) throw new Error("Unattended session is already registered");
-  stages.set(sessionId, entry);
+  stages.set(sessionId, registration);
+}
+
+export function registerUnattendedStage(sessionId: string, entry: UnattendedStageEntry): void {
+  registerStage(sessionId, { entry, stageSessionId: sessionId });
+}
+
+export function inheritUnattendedStage(sessionId: string, parentSessionId: string | undefined): boolean {
+  const registration = parentSessionId === undefined ? undefined : stages.get(parentSessionId);
+  if (registration === undefined) return false;
+  registerStage(sessionId, registration);
+  return true;
+}
+
+// Keep descendants restricted while their revoked registration awaits cleanup.
+export function registeredUnattendedStageOf(sessionId: string | undefined): UnattendedStageEntry | undefined {
+  return sessionId === undefined ? undefined : stages.get(sessionId)?.entry;
 }
 
 export function unattendedStageOf(sessionId: string | undefined): UnattendedStageEntry | undefined {
-  return sessionId === undefined ? undefined : stages.get(sessionId);
+  const registration = sessionId === undefined ? undefined : stages.get(sessionId);
+  return registration && stages.get(registration.stageSessionId) === registration ? registration.entry : undefined;
 }
 
 export function endUnattendedStage(sessionId: string): void {

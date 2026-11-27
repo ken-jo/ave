@@ -49,7 +49,7 @@ import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-reviewer-framework.js";
 import type { ApprovalMemory, UserApprovalHitPayload, UserApprovalVerdict } from "../shared/permissions-events.js";
 import { decidePermission, EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, SHELL_ANALYSIS_LIMIT_REASON, type PermissionDecisionRequest } from "./decision-pipeline.js";
-import { reportUnattendedDenial, unattendedStageOf } from "./unattended-lane-registry.js";
+import { registeredUnattendedStageOf, reportUnattendedDenial, unattendedStageOf } from "./unattended-lane-registry.js";
 import { unattendedGenerationTool } from "./unattended-lane.js";
 import type { ToolEffectEvidence, ToolEffectResolver } from "./tool-effect-evidence.js";
 import { exactShellRuleFor } from "./rules/shell-rule-approval.js";
@@ -1244,7 +1244,7 @@ export class PermissionManager {
   private matchLoadedNetworkRule(subject: NetworkRuleSubject): NetworkRuleDecision | undefined {
     const state = subject.projectCwd === undefined ? undefined : this.projectRuleScopes.stateFor(subject.projectCwd);
     if (state?.ok === false) throw state.error;
-    const unattended = unattendedStageOf(subject.sessionId) !== undefined;
+    const unattended = registeredUnattendedStageOf(subject.sessionId) !== undefined;
     const sessionRules = unattended ? [] : this.sessionRulesInScope(subject.sessionId);
     const matched: { deny?: { pattern: string; scope: NetworkRuleScope }; ask?: { pattern: string; scope: NetworkRuleScope }; allow?: { pattern: string; scope: NetworkRuleScope } } = {};
     const scoped: Array<[NetworkRuleScope, readonly PermissionRule[]]> = [["user", this.rules], ["project", state?.rules ?? []], ["session", sessionRules]];
@@ -1327,7 +1327,7 @@ export class PermissionManager {
     if (subject === undefined) admissionDenial ??= { code: "invalid-network-destination", reason: "Network destination is invalid" };
     if (rulesError) admissionDenial ??= { code: "policy-unreadable", reason: rulesError.message };
     const rule = matched?.decision !== "allow" || destination.network === "public" && destination.ruleScopes?.includes(matched.scope) ? matched : undefined;
-    const unattended = unattendedStageOf(context.sessionId) !== undefined;
+    const unattended = registeredUnattendedStageOf(context.sessionId) !== undefined;
     const base = this.evaluatePermission("sandbox_network", destination.source, "network", undefined, {
       headless: context.headless, ownerUnattended: context.ownerUnattended, approvalSurface: context.approvalSurface,
       sessionId: context.sessionId, projectRulesCwd: context.projectRulesCwd, permissionStoreError: context.permissionStoreError,
@@ -1636,7 +1636,7 @@ export class PermissionManager {
 
   private pipelineResult(evidence: PermissionDecisionRequest, context?: HostTerminalPermissionContext): PermissionCheckResult {
     const liveUnattended = unattendedStageOf(evidence.sessionId);
-    const unattended = evidence.unattended ?? liveUnattended;
+    const unattended = evidence.unattended ?? registeredUnattendedStageOf(evidence.sessionId);
     if (unattended || turnExtensionPolicyContext.getStore()?.unattendedStage === true) {
       const { deny, ask } = evidence.rules ?? {};
       evidence = { ...evidence, mode: unattended ? "default" : "strict", headless: true, rules: { deny, ask } };
@@ -1801,7 +1801,7 @@ export class PermissionManager {
     overlayTriggerOrigin: string | null | undefined,
     context: PermissionCheckContext,
   ): PermissionCheckResult {
-    const unattended = unattendedStageOf(context.sessionId);
+    const unattended = registeredUnattendedStageOf(context.sessionId);
     // Wins over every other stage, headless and session grants included: no approval may run this shell.
     let admissionDenial = isHomePrivacyHelperUnavailablePlan(context.hostShellExecutionPlan) ? HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL : context.admissionDenial;
     let floor = context.floor;

@@ -126,7 +126,7 @@ import type {
 } from "../shared/subagent-events.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { sessionAuthorityWithheld, turnExtensionPolicyContext, withholdSessionAuthorityForLifetime } from "../shared/turn-extension-policy.js";
-import { endUnattendedStage, registerUnattendedStage, unattendedStageOf, type UnattendedStageEntry } from "../permissions/unattended-lane-registry.js";
+import { endUnattendedStage, inheritUnattendedStage, registeredUnattendedStageOf } from "../permissions/unattended-lane-registry.js";
 const log = createLogger("ave");
 
 function maskSubAgentText(text: string): string {
@@ -2618,7 +2618,7 @@ export class SubAgentRunner {
     executionPolicy?: SubAgentExecutionPolicy,
     durableLinkBarrier?: A2AWireSpawnCallbacks["onDurablyLinked"],
   ): Promise<SubAgentSpawnResult> {
-    const inheritedLane = unattendedStageOf(input.originSessionId);
+    const inheritedLane = registeredUnattendedStageOf(input.originSessionId);
     if (inheritedLane && input.unattendedStage === undefined) {
       input = { ...input, unattendedStage: { runKey: inheritedLane.runKey, stageId: inheritedLane.stageId } };
     }
@@ -2631,7 +2631,7 @@ export class SubAgentRunner {
         allowExternalHooks: inherited?.allowExternalHooks ?? true,
         remoteControllerAuthority: undefined,
         ...(input.unattendedStage ? { unattendedStage: true as const, headless: true, approvalSurface: "unavailable" as const, withholdSessionAuthority: true, allowExternalHooks: false } : {}),
-      }), () => this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier, inheritedLane));
+      }), () => this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier));
     } finally {
       checkpointChild.endLane?.();
       checkpointChild.release?.();
@@ -2644,11 +2644,9 @@ export class SubAgentRunner {
     callbacks?: SubAgentSpawnCallbacks,
     executionPolicy?: SubAgentExecutionPolicy,
     durableLinkBarrier?: A2AWireSpawnCallbacks["onDurablyLinked"],
-    inheritedLane?: UnattendedStageEntry,
   ): Promise<SubAgentSpawnResult> {
     const childSessionId = buildChildSessionId(input.originSessionId);
-    if (inheritedLane) {
-      registerUnattendedStage(childSessionId, inheritedLane);
+    if (inheritUnattendedStage(childSessionId, input.originSessionId)) {
       checkpointChild.endLane = () => endUnattendedStage(childSessionId);
     }
     // A child of a scheduled wake turn never reads the woken chat's session allows, also after the wake has ended.
@@ -2777,6 +2775,7 @@ export class SubAgentRunner {
           ? child.getSessionProjectContext()
           : {}),
       sourceTools: toPersistedToolScope(grantedScope),
+      ...(input.unattendedStage ? { subAgentUnattended: true } : {}),
       ...(input.profileModel !== undefined ? { profileModel: input.profileModel } : {}),
       ...(input.profileMode !== undefined ? { profileMode: input.profileMode } : {}),
       ...(input.originSessionId !== undefined ? { originSessionId: input.originSessionId } : {}),
@@ -3623,6 +3622,10 @@ export class SubAgentRunner {
       return refuseStructurally(
         "sub-agent resume: origin session metadata does not match caller",
       );
+    }
+    if (meta.subAgentUnattended || registeredUnattendedStageOf(resumeId) || registeredUnattendedStageOf(originSessionId)
+      || turnExtensionPolicyContext.getStore()?.unattendedStage === true) {
+      return refuseStructurally("sub-agent resume: unattended sessions cannot be resumed");
     }
     const hasWireBinding = meta.a2aWireHandlerId !== undefined
       || meta.a2aWireInternalOrigin !== undefined;
