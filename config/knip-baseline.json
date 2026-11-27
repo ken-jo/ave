@@ -309,11 +309,6 @@
     },
     {
       "type": "types",
-      "file": "src/audit/sandbox-audit.ts",
-      "name": "SandboxEvent"
-    },
-    {
-      "type": "types",
       "file": "src/boot/steps/reviewer-wiring.ts",
       "name": "ActiveReviewerLlmIdentity"
     },
@@ -331,11 +326,6 @@
       "type": "types",
       "file": "src/data/settings-store.ts",
       "name": "AppearanceFontSettings"
-    },
-    {
-      "type": "types",
-      "file": "src/data/settings-store.ts",
-      "name": "AuditSettings"
     },
     {
       "type": "types",
@@ -509,11 +499,6 @@
     },
     {
       "type": "types",
-      "file": "src/main/host-fetch-guard.ts",
-      "name": "HostFetchDenyReason"
-    },
-    {
-      "type": "types",
       "file": "src/mcp/claude-desktop-import.ts",
       "name": "ClaudeDesktopImportEntry"
     },
@@ -544,16 +529,6 @@
     },
     {
       "type": "types",
-      "file": "src/permissions/permission-audit-runner.ts",
-      "name": "DayVerifyResult"
-    },
-    {
-      "type": "types",
-      "file": "src/permissions/permission-slash.ts",
-      "name": "PermissionAuditVerb"
-    },
-    {
-      "type": "types",
       "file": "src/permissions/permission-slash.ts",
       "name": "PermissionDirVerb"
     },
@@ -581,11 +556,6 @@
       "type": "types",
       "file": "src/permissions/workspace-root-reconciler.ts",
       "name": "RetainedWorkspaceRoot"
-    },
-    {
-      "type": "types",
-      "file": "src/permissions/workspace-root-reconciler.ts",
-      "name": "WorkspaceRootAuditLogger"
     },
     {
       "type": "types",
