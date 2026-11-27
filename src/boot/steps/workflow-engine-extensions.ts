@@ -10,6 +10,7 @@ import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-wo
 import { bindStageWorkspace, unbindStageWorkspace } from "../../permissions/stage-workspace-binding.js";
 import type { PermissionManager } from "../../permissions/permission-manager.js";
 import { createRunScopeHooks } from "../../permissions/run-scope.js";
+import { unattendedLaneHooks } from "../../permissions/unattended-lane-registry.js";
 import type { StageRunEngineDeps } from "../../work-board/workflow/stage-run-engine.js";
 
 const log = createLogger("ave");
@@ -99,6 +100,7 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
     workspaceBinding: { bind: bindStageWorkspace, unbind: unbindStageWorkspace },
     authoriseRunSource,
     passConditions: createPassConditionRegistry(),
+    lane: unattendedLaneHooks,
     runScope: createRunScopeHooks(permissionManager),
   };
 }

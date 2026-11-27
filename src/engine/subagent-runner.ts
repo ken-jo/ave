@@ -126,6 +126,7 @@ import type {
 } from "../shared/subagent-events.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { sessionAuthorityWithheld, turnExtensionPolicyContext, withholdSessionAuthorityForLifetime } from "../shared/turn-extension-policy.js";
+import { endUnattendedStage, registerUnattendedStage, unattendedStageOf, type UnattendedStageEntry } from "../permissions/unattended-lane-registry.js";
 const log = createLogger("ave");
 
 function maskSubAgentText(text: string): string {
@@ -2617,7 +2618,11 @@ export class SubAgentRunner {
     executionPolicy?: SubAgentExecutionPolicy,
     durableLinkBarrier?: A2AWireSpawnCallbacks["onDurablyLinked"],
   ): Promise<SubAgentSpawnResult> {
-    const checkpointChild: { release?: () => void } = {};
+    const inheritedLane = unattendedStageOf(input.originSessionId);
+    if (inheritedLane && input.unattendedStage === undefined) {
+      input = { ...input, unattendedStage: { runKey: inheritedLane.runKey, stageId: inheritedLane.stageId } };
+    }
+    const checkpointChild: { release?: () => void; endLane?: () => void } = {};
     try {
       // Delegated sessions retain content and attendance policy, never the parent's controller binding.
       const inherited = turnExtensionPolicyContext.getStore();
@@ -2626,20 +2631,26 @@ export class SubAgentRunner {
         allowExternalHooks: inherited?.allowExternalHooks ?? true,
         remoteControllerAuthority: undefined,
         ...(input.unattendedStage ? { unattendedStage: true as const, headless: true, approvalSurface: "unavailable" as const, withholdSessionAuthority: true, allowExternalHooks: false } : {}),
-      }), () => this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier));
+      }), () => this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier, inheritedLane));
     } finally {
+      checkpointChild.endLane?.();
       checkpointChild.release?.();
     }
   }
 
   private async runSpawnChild(
-    checkpointChild: { release?: () => void },
+    checkpointChild: { release?: () => void; endLane?: () => void },
     input: SubAgentSpawnInput,
     callbacks?: SubAgentSpawnCallbacks,
     executionPolicy?: SubAgentExecutionPolicy,
     durableLinkBarrier?: A2AWireSpawnCallbacks["onDurablyLinked"],
+    inheritedLane?: UnattendedStageEntry,
   ): Promise<SubAgentSpawnResult> {
     const childSessionId = buildChildSessionId(input.originSessionId);
+    if (inheritedLane) {
+      registerUnattendedStage(childSessionId, inheritedLane);
+      checkpointChild.endLane = () => endUnattendedStage(childSessionId);
+    }
     // A child of a scheduled wake turn never reads the woken chat's session allows, also after the wake has ended.
     if (sessionAuthorityWithheld()) withholdSessionAuthorityForLifetime(childSessionId);
     if (executionPolicy && typeof durableLinkBarrier !== "function") {

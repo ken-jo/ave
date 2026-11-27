@@ -1637,6 +1637,8 @@ async function runToolInvocationAttempt(
       await manager.ensureProjectRulesLoaded(projectRulesCwd);
       const checkDirectoryPermission = (): PermissionCheckResult => manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
         ...invocationPermissionContext, sessionId, projectRulesCwd,
+        unattendedInvokedEffect: tool.unattendedEffect ?? "unknown",
+        unattendedCallInput: auditInput,
         ...(hostShellExecutionPermitBinding ? { hostShellCwdIdentity: hostShellExecutionPermitBinding.cwdIdentity ?? null } : {}),
         userOwnedBrowser: userOwnedBrowserScopeOf(tool, approvalMemory),
         agentBrowser: agentBrowserScopeOf(tool, approvalMemory),
@@ -1656,7 +1658,7 @@ async function runToolInvocationAttempt(
       });
       let directoryPermission = behavior !== undefined ? manager.recheckPermission(behavior.reviewedPermission) : checkDirectoryPermission();
       const memoryRequest = directoryPermission.pipelineRequest;
-      if (behavior === undefined && directoryPermission.decision !== "allow" && memoryRequest && !memoryRequest.admissionDenial && !memoryRequest.floor
+      if (behavior === undefined && directoryPermission.decision !== "allow" && memoryRequest && !memoryRequest.unattended && !memoryRequest.admissionDenial && !memoryRequest.floor
         && !memoryRequest.rules?.deny && !memoryRequest.rules?.ask && !memoryRequest.manualRerun && !rationaleResumeContext) {
         const remembered = await services.tryUserApprovalMemorySkip(toolUse.name, source, invocationCategory, reviewerPathFields,
           finalInput, executionCwd, directoryScope, [], invocationPermissionContext, approvalCacheKey, {},
@@ -1668,7 +1670,7 @@ async function runToolInvocationAttempt(
           directoryScope, [] as string[], invocationPermissionContext,
           makeDirectoryEvaluationContext({ pathFields: reviewerPathFields, targetFilePaths: [outOfAllowedTarget.filePath] }),
           {}, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, auditInput, sessionId, directoryPermission] as const;
-        if (headless) directoryPermission = (await dispatchReviewerForHeadless(...reviewerArgs)).permissionResult;
+        if (headless || directoryPermission.reviewer.route === "headless") directoryPermission = (await dispatchReviewerForHeadless(...reviewerArgs)).permissionResult;
         else directoryPermission = await dispatchReviewerForInteractiveAuto(...reviewerArgs) ?? directoryPermission;
       }
       if (directoryPermission.decision === "allow") return { allowed: true, approvedDirectory: outOfAllowedTarget.realPath, scope: "turn", permissionResult: directoryPermission,
