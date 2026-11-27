@@ -5,6 +5,7 @@ import { Readable } from 'node:stream';
 import { getCACertificates } from 'node:tls';
 import { classifyAddress, fetchAddressCheckedResponse, NetworkGuardError } from '../../core/network-guard.js';
 import { raceWithAbort } from '../../shared/abortable-deadline.js';
+import { REDIRECT_STATUSES } from '../host-fetch-guard.js';
 import { modelFileUrl } from './model-manifest.js';
 import { MemoryModelError } from './model-manager-win32.js';
 
@@ -36,7 +37,9 @@ function requestArtifact(
         const status = incoming.statusCode ?? 0;
         const headers = new Headers();
         for (let index = 0; index + 1 < incoming.rawHeaders.length; index += 2) {
-          headers.append(incoming.rawHeaders[index]!, incoming.rawHeaders[index + 1]!);
+          const name = incoming.rawHeaders[index];
+          const value = incoming.rawHeaders[index + 1];
+          if (name !== undefined && value !== undefined) headers.append(name, value);
         }
         const hasBody = status >= 200 && status < 300 && status !== 204 && status !== 205;
         if (!hasBody) incoming.destroy();
@@ -84,7 +87,11 @@ export function downloadModelFile(
         ? [{ address: host, family }]
         : await raceWithAbort(dns.lookup(host, { all: true }), requestSignal);
       const approved = new Set(select(answers.map(answer => answer.address)));
-      return requestArtifact(url, answers.filter(answer => approved.has(answer.address)), requestSignal, assertStillValid);
+      const response = await requestArtifact(url, answers.filter(answer => approved.has(answer.address)), requestSignal, assertStillValid);
+      if (response.status >= 300 && response.status < 400 && !REDIRECT_STATUSES.has(response.status)) {
+        throw new MemoryModelError('model-download-failed');
+      }
+      return response;
     },
   });
 }

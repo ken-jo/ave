@@ -169,6 +169,20 @@ describe('memory map host boundary', () => {
     }
   });
 
+  it('does not send another artifact request for a non-redirect 304 with Location', async () => {
+    const lookup = vi.spyOn(artifactDns, 'lookup').mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+    const { send } = mockArtifactHttps([{ status: 304, location: 'https://artifacts.example.com/model' }]);
+    try {
+      const download = await artifactDownloader();
+      await expect(download(MODEL_FILES[0].name, new AbortController().signal, vi.fn()))
+        .rejects.toMatchObject({ code: 'model-download-failed' });
+      expect(send).toHaveBeenCalledExactlyOnceWith(modelFileUrl(MODEL_FILES[0].name));
+      expect(lookup).toHaveBeenCalledOnce();
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
   it('streams the pinned artifact through HTTPS and keeps cancellation attached', async () => {
     const address = { address: '93.184.216.34', family: 4 };
     const lookup = vi.spyOn(artifactDns, 'lookup').mockResolvedValue([address]);
