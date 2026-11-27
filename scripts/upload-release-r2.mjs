@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Derive the upload plan from the shared release channel; dry runs need no credentials or network.
 // Versioned objects are immutable: identical reruns pass and different bytes fail.
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { awsRunner, put, putVersioned } from "./lib/r2-objects.mjs";
-import { missingSecrets, planR2Upload } from "./lib/release-channel.mjs";
+import { MAC_FEED_FILE, missingSecrets, planR2Upload } from "./lib/release-channel.mjs";
 
 const TAG = "[upload-release-r2]";
 
@@ -61,6 +61,7 @@ async function main() {
   }
   const aws = awsRunner(process.env, TAG);
   const bucket = process.env.R2_BUCKET.trim();
+  writeFileSync(join(dir, MAC_FEED_FILE), plan.macFeed, "utf8");
   for (const operation of plan.operations) {
     if (operation.action === "copy") copy(aws, bucket, operation);
     else if (operation.immutable) await putVersioned(aws, bucket, operation, join(dir, operation.source), TAG);
