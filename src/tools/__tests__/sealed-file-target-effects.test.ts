@@ -38,7 +38,9 @@ vi.mock("../../shared/chat-origin.js", async (original) => {
 });
 
 import { AuditLogger } from "../../audit/audit-logger.js";
+import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { sealTargets } from "../../permissions/target-seal.js";
 import { resolvePhysicalFilesystemPath } from "../../shared/shell-filesystem-path.js";
@@ -196,6 +198,27 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     expect(existsSync(path)).toBe(false);
     expect(stagingFiles()).toEqual([]);
     expect(hooks.unlinks.filter((name) => name.includes(".ave-tmp-"))).toEqual([]);
+  });
+
+  it.each([false, true])("reports why a sealed write was refused (classifier unavailable: %s)", async (unavailable) => {
+    const path = join(project, "sub", "note.txt");
+    const seal = sealTargets(() => resolvePhysicalFilesystemPath(path, project, 64));
+    if (unavailable) {
+      setWindowsDriveQueryForTest(() => { throw windowsPathKindHelperUnavailable("No drive classification"); });
+    } else {
+      renameSync(path, join(project, "sub", "original.txt"));
+      symlinkSync(join(project, "sub", "original.txt"), path, "file");
+    }
+
+    const result = await new WriteFileTool().execute({ path, content: "changed" }, {
+      cwd: project, extraAllowedDirectories: [], metadata: {}, fileTargetSeal: seal,
+    });
+    expect(result).toMatchObject({
+      isError: true,
+      output: t(unavailable ? "be_executor.fileTargetUnverified" : "be_executor.fileTargetChanged"),
+    });
+    expect(hooks.opens).toEqual([]);
+    expect(readFileSync(path, "utf8")).toBe("before");
   });
 
   it("publishes a sealed write and closes the staging handle without deleting the destination", async () => {

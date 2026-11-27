@@ -877,6 +877,7 @@ export const en = {
 
   // be_executor
   "be_executor.fileTargetChanged": "File target changed or cannot be resolved.",
+  "be_executor.fileTargetUnverified": "Cannot verify that the file target is on this computer, so the file was not changed.",
   "be_executor.purposeSentence": "Performing the task '{text}' as requested by the user.",
   "be_executor.permHoldStrictHeadless": "[Permission hold — strict headless] Tool '{toolName}' ({source}) — strict mode does not allow headless auto-review.",
   "be_executor.permBlockHeadlessNoReviewer": "[Permission blocked — headless] Tool '{toolName}' ({source}) — no reviewer configured, fail-closed.",

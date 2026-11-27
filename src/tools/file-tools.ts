@@ -1,4 +1,4 @@
-import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
+import { isLocalityFailure, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { noteOwnedWrite, terminalFileEvidence, writtenFileIdentity, type WrittenFileIdentity } from "../main/terminal/changed-file-evidence.js";
 import { checkpointFileMutation, markCodeCheckpointUnavailable, type RecordCheckpointEffect } from "../memory/code-checkpoints.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -365,7 +365,7 @@ abstract class FileTool<TSchema extends z.ZodTypeAny> extends ZodTool<TSchema> {
       return {
         ok: false,
         error: process.platform === "win32" && transport.kind === "local" && ctx.fileTargetSeal !== undefined
-          ? { output: t("be_executor.fileTargetChanged"), isError: true }
+          ? { output: t(isLocalityFailure(error) ? "be_executor.fileTargetUnverified" : "be_executor.fileTargetChanged"), isError: true }
           : brokerFailureResult(errorMessage(error)),
       };
     }

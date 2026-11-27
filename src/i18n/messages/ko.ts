@@ -879,6 +879,7 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // be_executor
   "be_executor.fileTargetChanged": "파일 대상이 변경되었거나 경로를 확인할 수 없습니다.",
+  "be_executor.fileTargetUnverified": "파일 대상이 이 컴퓨터에 있는지 확인할 수 없어 파일을 변경하지 않았습니다.",
   "be_executor.purposeSentence": "사용자 요청에 따라 {text} 작업을 수행합니다.",
   "be_executor.permHoldStrictHeadless": "[권한 보류 — strict headless] 도구 '{toolName}' ({source}) — strict 모드는 headless 자동 리뷰를 허용하지 않습니다.",
   "be_executor.permBlockHeadlessNoReviewer": "[권한 차단 — headless] 도구 '{toolName}' ({source}) — reviewer 미배치, fail-closed.",
