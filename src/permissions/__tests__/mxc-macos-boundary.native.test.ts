@@ -4,7 +4,7 @@ import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { connect, createServer, type Server } from "node:net";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { Writable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,6 +32,12 @@ import { _mxcShellStandbyPidForTest, dropMxcShellStandbys, mxcShellSupervisorLoc
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../policy-model.js";
 
 const NATIVE = process.platform === "darwin" && process.arch === "arm64";
+// Darwin 25 is macOS 26. Its libsandbox compiles a carved profile deeply enough to overrun koffi's default 128 KiB
+// asynchronous stack; macOS 15 (Darwin 24) starts the same profiles on it (macos-15 CI runner, 2026-11-27).
+const DEFAULT_STACK_OVERRUNS = NATIVE && Number(release().split(".")[0]) >= 25;
+// One CLI start of the thirty-grant profile takes about 10 s on an M-series Mac and more than 12 s on the macos-15
+// runner, almost all of it libsandbox compiling the profile. The bound leaves room for the slower runner.
+const LAUNCHER_START_TIMEOUT_MS = 60_000;
 // The macOS permission job requires its cases: a macOS runner this suite cannot use fails here instead of skipping all of them.
 if (process.platform === "darwin" && !NATIVE && process.env.AVE_REQUIRE_SANDBOX_CASES === "1") {
   throw new Error(`AVE_REQUIRE_SANDBOX_CASES=1 but this macOS host is ${process.arch}: the container boundary suite runs only on arm64`);
@@ -391,21 +397,27 @@ describe.runIf(NATIVE)("native product shell launch", () => {
     expect(createHash("sha256").update(readFileSync(cli)).digest("hex")).toBe(pin.sha256);
 
     const previous = new Set(readdirSync(runtime));
-    const admitted = await prepare(command, { denyRead: [sealed], allowRead: allowed });
+    const admitted = await prepare(command, { denyRead: [sealed], allowRead: allowed, timeoutMs: LAUNCHER_START_TIMEOUT_MS });
     const staged = readdirSync(runtime).filter(name => name.startsWith("shell-") && !previous.has(name));
     expect(staged).toHaveLength(1);
     const requestPath = join(runtime, ...staged, "request.json");
+    const cliStarted = performance.now();
     const baseline = spawnSync(cli, ["--config", requestPath], {
-      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 12_000,
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: LAUNCHER_START_TIMEOUT_MS,
     });
+    console.info("Launcher CLI start with %d explicit read grants: %s ms", allowed.length, (performance.now() - cliStarted).toFixed(0));
     expect(baseline.error).toBeUndefined();
     expect(baseline).toMatchObject({ status: 0, stdout: "new access", stderr: "" });
 
-    // Regression check: the same staged bytes through the supervisor without its call stack setting die before exec.
+    // Regression check: the same staged bytes through the supervisor without its call stack setting die before exec
+    // where libsandbox overruns the default stack. Where it does not, they run exactly as the CLI did, so the
+    // configured stack changes nothing there.
     const requestSha256 = createHash("sha256").update(readFileSync(requestPath)).digest("hex");
     const unconfigured = await collectShell(startMxcShellSupervisor({ type: "shell-start", requestPath, requestSha256 },
-      10_000, undefined, () => {}, "test:default-stack-shell", supervisor.defaultStackLocation));
-    expect(unconfigured).toMatchObject({ code: -1, stdout: "", cleanupUnverified: false });
+      LAUNCHER_START_TIMEOUT_MS, undefined, () => {}, "test:default-stack-shell", supervisor.defaultStackLocation));
+    expect(unconfigured).toMatchObject(DEFAULT_STACK_OVERRUNS
+      ? { code: -1, stdout: "", cleanupUnverified: false }
+      : { code: baseline.status, stdout: baseline.stdout, stderr: baseline.stderr, cleanupUnverified: false });
 
     const supervised = await run(admitted);
     expect(supervised).toMatchObject({ code: baseline.status, stdout: baseline.stdout, stderr: baseline.stderr });
@@ -537,7 +549,7 @@ describe.runIf(NATIVE)("native product shell launch", () => {
       return offered;
     });
     await compareLauncher(`cat ${quote(allowed.at(-1) ?? "")}`, sealed, allowed);
-  });
+  }, 4 * LAUNCHER_START_TIMEOUT_MS);
 
   it("tunnels verified TLS from curl, git, node and python through its own live proxy only", async () => {
     const hostname = "shell-boundary.example";
@@ -1056,5 +1068,6 @@ req.end();
     }
     elapsed.sort((left, right) => left - right);
     console.info("Native shell launch, 21 commands, median %s ms", elapsed.at(10)?.toFixed(1));
-  }, 25_000);
+    // About 0.45 s a start on an M-series Mac; the macos-15 runner needs more than 1.2 s (25 s did not cover 21).
+  }, 120_000);
 });
