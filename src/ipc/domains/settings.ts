@@ -500,6 +500,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     previousActiveChatRuntime: LLMSettings["activeChatRuntime"],
     failedActiveChatRuntime: LLMSettings["activeChatRuntime"],
     transitionRevision: number,
+    rebindSettledReviewer: () => Promise<void>,
   ): Promise<{ runtime: LLMSettings["activeChatRuntime"] } | null> => {
     // Only the request that still owns the active selection may undo it; a newer selection binds execution itself.
     if (transitionRevision !== activeChatRuntimeTransitionRevision) return null;
@@ -524,12 +525,14 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       // The restoring save failed as well, so memory is back on the settings on disk. Bind execution to them rather than to the runtime that could not be saved.
       if (transitionRevision === activeChatRuntimeTransitionRevision) {
         await bindExecutionToSettings();
+        await rebindSettledReviewer();
         await broadcastSettingsSnapshot(deps, () => transitionRevision === activeChatRuntimeTransitionRevision);
       }
       return null;
     }
     if (!ownsRestoration()) return null;
 
+    await rebindSettledReviewer();
     await broadcastSettingsSnapshot(deps, ownsRestoration);
     return ownsRestoration() ? { runtime: restoredRuntime } : null;
   };
@@ -543,7 +546,8 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     const nextSubscriptionProvider = activeChatRuntime?.kind === "subscription"
       ? activeChatRuntime.provider
       : null;
-    if (!sameActiveChatRuntime(previousLlm.activeChatRuntime, activeChatRuntime)) {
+    const routeChanged = !sameActiveChatRuntime(previousLlm.activeChatRuntime, activeChatRuntime);
+    if (routeChanged) {
       // A provider selection is an authentication-boundary change. Abort both interactive loops before exposing
       // the new selection so a prior API tool round cannot issue another request after subscription activation.
       const reason = new Error("active chat runtime changed");
@@ -551,8 +555,22 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       deps.sideChatConversationLoop?.abortCurrentTurn?.(reason);
       for (const paneLoop of deps.paneChatLoops?.all() ?? []) paneLoop.abortCurrentTurn?.(reason);
     }
-    const persistSelection = settingsService.patch({ llm: { activeChatRuntime } });
+    const permissionManager = conversationLoop.permissionManager;
+    const reconfiguration = permissionManager?.beginChatRuntimeReviewerReconfiguration(routeChanged);
     const transitionRevision = ++activeChatRuntimeTransitionRevision;
+    const rebindSettledReviewer = async (): Promise<void> => {
+      if (reconfiguration === undefined || transitionRevision !== activeChatRuntimeTransitionRevision) return;
+      permissionManager?.settleChatRuntimeReviewerReconfiguration(reconfiguration);
+      for (let attempt = 0; attempt < 2 && transitionRevision === activeChatRuntimeTransitionRevision; attempt++) {
+        try {
+          await deps.rewireReviewerAgent?.();
+          return;
+        } catch {
+          // Only a successful rewire of this settled generation can release the hold.
+        }
+      }
+    };
+    const persistSelection = settingsService.patch({ llm: { activeChatRuntime } });
     const ownsTransition = (): boolean => (
       transitionRevision === activeChatRuntimeTransitionRevision
       && sameActiveChatRuntime(settingsService.get("llm").activeChatRuntime, activeChatRuntime)
@@ -574,6 +592,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
           previousLlm.activeChatRuntime,
           activeChatRuntime,
           transitionRevision,
+          rebindSettledReviewer,
         );
       } catch {
         // The renderer must never be told that the new runtime became active when its exact persisted predecessor could not be restored.
@@ -590,6 +609,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     // broadcast/status effects; its executable bindings were already applied synchronously by its own call.
     if (!ownsTransition()) return;
 
+    await rebindSettledReviewer();
     await broadcastSettingsSnapshot(deps, ownsTransition);
     if (!ownsTransition()) return;
     if (previousSubscriptionProvider && previousSubscriptionProvider !== nextSubscriptionProvider) {

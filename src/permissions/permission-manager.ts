@@ -373,6 +373,7 @@ export interface ReviewerDispatchResult {
 }
 
 type ReviewerAssessmentResult = Omit<ReviewerDispatchResult, "judge">;
+const REVIEWER_RECONFIGURATION_ERROR = "Permission reviewer reconfiguration did not complete; automatic review is unavailable.";
 
 interface JudgeDispatchResult {
   outcome: JudgeOutcome;
@@ -655,8 +656,10 @@ export class PermissionManager {
   private readonly judgeBreaker = new JudgeCircuitBreaker(DEFAULT_JUDGE_SETTINGS.breaker);
   private resolveJudgeRootSession: (sessionId: string) => string = (sessionId) => sessionId;
   private verdictCache: VerdictCache | null = null;
+  private reviewerVerdictCacheEnabled = true;
+  private reviewerFollowsChat = true;
   private recentlyDenied: RecentlyDeniedStore | null = null;
-  private readonly pipelineRequests = new WeakMap<PermissionCheckResult, { request: PermissionDecisionRequest; policyEpoch: string; policyContextEpoch: string; hostTerminalContext?: HostTerminalPermissionContext }>();
+  private readonly pipelineRequests = new WeakMap<PermissionCheckResult, { request: PermissionDecisionRequest; policyEpoch: string; policyContextEpoch: string; chatRuntimeGeneration?: number; hostTerminalContext?: HostTerminalPermissionContext }>();
   private reviewerCacheScope: Record<string, unknown> = {};
   // Runtime degrade flag — true when the persisted reviewer mode is "llm" but boot wiring could not instantiate the LLM provider adapter (fresh install: no chat provider/key configured) and fell back to the rule classifier. Surfaced to the renderer (PermissionsTab banner) so the user understands the reviewer is running rule-only until they configure a provider. Reset to false on every successful "llm" wiring.
   private reviewerDegradedToRule = false;
@@ -670,7 +673,9 @@ export class PermissionManager {
   private modeGeneration = 0;
   private permissionStoreError: string | undefined;
   private reviewerSettingsError: string | undefined;
-  private reviewerReconfiguration: object | undefined;
+  private reviewerReconfiguration: { chatRuntimeGeneration?: number } | undefined;
+  private chatRuntimeReviewerGeneration = 0;
+  private chatRuntimeReviewerHold: "pending" | "settled" | undefined;
   // Optional broadcast for memory-hit auto-approve disclosure.
   private broadcastUserApprovalHit: ((payload: UserApprovalHitPayload) => void) | null = null;
   // Architectural choke point for permission config fan-out — every persisted mutation through PermissionManager (addAlwaysAllowedPersist, addAlwaysDeniedPersist, removeRule) fires this callback so multi-window PermissionsTab refreshes without each call site re-implementing the broadcast wiring. Wired by boot from `ipc/domains/permissions.ts:broadcastPermissionConfigChanged`.
@@ -698,6 +703,8 @@ export class PermissionManager {
     cache: VerdictCache;
     recentlyDenied?: RecentlyDeniedStore;
     cacheScope?: Record<string, unknown>;
+    verdictCacheEnabled?: boolean;
+    followsChat?: boolean;
     // True when persisted mode is "llm" but wiring degraded to the rule classifier (provider/key not configured). Defaults to false so disabled and successfully configured callers clear it.
     degradedToRule?: boolean;
     // The user selected a reviewer model that cannot run (not offered, or its provider is not connected). Every review then fails as `unavailable` with this reason: the foreground asks with a modal, headless denies. No other model, and no rule-only classifier, stands in for the choice.
@@ -709,6 +716,8 @@ export class PermissionManager {
     this.reviewerModel = deps.model;
     this.reviewerUnavailableReason = deps.unavailableReason;
     this.verdictCache = deps.cache;
+    this.reviewerVerdictCacheEnabled = deps.verdictCacheEnabled ?? true;
+    this.reviewerFollowsChat = deps.followsChat ?? true;
     this.recentlyDenied = deps.recentlyDenied ?? null;
     this.reviewerCacheScope = deps.cacheScope ?? {};
     this.reviewerDegradedToRule = deps.degradedToRule ?? false;
@@ -762,6 +771,16 @@ export class PermissionManager {
       (category === undefined ||
         ((category === "shell" || category === "write" || category === "network") &&
           (this.judgeDeps?.settingsUnreadable || settings.categories[category]))));
+  }
+
+  private usesReviewerBaseline(category: ToolCategory): boolean {
+    return this.reviewerDisabled || !this.hasJudge(category);
+  }
+
+  private reviewFollowsChat(category: ToolCategory, baseline = false): boolean {
+    return this.reviewerFollowsChat && (baseline || this.usesReviewerBaseline(category) ||
+      this.judgeDeps?.settings.mode === "shadow" ||
+      this.judgeDeps?.chain.some(({ judge, settings }) => judge instanceof BuiltinLlmJudge && settings.model === undefined) === true);
   }
 
   // Whether the reviewer is currently running rule-only because the persisted "llm" mode could not be wired (provider/key absent). Read by the reviewer-show IPC to surface the degrade banner in PermissionsTab.
@@ -907,22 +926,47 @@ export class PermissionManager {
     return this.mode;
   }
 
-  // Host-owned tokens cannot be reconstructed by settings, tool arguments or renderer decisions.
   beginReviewerReconfiguration(): object {
-    const token = Object.freeze({});
+    const token = Object.freeze({
+      chatRuntimeGeneration: this.chatRuntimeReviewerHold === "settled" ? this.chatRuntimeReviewerGeneration : undefined,
+    });
     this.reviewerReconfiguration = token;
     this.policyGeneration += 1;
     return token;
   }
 
   completeReviewerReconfiguration(token: object): void {
-    if (this.reviewerReconfiguration === undefined || token !== this.reviewerReconfiguration) {
+    const current = this.reviewerReconfiguration;
+    if (current === undefined || token !== current) {
       this.reviewerReconfiguration ??= Object.freeze({});
       this.policyGeneration += 1;
       throw new JudgeContractError("Reviewer reconfiguration requires its current host token");
     }
     this.reviewerReconfiguration = undefined;
+    if (current.chatRuntimeGeneration === this.chatRuntimeReviewerGeneration) {
+      this.chatRuntimeReviewerHold = undefined;
+    }
     this.policyGeneration += 1;
+  }
+
+  beginChatRuntimeReviewerReconfiguration(routeChanged: boolean): number | undefined {
+    if (!routeChanged && this.chatRuntimeReviewerHold !== "pending") return undefined;
+    this.chatRuntimeReviewerHold = "pending";
+    return ++this.chatRuntimeReviewerGeneration;
+  }
+
+  settleChatRuntimeReviewerReconfiguration(generation: number): void {
+    if (generation === this.chatRuntimeReviewerGeneration && this.chatRuntimeReviewerHold === "pending") {
+      this.chatRuntimeReviewerHold = "settled";
+    }
+  }
+
+  isChatRuntimeReviewerHeld(): boolean {
+    return this.chatRuntimeReviewerHold !== undefined;
+  }
+
+  getRationaleReviewerRouteGeneration(): number {
+    return this.reviewerFollowsChat ? this.chatRuntimeReviewerGeneration : 0;
   }
 
   // Monotonic host policy identity for sealed rationale revalidation.
@@ -1738,7 +1782,12 @@ export class PermissionManager {
       ...(decision.reviewRequired ? { reviewer: { route: request.headless ? "headless" as const : "foreground-auto" as const } } : {}),
     };
     const policyEpoch = this.requestPolicyEpoch(request);
-    this.pipelineRequests.set(result, { request, policyEpoch, policyContextEpoch: unattended ? policyEpoch : this.getPolicyContextEpoch(), ...(hostTerminalContext ? { hostTerminalContext } : {}) });
+    const kind = request.tool.kind;
+    const category = kind === "file-write" ? "write" : kind === "mcp" ? "network" : kind;
+    const followsChat = (decision.reviewRequired || request.reviewer !== undefined) &&
+      this.reviewFollowsChat(category, request.userOwnedSurface?.choice === "auto");
+    this.pipelineRequests.set(result, { request, policyEpoch, policyContextEpoch: unattended ? policyEpoch : this.getPolicyContextEpoch(),
+      ...(followsChat ? { chatRuntimeGeneration: this.chatRuntimeReviewerGeneration } : {}), ...(hostTerminalContext ? { hostTerminalContext } : {}) });
     return result;
   }
 
@@ -1749,8 +1798,9 @@ export class PermissionManager {
     const issued = this.pipelineRequests.get(result);
     if (!issued) throw new JudgeContractError("Permission recheck requires an issued pipeline request");
     this.pipelineRequests.delete(result);
-    const stale = issued.policyEpoch !== this.requestPolicyEpoch(issued.request)
-      && !(!issued.request.unattended && options?.acrossMemoryRuleChanges === true && issued.policyContextEpoch === this.getPolicyContextEpoch());
+    const stale = (issued.chatRuntimeGeneration !== undefined && issued.chatRuntimeGeneration !== this.chatRuntimeReviewerGeneration)
+      || (issued.policyEpoch !== this.requestPolicyEpoch(issued.request)
+        && !(!issued.request.unattended && options?.acrossMemoryRuleChanges === true && issued.policyContextEpoch === this.getPolicyContextEpoch()));
     const refreshed = this.pipelineResult({ ...issued.request,
       ...(stale ? { admissionDenial: STALE_PERMISSION_POLICY } : {}),
     }, issued.hostTerminalContext);
@@ -1787,7 +1837,8 @@ export class PermissionManager {
       throw new JudgeContractError("Permission review requires valid judge evidence");
     }
     this.pipelineRequests.delete(result);
-    const stale = issued.policyEpoch !== this.requestPolicyEpoch(issued.request);
+    const stale = issued.policyEpoch !== this.requestPolicyEpoch(issued.request)
+      || (issued.chatRuntimeGeneration !== undefined && issued.chatRuntimeGeneration !== this.chatRuntimeReviewerGeneration);
     const failed = stale || !isReviewerAutoDecisionOutcome(review.outcome) || judge.judged && judge.fallback !== undefined ||
       issued.request.unattended !== undefined && (!judge.judged || judge.mode !== "active" || !judge.applied);
     const level = judge.judged && judge.decision !== "allow" ? "high" : review.verdict.level;
@@ -2114,21 +2165,23 @@ export class PermissionManager {
     routineScope?: Record<string, unknown>,
     options?: { lane?: ReviewerLane; abortSignal?: AbortSignal; purpose?: "approval-scope" },
   ): Promise<ReviewerDispatchResult> {
-    const settingsError = this.reviewerReconfiguration !== undefined
-      ? "Permission reviewer reconfiguration did not complete; automatic review is unavailable."
+    const permission = input.permissionDecision as PermissionCheckResult | undefined;
+    const issued = permission === undefined ? undefined : this.pipelineRequests.get(permission);
+    const logicalSurface = issued?.request.userOwnedSurface?.choice === "auto";
+    const settingsError = this.reviewerReconfiguration ||
+      (logicalSurface && !this.reviewerDisabled && this.reviewerFollowsChat && this.isChatRuntimeReviewerHeld())
+      ? REVIEWER_RECONFIGURATION_ERROR
       : this.refreshReviewerSettingsError();
     if (settingsError !== undefined) {
       return { verdict: { level: "high", reason: settingsError }, outcome: "error", cacheReason: "miss-not-found",
         judge: { judged: true, mode: "active", decision: options?.lane === "headless" ? "deny" : "ask", applied: true, source: "fallback", fallback: "error", rationale: settingsError, breakerTripped: false } };
     }
-    const permission = input.permissionDecision as PermissionCheckResult | undefined;
-    const issued = permission === undefined ? undefined : this.pipelineRequests.get(permission);
     if (issued?.request.unattended && !this.judgeDeps) {
       return { verdict: { level: "high", reason: "Automatic review is unavailable." }, outcome: "unavailable",
         cacheReason: "miss-not-found", judge: { judged: false, skip: "judge-off" } };
     }
     let verifiedSurfaceReview = false;
-    if (issued?.request.userOwnedSurface?.choice === "auto") {
+    if (logicalSurface) {
       const current = this.pipelineResult(issued.request, issued.hostTerminalContext);
       const currentRequest = this.pipelineRequests.get(current)!.request;
       this.pipelineRequests.delete(current);
@@ -2192,7 +2245,7 @@ export class PermissionManager {
     toolName: string,
     input: ReviewerDispatchInput,
     routineScope: Record<string, unknown> | undefined,
-    options: { abortSignal?: AbortSignal; tracingClassifier: TracingRiskClassifier | null; cacheScope?: Record<string, unknown>; stageOwnModel?: boolean },
+    options: { abortSignal?: AbortSignal; tracingClassifier: TracingRiskClassifier | null; verdictCacheEnabled: boolean; cacheScope?: Record<string, unknown>; stageOwnModel?: boolean },
   ): Promise<ReviewerAssessmentResult> {
     // Freeze the canonical scope before review can await; the same path grades raw arguments and later appears on the exact remembered-allow card.
     const workingDirectory = input.executionCwd === undefined
@@ -2322,8 +2375,8 @@ export class PermissionManager {
     };
 
     // Include the sandbox capability in the cache scope so a change to OS isolation invalidates stale verdicts produced under different sandbox assumptions. Capture this live state immediately before cache lookup: no await may sit between wrap-state sampling and cache lookup, or a worker un-wrap could replay a verdict relaxed under stale confinement.
-    const cacheCtx = buildCacheContext(sandboxCacheState);
-    const cacheResult = cache.lookup(lookupKey, cacheCtx);
+    const cacheCtx = options.verdictCacheEnabled ? buildCacheContext(sandboxCacheState) : undefined;
+    const cacheResult = cacheCtx === undefined ? undefined : cache.lookup(lookupKey, cacheCtx);
     let verdict: RiskVerdict;
     let ruleVerdictForAudit: RiskVerdict["level"] | null = null;
     let llmVerdictForAudit: RiskVerdict["level"] | null = null;
@@ -2364,7 +2417,7 @@ export class PermissionManager {
         scope: userApproval.scope,
         verdictAtApproval: userApproval.verdictAtApproval,
       });
-    } else if ((!preparedReview || providerPromptHash !== undefined) && cacheResult.hit && cacheResult.verdict) {
+    } else if ((!preparedReview || providerPromptHash !== undefined) && cacheResult?.hit && cacheResult.verdict) {
       const ruleVerdict = preparedReview?.ruleVerdict ?? new RuleBasedRiskClassifier().classify(reviewerContext ?? buildReviewerContext());
       ruleVerdictForAudit = ruleVerdict.level;
       verdict = preparedReview ? maxVerdict(ruleVerdict, cacheResult.verdict) : cacheResult.verdict;
@@ -2399,7 +2452,7 @@ export class PermissionManager {
         } else {
           // Only a successful fresh classification may become a base-cache entry. malformed/error/timeout fallback verdicts remain fail-safe for this invocation and can never reappear as an eligible "cache" rationale outcome on the next call.
           const cacheVerdict = preparedReview ? (providerPromptHash === undefined ? null : trace.llmVerdict) : verdict;
-          if (outcome === "fresh" && cacheVerdict !== null) {
+          if (cacheCtx !== undefined && outcome === "fresh" && cacheVerdict !== null) {
             // The verdict cache is the one sink written BEFORE the common redaction point below, so it redacts its own copy. A cache hit then replays an already-masked reason.
             await cache.store(lookupKey, cacheCtx, redactVerdictReason(cacheVerdict));
           }
@@ -2427,7 +2480,7 @@ export class PermissionManager {
     });
 
     return {
-      verdict, outcome, approvalBasis: approvalBasisFor(ruleVerdictForAudit ?? verdict.level, outcome), cacheReason: cacheResult.reason,
+      verdict, outcome, approvalBasis: approvalBasisFor(ruleVerdictForAudit ?? verdict.level, outcome), cacheReason: cacheResult?.reason ?? "miss-not-found",
     };
   }
 
@@ -2450,7 +2503,7 @@ export class PermissionManager {
     }
     const wired = this.judgeDeps;
     if (!wired) throw new JudgeContractError("Permission judge is not wired");
-    const baseline = this.reviewerDisabled || context?.baseline === true || !this.hasJudge(input.category);
+    const baseline = context?.baseline === true || this.usesReviewerBaseline(input.category);
     const defaultStage = { provider: "builtin-llm" as const, id: "builtin-llm" };
     const deps: JudgeEngineDeps = baseline ? {
       budget: "classifier",
@@ -2460,6 +2513,10 @@ export class PermissionManager {
     } : wired;
     const reviewedRequest = input.permissionDecision ? this.pipelineRequests.get(input.permissionDecision as PermissionCheckResult)?.request : undefined;
     const policyEpoch = this.requestPolicyEpoch(reviewedRequest);
+    const chatRuntimeGeneration = this.chatRuntimeReviewerGeneration;
+    const followsChat = this.reviewFollowsChat(input.category, baseline);
+    const policyChanged = () => this.requestPolicyEpoch(reviewedRequest) !== policyEpoch ||
+      (followsChat && this.chatRuntimeReviewerGeneration !== chatRuntimeGeneration);
     const sandboxState = resolveReviewerSandboxCacheState(
       input.source, toolName, input.mcpServerId, input.workerId, input.pluginId,
       input.hostShellExecutionPlan, input.disposableSubstrate,
@@ -2478,11 +2535,19 @@ export class PermissionManager {
     const ruleVerdict = new RuleBasedRiskClassifier().classify(invocation);
     let reviewer: ReviewerAssessmentResult | undefined;
     let reviewerStageId: string | undefined;
+    // Keep cache policy with the classifier selected for this dispatch.
+    const reviewerVerdictCacheEnabled = this.reviewerVerdictCacheEnabled;
+    const reviewerFollowsChat = this.reviewerFollowsChat;
     const chain = deps.chain.map((stage) => {
       const builtin = stage.judge;
       if (!(builtin instanceof BuiltinLlmJudge)) return stage;
       return { ...stage, judge: new BuiltinLlmJudge({
         classifyWithTrace: async (judgeInvocation, options) => {
+          if (reviewerFollowsChat && stage.settings.model === undefined && this.isChatRuntimeReviewerHeld()) {
+            reviewer = { verdict: { level: "high", reason: REVIEWER_RECONFIGURATION_ERROR }, outcome: "error", cacheReason: "miss-not-found" };
+            reviewerStageId = stage.settings.id;
+            throw new JudgeFailure("error", REVIEWER_RECONFIGURATION_ERROR);
+          }
           // Hooks may hide values from a provider, but the approval identity and audit still describe the exact original call.
           const policyRedacted = judgeInvocation.finalInput !== invocation.finalInput;
           const result = await this.assessReviewer(toolName, {
@@ -2491,6 +2556,7 @@ export class PermissionManager {
           }, context?.routineScope, {
             abortSignal: options?.abortSignal,
             tracingClassifier: builtin.getClassifier(),
+            verdictCacheEnabled: reviewerVerdictCacheEnabled || stage.settings.model !== undefined,
             ...(stage.settings.model ? { stageOwnModel: true } : {}),
             ...(stage.settings.model || policyRedacted ? {
               cacheScope: {
@@ -2537,17 +2603,17 @@ export class PermissionManager {
             input.source, toolName, input.mcpServerId, input.workerId, input.pluginId,
             input.hostShellExecutionPlan, input.disposableSubstrate,
           );
-          const policyChanged = this.requestPolicyEpoch(reviewedRequest) !== policyEpoch;
-          return policyChanged || !sameReviewerSandboxCacheState(sandboxState, current)
+          const changed = policyChanged();
+          return changed || !sameReviewerSandboxCacheState(sandboxState, current)
             ? { decision: decision === "allow" ? "ask" : decision,
-                rationale: policyChanged ? "Permission policy changed during judge review" : "Execution sandbox changed during judge review", fallback: "unavailable" }
+                rationale: changed ? "Permission policy changed during judge review" : "Execution sandbox changed during judge review", fallback: "unavailable" }
             : hookResult;
         },
       },
     }, abortSignal);
     // Audit and the unchanged shadow reviewer can both await. Recheck the host snapshot after their last await before publishing any allow.
     const staleReason = (): string | undefined => {
-      if (this.requestPolicyEpoch(reviewedRequest) !== policyEpoch) return "Permission policy changed during judge review";
+      if (policyChanged()) return "Permission policy changed during judge review";
       const current = resolveReviewerSandboxCacheState(
         input.source, toolName, input.mcpServerId, input.workerId, input.pluginId,
         input.hostShellExecutionPlan, input.disposableSubstrate,

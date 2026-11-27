@@ -829,6 +829,24 @@ describe("RationaleHostCoordinator", () => {
     });
   }
 
+
+  it("does not mint an automatic receipt for a replayed reevaluation", async () => {
+    const liveReviewer = reviewerReturning("aligned", "low");
+    const state = setup({ reviewer: {
+      async reevaluate(input) {
+        return { ...await liveReviewer.reevaluate(input), outcome: "cache" } as unknown as Awaited<ReturnType<RationaleScopeReviewer["reevaluate"]>>;
+      },
+    } });
+    const mint = vi.spyOn(state.ticketStore, "consumeReviewerAuthorizedOnce");
+    const round = await runReadyRound(state, materialize(state));
+
+    expect(round).toMatchObject({
+      status: "failed",
+      reevaluation: { outcome: "malformed", modalFallbackRequired: true },
+    });
+    expect(mint).not.toHaveBeenCalled();
+  });
+
   it("auto-approves a fresh low/medium reviewer terminal without a modal", async () => {
     const state = setup({ reviewer: reviewerReturning("aligned", "medium") });
     const materialized = materialize(state);
