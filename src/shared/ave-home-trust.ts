@@ -87,6 +87,7 @@ const COVERED_FILES: readonly string[] = Object.freeze([
   "agent-plugin-trust/hooks/approvals.json",
   "agent-plugin-trust/mcp/approvals.json",
   "skill-approvals.json",
+  "skill-memory/lessons.json",
   "routine/routines.json",
   "work-board/templates.json",
   "work-board/workflow-runs.json",

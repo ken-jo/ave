@@ -325,6 +325,7 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "ave-home", segments: ["agent-plugin-trust"], kind: "dir", why: "agent extension hook and MCP approvals (home content trust input)" },
   { anchor: "ave-home", segments: ["packages", "ledger.json"], kind: "file", why: "installed marketplace content records (home content trust input)" },
   { anchor: "ave-home", segments: ["packages", "mcp-installs.json"], kind: "file", why: "installed marketplace MCP server records (home content trust input)" },
+  { anchor: "ave-home", segments: ["skill-memory"], kind: "dir", why: "managed skill lessons and change ledger" },
   { anchor: "ave-home", segments: ["skill-approvals.json"], kind: "file", why: "legacy skill approvals (home content trust input)" },
 ]);
 
