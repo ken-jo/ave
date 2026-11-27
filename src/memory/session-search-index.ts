@@ -1,5 +1,5 @@
 // Namespace-local FTS search with fail-closed queries; JSONL rebuild is the only corruption recovery path.
-import { mkdirSync, chmodSync, unlinkSync } from "node:fs";
+import { promises as fsPromises, mkdirSync, chmodSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { createLogger } from "../lib/logger.js";
@@ -184,10 +184,12 @@ export class SessionSearchIndex {
             `Original: ${(err as Error).message}`,
         );
       }
-      const code = (err as NodeJS.ErrnoException).code;
-      if (options?.recoverCorruption && (code === "SQLITE_NOTADB" || code?.startsWith("SQLITE_CORRUPT"))) {
-        this.discard();
-        return this.open();
+      if (options?.recoverCorruption) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === "SQLITE_NOTADB" || code?.startsWith("SQLITE_CORRUPT")) {
+          this.discard();
+          return this.open();
+        }
       }
       return false;
     }
@@ -205,48 +207,36 @@ export class SessionSearchIndex {
     }
   }
 
-  writeRebuiltSessions(inputs: Iterable<IndexedSessionInput>): void {
-    const db = this.db;
-    if (!db) throw new Error("search index must be open for rebuild");
-    db.transaction(() => {
-      db.exec("DELETE FROM sessions_fts");
-      const insert = db.prepare(INSERT_SESSION_ROW);
-      let expectedRows = 0;
-      for (const input of inputs) {
-        insertSessionRow(insert, input);
-        expectedRows += 1;
-      }
-      const actualRows = this.rowCount();
-      if (actualRows !== expectedRows) {
-        throw new Error(`search index row count mismatch (expected ${expectedRows}, got ${actualRows})`);
-      }
-    })();
-  }
-
   // Index maintenance must never block source transcript persistence.
-  upsertSession(input: IndexedSessionInput): boolean {
-    const db = this.db;
-    if (!db) return false;
+  upsertSession(input: IndexedSessionInput): void {
+    if (!this.db) return;
     try {
-      db.transaction(() => {
-        db.prepare("DELETE FROM sessions_fts WHERE sessionId = ?").run(input.sessionId);
-        insertSessionRow(db.prepare(INSERT_SESSION_ROW), input);
-      })();
-      return true;
+      this.db.prepare("DELETE FROM sessions_fts WHERE sessionId = ?").run(input.sessionId);
+      this.db
+        .prepare(
+          `INSERT INTO sessions_fts (sessionId, content, timestamp, sessionKind, routineId, projectRoot, title)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.sessionId,
+          input.content,
+          input.timestamp,
+          input.sessionKind,
+          input.routineId ?? "",
+          input.projectRoot ?? "",
+          input.title ?? "",
+        );
     } catch (err) {
       log.warn("upsertSession failed for %s: %s", input.sessionId, (err as Error).message);
-      return false;
     }
   }
 
-  deleteSession(sessionId: string): boolean {
-    if (!this.db) return false;
+  deleteSession(sessionId: string): void {
+    if (!this.db) return;
     try {
       this.db.prepare("DELETE FROM sessions_fts WHERE sessionId = ?").run(sessionId);
-      return true;
     } catch (err) {
       log.warn("deleteSession failed for %s: %s", sessionId, (err as Error).message);
-      return false;
     }
   }
 
@@ -331,6 +321,60 @@ export class SessionSearchIndex {
     this.db = null;
   }
 
+  // Delete corrupt storage so the next open creates a clean database.
+  static async deleteFile(dbPath: string): Promise<void> {
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        await fsPromises.unlink(`${dbPath}${suffix}`);
+      } catch {
+      }
+    }
+  }
+
+  writeRebuiltSessions(inputs: Iterable<IndexedSessionInput>): void {
+    const db = this.db;
+    if (!db) throw new Error("search index must be open for rebuild");
+    db.transaction(() => {
+      db.exec("DELETE FROM sessions_fts");
+      const insert = db.prepare(INSERT_SESSION_ROW);
+      let expectedRows = 0;
+      for (const input of inputs) {
+        insertSessionRow(insert, input);
+        expectedRows += 1;
+      }
+      const actualRows = this.rowCount();
+      if (actualRows !== expectedRows) {
+        throw new Error(`search index row count mismatch (expected ${expectedRows}, got ${actualRows})`);
+      }
+    })();
+  }
+
+  upsertSessionAdmitted(input: IndexedSessionInput): boolean {
+    const db = this.db;
+    if (!db) return false;
+    try {
+      db.transaction(() => {
+        db.prepare("DELETE FROM sessions_fts WHERE sessionId = ?").run(input.sessionId);
+        insertSessionRow(db.prepare(INSERT_SESSION_ROW), input);
+      })();
+      return true;
+    } catch (err) {
+      log.warn("upsertSession failed for %s: %s", input.sessionId, (err as Error).message);
+      return false;
+    }
+  }
+
+  deleteSessionAdmitted(sessionId: string): boolean {
+    if (!this.db) return false;
+    try {
+      this.db.prepare("DELETE FROM sessions_fts WHERE sessionId = ?").run(sessionId);
+      return true;
+    } catch (err) {
+      log.warn("deleteSession failed for %s: %s", sessionId, (err as Error).message);
+      return false;
+    }
+  }
+
   discard(): void {
     this.close();
     for (const suffix of ["", "-wal", "-shm"]) {
@@ -341,5 +385,4 @@ export class SessionSearchIndex {
       }
     }
   }
-
 }

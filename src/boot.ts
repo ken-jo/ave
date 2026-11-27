@@ -66,8 +66,8 @@ import { registerBootMcpDisconnect, registerShutdownHook, configureAppShutdownHo
 
 import { type AppServices, emitEvent as emitHostEvent, onEvent } from "./boot/types.js";
 import { startWatcherTelemetryCollector } from "./boot/steps/watcher-telemetry-collector.js";
-import { bootstrapCoreServices, verifySessionSearchIndex } from "./boot/services.js";
-import { isWindowsBackgroundFeatureReleaseEnabled, sessionSearchIndexPolicySource } from "./permissions/windows-background-features.js";
+import { bootstrapCoreServices, selectBootSessionRepositoryFactory, verifySessionSearchIndex } from "./boot/services.js";
+import { isWindowsBackgroundFeatureReleaseEnabled } from "./permissions/windows-background-features.js";
 import { RoutinesStore } from "./main/routines-store.js";
 import { RoutinesScheduler } from "./main/routines-scheduler.js";
 import {
@@ -597,10 +597,10 @@ export async function bootstrap(
   // Open every durable conversation namespace before reconciliation. The same
   // instances are wired into the live loops below, preserving root tombstones
   // against late writes in this process.
-  const isolatedConversationMemoryManagers =
-    createIsolatedConversationMemoryManagers(sessionSearchIndexPolicySource(
-      () => settingsService.get("features")?.sessionIndexingWithoutContainment,
-    ));
+  const createSessionRepository = selectBootSessionRepositoryFactory(settingsService);
+  const isolatedConversationMemoryManagers = createSessionRepository === undefined
+    ? createIsolatedConversationMemoryManagers()
+    : createIsolatedConversationMemoryManagers(createSessionRepository);
   const workspaceSessionStores = [
     memoryManager,
     isolatedConversationMemoryManagers.sideChatMemoryManager,
@@ -610,8 +610,7 @@ export async function bootstrap(
   // plugin receives a HostApi. Confirmed missing/non-directory roots are
   // removed and their path grants pruned; transient filesystem failures retain
   // the user's setting. Conversation JSONL is preserved while stale project
-  // metadata is detached before the interactive loop is created. The search
-  // projection can wait for the sandbox gate.
+  // metadata is detached before the interactive loop is created.
   const rootReconciliation = await reconcileWorkspaceRoots({
     source: "boot",
     auditLogger: ctx.bootAuditLogger,
@@ -862,7 +861,7 @@ export async function bootstrap(
   recordBootPhase("conversation-wiring");
   await initSandboxGate(ctx, startupSignal);
   recordBootPhase("sandbox-gate");
-  if (isWindowsBackgroundFeatureReleaseEnabled()) {
+  if (process.platform === "win32" && isWindowsBackgroundFeatureReleaseEnabled()) {
     // Started together so the stores share one evidence refresh. Boot does not wait for the native answer: searches queue behind it.
     void Promise.all(workspaceSessionStores.map((manager) => verifySessionSearchIndex(manager)));
   }

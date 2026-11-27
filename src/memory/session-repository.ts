@@ -1,4 +1,4 @@
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { resolveConversationTitle, unwrapStagedText } from "../shared/conversation-title.js";
@@ -14,7 +14,7 @@ import { isSessionTaskItem, type SessionTaskItem } from "../shared/session-tasks
 import { isSessionGoal, type SessionGoal } from "../shared/session-goal.js";
 import { createLogger } from "../lib/logger.js";
 import { aveHome } from "../shared/ave-home.js";
-import { openFeatureNamespace } from "../main/storage/feature-namespace.js";
+import { sessionStorePath } from "../shared/session-store-path.js";
 import { t } from "../i18n/index.js";
 import { projectRootEquals, projectRootKey } from "../shared/project-identity.js";
 import { parseWorkBoardOriginSessionId } from "../shared/work-board-types.js";
@@ -36,9 +36,8 @@ import {
   isToolResultStubContent,
   type ToolResultTruncatedInfo,
 } from "../shared/tool-result-stub.js";
-import { SessionSearchIndex, type IndexedSessionInput, type SessionSearchIndexPolicy, type SessionSearchIndexPolicySource } from "./session-search-index.js";
+import { SessionSearchIndex, type IndexedSessionInput } from "./session-search-index.js";
 import { isRecord } from "../shared/is-record.js";
-import { parseStrictJsonText } from "../shared/strict-json.js";
 import { dlpSafeCandidate, isSafeStructuralId } from "../shared/dlp-safe-id.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
@@ -57,9 +56,9 @@ import {
 
 const log = createLogger("memory");
 // Track written row ids plus file size and mtime; append completion-order results only while the prior prefix remains valid.
-const transcriptWriteStates = new Map<string, { ids: string[]; size: number; mtimeMs: number }>();
+export const transcriptWriteStates = new Map<string, { ids: string[]; size: number; mtimeMs: number }>();
 // A process-local open journal marks a live turn; never recover its sidecar as an orphan.
-const liveTurnJournals = new Map<string, number>();
+export const liveTurnJournals = new Map<string, number>();
 // Auxiliary managers can share the same host-owned session directory.
 const unpublishedCapturesByDirectory = new Map<string, Map<string, Set<string>>>();
 
@@ -71,7 +70,7 @@ export interface FileSnapshot {
   tooLarge: boolean;
 }
 
-function statPathIfPresent(path: string): Omit<FileSnapshot, "content" | "tooLarge"> | null {
+export function statPathIfPresent(path: string): Omit<FileSnapshot, "content" | "tooLarge"> | null {
   let fd: number | null = null;
   try {
     fd = openSync(path, "r");
@@ -324,7 +323,7 @@ export interface SessionMetadata {
   goal?: SessionGoal;
 }
 
-function asTerminalA2ATaskState(value: unknown): A2AProjectedTaskState | undefined {
+export function asTerminalA2ATaskState(value: unknown): A2AProjectedTaskState | undefined {
   if (
     typeof value !== "string"
     || !(A2A_PROJECTED_TASK_STATE_VALUES as readonly string[]).includes(value)
@@ -349,7 +348,7 @@ interface DetachedWireTerminalTombstone {
   subAgentTitle?: string;
 }
 
-function detachProjectBinding<T extends object>(
+export function detachProjectBinding<T extends object>(
   metadata: T,
   terminalTombstone?: A2AProjectedTaskState,
 ): T {
@@ -369,7 +368,7 @@ function detachProjectBinding<T extends object>(
   return next;
 }
 
-function applyDetachedWireTerminalTombstone<T extends object>(
+export function applyDetachedWireTerminalTombstone<T extends object>(
   metadata: T,
   tombstone: DetachedWireTerminalTombstone,
 ): T {
@@ -388,11 +387,11 @@ function applyDetachedWireTerminalTombstone<T extends object>(
     tombstone.taskState,
   );
 }
-const MAX_SESSION_TITLE_CHARS = 80;
+export const MAX_SESSION_TITLE_CHARS = 80;
 
 // Own session-file limits here and share them with import validation.
 export const MAX_SESSION_FILE_BYTES = 5_000_000;
-const MAX_SUMMARY_PREAMBLE_CHARS = 8_000;
+export const MAX_SUMMARY_PREAMBLE_CHARS = 8_000;
 const MAX_A2A_WIRE_ID_CHARS = 256;
 const ACTIVE_SESSION_STATE_FILE = ".active-session.json";
 
@@ -400,12 +399,12 @@ const ACTIVE_SESSION_STATE_FILE = ".active-session.json";
 function isPersistedOriginSessionId(id: unknown): id is string {
   return isValidSessionId(id) || parseWorkBoardOriginSessionId(id) !== null;
 }
-function isValidA2AWireHandlerId(id: unknown): id is string {
+export function isValidA2AWireHandlerId(id: unknown): id is string {
   return typeof id === "string"
     && A2A_HANDLER_ID_PATTERN.test(id)
     && maskSensitiveData(id).detections.length === 0;
 }
-function isValidA2AWireMetadataId(id: unknown): id is string {
+export function isValidA2AWireMetadataId(id: unknown): id is string {
   return isValidSessionId(id)
     && id.length <= MAX_A2A_WIRE_ID_CHARS
     && isSafeStructuralId(id);
@@ -469,7 +468,7 @@ function stampLegacyRowIds(sessionId: string, messages: unknown[]): unknown[] {
   });
 }
 
-function isCompactBoundaryRecord(value: unknown): boolean {
+export function isCompactBoundaryRecord(value: unknown): boolean {
   if (!isRecord(value)) return false;
   const meta = isRecord(value.meta) ? value.meta : {};
   return value.role === "user" && meta.compactBoundary === true;
@@ -540,13 +539,13 @@ const VALID_CHECKPOINT_TRIGGERS = new Set<CheckpointTrigger>([
   "manual",
 ]);
 
-function normalizeSessionKind(value: unknown): SessionKind {
+export function normalizeSessionKind(value: unknown): SessionKind {
   if (value === "main" || value === "routine" || value === "subagent") return value;
   return "main";
 }
 
 // Index string content and multipart text fields so search does not lose readable message text.
-function extractSearchableContent(messages: unknown[]): string {
+export function extractSearchableContent(messages: unknown[]): string {
   const parts: string[] = [];
   for (const raw of messages) {
     const message = raw as Record<string, unknown>;
@@ -615,7 +614,7 @@ function normalizeCheckpoint(raw: unknown): Checkpoint | null {
 }
 
 // Missing or invalid kind becomes main without routine inference; discard invalid checkpoint entries individually.
-function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata {
+export function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata {
   const checkpointsRaw = Array.isArray(raw.checkpoints) ? raw.checkpoints : undefined;
   const checkpoints: Checkpoint[] | undefined = checkpointsRaw
     ? (checkpointsRaw.map(normalizeCheckpoint).filter((c): c is Checkpoint => c !== null))
@@ -751,79 +750,47 @@ function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata
   };
 }
 
-const SESSION_METADATA_FORBIDDEN_KEYS: ReadonlySet<string> = new Set();
-
-function readSessionMetadataObject(path: string): Record<string, unknown> | null {
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf-8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" && lstatSync(path, { throwIfNoEntry: false }) === undefined) return null;
-    throw error;
-  }
-  const parsed = parseStrictJsonText(raw, {
-    maxDepth: 32,
-    forbiddenKeys: SESSION_METADATA_FORBIDDEN_KEYS,
-    nullPrototypeObjects: true,
-    rejectNonFiniteNumbers: true,
-    fail: () => { throw new SyntaxError("invalid session metadata"); },
-  });
-  if (!isRecord(parsed)) {
+function parseSessionMetadataObject(raw: string): Record<string, unknown> {
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new TypeError("session metadata must be an object");
   }
   return parsed;
 }
 
 /** Whether stored session metadata belongs to `projectRoot`: the detach and its preview share this. */
-function sessionMetadataInProject(parsed: Record<string, unknown>, projectRoot: string): boolean {
+export function sessionMetadataInProject(parsed: Record<string, unknown>, projectRoot: string): boolean {
   const storedRoot = typeof parsed.projectRoot === "string" ? parsed.projectRoot : undefined;
   return Boolean(storedRoot && projectRootEquals(storedRoot, projectRoot));
 }
 
-const SEARCH_REPAIR_INTENT = ".search-repair.json";
-
 export class SessionRepository {
-  private readonly sessionsDir: string;
+  protected readonly sessionsDir: string;
   private readonly toolOutputArtifacts: ToolOutputArtifactStore;
-  private readonly unpublishedOutputCaptures: Map<string, Set<string>>;
+  protected readonly unpublishedOutputCaptures: Map<string, Set<string>>;
   // Keep one search index per manager namespace, never a global singleton.
-  private readonly searchIndex: SessionSearchIndex;
-  private readonly getSearchIndexPolicy: () => SessionSearchIndexPolicy;
-  private readonly refreshSearchIndexPolicy: (() => Promise<() => SessionSearchIndexPolicy>) | undefined;
-  private readonly searchIndexQueue: Array<(admit: () => SessionSearchIndexPolicy) => void> = [];
-  private searchIndexBatch: typeof this.searchIndexQueue = [];
-  private searchIndexDrain: Promise<void> | undefined;
-  private readonly pendingSearchWrites = new Set<string>();
-  private searchSourceRevision = 0;
-  private searchSourceWrites = 0;
-  private readonly liveSearchRecovery = new Set<string>();
-  private readonly sessionNamespace: ReturnType<typeof openFeatureNamespace>;
-  private searchIndexState: "current" | "stale" | "discarded" = "current";
-  private searchIndexChecked = false;
+  protected readonly searchIndex: SessionSearchIndex;
   // Root guards block stale writers until re-add; only newly created sessions may bind again.
-  private readonly detachedProjectRoots = new Set<string>();
+  protected readonly detachedProjectRoots = new Set<string>();
   // Session tombstones survive root re-add so old conversations remain detached.
-  private readonly detachedProjectRootsBySession = new Map<string, Set<string>>();
+  protected readonly detachedProjectRootsBySession = new Map<string, Set<string>>();
   private readonly reportedInterruptedTurnFolds = new Set<string>();
   // Capture policy generation before locking to detect detach/re-add ABA races.
   private readonly projectRootGenerations = new Map<string, number>();
   // Retain terminal state and binding together so late writes cannot regress or reclassify detached wire tasks.
-  private readonly detachedWireTerminalTombstones = new Map<string, DetachedWireTerminalTombstone>();
+  protected readonly detachedWireTerminalTombstones = new Map<string, DetachedWireTerminalTombstone>();
   private paneSessions: Map<string, Set<string>> | null = null;
-  private get checkpointsDir(): string {
+  protected get checkpointsDir(): string {
     return join(this.sessionsDir, ".checkpoints");
   }
 
-  private readonly aveDir: string;
+  protected readonly aveDir: string;
 
-  constructor(options?: { aveDir?: string } & SessionSearchIndexPolicySource) {
+  constructor(options?: { aveDir?: string }) {
     this.aveDir = resolve(options?.aveDir ?? aveHome());
-    this.sessionNamespace = openFeatureNamespace("sessions", this.aveDir);
-    this.sessionsDir = this.sessionNamespace.dir;
+    this.sessionsDir = sessionStorePath(this.aveDir);
     this.toolOutputArtifacts = new ToolOutputArtifactStore(this.sessionsDir);
     this.searchIndex = new SessionSearchIndex(this.aveDir);
-    this.getSearchIndexPolicy = options?.getSearchIndexPolicy ?? (() => "enabled");
-    this.refreshSearchIndexPolicy = options?.refreshSearchIndexPolicy;
     mkdirSync(this.sessionsDir, { recursive: true });
     this.restrictSessionsDirWrites();
     const captureOwnerKey = realpathSync(this.sessionsDir);
@@ -831,20 +798,20 @@ export class SessionRepository {
     unpublishedCapturesByDirectory.set(captureOwnerKey, this.unpublishedOutputCaptures);
   }
 
-  private projectRootGeneration(key: string): number {
+  protected projectRootGeneration(key: string): number {
     return this.projectRootGenerations.get(key) ?? 0;
   }
 
   // Use a persistent sidecar lock target; touching a missing metadata path during locking could resurrect deleted state.
-  private sessionMetadataLockPath(sessionId: string): string {
+  protected sessionMetadataLockPath(sessionId: string): string {
     return join(this.sessionsDir, ".metadata-locks", `${sessionId}.target`);
   }
 
-  private bumpProjectRootGeneration(key: string): void {
+  protected bumpProjectRootGeneration(key: string): void {
     this.projectRootGenerations.set(key, this.projectRootGeneration(key) + 1);
   }
 
-  private rememberDetachedWireTerminal(
+  protected rememberDetachedWireTerminal(
     sessionId: string,
     metadata: Partial<SessionMetadata>,
   ): DetachedWireTerminalTombstone | undefined {
@@ -877,95 +844,13 @@ export class SessionRepository {
   }
 
   closeSearchIndex(): void {
-    // Work still waiting for its policy runs as refused: writes leave a repair intent, reads answer nothing.
-    for (const work of [...this.searchIndexBatch.splice(0), ...this.searchIndexQueue.splice(0)]) {
-      try {
-        work(() => "inactive");
-      } catch (error) {
-        log.warn({ error }, "session search index work failed");
-      }
-    }
-    this.pendingSearchWrites.clear();
     this.searchIndex.close();
   }
 
-  /**
-   * Runs database work under a policy that is current when the work runs. A refreshing source is awaited off the
-   * caller's path: saves return once their files are written. Each batch is claimed before its refresh and
-   * runs in order with no await between the policy and the database.
-   */
-  private withSearchIndexPolicy(work: (admit: () => SessionSearchIndexPolicy) => void): void {
-    if (this.refreshSearchIndexPolicy === undefined) {
-      work(this.getSearchIndexPolicy);
-      return;
-    }
-    this.searchIndexQueue.push(work);
-    this.searchIndexDrain ??= this.drainSearchIndexQueue(this.refreshSearchIndexPolicy);
-  }
-
-  private async drainSearchIndexQueue(refresh: () => Promise<() => SessionSearchIndexPolicy>): Promise<void> {
-    try {
-      while (this.searchIndexQueue.length > 0) {
-        this.searchIndexBatch = this.searchIndexQueue.splice(0);
-        const revision = this.searchSourceRevision;
-        const readPolicy = await refresh().catch((): (() => SessionSearchIndexPolicy) => () => "inactive");
-        const admit = (): SessionSearchIndexPolicy => revision === this.searchSourceRevision && this.searchSourceWrites === 0
-          ? readPolicy() : "inactive";
-        for (const work of this.searchIndexBatch.splice(0)) {
-          try {
-            work(admit);
-          } catch (error) {
-            log.warn({ error }, "session search index work failed");
-          }
-        }
-      }
-    } finally {
-      this.searchIndexDrain = undefined;
-    }
-  }
-
-  private answerFromSearchIndex<T>(work: (admit: () => SessionSearchIndexPolicy) => T): Promise<T> {
-    return new Promise((resolve, reject) => {
-      this.withSearchIndexPolicy((admit) => {
-        try {
-          resolve(work(admit));
-        } catch (error) {
-          reject(error);
-        }
-      });
-    });
-  }
-
-  /** Resolves once the database work queued so far has run. */
-  searchIndexIdle(): Promise<void> {
-    return this.searchIndexDrain ?? Promise.resolve();
-  }
-
-  /** Searches after the queued writes, with the policy refreshed for this call. */
-  searchSessionsWithCurrentPolicy(query: string, options: Pick<ListSessionsOptions, "kind" | "routineId" | "projectRoot" | "includeUnscoped"> = {},
-    onAdmission?: (assertLive: () => void) => void): Promise<SessionSearchEntry[]> {
-    return this.answerFromSearchIndex((admit) => {
-      if (!onAdmission) return this.querySearchIndex(query, options, admit);
-      const revision = this.searchSourceRevision;
-      const policy = admit();
-      const result = this.querySearchIndex(query, options, admit);
-      onAdmission(() => {
-        if (revision !== this.searchSourceRevision || this.searchSourceWrites !== 0 || admit() !== policy) throw new Error("Session search authorization changed");
-      });
-      return result;
-    });
-  }
-
-  /** A synchronous search cannot refresh the policy, so a repository that requires a refresh answers nothing. */
   searchSessions(query: string, options: Pick<ListSessionsOptions, "kind" | "routineId" | "projectRoot" | "includeUnscoped"> = {}): SessionSearchEntry[] {
-    return this.querySearchIndex(query, options, this.refreshSearchIndexPolicy === undefined ? this.getSearchIndexPolicy : () => "inactive");
-  }
-
-  private querySearchIndex(query: string, options: Pick<ListSessionsOptions, "kind" | "routineId" | "projectRoot" | "includeUnscoped">,
-    admit: () => SessionSearchIndexPolicy): SessionSearchEntry[] {
     // Require two code points; exactly two use LIKE because trigram MATCH requires three.
     if ([...query.trim()].length < 2) return [];
-    if (!this.canUseSearchIndex("read", admit) || !this.searchIndex.open()) return [];
+    if (!this.searchIndex.open()) return [];
     try {
       // The index has no schema version to trigger a rebuild, so rows indexed before staged titles were unwrapped are repaired on read.
       // This only repairs a stored title whose 80-code-point cut kept the whole envelope header; a longer header stays raw until the session is saved again.
@@ -1004,18 +889,17 @@ export class SessionRepository {
     }
     const targetPath = join(this.sessionsDir, `${sessionId}.jsonl`);
     await withFileLock(targetPath, async () => {
-      this.mutateSessionSearchSource(sessionId, () => {
-        this.writeSessionTranscriptLocked(sessionId, targetPath, messages);
-        // Whole-history save supersedes orphan recovery state; retain sidecars for locally running turns.
-        if (!this.isTurnJournalLive(sessionId)) {
-          removeTurnInflightRecord(turnInflightPath(this.sessionsDir, sessionId));
-        }
-      }, messages);
+      this.writeSessionTranscriptLocked(sessionId, targetPath, messages);
     });
+    // Whole-history save supersedes orphan recovery state; retain sidecars for locally running turns.
+    if (!this.isTurnJournalLive(sessionId)) {
+      removeTurnInflightRecord(turnInflightPath(this.sessionsDir, sessionId));
+    }
+    this.indexSessionForSearch(sessionId, messages);
   }
 
   // Rewrite through temp, fsync, and rename so crashes retain a complete prior transcript.
-  private writeSessionTranscriptLocked(sessionId: string, targetPath: string, messages: unknown[]): void {
+  protected writeSessionTranscriptLocked(sessionId: string, targetPath: string, messages: unknown[]): void {
     const prepared = this.prepareSessionMessagesForDisk(sessionId, messages);
     const lines = prepared.messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
     let unchanged = false;
@@ -1069,14 +953,11 @@ export class SessionRepository {
         && rows !== null
       ) {
         if (rows.length === 0) return "unchanged";
-        await this.withSearchSourceWrite(async () => {
-          const prepared = this.prepareSessionMessagesForDisk(sessionId, rows);
-          const after = await appendJsonlRecords(targetPath, prepared.messages);
-          transcriptWriteStates.set(targetPath, { ids, ...after });
-        });
+        const prepared = this.prepareSessionMessagesForDisk(sessionId, rows);
+        const after = await appendJsonlRecords(targetPath, prepared.messages);
+        transcriptWriteStates.set(targetPath, { ids, ...after });
         return "appended";
       }
-      this.markSearchSourceChanged();
       this.writeSessionTranscriptLocked(sessionId, targetPath, messages);
       return "rewritten";
     });
@@ -1088,13 +969,8 @@ export class SessionRepository {
       throw new Error(`beginTurnJournal: invalid sessionId "${sessionId}"`);
     }
     const path = turnInflightPath(this.sessionsDir, sessionId);
-    const hadJournal = lstatSync(path, { throwIfNoEntry: false }) !== undefined;
     liveTurnJournals.set(path, (liveTurnJournals.get(path) ?? 0) + 1);
-    if (hadJournal) {
-      await this.withSearchSourceWrite(() => writeTurnInflightRecord(path, { v: 1, startedAt }));
-    } else {
-      await writeTurnInflightRecord(path, { v: 1, startedAt });
-    }
+    await writeTurnInflightRecord(path, { v: 1, startedAt });
   }
 
   // Undefined partial content preserves the in-flight marker.
@@ -1102,14 +978,10 @@ export class SessionRepository {
     if (!isValidSessionId(sessionId)) {
       throw new Error(`writeTurnPartial: invalid sessionId "${sessionId}"`);
     }
-    await this.withSearchSourceWrite(async () => {
-      if (partial && this.isTurnJournalLive(sessionId)) this.liveSearchRecovery.add(sessionId);
-      await writeTurnInflightRecord(
-        turnInflightPath(this.sessionsDir, sessionId),
-        partial ? { v: 1, startedAt, partial } : { v: 1, startedAt },
-      );
-      if (!partial) this.liveSearchRecovery.delete(sessionId);
-    });
+    await writeTurnInflightRecord(
+      turnInflightPath(this.sessionsDir, sessionId),
+      partial ? { v: 1, startedAt, partial } : { v: 1, startedAt },
+    );
   }
 
   // Deregister the turn but retain recovery evidence until persistence is confirmed.
@@ -1122,19 +994,15 @@ export class SessionRepository {
       return;
     }
     liveTurnJournals.delete(path);
-    if (this.liveSearchRecovery.delete(sessionId)) this.markSearchSourceChanged();
   }
 
   // Remove the sidecar only after its owner confirms the transcript contains the turn.
   clearTurnJournal(sessionId: string): void {
     if (!isValidSessionId(sessionId) || this.isTurnJournalLive(sessionId)) return;
-    const path = turnInflightPath(this.sessionsDir, sessionId);
-    if (lstatSync(path, { throwIfNoEntry: false }) === undefined) return;
-    this.markSearchSourceChanged();
-    removeTurnInflightRecord(path);
+    removeTurnInflightRecord(turnInflightPath(this.sessionsDir, sessionId));
   }
 
-  private isTurnJournalLive(sessionId: string): boolean {
+  protected isTurnJournalLive(sessionId: string): boolean {
     return liveTurnJournals.has(turnInflightPath(this.sessionsDir, sessionId));
   }
 
@@ -1169,9 +1037,10 @@ export class SessionRepository {
   }
 
   // Empty searchable content removes the index row; derive timestamps from transcript mtime, not indexing time.
-  private buildIndexInput(sessionId: string, messages: unknown[], metadata: SessionMetadata | null): IndexedSessionInput | null {
+  private buildIndexInput(sessionId: string, messages: unknown[]): IndexedSessionInput | null {
     const content = extractSearchableContent(messages);
     if (!content) return null;
+    const metadata = this.loadSessionMetadata(sessionId);
     const summary = this.deriveSessionSummary(sessionId, messages);
     const mtimeMs = getFileMtimeMs(join(this.sessionsDir, `${sessionId}.jsonl`));
     const timestamp = mtimeMs >= 0 ? new Date(mtimeMs).toISOString() : new Date().toISOString();
@@ -1186,229 +1055,114 @@ export class SessionRepository {
     };
   }
 
-  private mutateSessionSearchSource(sessionId: string, write: () => void, messages?: unknown[]): void {
-    if (this.refreshSearchIndexPolicy === undefined) {
-      this.deferInactiveSearchWrite();
-      write();
-      this.indexSessionForSearch(sessionId, messages);
-      return;
-    }
-
-    // A marker from a previous batch or process requires a full repair.
-    const first = this.pendingSearchWrites.size === 0;
-    if (first && this.hasSearchRepairIntent()) this.searchIndexState = "stale";
-    this.persistSearchRepairIntent();
-    this.searchSourceRevision += 1;
+  // Open and close the index per operation so persistence leaves no database handle blocking directory cleanup.
+  protected indexSessionForSearch(sessionId: string, messages: unknown[]): void {
+    if (!this.searchIndex.open()) return;
     try {
-      write();
-    } catch (error) {
-      this.searchIndexState = "stale";
-      throw error;
-    }
-
-    this.pendingSearchWrites.add(sessionId);
-    this.scheduleSearchWrites();
-  }
-
-  private scheduleSearchWrites(): void {
-    this.withSearchIndexPolicy((admit) => this.flushSearchWrites(admit));
-  }
-
-  private markSearchSourceChanged(): void {
-    this.recordSearchRepairIntent();
-    this.searchSourceRevision += 1;
-  }
-
-  private async withSearchSourceWrite<T>(write: () => Promise<T>): Promise<T> {
-    this.markSearchSourceChanged();
-    this.searchSourceWrites += 1;
-    try {
-      return await write();
-    } finally {
-      this.searchSourceRevision += 1;
-      this.searchSourceWrites -= 1;
-      if (this.searchSourceWrites === 0 && this.pendingSearchWrites.size > 0) this.scheduleSearchWrites();
-    }
-  }
-
-  private writeSessionSearchRow(sessionId: string, messages: unknown[] | null): boolean {
-    const input = messages === null ? null
-      : this.buildIndexInput(sessionId, messages, this.readSessionMetadataForSearch(sessionId));
-    return input ? this.searchIndex.upsertSession(input) : this.searchIndex.deleteSession(sessionId);
-  }
-
-  private indexSessionForSearch(sessionId: string, messages: unknown[] | undefined): void {
-    if (!this.canUseSearchIndex("write", this.getSearchIndexPolicy) || !this.searchIndex.open()) return;
-    try {
-      if (!this.writeSessionSearchRow(sessionId, messages ?? this.loadSession(sessionId))) this.recordSearchRepairIntent();
-    } catch (error) {
-      this.recordSearchRepairIntent();
-      log.warn({ error }, "could not update session search row");
+      const input = this.buildIndexInput(sessionId, messages);
+      if (input) this.searchIndex.upsertSession(input);
+      else this.searchIndex.deleteSession(sessionId);
     } finally {
       this.searchIndex.close();
     }
   }
-
-  private flushSearchWrites(admit: () => SessionSearchIndexPolicy): void {
-    if (this.pendingSearchWrites.size === 0) return;
-    // Recovery may have already projected every pending source change.
-    if (!this.canUseSearchIndex("write", admit) || this.pendingSearchWrites.size === 0) return;
+  private deleteSessionFromSearchIndex(sessionId: string): void {
+    if (!this.searchIndex.open()) return;
     try {
-      if (!this.searchIndex.open()) throw new Error("could not open session search index for writing");
-      for (const sessionId of this.pendingSearchWrites) {
-        if (!this.writeSessionSearchRow(sessionId, this.loadSession(sessionId))) {
-          throw new Error("could not commit session search row");
-        }
-      }
-      this.clearSearchRepairIntent();
-    } catch (error) {
-      this.searchIndexState = "stale";
-      log.warn({ error }, "could not project queued session search changes");
-    } finally {
-      this.pendingSearchWrites.clear();
-      this.searchIndex.close();
-    }
-  }
-
-  private hasSearchRepairIntent(): boolean {
-    return lstatSync(join(this.sessionsDir, SEARCH_REPAIR_INTENT), { throwIfNoEntry: false }) !== undefined;
-  }
-
-  private recordSearchRepairIntent(): void {
-    this.searchIndexState = "stale";
-    this.persistSearchRepairIntent();
-  }
-
-  private persistSearchRepairIntent(): void {
-    if (!this.hasSearchRepairIntent()) this.sessionNamespace.writeExistingJsonSync(SEARCH_REPAIR_INTENT, true);
-  }
-
-  private clearSearchRepairIntent(): void {
-    if (this.searchSourceWrites > 0 || this.liveSearchRecovery.size > 0) return;
-    try {
-      unlinkSync(join(this.sessionsDir, SEARCH_REPAIR_INTENT));
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-    }
-  }
-
-  private deferInactiveSearchWrite(): void {
-    try {
-      if (this.getSearchIndexPolicy() === "inactive") this.recordSearchRepairIntent();
-    } catch (error) {
-      log.warn({ error }, "could not persist session search repair intent");
-    }
-  }
-
-  private pauseSearchIndex(): void {
-    if (this.searchIndexState === "discarded" && !this.hasSearchRepairIntent()) return;
-    this.searchIndexState = "stale";
-    this.searchIndex.discard();
-    this.clearSearchRepairIntent();
-    this.pendingSearchWrites.clear();
-    this.searchIndexState = "discarded";
-  }
-
-  private canUseSearchIndex(operation: "read" | "write", admit: () => SessionSearchIndexPolicy): boolean {
-    try {
-      if (this.searchSourceWrites > 0) return false;
-      const policy = admit();
-      if (policy === "inactive") {
-        if (operation === "write") this.recordSearchRepairIntent();
-        return false;
-      }
-      if (policy === "paused") {
-        this.pauseSearchIndex();
-        return false;
-      }
-      if (this.searchIndexState !== "current" || (this.pendingSearchWrites.size === 0 && this.liveSearchRecovery.size === 0 && this.hasSearchRepairIntent())) {
-        this.rebuildSessionSearchRows();
-      }
-      if (policy === "enabled-with-recovery" && !this.searchIndexChecked) {
-        if (!this.hasPopulatedSearchIndex()) this.rebuildSessionSearchRows();
-        this.searchIndexChecked = true;
-      }
-      return true;
-    } catch (error) {
-      log.warn({ error }, "could not update session search index state");
-      return false;
-    }
-  }
-
-  private hasPopulatedSearchIndex(): boolean {
-    if (statPathIfPresent(this.searchIndex.getDbPath()) === null || !this.searchIndex.open()) return false;
-    try {
-      return this.searchIndex.rowCount() > 0;
-    } finally {
-      this.searchIndex.close();
-    }
-  }
-
-  private *sessionSearchInputs(): Iterable<IndexedSessionInput> {
-    const sessionFiles = this.listSessionJsonlFiles().sort();
-    for (const file of sessionFiles) {
-      const sessionId = file.slice(0, -".jsonl".length);
-      if (!isValidSessionId(sessionId)) continue;
-      const messages = this.loadSession(sessionId);
-      if (!Array.isArray(messages)) continue;
-      const input = this.buildIndexInput(sessionId, messages, this.readSessionMetadataForSearch(sessionId));
-      if (input) yield input;
-    }
-  }
-
-  private rebuildSessionSearchRows(): void {
-    this.searchIndexState = "stale";
-    try {
-      if (!this.searchIndex.open({ recoverCorruption: true })) {
-        throw new Error("search index could not be opened for repair");
-      }
-
-      this.searchIndex.writeRebuiltSessions(this.sessionSearchInputs());
-      this.clearSearchRepairIntent();
-      this.pendingSearchWrites.clear();
-      this.searchIndexState = "current";
-      this.searchIndexChecked = true;
+      this.searchIndex.deleteSession(sessionId);
     } finally {
       this.searchIndex.close();
     }
   }
 
   // Rebuild the complete search projection after detach so retries repair partial metadata/index updates.
-  private repairAllSessionSearchRowsForProjectDetach(admit: () => SessionSearchIndexPolicy): void {
-    if (this.searchSourceWrites > 0) return;
+  private repairAllSessionSearchRowsForProjectDetach(): void {
+    const dbPath = this.searchIndex.getDbPath();
+    this.searchIndex.close();
     try {
-      const policy = admit();
-      if (policy === "inactive") return;
-      if (policy === "paused") this.pauseSearchIndex();
-      else this.rebuildSessionSearchRows();
+      for (const suffix of ["", "-wal", "-shm"]) {
+        try {
+          unlinkSync(`${dbPath}${suffix}`);
+        } catch (error) {
+          if (!isMissingPathError(error)) throw error;
+        }
+      }
+      if (!this.searchIndex.open()) {
+        throw new Error("search index could not be opened after reset");
+      }
+
+      let expectedRows = 0;
+      const sessionFiles = readdirIfPresent(this.sessionsDir)
+        .filter((file) => file.endsWith(".jsonl"))
+        .sort();
+      for (const file of sessionFiles) {
+        const sessionId = file.slice(0, -".jsonl".length);
+        if (!isValidSessionId(sessionId)) continue;
+        const messages = this.loadSession(sessionId);
+        if (!Array.isArray(messages)) continue;
+        const input = this.buildIndexInput(sessionId, messages);
+        if (!input) continue;
+        this.searchIndex.upsertSession(input);
+        expectedRows += 1;
+      }
+      const actualRows = this.searchIndex.rowCount();
+      if (actualRows !== expectedRows) {
+        throw new Error(
+          `search index row count mismatch (expected ${expectedRows}, got ${actualRows})`,
+        );
+      }
     } catch (cause) {
       throw Object.assign(
         new Error("workspace session search index repair failed"),
         { code: "SESSION_SEARCH_INDEX_REPAIR_FAILED", cause },
       );
+    } finally {
+      this.searchIndex.close();
     }
   }
 
   // Boot integrity repair rebuilds missing or corrupt indexes from JSONL; search never scans as a fallback.
-  verifyOrRebuildSearchIndex(): Promise<void> {
-    return this.answerFromSearchIndex((admit) => this.verifyOrRebuildSearchIndexUnder(admit));
-  }
-
-  private verifyOrRebuildSearchIndexUnder(admit: () => SessionSearchIndexPolicy): void {
-    if (!this.canUseSearchIndex("read", admit)) return;
+  async verifyOrRebuildSearchIndex(): Promise<void> {
     const opened = this.searchIndex.open();
-    if (opened) {
-      try {
-        // Skip transcript enumeration for healthy populated indexes.
-        if (this.searchIndex.rowCount() > 0 || this.listSessionJsonlFiles().length === 0) return;
-      } finally {
-        this.searchIndex.close();
-      }
+    // Skip transcript enumeration for healthy populated indexes.
+    if (opened && this.searchIndex.rowCount() > 0) {
+      this.searchIndex.close();
+      return;
     }
-    this.rebuildSessionSearchRows();
+    const sessionFiles = this.listSessionJsonlFiles();
+    const needsRebuild = !opened || sessionFiles.length > 0;
+    if (!needsRebuild) {
+      this.searchIndex.close();
+      return;
+    }
+    log.info("search index rebuild starting (%d session file(s))", sessionFiles.length);
+    if (opened) {
+      this.searchIndex.close();
+    }
+    await SessionSearchIndex.deleteFile(this.searchIndex.getDbPath());
+    if (!this.searchIndex.open()) {
+      log.warn("search index rebuild failed: could not reopen index after reset");
+      return;
+    }
+    try {
+      const UUID_RE = /^[0-9a-f-]{8,}$/i;
+      for (const file of sessionFiles) {
+        const stem = file.replace(".jsonl", "");
+        if (!UUID_RE.test(stem)) continue;
+        const messages = this.loadSession(stem);
+        if (!Array.isArray(messages)) continue;
+        // Keep one index handle across the bulk rebuild.
+        const input = this.buildIndexInput(stem, messages);
+        if (input) this.searchIndex.upsertSession(input);
+        else this.searchIndex.deleteSession(stem);
+      }
+      log.info("search index rebuild complete (%d row(s))", this.searchIndex.rowCount());
+    } finally {
+      this.searchIndex.close();
+    }
   }
 
-  private listSessionJsonlFiles(): string[] {
+  protected listSessionJsonlFiles(): string[] {
     return readdirIfPresent(this.sessionsDir).filter((file) => file.endsWith(".jsonl"));
   }
 
@@ -1423,8 +1177,7 @@ export class SessionRepository {
     await withFileLock(targetPath, async () => {
       const prepared = this.prepareSessionMessagesForDisk(sessionId, messages);
       const lines = prepared.messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
-      this.markSearchSourceChanged();
-      writeUtf8FileAtomicSync(targetPath, lines);
+      writeFileSync(targetPath, lines, "utf-8");
       // Release unpublished artifact pins only after durable checkpoint ownership commits.
       const unpublished = this.unpublishedOutputCaptures.get(sessionId);
       for (const id of prepared.keepCaptureIds) unpublished?.delete(id);
@@ -1693,8 +1446,6 @@ export class SessionRepository {
       ? this.projectRootGeneration(guardedProjectKey)
       : undefined;
     await withFileLock(this.sessionMetadataLockPath(sessionId), async () => {
-      // A metadata update must not replace an unreadable sidecar with default scope.
-      readSessionMetadataObject(targetPath);
       const sessionTombstones = this.detachedProjectRootsBySession.get(sessionId);
       const rootIsDetached = Boolean(
         guardedProjectKey && this.detachedProjectRoots.has(guardedProjectKey),
@@ -1725,11 +1476,16 @@ export class SessionRepository {
         safe = detachProjectBinding(safe);
         this.rememberDetachedWireTerminal(sessionId, safe);
       }
-      this.mutateSessionSearchSource(sessionId, () => {
-        writeUtf8FileAtomicSync(targetPath, JSON.stringify(safe, null, 2));
-        this.notePaneSession(sessionId, safe);
-      });
+      writeUtf8FileAtomicSync(targetPath, JSON.stringify(safe, null, 2));
+      this.notePaneSession(sessionId, safe);
     });
+    // Reindex metadata-only updates too because project, kind, routine, and title fields are denormalized.
+    const messages = this.loadSession(sessionId);
+    if (Array.isArray(messages)) {
+      this.indexSessionForSearch(sessionId, messages);
+    } else {
+      this.deleteSessionFromSearchIndex(sessionId);
+    }
   }
 
   // Re-add permits new bindings but keeps old session tombstones; it does not reassign detached chats.
@@ -1741,7 +1497,7 @@ export class SessionRepository {
   }
 
   // Detach project metadata without deleting transcripts; re-read under locks for idempotent concurrent cleanup.
-  private sessionMetadataTargets(): Array<{ sessionId: string; targetPath: string }> {
+  protected sessionMetadataTargets(): Array<{ sessionId: string; targetPath: string }> {
     return readdirIfPresent(this.sessionsDir)
       .filter((file) => file.endsWith(".meta.json"))
       .map((file) => ({
@@ -1758,15 +1514,17 @@ export class SessionRepository {
     if (!projectRootKey(projectRoot)) return 0;
     let count = 0;
     for (const { sessionId, targetPath } of this.sessionMetadataTargets()) {
-      let parsed: Record<string, unknown> | null;
+      const raw = readUtf8FileIfPresent(targetPath);
+      if (raw === null) continue;
+      let parsed: Record<string, unknown>;
       try {
-        parsed = readSessionMetadataObject(targetPath);
+        parsed = parseSessionMetadataObject(raw);
       } catch (error) {
         const errorName = error instanceof Error ? error.name : "UnknownError";
         log.warn("countSessionsInProject: invalid metadata for %s (%s)", sessionId, errorName);
         throw Object.assign(new Error("workspace session metadata unreadable"), { code: "SESSION_METADATA_INVALID", cause: error });
       }
-      if (parsed !== null && sessionMetadataInProject(parsed, projectRoot)) count += 1;
+      if (sessionMetadataInProject(parsed, projectRoot)) count += 1;
     }
     return count;
   }
@@ -1803,8 +1561,10 @@ export class SessionRepository {
       // Preflight every candidate while all locks are held before rewriting any metadata.
       for (const { sessionId, targetPath } of metadataTargets) {
         try {
-          const parsed = readSessionMetadataObject(targetPath);
-          if (parsed === null || !sessionMetadataInProject(parsed, projectRoot)) continue;
+          const raw = readUtf8FileIfPresent(targetPath);
+          if (raw === null) continue;
+          const parsed = parseSessionMetadataObject(raw);
+          if (!sessionMetadataInProject(parsed, projectRoot)) continue;
           const normalized = normalizeSessionMetadata(parsed);
           const terminalTombstone = this.detachedWireTerminalTombstones.get(sessionId);
           const next = terminalTombstone
@@ -1822,8 +1582,7 @@ export class SessionRepository {
         }
       }
 
-      // Persist projection repair before detaching metadata so it survives workspace removal completion.
-      this.markSearchSourceChanged();
+      // Keep root intent active through partial I/O failure so retry can repair metadata and the complete index.
       for (const { sessionId, targetPath, normalized, next } of plans) {
         writeUtf8FileAtomicSync(targetPath, JSON.stringify(next, null, 2));
         const sessionTombstones = this.detachedProjectRootsBySession.get(sessionId)
@@ -1840,7 +1599,7 @@ export class SessionRepository {
       }
     });
 
-    this.withSearchIndexPolicy((admit) => this.repairAllSessionSearchRowsForProjectDetach(admit));
+    this.repairAllSessionSearchRowsForProjectDetach();
     return detachedCount;
   }
 
@@ -1863,7 +1622,6 @@ export class SessionRepository {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     }
     if (options.bump) {
-      this.markSearchSourceChanged();
       const now = new Date();
       utimesSync(path, now, now);
     }
@@ -1878,34 +1636,17 @@ export class SessionRepository {
     return readUtf8FileIfPresent(path) !== null;
   }
 
-  private readSessionMetadataForSearch(sessionId: string): SessionMetadata | null {
-    const path = join(this.sessionsDir, `${sessionId}.meta.json`);
-    try {
-      const metadata = readSessionMetadataObject(path);
-      if (metadata === null) return null;
-      const { sessionKind, routineId, projectRoot } = metadata;
-      if (sessionKind !== undefined && sessionKind !== normalizeSessionKind(sessionKind)
-        || routineId !== undefined && (typeof routineId !== "string" || routineId.trim().length === 0)
-        || projectRoot !== undefined && (
-          typeof projectRoot !== "string" || projectRoot.includes("\0")
-          || projectRoot.trim().length === 0 || projectRoot.trim().length > MAX_PROJECT_ROOT_CHARS
-        )) {
-        throw new TypeError("invalid search scope");
-      }
-      return normalizeSessionMetadata(metadata);
-    } catch {
-      throw new Error("invalid session metadata for search");
-    }
-  }
-
   loadSessionMetadata(sessionId: string): SessionMetadata | null {
     if (!isValidSessionId(sessionId)) {
       throw new Error(`loadSessionMetadata: invalid sessionId "${sessionId}"`);
     }
     const path = join(this.sessionsDir, `${sessionId}.meta.json`);
     try {
-      const parsed = readSessionMetadataObject(path);
-      return parsed === null ? null : normalizeSessionMetadata(parsed);
+      const raw = readUtf8FileIfPresent(path);
+      if (raw === null) return null;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== "object") return null;
+      return normalizeSessionMetadata(parsed);
     } catch (err) {
       // Warn on metadata parse or I/O failures while retaining the null return contract.
       log.warn(`loadSessionMetadata failed for ${sessionId}: %s`, (err as Error).message);
@@ -2010,7 +1751,7 @@ export class SessionRepository {
     return index;
   }
 
-  private notePaneSession(sessionId: string, metadata: SessionMetadata | null): void {
+  protected notePaneSession(sessionId: string, metadata: SessionMetadata | null): void {
     const index = this.paneSessions;
     if (!index) return;
     for (const [tabId, ids] of index) {
@@ -2175,7 +1916,6 @@ export class SessionRepository {
     );
     if (kept.length === checkpoints.length) return;
 
-    this.markSearchSourceChanged();
     for (const compactNum of discardedCompactNums) {
       const snapshotPath = join(this.checkpointsDir, sessionId, `${compactNum}.jsonl`);
       try {
@@ -2223,13 +1963,12 @@ export class SessionRepository {
       this.detachedProjectRootsBySession.delete(sessionId);
       await deleteCodeCheckpoints(sessionId);
       this.detachedWireTerminalTombstones.delete(sessionId);
-      this.mutateSessionSearchSource(sessionId, () => {
-        const jsonlPath = join(this.sessionsDir, `${sessionId}.jsonl`);
-        unlinkIfPresent(jsonlPath);
-        transcriptWriteStates.delete(jsonlPath);
-        unlinkIfPresent(join(this.sessionsDir, `${sessionId}.meta.json`));
-        this.notePaneSession(sessionId, null);
-      });
+      const jsonlPath = join(this.sessionsDir, `${sessionId}.jsonl`);
+      unlinkIfPresent(jsonlPath);
+      transcriptWriteStates.delete(jsonlPath);
+      const metaPath = join(this.sessionsDir, `${sessionId}.meta.json`);
+      unlinkIfPresent(metaPath);
+      this.notePaneSession(sessionId, null);
       const sessionDir = join(this.sessionsDir, sessionId);
       try {
         rmSync(sessionDir, { recursive: true, force: true });
@@ -2247,6 +1986,13 @@ export class SessionRepository {
         rmSync(diffCacheDir, { recursive: true, force: true });
       } catch (err) {
         log.warn(`deleteSession: failed to remove diff cache dir ${diffCacheDir}: ${(err as Error).message}`);
+      }
+      if (this.searchIndex.open()) {
+        try {
+          this.searchIndex.deleteSession(sessionId);
+        } finally {
+          this.searchIndex.close();
+        }
       }
     });
   }
@@ -2301,7 +2047,7 @@ export class SessionRepository {
     return true;
   }
 
-  private prepareSessionMessagesForDisk(sessionId: string, messages: unknown[]): {
+  protected prepareSessionMessagesForDisk(sessionId: string, messages: unknown[]): {
     messages: unknown[];
     keepArtifactKeys: Set<string>;
     keepCaptureIds: Set<string>;
@@ -2512,7 +2258,7 @@ export class SessionRepository {
   }
 
   // Derive summaries only from string user/assistant content so disk and in-memory paths agree.
-  private deriveSessionSummary(
+  protected deriveSessionSummary(
     sessionId: string,
     messages: unknown[] | null,
   ): { title: string; preview: string } {
