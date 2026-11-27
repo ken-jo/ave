@@ -759,9 +759,6 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     const coverage = { dns: "host-resolver", rawIp: rawIpProbe.rawIp };
     expect(getWindowsSandboxSubstrate()?.shellEgressProtocolCoverage).toEqual(coverage);
     expect(getHostShellExecutionPlan().egressProtocolCoverage).toEqual(coverage);
-    if (rawIpProbe.reachableTargets.length > 0) {
-      expect(h.logger.warn).toHaveBeenCalledWith({ targets: ["t4"] }, "raw-ip-reachable");
-    }
   });
 
   it("keeps the approved route and records the reason when PowerShell cannot start in a container", async () => {

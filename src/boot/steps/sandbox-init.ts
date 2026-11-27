@@ -730,7 +730,6 @@ async function settleWindowsMxcStartProbe(): Promise<{ mxc: WindowsSandboxPlanIn
     if (mxc.state === "available") {
       log.info({ mxcShellState: mxc.state }, "boot: MXC shell start probe succeeded in %d ms", Date.now() - started);
       const rawIpProbe = mxc.rawIpProbe;
-      if (rawIpProbe && rawIpProbe.reachableTargets.length > 0) log.warn({ targets: rawIpProbe.reachableTargets }, "raw-ip-reachable");
       return { mxc: { state: "available" }, coverage: rawIpProbe ? { dns: "host-resolver", rawIp: rawIpProbe.rawIp } : undefined };
     }
     log.warn({ mxcShellState: mxc.state, mxcShellReason: mxc.reason },

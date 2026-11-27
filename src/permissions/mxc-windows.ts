@@ -429,7 +429,7 @@ export async function probeMxcPowerShellStart(
     });
     const started = await deps.run(wxcExec, mxcRequestArgs(startRequest, wxcExec), MXC_START_PROBE_TIMEOUT_MS + 5_000);
     const start = classifyMxcStartProbe(started.code, started.stdout, started.stderr);
-    if (!start.ok) return unavailable(start.reason, start.detail);
+    if (!start.ok) return unavailable(start.reason, listener === undefined ? start.detail : `exit ${String(started.code)}`);
     const available = { state: "available", windowsBuild: deps.windowsBuild } as const;
     if (!measure) return available;
     const evidence = listener === undefined ? undefined : parseMxcRawIpProbeEvidence(started.stdout, probeId, started.stderr);
@@ -437,11 +437,12 @@ export async function probeMxcPowerShellStart(
       ? { rawIp: "unknown", reason: "listener-unavailable", reachableTargets: [] }
       : classifyMxcRawIpProbe(evidence, controlRefused);
     log.info({ launcherSha256: pinnedWxcExecSha256(deps.arch), schema: startRequest.version,
-      network: startRequest.network, windowsBuild: deps.windowsBuild, evidence, controlRefused, ...rawIpProbe },
+      network: startRequest.network, windowsBuild: deps.windowsBuild },
       "MXC raw IP startup measurement");
+    if (rawIpProbe.reachableTargets.length > 0) log.warn("raw-ip-reachable");
     return { ...available, rawIpProbe };
   } catch (error) {
-    return unavailable("powershell-start-failed", errorMessage(error));
+    return unavailable("powershell-start-failed", listener === undefined ? errorMessage(error) : "Measurement launcher failed");
   } finally {
     await listener?.close().catch(error => log.warn({ error }, "MXC startup measurement listener cleanup failed"));
   }
