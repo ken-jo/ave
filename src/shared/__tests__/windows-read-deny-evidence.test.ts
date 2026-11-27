@@ -185,6 +185,23 @@ describe("Windows read deny evidence admission", () => {
       pin.mockRestore();
     }
   });
+  it("keeps denying a target that appears after a missing observation", async () => {
+    const fixture = mkdtempSync(join(tmpdir(), "ave-appeared-deny-"));
+    try {
+      const path = join(fixture, "secret");
+      const snapshot: WindowsReadDenySnapshot = new Map([[windowsReadDenyKey(path), { status: "missing" }]]);
+      expect(windowsReadDenyEvidence(path, snapshot).status).toBe("missing");
+
+      writeFileSync(path, "fixture");
+      expect(windowsReadDenyEvidence(path, snapshot)).toEqual({
+        status: "error",
+        reason: "DACL snapshot target now exists",
+      });
+    } finally {
+      await cleanupTmpDir(fixture);
+    }
+  });
+
   it("keeps a private target whose path is now missing", async () => {
     const fixture = mkdtempSync(join(tmpdir(), "ave-missing-private-"));
     const pins = vi.spyOn(windowsPathFacts, "pinWindowsPaths").mockReturnValue([]);
