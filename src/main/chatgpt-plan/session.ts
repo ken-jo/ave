@@ -242,8 +242,13 @@ export class ChatGptPlanSession {
             code: result.code,
             codeVerifier: attempt.codeVerifier,
             redirectUri: listener.redirectUri,
+          }, () => {
+            if (record && this.record === record) this.withdrawGrant();
           });
         } catch (error) {
+          if (record && this.record === record && error instanceof ChatGptPlanOAuthError && error.failure === "invalid-client") {
+            await this.discardRegistration();
+          }
           // A refused code is discarded; a newly issued client is kept so the
           // next attempt reauthorizes it instead of registering again.
           if (!record && error instanceof ChatGptPlanOAuthError && error.failure === "invalid-grant") {
@@ -403,19 +408,25 @@ export class ChatGptPlanSession {
         response = await refreshAccessToken(this.options.fetch, {
           clientId: record.clientId,
           refreshToken: record.tokens.refreshToken,
+        }, () => {
+          if (this.record === record) this.withdrawGrant();
         });
       } catch (error) {
         this.emit({ event: "refresh-failed", failure: failureCode(error) });
         if (error instanceof ChatGptPlanOAuthError && error.failure === "refresh-token-unusable") {
-          await this.save({ ...record, tokens: null });
+          if (this.record === record) await this.save({ ...record, tokens: null });
           this.notice = "reconnect-required";
           throw new ChatGptPlanSessionError("reconnect-required");
         }
         if (error instanceof ChatGptPlanOAuthError && error.failure === "invalid-client") {
+          if (this.record === record) await this.discardRegistration();
+          this.notice = "reconnect-required";
           throw new ChatGptPlanSessionError("invalid-client");
         }
         throw new ChatGptPlanSessionError("temporarily-unavailable");
       }
+      if (this.record !== record) throw new ChatGptPlanSessionError("signed-out");
+      if (!response.scopes.includes(CHATGPT_PLAN_USAGE_SCOPE)) this.withdrawGrant();
       let idToken = record.tokens.idToken;
       if (response.idToken) {
         try {
@@ -428,8 +439,11 @@ export class ChatGptPlanSession {
           if (!(error instanceof ChatGptPlanIdTokenError) || error.failure !== "jwks-unavailable") {
             // A rotated ID token that fails its signature, issuer, audience or subject check is not this account's:
             // nothing from the response is stored, and the superseded refresh token cannot be reused.
+            if (this.record === record) {
+              this.withdrawGrant();
+              await this.save({ ...record, tokens: null });
+            }
             this.emit({ event: "refresh-failed", failure: failureCode(error) });
-            await this.save({ ...record, tokens: null });
             this.notice = "reconnect-required";
             throw new ChatGptPlanSessionError("reconnect-required");
           }
@@ -438,6 +452,7 @@ export class ChatGptPlanSession {
           this.emit({ event: "refresh-failed", failure: "id-token-jwks-unavailable" });
         }
       }
+      if (this.record !== record) throw new ChatGptPlanSessionError("signed-out");
       const tokens = this.storedTokens(response, idToken);
       await this.save({ ...record, tokens });
       return tokens;
@@ -474,8 +489,7 @@ export class ChatGptPlanSession {
   private async save(record: AccountRecord): Promise<void> {
     if (this.record?.tokens?.scopes.includes(CHATGPT_PLAN_USAGE_SCOPE)
       && !record.tokens?.scopes.includes(CHATGPT_PLAN_USAGE_SCOPE)) {
-      this.grantWithdrawn = true;
-      this.connectionLost?.();
+      this.withdrawGrant();
     }
     if (!await this.options.secrets.isSecretStorageEncrypted()) {
       throw new ChatGptPlanSessionError("secure-storage-unavailable");
@@ -483,6 +497,17 @@ export class ChatGptPlanSession {
     await this.options.secrets.setSecret(CHATGPT_PLAN_ACCOUNT_SECRET_KEY, JSON.stringify(record));
     this.record = record;
     this.grantWithdrawn = false;
+  }
+
+  private withdrawGrant(): void {
+    if (this.grantWithdrawn) return;
+    this.grantWithdrawn = true;
+    this.connectionLost?.();
+  }
+
+  private async discardRegistration(): Promise<void> {
+    this.record = null;
+    await this.options.secrets.deleteSecret(CHATGPT_PLAN_ACCOUNT_SECRET_KEY);
   }
 
   private emit(event: ChatGptPlanSessionEvent): void {

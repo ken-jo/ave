@@ -1,4 +1,4 @@
-import { collectAsyncIterable as collect } from "../../../__tests__/test-helpers.js";
+import { collectAsyncIterable as collect, deferred } from "../../../__tests__/test-helpers.js";
 import { sseResponse } from "../../../__tests__/support/sse-response.js";
 import { describe, expect, it, vi } from "vitest";
 import { CHATGPT_PLAN_MODELS_URL, CHATGPT_PLAN_RESPONSES_URL, CHATGPT_PLAN_TOKEN_URL } from "../endpoints.js";
@@ -76,7 +76,11 @@ interface Harness {
   readonly opened: string[];
 }
 
-function harness(scopes: readonly string[] | null, responses: (url: string) => Response = () => sse(COMPLETED_TURN)): Harness {
+function harness(
+  scopes: readonly string[] | null,
+  responses: (url: string) => Response = () => sse(COMPLETED_TURN),
+  secrets = storedSecrets(scopes),
+): Harness {
   const requests: Harness["requests"] = [];
   const opened: string[] = [];
   const networkFetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -86,7 +90,7 @@ function harness(scopes: readonly string[] | null, responses: (url: string) => R
     return responses(url);
   }) as typeof fetch;
   const runtime = createChatGptPlanRuntime({
-    secrets: storedSecrets(scopes),
+    secrets,
     networkFetch,
     namespace: createSubscriptionRuntimeNamespace(),
     startListener: async () => ({
@@ -621,6 +625,44 @@ describe("SubscriptionRuntimeService with ChatGPT plan usage", () => {
       expect(after?.scope).not.toBe(before?.scope);
       await expect(svc.isConnected("chatgpt-plan")).resolves.toBe(false);
     } finally {
+      await svc.stop();
+    }
+  });
+
+  it.each([true, false])("classifies registration rejection at receipt (terminal: %s)", async (terminal) => {
+    const secrets = storedSecrets(PLAN_SCOPES);
+    const persistence = deferred<void>();
+    const clearing = vi.spyOn(secrets, "deleteSecret").mockImplementation(async (key) => {
+      await persistence.promise;
+      secrets.values.delete(key);
+    });
+    const h = harness(PLAN_SCOPES, () => terminal
+      ? new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 })
+      : new Response("unavailable", { status: 503 }), secrets);
+    const svc = await service(h.runtime);
+    let confirmation: Promise<unknown> | undefined;
+    try {
+      await expect(svc.isConnected("chatgpt-plan")).resolves.toBe(true);
+      const before = subscriptionConnectionProjection("chatgpt-plan");
+      confirmation = h.runtime.confirmSession().catch((error: unknown) => error);
+      if (terminal) {
+        await vi.waitFor(() => expect(clearing).toHaveBeenCalledOnce());
+        const after = subscriptionConnectionProjection("chatgpt-plan");
+        expect(after).toMatchObject({ connected: false });
+        expect(after?.scope).not.toBe(before?.scope);
+        await expect(svc.isConnected("chatgpt-plan")).resolves.toBe(false);
+        persistence.resolve();
+        await expect(confirmation).resolves.toMatchObject({ code: "subscription-operation-failed" });
+        await expect(svc.isConnected("chatgpt-plan")).resolves.toBe(false);
+      } else {
+        await expect(confirmation).resolves.toMatchObject({ code: "subscription-runtime-unavailable" });
+        expect(clearing).not.toHaveBeenCalled();
+        expect(subscriptionConnectionProjection("chatgpt-plan")).toEqual(before);
+        await expect(svc.isConnected("chatgpt-plan")).resolves.toBe(true);
+      }
+    } finally {
+      persistence.resolve();
+      await confirmation;
       await svc.stop();
     }
   });

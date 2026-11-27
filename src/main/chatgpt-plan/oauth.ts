@@ -271,6 +271,7 @@ export async function exchangeAuthorizationCode(
     readonly codeVerifier: string;
     readonly redirectUri: string;
   },
+  onInvalidClient?: () => void,
 ): Promise<ChatGptPlanTokenResponse> {
   const response = await postForm(fetchImpl, CHATGPT_PLAN_TOKEN_URL, {
     grant_type: "authorization_code",
@@ -285,7 +286,10 @@ export async function exchangeAuthorizationCode(
   if (response.status >= 500) throw new ChatGptPlanOAuthError("transient", undefined, response.status);
   const code = oauthErrorCodeOf(body);
   if (code === "invalid_grant") throw new ChatGptPlanOAuthError("invalid-grant", code, response.status);
-  if (code === "invalid_client") throw new ChatGptPlanOAuthError("invalid-client", code, response.status);
+  if (code === "invalid_client") {
+    onInvalidClient?.();
+    throw new ChatGptPlanOAuthError("invalid-client", code, response.status);
+  }
   throw new ChatGptPlanOAuthError("rejected", code, response.status);
 }
 
@@ -297,6 +301,7 @@ export async function exchangeAuthorizationCode(
 export async function refreshAccessToken(
   fetchImpl: typeof fetch,
   input: { readonly clientId: string; readonly refreshToken: string },
+  onGrantLost?: () => void,
 ): Promise<ChatGptPlanTokenResponse> {
   const response = await postForm(fetchImpl, CHATGPT_PLAN_TOKEN_URL, {
     grant_type: "refresh_token",
@@ -309,9 +314,13 @@ export async function refreshAccessToken(
   if (response.status >= 500) throw new ChatGptPlanOAuthError("transient", undefined, response.status);
   const code = oauthErrorCodeOf(body);
   if (code !== undefined && UNUSABLE_REFRESH_TOKEN_ERRORS.has(code)) {
+    onGrantLost?.();
     throw new ChatGptPlanOAuthError("refresh-token-unusable", code, response.status);
   }
-  if (code === "invalid_client") throw new ChatGptPlanOAuthError("invalid-client", code, response.status);
+  if (code === "invalid_client") {
+    onGrantLost?.();
+    throw new ChatGptPlanOAuthError("invalid-client", code, response.status);
+  }
   throw new ChatGptPlanOAuthError("rejected", code, response.status);
 }
 
