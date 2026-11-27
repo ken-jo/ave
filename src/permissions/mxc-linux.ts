@@ -347,6 +347,8 @@ export function buildBubblewrapShellRequest(input: {
   } as const;
 }
 
+const LINUX_CANARY_STDOUT_LIMIT = 64 * 1024;
+
 /**
  * Runs the launcher like `execFile`, resolving to its stdout and rejecting on a non-zero exit, with the contained shell's
  * environment written into a pipe on {@link LINUX_SHELL_ENVIRONMENT_FD}.
@@ -365,14 +367,28 @@ function runLauncherWithEnvironment(
       { env: options.env, stdio, ...(options.signal ? { signal: options.signal } : {}), killSignal: options.killSignal, timeout: options.timeout });
   }
   writeLinuxShellEnvironment(child, environment);
+  // The canary's command prints one short line; output past the bound is drained, never kept, and stops the launcher.
   const stdout: Buffer[] = [];
-  child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
+  let kept = 0;
+  let overflowed = false;
+  child.stdout?.on("data", (chunk: Buffer) => {
+    if (overflowed) return;
+    kept += chunk.length;
+    if (kept > LINUX_CANARY_STDOUT_LIMIT) {
+      overflowed = true;
+      stdout.length = 0;
+      child.kill("SIGKILL");
+      return;
+    }
+    stdout.push(chunk);
+  });
   child.stderr?.resume();
   (child.stdio[LINUX_SHELL_READY_FD] as NodeJS.ReadableStream | null)?.resume();
   const completion = new Promise<{ stdout: string }>((resolve, reject) => {
     child.once("error", reject);
     child.once("close", (code, signal) => {
-      if (code === 0) resolve({ stdout: Buffer.concat(stdout).toString("utf8") });
+      if (overflowed) reject(Object.assign(new Error(`Linux container launcher wrote more than ${LINUX_CANARY_STDOUT_LIMIT} bytes`), { code: "stdout-limit" }));
+      else if (code === 0) resolve({ stdout: Buffer.concat(stdout).toString("utf8") });
       else reject(Object.assign(new Error(`Linux container launcher exited with ${code ?? signal}`), { code, signal }));
     });
   });

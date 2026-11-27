@@ -396,6 +396,22 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     });
   });
 
+  it("stops reading a canary launcher's output past its bound and stops the launcher", async () => {
+    const programs = await requireMxcLinuxShellPrograms(resources);
+    const scratch = mkdtempSync(join(requireMxcContainerStartRoot(), "canary-flood-"));
+    try {
+      // The dry run passes through; the real run floods stdout before it would start the real launcher.
+      const marker = join(scratch, "launcher-reached");
+      const flooding = join(scratch, "flooding-launcher");
+      writeFileSync(flooding, `#!/bin/sh\ncase " $* " in *" --dry-run "*) exec ${quote(programs.launcher)} "$@" ;; esac\n`
+        + `head -c 4194304 /dev/zero\n: > ${quote(marker)}\nexec ${quote(programs.launcher)} "$@"\n`, { mode: 0o755 });
+      expect(await runCanary(requireMxcContainerStartRoot(), { ...programs, launcher: flooding })).toEqual({ state: "shell-start-failed" });
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("keeps the container available when the raw-IP prober stalls", async () => {
     const programs = await requireMxcLinuxShellPrograms(resources);
     const started = Date.now();
