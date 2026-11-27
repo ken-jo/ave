@@ -26,6 +26,7 @@ pub const SEQUENTIAL: u32 = 4;
 pub const NOT_DIRECTORY: u32 = 0x40;
 pub const BACKUP: u32 = 0x4000;
 pub const OPEN_REPARSE: u32 = 0x200000;
+const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x02000000;
 pub const WAIT_TIMEOUT: u32 = 258;
 
 #[repr(C)]
@@ -426,10 +427,14 @@ pub fn legacy(handle: Raw) -> Result<Legacy, u32> {
 }
 
 pub fn open_root(root: &[u16], access: u32, share: u32) -> Result<Handle, u32> {
-    let extended = if root.starts_with(&[92, 92]) {
-        [ascii(r"\\?\UNC\"), root[2..].to_vec()].concat()
+    open_absolute(root, access, share, OPEN_REPARSE | FILE_FLAG_BACKUP_SEMANTICS)
+}
+
+pub fn open_absolute(path: &[u16], access: u32, share: u32, flags: u32) -> Result<Handle, u32> {
+    let extended = if path.starts_with(&[92, 92]) {
+        [ascii(r"\\?\UNC\"), path[2..].to_vec()].concat()
     } else {
-        [ascii(r"\\?\"), root.to_vec()].concat()
+        [ascii(r"\\?\"), path.to_vec()].concat()
     };
     unsafe {
         Handle::from_raw(CreateFileW(
@@ -438,7 +443,7 @@ pub fn open_root(root: &[u16], access: u32, share: u32) -> Result<Handle, u32> {
             share,
             null_mut(),
             3,
-            0x02200000,
+            flags,
             null_mut(),
         ))
     }

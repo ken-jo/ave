@@ -209,7 +209,7 @@ fn file_access_row(path: &[u16]) -> Option<String> {
     };
     // The caller binds the result to its file identity. Open only the leaf so
     // the read also works with metadata access limited to a workspace.
-    let file = open_root(leaf, READ_ATTRIBUTES | READ_CONTROL, SHARE_READ | SHARE_WRITE).ok()?;
+    let file = open_absolute(leaf, READ_ATTRIBUTES | READ_CONTROL, SHARE_READ | SHARE_WRITE, OPEN_REPARSE).ok()?;
     let info = legacy(file.raw()).ok()?;
     if info.attributes & (DIRECTORY | REPARSE) != 0 || info.links != 1 {
         return None;

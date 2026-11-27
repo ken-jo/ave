@@ -24,6 +24,18 @@ function descriptor(aces: WindowsDacl["aces"]): WindowsDacl {
 }
 
 describe("Windows path facts admission and evaluation", () => {
+  it("opens the file-access leaf without backup semantics and checks its attributes after open", () => {
+    const facts = readFileSync(resolve("native/windows-path-kind/src/facts.rs"), "utf8");
+    const windows = readFileSync(resolve("native/windows-path-kind/src/windows.rs"), "utf8");
+    const fileAccess = facts.slice(facts.indexOf("fn file_access_row"), facts.indexOf("\nfn file_access("));
+    const openLeaf = /open_absolute\(\s*leaf,\s*READ_ATTRIBUTES \| READ_CONTROL,\s*SHARE_READ \| SHARE_WRITE,\s*OPEN_REPARSE,?\s*\)/u;
+    expect(fileAccess).toMatch(openLeaf);
+    expect(fileAccess.slice(fileAccess.search(openLeaf))).toMatch(/legacy\(file\.raw\(\)\)[\s\S]+info\.attributes & \(DIRECTORY \| REPARSE\) != 0/u);
+    expect(windows).toMatch(/const OPEN_REPARSE: u32 = 0x200000;/u);
+    const absoluteOpen = windows.slice(windows.indexOf("pub fn open_absolute"), windows.indexOf("pub fn open_relative"));
+    expect(absoluteOpen).toMatch(/CreateFileW\([\s\S]+?3,\s*flags,\s*null_mut\(\),/u);
+  });
+
   it("keys objects by volume and file ID independently of aliases and case", () => {
     for (const canonical of ["C:\\fixture\\Foo", "C:\\fixture\\foo", "C:\\alias\\FOO~1"]) {
       const alias: WindowsPathFacts = { ...ORDINARY, canonical };
@@ -255,6 +267,11 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     expect(protectedDacl.aclHex).not.toBe(inherited.aclHex);
     expect(() => readWindowsFileDacls([file, join(fixture, "missing")])).toThrow(/helper failed/);
     expect(() => readWindowsFileDacls([join(fixture, "junction")])).toThrow(/helper failed/);
+  });
+
+  it("refuses a file DACL batch when a later path is a directory", () => {
+    const parent = join(fixture, "directory");
+    expect(() => readWindowsFileDacls([join(parent, "file"), parent])).toThrow(expect.objectContaining({ status: 4 }));
   });
 
   it("refuses a file DACL batch when a file has a second hard link", () => {
