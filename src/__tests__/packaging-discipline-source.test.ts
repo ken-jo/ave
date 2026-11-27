@@ -1589,6 +1589,20 @@ describe("installer smoke and packaging discipline", () => {
     });
   });
 
+  const mockShardJobs = 'gh() { printf "%s" "$SHARD_JOB_EVIDENCE"; return "${SHARD_JOB_EXIT:-0}"; }\n';
+  const completedShard = (shard: number, conclusion = "success") => ({
+    name: `Vitest shard ${shard}`, status: "completed", conclusion,
+  });
+  const jobEvidence = (jobs: ReturnType<typeof completedShard>[]) => JSON.stringify([{ total_count: jobs.length, jobs }]);
+
+  it("requires individual Linux shard conclusions in the aggregate", () => {
+    const { jobs } = parseYaml(readRepoFile(".github/workflows/ci.yml"));
+    const step = jobs["build-and-test"].steps[0];
+    expect(jobs.vitest.name).toBe(`Vitest shard ${githubExpression("matrix.shard")}`);
+    expect(step.env.GH_TOKEN).toBe(githubExpression("github.token"));
+    expect(step.run).toContain('gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100"');
+  });
+
   it.runIf(process.platform !== "win32").each([
     { label: "selected success", selected: "true", native: "success", build: "success", vitest: "success", docs: "false", status: 0 },
     { label: "renderer-only platform skip", selected: "false", native: "skipped", build: "success", vitest: "success", docs: "false", status: 0 },
@@ -1607,12 +1621,26 @@ describe("installer smoke and packaging discipline", () => {
     { label: "one-shard fallback", selected: "true", native: "success", build: "success", vitest: "success", docs: "false", count: "2", matrix: "[1]", status: 1 },
     { label: "duplicate shard", selected: "true", native: "success", build: "success", vitest: "success", docs: "false", count: "2", matrix: "[1,1]", status: 1 },
     { label: "missing shard count", selected: "true", native: "success", build: "success", vitest: "success", docs: "false", count: "", matrix: "[1,2]", status: 1 },
-  ])("evaluates the actual aggregate shell for $label", ({ selected, native, build, vitest, docs, status, count = "1", matrix = "[1]" }) => {
+    ...[
+      { label: "missing completion", jobs: [completedShard(1)], status: 1 },
+      { label: "duplicate completion", jobs: [completedShard(1), completedShard(2), completedShard(2)], status: 1 },
+      { label: "skipped leg", jobs: [completedShard(1), completedShard(2, "skipped")], status: 1 },
+      { label: "cancelled leg", jobs: [completedShard(1), completedShard(2, "cancelled")], status: 1 },
+      { label: "empty job response", jobs: [], status: 1 },
+      { label: "job API failure", jobExit: "1", status: 1 },
+      { label: "out-of-order completions", jobs: [completedShard(2), completedShard(1)], status: 0 },
+    ].map((test) => ({ selected: "true", native: "success", build: "success", vitest: "success",
+      docs: "false", count: "2", matrix: "[1,2]", ...test })),
+  ].map((test) => ({ jobs: undefined, jobExit: "0", ...test })))("evaluates the actual aggregate shell for $label", ({
+    selected, native, build, vitest, docs, status, count = "1", matrix = "[1]", jobs, jobExit,
+  }) => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
     const command = workflow.jobs["build-and-test"].steps[0].run as string;
-    const result = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
+    const result = spawnSync("bash", ["-e", "-c", mockShardJobs + command], { encoding: "utf8", env: {
       ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: build, VITEST_RESULT: vitest, DOCS_ONLY: docs,
       VITEST_SHARD_COUNT: count, VITEST_SHARDS: matrix,
+      SHARD_JOB_EVIDENCE: jobEvidence(jobs ?? Array.from({ length: Number(count) }, (_, index) => completedShard(index + 1))),
+      SHARD_JOB_EXIT: jobExit,
       PLATFORM_CHECKS: selected, WINDOWS_PREPARATION_RESULT: native,
       WINDOWS_PACKAGING_RESULT: native, WINDOWS_SCRIPTS_RESULT: native, WINDOWS_DEV_BOOT_RESULT: native, WINDOWS_RESULT: native, MACOS_RESULT: native, LINUX_RESULT: native,
       WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
@@ -1631,9 +1659,10 @@ describe("installer smoke and packaging discipline", () => {
   ])("gates Windows preparation ($preparation) and shard results ($shards) independently", ({ preparation, shards, status }) => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
     const command = workflow.jobs["build-and-test"].steps[0].run as string;
-    const result = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
+    const result = spawnSync("bash", ["-e", "-c", mockShardJobs + command], { encoding: "utf8", env: {
       ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success", VITEST_RESULT: "success",
       VITEST_SHARD_COUNT: "1", VITEST_SHARDS: "[1]",
+      SHARD_JOB_EVIDENCE: jobEvidence([completedShard(1)]), SHARD_JOB_EXIT: "0",
       DOCS_ONLY: "false", PLATFORM_CHECKS: "true", WINDOWS_PREPARATION_RESULT: preparation,
       WINDOWS_PACKAGING_RESULT: "success", WINDOWS_SCRIPTS_RESULT: "success", WINDOWS_DEV_BOOT_RESULT: "success",
       WINDOWS_RESULT: shards, MACOS_RESULT: "success", LINUX_RESULT: "success",
@@ -1840,7 +1869,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(body).toContain("WINDOWS_RESULT: ${{ needs.windows-permission-tests.result }}");
     expect(matched(commands, VERIFIES_THE_CODE)).toEqual([]);
     expect(shards).toMatch(/^ {4}needs: build$/mu);
-    // One failed or cancelled shard makes needs.vitest.result fail the aggregate.
+    // Keep finished shard results available when another shard fails.
     expect(shards).toContain("      fail-fast: false\n");
     expect(shards).toContain(`          AVE_CI_PLAN_FILE: ${githubExpression("runner.temp")}/ci-plan/ci-plan.json`);
     expect(shards).toContain("          AVE_CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}");

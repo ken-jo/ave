@@ -699,6 +699,7 @@ jobs:
       - name: Require the build and every Vitest shard
         if: always()
         env:
+          GH_TOKEN: ${{ github.token }}
           GATE_CORE_RESULT: ${{ needs.gate-core.result }}
           MXC_PINS_RESULT: ${{ needs.mxc-pins.result }}
           BUILD_RESULT: ${{ needs.build.result }}
@@ -770,6 +771,19 @@ jobs:
                [ "$VITEST_SHARDS" != "[$(seq -s, 1 "$VITEST_SHARD_COUNT")]" ]; then
             echo "::error::Vitest matrix '$VITEST_SHARDS' does not contain the $VITEST_SHARD_COUNT planned shards"
             exit 1
+          else
+            # The matrix result alone does not prove that every leg finished.
+            if ! job_pages=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100") ||
+               ! jq -e --argjson shards "$VITEST_SHARDS" '
+                 ([$shards[] | ["Vitest shard \(.)", "completed", "success"]] | sort) as $expected
+                 | .[0].total_count as $total
+                 | map(.jobs[]) as $jobs
+                 | ($jobs | length) == $total
+                   and ([$jobs[] | select(.name | startswith("Vitest shard ")) | [.name, .status, .conclusion]] | sort) == $expected
+               ' <<< "$job_pages" > /dev/null; then
+              echo "::error::Vitest matrix '$VITEST_SHARDS' lacks exactly one successful job per shard"
+              exit 1
+            fi
           fi
           if [ "$PLATFORM_CHECKS" != "true" ] && [ "$PLATFORM_CHECKS" != "false" ]; then
             echo "::error::native platform selection was not resolved"
