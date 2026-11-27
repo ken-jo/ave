@@ -4,8 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { MxcExecutableNotAdmissibleError } from "../../permissions/mxc-extension-errors.js";
-import { resolvePosixHolderLaunch } from "../wrap-bundled-command.js";
+import { MxcExecutableNotAdmissibleError, resolvePosixHolderLaunch } from "../wrap-bundled-command.js";
 
 let root: string;
 let bin: string;
