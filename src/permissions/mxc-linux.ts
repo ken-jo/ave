@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
+import { type ChildProcess, execFile, spawn, type StdioOptions } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, constants, realpathSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, openSync, realpathSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { posix } from "node:path";
@@ -34,6 +34,27 @@ const log = createLogger("mxc-linux");
 const SYSTEM_TOOL_DIRS = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 const LINUX_TOOLS = ["bwrap", "slirp4netns", "unshare", "nsenter", "ip", "iptables", "ip6tables", "iptables-restore", "ip6tables-restore"];
 const PROXY_VARIABLES = /^(?:https?|all|no|ftp)_proxy$/iu;
+
+/**
+ * The descriptor a Linux container shell reads its environment from. The pinned launcher hands a request's `env` to
+ * bwrap as `--setenv NAME VALUE` arguments, and any local user can read `/proc/<pid>/cmdline`. So a request carries no
+ * environment. The launcher passes its inherited descriptors through to the contained shell, which sources this one
+ * before anything else runs. It reads a 0600 file in the request's staging folder, under the runtime root the
+ * container cannot read by path.
+ */
+export const LINUX_SHELL_ENVIRONMENT_FD = 9;
+const PORTABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+
+/** The environment as a POSIX `sh` script of single-quoted exports. A name `sh` cannot export is left out, never renamed. */
+function linuxShellEnvironmentScript(env: Readonly<Record<string, string>>): string {
+  const dropped: string[] = [];
+  const lines = Object.entries(env).flatMap(([key, value]) => {
+    if (!PORTABLE_NAME.test(key)) { dropped.push(key); return []; }
+    return [`export ${key}=${quote(value)}`];
+  });
+  if (dropped.length > 0) log.info("Linux container shell environment leaves out non-portable names: %s", dropped.join(", "));
+  return `${lines.join("\n")}\n`;
+}
 
 /** The saved-session grant and its generated exclusions use the same launch-time walk as the Linux wrap. */
 export async function projectLinuxSavedSessionDenies(input: {
@@ -273,21 +294,55 @@ export function buildBubblewrapShellRequest(input: {
   if (grants.readwrite.length + readonlyPaths.length + grants.denied.length > 400) {
     throw new Error("Container grant limit exceeded by the filter helper");
   }
-  const env = Object.entries(input.env).flatMap(([key, value]) =>
-    key && !key.includes("=") && !PROXY_VARIABLES.test(key) ? [`${key}=${value}`] : []);
+  const env: Record<string, string> = Object.fromEntries(Object.entries(input.env).filter(([key]) => !PROXY_VARIABLES.test(key)));
   const home = input.env.HOME;
   // Git expects its global config to be a file. A masked, absent config has no settings to read.
   if (home !== undefined && input.env.GIT_CONFIG_GLOBAL === undefined
-    && grants.placeholders?.some(row => row.path === posix.join(home, ".gitconfig"))) env.push("GIT_CONFIG_GLOBAL=/dev/null");
-  const bootstrap = `export NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1\n${input.commandLine}`;
+    && grants.placeholders?.some(row => row.path === posix.join(home, ".gitconfig"))) env.GIT_CONFIG_GLOBAL = "/dev/null";
+  // The environment arrives on its descriptor, which the shell closes before the command; a missing one ends the shell.
+  const fd = LINUX_SHELL_ENVIRONMENT_FD;
+  const bootstrap = `. /dev/fd/${fd} && exec ${fd}<&- || exit 125\n`
+    + `export NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1\n${input.commandLine}`;
   return {
-    version: "0.9.0-alpha",
-    containment: "bubblewrap",
-    process: { commandLine: `${quote(helper)} /bin/sh -c ${quote(bootstrap)}`, cwd, timeout: input.timeoutMs, inheritDefaultEnv: false, env },
-    filesystem: { readwritePaths: grants.readwrite, readonlyPaths, deniedPaths: grants.denied },
-    network: { egress: { default: "deny" }, ingress: { default: "deny", hostLoopback: "deny" } },
-    runtimeConfig: { networkProxy: input.proxyUrl },
+    request: {
+      version: "0.9.0-alpha",
+      containment: "bubblewrap",
+      process: { commandLine: `${quote(helper)} /bin/sh -c ${quote(bootstrap)}`, cwd, timeout: input.timeoutMs, inheritDefaultEnv: false, env: [] },
+      filesystem: { readwritePaths: grants.readwrite, readonlyPaths, deniedPaths: grants.denied },
+      network: { egress: { default: "deny" }, ingress: { default: "deny", hostLoopback: "deny" } },
+      runtimeConfig: { networkProxy: input.proxyUrl },
+    },
+    environment: linuxShellEnvironmentScript(env),
   } as const;
+}
+
+/**
+ * Runs the launcher like `execFile`, resolving to its stdout and rejecting on a non-zero exit, with the contained shell's
+ * environment file open read-only on {@link LINUX_SHELL_ENVIRONMENT_FD}.
+ */
+function runLauncherWithEnvironment(
+  launcher: string, args: readonly string[], environmentPath: string,
+  options: { readonly signal?: AbortSignal; readonly env: NodeJS.ProcessEnv; readonly timeout: number; readonly killSignal: NodeJS.Signals },
+) {
+  const fd = openSync(environmentPath, "r");
+  let child: ChildProcess;
+  try {
+    const stdio: StdioOptions = ["ignore", "pipe", "pipe", ...Array<"ignore">(LINUX_SHELL_ENVIRONMENT_FD - 3).fill("ignore"), fd];
+    child = spawn(launcher, args, { env: options.env, stdio, ...(options.signal ? { signal: options.signal } : {}), killSignal: options.killSignal, timeout: options.timeout });
+  } finally {
+    closeSync(fd);
+  }
+  const stdout: Buffer[] = [];
+  child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
+  child.stderr?.resume();
+  const completion = new Promise<{ stdout: string }>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) resolve({ stdout: Buffer.concat(stdout).toString("utf8") });
+      else reject(Object.assign(new Error(`Linux container launcher exited with ${code ?? signal}`), { code, signal }));
+    });
+  });
+  return Object.assign(completion, { child });
 }
 
 async function listenLoopback(server: Server): Promise<number> {
@@ -380,20 +435,23 @@ async function runLinuxCanary(
         'exit "$status"',
       ].join("\n");
       const timeout = TOOL_TIMEOUT_POLICY.mxcLinuxShellProbeMs + TOOL_TIMEOUT_POLICY.mxcLinuxRawIpProbeMs;
-      const request = buildBubblewrapShellRequest({
+      const { request, environment } = buildBubblewrapShellRequest({
         grants: held.grants, lookups, cwd: working, commandLine, timeoutMs: timeout,
         env: { HOME: working, TMPDIR: working, PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
         proxyUrl: proxy.url, helper: programs.helper,
       });
       const config = posix.join(scratch, "request.json");
       await writeFile(config, JSON.stringify(request), { mode: 0o600, flag: "wx" });
+      // Beside the request, so the container cannot read it by path; the run hands it over on its descriptor.
+      const environmentPath = posix.join(scratch, "environment.sh");
+      await writeFile(environmentPath, environment, { mode: 0o600, flag: "wx" });
       const options = { signal, env: programs.env, timeout: timeout + TOOL_TIMEOUT_POLICY.mxcLinuxShellStopMs, killSignal: "SIGKILL" as const };
       try { await runFile(programs.launcher, ["--dry-run", "--config", config], options); } catch {
         signal?.throwIfAborted();
         return { state: "request-rejected" };
       }
       held.validate();
-      const execution = runFile(programs.launcher, ["--config", config], options);
+      const execution = runLauncherWithEnvironment(programs.launcher, ["--config", config], environmentPath, options);
       const pid = execution.child.pid;
       let ended = false;
       const settled = execution.then(() => { ended = true; }, () => { ended = true; });

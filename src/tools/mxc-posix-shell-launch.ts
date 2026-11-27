@@ -1,5 +1,6 @@
 import { lstatSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { sameFileIdentity } from "../lib/file-identity.js";
 import { getHostResources } from "../main/host-resources.js";
@@ -138,14 +139,21 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
   const held = programs === undefined ? undefined : await holdMxcLinuxPlaceholders(lookups,
     (current) => rankPosixContainerRows(model, "bubblewrap", current));
   if (held !== undefined) lifecycle.defer(() => held.release());
-  const { request, grants } = programs !== undefined && held !== undefined
-    ? { grants: held.grants, request: buildBubblewrapShellRequest({
+  const { request, grants, environment } = programs !== undefined && held !== undefined
+    ? { grants: held.grants, ...buildBubblewrapShellRequest({
       ...input, grants: held.grants, lookups, helper: programs.helper, proxyUrl: listener.url,
     }) }
-    : buildSeatbeltShellRequest({ ...input, model, lookups: { ...lookups, foldsCase }, proxyUrl: listener.url });
+    : { ...buildSeatbeltShellRequest({ ...input, model, lookups: { ...lookups, foldsCase }, proxyUrl: listener.url }), environment: undefined };
   const staging = await mkdtemp(join(runtimeRoot, "shell-"));
   lifecycle.defer(() => rm(staging, { recursive: true }));
   const staged = await stageMxcShellRequest(join(staging, "request.json"), request);
+  // Linux only: the shell's environment, beside the request under the runtime root, handed over on a descriptor.
+  const environmentPath = join(staging, "environment.sh");
+  const stagedEnvironment = environment === undefined ? undefined : await (async () => {
+    const bytes = Buffer.from(environment);
+    await writeFile(environmentPath, bytes, { flag: "wx", mode: 0o600 });
+    return { environmentPath, environmentSha256: createHash("sha256").update(bytes).digest("hex") };
+  })();
   const writeRoots = mandatory.allowWrite.filter(path => grants.readwrite.includes(lookups.canonical(path)));
   const cleanupGit = mandatory.gitControlSnapshot === undefined ? undefined : await prepareSandboxBareRepositoryCleanup(
     writeRoots, basename(staging), restrictSandboxGitControlSnapshot(mandatory.gitControlSnapshot, writeRoots, gitExclusions(grants)),
@@ -160,11 +168,12 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
       assertAdmission();
       active = true;
       if (programs !== undefined && held !== undefined) {
+        if (stagedEnvironment === undefined) throw new Error("Linux container shell has no staged environment");
         programs.validate();
         held.validate();
         const releaseGit = cleanupGit === undefined ? undefined : holdSandboxGitWrites(writeRoots);
         let launch: ReturnType<typeof startMxcLinuxShell>;
-        try { launch = startMxcLinuxShell(programs, staged, input.timeoutMs, lifecycle.signal, revoke, label); } catch (error) {
+        try { launch = startMxcLinuxShell(programs, { ...staged, ...stagedEnvironment }, input.timeoutMs, lifecycle.signal, revoke, label); } catch (error) {
           releaseGit?.();
           throw error;
         }

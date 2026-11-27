@@ -1,9 +1,10 @@
-import { spawn } from "node:child_process";
+import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, openSync, readFileSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { Readable } from "node:stream";
 import { trackManagedChildProcess } from "../main/managed-child-processes.js";
-import type { MxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
+import { LINUX_SHELL_ENVIRONMENT_FD, type MxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 export interface LinuxContainerShellExit {
@@ -36,7 +37,11 @@ export function launcherOutcomeFromLog(log: string): LauncherOutcome {
 
 export function startMxcLinuxShell(
   programs: MxcLinuxShellPrograms,
-  staged: { readonly requestPath: string; readonly requestSha256: string },
+  staged: {
+    readonly requestPath: string; readonly requestSha256: string;
+    /** The contained shell's environment script, a 0600 file beside the request. */
+    readonly environmentPath: string; readonly environmentSha256: string;
+  },
   timeoutMs: number,
   signal: AbortSignal,
   revoke: () => void,
@@ -46,12 +51,26 @@ export function startMxcLinuxShell(
   if (createHash("sha256").update(readFileSync(staged.requestPath)).digest("hex") !== staged.requestSha256) {
     throw new Error("Linux container request changed before launch");
   }
+  // The environment travels on a descriptor, never as launcher arguments, which any local user can read.
+  const environment = openSync(staged.environmentPath, "r");
+  let child: ChildProcessByStdio<null, Readable, Readable>;
   // A fresh, private log beside the staged request. The launcher appends to it, so an existing file is refused.
   const logPath = join(dirname(staged.requestPath), "launcher.log");
-  closeSync(openSync(logPath, "wx", 0o600));
-  const child = spawn(programs.launcher, ["--log-file", logPath, "--config", staged.requestPath], {
-    env: programs.env, detached: true, stdio: ["ignore", "pipe", "pipe"],
-  });
+  try {
+    // A positional read leaves the descriptor at offset 0 for the shell that sources it.
+    const bytes = Buffer.alloc(fstatSync(environment).size);
+    if (readSync(environment, bytes, 0, bytes.length, 0) !== bytes.length
+      || createHash("sha256").update(bytes).digest("hex") !== staged.environmentSha256) {
+      throw new Error("Linux container environment changed before launch");
+    }
+    closeSync(openSync(logPath, "wx", 0o600));
+    child = spawn(programs.launcher, ["--log-file", logPath, "--config", staged.requestPath], {
+      env: programs.env, detached: true,
+      stdio: ["ignore", "pipe", "pipe", ...Array<"ignore">(LINUX_SHELL_ENVIRONMENT_FD - 3).fill("ignore"), environment],
+    }) as ChildProcessByStdio<null, Readable, Readable>;
+  } finally {
+    closeSync(environment);
+  }
   let timeout = false;
   let cancelled = false;
   let escalator: ReturnType<typeof setTimeout> | undefined;

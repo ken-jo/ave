@@ -73,7 +73,11 @@ it("keeps the Linux request bytes stable and requires the nearest cwd row to all
     env: { HOME: "/work/sandbox-home", TMPDIR: "/work/sandbox-home/temp", PATH: "/usr/bin", HTTPS_PROXY: "discard", NO_PROXY: "discard" },
     proxyUrl: "http://127.0.0.1:12345", helper: "/app/filter/apply-seccomp",
   };
-  const request = buildBubblewrapShellRequest(input);
+  const { request, environment } = buildBubblewrapShellRequest(input);
   expect(`${JSON.stringify(request, null, 2)}\n`).toBe(readFileSync(new URL("./fixtures/bubblewrap-shell-request.json", import.meta.url), "utf8"));
+  // The launcher would put a request's env on bwrap's command line, so the request carries none: the shell sources it.
+  expect(request.process.env).toEqual([]);
+  expect(environment).toBe("export HOME='/work/sandbox-home'\nexport TMPDIR='/work/sandbox-home/temp'\nexport PATH='/usr/bin'\n");
+  expect(buildBubblewrapShellRequest({ ...input, env: { TOKEN: "it's", "BAD-NAME": "x" } }).environment).toBe("export TOKEN='it'\"'\"'s'\n");
   expect(() => buildBubblewrapShellRequest({ ...input, cwd: "/work/.ave/hooks" })).toThrow("outside its filesystem grants");
 });

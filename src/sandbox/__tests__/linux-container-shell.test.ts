@@ -29,20 +29,33 @@ describe.runIf(process.platform !== "win32")("Linux container shell exit classif
   beforeEach(() => { root = mkdtempSync(join(tmpdir(), "ave-linux-shell-exit-")); });
   afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
-  // A stand-in launcher: writes the given log to `--log-file`, the given stderr, and exits with the given status.
+  const ENVIRONMENT = "export TOKEN='staged'\n";
+  let lastStaging = "";
+  function stage(staging: string) {
+    const requestPath = join(staging, "request.json");
+    writeFileSync(requestPath, "{}");
+    const environmentPath = join(staging, "environment.sh");
+    writeFileSync(environmentPath, ENVIRONMENT, { mode: 0o600 });
+    return {
+      requestPath, requestSha256: createHash("sha256").update(readFileSync(requestPath)).digest("hex"),
+      environmentPath, environmentSha256: createHash("sha256").update(ENVIRONMENT).digest("hex"),
+    };
+  }
+
+  // A stand-in launcher: copies its environment descriptor, writes the given log to `--log-file`, the given stderr, and
+  // exits with the given status.
   async function run(log: string, stderr: string, status: number) {
     const staging = mkdtempSync(join(root, "shell-"));
+    lastStaging = staging;
     const launcher = join(staging, "launcher");
     writeFileSync(join(staging, "log"), log);
     writeFileSync(join(staging, "stderr"), stderr);
     writeFileSync(launcher, `#!/bin/sh\n[ "$1" = --log-file ] || exit 90\n[ "$3" = --config ] || exit 91\n`
+      + `cat <&9 > ${JSON.stringify(join(staging, "received-environment"))} || exit 92\n`
       + `cat ${JSON.stringify(join(staging, "log"))} >> "$2"\ncat ${JSON.stringify(join(staging, "stderr"))} >&2\nexit ${status}\n`);
     chmodSync(launcher, 0o755);
-    const requestPath = join(staging, "request.json");
-    writeFileSync(requestPath, "{}");
-    const requestSha256 = createHash("sha256").update(readFileSync(requestPath)).digest("hex");
-    const { child, completion } = startMxcLinuxShell({ launcher, helper: "/bin/true", env: { PATH: "/usr/bin:/bin" } },
-      { requestPath, requestSha256 }, 10_000, new AbortController().signal, () => {}, "test:linux-shell-exit");
+    const { completion, child } = startMxcLinuxShell({ launcher, helper: "/bin/true", env: { PATH: "/usr/bin:/bin" } },
+      stage(staging), 10_000, new AbortController().signal, () => {}, "test:linux-shell-exit");
     child.stdout.resume();
     child.stderr.resume();
     return completion;
@@ -63,12 +76,23 @@ describe.runIf(process.platform !== "win32")("Linux container shell exit classif
   });
 
   it("refuses to reuse an existing launcher log", async () => {
-    const requestPath = join(root, "request.json");
-    writeFileSync(requestPath, "{}");
+    const staged = stage(root);
     writeFileSync(join(root, "launcher.log"), "Exit code: 0 (0x0)\n");
-    const requestSha256 = createHash("sha256").update(readFileSync(requestPath)).digest("hex");
     expect(() => startMxcLinuxShell({ launcher: "/bin/false", helper: "/bin/true", env: {} },
-      { requestPath, requestSha256 }, 1_000, new AbortController().signal, () => {}, "test:linux-shell-exit"))
+      staged, 1_000, new AbortController().signal, () => {}, "test:linux-shell-exit"))
       .toThrow(expect.objectContaining({ code: "EEXIST" }));
+  });
+
+  it("hands the launcher the staged environment on its descriptor, from the start, never as arguments", async () => {
+    await run(EXITED_255, "", 255);
+    expect(readFileSync(join(lastStaging, "received-environment"), "utf8")).toBe(ENVIRONMENT);
+  });
+
+  it("refuses an environment that changed after it was staged", () => {
+    const staged = stage(root);
+    writeFileSync(staged.environmentPath, "export TOKEN='replaced'\n");
+    expect(() => startMxcLinuxShell({ launcher: "/bin/false", helper: "/bin/true", env: {} },
+      staged, 1_000, new AbortController().signal, () => {}, "test:linux-shell-exit"))
+      .toThrow("Linux container environment changed before launch");
   });
 });

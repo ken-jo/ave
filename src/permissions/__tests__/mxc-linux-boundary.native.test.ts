@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createSocket, type Socket as UdpSocket } from "node:dgram";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -319,6 +319,36 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     });
     expect(Date.now() - started).toBeLessThan(5_000 + 12_000 + 2_000);
   }, 30_000);
+
+  // Every process whose command line holds `text`: `/proc/<pid>/cmdline` is readable by any local user.
+  function commandLinesHolding(text: string): string[] {
+    return readdirSync("/proc").filter(entry => /^\d+$/u.test(entry)).flatMap((pid) => {
+      try {
+        const words = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+        return words.includes(text) ? [`${pid}:${words.split("\0")[0]}`] : [];
+      } catch { return []; }
+    });
+  }
+
+  it("keeps a shell's environment off every process command line, while the shell still sees it", async () => {
+    const secret = `ave-cmdline-secret-${randomBytes(8).toString("hex")}`;
+    // Positive control: the scan sees a value that is on a live process's command line.
+    const control = spawn("/bin/sh", ["-c", "sleep 30", `${secret}-control`], { stdio: "ignore" });
+    try {
+      await vi.waitFor(() => expect(commandLinesHolding(`${secret}-control`)).toHaveLength(1), { timeout: 5_000, interval: 50 });
+    } finally {
+      control.kill("SIGKILL");
+    }
+    startEgressRelayService({ ask: async () => false });
+    const { launch } = await prepare(`printf '%s' "$AVE_TEST_TOKEN" > seen-token; sleep 3`, { env: { AVE_TEST_TOKEN: secret } });
+    const pending = run(launch);
+    await vi.waitFor(() => expect(existsSync(join(work, "seen-token"))).toBe(true), { timeout: 10_000, interval: 50 });
+    const holders = commandLinesHolding(secret);
+    const result = await pending;
+    expect(holders).toEqual([]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(readFileSync(join(work, "seen-token"), "utf8")).toBe(secret);
+  });
 
   it("tunnels a verified TLS response through the invocation proxy", async () => {
     const hostname = "shell-boundary.example";
