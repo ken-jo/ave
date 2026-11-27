@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { createHostGit, type HostGit } from "../host-git.js";
+import * as ownedFs from "../owned-fs.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { removeTree, stageOf, writeUnder as write } from "./stage-fixtures.js";
@@ -43,9 +44,10 @@ it("a queued integration whose run authority is revoked before it starts collect
   const opened = await provider.open(run, project);
   if (!opened.ok || opened.workspace.kind !== "folder" || opened.workspace.outputDir === undefined) throw new Error("expected a folder workspace");
   const out = opened.workspace.outputDir;
-  const prepared = await provider.prepare(run, stageOf("s1", { outputs: ["plan.md"] }), 1);
+  const prepared = await provider.prepare(run, stageOf("s1", { outputs: ["plan.md", "summary.md"] }), 1);
   if (!prepared.ok) throw new Error(`prepare refused: ${prepared.code}`);
   write(prepared.workspace.root, "plan.md", "the plan\n");
+  write(prepared.workspace.root, "summary.md", "the summary\n");
   expect(await provider.seal(run, "s1")).toEqual({ ok: true });
 
   // Another call of the run holds the run's queue; the integration waits behind it.
@@ -60,7 +62,26 @@ it("a queued integration whose run authority is revoked before it starts collect
   await expect(integrated).rejects.toThrow("the run was stopped");
   expect(existsSync(join(out, "plan.md"))).toBe(false);
 
-  // The same join with standing authority collects the sealed file.
+  // Revoke during a later source open, after the first file has been staged.
+  let openedSummary = 0;
+  const copying = new AbortController();
+  const openSource = ownedFs.openSource;
+  const source = vi.spyOn(ownedFs, "openSource").mockImplementation(async (root, segments) => {
+    const handle = await openSource(root, segments);
+    if (segments[0] === "summary.md" && ++openedSummary === 2) copying.abort(new Error("stopped during source open"));
+    return handle;
+  });
+  try {
+    await expect(provider.integrate(run, "j1", ["s1"], copying.signal)).rejects.toThrow("stopped during source open");
+  } finally {
+    source.mockRestore();
+  }
+  expect(readdirSync(out)).not.toContain("plan.md");
+  expect(readdirSync(out)).not.toContain("summary.md");
+  expect(readdirSync(opened.workspace.runRoot).some(name => name.startsWith("collect-"))).toBe(false);
+
+  // The same join with standing authority collects the sealed files.
   expect(await provider.integrate(run, "j1", ["s1"], new AbortController().signal)).toEqual({ ok: true });
   expect(existsSync(join(out, "plan.md"))).toBe(true);
+  expect(existsSync(join(out, "summary.md"))).toBe(true);
 });

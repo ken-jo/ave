@@ -17,8 +17,9 @@ function sameApprovedStage(stage: WorkItemStageRun | undefined, attempt: number,
 export function createRecordedOutputEffects(deps: {
   records: WorkflowRunState; outputs?: RequestedOutputHooks; resolvePinned: (pin: RunRecord["pin"]) => Promise<TemplateVersion>;
   /** The run's effect authority and its read with the committed row (WorkBoardStore.runAuthority, admitsRunEffect). */
-  canAdmitRunEffect: (run: RunRef) => boolean;
+  canAdmitRunEffect: (run: RunRef, authority: AbortSignal) => boolean;
   runAuthority: (run: RunRef) => AbortSignal;
+  settledOutputAuthority: (run: RunRef) => AbortSignal;
   resolveProjectRoot: (root: string) => string | null;
   scheduledProject: (source: Extract<RunRecord["runStartedBy"], { kind: "schedule-attachment" }>) => Promise<string | undefined | null>;
   notifyItemChanged: (id: number) => void;
@@ -27,7 +28,7 @@ export function createRecordedOutputEffects(deps: {
 
   async function execute(record: RunRecord, stage: WorkItemStageRun, definition: TemplateStage, output: RequestedOutput,
     run: RunRef, approvalSurface: WebContents, canExecute: () => boolean, signal: AbortSignal,
-    rowRemoved?: () => boolean): Promise<boolean> {
+    rowRemoved?: () => boolean, authority = deps.runAuthority(run)): Promise<boolean> {
     if (rowRemoved?.()) return false;
     const hash = requestedOutputHash(stage);
     const read = await records.get(run.itemId, run.runId);
@@ -41,8 +42,8 @@ export function createRecordedOutputEffects(deps: {
       result = { id: output.id, status: "failed", detail: "workspace-unavailable" };
     } else {
       // Every launch point reads the run's authority with the caller's own liveness, right before it acts.
-      result = await outputs.execute({ run, stageId: stage.stageId, output, approvalSurface, signal, authority: deps.runAuthority(run),
-        canExecute: () => canExecute() && deps.canAdmitRunEffect(run),
+      result = await outputs.execute({ run, stageId: stage.stageId, output, approvalSurface, signal, authority,
+        canExecute: () => canExecute() && deps.canAdmitRunEffect(run, authority),
         workspace: { root: workspaceRoot, repository: record.runWorkspace?.kind === "git" ? run.projectRoot : undefined },
       }).catch(() => ({ id: output.id, status: "failed", detail: signal.aborted ? "output-execution-interrupted" : "output-execution-failed" }));
     }
@@ -62,6 +63,8 @@ export function createRecordedOutputEffects(deps: {
     const { runId, stageId, attempt, outputId, outputHash } = input;
     const record = await records.get(itemId, runId);
     if (!record) return { ok: false, reason: "not_found" };
+    const identity = { itemId, runId, runKey: `work-board:${itemId}#${runId}` };
+    const authority = record.settled === undefined ? deps.runAuthority(identity) : deps.settledOutputAuthority(identity);
     const definition = (await resolvePinned(record.pin).catch(() => undefined))?.stages.find(row => row.id === stageId);
     if (!definition) return { ok: false, reason: "graph_mismatch" };
     const source = record.runStartedBy;
@@ -74,6 +77,7 @@ export function createRecordedOutputEffects(deps: {
     let selected: RequestedOutput | undefined;
     let reason: Extract<StageOutputRetryResult, { ok: false }>["reason"] = "not_pending";
     const reserved = await records.update(itemId, runId, stored => {
+      if (!canExecute() || !deps.canAdmitRunEffect(identity, authority)) { reason = "run_mismatch"; return null; }
       const stage = stored.stageRuns.find(row => row.stageId === stageId);
       if (!sameApprovedStage(stage, attempt, outputHash)) { reason = "output_mismatch"; return null; }
       const output = stage.requestedOutputs?.find(row => row.id === outputId);
@@ -87,8 +91,8 @@ export function createRecordedOutputEffects(deps: {
     });
     const stage = reserved.ok && reserved.run.stageRuns.find(row => row.stageId === stageId);
     if (!stage || !selected) return { ok: false, reason };
-    const run = { itemId, runId, runKey: `work-board:${itemId}#${runId}`, projectRoot: projectRoot ?? undefined };
-    if (!await execute(record, stage, definition, selected, run, surface, canExecute, new AbortController().signal)) return { ok: false, reason: "run_mismatch" };
+    const run = { ...identity, projectRoot: projectRoot ?? undefined };
+    if (!await execute(record, stage, definition, selected, run, surface, canExecute, new AbortController().signal, undefined, authority)) return { ok: false, reason: "run_mismatch" };
     return { ok: true };
   }
 

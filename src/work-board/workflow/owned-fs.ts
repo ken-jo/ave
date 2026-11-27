@@ -185,6 +185,8 @@ export interface OwnedDir {
   createFile(name: string, options?: { replace?: boolean }): { fd: number; id: NodeId };
   /** Written beside the name and renamed over it, so a link planted at either name is replaced, not written through. */
   writeFileAtomic(name: string, data: string): void;
+  /** Publish an owned staging file by identity without writing through an existing destination. */
+  replaceFileFrom(name: string, staged: OwnedDir, stagedName: string, id: NodeId, canReplace?: () => void): void;
   /** A regular file with one name, verified by identity; undefined when nothing is there. */
   readFile(name: string): Buffer | undefined;
   /** Removes one entry and everything below it without following a link. With `expect`, only while the entry is what that id names. */
@@ -336,13 +338,18 @@ class Dir implements OwnedDir {
   }
 
   writeFileAtomic(name: string, data: string): void {
-    const path = join(this.path, entryName(name));
     const { fd, id } = this.createFile(`${name}.tmp`, { replace: true });
     try { writeFileSync(fd, data); } finally { closeSync(fd); }
-    this.check();
-    const written = stats(`${path}.tmp`);
-    if (written === undefined || !written.isFile() || written.nlink !== 1n || idOf(written) !== id) throw new OwnedFsError("changed", "the file was replaced while it was written");
-    replaceStagedFile(`${path}.tmp`, path);
+    this.replaceFileFrom(name, this, `${name}.tmp`, id);
+  }
+
+  replaceFileFrom(name: string, staged: OwnedDir, stagedName: string, id: NodeId, canReplace?: () => void): void {
+    const path = join(this.path, entryName(name));
+    replaceStagedFile(join(staged.path, entryName(stagedName)), path, undefined, () => {
+      this.check();
+      if (staged.entryId(stagedName, "single-link-file") !== id) throw new OwnedFsError("changed", "the file was replaced while it was written");
+      canReplace?.();
+    });
   }
 
   readFile(name: string): Buffer | undefined {

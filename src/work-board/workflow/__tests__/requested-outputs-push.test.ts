@@ -514,11 +514,18 @@ it("a rule that comes from a conditional include which applies only inside the p
   const x = setup();
   stableAlias(x, "insteadOf");
   const args = await x.capture();
-  const include = join(x.fixture.base, "included.conf");
-  writeFileSync(include, `[url "${x.two}"]\n  insteadOf = ${x.one}\n`);
-  appendFileSync(x.fixture.env.GIT_CONFIG_GLOBAL ?? "", `[includeIf "gitdir:${x.repo}/.git"]\n  path = ${include}\n`);
+  const includeName = "included.conf";
+  const include = join(x.fixture.base, includeName);
+  const globalConfig = x.fixture.env.GIT_CONFIG_GLOBAL;
+  if (globalConfig === undefined) throw new Error("Missing fixture gitconfig");
+  const gitDir = process.platform === "win32" ? x.repo.replaceAll("\\", "/") : x.repo;
+  const includeKey = `includeIf.gitdir:${gitDir}/.git.path`;
+  x.git("config", "--file", include, `url.${x.two}.insteadOf`, x.one);
+  x.git("config", "--file", globalConfig, includeKey, includeName);
+  expect(x.git("config", "--file", globalConfig, "--list")).toContain(`includeif.gitdir:${gitDir}/.git.path=${includeName}`);
   expect(x.git("remote", "get-url", "--push", "origin")).toBe(args.url);
   const command = ["config", "--includes", "--get-regexp", "^url\\..*\\.(insteadof|pushinsteadof)$"];
+  expect(x.git(...command)).toContain(`url.${x.two}.insteadof ${x.one}`);
   await expect(x.real.run(x.fixture.base, command)).resolves.toMatchObject({ code: 1, stdout: "" });
   await expect(x.push(args)).resolves.toEqual({ status: "failed", detail: "push-url-unverified" });
   empty(x);
@@ -600,6 +607,18 @@ it('a compare mismatch never shows the guard\'s text, and a guard refusal and a 
 it("a rule read that exits 1 with empty output lets the request through", async () => {
   const x = setup();
   await expect(x.bind()).resolves.toMatchObject({ url: x.one });
+});
+
+it("records a generic transport failure without retaining its diagnostic", async () => {
+  const x = setup();
+  const args = await x.capture();
+  const runner = wrap(x, (command, next) => command[0] === "push"
+    ? Promise.resolve({ code: 1, stdout: "", stderr: "fixture transport diagnostic" }) : next());
+  await expect(x.push(args, runner)).resolves.toEqual({
+    status: "failed",
+    detail: canonicalWorkflowJson({ remote: "origin", host: "example.test", branch: runBranch(RUN_ID), sha: args.sha, exit: "push-failed" }),
+  });
+  empty(x);
 });
 
 it('a configuration file that git cannot parse, written after the approval, ends the execution failed with "push failed: push URL could not be verified" and pushes nothing', async () => {

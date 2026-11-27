@@ -71,7 +71,7 @@ interface LaneHooks {
 export interface StageRunEngineDeps {
   /** The board: the row of a run carries its id, its shown status and its final output. Nothing a run is decided from is read here. */
   store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "revokedRowKept" | "clearMissingRun" | "runAuthority" | "revokeRun" | "admitsRunEffect"
-    | "hasActiveProvisionalStart" | "acceptProvisionalTemplateStart" | "rollbackProvisionalTemplateStart" | "finishProvisionalWorkspaceRecovery">;
+    | "settledOutputAuthority" | "runBoardSnapshot" | "hasActiveProvisionalStart" | "acceptProvisionalTemplateStart" | "rollbackProvisionalTemplateStart" | "finishProvisionalWorkspaceRecovery">;
   /** Every run-authority field: the pin, the source, the stage runs, the joins, the gates and how the run ended. */
   runs: WorkflowRunState;
   /** The authorised registry root of a project path, or null when the registry does not hold it. */
@@ -304,11 +304,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   const records = deps.runs;
   const runs = new Map<number, RunState>();
   // A read of the run's authority (store.runAuthority) and its committed row, made right before an output handler or integration starts.
-  const canAdmitRunEffect = ({ itemId, runId }: RunRef): boolean => store.admitsRunEffect(itemId, runId);
+  const canAdmitRunEffect = ({ itemId, runId }: RunRef, authority?: AbortSignal): boolean => store.admitsRunEffect(itemId, runId, authority);
   const runAuthority = ({ itemId, runId }: RunRef): AbortSignal => store.runAuthority(itemId, runId);
   const outputApprovalSurfaces = new WeakMap<RunState, Map<string, WebContents>>();
   const outputEffects = createRecordedOutputEffects({ records, outputs: deps.outputs, resolvePinned, resolveProjectRoot: deps.resolveProjectRoot, notifyItemChanged,
-    canAdmitRunEffect, runAuthority,
+    canAdmitRunEffect, runAuthority, settledOutputAuthority: ({ itemId, runId }) => store.settledOutputAuthority(itemId, runId),
     scheduledProject: async source => {
       const approved = (await deps.attachments.getAttachment(source.attachmentId))?.approvedScope;
       return approved?.kind === "project" ? approved.projectRoot : approved?.kind === "all" ? undefined : null;
@@ -474,6 +474,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** After any board write, each run by its class. A run file awaiting review or a board file that shows nothing changes nothing. With
    * `release` (a permitted read), a live run replays its held events (drain), and only a run that holds events is ended by its class. */
   async function checkRows(release = false): Promise<void> {
+    if (release) await store.runBoardSnapshot();
     const classOf = await records.classes();
     if (typeof classOf === "string") return;
     for (const state of [...runs.values()]) {
@@ -983,13 +984,18 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           break;
         }
         case "integrate": {
-          if (state.integrating.has(effect.joinId) || !canAdmitRunEffect(state.ref)) break;
+          const authority = runAuthority(state.ref);
+          const admitted = () => canAdmitRunEffect(state.ref, authority);
+          if (state.integrating.has(effect.joinId) || authority.aborted) break;
+          if (!admitted()) await store.runBoardSnapshot();
+          if (!admitted()) break;
           let complete = true;
           for (const stageId of effect.stageIds) if (!(await sealStage(stageId))) complete = false;
           // A failed seal drops the open join through `seal_failed`; incomplete inputs never reach integration.
-          if (!complete || !canAdmitRunEffect(state.ref)) break;
+          if (!complete || authority.aborted) break;
+          if (!admitted()) await store.runBoardSnapshot();
+          if (!admitted()) break;
           state.integrating.add(effect.joinId);
-          const authority = runAuthority(state.ref);
           try {
             const merged = await workspace.integrate(state.ref, effect.joinId, effect.stageIds, authority);
             post(state, merged.ok ? { type: "join_integrated", joinId: effect.joinId } : { type: "join_conflict", joinId: effect.joinId, conflict: merged.conflict });
@@ -1108,7 +1114,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
       // Recheck the run source after preparing the child. The provisional write separately checks the live remote authority at launch.
       if ((await authorise()).lane !== lane) throw new WorkflowInvariantError("run-not-authorised", "source-not-authorised");
-      if (halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");
+      const canLaunch = () => !halted(state, stageId) && canAdmitRunEffect(state.ref);
+      const requireLaunch = () => {
+        if (halted(state, stageId) || runAuthority(state.ref).aborted) throw new WorkflowInvariantError("run-stopped");
+        if (!canAdmitRunEffect(state.ref)) throw new WorkflowInvariantError("run-write-held");
+      };
 
       const intake = deps.outputs && stageDeclaresOutputs(stage) ? stageOutputIntake(deps.outputs, {
         stage, workspaceRoot: stageRoot, run: state.ref,
@@ -1178,6 +1188,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           },
           {
             onLinked: ({ childSessionId }) => {
+              requireLaunch();
               if (source.kind === "schedule-attachment" && state.projectRoot !== undefined
                 && !deps.scopeAuthorised({ kind: "project", projectRoot: state.projectRoot })) {
                 throw new WorkflowInvariantError("run-not-authorised", "scope-not-authorised");
@@ -1217,7 +1228,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         if (pendingStart) {
           // Only one first stage commits the launch. Its runner call follows the guarded rename without yielding.
           pendingStart.acceptance ??= store.acceptProvisionalTemplateStart(state.itemId, state.runId, pendingStart.authority,
-            () => !halted(state, stageId), () => {
+            canLaunch, () => {
               running = launchChild();
               void running.catch(() => undefined);
             });
@@ -1227,7 +1238,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           }
         }
         if (!running) {
-          if (halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");
+          requireLaunch();
           running = launchChild();
         }
         if (state.pendingStart) {
@@ -1829,7 +1840,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         if (held.kind !== "stop_requested") log.info("held stage run event dropped (id=%d, event=%s): superseded by the restart reconcile", item.id, held.kind);
       }
       await records.dropHeld(record).catch((error: unknown) => log.warn("held stage run events stay in the run file (id=%d): %s", item.id, errorMessage(error)));
-      if (heldBefore.some(held => held.kind === "stop_requested")) stop(item.id);
+      if (runAuthority(state.ref).aborted || heldBefore.some(held => held.kind === "stop_requested")) stop(item.id);
       else drain(state);
     }
     const at = new Date().toISOString();

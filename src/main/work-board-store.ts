@@ -792,12 +792,12 @@ export class WorkBoardStore {
   // Fires as a listed row the user deleted is written gone, before boardChanged, with the run that row named, and after a failed write of
   // such a delete that leaves its intent stored. Only a cue to read the delete intents again: no run ends by it (see runClasses).
   readonly rowDeleted = new ChangeSignal<{ itemId: number; runId: string }>((err) => log.warn("[work-board] delete listener threw: %s", (err as Error).message));
-  // Fires when a delete's write failed and the published board still shows the row: its run's authority stays revoked, so the run is
-  // to be stopped as by Stop (see commit).
+  // A confirmed failed delete left its entry on disk. Stop its run even if that entry is an unreadable card.
   readonly revokedRowKept = new ChangeSignal<{ itemId: number; runId: string }>((err) => log.warn("[work-board] revoked-run listener threw: %s", (err as Error).message));
   private cache: BoardFile = emptyBoard();
   // Each run's effect authority by `itemId#runId` (see runAuthority). Kept for the process: a revoked one must stay revoked after the run settles.
   private readonly authorities = new Map<string, AbortController>();
+  private readonly settledOutputAuthorities = new Map<string, AbortController>();
   private loaded = false;
   // No legacy board copy is left started and not done; it never is again.
   private legacyCopySettled = false;
@@ -843,12 +843,8 @@ export class WorkBoardStore {
     // A delete takes the run's authority as it is decided, before anything is written: the row may be gone on disk before this write
     // returns, and no effect may start in between. A delete that fails with the row still standing leaves the run revoked, as Stop does.
     this.revokeRun(itemId, runId);
-    try {
-      await this.write(board, change, canCommit, didCommit);
-    } catch (error) {
-      if (this.names(itemId, runId)) this.revokedRowKept.emit(change.deleted);
-      throw error;
-    }
+    this.authorityOf(itemId, runId, this.settledOutputAuthorities).abort(new WorkflowRunRevoked());
+    await this.write(board, change, canCommit, didCommit);
   }
 
   private async write(board: BoardRead, change: BoardChange, canCommit?: () => boolean, didCommit?: () => void): Promise<void> {
@@ -1204,8 +1200,7 @@ export class WorkBoardStore {
   }
 
   /** The run's authority to start an outward effect: one signal per run, handed to every final launch point of its effects. It is
-   * aborted synchronously, and never restored, by the commit that deletes the run's row (before listeners hear of it), by a delete that
-   * landed although its write failed, and by revokeRun (Stop, or the engine finding the row removed). */
+   * aborted synchronously, and never restored, by Stop or a delete that reaches its board write, even if that write fails. */
   runAuthority(itemId: number, runId: string): AbortSignal {
     return this.authorityOf(itemId, runId).signal;
   }
@@ -1216,8 +1211,13 @@ export class WorkBoardStore {
   }
 
   /** Synchronous effect admission: the run's authority stands and the board the last commit published still names it on its row. */
-  admitsRunEffect(itemId: number, runId: string): boolean {
-    return !this.runAuthority(itemId, runId).aborted && this.names(itemId, runId);
+  admitsRunEffect(itemId: number, runId: string, authority = this.runAuthority(itemId, runId)): boolean {
+    return !authority.aborted && this.names(itemId, runId);
+  }
+
+  /** A fresh approval for a settled run has its own lifetime, bounded by deletion of the row. */
+  settledOutputAuthority(itemId: number, runId: string): AbortSignal {
+    return this.authorityOf(itemId, runId, this.settledOutputAuthorities).signal;
   }
 
   /** Whether the board the last commit published names the run on its row. */
@@ -1225,12 +1225,12 @@ export class WorkBoardStore {
     return this.cache.items.some(item => item.id === itemId && item.runId === runId);
   }
 
-  private authorityOf(itemId: number, runId: string): AbortController {
+  private authorityOf(itemId: number, runId: string, authorities = this.authorities): AbortController {
     const key = `${itemId}#${runId}`;
-    let authority = this.authorities.get(key);
+    let authority = authorities.get(key);
     if (!authority) {
       authority = new AbortController();
-      this.authorities.set(key, authority);
+      authorities.set(key, authority);
     }
     return authority;
   }
@@ -1984,7 +1984,7 @@ export class WorkBoardStore {
     try {
       await this.commit(board, { drops: true, deleted: intent, ...(item.remoteProvisional && { provisionalRetraction: true }) });
     } catch (error) {
-      if (intent !== undefined && marked === "marked") await this.settleFailedDelete(intent, error, (onDisk) => listsRow(onDisk, intent), operation);
+      if (intent !== undefined) await this.settleFailedDelete(intent, error, (onDisk) => listsRow(onDisk, intent), operation, marked === "marked");
       throw error;
     }
     if (item.templateId !== undefined) await this.pruneAfterWrite(this.retention(boardStanding(board)));
@@ -2019,13 +2019,20 @@ export class WorkBoardStore {
   // the intents again; a board that shows nothing leaves the outcome unknown, stored as a marker of `operation` (see
   // WorkflowRunStore.markUnknown). An intent this delete did not store (`ownIntent` false) is another delete's: it is never taken back or
   // marked, only told again.
-  private async settleFailedDelete(intent: DeleteIntent, error: unknown, unlanded: (onDisk: BoardOnDisk) => boolean, operation: MarkerOp): Promise<void> {
+  private async settleFailedDelete(intent: DeleteIntent, error: unknown, unlanded: (onDisk: BoardOnDisk) => boolean, operation: MarkerOp, hasIntent = true): Promise<void> {
     const refused = error instanceof WorkBoardWriteRefusal;
     const onDisk = refused ? undefined : await readBoardOnDisk(this.filePath).catch(() => undefined);
     if (refused || (onDisk && unlanded(onDisk))) {
-      if (operation.ownIntent && !(await this.runs.withdrawIntent(intent, operation))) log.warn("[work-board-store] a delete intent was not taken back: its outcome is held as unknown");
+      if (hasIntent && operation.ownIntent && !(await this.runs.withdrawIntent(intent, operation))) log.warn("[work-board-store] a delete intent was not taken back: its outcome is held as unknown");
+      // Existing retry cards retain the aborted signal. A new gesture can authorize a settled output again.
+      const key = `${intent.itemId}#${intent.runId}`;
+      if (this.settledOutputAuthorities.get(key)?.signal.aborted) {
+        this.settledOutputAuthorities.delete(key);
+        this.revokedRowKept.emit(intent);
+      }
       return;
     }
+    if (!hasIntent) return;
     if (!onDisk && operation.ownIntent) await this.runs.markUnknown(intent, operation);
     this.revokeRun(intent.itemId, intent.runId);
     this.rowDeleted.emit(intent);

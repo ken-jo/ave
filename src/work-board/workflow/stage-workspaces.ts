@@ -1002,12 +1002,44 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       if (there !== undefined && there.sha256 !== copy.sha256 && there.sha256 !== file.out[copy.path]?.sha256) next.set(copy.path, { ...there, stageId: copy.stageId });
       else wanted.push(copy);
     }
-    // Each copy is the sealed content, or it does not stay. Nothing is collected once the run's authority is revoked.
-    authority?.throwIfAborted();
-    for (const copy of wanted) await copySeedFiles(stageDir(copy.stageId), out, [copy.path], new Map([[copy.path, copy.sha256]]));
-    file.out = Object.fromEntries(next);
-    file.joins[joinId] = true;
-    writeRunFile(at, file);
+    const assertAuthority = () => authority?.throwIfAborted();
+    assertAuthority();
+    const staged = wanted.length > 0 ? at.run.makeTemp("collect-") : undefined;
+    const published = new Map<string, WorkspaceRecord["out"][string]>();
+    try {
+      if (staged) {
+        // Prepare the verified bytes off the output tree. An interrupted read leaves the previous output intact.
+        const prepared = [];
+        for (const copy of wanted) {
+          assertAuthority();
+          const [source] = await copySeedFiles(stageDir(copy.stageId), staged, [copy.path], new Map([[copy.path, copy.sha256]]), false, authority);
+          if (source === undefined) throw new Error("a staged copy is missing");
+          prepared.push({ copy, source });
+        }
+        // Publish without yielding. A failed rename leaves the last destination intact.
+        for (const { copy, source } of prepared) {
+          const segments = copy.path.split("/");
+          const leaf = segments.pop() as string;
+          assertAuthority();
+          out.ensurePath(segments).replaceFileFrom(leaf, source.directory, leaf, source.id, assertAuthority);
+          published.set(copy.path, { sha256: copy.sha256, size: copy.size, stageId: copy.stageId });
+        }
+      }
+      assertAuthority();
+      file.out = Object.fromEntries(next);
+      file.joins[joinId] = true;
+      writeRunFile(at, file);
+    } catch (error) {
+      // Keep the identity of each completed copy so a later attempt can distinguish it from a user's edit.
+      delete file.joins[joinId];
+      if (published.size > 0) {
+        file.out = Object.fromEntries([...Object.entries(file.out), ...published]);
+        writeRunFile(at, file);
+      }
+      throw error;
+    } finally {
+      if (staged) await at.run.remove(basename(staged.path), staged.id);
+    }
     return { ok: true };
   }
 

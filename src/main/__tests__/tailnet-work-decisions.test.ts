@@ -225,6 +225,23 @@ it("withholds the prior schedule pin after its current template scope leaves the
   });
 });
 
+it("approves an ordinary stage gate through the authenticated remote dispatcher", async () => {
+  const { h, decide, runtime } = await fixture();
+  await h.runThenEnd(async () => {
+    const version = await h.confirm([stageOf("review")]);
+    const itemId = await h.addItem(version);
+    const start = h.start(itemId, h.local(version));
+    (await h.untilLive(1, itemId))[0].finish();
+    await start;
+    const offered = (await runtime.list(evidence)).find(review => review.kind === "stage" && review.binding.itemId === itemId);
+    if (offered?.kind !== "stage") throw new Error("Missing stage review");
+    expect(offered.binding.input).not.toHaveProperty("outputHash");
+    await expect(decide(fromWire({ ...base, kind: "stage", itemId, input: { ...offered.binding.input, decision: "approve" } })))
+      .resolves.toEqual({ ok: true, kind: "stage", status: "approved" });
+    await h.until(itemId, row => row.runStatus === "completed");
+  });
+});
+
 it.each(["reject", "request_changes"] as const)("requires a local approver for an output-bearing gate and permits remote %s", async decision => {
   const invoke = vi.fn();
   const { h, decide, runtime, log } = await fixture({

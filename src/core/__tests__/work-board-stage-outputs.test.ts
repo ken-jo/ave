@@ -551,6 +551,37 @@ it("keeps a retry opened during an active run revoked after Stop settles that ru
   // The retry holds the run's own authority, which Stop revoked and the run's settlement left revoked.
   expect(fixture.authorities.at(-1)).toBe(h.board.runAuthority(itemId, binding.runId));
   expect(fixture.authorities.at(-1)?.aborted).toBe(true);
+  const fresh = await openRetryCard(fixture, itemId, binding, outcome.id);
+  answerOutput(fixture, fresh.retryCard);
+  await expect(fresh.retry).resolves.toEqual({ ok: true });
+  expect(handler).toHaveBeenCalledOnce();
+}));
+
+it("a failed delete invalidates an open retry and permits a fresh approval on the retained settled run", () => withOutputExecutor({ args: plainArgs }, async fixture => {
+  const { h, handler } = fixture;
+  const { itemId, card, decision, binding } = await openOutputGate(fixture);
+  answerOutput(fixture, card, "deny-once");
+  await expect(decision).resolves.toMatchObject({ ok: true });
+  await h.until(itemId, row => row.runStatus === "completed");
+  const [outcome] = (await h.stageRun(itemId, binding.stageId)).outputExecutions ?? [];
+  const open = await openRetryCard(fixture, itemId, binding, outcome.id);
+  const rename = fsPromises.rename.bind(fsPromises);
+  const renames = vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
+    if (to === h.boardPath) throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    return rename(from, to);
+  });
+  try {
+    await expect(h.board.remove(itemId)).rejects.toThrow("no space left on device");
+  } finally {
+    renames.mockRestore();
+  }
+  answerOutput(fixture, open.retryCard);
+  await open.retry;
+  expect(handler).not.toHaveBeenCalled();
+  const fresh = await openRetryCard(fixture, itemId, binding, outcome.id);
+  answerOutput(fixture, fresh.retryCard);
+  await expect(fresh.retry).resolves.toEqual({ ok: true });
+  expect(handler).toHaveBeenCalledOnce();
 }));
 
 it("refuses tool execution without an approval surface", () => withOutputExecutor({ args: plainArgs }, async fixture => {
