@@ -1654,6 +1654,7 @@ export class SubscriptionRuntimeService {
     this.stopped = true;
     for (const [provider, state] of this.connections) {
       this.clearConfirmation(state);
+      if (state.status.connection === "connected") this.latchConnection(provider, state, "unknown");
       if (connectionProjections.get(provider)?.revision === state.revision) connectionProjections.delete(provider);
     }
     this.stopPromise = (async () => {
@@ -1957,14 +1958,16 @@ export class SubscriptionRuntimeService {
     provider: CliProvider, state: HostConnection, connection: "unknown" | "signed-out", version = state.status.version,
     runtime?: "not-configured" | "unavailable",
   ): void {
-    const changed = state.status.connection !== connection || state.latch === 0;
+    const nextRuntime = runtime ?? (connection === "signed-out" ? (provider === "codex" ? "ready" : "unverified") : "unavailable");
+    const changed = state.status.connection !== connection || state.status.runtime !== nextRuntime
+      || state.status.version !== version || state.latch === 0;
     state.latch = ++this.sequence;
     state.generation += 1;
     this.invalidateSafety(provider);
     state.status = {
       ...this.failedProbeStatus(provider, version),
       connection,
-      runtime: runtime ?? (connection === "signed-out" ? (provider === "codex" ? "ready" : "unverified") : "unavailable"),
+      runtime: nextRuntime,
     };
     if (changed) this.publishConnection(provider);
     this.confirmAccount(provider, state);
@@ -1990,6 +1993,7 @@ export class SubscriptionRuntimeService {
     if (this.stopped || !target || state.busy || state.confirming || state.timer || state.status.connection === "connected") return;
     state.timer = setTimeout(() => {
       state.timer = undefined;
+      if (this.stopped || state.target !== target || state.busy || state.status.connection === "connected") return;
       state.confirming = true;
       if (!target.retry && state.target === target) state.target = undefined;
       void this.readCliStatus(provider, {}).catch(() => undefined).finally(() => {

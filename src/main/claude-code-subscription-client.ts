@@ -749,7 +749,12 @@ export class ClaudeCodeSubscriptionClient {
               || typeof parsed.subscriptionType !== "string" || !parsed.subscriptionType.trim()))) {
             throw new Error("invalid-auth-status");
           }
-          auth = { loggedIn: parsed.loggedIn, accepted: receipt?.({ kind: parsed.loggedIn ? "connected" : "signed-out" }) };
+          const accepted = receipt?.({ kind: parsed.loggedIn ? "connected" : "signed-out" });
+          if (!parsed.loggedIn && accepted !== false) {
+            this.verifiedIdentity = null;
+            this.verifiedVersion = null;
+          }
+          auth = { loggedIn: parsed.loggedIn, accepted };
         },
       });
     } catch (error) {
