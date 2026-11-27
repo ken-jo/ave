@@ -3,6 +3,7 @@ export const NATIVE_TIER_TESTS = [
   "src/permissions/__tests__/asrt-mxc-egress.test.ts",
   "src/permissions/__tests__/asrt-sandbox-mxc-proxy.test.ts",
   "src/permissions/__tests__/container-route-unswitched.test.ts",
+  "src/permissions/__tests__/mxc-extension-admission.windows.test.ts",
   "src/permissions/__tests__/mxc-runtime-root-floor.test.ts",
   "src/permissions/__tests__/mxc-runtime-root.test.ts",
   "src/plugins/isolation/__tests__/confined-plugin-child.test.ts",
