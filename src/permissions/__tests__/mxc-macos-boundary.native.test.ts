@@ -1,13 +1,13 @@
-import childProcess, { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { syncBuiltinESMExports } from "node:module";
 import { connect, createServer, type Server } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildNativeShellSupervisor } from "../../__tests__/support/mxc-shell-supervisor-native.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { createContainedShellLifecycle } from "../../tools/contained-shell-lifecycle.js";
 import { prepareMxcPosixShellLaunch } from "../../tools/mxc-posix-shell-launch.js";
@@ -17,13 +17,29 @@ import { startEgressRelayService, stopEgressRelayService, type EgressRelayServic
 import { currentMxcRuntimeHost, establishMxcRuntimeRoot, _forgetMxcRuntimeRootForTest } from "../mxc-runtime-root.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability,
   setContainerShellSubstrate, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
-import { buildSafeChildEnv } from "../../tools/safe-env.js";
-import { launcherPathFor, pinnedLauncherSha256, resolveHostLauncherPath } from "../mxc-launcher.js";
-import { _runSeatbeltCanaryForTest, buildSeatbeltShellRequest } from "../mxc-macos.js";
+import pins from "../mxc-launcher-pins.json" with { type: "json" };
+import { _runSeatbeltCanaryForTest, buildSeatbeltShellRequest, detectHostMxcMacShellSupport } from "../mxc-macos.js";
 import { posixPolicyLookups } from "../mxc-posix.js";
+import { stageMxcShellRequest, startMxcShellSupervisor } from "../mxc-shell-supervisor-client.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../policy-model.js";
 
-describe.runIf(process.platform === "darwin" && process.arch === "arm64")("native macOS shell boundary", () => {
+const NATIVE = process.platform === "darwin" && process.arch === "arm64";
+let supervisor: Awaited<ReturnType<typeof buildNativeShellSupervisor>>;
+
+if (NATIVE) {
+  beforeAll(async () => { supervisor = await buildNativeShellSupervisor(); });
+  afterAll(() => supervisor.dispose());
+}
+
+async function collectShell(launch: ReturnType<typeof startMxcShellSupervisor>) {
+  let stdout = "";
+  let stderr = "";
+  launch.child.stdout.setEncoding("utf8").on("data", (data: string) => { stdout += data; });
+  launch.child.stderr.setEncoding("utf8").on("data", (data: string) => { stderr += data; });
+  return { ...await launch.completion, stdout, stderr };
+}
+
+describe.runIf(NATIVE)("native macOS shell boundary", () => {
   let root: string;
   let work: string;
 
@@ -35,21 +51,17 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-  function launch(commandLine: string, timeoutMs: number, model: PolicyModel, cwd = work) {
-    const launcher = launcherPathFor(resolve("resources"), "darwin", "arm64");
-    if (launcher === undefined) throw new Error("macOS launcher path is missing");
-    const config = join(root, "launcher.json");
+  async function launch(commandLine: string, timeoutMs: number, model: PolicyModel, cwd = work) {
     const { request } = buildSeatbeltShellRequest({
       model, cwd, commandLine, timeoutMs, lookups: posixPolicyLookups(root, true),
       env: { HOME: root, PATH: "/usr/bin:/bin" }, proxyUrl: "http://127.0.0.1:1",
     });
-    writeFileSync(config, JSON.stringify(request), { mode: 0o600 });
-    return spawnSync(launcher, ["--config", config], {
-      stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: buildSafeChildEnv(), timeout: 8_000,
-    });
+    const staged = await stageMxcShellRequest(join(root, "request.json"), request);
+    return collectShell(startMxcShellSupervisor(staged, timeoutMs, undefined, () => {},
+      "test:boundary-shell", supervisor.location));
   }
 
-  it("carves around a denied sibling and refuses protected moves and new pattern matches", () => {
+  it("carves around a denied sibling and refuses protected moves and new pattern matches", async () => {
     const vault = join(root, "vault");
     const open = join(vault, "open");
     const secret = join(vault, "secret");
@@ -72,7 +84,7 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
         policyGrantRow(open, "ro", "launch-grant", true),
       ],
     });
-    const result = launch([
+    const result = await launch([
       `test "$(cat '${open}/control')" = readable || exit 11`,
       `if cat '${secret}'; then exit 12; fi`,
       `if stat '${secret}'; then exit 16; fi`,
@@ -80,14 +92,14 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
       "if (echo denied > ordinary/new.locked); then exit 14; fi",
       "if mv control renamed; then exit 15; fi",
     ].join("\n"), 3_000, model);
-    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.code, result.stdout + result.stderr).toBe(0);
     expect(result.stdout).not.toContain("private fixture");
     expect(existsSync(protectedChild)).toBe(true);
     expect(existsSync(join(work, "ordinary", "new.locked"))).toBe(false);
     expect(readFileSync(join(work, "ordinary", "good"), "utf8").trim()).toBe("ok");
   });
 
-  it("keeps both admitted children readable through nested carves and both denied scopes closed", () => {
+  it("keeps both admitted children readable through nested carves and both denied scopes closed", async () => {
     const outer = join(work, "outer");
     const project = join(outer, "project");
     const inner = join(project, "inner");
@@ -100,28 +112,27 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
       launchGrants: [work, project, child].map(dir => policyGrantRow(dir, "ro", "launch-grant", true)),
       userGrants: [], extensionManifests: [],
     });
-    const result = launch([
+    const result = await launch([
       `cat '${project}/file' || exit 11`,
       `cat '${child}/file' || exit 12`,
       `if cat '${outer}/file'; then exit 13; fi`,
       `if cat '${inner}/file'; then exit 14; fi`,
     ].join("\n"), 3_000, model);
-    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.code, result.stdout + result.stderr).toBe(0);
   });
 
-  it("reaps the shell, a background child and a setsid descendant on the backend timeout under an override", () => {
+  it("reaps the shell, a background child and a setsid descendant on the backend timeout under an override", async () => {
     const model = buildPolicyModel({
       floors: [], userGrants: [], extensionManifests: [],
       launchGrants: [policyGrantRow(work, "rw", "launch-grant", true)],
     });
-    const result = launch([
+    const result = await launch([
       "echo $$ > shell.pid",
       "sleep 8 & echo $! > child.pid",
       `/usr/bin/perl -MPOSIX -e 'POSIX::setsid() >= 0 or die $!; open(my $pid, ">", "detached.pid") or die $!; print $pid $$; close($pid); sleep 8' &`,
       "wait",
     ].join("\n"), 1_200, model);
-    expect(result.signal).toBeNull();
-    expect(result.status, result.stdout + result.stderr).toBe(255);
+    expect(result).toMatchObject({ timedOut: true, cleanupUnverified: false });
     for (const name of ["shell", "child", "detached"]) {
       const pid = Number(readFileSync(join(work, `${name}.pid`), "utf8").trim());
       expect(pid).toBeGreaterThan(1);
@@ -129,50 +140,33 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
     }
   });
 
-  it("proves the boot canary against the installed launcher and cleans its staging", async () => {
-    const launcher = launcherPathFor(resolve("resources"), "darwin", "arm64");
-    if (launcher === undefined) throw new Error("macOS launcher path is missing");
-    await expect(_runSeatbeltCanaryForTest(launcher, root)).resolves.toBe("available");
+  it("proves the boot canary through the installed sandbox library and cleans its staging", async () => {
+    await expect(_runSeatbeltCanaryForTest(supervisor.location, root)).resolves.toBe("available");
     expect(readdirSync(root)).toEqual(["work"]);
   });
 
-  it("waits for the canary child to exit before tearing down on abort", async () => {
-    const launcher = launcherPathFor(resolve("resources"), "darwin", "arm64");
-    if (launcher === undefined) throw new Error("macOS launcher path is missing");
-    const wrapper = join(work, "abort-probe");
-    writeFileSync(wrapper, `#!/bin/sh
-if [ "$1" = "--debug" ]; then exit 91; fi
-if [ "$1" = "--config" ]; then
-  /usr/bin/perl -MJSON::PP -0777 -i -pe 'my $request=decode_json($_); $request->{process}{commandLine}=q{echo $$ > child.pid; /bin/sleep 1; exit 0}; $_=encode_json($request)' "$2" || exit 1
-fi
-exec "${launcher}" "$@"
-`, { mode: 0o700 });
-
+  it("cleans the canary staging when boot is cancelled", async () => {
     const controller = new AbortController();
     const reason = new Error("Canary cancelled");
-    const outcome = _runSeatbeltCanaryForTest(wrapper, root, controller.signal).catch((error: unknown) => error);
-    const childPid = await vi.waitFor(() => {
-      const staging = readdirSync(root).find(name => name.startsWith("p-"));
-      if (staging === undefined) throw new Error("Canary staging has not started");
-      const pid = Number(readFileSync(join(root, staging, "w", "child.pid"), "utf8"));
-      expect(pid).toBeGreaterThan(1);
-      return pid;
-    }, { interval: 10, timeout: 3_000 });
+    const outcome = _runSeatbeltCanaryForTest(supervisor.location, root, controller.signal);
+    const observed = expect(outcome).rejects.toBe(reason);
+    await vi.waitFor(() => {
+      const directory = readdirSync(root).find(name => name.startsWith("p-"));
+      expect(directory && existsSync(join(root, directory, "canary.json"))).toBe(true);
+    }, { interval: 1, timeout: 2_000 });
     controller.abort(reason);
-    const result = await outcome;
-    expect(() => process.kill(childPid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+    await observed;
     expect(readdirSync(root)).toEqual(["work"]);
-    expect(result).toBe(reason);
   });
 });
 
-// Change this receipt only after running the native boundary suite against the new launcher.
-const VERIFIED_LAUNCHER = "4c68a4ff34ed14134a94a4312a8ec172bd2099dd26453e4a7893d91515f42687";
-it("requires new macOS boundary evidence when the launcher pin changes", () => {
-  expect(pinnedLauncherSha256("darwin-arm64")).toBe(VERIFIED_LAUNCHER);
+// Change this receipt only after verifying the native boundary against the new library.
+const VERIFIED_LIBRARY = "b99eba8c95bde9a104c025a17e077f71ad420c4ac58f873af41170e8ac848e3f";
+it("requires new macOS boundary evidence when the sandbox library pin changes", () => {
+  expect(pins.targets["darwin-arm64"].library.sha256).toBe(VERIFIED_LIBRARY);
 });
 
-describe.runIf(process.platform === "darwin" && process.arch === "arm64")("native product shell launch", () => {
+describe.runIf(NATIVE)("native product shell launch", () => {
   let root: string;
   let project: string;
   let home: string;
@@ -191,7 +185,7 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
     vi.stubEnv("AVE_TEST_SANDBOX_BASE", root);
     cache = currentMxcRuntimeHost().cacheHome;
     runtime = establishMxcRuntimeRoot();
-    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    configureHostResources(supervisor.resources);
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt", platform: "darwin", confidence: "verified", reason: "Test relay",
@@ -237,13 +231,35 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
     }, lease);
   }
 
-  async function run(launch: Awaited<ReturnType<typeof prepare>>) {
-    const { child, completion } = launch.start("test:native-posix-shell");
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8").on("data", data => { stdout += data; });
-    child.stderr.setEncoding("utf8").on("data", data => { stderr += data; });
-    return { ...await completion, stdout, stderr };
+  function run(launch: Awaited<ReturnType<typeof prepare>>) {
+    return collectShell(launch.start("test:native-posix-shell"));
+  }
+
+  async function compareLauncher(command: string, sealed: string, allowed: string[]) {
+    const sdkRoot = resolve("node_modules", pins.sdk.packages["@microsoft/mxc-sdk"]);
+    const pin = pins.targets["darwin-arm64"].launcher;
+    const cli = join(sdkRoot, pin.member);
+    expect(createHash("sha256").update(readFileSync(cli)).digest("hex")).toBe(pin.sha256);
+
+    const previous = new Set(readdirSync(runtime));
+    const admitted = await prepare(command, { denyRead: [sealed], allowRead: allowed });
+    const staged = readdirSync(runtime).filter(name => name.startsWith("shell-") && !previous.has(name));
+    expect(staged).toHaveLength(1);
+    const requestPath = join(runtime, staged[0]!, "request.json");
+    const baseline = spawnSync(cli, ["--config", requestPath], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 12_000,
+    });
+    expect(baseline.error).toBeUndefined();
+    expect(baseline).toMatchObject({ status: 0, stdout: "new access", stderr: "" });
+
+    // Regression check: the same staged bytes through the supervisor without its call stack setting die before exec.
+    const requestSha256 = createHash("sha256").update(readFileSync(requestPath)).digest("hex");
+    const unconfigured = await collectShell(startMxcShellSupervisor({ type: "shell-start", requestPath, requestSha256 },
+      10_000, undefined, () => {}, "test:default-stack-shell", supervisor.defaultStackLocation));
+    expect(unconfigured).toMatchObject({ code: -1, stdout: "", cleanupUnverified: false });
+
+    const supervised = await run(admitted);
+    expect(supervised).toMatchObject({ code: baseline.status, stdout: baseline.stdout, stderr: baseline.stderr });
   }
 
   async function listen(server: Server, socket?: string): Promise<number> {
@@ -326,115 +342,24 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
     expect(existsSync(config)).toBe(false);
   });
 
-  it.each([
-    { lookup: "successful child discovery", psFails: false, pgrepFails: false, detached: true },
-    { lookup: "failed primary lookup", psFails: true, pgrepFails: false, detached: true },
-    { lookup: "all child lookups failed", psFails: true, pgrepFails: true, detached: false },
-  ])("cancels a live launch promptly with $lookup", async ({ psFails, pgrepFails, detached }) => {
-    startEgressRelayService({ ask: async () => false });
-    const controller = new AbortController();
-    const launch = await prepare([
-      "echo $$ > shell.pid",
-      `/bin/sh -c ${quote(`echo denied > ${quote(join(root, "outside"))}`)} && exit 40`,
-      "sleep 20 & echo $! > child.pid",
-      "exec 3>&-",
-      ...(detached ? [
-        '/usr/bin/perl -MPOSIX -e \'POSIX::setsid() >= 0 or die $!; open(my $pid, ">", "detached.pid") or die $!; print $pid $$; close($pid); sleep 20\' </dev/null >/dev/null 2>&1 &',
-      ] : []),
-      "wait",
-    ].join("\n"), { signal: controller.signal, timeoutMs: 10_000 });
-    const { child: supervisor, completion } = launch.start("test:native-posix-shell-cancel");
-    const group = supervisor.pid;
-    if (group === undefined) throw new Error("Expected a running supervisor");
-    supervisor.stdout.resume();
-    let stderr = "";
-    supervisor.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
-    const started = vi.waitFor(() => ["shell", "child", ...(detached ? ["detached"] : [])].map(name => {
-      const pid = Number(readFileSync(join(project, `${name}.pid`), "utf8").trim());
-      expect(pid).toBeGreaterThan(1);
-      expect(() => process.kill(pid, 0)).not.toThrow();
-      return pid;
-    }), { interval: 15, timeout: 3_000 });
-    const pids = await Promise.race([started, completion.then(outcome => {
-      throw new Error(`Launcher exited before the cancellation fixture started: ${JSON.stringify(outcome)} ${stderr}`);
-    })]);
-    const processGroup = (pid: number) =>
-      Number(execFileSync("/bin/ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" }).trim());
-    expect(processGroup(group)).toBe(group);
-    expect(processGroup(pids[0] as number)).toBe(group);
-    expect(processGroup(pids[1] as number)).toBe(group);
-    if (detached) expect(processGroup(pids[2] as number)).toBe(pids[2]);
-    const execFile = childProcess.execFile;
-    const failedLookups = new Set<string>();
-    const lookup = psFails ? vi.spyOn(childProcess, "execFile").mockImplementation((file, args, ...rest) => {
-      if (Array.isArray(args) && (
-        (file === "/bin/ps" && args.includes("pid=,ppid=")) ||
-        (pgrepFails && file === "/usr/bin/pgrep" && args.includes("-P"))
-      )) {
-        failedLookups.add(file);
-        return Reflect.apply(execFile, undefined, [file, ["-o", "invalidProcessColumn"], ...rest]);
-      }
-      return Reflect.apply(execFile, undefined, [file, args, ...rest]);
-    }) : undefined;
-    if (lookup !== undefined) syncBuiltinESMExports();
-    const lease = leases[0];
-    if (lease === undefined) throw new Error("Expected an invocation lease");
-    const expectGroupGone = () => expect(() => process.kill(-group, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
-    lease.defer(() => { expectGroupGone(); });
-    try {
-      const cancelledAt = performance.now();
-      controller.abort();
-      const disposal = lease.dispose();
-      const outcome = await completion;
-      const elapsed = performance.now() - cancelledAt;
-      const survivingPids = [group, ...pids].filter(pid => {
-        try { return process.kill(pid, 0); }
-        catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-          return false;
-        }
-      });
-      for (const pid of survivingPids) {
-        try { process.kill(pid, "SIGKILL"); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-      }
-      if (psFails) expect(failedLookups).toContain("/bin/ps");
-      expect(elapsed, `Cancellation took ${Math.round(elapsed)} ms`).toBeLessThan(3_000);
-      if (pgrepFails) expect(failedLookups).toContain("/usr/bin/pgrep");
-      expect({ outcome, survivingPids }).toMatchObject({
-        outcome: { code: pgrepFails ? null : 255, signal: pgrepFails ? "SIGKILL" : null, cancelled: true, timedOut: false },
-        survivingPids: [],
-      });
-      expectGroupGone();
-      expect(existsSync(join(root, "outside"))).toBe(false);
-      expect(await disposal).toEqual([]);
-    } finally {
-      if (lookup !== undefined) {
-        lookup.mockRestore();
-        syncBuiltinESMExports();
-      }
+  it("refuses an absent or invalid sandbox library through the boot check", async () => {
+    const resources = { resourcePath: join(root, "resources"), isPackaged: false };
+    await expect(detectHostMxcMacShellSupport(resources)).resolves.toEqual({ state: "unavailable", reason: "binary-missing" });
+    const nodeModules = join(root, "node_modules");
+    for (const relative of [...Object.keys(pins.sdk.files), ...Object.keys(pins.sdk.darwinFiles)]) {
+      const destination = join(nodeModules, relative);
+      mkdirSync(dirname(destination), { recursive: true });
+      copyFileSync(join(supervisor.location.nodeModules, relative), destination);
     }
-  }, 15_000);
-
-  it("checks the installed launcher bytes and refuses a changed or missing launcher", async () => {
-    startEgressRelayService({ ask: async () => false });
-    const installed = (await resolveHostLauncherPath("darwin-arm64")).path;
-    expect(createHash("sha256").update(readFileSync(installed)).digest("hex")).toBe(VERIFIED_LAUNCHER);
-    const resourcePath = join(root, "resources");
-    const copied = launcherPathFor(resourcePath, "darwin", "arm64");
-    if (copied === undefined) throw new Error("No launcher path for the verification fixture");
-    mkdirSync(dirname(copied), { recursive: true });
-    writeFileSync(copied, readFileSync(installed), { mode: 0o700 });
-    await resolveHostLauncherPath("darwin-arm64", resourcePath);
-    configureHostResources({ resourcePath, isPackaged: false });
-    const launch = await prepare("echo unexpected");
-    writeFileSync(copied, "changed");
-    expect(() => launch.start("test:changed-launcher")).toThrow("Verified container launcher changed");
-    rmSync(copied);
-    await expect(prepare("echo unexpected")).rejects.toMatchObject({ code: "ENOENT" });
+    const library = join(nodeModules, pins.sdk.packages["@microsoft/mxc-sdk"], pins.targets["darwin-arm64"].library.member);
+    mkdirSync(dirname(library), { recursive: true });
+    writeFileSync(library, "changed");
+    mkdirSync(join(root, "dist", "src", "main"), { recursive: true });
+    symlinkSync(supervisor.location.entry, join(root, "dist", "src", "main", "mxc-shell-supervisor.js"));
+    await expect(detectHostMxcMacShellSupport(resources)).resolves.toEqual({ state: "unavailable", reason: "launcher-mismatch" });
   });
 
-  it("reads a new command grant without restarting the relay", async () => {
+  it("reads a new command grant without restarting the relay, matching the launcher only with the configured call stack", async () => {
     startEgressRelayService({ ask: async () => false });
     const sealed = join(home, "seal");
     const offered = join(sealed, "file");
@@ -443,9 +368,25 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
     const check = `cat ${quote(offered)}`;
     const denied = await run(await prepare(check, { denyRead: [sealed] }));
     expect(denied.code).not.toBe(0);
-    const admitted = await run(await prepare(check, { denyRead: [sealed], allowRead: [offered] }));
-    expect(admitted.stdout).toBe("new access");
-    expect(admitted.code).toBe(0);
+    await compareLauncher(check, sealed, [offered]);
+  });
+
+  it("matches the launcher with thirty deeply nested explicit read grants only with the configured call stack", async () => {
+    startEgressRelayService({ ask: async () => false });
+    const sealed = join(home, "seal");
+    const allowed = Array.from({ length: 30 }, (_, index) => {
+      const branch = join(sealed, `d${index}`);
+      const nested = join(branch, "inner", "deeper");
+      mkdirSync(nested, { recursive: true });
+      for (let sibling = 0; sibling < 8; sibling += 1) {
+        writeFileSync(join(nested, `sibling${sibling}`), "private fixture");
+        mkdirSync(join(branch, `side${sibling}`));
+      }
+      const offered = join(nested, "file");
+      writeFileSync(offered, "new access");
+      return offered;
+    });
+    await compareLauncher(`cat ${quote(allowed[29]!)}`, sealed, allowed);
   });
 
   it("tunnels verified TLS from curl, git, node and python through its own live proxy only", async () => {

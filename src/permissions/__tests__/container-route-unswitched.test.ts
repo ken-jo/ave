@@ -99,9 +99,23 @@ describe("container route call sites", () => {
     expect(callers(/\brankPosixContainerRows\b/u, "src/permissions/mxc-posix.ts"))
       .toEqual(["src/permissions/mxc-macos.ts"]);
     expect(callers(/\bmxc-macos\.[jt]s\b|\bdetectHostMxcMacShellSupport\b/u, "src/permissions/mxc-macos.ts"))
-      .toEqual(["src/boot/steps/sandbox-init.ts", "src/tools/mxc-posix-shell-launch.ts"]);
+      .toEqual(["src/boot/steps/sandbox-init.ts", "src/permissions/mxc-shell-supervisor-service.ts", "src/tools/mxc-posix-shell-launch.ts"]);
     expect(callers(/\bsetContainerShellSubstrate\s*\(/u, "src/permissions/sandbox-capability.ts"))
       .toEqual(["src/boot/steps/sandbox-init.ts"]);
+  });
+
+  it("keeps workload signalling out of the macOS shell routes", () => {
+    const files = [
+      "src/tools/mxc-posix-shell-launch.ts",
+      "src/permissions/mxc-macos.ts",
+      "src/permissions/mxc-shell-supervisor-client.ts",
+      "src/permissions/mxc-shell-supervisor.ts",
+      "src/permissions/mxc-shell-supervisor-service.ts",
+    ];
+    const route = files.map(file => readFileSync(file, "utf8")).join("\n");
+    expect(route).not.toMatch(/(?:\bexecFile\b|\bps\b|\bpgrep\b|mxc-exec-mac|\bprocess\.kill\b|\bdetached\s*:)/u);
+    expect(route.match(/\b\w+\.kill\s*\([^)]*\)/gu)).toEqual(['child.kill("SIGKILL")']);
+    expect(route).toMatch(/if \(result\.cleanupUnverified[^\n]*\) \{\s*child\.kill\("SIGKILL"\);/u);
   });
 
   it("limits the route selector to relay startup and holder selection", () => {

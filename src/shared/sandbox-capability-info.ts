@@ -263,7 +263,7 @@ export function maxEgressGrantScope(strength: EgressIdentityStrength): EgressGra
 const MXC_UNAVAILABLE_REASONS = {
   "not-windows": true, "unsupported-arch": true, "binary-missing": true, "probe-failed": true,
   "container-unavailable": true, "request-rejected": true,
-  /** Installed launcher integrity does not match its pin. */
+  /** The installed native launcher or shell library could not be verified against its pin. */
   "launcher-mismatch": true,
   "powershell-start-failed": true,
   /** An interactive runtime start has not been established. */

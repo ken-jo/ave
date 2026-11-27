@@ -295,7 +295,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
               import("../../permissions/sandbox-capability.js"),
               import("../../main/host-resources.js"),
             ]);
-            const support = await detectHostMxcMacShellSupport(getHostResources().resourcePath, startupSignal);
+            const support = await detectHostMxcMacShellSupport(getHostResources(), startupSignal);
             setContainerShellSubstrate(support);
             if (support.state === "unavailable") {
               if (shellExplicitEnv) throw new Error(`macOS container shell unavailable (${support.reason})`);

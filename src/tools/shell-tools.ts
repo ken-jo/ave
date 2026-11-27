@@ -2611,13 +2611,15 @@ async function runPosixContainerShell(input: {
         ...(launch.carvedReadLimitedAt?.map(folder => t("sandboxPolicy.carvedReadLimited", { folder })) ?? []),
         ...launch.narrowedWriteRoots.map(({ root }) => t("sandboxPolicy.containerWriteWithheld", { root })),
       ];
-      const format = interrupted || exit.code === 255
+      // The SDK reports a shell ended by a signal, or a child lost before exec, as -1; 255 is a literal exit status.
+      const noExitCode = exit.code === -1;
+      const format = interrupted || noExitCode
         ? collector.format() : collector.format({ code: exit.code, signal: null });
       const ending = exit.cancelled ? t("sandboxPolicy.containerShellCancelled")
         : exit.timedOut ? t("sandboxPolicy.containerShellTimedOut", { seconds: timeoutMs / 1000 })
           : exit.cleanupUnverified ? t("sandboxPolicy.containerShellCleanupUnverified")
             : exit.failure ? t("sandboxPolicy.containerShellRefused", { reason: exit.failure.code })
-              : exit.code === 255 ? t("sandboxPolicy.containerShellExit255") : "";
+              : noExitCode ? t("sandboxPolicy.containerShellNoExitCode") : "";
       const output = await annotateWithSandboxViolations(egress.token, [format, ending].filter(Boolean).join("\n"), undefined, policyNotices);
       result = {
         output, isError: interrupted || exit.code !== 0,

@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildNativeShellSupervisor } from "../../__tests__/support/mxc-shell-supervisor-native.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -208,10 +209,12 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
       confines: { filesystem: true, process: true, network: true },
     });
     if (process.platform === "darwin") {
-      const resourcePath = resolve("resources");
-      configureHostResources({ resourcePath, isPackaged: false });
+      // A supervisor bundled from this source, never a stale dist.
+      const supervisor = await buildNativeShellSupervisor();
+      test.onTestFinished(supervisor.dispose);
+      configureHostResources(supervisor.resources);
       establishMxcRuntimeRoot();
-      const support = await detectHostMxcMacShellSupport(resourcePath);
+      const support = await detectHostMxcMacShellSupport(supervisor.resources);
       expect(support).toEqual({ state: "available" });
       setContainerShellSubstrate(support);
     }

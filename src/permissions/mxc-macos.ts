@@ -1,18 +1,16 @@
-import { execFile } from "node:child_process";
 import { existsSync, lstatSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
-import { createLogger } from "../lib/logger.js";
-import { raceWithTimeout } from "../shared/abortable-deadline.js";
+import type { HostResources } from "../main/host-resources.js";
 import type { SandboxMacContainerShellSupport, SandboxMacContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { buildSafeChildEnv } from "../tools/safe-env.js";
-import { launcherPathFor, resolveHostLauncherPath } from "./mxc-launcher.js";
+import pins from "./mxc-launcher-pins.json" with { type: "json" };
 import { atOrUnder, canonicalPath, posixPolicyLookups, rankPosixContainerRows, type PosixPolicyLookups } from "./mxc-posix.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
+import { mxcShellSupervisorLocation, stageMxcShellRequest, startMxcShellSupervisor } from "./mxc-shell-supervisor-client.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "./policy-model.js";
 import { buildSeatbeltShellProfile, splitSeatbeltPolicyRows } from "./seatbelt-profile.js";
 import { quoteSandboxWrappedWord } from "./sandbox-wrapped-command.js";
@@ -89,46 +87,41 @@ export function mapSeatbeltShellRequest(wire: ReturnType<typeof buildSeatbeltShe
   };
 }
 
-type CanaryVerdict = "available" | "request-rejected" | "shell-start-failed";
+type CanaryVerdict = "available" | "request-rejected" | "shell-start-failed" | "launcher-mismatch";
 
 interface MacShellProbeDependencies {
   readonly arch: string;
-  launcherPath(): string | undefined;
-  exists(path: string): boolean;
-  verifyPin(path: string): Promise<boolean>;
+  libraryExists(): boolean;
   requireRuntimeRoot(): string;
-  canary(launcher: string, root: string): Promise<CanaryVerdict>;
+  canary(root: string): Promise<CanaryVerdict>;
 }
 
 async function detectMxcMacShellSupport(deps: MacShellProbeDependencies): Promise<SandboxMacContainerShellSupport> {
   const unavailable = (reason: SandboxMacContainerShellUnavailableReason): SandboxMacContainerShellSupport =>
     ({ state: "unavailable", reason });
   if (deps.arch !== "arm64") return unavailable("unsupported-arch");
-  const launcher = deps.launcherPath();
-  if (launcher === undefined || !deps.exists(launcher)) return unavailable("binary-missing");
-  if (!await deps.verifyPin(launcher)) return unavailable("launcher-mismatch");
+  if (!deps.libraryExists()) return unavailable("binary-missing");
   let root: string;
   try {
     root = deps.requireRuntimeRoot();
   } catch {
     return unavailable("runtime-root-unproved");
   }
-  const verdict = await deps.canary(launcher, root);
+  const verdict = await deps.canary(root);
   return verdict === "available" ? { state: "available" } : unavailable(verdict);
 }
 
-export function detectHostMxcMacShellSupport(resourcePath: string, signal?: AbortSignal): Promise<SandboxMacContainerShellSupport> {
+export function detectHostMxcMacShellSupport(resources: HostResources, signal?: AbortSignal): Promise<SandboxMacContainerShellSupport> {
   signal?.throwIfAborted();
-  if (!isAbsolute(resourcePath)) throw new Error("Container launcher resources must be absolute");
+  const location = mxcShellSupervisorLocation(resources);
   return detectMxcMacShellSupport({
     arch: process.arch,
-    launcherPath: () => launcherPathFor(resourcePath, "darwin", process.arch),
-    exists: existsSync,
-    verifyPin: () => resolveHostLauncherPath("darwin-arm64", resourcePath).then(() => true, () => false),
+    libraryExists: () => existsSync(join(location.nodeModules, pins.sdk.packages["@microsoft/mxc-sdk"],
+      pins.targets["darwin-arm64"].library.member)),
     requireRuntimeRoot: requireMxcContainerStartRoot,
-    async canary(launcher, root) {
+    async canary(root) {
       try {
-        return await runSeatbeltCanary(launcher, root, signal);
+        return await runSeatbeltCanary(location, root, signal);
       } catch {
         signal?.throwIfAborted();
         return "shell-start-failed";
@@ -139,8 +132,6 @@ export function detectHostMxcMacShellSupport(resourcePath: string, signal?: Abor
 
 const MAX_UNIX_SOCKET_PATH_BYTES = 103;
 const CANARY_CONTROL = "container-shell-control\n";
-const CANARY_HOST_TIMEOUT_MS = TOOL_TIMEOUT_POLICY.mxcMacShellProbeMs + TOOL_TIMEOUT_POLICY.mxcMacShellProbeGraceMs;
-const log = createLogger("mxc-macos");
 
 interface SeatbeltCanaryEvidence {
   readonly status: number | null;
@@ -172,32 +163,9 @@ function listenOnLoopback(server: Server): Promise<number> {
   });
 }
 
-function runCanaryRequest(launcher: string, config: string, flags: readonly string[], signal?: AbortSignal):
-Promise<Pick<SeatbeltCanaryEvidence, "status" | "timedOut" | "stdout"> & { stderr: string }> {
-  return new Promise((resolve, reject) => {
-    execFile(launcher, [...flags, "--config", config], {
-      cwd: dirname(launcher),
-      env: buildSafeChildEnv(),
-      encoding: "utf8",
-      ...(flags.length > 0 ? { timeout: CANARY_HOST_TIMEOUT_MS, signal } : {}),
-    }, (error, stdout, stderr) => {
-      if (signal?.aborted || (error && typeof error.code !== "number" && !error.killed)) {
-        reject(error);
-      } else {
-        resolve({
-          status: error === null ? 0 : typeof error.code === "number" ? error.code : null,
-          timedOut: error?.killed === true,
-          stdout, stderr,
-        });
-      }
-    });
-  });
-}
-
-async function runSeatbeltCanary(launcher: string, root: string, signal?: AbortSignal): Promise<CanaryVerdict> {
+async function runSeatbeltCanary(location: ReturnType<typeof mxcShellSupervisorLocation>, root: string, signal?: AbortSignal): Promise<CanaryVerdict> {
   let scratch: string | undefined;
   let socketAlias: string | undefined;
-  let running: ReturnType<typeof runCanaryRequest> | undefined;
   let otherPortConnected = false;
   let unixSocketConnected = false;
   const unix = createServer(socket => { unixSocketConnected = true; socket.destroy(); });
@@ -274,19 +242,18 @@ async function runSeatbeltCanary(launcher: string, root: string, signal?: AbortS
       model, lookups, commandLine, cwd: working, timeoutMs: TOOL_TIMEOUT_POLICY.mxcMacShellProbeMs,
       env: { HOME: working, PATH: "/usr/bin:/bin" }, proxyUrl: `http://127.0.0.1:${proxyPort}`,
     });
-    await writeFile(config, JSON.stringify(request), { flag: "wx", mode: 0o600 });
-    const dryRun = await runCanaryRequest(launcher, config, ["--dry-run"], signal).catch(() => {
-      signal?.throwIfAborted();
-      return null;
-    });
-    if (dryRun === null || dryRun.status !== 0 || dryRun.timedOut) return "request-rejected";
+    const staged = await stageMxcShellRequest(config, request);
+    const launch = startMxcShellSupervisor(staged, TOOL_TIMEOUT_POLICY.mxcMacShellProbeMs, signal,
+      () => { proxy.close(); }, "macos-shell-canary", location);
+    let stdout = "";
+    launch.child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    launch.child.stderr.resume();
+    const start = await launch.completion;
     signal?.throwIfAborted();
-    // The launcher's own deadline reaps the contained child. Signalling the launcher alone can orphan it.
-    running = runCanaryRequest(launcher, config, []).finally(() => { running = undefined; });
-    const start = await raceWithTimeout(running, CANARY_HOST_TIMEOUT_MS, () => new Error("Container canary exit unconfirmed"));
-    signal?.throwIfAborted();
+    if (start.failure?.code === "integrity") return "launcher-mismatch";
+    if (start.failure?.code === "start-refused" && start.failure.sdkCode === "malformed_request") return "request-rejected";
     return seatbeltCanaryPassed({
-      ...start,
+      status: start.code, timedOut: start.timedOut, stdout,
       control: existsSync(control) ? await readFile(control, "utf8") : null,
       outsideWrite: lstatSync(outsideWrite, { throwIfNoEntry: false }) !== undefined,
       otherPortConnected, unixSocketConnected,
@@ -294,15 +261,7 @@ async function runSeatbeltCanary(launcher: string, root: string, signal?: AbortS
       protectedParentInPlace: existsSync(protectedChild) && !existsSync(renamed),
     }) ? "available" : "shell-start-failed";
   } finally {
-    if (running === undefined) {
-      await teardown();
-    } else {
-      // The watchdog bounds boot's wait. Keep the fixture live until the launcher actually finishes.
-      proxy.unref();
-      other.unref();
-      unix.unref();
-      void running.then(teardown, teardown).catch(error => log.warn({ err: error }, "Container canary cleanup failed"));
-    }
+    await teardown();
   }
 }
 
