@@ -15,6 +15,10 @@ const PIPE_PREFIX: &str = r"\\.\pipe\ave-mxc-";
 const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+const PIPE_WAIT: u32 = 0;
+const PIPE_NOWAIT: u32 = 1;
+const PERMITTED: u8 = 1;
+const WRITTEN: u8 = 2;
 
 struct Delivery {
     bound: Handle,
@@ -30,17 +34,39 @@ struct Delivery {
 
 struct Authorization {
     gate: Vec<u16>,
-    permit: Mutex<Receiver<()>>,
+    replies: Mutex<Receiver<u8>>,
 }
 
 impl Authorization {
-    fn request(&self, remaining: impl FnOnce() -> u32) -> bool {
-        let Ok(permit) = self.permit.lock() else {
-            return false;
+    fn handoff(&self, pipe: Raw, delivery: &Delivery, client: &Handle) -> Result<(), u32> {
+        let Ok(replies) = self.replies.lock() else {
+            return Err(0);
         };
-        write(unsafe { GetStdHandle(STDOUT) }, b"authorize\n") == Ok(10)
-            && permit.recv_timeout(std::time::Duration::from_millis(u64::from(remaining()))).is_ok()
+        check(unsafe { SetNamedPipeHandleState(pipe, &PIPE_NOWAIT, null(), null()) })?;
+        let stdout = unsafe { GetStdHandle(STDOUT) };
+        if !may_offer_pipe(
+            || {
+                write_all(stdout, b"authorize\n").is_ok()
+                    && received(&replies, PERMITTED, delivery.remaining())
+            },
+            || unsafe { GetFileAttributesW(self.gate.as_ptr()) },
+        ) || delivery.remaining() == 0
+            || unsafe { WaitForSingleObject(client.raw(), 0) } != WAIT_TIMEOUT
+        {
+            return Err(0);
+        }
+        let offer = format!("deliver {:x} {}\n", pipe as usize, delivery.deadline);
+        write_all(stdout, offer.as_bytes())?;
+        if !received(&replies, WRITTEN, delivery.remaining()) {
+            return Err(0);
+        }
+        check(unsafe { SetNamedPipeHandleState(pipe, &PIPE_WAIT, null(), null()) })
     }
+}
+
+fn received(replies: &Receiver<u8>, expected: u8, remaining: u32) -> bool {
+    remaining != 0
+        && replies.recv_timeout(std::time::Duration::from_millis(remaining.into())) == Ok(expected)
 }
 
 impl Delivery {
@@ -66,7 +92,7 @@ fn read_u32() -> Result<u32, u32> {
     Ok(u32::from_le_bytes(bytes))
 }
 
-fn watch_owner(delivery: &Delivery, authorization: Option<SyncSender<()>>) {
+fn watch_owner(delivery: &Delivery, authorization: Option<SyncSender<u8>>) {
     let Ok(pid) = read_u32() else {
         return;
     };
@@ -85,8 +111,10 @@ fn watch_owner(delivery: &Delivery, authorization: Option<SyncSender<()>>) {
     delivery.signal(&delivery.bound);
     if let Some(authorization) = authorization {
         let mut reply = [0];
-        while read_exact(input(), &mut reply).is_ok() && reply[0] == 1 {
-            if authorization.send(()).is_err() { break; }
+        while read_exact(input(), &mut reply).is_ok() && matches!(reply[0], PERMITTED | WRITTEN) {
+            if authorization.send(reply[0]).is_err() {
+                break;
+            }
         }
     } else {
         let _ = read(input(), &mut [0]);
@@ -98,24 +126,25 @@ fn gate_allows_write(attributes: u32) -> bool {
         && attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) == 0
 }
 
-fn delivery_is_authorized(request: impl FnOnce() -> bool, attributes: impl FnOnce() -> u32) -> bool {
+fn may_offer_pipe(request: impl FnOnce() -> bool, attributes: impl FnOnce() -> u32) -> bool {
     request() && gate_allows_write(attributes())
 }
 
 fn send(pipe: Raw, delivery: &Delivery, client: &Handle) -> bool {
-    if let Some(authorization) = &delivery.authorization {
-        if !delivery_is_authorized(
-            || authorization.request(|| delivery.remaining()),
-            || unsafe { GetFileAttributesW(authorization.gate.as_ptr()) },
-        ) || delivery.remaining() == 0
-            || unsafe { WaitForSingleObject(client.raw(), 0) } != WAIT_TIMEOUT
-        {
-            return false;
-        }
-    }
-    let result: Result<(), u32> = match write(pipe, &delivery.policy) {
-        Ok(written) if written != delivery.policy.len() => return false,
-        Ok(_) => flush(pipe).and_then(|_| write(pipe, &[])).and_then(|_| {
+    let written = match &delivery.authorization {
+        Some(authorization) => authorization.handoff(pipe, delivery, client),
+        None => write(pipe, &delivery.policy).and_then(|count| {
+            if count == delivery.policy.len() {
+                Ok(())
+            } else {
+                Err(0)
+            }
+        }),
+    };
+    let result: Result<(), u32> = written
+        .and_then(|()| flush(pipe))
+        .and_then(|_| write(pipe, &[]))
+        .and_then(|_| {
             let mut discard = [0; 256];
             while read(pipe, &mut discard).is_ok() {
                 if delivery.remaining() == 0 {
@@ -123,9 +152,7 @@ fn send(pipe: Raw, delivery: &Delivery, client: &Handle) -> bool {
                 }
             }
             Err(last_error())
-        }),
-        Err(error) => Err(error),
-    };
+        });
     matches!(result, Err(109 | 232))
 }
 
@@ -224,7 +251,11 @@ pub fn run(args: &[Vec<u16>]) -> u8 {
         return 2;
     }
     let deadline = unsafe { GetTickCount64() } + u64::from(timeout);
-    let mut policy = vec![0; size as usize];
+    let mut policy = if gate.is_some() {
+        Vec::new()
+    } else {
+        vec![0; size as usize]
+    };
     if read_exact(input(), &mut policy).is_err() {
         return 2;
     }
@@ -263,10 +294,13 @@ pub fn run(args: &[Vec<u16>]) -> u8 {
         }
     }
     drop(descriptor);
-    let (authorization, permits) = match gate {
+    let (authorization, replies) = match gate {
         Some(gate) => {
             let (send, receive) = sync_channel(0);
-            (Some(Authorization { gate, permit: Mutex::new(receive) }), Some(send))
+            (
+                Some(Authorization { gate, replies: Mutex::new(receive) }),
+                Some(send),
+            )
         }
         None => (None, None),
     };
@@ -283,7 +317,7 @@ pub fn run(args: &[Vec<u16>]) -> u8 {
     });
     let owner_delivery = Arc::clone(&delivery);
     let owner = thread::Builder::new()
-        .spawn(move || watch_owner(&owner_delivery, permits))
+        .spawn(move || watch_owner(&owner_delivery, replies))
         .unwrap_or_else(|_| exit(1));
     let workers: Vec<_> = pipes
         .iter()
@@ -325,17 +359,27 @@ mod tests {
     }
 
     #[test]
-    fn a_write_requires_a_fresh_permit_and_a_live_gate_after_the_reply() {
-        assert!(!delivery_is_authorized(|| false, || 0x80));
+    fn a_pipe_offer_requires_a_fresh_permit_and_a_live_gate_after_the_reply() {
+        assert!(!may_offer_pipe(|| false, || 0x80));
         let attrs = std::cell::Cell::new(0x80);
-        assert!(!delivery_is_authorized(
+        assert!(!may_offer_pipe(
             || {
                 attrs.set(INVALID_FILE_ATTRIBUTES);
                 true
             },
             || attrs.get(),
         ));
-        assert!(delivery_is_authorized(|| true, || 0x80));
+        assert!(may_offer_pipe(|| true, || 0x80));
+    }
+
+    #[test]
+    fn permission_to_offer_a_pipe_does_not_acknowledge_the_host_write() {
+        let (send, replies) = sync_channel(1);
+        send.send(PERMITTED).unwrap();
+        assert!(!received(&replies, WRITTEN, 10));
+        send.send(WRITTEN).unwrap();
+        assert!(!received(&replies, WRITTEN, 0));
+        assert!(received(&replies, WRITTEN, 10));
     }
 
     #[test]

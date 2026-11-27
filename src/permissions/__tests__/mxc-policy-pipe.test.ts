@@ -1,9 +1,10 @@
 import childProcess from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "../../__tests__/support/deferred.js";
 import * as helperPath from "../../main/windows-path-kind-launcher.js";
 import * as managedChildren from "../../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -81,7 +82,7 @@ describe.skipIf(process.platform !== "win32")("native policy pipe EOF", () => {
       finally { if (root !== undefined) rmSync(root, { recursive: true, force: true }); }
     }
   });
-  for (const withdraw of ["lifecycle", "proof"] as const) it(`refuses a held native read after ${withdraw} withdrawal`, async (context) => {
+  for (const withdraw of ["lifecycle", "proof", "granted proof"] as const) it(`refuses a held native read after ${withdraw} withdrawal`, async (context) => {
     vi.restoreAllMocks();
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     requireMxcPolicyPipeHelper(context.skip);
@@ -90,6 +91,22 @@ describe.skipIf(process.platform !== "win32")("native policy pipe EOF", () => {
     const controller = new AbortController();
     let proved = true;
     const assertStillValid = vi.fn(() => { if (!proved) throw new Error("Launch proof withdrawn"); });
+    const granted = deferred<() => void>();
+    if (withdraw === "granted proof") {
+      const spawn = childProcess.spawn;
+      vi.spyOn(childProcess, "spawn").mockImplementation((...args: Parameters<typeof spawn>) => {
+        const server = spawn(...args);
+        const stdin = server.stdin;
+        if (!stdin || !Array.isArray(args[1]) || args[1][0] !== "--mxc-policy") return server;
+        const write = stdin.write.bind(stdin);
+        vi.spyOn(stdin, "write").mockImplementation((chunk, callback) => {
+          if (!Buffer.isBuffer(chunk) || !chunk.equals(Buffer.from([1]))) return write(chunk, callback);
+          granted.resolve(() => { write(chunk, callback); });
+          return true;
+        });
+        return server;
+      });
+    }
     let transport: Awaited<ReturnType<typeof openMxcPolicyPipe>> | undefined;
     let child: childProcess.ChildProcess | undefined;
     try {
@@ -112,12 +129,19 @@ describe.skipIf(process.platform !== "win32")("native policy pipe EOF", () => {
         }, (_error, stdout) => resolveResult(stdout));
         owned.bindChild(child);
       });
-      const before = assertStillValid.mock.calls.length;
+      let before = assertStillValid.mock.calls.length;
       if (withdraw === "lifecycle") controller.abort();
-      else proved = false;
+      if (withdraw === "proof") proved = false;
       child?.stdin?.end("read");
+      if (withdraw === "granted proof") {
+        const resume = await Promise.race([granted.promise, done.then(() => { throw new Error("Native receiver never obtained a permit"); })]);
+        before = assertStillValid.mock.calls.length;
+        proved = false;
+        expect(readdirSync(root)).toHaveLength(1);
+        resume();
+      }
       expect(await done).toBe("");
-      if (withdraw === "proof") {
+      if (withdraw !== "lifecycle") {
         expect(controller.signal.aborted).toBe(false);
         expect(assertStillValid.mock.calls.length).toBeGreaterThan(before);
       }

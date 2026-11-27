@@ -194,6 +194,12 @@ unsafe extern "system" {
     pub fn ConnectNamedPipe(pipe: Raw, overlapped: Raw) -> i32;
     pub fn DisconnectNamedPipe(pipe: Raw) -> i32;
     pub fn GetNamedPipeClientProcessId(pipe: Raw, pid: *mut u32) -> i32;
+    pub fn SetNamedPipeHandleState(
+        pipe: Raw,
+        mode: *const u32,
+        max: *const u32,
+        timeout: *const u32,
+    ) -> i32;
 }
 
 #[link(name = "ntdll")]

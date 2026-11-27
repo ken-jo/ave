@@ -1,4 +1,5 @@
 import childProcess from "node:child_process";
+import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import { withWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
 import { assertManagedChildProcessAdmissionOpen, retainUnterminatedChildProcess, trackManagedChildProcess } from "../main/managed-child-processes.js";
@@ -8,6 +9,71 @@ import { commitUnderAdmission } from "../shared/admission-commit.js";
 import { createMxcReleaseGate } from "./mxc-release-gate.js";
 
 const MAX_POLICY_BYTES = 4 * 1024 * 1024;
+const SYNCHRONIZE = 0x00100000;
+const PROCESS_DUP_HANDLE = 0x40;
+const DUPLICATE_SAME_ACCESS = 2;
+const WAIT_TIMEOUT = 258;
+const INVALID_FILE_ATTRIBUTES = 0xffff_ffff;
+const FILE_ATTRIBUTE_DIRECTORY_OR_REPARSE_POINT = 0x410;
+const PIPE_DISCONNECTED_ERRORS = new Set([109, 232]);
+
+function loadPolicyWriter() {
+  const requireNative = typeof require === "function" ? require : createRequire(import.meta.url);
+  const ffi = requireNative("koffi") as typeof import("koffi");
+  const kernel = ffi.load("kernel32.dll");
+  return {
+    openProcess: kernel.func("intptr_t __stdcall OpenProcess(uint32_t, int, uint32_t)"),
+    currentProcess: kernel.func("intptr_t __stdcall GetCurrentProcess()"),
+    duplicate: kernel.func("int __stdcall DuplicateHandle(intptr_t, intptr_t, intptr_t, void *, uint32_t, int, uint32_t)"),
+    close: kernel.func("int __stdcall CloseHandle(intptr_t)"),
+    wait: kernel.func("uint32_t __stdcall WaitForSingleObject(intptr_t, uint32_t)"),
+    clientPid: kernel.func("int __stdcall GetNamedPipeClientProcessId(intptr_t, void *)"),
+    attributes: kernel.func("uint32_t __stdcall GetFileAttributesW(str16)"),
+    tick: kernel.func("uint64_t __stdcall GetTickCount64()"),
+    write: kernel.func("int __stdcall WriteFile(intptr_t, void *, uint32_t, void *, void *)"),
+    lastError: kernel.func("uint32_t __stdcall GetLastError()"),
+  };
+}
+
+let policyWriter: ReturnType<typeof loadPolicyWriter> | undefined;
+
+function writePolicyUnderAdmission(bytes: Buffer, gate: string, helperPid: number, clientPid: number,
+  source: bigint, deadline: bigint, assertLive: () => void): void {
+  const refusal = new Error("Windows sandbox policy write was refused");
+  if (process.platform !== "win32") throw refusal;
+  policyWriter ??= loadPolicyWriter();
+  const api = policyWriter;
+  const helper = api.openProcess(PROCESS_DUP_HANDLE | SYNCHRONIZE, 0, helperPid);
+  if (!helper) throw refusal;
+  try {
+    const client = api.openProcess(SYNCHRONIZE, 0, clientPid);
+    if (!client) throw refusal;
+    try {
+      const duplicated = Buffer.alloc(8);
+      if (!api.duplicate(helper, source, api.currentProcess(), duplicated, 0, 0, DUPLICATE_SAME_ACCESS)) throw refusal;
+      const pipe = duplicated.readBigInt64LE();
+      try {
+        const count = Buffer.alloc(4);
+        commitUnderAdmission(assertLive, () => {
+          const attributes = api.attributes(gate);
+          if (attributes === INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY_OR_REPARSE_POINT) !== 0
+            || api.wait(helper, 0) !== WAIT_TIMEOUT || api.wait(client, 0) !== WAIT_TIMEOUT || BigInt(api.tick()) >= deadline) throw refusal;
+          if (!api.clientPid(pipe, count)) {
+            if (PIPE_DISCONNECTED_ERRORS.has(api.lastError())) return;
+            throw refusal;
+          }
+          if (count.readUInt32LE() !== clientPid || BigInt(api.tick()) >= deadline) throw refusal;
+          // The helper hands off a nonblocking pipe and waits for the write result.
+          if (!api.write(pipe, bytes, bytes.length, count, null)) {
+            if (PIPE_DISCONNECTED_ERRORS.has(api.lastError())) return;
+            throw refusal;
+          }
+          if (count.readUInt32LE() !== bytes.length) throw refusal;
+        });
+      } finally { api.close(pipe); }
+    } finally { api.close(client); }
+  } finally { api.close(helper); }
+}
 
 class PolicyHelperTerminationError extends Error {
   readonly outcome = "left";
@@ -25,7 +91,14 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?:
   if (!bytes.length || bytes.length > MAX_POLICY_BYTES) throw new Error("Windows sandbox policy frame length is invalid");
   if (!/^\\\\\.\\pipe\\ave-mxc-[a-f0-9]{32}$/u.test(pipe)) throw new Error("Windows sandbox policy pipe name is invalid");
   assertManagedChildProcessAdmissionOpen("mxc:policy");
-  const assertLive = () => { admission?.signal.throwIfAborted(); admission?.assertStillValid(); };
+  const header = Buffer.alloc(4);
+  header.writeUInt32LE(bytes.length);
+  const frame = Buffer.concat([header, bytes]);
+  const assertLive = () => {
+    admission?.signal.throwIfAborted();
+    admission?.assertStillValid();
+    admission?.signal.throwIfAborted();
+  };
   const gate = admission ? commitUnderAdmission(assertLive, () => createMxcReleaseGate(admission.root)) : undefined;
   let server: childProcess.ChildProcessWithoutNullStreams;
   try {
@@ -41,6 +114,7 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?:
   let released = false;
   let ready = false;
   let authorizations = 0;
+  let awaitingDelivery = false;
   let failing = false;
   let failure: Error | undefined;
   let rejectReady: (error: Error) => void = () => {};
@@ -129,13 +203,23 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?:
           if (!ready && line === "ready\n") {
             ready = true;
             resolve();
-          } else if (ready && gate && bound && line === "authorize\n" && authorizations < 2) {
+          } else if (ready && gate && bound && line === "authorize\n" && !awaitingDelivery && authorizations < 2) {
             authorizations += 1;
+            awaitingDelivery = true;
             try { commitUnderAdmission(assertLive, () => { server.stdin.write(Buffer.from([1])); }); }
             catch (error) { fail(error); return; }
           } else {
-            fail(new Error("Windows sandbox policy helper sent an invalid response"));
-            return;
+            const offer = /^deliver ([1-9a-f][0-9a-f]{0,15}) ([1-9][0-9]{0,19})\n$/u.exec(line);
+            if (!awaitingDelivery || !gate || !offer || server.pid === undefined || bound?.pid === undefined) {
+              fail(new Error("Windows sandbox policy helper sent an invalid response"));
+              return;
+            }
+            try {
+              writePolicyUnderAdmission(frame.subarray(header.length), gate.path, server.pid, bound.pid,
+                BigInt(`0x${offer[1]}`), BigInt(offer[2]), assertLive);
+              awaitingDelivery = false;
+              server.stdin.write(Buffer.from([2]));
+            } catch (error) { fail(error); return; }
           }
         }
       });
@@ -146,9 +230,7 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?:
         stopTracking = trackManagedChildProcess(server, { killProcessGroup: false, label: "mxc:policy" });
         if (typeof stopTracking !== "function") throw new Error("Windows sandbox policy tracking disposer is invalid");
         server.stderr.resume();
-        const header = Buffer.alloc(4);
-        header.writeUInt32LE(bytes.length);
-        server.stdin.write(Buffer.concat([header, bytes]));
+        server.stdin.write(gate ? frame.subarray(0, header.length) : frame);
       } catch (error) {
         recordFailure(error);
         cleanup(() => retainUnterminatedChildProcess(server, "mxc:policy"));
