@@ -34,8 +34,18 @@ function approvalRequest(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function requireValue<T>(value: T | null | undefined, description: string): T {
+  if (value === null || value === undefined) {
+    throw new Error(`Missing ${description}`);
+  }
+  return value;
+}
+
 function mainComposer(container: HTMLElement) {
-  return container.querySelector<HTMLTextAreaElement>(testIdSelector(TEST_IDS.composerTextarea))!;
+  return requireValue(
+    container.querySelector<HTMLTextAreaElement>(testIdSelector(TEST_IDS.composerTextarea)),
+    "main composer textarea",
+  );
 }
 
 async function appWithPendingApproval(overrides: Record<string, unknown> = {}) {
@@ -166,7 +176,7 @@ describe("/allow — the sentence fills the form", () => {
     const app = await appWithPendingApproval();
     const composer = mainComposer(app.container);
     const send = app.container.querySelector('[data-testid="composer-send-button"]');
-    const { approval } = window.ave!;
+    const { approval } = requireValue(window.ave, "window.ave");
 
     for (const draft of ["keep this draft", "/allowance this folder"]) {
       await submitChatMessage(app.container, draft);
@@ -325,7 +335,7 @@ describe("/allow — every failure is plain, and none of it is a grant", () => {
       expect(choice(app.container, "allow-always")?.dataset.proposed).toBe("true"),
     );
     await waitFor(() => expect(choice(app.container, "allow-always")).toHaveFocus());
-    await userEvent.click(choice(app.container, "deny-once")!);
+    await userEvent.click(requireValue(choice(app.container, "deny-once"), "deny-once button"));
     await waitFor(() =>
       expect(
         app.container.querySelector(testIdSelector(TEST_IDS.approvalDock))
