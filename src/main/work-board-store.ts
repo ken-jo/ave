@@ -924,6 +924,11 @@ export class WorkBoardStore {
     return (await readBoardOnDisk(this.filePath))?.standing;
   }
 
+  /** Cancellation can arrive before a delete publishes its board write. Check after that write has released the board. */
+  async runRowStillNamed(run: { itemId: number; runId: string }): Promise<boolean> {
+    return withInProcessFileQueue(this.filePath, async () => (await this.runRowsOnDisk())?.(run) === "named");
+  }
+
   /** Which runs the board holds nothing of: no record in the run file and no row of their item on the board file on disk. Undefined
    * while either shows nothing. It decides what a run keeps on disk for its item's lifetime, never how a run ends. */
   async runsWithoutItem(): Promise<((run: { runId: string; itemId: number }) => boolean) | undefined> {

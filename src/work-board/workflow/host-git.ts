@@ -70,12 +70,13 @@ interface HostGitResult { code: number; stdout: string; stderr: string }
  * `bytes`: git runs in the C locale, so a pattern it is given matches a name byte for byte; in the host's own locale, one whose
  * characters the name's bytes are not would match no part of it. */
 interface HostGitCall { stdin?: string; holdPreparedRef?: (signal: AbortSignal) => Promise<void>; signal?: AbortSignal;
+  refreshLaunch?: () => Promise<boolean>; canLaunch?: () => boolean;
   [WORKFLOW_PUSH]?: true; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; bytes?: boolean;
   worktree?: { gitDir: string; workTree: string }; paths?: readonly string[]; requiresFloor?: boolean; deadline?: number }
 /** Bytes as the text they are and nothing else: no byte replaced, no leading mark dropped. Throws for bytes that are no text. */
 const STRICT_TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 export class HostGitError extends Error {
-  constructor(readonly reason: "unavailable" | "held" | "timeout" | "output-limit" | "terminated" | "driver-name" | "not-text", message: string, options?: ErrorOptions) { super(message, options); }
+  constructor(readonly reason: "unavailable" | "held" | "timeout" | "output-limit" | "terminated" | "driver-name" | "not-text" | "authority-revoked", message: string, options?: ErrorOptions) { super(message, options); }
 }
 
 /** The git a host call starts: an absolute program and, for the installation the app bundles, the search path and system folder its
@@ -185,6 +186,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
         checkDeadline(deadline);
         if (!holds) throw new HostGitError("unavailable", "the selected git has not passed the hook floor probe");
       }
+      if (call.refreshLaunch && !await call.refreshLaunch()) throw new HostGitError("authority-revoked", "Git launch authority was revoked");
       clearTimeout(timer);
       try { return await start(git, cwd, buildHostGitArgs(full, { configArgs }), call); }
       catch (error) { arm(); throw error; }
@@ -210,6 +212,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
       const timeLeft = (): number => call.deadline === undefined ? timeoutMs : Math.min(timeoutMs, call.deadline - performance.now());
       if (timeLeft() <= 0) return reject(gitTimedOut());
       call.signal?.throwIfAborted();
+      if (call.canLaunch && !call.canLaunch()) return reject(new HostGitError("authority-revoked", "Git launch authority was revoked"));
       const started = spawnHostGitIfWorkspaceFree(cwd, git.path, args, { cwd, env: programEnv(launchEnv(call), git), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] }, call.deadline);
       if (started === "held") return reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
       if (started === "no-folder") return reject(new HostGitError("unavailable", "the folder git would run in does not exist"));
@@ -558,16 +561,25 @@ function pushHost(url: string): string {
   return url.match(/^(?:[^@/:]+@)?(\[[\da-f:]+\]|[^/:]+):/iu)?.[1] ?? "";
 }
 
+export function workflowPushBinding(runId: string, args: Record<string, unknown>): PushBinding | { code: PushRemoteCode } {
+  const { remote, url, ref, sha } = args;
+  if (typeof remote !== "string" || !REMOTE_NAME.test(remote) || typeof url !== "string"
+    || ref !== pushRefOf(runId) || typeof sha !== "string" || !COMMIT_ID.test(sha)) return { code: "remote-not-configured" };
+  const approved = validatePushUrl(url);
+  if ("code" in approved) return approved;
+  if (approved.url !== url || !hasExactKeys(args, ["remote", "url", "ref", "sha"])) return { code: "remote-not-configured" };
+  return { remote, url, ref, sha };
+}
+
 export async function executeWorkflowPush(
   git: HostGit, cwd: string | undefined, runId: string, args: Record<string, unknown>, canExecute: () => boolean, authority: AbortSignal,
+  refreshAuthority?: () => Promise<boolean>,
 ): Promise<PushOutcome> {
   const failure = (code: PushCode): PushOutcome => ({ status: "failed", detail: code });
-  const { remote, url, ref, sha } = args;
-  if (!cwd || typeof remote !== "string" || !REMOTE_NAME.test(remote) || typeof url !== "string"
-    || ref !== pushRefOf(runId) || typeof sha !== "string" || !COMMIT_ID.test(sha)) return failure("remote-not-configured");
-  const approved = validatePushUrl(url);
-  if ("code" in approved) return failure(approved.code);
-  if (approved.url !== url || !hasExactKeys(args, ["remote", "url", "ref", "sha"])) return failure("remote-not-configured");
+  if (!cwd) return failure("remote-not-configured");
+  const binding = workflowPushBinding(runId, args);
+  if ("code" in binding) return failure(binding.code);
+  const { remote, url, ref, sha } = binding;
   const call = pushDeadline();
   let outcome = failure("push-ref-changed");
   let lockSignal: AbortSignal | undefined;
@@ -590,7 +602,7 @@ export async function executeWorkflowPush(
           if (!canExecute()) { outcome = failure("output-execution-interrupted"); return; }
           // The launcher checks both the ref lock and the run's authority as it starts the process, on every launch attempt.
           const pushed = await git.run(cwd, ["push", "--porcelain", "--no-follow-tags", "--recurse-submodules=no", "--no-signed", url, `${sha}:${ref}`],
-            { ...lockedCall, signal: AbortSignal.any([signal, authority]) });
+            { ...lockedCall, signal: AbortSignal.any([signal, authority]), refreshLaunch: refreshAuthority, canLaunch: canExecute });
           // Only known diagnostic phrases are retained. A credential helper can write arbitrary secrets to either pipe.
           const authMessage = pushed.stderr.match(/authentication failed|could not read (?:username|password)|permission denied|could not read from remote|terminal prompts disabled|refusing to prompt for credentials|cannot prompt|unable to get (?:username|password)|\b(?:401|403)\b/iu)?.[0];
           const exit = pushed.code === 0 ? "ok"
@@ -598,7 +610,10 @@ export async function executeWorkflowPush(
               : /non-fast-forward|fetch first/iu.test(pushed.stdout) ? "push-non-fast-forward" : "push-failed";
           outcome = { status: pushed.code === 0 ? "done" : "failed",
             detail: canonicalWorkflowJson({ remote, host: pushHost(url).slice(0, 2048), branch: ref.slice("refs/heads/".length), sha, exit }) };
-        } catch { outcome = failure(authority.aborted && !signal.aborted ? "output-execution-interrupted" : "push-failed"); }
+        } catch (error) {
+          outcome = failure(!canExecute() || (error instanceof HostGitError && error.reason === "authority-revoked") || authority.aborted && !signal.aborted
+            ? "output-execution-interrupted" : "push-failed");
+        }
       },
     });
     if (locked.code !== 0 && outcome.detail === "push-ref-changed") {

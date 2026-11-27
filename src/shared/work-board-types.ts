@@ -466,7 +466,7 @@ export interface StageOutputRetryInput extends StageRetryInput {
   outputId: string;
   outputHash: string;
 }
-export type StageOutputRetryResult = { ok: true } | { ok: false; reason: StageRunRefusal | "output_mismatch" | "push-retry-forbidden" | "user-gesture-required" };
+export type StageOutputRetryResult = { ok: true } | { ok: false; reason: StageRunRefusal | "output_mismatch" | "push-retry-forbidden" | "user-gesture-required" | "requested-output-card-unavailable" | "output-retry-effect-unknown" };
 export type StageOutputRetryIpcResult = StageOutputRetryResult | { ok: false; reason: "invalid-input" | StageStoreRefusal };
 
 export interface StageGateDecideInput {
@@ -483,7 +483,7 @@ export interface StageGateDecideInput {
 type StageStoreRefusal = WorkBoardRefusalCode | "invalid-template-run";
 /** Decision refusals are snake_case. One with text shows reasonCodes.<the refusal with "-" for "_">, as run reason codes do. */
 type StageGateRefusal = "not_found" | "not_pending" | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "attempt_mismatch" | "result_mismatch" | "output_mismatch" | "attempts_exhausted"
-  | "note_required" | "note_too_long" | "note_invalid" | "version_missing" | "graph_mismatch" | "user-gesture-required" | "outputs-need-local-approver" | "remote-controller-authority-revoked";
+  | "note_required" | "note_too_long" | "note_invalid" | "version_missing" | "graph_mismatch" | "user-gesture-required" | "requested-output-card-unavailable" | "remote-controller-authority-revoked";
 export type StageGateDecideResult = { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending"> } | { ok: false; reason: StageGateRefusal };
 export type StageGateDecideIpcResult =
   | { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending">; redactedCount?: number }

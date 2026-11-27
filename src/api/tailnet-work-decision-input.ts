@@ -6,12 +6,22 @@ import { parseDecidePlanInput, parseDecideStageInput, parseJoinBinding, parseTem
 import { parseScheduleAttachmentRequest } from "../work-board/schedule-attachment-input.js";
 
 export function parseTailnetWorkDecision(raw: unknown): TailnetWorkDecisionRequest | null {
-  if (!hasTemplateKeys(raw, ["id", "scope", "kind", "input", "itemId", "templateId"])
+  if (!hasTemplateKeys(raw, ["id", "scope", "kind", "input", "itemId", "templateId", "reviewHandle"])
     || typeof raw.id !== "string" || !UUID_PATTERN.test(raw.id)
     || typeof raw.scope !== "string" || !UUID_PATTERN.test(raw.scope)
     || typeof raw.kind !== "string") return null;
-  const { id, scope, kind, itemId, templateId, input } = raw;
-  const base = { id, scope };
+  const { id, scope, kind, itemId, templateId, input, reviewHandle } = raw;
+  if (reviewHandle !== undefined && ((kind !== "stage" && kind !== "requested-output")
+    || typeof reviewHandle !== "string" || !UUID_PATTERN.test(reviewHandle))) return null;
+  const base = { id, scope, ...(reviewHandle === undefined ? {} : { reviewHandle }) };
+  if (kind === "output-retry") {
+    if (!isPositiveSafeInteger(itemId) || templateId !== undefined
+      || !hasTemplateKeys(input, ["runId", "stageId", "attempt", "outputHash", "outputId"])
+      || typeof input.runId !== "string" || !RUN_ID_PATTERN.test(input.runId) || !isStageId(input.stageId)
+      || !isPositiveSafeInteger(input.attempt) || !isGraphHash(input.outputHash)
+      || typeof input.outputId !== "string" || !UUID_PATTERN.test(input.outputId)) return null;
+    return { ...base, kind, itemId, input: { runId: input.runId, stageId: input.stageId, attempt: input.attempt, outputHash: input.outputHash, outputId: input.outputId } };
+  }
   if (kind === "plan" || kind === "stage" || kind === "join") {
     if (!isPositiveSafeInteger(itemId) || templateId !== undefined) return null;
     if (kind === "plan") {
@@ -33,6 +43,12 @@ export function parseTailnetWorkDecision(raw: unknown): TailnetWorkDecisionReque
     return parsed && isTemplateId(templateId) ? { ...base, kind, templateId, input: parsed } : null;
   }
   if (templateId !== undefined) return null;
+  if (kind === "output-execution-card") {
+    if (!hasTemplateKeys(input, ["handle", "choice"]) || typeof input.handle !== "string" || input.handle.length > 115
+      || !/^[\da-f-]{36}\.\d{1,16}\.[\da-f]{64}$/u.test(input.handle)
+      || (input.choice !== "allow-once" && input.choice !== "deny-once")) return null;
+    return { ...base, kind, input: { handle: input.handle, choice: input.choice } };
+  }
   if (kind === "create-and-run") {
     if (!hasTemplateKeys(input, ["templateId", "version", "graphHash", "projectRoot", "title", "detail"])
       || typeof input.title !== "string" || (input.detail !== undefined && typeof input.detail !== "string")) return null;

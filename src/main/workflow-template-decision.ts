@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { requireTemplate } from "../work-board/template-graph.js";
 import type { WorkDecisionAuthority } from "../work-board/work-decision-authority.js";
+import type { TailnetControllerAuthority } from "../shared/chat-origin.js";
 
 const decisionBrand: unique symbol = Symbol("host-decision");
 
@@ -8,6 +9,7 @@ export interface RemoteWorkDecisionEvidence {
   readonly login: string;
   readonly conversationId: string;
   readonly authority: WorkDecisionAuthority;
+  readonly outputPage?: { readonly id: string; readonly controller: TailnetControllerAuthority };
 }
 
 interface DecisionProofBase {
