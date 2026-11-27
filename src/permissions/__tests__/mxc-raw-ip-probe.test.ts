@@ -241,7 +241,7 @@ describe("raw IP startup observation", () => {
     expect(request.runtimeConfig.networkProxy).toBe("http://127.0.0.1:9");
   });
 
-  it("caps the LAN lookup and retries a failed measurement with the full plain start budget", async () => {
+  it("caps the LAN lookup and preserves the measured start rejection without a second launch", async () => {
     const epoch = 1_800_000_000_000;
     const clock = vi.spyOn(Date, "now").mockReturnValue(epoch);
     const run = vi.fn<DetectMxcSupportDeps["run"]>()
@@ -252,14 +252,75 @@ describe("raw IP startup observation", () => {
       await expect(probeMxcPowerShellStart(makeDeps(run), async () => {
         clock.mockReturnValue(epoch + 57_000);
         return { port: 49153, url: "http://127.0.0.1:49153", close: async () => {} };
-      })).resolves.toMatchObject({ state: "available", rawIpProbe: { rawIp: "unknown", reason: "no-evidence" } });
+      })).resolves.toMatchObject({ state: "unavailable", reason: "powershell-start-failed" });
     } finally {
       clock.mockRestore();
     }
-    expect(run.mock.calls.map(([, , timeout]) => timeout)).toEqual([2_000, 8_000, 65_000]);
-    const request = JSON.parse(Buffer.from(run.mock.calls[2]?.[1][1] ?? "", "base64").toString("utf8"));
-    expect(request.process.timeout).toBe(60_000);
-    expect(request.runtimeConfig.networkProxy).toBe("http://127.0.0.1:9");
+    expect(run.mock.calls.map(([, , timeout]) => timeout)).toEqual([2_000, 8_000]);
+  });
+
+  it("preserves a nonzero measured start without a second launch", async () => {
+    const run = vi.fn<DetectMxcSupportDeps["run"]>()
+      .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ code: 0xc0000142, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" });
+    await expect(probeMxcPowerShellStart(makeDeps(run), openInvocationProxyListener))
+      .resolves.toMatchObject({ state: "unavailable", reason: "unverified-session" });
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a complete matching frame returned after the startup cutoff", async () => {
+    const epoch = 1_800_000_000_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(epoch);
+    try {
+      const run = vi.fn<DetectMxcSupportDeps["run"]>(async (_file, args) => {
+        if (args[0] !== "--config-base64") return { code: 0, stdout: "192.0.2.2:49152", stderr: "" };
+        const { id, controlHost, proxyUrl } = probeScriptInputs(args);
+        expect(await requestProxyRefusal(proxyUrl, controlHost)).toBe(403);
+        clock.mockReturnValue(epoch + 60_001);
+        return { code: 0, stdout: evidenceFrame(id), stderr: "" };
+      });
+      await expect(probeMxcPowerShellStart(makeDeps(run), openInvocationProxyListener)).resolves.toMatchObject({
+        state: "available", rawIpProbe: { rawIp: "unknown", reason: "no-evidence" },
+      });
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("cancels an in-progress listener open at the startup cutoff", async () => {
+    vi.useFakeTimers();
+    try {
+      const close = vi.fn(async () => {});
+      const run = vi.fn<DetectMxcSupportDeps["run"]>();
+      const starting = probeMxcPowerShellStart(makeDeps(run), (options) => {
+        options.admission?.adopt(close);
+        return new Promise(() => {});
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(close).toHaveBeenCalledOnce();
+      await expect(starting).resolves.toMatchObject({ state: "unavailable", reason: "powershell-start-failed" });
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops waiting for listener close at the startup cutoff", async () => {
+    vi.useFakeTimers();
+    try {
+      const close = vi.fn<() => Promise<void>>(() => new Promise(() => {}));
+      const run = vi.fn<DetectMxcSupportDeps["run"]>().mockResolvedValue({ code: 0, stdout: "", stderr: "" });
+      const settled = vi.fn();
+      const starting = probeMxcPowerShellStart(makeDeps(run), async () => ({ port: 49153, url: "http://127.0.0.1:49153", close }));
+      void starting.then(settled);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(close).toHaveBeenCalledOnce();
+      expect(settled).toHaveBeenCalledWith(expect.objectContaining({ state: "available" }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([

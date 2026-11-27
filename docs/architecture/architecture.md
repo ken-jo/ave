@@ -3704,12 +3704,14 @@ in its directory.
   `192.0.2.1:443`, `[2001:db8::1]:443`, and the host's primary LAN IPv4 on a
   port selected from those without a listener. UDP is checked by arrival only.
   The host listens on that LAN address at an OS-assigned port, and the script
-  sends the launch identifier as a nonce. The host lookup, listener, and
-  contained start share a sixty-second budget. The script uses up to three
+  sends the launch identifier as a nonce. The host lookup, listener open and
+  close, contained start, and host evidence acceptance share a sixty-second
+  deadline. The script uses up to three
   seconds per target and twelve seconds overall, with one second reserved for
   exit. The host can wait up to three seconds for a sent datagram within that
-  measurement deadline. If the measured start fails, the plain exit check
-  gets its original budget.
+  measurement deadline. The plain exit check uses the remaining startup
+  budget if the invocation listener is unavailable. A measured launch's exit
+  result determines shell availability.
   `rawIp: "blocked"` requires the control to pass, an IPv4 local `10013`
   refusal, IPv6 refusal evidence, no TCP response on the LAN target, and no UDP
   arrival. A local IPv6 `10013` is measured evidence. For IPv6 no-route codes

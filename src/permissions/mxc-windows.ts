@@ -21,6 +21,7 @@ import {
 } from "./admitted-obligation.js";
 
 import { errorMessage } from "../shared/error-message.js";
+import { raceWithAbort } from "../shared/abortable-deadline.js";
 import { compileGlobMatcher, globToRegExp } from "../lib/glob-matcher.js";
 import { isPlainWindowsPathComponent } from "../shared/windows-path-spelling.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
@@ -532,52 +533,94 @@ export async function probeMxcPowerShellStart(
   const available = { state: "available", windowsBuild: deps.windowsBuild } as const;
   let rawIpProbe: MxcRawIpProbeVerdict = { rawIp: "unknown", reason: "listener-unavailable", reachableTargets: [], udpArrival: "unmeasured" };
   let result: Awaited<ReturnType<typeof launch>> | undefined;
-  if (measure) {
-    const deadline = Date.now() + MXC_START_PROBE_TIMEOUT_MS;
-    const measurementDeadline = deadline - MXC_START_EXIT_RESERVE_MS;
-    let listener: Awaited<ReturnType<typeof openListener>> | undefined;
-    let udp: Awaited<ReturnType<typeof openMxcRawIpUdpListener>>;
-    try {
-      const probeId = randomBytes(16).toString("hex");
-      const controlHost = `127.${[...randomBytes(3)].join(".")}`;
-      let controlRefused = false;
-      listener = await openListener({
-        upstream: () => undefined,
-        onRefused: (destination) => { if (destination === controlHost) controlRefused = true; },
-      });
-      rawIpProbe = classifyMxcRawIpProbe(undefined, false, "unmeasured");
-      const lookupBudget = Math.min(MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS, measurementDeadline - Date.now());
-      const lan = lookupBudget > 0 ? await findMxcLanProbeTarget(deps, lookupBudget) : undefined;
-      if (lan !== undefined) udp = await openMxcRawIpUdpListener(lan.address, probeId, measurementDeadline);
-      const startBudget = deadline - Date.now();
-      if (startBudget > MXC_START_EXIT_RESERVE_MS) {
-        const script = buildMxcRawIpProbeScript(probeId, listener.port, controlHost, lan, udp, measurementDeadline);
+  try {
+    if (measure) {
+      const deadline = Date.now() + MXC_START_PROBE_TIMEOUT_MS;
+      const measurementDeadline = deadline - MXC_START_EXIT_RESERVE_MS;
+      const controller = new AbortController();
+      const { signal } = controller;
+      const expiry = setTimeout(() => controller.abort(), MXC_START_PROBE_TIMEOUT_MS);
+      const expired = () => signal.aborted || Date.now() >= deadline;
+      let closeTcp: (() => Promise<void>) | undefined;
+      let udp: Awaited<ReturnType<typeof openMxcRawIpUdpListener>>;
+      let closing: Promise<unknown> | undefined;
+      const close = async (release: () => void | Promise<void>, protocol: "TCP" | "UDP") => {
         try {
-          result = await launch(script, listener.url, startBudget);
+          await release();
+        } catch {
+          try {
+            await release();
+          } catch {
+            log.warn(`MXC startup ${protocol} listener cleanup failed`);
+          }
+        }
+      };
+      const cleanup = () => closing ??= Promise.all([closeTcp && close(closeTcp, "TCP"), udp && close(udp.close, "UDP")]);
+      const handleExpiry = () => { void cleanup(); };
+      signal.addEventListener("abort", handleExpiry, { once: true });
+      try {
+        const probeId = randomBytes(16).toString("hex");
+        const controlHost = `127.${[...randomBytes(3)].join(".")}`;
+        let controlRefused = false;
+        const opening = openListener({
+          upstream: () => undefined,
+          onRefused: (destination) => { if (destination === controlHost) controlRefused = true; },
+          admission: {
+            signal,
+            assertCanBind: () => { if (expired()) throw new Error("MXC startup deadline reached"); },
+            acceptsConnections: () => !expired(),
+            adopt: (release) => { closeTcp = release; },
+          },
+        }).then((bound) => {
+          if (signal.aborted) {
+            if (closeTcp === undefined) void close(bound.close, "TCP");
+          } else {
+            closeTcp = bound.close;
+          }
+          return bound;
+        });
+        const listener = await raceWithAbort(opening, signal).catch(() => undefined);
+        if (listener === undefined) {
+          void cleanup();
+          const startBudget = deadline - Date.now();
+          if (expired()) return unavailable("powershell-start-failed", "startup-deadline");
+          result = await launch("exit 0", "http://127.0.0.1:9", startBudget);
+        } else {
+          const lookupBudget = Math.min(MXC_LAN_TARGET_LOOKUP_TIMEOUT_MS, measurementDeadline - Date.now());
+          const lan = lookupBudget > 0 ? await raceWithAbort(findMxcLanProbeTarget(deps, lookupBudget), signal) : undefined;
+          if (lan !== undefined) {
+            const binding = openMxcRawIpUdpListener(lan.address, probeId, measurementDeadline).then((bound) => {
+              if (signal.aborted && bound !== undefined) void close(bound.close, "UDP");
+              return bound;
+            });
+            udp = await raceWithAbort(binding, signal);
+          }
+          if (expired()) return unavailable("powershell-start-failed", "startup-deadline");
+          const startBudget = deadline - Date.now();
+          const script = buildMxcRawIpProbeScript(probeId, listener.port, controlHost, lan, udp, measurementDeadline);
+          try {
+            result = await launch(script, listener.url, startBudget);
+          } finally {
+            const started = result?.started;
+            const evidence = started?.code === 0 && !expired()
+              ? parseMxcRawIpProbeEvidence(started.stdout, probeId, started.stderr) : undefined;
+            const udpArrival = await udp?.observe(evidence?.udp ?? "unmeasured", MXC_RAW_IP_TARGET_TIMEOUT_MS) ?? "unmeasured";
+            rawIpProbe = classifyMxcRawIpProbe(evidence, controlRefused, udpArrival);
+          }
+        }
+      } finally {
+        try {
+          await raceWithAbort(cleanup(), signal);
+        } catch {
+          if (rawIpProbe.rawIp === "blocked") rawIpProbe = classifyMxcRawIpProbe(undefined, false, rawIpProbe.udpArrival);
         } finally {
-          const started = result?.started;
-          const evidence = started?.code === 0 ? parseMxcRawIpProbeEvidence(started.stdout, probeId, started.stderr) : undefined;
-          const udpArrival = await udp?.observe(evidence?.udp ?? "unmeasured", MXC_RAW_IP_TARGET_TIMEOUT_MS) ?? "unmeasured";
-          rawIpProbe = classifyMxcRawIpProbe(evidence, controlRefused, udpArrival);
+          clearTimeout(expiry);
+          signal.removeEventListener("abort", handleExpiry);
         }
       }
-    } catch {
-      // Optional measurement errors leave the plain startup check authoritative.
-    } finally {
-      try {
-        udp?.close();
-      } catch {
-        log.warn("MXC startup UDP listener cleanup failed");
-      }
-      const bound = listener;
-      await bound?.close().catch(() => bound.close()).catch((error) => {
-        log.warn({ error }, "MXC startup measurement listener cleanup failed");
-      });
+    } else {
+      result = await launch("exit 0", "http://127.0.0.1:9", MXC_START_PROBE_TIMEOUT_MS);
     }
-  }
-
-  try {
-    if (result?.started.code !== 0) result = await launch("exit 0", "http://127.0.0.1:9", MXC_START_PROBE_TIMEOUT_MS);
     const { request, started } = result;
     const start = classifyMxcStartProbe(started.code, started.stdout, started.stderr);
     if (!start.ok) return unavailable(start.reason, start.detail);
