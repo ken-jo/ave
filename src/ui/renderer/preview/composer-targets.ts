@@ -14,7 +14,7 @@ export interface ComposerTarget {
   /** Put `text` into the draft; false when it did not fit. */
   attach: (text: string) => boolean;
   attachImage?: (base64: string, canCommit?: () => boolean) => Promise<boolean>;
-  getSessionIdentity?: () => symbol;
+  getSessionIdentity?: () => symbol | undefined;
   /** Whether the user can see this composer now. */
   available: () => boolean;
   /** The composer's dock: focus landing inside it is "the user used it". */

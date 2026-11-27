@@ -11,6 +11,7 @@ import type { AveApi } from "../../types.js";
 import { ChatContextProvider, type ChatContextValue } from "../../context/ChatContext.js";
 import { ApprovalSurfaceProvider } from "../../hooks/use-approval.js";
 import { approvalRequest, approvalSurfaceStub, deferred } from "../../../../../test/renderer/helpers.js";
+import { pinPaneChatImageTarget } from "../../preview/composer-targets.js";
 import { makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { getUsableContext } from "../../../../shared/context-budget.js";
@@ -167,7 +168,11 @@ describe("SideChatView — New button gating during streaming", () => {
     expect(railView.getByTestId("status-toast-message")).not.toHaveTextContent("secondary/model-c");
   });
 
-  it.each(["capture", "image save"] as const)("keeps a pending %s out of the new pane chat", async (pendingStep) => {
+  it.each([
+    { pendingStep: "capture", resetSucceeds: true },
+    { pendingStep: "image save", resetSucceeds: true },
+    { pendingStep: "capture", resetSucceeds: false },
+  ] as const)("invalidates a pending $pendingStep when New starts (success: $resetSucceeds)", async ({ pendingStep, resetSucceeds }) => {
     const { api } = makeApi();
     const tabId = "browser:capture";
     const groupId = "pane:capture";
@@ -175,7 +180,8 @@ describe("SideChatView — New button gating during streaming", () => {
     const sideChat = api.sideChat;
     if (!sideChat) throw new Error("Expected the pane chat API");
     sideChat.paneHistory = vi.fn(async () => ({ ok: true as const, sessionId: "side-1", messages: [] }));
-    const endPaneChat = vi.fn(async () => ({ ok: true as const, sessionId: null }));
+    const pendingNew = deferred<Awaited<ReturnType<typeof sideChat.endPaneChat>>>();
+    const endPaneChat = vi.fn(() => pendingNew.promise);
     sideChat.endPaneChat = endPaneChat;
     const image = { ok: true as const, path: "/work/capture.png", dataUrl: "data:image/png;base64,aW1hZ2U=", mimeType: "image/png", width: 200, height: 100, bytes: 5 };
     const captureResult = { ok: true as const, value: { ...image, tabId, documentGeneration: 2, truncated: false } };
@@ -208,13 +214,24 @@ describe("SideChatView — New button gating during streaming", () => {
     expect(endPaneChat).toHaveBeenCalledExactlyOnceWith(tabId, "new");
     expect(screen.getByTestId("side-chat-composer-dock")).toBe(dock);
     expect(screen.getByTestId("browser-capture-menu")).toBe(toolbar);
+    expect.soft(pinPaneChatImageTarget(groupId, () => true)).toBeNull();
+
+    if (!resetSucceeds) {
+      await act(async () => { pendingNew.resolve({ ok: false, error: "session-not-found" }); });
+      expect(pinPaneChatImageTarget(groupId, () => true)).not.toBeNull();
+    }
     await act(async () => {
       pendingCapture.resolve(captureResult);
       pendingSave.resolve(image);
     });
+    if (resetSucceeds) {
+      await act(async () => { pendingNew.resolve({ ok: true, sessionId: null }); });
+      expect(pinPaneChatImageTarget(groupId, () => true)).not.toBeNull();
+    }
 
     expect.soft(readImage).not.toHaveBeenCalled();
     expect.soft(sideComposer().textarea).toHaveValue("");
+    expect.soft(within(dock).queryByTestId("attachment-chip")).toBeNull();
     if (pendingStep === "capture") expect(saveClipboardImage).not.toHaveBeenCalled();
     else expect(release).toHaveBeenCalledExactlyOnceWith([image.path]);
   });

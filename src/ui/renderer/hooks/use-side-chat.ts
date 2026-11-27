@@ -62,7 +62,8 @@ export interface UseSideChat {
   turnSummaryByTurnStart: Map<number, TurnSummary>;
   isStreaming: boolean;
   sessionId: string | null;
-  getSessionIdentity: () => symbol;
+  getSessionIdentity: () => symbol | undefined;
+  beginPaneReset: () => (() => void) | null;
   send: (text: string, opts?: SideChatSendOptions) => Promise<void>;
   newSession: () => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
@@ -142,6 +143,7 @@ function createSideChatRuntime(retained: boolean) {
     isStreamingRef: runtimeRef(false),
   };
   let sessionIdentity = Symbol();
+  let paneResetPending = false;
   const update = (patch: Partial<SideChatSnapshot>) => {
     runtime.snapshot = { ...runtime.snapshot, ...patch };
     for (const listener of runtime.listeners) listener();
@@ -157,7 +159,13 @@ function createSideChatRuntime(retained: boolean) {
     },
     setIsStreaming: (isStreaming: boolean) => update({ isStreaming }),
     // A fresh draft has a lifetime even before the host assigns it a session ID.
-    getSessionIdentity: () => sessionIdentity,
+    getSessionIdentity: () => paneResetPending ? undefined : sessionIdentity,
+    beginPaneReset: () => {
+      if (paneResetPending) return null;
+      sessionIdentity = Symbol();
+      paneResetPending = true;
+      return () => { paneResetPending = false; };
+    },
     setSessionId: (sessionId: string | null) => {
       sessionIdentity = Symbol();
       update({ sessionId });
@@ -862,6 +870,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     isStreaming,
     sessionId,
     getSessionIdentity: runtime.getSessionIdentity,
+    beginPaneReset: runtime.beginPaneReset,
     send,
     newSession,
     loadSession,

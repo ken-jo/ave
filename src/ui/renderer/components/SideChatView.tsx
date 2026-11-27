@@ -232,6 +232,7 @@ function SideChatSession({
     isStreaming,
     sessionId,
     getSessionIdentity,
+    beginPaneReset,
     send,
     newSession,
     loadSession,
@@ -264,6 +265,8 @@ function SideChatSession({
       await newSession();
       return;
     }
+    const finishPaneReset = beginPaneReset();
+    if (!finishPaneReset) return;
     try {
       const res = await sideChat.endPaneChat(paneTabId, "new");
       if (!res.ok) {
@@ -274,9 +277,11 @@ function SideChatSession({
       clear();
     } catch (err) {
       setPaneError(errorMessage(err));
+    } finally {
+      finishPaneReset();
     }
     void onSessionsChanged?.();
-  }, [sideChat, paneTabId, newSession, clear, onSessionsChanged]);
+  }, [sideChat, paneTabId, newSession, beginPaneReset, clear, onSessionsChanged]);
   const tileHidden = chatContext?.hidden === true;
   // Late session-mutation replies cannot restore a claim after teardown.
   useLayoutEffect(() => {
