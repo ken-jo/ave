@@ -200,10 +200,9 @@ jobs:
         working-directory: ave
         env:
           AVE_BUILD_MINIFIER: esbuild
-      # Plan once: the shards below run this plan instead of planning again,
-      # so every shard splits the same file list. A full run without
-      # coverage uses one pool beside selected native checks, otherwise
-      # FULL_RUN_SHARDS shards. Affected and coverage runs use one pool.
+      # Plan once so every shard splits the same file list. Full runs without
+      # coverage use two shards with selected native checks and four otherwise.
+      # Affected and coverage runs use one shard.
       - name: Plan the suite
         id: plan
         if: steps.docs-impact.outputs.docs_only != 'true'
@@ -435,8 +434,7 @@ jobs:
         # composite's two halves separately, the duplicate scan last;
         # `check:test-quality` stays as the local one-shot README.md documents.
         #
-        # Four workers share one runner when native checks dominate the
-        # critical path. File isolation and timing phases remain unchanged.
+        # Each Linux shard uses up to four workers with file isolation.
         #
         # This job is one shard of the plan the build job wrote:
         # AVE_CI_PLAN_FILE is that plan, AVE_CI_SHARD this shard's place in
