@@ -281,6 +281,10 @@ export type SandboxMacContainerShellSupport =
   | { readonly state: "available" }
   | { readonly state: "unavailable"; readonly reason: SandboxMacContainerShellUnavailableReason };
 
+export type SandboxMacContainerShellInfo = SandboxMacContainerShellSupport & {
+  readonly egressProtocolCoverage: EgressProtocolCoverage;
+};
+
 /** A plan is selection evidence, never proof that a particular process has started. */
 export interface SandboxWindowsExtensionPlan {
   readonly requestedBackend: "mxc" | "none";
@@ -405,6 +409,8 @@ export interface SandboxCapabilityInfo {
   boot?: SandboxBootOutcomeView | null;
   /** Windows: which substrate carries shells and extensions this boot, and how strongly their egress is attributed. `null` off Windows, and on Windows when boot never ran the gate. */
   windowsSubstrate?: SandboxWindowsSubstrateInfo | null;
+  /** Boot verification for the macOS shell container. */
+  containerShell?: SandboxMacContainerShellInfo;
   /** Windows: no sandboxed process can start this run because the container runtime root is unproved; set whatever the sandbox setting. */
   sandboxHomesUnavailable?: boolean;
   /** The shell sandbox as the chat input's permission card shows it. */

@@ -10,7 +10,7 @@ import { openEgressInvocation } from "../egress-invocations.js";
 import { openEgressRelay } from "../egress-relay/relay.js";
 import {
   __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest,
-  detectMxcShellCapability, getHostShellExecutionPlan, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot,
+  detectMxcShellCapability, getHostShellExecutionPlan, getMacContainerShellInfo, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot,
 } from "../sandbox-capability.js";
 
 const platform = process.platform;
@@ -40,7 +40,9 @@ describe.runIf(platform === "darwin" || platform === "linux")("POSIX shell and h
       egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" },
     });
     expect(getHostShellExecutionPlan("default", "hook").identity).toBe("host-shell-execution-plan/v4:darwin:asrt");
+    expect(getMacContainerShellInfo()).toEqual({ state: "available", egressProtocolCoverage: { dns: "blocked", rawIp: "blocked" } });
     setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+    expect(getMacContainerShellInfo()).toMatchObject({ state: "unavailable", reason: "shell-start-failed" });
     expect(getHostShellExecutionPlan()).toMatchObject({
       mode: "plain", substrate: "none", requiresExplicitUserApproval: true, fallbackReason: "active-sandbox-not-shell-contained",
     });

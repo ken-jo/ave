@@ -1,6 +1,6 @@
 // Reviewer relaxation requires live OS isolation; none forbids intent-only downgrades from MEDIUM/HIGH to LOW. Inactive gates publish verified none; audit stores the resulting verdict rather than the full capability (docs/architecture/permission-policy-design.md).
 
-import { assertSandboxWindowsExtensionPlan, egressProtocolCoverageFor } from "../shared/sandbox-capability-info.js";
+import { assertSandboxWindowsExtensionPlan, containerEgressProtocolCoverage, egressProtocolCoverageFor } from "../shared/sandbox-capability-info.js";
 import { isContainerShellRouteEnabled } from "../shared/container-platform.js";
 import { getAveHomePrivacyFailure, isAveHomePrivacyApprovable, isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
 import { windowsDenyUnenforceableAtBoot } from "./admitted-obligation.js";
@@ -9,6 +9,7 @@ import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
   SandboxBootOutcome,
   SandboxConfinement,
+  SandboxMacContainerShellInfo,
   SandboxMacContainerShellSupport,
   SandboxWindowsSubstrateInfo,
   SandboxWindowsExtensionPlan,
@@ -271,6 +272,13 @@ export function detectMxcShellCapability(): SandboxCapability | undefined {
     return _containerShellSubstrate?.state === "available" ? MAC_CONTAINER_SHELL_CAPABILITY : undefined;
   }
   return _mxcShellCapability;
+}
+
+export function getMacContainerShellInfo(): SandboxMacContainerShellInfo | undefined {
+  if (process.platform !== "darwin" || !isShellSandboxRequestedAtBoot() || _containerShellSubstrate === undefined) return undefined;
+  const support = _containerShellSubstrate.state === "available" && detectMxcShellCapability() === undefined
+    ? { state: "unavailable", reason: "shell-start-failed" } as const : _containerShellSubstrate;
+  return { ...support, egressProtocolCoverage: containerEgressProtocolCoverage("seatbelt") };
 }
 
 // Windows: no sandbox HOME can be made this run (the container runtime root is unproved, or its HOME parent was replaced).
