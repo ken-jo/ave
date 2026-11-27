@@ -3,8 +3,9 @@ import { lstatSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { Readable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 import { sameFileIdentity } from "../lib/file-identity.js";
-import { trackManagedChildProcess } from "../main/managed-child-processes.js";
+import { observeManagedProcessGroup, trackManagedChildProcess } from "../main/managed-child-processes.js";
 import {
   aveHomeReadBoundaryCovering, getDefaultSensitiveWriteDenyEntries, getProtectedReadDenyFloor,
   getUserReadDenies, protectedReadDenyMatcher, runWithSandboxWritePreflight,
@@ -53,18 +54,23 @@ function pathFoldsCase(path: string): boolean {
   return false;
 }
 
-function directLauncherChild(parent: number): Promise<number | undefined> {
+function readProcessList(file: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile("/bin/ps", ["-axo", "pid=,ppid="], {
+    execFile(file, args, {
       timeout: TOOL_TIMEOUT_POLICY.mxcMacShellChildLookupMs,
       env: buildSafeChildEnv(),
     }, (error, stdout) => {
       if (error) { reject(error); return; }
-      const entries = stdout.split("\n").map(line => line.trim().split(/\s+/u).map(Number))
-        .filter(([pid, ppid]) => pid !== undefined && pid > 1 && ppid === parent);
-      resolve(entries.length === 1 ? entries[0]?.[0] : undefined);
+      resolve(stdout);
     });
   });
+}
+
+async function directLauncherChild(parent: number): Promise<number | undefined> {
+  const stdout = await readProcessList("/bin/ps", ["-axo", "pid=,ppid="]);
+  const entries = stdout.split("\n").map(line => line.trim().split(/\s+/u).map(Number))
+    .filter(([pid, ppid]) => pid !== undefined && pid > 1 && ppid === parent);
+  return entries.length === 1 ? entries[0]?.[0] : undefined;
 }
 
 function signalOwnedProcess(pid: number, signal: NodeJS.Signals): void {
@@ -72,23 +78,33 @@ function signalOwnedProcess(pid: number, signal: NodeJS.Signals): void {
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
 }
 
-async function signalLauncherChild(launcher: LauncherChild, closed: Promise<unknown>, graceMs: number): Promise<void> {
+async function stopLauncher(launcher: LauncherChild, closed: Promise<unknown>, graceMs: number): Promise<void> {
   const parent = launcher.pid;
   if (parent === undefined) return;
   const stillRunning = (): boolean => launcher.exitCode === null && launcher.signalCode === null;
   const until = performance.now() + graceMs;
+  let child: number | undefined;
   while (stillRunning() && performance.now() < until) {
-    const child = await directLauncherChild(parent).catch(() => undefined);
-    if (child !== undefined && stillRunning()) {
-      // Only the supervisor's child gets the signal. Its exit makes the supervisor reap
-      // the whole sandbox, including descendants that left the launcher's process group.
-      signalOwnedProcess(child, "SIGKILL");
-      return;
-    }
+    child = await directLauncherChild(parent).catch(() => undefined);
+    if (child !== undefined) break;
     await Promise.race([closed, sleep(TOOL_TIMEOUT_POLICY.mxcMacShellChildPollMs)]);
   }
-  // When discovery fails, the supervisor's configured deadline reaps the sandbox.
-  // Completion and disposal both wait for its close.
+  if (child === undefined && stillRunning()) {
+    const stdout = await readProcessList("/usr/bin/pgrep", ["-P", String(parent)]).catch(() => "");
+    const children = stdout.trim().split(/\s+/u).map(Number).filter(pid => Number.isSafeInteger(pid) && pid > 1);
+    if (children.length === 1) child = children[0];
+  }
+  if (child !== undefined && stillRunning()) {
+    // The child's exit lets the supervisor reap descendants in other process groups.
+    signalOwnedProcess(child, "SIGKILL");
+    await Promise.race([closed, delay(graceMs, undefined, { ref: false })]);
+  }
+  // The launcher is the leader of its own group. End that group if discovery
+  // gave up or the supervisor failed to exit inside the reaping grace period.
+  if (!stillRunning()) return;
+  const group = observeManagedProcessGroup(launcher);
+  signalOwnedProcess(-parent, "SIGKILL");
+  if (await group.confirmExit() === undefined) throw new Error("Could not confirm macOS shell process group exit");
 }
 
 function isLauncherErrorEnvelope(line: string): boolean {
@@ -110,7 +126,7 @@ function superviseLauncher(
   let signalling: Promise<void> | undefined;
 
   const stop = (): void => {
-    signalling ??= signalLauncherChild(launcher, close, grace);
+    signalling ??= stopLauncher(launcher, close, grace);
     // The close path reports any teardown failure after the launcher leaves.
     void signalling.catch(() => {});
   };
@@ -122,16 +138,19 @@ function superviseLauncher(
     launcher.once("error", error => { if (launcher.pid === undefined) reject(error); });
     launcher.once("close", (code, signal) => resolve({ code, signal }));
   });
+  const settled = close.then(async outcome => {
+    await signalling;
+    return outcome;
+  });
   launcher.stderr.on("data", (chunk: Buffer) => { tail = (tail + chunk.toString()).slice(-8192); });
-  lifecycle.jobStarted(close);
+  lifecycle.jobStarted(settled);
   lifecycle.signal.addEventListener("abort", handleAbort, { once: true });
   const timer = setTimeout(() => {
-    if (cancelled) return;
-    timedOut = true;
+    timedOut ||= !cancelled;
     lifecycle.revoke();
+    stop();
   }, timeoutMs + grace);
-  const completion = close.then(async ({ code, signal }) => {
-    await signalling;
+  const completion = settled.then(({ code, signal }) => {
     // The backend's own deadline is earlier than the host watchdog. Its status 255 also
     // represents a command signal or a literal exit 255.
     const rejected = !cancelled && code === 255 && tail.split("\n").some(isLauncherErrorEnvelope);
