@@ -17,6 +17,11 @@ module.exports = async function beforePack(context) {
     const arch = "arm64";
     const { buildMacosDirOps } = await import(pathToFileURL(join(__dirname, "build-macos-dir-ops.mjs")).href);
     buildMacosDirOps({ root: context.packager.projectDir, arch });
+    // The holder label sweep helper, rebuilt fresh: its image must be the one the main bundle pins.
+    const { buildMacosHolderSweep } = await import(pathToFileURL(join(__dirname, "build-macos-holder-sweep.mjs")).href);
+    const holderSweep = buildMacosHolderSweep({ root: context.packager.projectDir, arch });
+    const { recordMacosHolderSweepPackageBuild } = await import("./lib/macos-holder-sweep-package.mjs");
+    recordMacosHolderSweepPackageBuild({ appOutDir: context.appOutDir, arch, build: holderSweep, bundleDir: join(projectRoot, "dist", "src", "main") });
     const { verifyMxcSdkSource } = await import("./lib/mxc-sdk-integrity.mjs");
     verifyMxcSdkSource(join(projectRoot, "node_modules"), arch, require("../src/permissions/mxc-launcher-pins.json"), {}, "darwin");
     return;
