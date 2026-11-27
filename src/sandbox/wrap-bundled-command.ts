@@ -10,7 +10,7 @@ import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-
 import { buildLauncherEnvironment, prepareSandboxTargetLaunch, type SandboxTargetLaunch } from "../permissions/launcher-environment.js";
 import type { ChildProcess } from "node:child_process";
 import {
-  abandonManagedLaunch, createManagedRelayResources, observeManagedWindowsRelayExit, recordManagedCleanup,
+  abandonManagedLaunch, assertManagedChildProcessAdmissionOpen, createManagedRelayResources, observeManagedWindowsRelayExit, recordManagedCleanup,
   releaseManagedResources, type ManagedResources, type RelayBestEffortExit,
 } from "../main/managed-child-processes.js";
 import { randomBytes } from "node:crypto";
@@ -35,7 +35,11 @@ import { admitWindowsLookupPaths } from "../permissions/admitted-obligation.js";
 import { MxcProcessCleanupError, MxcProcessContractError } from "../permissions/mxc-extension-errors.js";
 import { planWindowsExtensionHolder } from "../permissions/mxc-extension-readiness.js";
 import { isWindowsPathAtOrUnder } from "../permissions/mxc-windows.js";
-import { posixHolderPaths } from "../permissions/holder-admission-darwin.js";
+import { measurePosixExecutableIdentity, posixHolderPaths, seatbeltHolderEnvironment, seatbeltHolderProcess } from "../permissions/holder-admission-darwin.js";
+import { captureSeatbeltHolderFloors, composeSeatbeltHolderLaunch, startSeatbeltHolder, type SeatbeltHolderLaunchInput } from "../permissions/seatbelt-holder-launch.js";
+import { newHolderLabels } from "../permissions/holder-label-sweep.js";
+import { provenSeatbeltHolderRoute } from "../permissions/seatbelt-holder-boot.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { isFullyQualifiedWindowsPath } from "../shared/windows-path-spelling.js";
 import { getExtensionBackendPlan, getMacHolderCapability } from "../permissions/sandbox-capability.js";
 import { listAuthorizedWorkspaceRoots } from "../permissions/workspace-authorized-roots.js";
@@ -833,4 +837,75 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
       throw error;
     }),
   };
+}
+
+/** A started host-owned offline holder: its pipes, and the one hand on its lifetime. */
+export interface SeatbeltOfflineHolder {
+  readonly process: MxcHolderProcess;
+  /** Idempotent. Rejects when termination is unverified; that label then starts nothing more this app run. */
+  release(): Promise<void>;
+}
+
+const quarantinedOfflineHolders = new Set<string>();
+
+/**
+ * A host-owned offline child on macOS (the memory inference child) once its holder route is on: a holder whose profile
+ * has no network rule, with no egress invocation, no lease, no proxy variable and no extension-start consent. Its only
+ * writes are its own staging HOME and temp; it reads what every holder reads. It starts only on the boot check's proof
+ * (`asrt-sandbox.ts` `isOfflineHolderConfinementActive`), and is never started on the old wrap.
+ */
+export async function spawnSeatbeltOfflineHolder(input: {
+  readonly label: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly baseEnv: Readonly<NodeJS.ProcessEnv>;
+  readonly holderEnv?: Readonly<Record<string, string>>;
+}): Promise<SeatbeltOfflineHolder> {
+  const route = provenSeatbeltHolderRoute();
+  if (process.platform !== "darwin" || route === undefined || getMacHolderCapability()?.state !== "ready") {
+    throw new MxcProcessContractError(`${input.label}: the macOS holder route is not proven`);
+  }
+  if (quarantinedOfflineHolders.has(input.label)) throw new MxcHolderQuarantinedError(input.label);
+  assertManagedChildProcessAdmissionOpen(input.label);
+  const staging = createHolderStaging();
+  let holder: Awaited<ReturnType<typeof startSeatbeltHolder>>;
+  try {
+    const writeRoots = [staging.root];
+    const boundary = createAveHomeBoundarySnapshot();
+    const floors = await boundary.run(() => captureSeatbeltHolderFloors({ cwd: staging.home, writeRoots }));
+    const launchInput: SeatbeltHolderLaunchInput = {
+      command: input.command, args: [...input.args], cwd: staging.home,
+      env: seatbeltHolderEnvironment({ baseEnv: input.baseEnv, holderEnv: input.holderEnv, home: staging.home, temp: staging.temp, cwd: staging.home }),
+      readRoots: [], writeRoots, floorPierces: [], network: "offline", labels: newHolderLabels(),
+    };
+    const { launch, identity } = boundary.run(() => withLocalityDecision(() => ({
+      launch: composeSeatbeltHolderLaunch(launchInput, floors), identity: measurePosixExecutableIdentity(input.command),
+    })));
+    holder = await startSeatbeltHolder(launch, {
+      label: input.label, helper: route.helper, launchers: route.launchers, admittedDigest: launch.digest,
+      assertStillValid: () => {
+        assertManagedChildProcessAdmissionOpen(input.label);
+        if (getMacHolderCapability()?.state !== "ready") throw new MxcProcessContractError(`${input.label}: the macOS holder route is no longer proven`);
+        if (measurePosixExecutableIdentity(input.command) !== identity) throw new MxcProcessContractError("Container executable changed after admission");
+      },
+    });
+  } catch (error) {
+    // An unverified refused start may have left a process: its staging stays, and so does the quarantine.
+    if (error instanceof MxcProcessCleanupError) quarantinedOfflineHolders.add(input.label);
+    else await removeHolderStaging(staging.root);
+    throw error;
+  }
+  let releasing: Promise<void> | undefined;
+  return Object.freeze({
+    process: seatbeltHolderProcess(holder),
+    release: () => releasing ??= holder.dispose().then(() => removeHolderStaging(staging.root), (error: unknown) => {
+      quarantinedOfflineHolders.add(input.label);
+      throw new MxcProcessCleanupError(`${input.label}: offline holder termination is unverified`, { cause: error });
+    }),
+  });
+}
+
+// @internal — test teardown only.
+export function __resetOfflineHolderQuarantineForTest(): void {
+  quarantinedOfflineHolders.clear();
 }

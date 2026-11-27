@@ -1,4 +1,4 @@
-import { isOfflineProcessConfinementActive } from "../../permissions/asrt-sandbox.js";
+import { isOfflineHolderConfinementActive, isOfflineProcessConfinementActive } from "../../permissions/asrt-sandbox.js";
 import { getExtensionBackendPlan } from "../../permissions/sandbox-capability.js";
 import { MemoryMapHostError } from "./errors.js";
 
@@ -8,5 +8,7 @@ import { MemoryMapHostError } from "./errors.js";
 export function assertLocalEmbeddingRuntime(): void {
   const plan = process.platform === "win32" ? getExtensionBackendPlan() : undefined;
   const planRefuses = plan !== undefined && (plan.readiness === "checking" || plan.readiness === "rejected" || plan.selectedBackend === "mxc");
+  // macOS with its holder route on: the offline holder, on the boot check's proof; unproven is refused, never asked.
+  if (isOfflineHolderConfinementActive()) return;
   if (!isOfflineProcessConfinementActive() || planRefuses) throw new MemoryMapHostError("local-runtime-unavailable");
 }

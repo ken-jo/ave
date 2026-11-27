@@ -14,7 +14,7 @@ vi.mock("../../shared/container-platform.js", async (actual) => {
 });
 
 import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
-import { prepareMxcHolderStart, spawnMxcBundledHolder, type MxcBundledHolder } from "../../sandbox/wrap-bundled-command.js";
+import { __resetOfflineHolderQuarantineForTest, prepareMxcHolderStart, spawnMxcBundledHolder, spawnSeatbeltOfflineHolder, type MxcBundledHolder } from "../../sandbox/wrap-bundled-command.js";
 import { spawnMxcConfinedChild } from "../confined-child.js";
 import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
 import { verifyHolderSweepHelper } from "../holder-label-sweep.js";
@@ -76,6 +76,7 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
   afterEach(async () => {
     await Promise.allSettled(holders.splice(0).map(started => started.release()));
     await closeHeldHolderLeases();
+    __resetOfflineHolderQuarantineForTest();
     await stopEgressRelayService();
     __setProvenSeatbeltHolderRouteForTest(undefined);
     __resetMacExtensionPlanForTest();
@@ -267,6 +268,40 @@ describe.runIf(NATIVE)("macOS holder boundary (native)", () => {
     };
     await expect(start(false)).resolves.toBeUndefined();
     await expect(start(true)).rejects.toThrow("Container filesystem changed after admission");
+  });
+
+  it("N12: an offline holder reaches no TCP listener and no Unix socket, writes only its staging; the host controls connect", async () => {
+    const { createServer } = await import("node:net");
+    const tcp = createServer(socket => socket.end()).listen(0, "127.0.0.1");
+    await new Promise(r => tcp.once("listening", r));
+    const port = (tcp.address() as { port: number }).port;
+    const socketPath = join(root, "s.sock");
+    const unix = createServer(socket => socket.end()).listen(socketPath);
+    await new Promise(r => unix.once("listening", r));
+    try {
+      // Controls: the same probes from the host connect.
+      execFileSync("/usr/bin/nc", ["-z", "-w", "2", "127.0.0.1", String(port)], { timeout: 5000 });
+      execFileSync("/usr/bin/perl", ["-MIO::Socket::UNIX", "-e", "IO::Socket::UNIX->new(Peer => $ARGV[0]) or exit 1", socketPath], { timeout: 5000 });
+      const probe = [
+        `/usr/bin/nc -z -w 2 127.0.0.1 ${port} 2>/dev/null && echo tcp-open || echo tcp-refused`,
+        `/usr/bin/perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Peer => $ARGV[0]) or exit 1' '${socketPath}' 2>/dev/null && echo unix-open || echo unix-refused`,
+        `(echo x > "$HOME/ok" && echo home-written) || echo home-refused`,
+        `(echo x > '${join(data, "offline")}' 2>/dev/null && echo data-written) || echo data-refused`,
+      ].join("; ");
+      const started = await spawnSeatbeltOfflineHolder({ label: "test:offline", command: "/bin/sh", args: ["-c", probe], baseEnv: { PATH } });
+      try {
+        const out: string[] = [];
+        started.process.stdout.on("data", (chunk: Buffer) => out.push(chunk.toString()));
+        await started.process.completion;
+        await new Promise(r => setTimeout(r, 50));
+        expect(out.join("").trim().split("\n")).toEqual(["tcp-refused", "unix-refused", "home-written", "data-refused"]);
+      } finally {
+        await started.release();
+      }
+    } finally {
+      tcp.close();
+      unix.close();
+    }
   });
 
   it("N13: a kernel-refused start runs nothing and leaves no staging tree", async () => {

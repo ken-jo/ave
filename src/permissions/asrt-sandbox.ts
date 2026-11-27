@@ -1411,6 +1411,13 @@ export function isOfflineProcessConfinementActive(): boolean {
   return active && !holderConfinementIsExternal && getAveHomePrivacyFailure() === undefined;
 }
 
+/** macOS once its holder route is on: an offline host process runs in an offline holder, never on the wrap, and only on
+ * the boot check's proof. Like the wrap it needs the shared Ave home privacy floor; it follows neither setting. */
+export function isOfflineHolderConfinementActive(): boolean {
+  return process.platform === "darwin" && active && holderConfinementIsExternal && getMacHolderCapability()?.state === "ready"
+    && getAveHomePrivacyFailure() === undefined;
+}
+
 // Host-shell spawn gate (bash / powershell tools, the workspace terminal): ASRT is active AND the shell sandbox (`features.osToolSandbox`) was requested at boot.
 export function isShellSandboxActive(): boolean {
   return active && isShellSandboxRequestedAtBoot();

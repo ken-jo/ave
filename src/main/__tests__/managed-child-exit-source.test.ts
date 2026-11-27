@@ -299,7 +299,7 @@ function containedHookAwaitsRelease(source: string): boolean {
   return appearsInOrder(source, "const stop = (): void => { void holder.release().catch",
     "timedOut = true; stop();", "cancelled = true; stop();", 'input.abortSignal?.addEventListener("abort", onAbort',
     "if (input.abortSignal?.aborted) onAbort()", "writeError = error as Error;\n    stop();",
-    "input.timeoutMs + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs", "settleTimer = setTimeout(",
+    "input.timeoutMs + containerHolderStopMs()", "settleTimer = setTimeout(",
     "await Promise.race([owned.completion, unsettled])", 'if (result === "unsettled") {\n      stop();',
     'return deny(t("be_scriptHookRunner.containedSettleDeadline"', "await Promise.race([stdoutEnded,",
     "await holder.release();", 'return deny(t("be_scriptHookRunner.containedTerminationUnverified"', "return input.outcome(");
