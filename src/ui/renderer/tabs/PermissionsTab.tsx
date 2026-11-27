@@ -43,7 +43,7 @@ import {
   type EgressProtocolCoverage,
   type SandboxCapabilityInfo,
   type ContainerRawIpProbeVerdict,
-  type MacRawIpUnknownReason,
+  type LinuxRawIpUnknownReason, type MacRawIpUnknownReason,
   type SandboxContainerShellUnavailableReason,
   type SandboxMxcUnavailableReason,
   type SandboxWindowsExtensionReason,
@@ -267,7 +267,8 @@ const MAC_RAW_IP_REASON_KEY = {
   "no-evidence": "permissionsTab.osSandboxMacContainerRawIpReasonNoEvidence",
   "control-failed": "permissionsTab.osSandboxMacContainerRawIpReasonControlFailed",
   "udp-unmeasured": "permissionsTab.osSandboxMacContainerRawIpReasonUdpUnmeasured",
-} as const satisfies Record<MacRawIpUnknownReason, string>;
+  "arrival-unprovable": "permissionsTab.osSandboxLinuxContainerRawIpReasonArrivalUnprovable",
+} as const satisfies Record<MacRawIpUnknownReason | LinuxRawIpUnknownReason, string>;
 
 /** The measured raw-IP sentence for an available macOS container; an unmeasured one reads as not confirmed. */
 function macRawIpSentence(rawIp: ContainerRawIpProbeVerdict | undefined): string {

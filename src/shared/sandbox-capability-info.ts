@@ -305,7 +305,7 @@ export type ContainerRawIpEvidenceKind = "measured" | "structural" | "arrival";
  * Memory only, never persisted, re-measured every boot.
  */
 export type MxcRawIpProbeVerdict<
-  Reason extends MxcRawIpUnknownReason = MxcRawIpUnknownReason,
+  Reason extends string = MxcRawIpUnknownReason,
   Evidence extends ContainerRawIpEvidenceKind = Exclude<ContainerRawIpEvidenceKind, "arrival">,
   Target extends string = MxcRawIpTarget,
 > = {
@@ -327,7 +327,9 @@ export type MacRawIpVerdict = MxcRawIpProbeVerdict<MacRawIpUnknownReason>;
  * The reasons the Linux shell container's canary gives: the macOS ones. As on every POSIX backend, `blocked` needs the
  * UDP datagram measured and not arrived; an unmeasured one is `udp-unmeasured`.
  */
-export type LinuxRawIpUnknownReason = MacRawIpUnknownReason;
+export type LinuxRawIpUnknownReason = MacRawIpUnknownReason
+  /** The host's address lies in the backend's own network, so no arrival could have been delivered to its listener. */
+  | "arrival-unprovable";
 /** The Linux probe's targets: the shared ones plus `ta`, the TCP arrival listener on the host's primary IPv4. */
 export type LinuxRawIpTarget = MxcRawIpTarget | "ta";
 /** Whether a process in the Linux shell container can reach an IP address directly, as this boot's canary measured it. */

@@ -4595,6 +4595,7 @@ export const en = {
   "permissionsTab.osSandboxMacContainerRawIpReasonNoEvidence": "the test did not run or reported nothing",
   "permissionsTab.osSandboxMacContainerRawIpReasonControlFailed": "the proxy check did not pass",
   "permissionsTab.osSandboxMacContainerRawIpReasonUdpUnmeasured": "the UDP test was not measured",
+  "permissionsTab.osSandboxLinuxContainerRawIpReasonArrivalUnprovable": "this computer's address lies inside the container network's own range, so the arrival test proves nothing",
   "permissionsTab.osSandboxMacContainerUnavailable": "Shell commands cannot run in the macOS sandbox container: {reason} Each shell command will ask before it runs.",
   "permissionsTab.osSandboxMacContainerReasonUnsupportedArch": "The sandbox container requires an Apple silicon Mac.",
   "permissionsTab.osSandboxMacContainerReasonBinaryMissing": "The sandbox library is missing. Reinstall Ave.",

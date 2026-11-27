@@ -18,7 +18,7 @@ import { INVOCATION_PROXY_REFUSED_STATUS, openInvocationProxyListener } from "./
 import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
 import { holdMxcLinuxPlaceholders } from "./mxc-linux-placeholders.js";
 import {
-  LINUX_RAW_IP_PROBER, linuxRawIpProberArguments, linuxRawIpUdpArrival, linuxRawIpUdpSend, linuxRawIpVerdict, openLinuxRawIpHostTargets, parseLinuxRawIpProbeOutput, primaryIpv4,
+  LINUX_RAW_IP_PROBER, linuxRawIpHostInBackendNetwork, linuxRawIpProberArguments, linuxRawIpUdpArrival, linuxRawIpUdpSend, linuxRawIpVerdict, openLinuxRawIpHostTargets, parseLinuxRawIpProbeOutput, primaryIpv4,
   readLinuxLauncherFirewall,
 } from "./mxc-linux-raw-ip.js";
 import filterPins from "./mxc-linux-seccomp-pins.json" with { type: "json" };
@@ -373,8 +373,13 @@ interface LinuxCanaryTestOverrides {
   readonly prober?: string;
   /** Replaces the host's primary IPv4 the host-side targets bind. */
   readonly hostAddress?: string;
-  /** Runs while the container runs, with the TCP arrival listener's address, to force an arrival. */
-  readonly duringRun?: (arrival: { readonly address: string; readonly port: number }) => Promise<void>;
+  /**
+   * Runs while the container runs, with the TCP arrival listener's address, the launcher's pid and the container's
+   * working folder, to force an arrival or to open the container's firewall.
+   */
+  readonly duringRun?: (arrival: {
+    readonly address: string; readonly port: number; readonly launcherPid: number | undefined; readonly working: string;
+  }) => Promise<void>;
 }
 
 async function runLinuxCanary(
@@ -413,7 +418,8 @@ async function runLinuxCanary(
       unix.once("error", reject);
       unix.listen(posix.join(working, "u"), resolve);
     });
-    targets = await openLinuxRawIpHostTargets(overrides.hostAddress ?? primaryIpv4(), nonce);
+    const hostAddress = overrides.hostAddress ?? primaryIpv4();
+    targets = await openLinuxRawIpHostTargets(hostAddress, nonce);
     const udp = targets?.udp;
     // Measured, not assumed: the arrival listener must take an unconfined connect before the container runs.
     const arrivalControl = targets === undefined ? false : await targets.tcp.control();
@@ -471,7 +477,7 @@ async function runLinuxCanary(
       const firewall = pid === undefined ? Promise.resolve(false) : readLinuxLauncherFirewall(pid, proxyPort,
         () => stat(posix.join(working, "control")).then(() => true, () => false), () => ended);
       const forced = targets === undefined || overrides.duringRun === undefined ? undefined
-        : overrides.duringRun({ address: targets.address, port: targets.tcp.port });
+        : overrides.duringRun({ address: targets.address, port: targets.tcp.port, launcherPid: pid, working });
       const [{ stdout }, firewallDrops] = await Promise.all([
         execution, firewall, pid === undefined ? undefined : held.recordLauncher(pid), forced, settled,
       ]);
@@ -486,7 +492,7 @@ async function runLinuxCanary(
       const udpArrived = udp !== undefined && udpSend === "sent" ? await udp.settle() : udp?.arrived === true;
       const udpArrival = linuxRawIpUdpArrival(udpSend, udp !== undefined, udpArrived);
       const rawIpProbe = linuxRawIpVerdict({
-        ran: true, ...(output === undefined ? {} : { output }), expectedStatus: INVOCATION_PROXY_REFUSED_STATUS,
+        ran: true, backend: "slirp", hostInBackendNetwork: linuxRawIpHostInBackendNetwork(hostAddress), ...(output === undefined ? {} : { output }), expectedStatus: INVOCATION_PROXY_REFUSED_STATUS,
         nonceRecorded, tlRan: targets !== undefined, udpArrival, firewallDrops,
         ...(targets === undefined ? {} : { arrival: { controlPassed: arrivalControl, arrived: targets.tcp.arrived } }),
       });

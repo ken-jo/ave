@@ -28,10 +28,20 @@ export interface RawIpTargetResult {
   readonly kind?: InconclusiveKind;
 }
 
+/**
+ * The network a Linux canary's container had. `slirp`: the shell route, the launcher's slirp4netns backend with its
+ * firewall. Each backend counts as a local refusal only the TCP result a canary has observed on it.
+ */
+export type LinuxRawIpBackend = "slirp";
+
 // Linux column of the rules. The prober is plain bash, which reports a failed connect by its C-locale message, not
-// its number. EPERM/EACCES are a local policy refusal; a connect, or ECONNREFUSED, means the packet reached a peer.
+// its number. A connect, or ECONNREFUSED, means the packet reached a peer.
 const LINUX_RESULTS = {
-  refusedLocal: new Set(["Operation not permitted", "Permission denied"]),
+  // No canary has observed a TCP policy refusal (EPERM, EACCES) through slirp4netns: the launcher's firewall drops the
+  // packet, which is judged by arrival. So no TCP result counts as refused locally there.
+  tcpRefusedLocal: { slirp: new Set<string>() } satisfies Record<LinuxRawIpBackend, ReadonlySet<string>>,
+  // A datagram's send is refused locally by EPERM or EACCES: the firewall's OUTPUT drop, as the canary measures.
+  udpRefusedLocal: new Set(["Operation not permitted", "Permission denied"]),
   allowed: new Set(["0", "Connection refused"]),
   noRoute: new Set([
     "Network is unreachable", "No route to host", "Cannot assign requested address", "Address family not supported by protocol",
@@ -39,10 +49,14 @@ const LINUX_RESULTS = {
   timeout: new Set(["Connection timed out", "deadline"]),
 } as const;
 
-/** One printed result (`0`, `deadline`, or the C-locale error message), as the rules classify it on Linux. */
-export function classifyLinuxRawIpTarget(result: string | undefined): RawIpTargetResult {
+/**
+ * One printed result (`0`, `deadline`, or the C-locale error message), as the rules classify it on Linux. `refusedLocal`
+ * is the set of results that count as a local policy refusal for this target: none unless the caller names a backend.
+ */
+export function classifyLinuxRawIpTarget(result: string | undefined, backend?: LinuxRawIpBackend, udp = false): RawIpTargetResult {
   if (result === undefined) return { class: "inconclusive", kind: "unclassified" };
-  if (LINUX_RESULTS.refusedLocal.has(result)) return { class: "refused-local" };
+  const refusedLocal = udp ? LINUX_RESULTS.udpRefusedLocal : backend === undefined ? undefined : LINUX_RESULTS.tcpRefusedLocal[backend];
+  if (refusedLocal?.has(result) === true) return { class: "refused-local" };
   if (LINUX_RESULTS.allowed.has(result)) return { class: "allowed" };
   if (LINUX_RESULTS.noRoute.has(result)) return { class: "inconclusive", kind: "no-route" };
   if (LINUX_RESULTS.timeout.has(result)) return { class: "inconclusive", kind: "timeout" };
@@ -79,6 +93,12 @@ export function parseLinuxRawIpProbeOutput(text: string): LinuxRawIpProbeOutput 
 export interface LinuxRawIpMeasurement {
   /** False when the probe did not run in a proven container (the shell canary did not pass). */
   readonly ran: boolean;
+  readonly backend: LinuxRawIpBackend;
+  /**
+   * The host's primary IPv4, which the host-side targets bind, lies in the backend's own network: a datagram or connect
+   * to it stays inside that network, so nothing arriving proves nothing.
+   */
+  readonly hostInBackendNetwork: boolean;
   readonly output?: LinuxRawIpProbeOutput;
   /** The refusal status the invocation listener answers with, from the listener module. */
   readonly expectedStatus: number;
@@ -103,7 +123,7 @@ export interface LinuxRawIpMeasurement {
  */
 export function linuxRawIpUdpSend(printed: string | undefined): MxcRawIpUdpSend {
   if (printed === "0") return "sent";
-  return classifyLinuxRawIpTarget(printed).class === "refused-local" ? "refused-local" : "unmeasured";
+  return classifyLinuxRawIpTarget(printed, undefined, true).class === "refused-local" ? "refused-local" : "unmeasured";
 }
 
 /**
@@ -126,10 +146,11 @@ export function linuxRawIpVerdict(measurement: LinuxRawIpMeasurement): LinuxRawI
   if (control === undefined && Object.keys(output.targets).length === 0) return unknown("no-evidence");
   if (control === undefined || control.status !== String(measurement.expectedStatus) || control.refusal === "none"
     || control.refusal === "" || !measurement.nonceRecorded) return unknown("control-failed");
-  const t4 = classifyLinuxRawIpTarget(output.targets.T4);
-  const t6 = classifyLinuxRawIpTarget(output.targets.T6);
-  const tl = measurement.tlRan ? classifyLinuxRawIpTarget(output.targets.TL) : undefined;
-  const ta = measurement.arrival === undefined ? undefined : classifyLinuxRawIpTarget(output.targets.TA);
+  const classify = (result: string | undefined) => classifyLinuxRawIpTarget(result, measurement.backend);
+  const t4 = classify(output.targets.T4);
+  const t6 = classify(output.targets.T6);
+  const tl = measurement.tlRan ? classify(output.targets.TL) : undefined;
+  const ta = measurement.arrival === undefined ? undefined : classify(output.targets.TA);
   // Rule 2: anything that reached a peer, by TCP, by the TCP arrival listener or by the UDP arrival check.
   // The arrival listener is `ta`: the container reached it whether the connect reported success or the listener saw it.
   reachableTargets.push(...([["t4", t4], ["t6", t6], ["tl", tl], ["ta", ta]] as const)
@@ -139,6 +160,10 @@ export function linuxRawIpVerdict(measurement: LinuxRawIpMeasurement): LinuxRawI
   if (reachableTargets.length > 0) {
     log.warn(`raw-ip-reachable (${reachableTargets.join(", ")})`);
     return unknown("raw-ip-reachable");
+  }
+  if (measurement.hostInBackendNetwork) {
+    log.info("raw-ip arrival unprovable: the host address lies in the backend's own network");
+    return unknown("arrival-unprovable");
   }
   // Owner ruling: with no IPv6 route, a network namespace holding nothing but `lo` is structural evidence for T6.
   const interfaces = output.interfaces;
@@ -182,6 +207,26 @@ export function primaryIpv4(): string | undefined {
     for (const entry of entries ?? []) if (entry.family === "IPv4" && !entry.internal) return entry.address;
   }
   return undefined;
+}
+
+/** slirp4netns' own network: its gateway, DNS and the container's address. */
+const SLIRP_NETWORK_PREFIX = "10.0.2.";
+
+/** Whether a host address lies in the slirp4netns network, where it would not be delivered to the host's listener. */
+export function linuxRawIpHostInBackendNetwork(address: string | undefined): boolean {
+  return address?.startsWith(SLIRP_NETWORK_PREFIX) === true && /^10\.0\.2\.\d{1,3}$/u.test(address);
+}
+
+/** One connection the host-side TCP arrival listener accepted. */
+export interface LinuxRawIpTcpAccept { readonly address: string | undefined; readonly port: number | undefined }
+
+/**
+ * Whether anything but the control reached the listener. Accepts are counted: exactly one, the control's, is clean;
+ * any more is an arrival, even one from the control's own source port.
+ */
+export function linuxRawIpTcpArrived(accepts: readonly LinuxRawIpTcpAccept[], control: LinuxRawIpTcpAccept | undefined): boolean {
+  const controlTaken = control !== undefined && accepts.some((accept) => accept.address === control.address && accept.port === control.port);
+  return accepts.length > (controlTaken ? 1 : 0);
 }
 
 /** A port that was free on `address` a moment ago: bound ephemerally, then closed just before the run. */
@@ -230,10 +275,10 @@ async function openUdpArrival(address: string, nonce: string) {
 /**
  * A host-side TCP listener for the arrival evidence. `control()` proves it reachable by an unconfined connect from this
  * process; every other connection it accepts, with or without a payload, is an arrival. The container's address is
- * not told apart by its source, since the backend translates it; only the control's own source port is excluded.
+ * not told apart by its source, since the backend translates it; accepts are counted instead.
  */
 async function openTcpArrival(address: string) {
-  const accepts: { readonly address: string | undefined; readonly port: number | undefined }[] = [];
+  const accepts: LinuxRawIpTcpAccept[] = [];
   let control: { readonly address: string; readonly port: number } | undefined;
   let notify: (() => void) | undefined;
   const isControl = (accept: (typeof accepts)[number]) => control !== undefined && accept.address === control.address
@@ -254,7 +299,7 @@ async function openTcpArrival(address: string) {
   return {
     port,
     /** Whether any connection but the control's reached the listener; one before the control is an arrival too. */
-    get arrived() { return accepts.some((accept) => !isControl(accept)); },
+    get arrived() { return linuxRawIpTcpArrived(accepts, control); },
     /** Connects from this unconfined process and waits, up to the per-target deadline, for the listener to take it. */
     async control(): Promise<boolean> {
       await new Promise<void>((resolve) => {

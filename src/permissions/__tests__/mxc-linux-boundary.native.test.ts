@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createSocket, type Socket as UdpSocket } from "node:dgram";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { connect, createServer, type Server } from "node:net";
@@ -29,6 +29,24 @@ import { __resetActiveSandboxCapabilityForTest, __resetContainerShellSubstrateFo
 import { quoteSandboxWrappedWord as quote } from "../sandbox-wrapped-command.js";
 
 const NATIVE = process.env.AVE_RUN_MXC_LINUX_BOUNDARY === "1";
+
+/** `python3 -c` program: enter pid's user and network namespaces and exec argv[2:] with CAP_NET_ADMIN ambient. */
+const AMBIENT_NET_ADMIN_EXEC = `import ctypes, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+pid = sys.argv[1]
+for kind, flag in (("user", 0x10000000), ("net", 0x40000000)):
+    fd = os.open(f"/proc/{pid}/ns/{kind}", os.O_RDONLY)
+    if libc.setns(fd, flag) != 0: raise OSError(ctypes.get_errno(), f"setns {kind}")
+    os.close(fd)
+class Header(ctypes.Structure): _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
+class Data(ctypes.Structure): _fields_ = [("effective", ctypes.c_uint32), ("permitted", ctypes.c_uint32), ("inheritable", ctypes.c_uint32)]
+header, data = Header(0x20080522, 0), (Data * 2)()
+if libc.capget(ctypes.byref(header), data) != 0: raise OSError(ctypes.get_errno(), "capget")
+data[0].inheritable |= 1 << 12
+if libc.capset(ctypes.byref(header), data) != 0: raise OSError(ctypes.get_errno(), "capset")
+if libc.prctl(47, 2, 12, 0, 0) != 0: raise OSError(ctypes.get_errno(), "ambient")
+os.execvp(sys.argv[2], sys.argv[2:])
+`;
 
 describe.runIf(NATIVE)("native Linux shell container boundary", () => {
   let root: string;
@@ -301,6 +319,40 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     expect(await runCanary(requireMxcContainerStartRoot(), programs)).toMatchObject({
       state: "available", rawIpProbe: { rawIp: "blocked", evidenceKind: "arrival", reachableTargets: [], udpArrival: "absent" },
     });
+  });
+
+  it("delivers the container's own connect to the arrival listener through the backend when its firewall is open", async () => {
+    const programs = await requireMxcLinuxShellPrograms(resources);
+    // The control for the arrival evidence above: the same canary with the launcher's egress firewall opened from the
+    // container's own user namespace, which this account owns, so no root is needed. What the container then sends
+    // must reach the host-side listeners, so "nothing arrived" above is a measurement of the drop, not of the path.
+    const ownNet = readlinkSync("/proc/self/ns/net");
+    const descendants = (pid: number): number[] => {
+      const children = readdirSync(`/proc/${pid}/task`).flatMap(task =>
+        readFileSync(`/proc/${pid}/task/${task}/children`, "utf8").trim().split(/\s+/u).filter(Boolean).map(Number));
+      return [...children, ...children.flatMap(descendants)];
+    };
+    const prober = `for i in $(seq 100); do [ -e firewall-open ] && break; sleep 0.05; done\n${LINUX_RAW_IP_PROBER}`;
+    const duringRun = async ({ launcherPid, working }: { readonly launcherPid: number | undefined; readonly working: string }) => {
+      if (launcherPid === undefined) throw new Error("no launcher pid");
+      let inside: number | undefined;
+      await vi.waitFor(() => {
+        inside = descendants(launcherPid).find(pid => {
+          try { return readlinkSync(`/proc/${pid}/ns/net`) !== ownNet && !readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("slirp4netns"); } catch { return false; }
+        });
+        expect(inside).toBeDefined();
+        expect(existsSync(join(working, "control"))).toBe(true);
+      }, { timeout: 5_000 });
+      // nsenter here has no --keep-caps: join the user and network namespaces, then carry CAP_NET_ADMIN across exec
+      // as an ambient capability, as the launcher's own supervisor holds it.
+      for (const table of ["iptables", "ip6tables"]) {
+        execFileSync("python3", ["-I", "-c", AMBIENT_NET_ADMIN_EXEC, String(inside), table, "-I", "MXC_EGRESS", "1", "-j", "ACCEPT"]);
+      }
+      writeFileSync(join(working, "firewall-open"), "");
+    };
+    const result = await runCanary(requireMxcContainerStartRoot(), programs, undefined, { prober, duringRun });
+    expect(result).toMatchObject({ state: "available", rawIpProbe: { rawIp: "unknown", reason: "raw-ip-reachable" } });
+    expect(result.state === "available" ? result.rawIpProbe.reachableTargets : []).toEqual(expect.arrayContaining(["ta"]));
   });
 
   it("reports an arrival at the host-side TCP listener during the run as unknown, raw-ip-reachable", async () => {

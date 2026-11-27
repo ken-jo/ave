@@ -4597,6 +4597,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "permissionsTab.osSandboxMacContainerRawIpReasonNoEvidence": "시험이 실행되지 않았거나 결과를 보내지 않았습니다",
   "permissionsTab.osSandboxMacContainerRawIpReasonControlFailed": "프록시 점검을 통과하지 못했습니다",
   "permissionsTab.osSandboxMacContainerRawIpReasonUdpUnmeasured": "UDP 시험을 측정하지 못했습니다",
+  "permissionsTab.osSandboxLinuxContainerRawIpReasonArrivalUnprovable": "이 컴퓨터의 주소가 컨테이너 네트워크 자체 대역 안에 있어 그 주소로의 도착 여부로는 아무것도 증명되지 않음",
   "permissionsTab.osSandboxMacContainerUnavailable": "macOS 샌드박스 컨테이너에서 셸 명령을 실행할 수 없습니다. {reason} 셸 명령은 실행 전에 승인을 요청합니다.",
   "permissionsTab.osSandboxMacContainerReasonUnsupportedArch": "샌드박스 컨테이너를 사용하려면 Apple Silicon Mac이 필요합니다.",
   "permissionsTab.osSandboxMacContainerReasonBinaryMissing": "샌드박스 라이브러리가 없습니다. Ave를 다시 설치하세요.",

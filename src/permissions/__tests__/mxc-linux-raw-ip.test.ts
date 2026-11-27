@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import { acceptMeasuredContainerEgress, containerEgressProtocolCoverage, posixContainerMeasuredEgress, type LinuxRawIpVerdict, type MxcRawIpUdpArrival } from "../../shared/sandbox-capability-info.js";
 import { INVOCATION_PROXY_REFUSED_STATUS } from "../egress-invocation-listener.js";
 import {
-  classifyLinuxRawIpTarget, type LinuxRawIpMeasurement, linuxFirewallPayloadDrops, linuxRawIpProberArguments, linuxRawIpUdpArrival, linuxRawIpUdpSend, linuxRawIpVerdict,
+  classifyLinuxRawIpTarget, type LinuxRawIpMeasurement, linuxFirewallPayloadDrops, linuxRawIpHostInBackendNetwork, linuxRawIpProberArguments, linuxRawIpTcpArrived,
+  linuxRawIpUdpArrival, linuxRawIpUdpSend, linuxRawIpVerdict,
   openLinuxRawIpHostTargets, parseLinuxRawIpProbeOutput,
 } from "../mxc-linux-raw-ip.js";
 
@@ -31,8 +32,8 @@ const ARRIVAL_HELD = { arrival: { controlPassed: true, arrived: false }, firewal
 
 function measured(lines: readonly string[], overrides: Partial<LinuxRawIpMeasurement> = {}): LinuxRawIpMeasurement {
   return {
-    ran: true, output: parseLinuxRawIpProbeOutput(lines.join("\n")), expectedStatus: INVOCATION_PROXY_REFUSED_STATUS,
-    nonceRecorded: true, tlRan: true, udpArrival: "absent", firewallDrops: false, ...overrides,
+    ran: true, backend: "slirp", output: parseLinuxRawIpProbeOutput(lines.join("\n")), expectedStatus: INVOCATION_PROXY_REFUSED_STATUS,
+    nonceRecorded: true, tlRan: true, udpArrival: "absent", firewallDrops: false, hostInBackendNetwork: false, ...overrides,
   };
 }
 
@@ -49,8 +50,9 @@ function unknown(
 
 describe("Linux raw-IP verdict rules", () => {
   it("classifies bash's C-locale connect results by the Linux column of the rules", () => {
-    expect(classifyLinuxRawIpTarget(REFUSED)).toEqual({ class: "refused-local" });
-    expect(classifyLinuxRawIpTarget("Permission denied")).toEqual({ class: "refused-local" });
+    // No canary has observed a TCP policy refusal on the slirp shell route: there a drop is judged by arrival.
+    expect(classifyLinuxRawIpTarget(REFUSED, "slirp")).toEqual({ class: "inconclusive", kind: "unclassified" });
+    expect(classifyLinuxRawIpTarget("Permission denied", "slirp")).toEqual({ class: "inconclusive", kind: "unclassified" });
     expect(classifyLinuxRawIpTarget("0")).toEqual({ class: "allowed" });
     expect(classifyLinuxRawIpTarget("Connection refused")).toEqual({ class: "allowed" });
     expect(classifyLinuxRawIpTarget("Network is unreachable")).toEqual({ class: "inconclusive", kind: "no-route" });
@@ -66,16 +68,24 @@ describe("Linux raw-IP verdict rules", () => {
         interfaces: ["lo", "tap0"] });
   });
 
-  it("is blocked only when both documentation targets were refused locally and the control passed", () => {
-    expect(linuxRawIpVerdict(measured([CONTROL, `T4 ${REFUSED}`, `T6 ${REFUSED}`, "TL deadline", `UA ${REFUSED}`, "IF lo,tap0"])))
-      .toEqual(blocked("measured"));
+  it("never publishes blocked on the slirp shape from TCP policy refusals alone", () => {
+    for (const interfaces of ["IF lo,tap0", "IF lo"]) {
+      for (const extra of [{}, ARRIVAL_HELD]) {
+        const verdict = linuxRawIpVerdict(measured([CONTROL, `T4 ${REFUSED}`, `T6 ${REFUSED}`, "TL deadline", "TA deadline", `UA ${REFUSED}`, interfaces], extra));
+        expect(verdict.rawIp, `${interfaces} ${JSON.stringify(extra)}`).toBe("unknown");
+      }
+    }
+    // Structure alone is no evidence either.
+    expect(linuxRawIpVerdict(measured([CONTROL, `T4 ${REFUSED}`, "T6 Network is unreachable", `TL ${REFUSED}`, "IF lo"])).rawIp).toBe("unknown");
   });
 
-  it("counts a loopback-only network namespace as structural IPv6 evidence, and nothing else", () => {
-    const lines = (interfaces: string) => [CONTROL, `T4 ${REFUSED}`, "T6 Network is unreachable", `TL ${REFUSED}`, `IF ${interfaces}`];
-    expect(linuxRawIpVerdict(measured(lines("lo")))).toEqual(blocked("structural"));
-    expect(linuxRawIpVerdict(measured(lines("lo,tap0")))).toEqual(unknown("ipv6-unmeasured"));
-    expect(linuxRawIpVerdict(measured(lines("")))).toEqual(unknown("ipv6-unmeasured"));
+  it("publishes no arrival evidence when the host's address lies in the backend's own network", () => {
+    expect(linuxRawIpVerdict(measured(DROPPED, { ...ARRIVAL_HELD, hostInBackendNetwork: true }))).toEqual(unknown("arrival-unprovable"));
+    expect(linuxRawIpHostInBackendNetwork("10.0.2.15")).toBe(true);
+    expect(linuxRawIpHostInBackendNetwork("10.0.2.0")).toBe(true);
+    expect(linuxRawIpHostInBackendNetwork("10.0.3.15")).toBe(false);
+    expect(linuxRawIpHostInBackendNetwork("192.168.1.10")).toBe(false);
+    expect(linuxRawIpHostInBackendNetwork(undefined)).toBe(false);
   });
 
   it("counts a dropping firewall as blocked only by arrival evidence: control taken, nothing arrived, structure read", () => {
@@ -95,11 +105,9 @@ describe("Linux raw-IP verdict rules", () => {
     // An unclassified connect result is not a drop.
     expect(linuxRawIpVerdict(measured(DROPPED.map((line) => line === "T4 deadline" ? "T4 Bad file descriptor" : line), ARRIVAL_HELD))
       .rawIp).toBe("unknown");
-    // Locally refused targets keep their own evidence kind; arrival names only what it decided.
-    expect(linuxRawIpVerdict(measured([CONTROL, `T4 ${REFUSED}`, "T6 deadline", "TL deadline", "TA deadline", "IF lo,tap0"], ARRIVAL_HELD)))
-      .toEqual(blocked("arrival"));
-    expect(linuxRawIpVerdict(measured([CONTROL, `T4 ${REFUSED}`, `T6 ${REFUSED}`, "TL deadline", "TA deadline", "IF lo,tap0"], ARRIVAL_HELD)))
-      .toEqual(blocked("measured"));
+    // A TCP policy refusal is no drop on this shape, so it leaves the verdict unknown even with arrival evidence.
+    expect(linuxRawIpVerdict(measured([CONTROL, `T4 ${REFUSED}`, "T6 deadline", "TL deadline", "TA deadline", "IF lo,tap0"], ARRIVAL_HELD)).rawIp)
+      .toBe("unknown");
     // Arrival evidence never replaces the proxy control or TL.
     expect(linuxRawIpVerdict(measured(DROPPED, { ...ARRIVAL_HELD, nonceRecorded: false }))).toEqual(unknown("control-failed"));
     expect(linuxRawIpVerdict(measured(DROPPED, { ...ARRIVAL_HELD, tlRan: false }))).toEqual(unknown("no-evidence"));
@@ -145,13 +153,11 @@ describe("Linux raw-IP verdict rules", () => {
     expect(linuxRawIpVerdict(measured([...refused, "TL deadline", "UA 0", "IF lo"], { udpArrival: "arrived" })))
       .toEqual(unknown("raw-ip-reachable", ["udp"], "arrived"));
     // A datagram that left the container but never arrived leaves the TCP verdict standing.
-    expect(linuxRawIpVerdict(measured([...refused, "TL deadline", "UA 0", "IF lo"]))).toEqual(blocked("measured"));
+    expect(linuxRawIpVerdict(measured(DROPPED.map((line) => line.startsWith("UA ") ? "UA 0" : line), ARRIVAL_HELD))).toEqual(blocked("arrival"));
   });
 
   it("never publishes blocked while the UDP datagram is unmeasured, as on macOS", () => {
     const unmeasured = { udpArrival: "unmeasured" } as const;
-    expect(linuxRawIpVerdict(measured([CONTROL, `T4 ${REFUSED}`, `T6 ${REFUSED}`, "TL deadline", "IF lo"], unmeasured)))
-      .toEqual(unknown("udp-unmeasured", [], "unmeasured"));
     expect(linuxRawIpVerdict(measured(DROPPED, { ...ARRIVAL_HELD, ...unmeasured })))
       .toEqual(unknown("udp-unmeasured", [], "unmeasured"));
     // Without the TCP evidence the TCP reason still names what failed first.
@@ -229,6 +235,15 @@ describe("Linux raw-IP verdict rules", () => {
     } finally {
       await targets.close();
     }
+  });
+
+  it("counts accepts: only the control's single connection is clean, a second from its source port is an arrival", () => {
+    const control = { address: "10.0.0.5", port: 40000 };
+    expect(linuxRawIpTcpArrived([], undefined)).toBe(false);
+    expect(linuxRawIpTcpArrived([control], control)).toBe(false);
+    expect(linuxRawIpTcpArrived([control, control], control)).toBe(true);
+    expect(linuxRawIpTcpArrived([{ address: "10.0.0.6", port: 1 }], control)).toBe(true);
+    expect(linuxRawIpTcpArrived([control], undefined)).toBe(true);
   });
 
   it("hands the prober the arrival port after the UDP port", () => {
