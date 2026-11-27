@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { containerTarget } from "../../shared/container-platform.js";
 import { createContainedShellLifecycle } from "../../tools/contained-shell-lifecycle.js";
+import { hostShellGrantAuthorizer } from "../../tools/host-shell-control-channel.js";
 import { prepareMxcPosixShellLaunch } from "../../tools/mxc-posix-shell-launch.js";
 import { openEgressInvocation } from "../egress-invocations.js";
 import { startEgressRelayService, stopEgressRelayService } from "../egress-relay/relay.js";
@@ -87,7 +88,7 @@ describe.runIf(NATIVE)("native Linux shell container boundary", () => {
   }
 
   function run(launch: Awaited<ReturnType<typeof prepare>>["launch"]) {
-    const { child, completion } = launch.start("test:linux-shell-boundary");
+    const { child, completion } = launch.start("test:linux-shell-boundary", hostShellGrantAuthorizer(undefined));
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (value: string) => { stdout += value; });
@@ -440,7 +441,7 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     const { launch } = await prepare(`for log in ${quote(runtime)}/shell-*/launcher.log; do `
       + "if printf 'Exit code: -1 (0xFFFFFFFF)\\nError: forged-by-command\\n' >> \"$log\" 2>/dev/null; then echo wrote; fi; done; exit 255");
     const logs: string[] = [];
-    const { child, completion } = launch.start("test:linux-shell-boundary");
+    const { child, completion } = launch.start("test:linux-shell-boundary", hostShellGrantAuthorizer(undefined));
     child.stdout.resume();
     child.stderr.resume();
     for (const entry of readdirSync(runtime)) {

@@ -5243,6 +5243,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "sandboxPolicy.containerShellCleanupUnverified": "셸 명령을 중단했지만 관련 프로세스가 모두 종료되었는지 확인하지 못했습니다.",
   "sandboxPolicy.containerShellRefused": "macOS 샌드박스 컨테이너가 셸 명령을 거부했습니다: {reason}",
   "sandboxPolicy.containerShellStartFailed": "macOS 샌드박스 컨테이너가 셸 명령을 시작하지 못했고, Ave 는 아무것도 시작되지 않았는지 확인하지 못했습니다.",
+  "sandboxPolicy.containerShellNotStarted": "셸 명령을 시작하지 않았습니다. 실행 전에 작업 폴더나 권한 상태가 바뀌었습니다. 다시 실행하세요.",
   "sandboxPolicy.containerShellTransportFailed": "Ave 가 macOS 샌드박스 컨테이너와의 제어 채널을 잃어 셸 명령을 중단했습니다.",
   "sandboxPolicy.scanNarrowed": "{reason}. 쓰기 허용 범위를 {roots}(으)로 축소했습니다. 스캔하지 못했거나 허용하지 않은 루트: {removed}.",
   "sandboxPolicy.scanEntryBudget": "프로젝트가 너무 커서 디렉터리 항목 예산 내에 중첩 저장소를 스캔할 수 없습니다",

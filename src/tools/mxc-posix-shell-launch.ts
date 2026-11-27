@@ -13,7 +13,8 @@ import { buildBubblewrapShellRequest, projectLinuxSavedSessionDenies, requireMxc
 import { holdMxcLinuxPlaceholders } from "../permissions/mxc-linux-placeholders.js";
 import { atOrUnder, posixPolicyLookups, rankPosixContainerRows, type PosixFilesystemGrants } from "../permissions/mxc-posix.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
-import { stageMxcShellRequest, startMxcShellSupervisor } from "../permissions/mxc-shell-supervisor-client.js";
+import { MxcCwdChangedError, stageMxcShellRequest, startMxcShellSupervisor, writeMxcShellRequest, type MxcShellRunAuthorizer } from "../permissions/mxc-shell-supervisor-client.js";
+import { captureShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { policyFloorRow } from "../permissions/policy-model.js";
 import { detectMxcShellCapability } from "../permissions/sandbox-capability.js";
 import { prepareSandboxBareRepositoryCleanup } from "../permissions/sandbox-bare-repository-cleanup.js";
@@ -30,6 +31,8 @@ interface PreparePosixShellInput extends Pick<PrepareMxcShellLaunchInput, "egres
   readonly allowWrite: readonly string[];
   readonly denyRead: readonly string[];
   readonly floorPierces: readonly string[];
+  /** An identity already bound to this cwd, such as the approved directory of a permit; the staged one must equal it. */
+  readonly cwdIdentity?: ShellWorkingDirectoryIdentity;
 }
 
 function pathFoldsCase(path: string): boolean {
@@ -59,6 +62,10 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
   });
   const { assertAdmission } = egress;
   assertAdmission();
+  // The directory the grants are ranked for: staging, the supervisor and the workload each compare it again.
+  // macOS only: the Linux route keeps its own launch checks.
+  const cwdIdentity = linux ? undefined : input.cwdIdentity ?? captureShellWorkingDirectoryIdentity(input.cwd);
+  if (!linux && cwdIdentity === undefined) throw new MxcCwdChangedError();
   const hostHome = getPolicyHome();
   const inRuntime = protectedReadDenyMatcher([runtimeRoot]);
   if (inRuntime(input.cwd) !== undefined) throw new Error("Container shell working directory is inside the sandbox runtime root");
@@ -114,7 +121,9 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
     : { ...buildSeatbeltShellRequest({ ...input, model, lookups: { ...lookups, foldsCase }, proxyUrl: listener.url }), environment: undefined };
   const staging = await mkdtemp(join(runtimeRoot, "shell-"));
   lifecycle.defer(() => rm(staging, { recursive: true }));
-  const staged = await stageMxcShellRequest(join(staging, "request.json"), request);
+  // macOS stages the cwd identity its supervisor and workload compare again; Linux stages the request alone, as before.
+  const shellStart = cwdIdentity === undefined ? undefined : await stageMxcShellRequest(join(staging, "request.json"), request, cwdIdentity);
+  const staged = shellStart ?? await writeMxcShellRequest(join(staging, "request.json"), request);
   // Linux only: the shell's environment, beside the request under the runtime root, handed over on a descriptor.
   const environmentPath = join(staging, "environment.sh");
   const stagedEnvironment = environment === undefined ? undefined : await (async () => {
@@ -131,7 +140,10 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
     carvedReadLimitedAt: grants.carvedReadLimitedAt,
     proxyPort: listener.port,
     narrowedWriteRoots: mandatory.narrowedWriteRoots,
-    start(label: string) {
+    /** macOS spends a host permit at the workload's grant (`authorize`); Linux has no grant, so its caller spends it before start. */
+    spendsPermitAtGrant: !linux,
+    /** `authorize` is the caller's final check before user code runs; this route's own admission is checked inside it. */
+    start(label: string, authorize: MxcShellRunAuthorizer) {
       if (egress.active) throw new Error("Container shell launch already started");
       assertAdmission();
       egress.activate();
@@ -165,7 +177,13 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
         lifecycle.jobStarted(completion);
         return { child: launch.child, completion };
       }
-      const launch = startMxcShellSupervisor(staged, input.timeoutMs, lifecycle.signal, revoke, label);
+      if (shellStart === undefined) throw new Error("macOS container shell request has no staged cwd identity");
+      // A failed admission throws out of the final check, which withholds the grant.
+      const launch = startMxcShellSupervisor(shellStart, input.timeoutMs, lifecycle.signal, revoke, label, undefined,
+        (grant) => authorize(() => {
+          assertAdmission();
+          return grant();
+        }));
       lifecycle.jobStarted(launch.completion);
       return launch;
     },

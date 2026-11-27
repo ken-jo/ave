@@ -23,6 +23,13 @@ import { quoteSandboxWrappedWord } from "./sandbox-wrapped-command.js";
 
 const PROXY_ENV_KEYS = new Set(["http_proxy", "https_proxy", "all_proxy", "no_proxy", "ftp_proxy"]);
 
+/**
+ * The only environment names a container shell is given. The SDK starts every command under /bin/sh, and macOS's
+ * /bin/sh (bash 3.2) imports a function from any `BASH_FUNC_<name>%%` entry, which would stand in for the cwd
+ * prelude's own builtins (`read`, `pwd`, `[`). The host builds this request and the supervisor checks it again.
+ */
+export const SEATBELT_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+
 class SeatbeltShellRequestError extends Error {
   constructor(readonly code: "cwd-ungranted" | "proxy-invalid" | "env-invalid", message: string) {
     super(message);
@@ -53,8 +60,10 @@ export function buildSeatbeltShellRequest(input: {
     throw new SeatbeltShellRequestError("cwd-ungranted", `Container shell working directory is outside its filesystem grants: ${cwd}`);
   }
   const profileOverride = buildSeatbeltShellProfile({ model, grants, lookups, unixSocketRoots: [], proxyPort });
-  const env = Object.entries(input.env).flatMap(([key, value]) =>
-    key && !key.includes("=") && !PROXY_ENV_KEYS.has(key.toLowerCase()) ? [`${key}=${value}`] : []);
+  const env = Object.entries(input.env).flatMap(([key, value]) => {
+    if (!SEATBELT_ENV_NAME.test(key)) throw new SeatbeltShellRequestError("env-invalid", "Container environment name is not a plain identifier");
+    return PROXY_ENV_KEYS.has(key.toLowerCase()) ? [] : [`${key}=${value}`];
+  });
   return {
     grants,
     request: {

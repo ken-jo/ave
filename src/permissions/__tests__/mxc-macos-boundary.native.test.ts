@@ -19,6 +19,8 @@ import { quoteSandboxWrappedWord as quote } from "../sandbox-wrapped-command.js"
 import { t } from "../../i18n/index.js";
 import { reserveTailnetListenerPort } from "../../shared/tailnet-listener-port.js";
 import { BashTool } from "../../tools/shell-tools.js";
+import { hostShellGrantAuthorizer } from "../../tools/host-shell-control-channel.js";
+import { resolveTrustedPowerShellExecutable } from "../../shared/powershell-executable.js";
 import { liveEgressInvocationCount, openEgressInvocation } from "../egress-invocations.js";
 import { startEgressRelayService, stopEgressRelayService, type EgressRelayServiceOptions } from "../egress-relay/relay.js";
 import { currentMxcRuntimeHost, establishMxcRuntimeRoot, _forgetMxcRuntimeRootForTest } from "../mxc-runtime-root.js";
@@ -112,6 +114,12 @@ function reapRecorded(pids: Readonly<Record<string, number>>): void {
   }
 }
 
+/** The cwd identity a hand-built start frame carries, as staging records it. */
+function cwdIdentityOf(path: string) {
+  const stats = statSync(path, { bigint: true });
+  return { realpath: path, dev: String(stats.dev), ino: String(stats.ino) };
+}
+
 async function collectShell(launch: ReturnType<typeof startMxcShellSupervisor>) {
   let stdout = "";
   let stderr = "";
@@ -132,15 +140,72 @@ describe.runIf(NATIVE)("native macOS shell boundary", () => {
 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-  async function launch(commandLine: string, timeoutMs: number, model: PolicyModel, cwd = work) {
+  async function launch(commandLine: string, timeoutMs: number, model: PolicyModel, cwd = work, location = supervisor.location,
+    authorize?: (grant: () => boolean) => Promise<boolean>) {
     const { request } = buildSeatbeltShellRequest({
       model, cwd, commandLine, timeoutMs, lookups: posixPolicyLookups(root, true),
       env: { HOME: root, PATH: "/usr/bin:/bin" }, proxyUrl: "http://127.0.0.1:1",
     });
     const staged = await stageMxcShellRequest(join(root, "request.json"), request);
     return collectShell(startMxcShellSupervisor(staged, timeoutMs, undefined, () => {},
-      "test:boundary-shell", supervisor.location));
+      "test:boundary-shell", location, authorize));
   }
+
+  const POWERSHELL = resolveTrustedPowerShellExecutable()?.executable;
+  const cwdSwapModel = () => buildPolicyModel({
+    floors: [], userGrants: [], extensionManifests: [],
+    launchGrants: [
+      policyGrantRow(root, "ro", "launch-grant", true), policyGrantRow(work, "rw", "launch-grant", true),
+      ...(POWERSHELL === undefined ? [] : [policyGrantRow(dirname(realpathSync.native(POWERSHELL)), "ro", "launch-grant", true)]),
+    ],
+  });
+  const bashMarker = "exec /bin/bash -c 'echo ran > marker'";
+  const powerShellMarker = () => `exec ${quote(POWERSHELL ?? "")} -NoProfile -NonInteractive -Command 'Set-Content -LiteralPath marker -Value ran'`;
+
+  /** Replace the working directory after the supervisor's last check and before the child's, then run the marker. */
+  async function swapBeforeChild(commandLine: string, mode: "same-path" | "link" | "link-to-moved") {
+    const cwd = join(work, "cwd");
+    const elsewhere = join(work, "elsewhere");
+    mkdirSync(cwd);
+    mkdirSync(elsewhere);
+    // link-to-moved keeps the inode: the link reaches the original directory at its new path, so only the path differs.
+    writeFileSync(join(work, "swap-mode"), mode === "same-path" ? "same-path" : `link:${mode === "link" ? elsewhere : `${cwd}-moved`}`);
+    const result = await launch(commandLine, 20_000, cwdSwapModel(), cwd, supervisor.swapCwdLocation);
+    expect(existsSync(`${cwd}-moved`), "the swap ran").toBe(true);
+    for (const directory of [cwd, `${cwd}-moved`, elsewhere]) expect(existsSync(join(directory, "marker"))).toBe(false);
+    return result;
+  }
+
+  it.each(["same-path", "link", "link-to-moved"] as const)("refuses Bash before its marker runs when the cwd is replaced (%s) after the supervisor's check", async (mode) => {
+    const result = await swapBeforeChild(bashMarker, mode);
+    expect(result).toMatchObject({ rejected: true, cleanupUnverified: false, failure: { code: "cwd-changed" } });
+  });
+
+  it.skipIf(POWERSHELL === undefined).each(["same-path", "link", "link-to-moved"] as const)(
+    "refuses PowerShell before its marker runs when the cwd is replaced (%s) after the supervisor's check (skipped where no trusted pwsh is installed)",
+    async (mode) => {
+      const result = await swapBeforeChild(powerShellMarker(), mode);
+      expect(result).toMatchObject({ rejected: true, cleanupUnverified: false, failure: { code: "cwd-changed" } });
+    });
+
+  it("keeps the real workload blocked before user code when the host withholds its grant on a stable cwd", async () => {
+    const authorize = vi.fn((_grant: () => boolean) => Promise.resolve(false));
+    const result = await launch(bashMarker, 20_000, cwdSwapModel(), work, supervisor.location, authorize);
+    expect(authorize).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ rejected: true, grantWithheld: true, cleanupUnverified: false });
+    expect(existsSync(join(work, "marker"))).toBe(false);
+  });
+
+  it("keeps a stable cwd's own exit 197 an ordinary exit", async () => {
+    const result = await launch("exec /bin/bash -c 'echo ran > marker; exit 197'", 20_000, cwdSwapModel());
+    expect(result).toMatchObject({ code: 197, rejected: false, cleanupUnverified: false });
+    expect(result).not.toHaveProperty("failure");
+    expect(readFileSync(join(work, "marker"), "utf8")).toBe("ran\n");
+    if (POWERSHELL !== undefined) {
+      const pwsh = await launch(`exec ${quote(POWERSHELL)} -NoProfile -NonInteractive -Command 'exit 197'`, 20_000, cwdSwapModel());
+      expect(pwsh).toMatchObject({ code: 197, rejected: false, cleanupUnverified: false });
+    }
+  });
 
   it("carves around a denied sibling and refuses protected moves and new pattern matches", async () => {
     const vault = join(root, "vault");
@@ -380,7 +445,7 @@ describe.runIf(NATIVE)("native product shell launch", () => {
   }
 
   function run(launch: Awaited<ReturnType<typeof prepare>>) {
-    return collectShell(launch.start("test:native-posix-shell"));
+    return collectShell(launch.start("test:native-posix-shell", hostShellGrantAuthorizer(undefined)));
   }
 
   function latestLease() {
@@ -419,10 +484,11 @@ describe.runIf(NATIVE)("native product shell launch", () => {
     // where libsandbox overruns the default stack. Where it does not, they run exactly as the CLI did, so the
     // configured stack changes nothing there.
     const requestSha256 = createHash("sha256").update(readFileSync(requestPath)).digest("hex");
-    const unconfigured = await collectShell(startMxcShellSupervisor({ type: "shell-start", requestPath, requestSha256 },
+    const unconfigured = await collectShell(startMxcShellSupervisor({ type: "shell-start", requestPath, requestSha256, cwdIdentity: cwdIdentityOf(project) },
       LAUNCHER_START_TIMEOUT_MS, undefined, () => {}, "test:default-stack-shell", supervisor.defaultStackLocation));
+    // A shell that dies before exec never runs its cwd check, so its start is refused rather than reported as an exit.
     expect(unconfigured).toMatchObject(DEFAULT_STACK_OVERRUNS
-      ? { code: -1, stdout: "", cleanupUnverified: false }
+      ? { code: null, rejected: true, stdout: "", cleanupUnverified: false, failure: { code: "start-refused" } }
       : { code: baseline.status, stdout: baseline.stdout, stderr: baseline.stderr, cleanupUnverified: false });
 
     const supervised = await run(admitted);
@@ -606,7 +672,7 @@ describe.runIf(NATIVE)("native product shell launch", () => {
     };
     startEgressRelayService(relay);
     const other = await prepare("sleep 10");
-    const otherRun = other.start("test:second-proxy");
+    const otherRun = other.start("test:second-proxy", hostShellGrantAuthorizer(undefined));
     otherRun.child.stdout.resume();
     otherRun.child.stderr.resume();
     const nodeScript = join(project, "tls-client.cjs");
@@ -867,7 +933,7 @@ req.end();
 
   it("reports cleanup unverified when the supervisor is killed mid-run and signals nothing else", async () => {
     startEgressRelayService({ ask: async () => false });
-    const started = (await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 })).start("test:supervisor-killed");
+    const started = (await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 })).start("test:supervisor-killed", hostShellGrantAuthorizer(undefined));
     const pending = collectShell(started);
     const pids = await recordedPids(project, DETACH_KINDS);
     const signals = vi.spyOn(process, "kill");
@@ -886,7 +952,7 @@ req.end();
 
   it("reaps everything and exits cleanly when its owner pipe closes", async () => {
     startEgressRelayService({ ask: async () => false });
-    const started = (await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 })).start("test:owner-lost");
+    const started = (await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 })).start("test:owner-lost", hostShellGrantAuthorizer(undefined));
     const pending = collectShell(started);
     const pids = await recordedPids(project, DETACH_KINDS);
     try {
@@ -901,7 +967,7 @@ req.end();
 
   it("reaps everything and exits when the supervisor receives SIGTERM", async () => {
     startEgressRelayService({ ask: async () => false });
-    const started = (await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 })).start("test:supervisor-term");
+    const started = (await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 })).start("test:supervisor-term", hostShellGrantAuthorizer(undefined));
     const pending = collectShell(started);
     const pids = await recordedPids(project, DETACH_KINDS);
     try {
@@ -924,7 +990,7 @@ req.end();
     const malformed = join(mkdtempSync(join(root, "direct-")), "request.json");
     writeFileSync(malformed, "{", { mode: 0o600 });
     const requestSha256 = createHash("sha256").update("{").digest("hex");
-    const unreadable = await collectShell(startMxcShellSupervisor({ type: "shell-start", requestPath: malformed, requestSha256 },
+    const unreadable = await collectShell(startMxcShellSupervisor({ type: "shell-start", requestPath: malformed, requestSha256, cwdIdentity: cwdIdentityOf(project) },
       5_000, undefined, () => {}, "test:malformed", supervisor.location));
     expect(unreadable).toMatchObject({ rejected: true, failure: { code: "start-refused", sdkCode: "malformed_request" } });
     expect(existsSync(marker)).toBe(false);
@@ -969,7 +1035,7 @@ req.end();
     ["draining", () => forceKillAndDrainManagedChildProcesses("test quit", TOOL_TIMEOUT_POLICY.mxcMacShellStopMs)],
   ] as const)("stops a live command cooperatively in the %s quit sweep and still force-kills other children", async (_name, sweep) => {
     startEgressRelayService({ ask: async () => false });
-    const started = (await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 })).start("test:quit-sweep");
+    const started = (await prepare(DETACH_WORKLOAD, { timeoutMs: 60_000 })).start("test:quit-sweep", hostShellGrantAuthorizer(undefined));
     const pending = collectShell(started);
     const pids = await recordedPids(project, DETACH_KINDS);
     const other = spawn("/bin/sleep", ["30"], { stdio: "ignore" });
@@ -993,7 +1059,7 @@ req.end();
     startEgressRelayService({ ask: async () => false });
     expect((await run(await prepare("/usr/bin/true"))).code).toBe(0);
     const standby = await vi.waitFor(standbyPid);
-    const warm = (await prepare("printf warm")).start("test:warm-standby");
+    const warm = (await prepare("printf warm")).start("test:warm-standby", hostShellGrantAuthorizer(undefined));
     expect(warm.child.pid).toBe(standby);
     expect(await collectShell(warm)).toMatchObject({ code: 0, stdout: "warm" });
 

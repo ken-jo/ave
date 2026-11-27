@@ -173,4 +173,13 @@ describe("macOS container shell request", () => {
     expect(() => buildSeatbeltShellRequest({ ...input, proxyUrl: "https://127.0.0.1:8444" }))
       .toThrow(expect.objectContaining({ code: "proxy-invalid" }));
   });
+
+  it("refuses an environment name the container's /bin/sh could import as a function, or any other non-identifier name", () => {
+    for (const name of ["BASH_FUNC_read%%", "BASH_FUNC_pwd%%", "BASH_FUNC_[%%", "1LEADING", "WITH-DASH", "", "A=B"]) {
+      expect(() => buildSeatbeltShellRequest({ ...input, env: { ...input.env, [name]: "() { aveHostHandoff=G; }" } }), name)
+        .toThrow(expect.objectContaining({ code: "env-invalid" }));
+    }
+    // Proxy keys are still dropped: the container's proxy is set by its runtime config.
+    expect(buildSeatbeltShellRequest(input).request.process.env).toEqual(["HOME=/fixture/private/open", "PATH=/usr/bin:/bin"]);
+  });
 });

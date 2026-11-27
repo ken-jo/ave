@@ -28,16 +28,20 @@ type StoppedFrame = { type: "stopped"; spawnPendingAtCancellation: boolean };
 type NativeCreatedFrame = { type: "native-created"; id: number; processHandle: string };
 type NativeObservedFrame = { type: "native-observed"; id: number };
 type StartFrame = { type: "start"; request: ContainerRequest };
-type ShellStartFrame = { type: "shell-start"; requestPath: string; requestSha256: string };
+/** The staged cwd's realpath and its stat dev and inode, as decimal strings: the bigints a JSON frame can carry. */
+type MxcShellCwdIdentity = { realpath: string; dev: string; ino: string };
+type ShellStartFrame = { type: "shell-start"; requestPath: string; requestSha256: string; cwdIdentity: MxcShellCwdIdentity };
+/** The workload checked its inherited cwd and waits for the host's grant (`spawn-authorized`) before user code runs. */
+type ShellCwdVerifiedFrame = { type: "shell-cwd-verified"; id: number };
 type ShellReadyFrame = { type: "shell-ready"; id: number };
 type ReadyFrame = { type: "ready"; id: number; nodeVersion: string; nativeModules: string[]; nativeModuleCount: number; nativeModulesTruncated: boolean; ownerHandle: string;
   requestDigest: string; startEvidence: MxcExtensionStartEvidence };
 type ExitFrame = { type: "exit"; exitCode: number; timedOut: boolean };
 type FailureFrame = { type: "error"; message: string } & (
-  { code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost"; backendLoss?: "extension" | "common" }
+  { code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost" | "cwd-changed"; backendLoss?: "extension" | "common" }
   | { code: "start-refused"; sdkCode?: string }
 );
-export type MxcStreamFrame = (StreamFrame | ControlFrame | WindowsExtensionReleaseFrame | StoppedFrame | NativeCreatedFrame | NativeObservedFrame | StartFrame | ReadyFrame | ShellStartFrame | ShellReadyFrame | ExitFrame | FailureFrame) & {
+export type MxcStreamFrame = (StreamFrame | ControlFrame | WindowsExtensionReleaseFrame | StoppedFrame | NativeCreatedFrame | NativeObservedFrame | StartFrame | ReadyFrame | ShellStartFrame | ShellCwdVerifiedFrame | ShellReadyFrame | ExitFrame | FailureFrame) & {
   version: 1;
   generation: string;
   sequence: number;
@@ -88,8 +92,10 @@ function validateFrame(value: unknown, generation: string, sequence: number, pro
       if (typeof frame.requestPath !== "string" || frame.requestPath.length > 32768
         || !isAbsolute(frame.requestPath) || frame.requestPath.includes("\0")
         || typeof frame.requestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(frame.requestSha256)) fail();
-      fields = ["requestPath", "requestSha256"];
+      validateShellCwdIdentity(frame.cwdIdentity);
+      fields = ["requestPath", "requestSha256", "cwdIdentity"];
       break;
+    case "shell-cwd-verified":
     case "shell-ready":
       if (!Number.isSafeInteger(frame.id) || (frame.id as number) <= 0 || (frame.id as number) > 0xffffffff) fail();
       fields = ["id"];
@@ -114,7 +120,7 @@ function validateFrame(value: unknown, generation: string, sequence: number, pro
       fields = ["exitCode", "timedOut"];
       break;
     case "error":
-      if (!["contract", "integrity", "capability-unavailable", "cleanup-unverified", "supervisor-lost", "start-refused"].includes(String(frame.code))
+      if (!["contract", "integrity", "capability-unavailable", "cleanup-unverified", "supervisor-lost", "start-refused", "cwd-changed"].includes(String(frame.code))
         || typeof frame.message !== "string" || frame.message.length > 1024) fail();
       fields = ["code", "message"];
       if (frame.code === "start-refused") {
@@ -129,6 +135,16 @@ function validateFrame(value: unknown, generation: string, sequence: number, pro
   }
   const allowed = new Set(["version", "generation", "sequence", "type", ...fields]);
   if (Object.keys(frame).some((key) => !allowed.has(key))) fail();
+}
+
+function validateShellCwdIdentity(value: unknown): void {
+  const fail = (): never => { throw new MxcProcessContractError("Invalid supervisor frame"); };
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail();
+  const identity = value as Record<string, unknown>;
+  if (Object.keys(identity).length !== 3 || typeof identity.realpath !== "string" || identity.realpath.length > 32768
+    || !isAbsolute(identity.realpath) || identity.realpath.includes("\0")
+    || typeof identity.dev !== "string" || !/^(?:0|[1-9][0-9]{0,19})$/u.test(identity.dev)
+    || typeof identity.ino !== "string" || !/^(?:0|[1-9][0-9]{0,19})$/u.test(identity.ino)) fail();
 }
 
 type ChannelDirection = "host" | "supervisor";
