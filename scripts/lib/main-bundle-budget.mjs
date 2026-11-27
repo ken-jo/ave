@@ -16,6 +16,8 @@ export const MAIN_BUNDLE_ROOT_FILES = Object.freeze([
   // buried inside main.js has no path to be run from). See build-main-esbuild.
   "plugin-child-main.js",
   "preview-document-child-main.js",
+  "memory-map-child.js",
+  "memory-map-worker.js",
   // Per-capture tile composition child (browser-capture-stitch-process.ts).
   "browser-capture-stitch-child.js",
   // Resident worker thread for verified-shell repository evidence (git-repository-inspection-client.ts).

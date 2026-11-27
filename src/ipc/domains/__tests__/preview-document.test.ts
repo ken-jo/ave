@@ -17,7 +17,7 @@ import * as managedChildren from "../../../main/managed-child-processes.js";
 import * as allowedDirectories from "../../../permissions/allowed-directories.js";
 import * as fileReadCore from "../../../tools/file-read-core.js";
 import { validateHostRendererSender } from "../../gated.js";
-import { setSessionContentsLookup } from "../../../main/app-state.js";
+import { getMainWindows, setSessionContentsLookup, unregisterMainWindow } from "../../../main/app-state.js";
 import { allowKeyMaterialInspectionUnder, canonicalizePathForMatch } from "../../../permissions/sensitive-paths.js";
 import { observeAgentDocumentMutation, runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../../tools/agent-observation-context.js";
 import type { DocumentObservationEvent } from "../../../shared/agent-observation.js";
@@ -60,6 +60,7 @@ import { CHANNELS } from "../../../contract/app-contract.js";
 
 const auditLog = vi.fn();
 const appWindows: Array<{ isDestroyed: () => boolean; webContents: object }> = [];
+const fixtureSenders = new Set<EventEmitter>();
 const deps = { auditLogger: { log: auditLog }, getAppWindows: () => appWindows, getMainWindow: () => null } as never;
 const OK_FRAME = "file:///app/index.html";
 const EVIL_FRAME = "https://evil.example.com/x";
@@ -72,6 +73,7 @@ function documentEvent(url: string, senderId = 1, routingId = 0) {
   const frame = { url, processId: senderId, routingId, detached: false, isDestroyed: (): boolean => false };
   const sender = Object.assign(new EventEmitter(), { id: senderId, mainFrame: frame, isDestroyed: (): boolean => false,
     getType: (): string => "window", session: defaultSession, send: vi.fn() });
+  fixtureSenders.add(sender);
   appWindows.push({ isDestroyed: () => false, webContents: sender });
   return { sender, senderFrame: frame };
 }
@@ -126,7 +128,17 @@ beforeEach(() => {
   auditLog.mockClear();
 });
 
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => {
+  try {
+    for (const sender of fixtureSenders) sender.emit("destroyed");
+    for (const window of getMainWindows()) unregisterMainWindow(window);
+    setSessionContentsLookup(null);
+  } finally {
+    fixtureSenders.clear();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  }
+});
 
 describe("preview:read-document handler", () => {
   it.each(["completion", "abort"])("clears the owner watch interval on %s", async (outcome) => {
@@ -437,11 +449,8 @@ describe("read-only observation sender boundary", () => {
     return result.observation;
   }
 
-  afterEach(async () => {
-    const state = await import("../../../main/app-state.js");
-    for (const window of state.getMainWindows()) state.unregisterMainWindow(window);
-    setSessionContentsLookup(null);
-  });
+  // Advance the receipt watch only when the case exercises a tick. Child deadlines stay on the real clock.
+  beforeEach(() => { vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] }); });
 
   it("binds a full text preview to exactly its displayed bytes, frame and session", async () => {
     const event = documentEvent(OK_FRAME);
@@ -552,10 +561,8 @@ describe("read-only observation sender boundary", () => {
   });
 
   it("keeps at most sixteen frame-bound preview opener receipts", async () => {
-    // Only the receipt watch is faked, so a single tick can be counted.
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const event = documentEvent(OK_FRAME);
     try {
-      const event = documentEvent(OK_FRAME);
       const results: PreviewReadFileResult[] = [];
       for (let index = 0; index < 17; index += 1) {
         const path = join(root, `preview-open-${index}.txt`);
@@ -574,8 +581,7 @@ describe("read-only observation sender boundary", () => {
       expect(await handlers.get(CHANNELS.attach.openExternal)!(event, results[0].path)).toEqual({ ok: false, error: "path_not_authorized" });
       expect(await handlers.get(CHANNELS.attach.openExternal)!(event, results[16].path)).toEqual({ ok: true });
       expect(openPath).toHaveBeenCalledExactlyOnceWith(results[16].path);
-      event.sender.emit("destroyed");
-    } finally { vi.useRealTimers(); }
+    } finally { event.sender.emit("destroyed"); }
   });
 
   it.each(["latest-first", "stale-first"])("keeps the latest text baseline alive across overlapping reloads (%s)", async (order) => {

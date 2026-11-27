@@ -554,7 +554,10 @@
       ]
     },
     "win": {
-      "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(win32){,/**/*}"],
+      "files": [
+        "package.json",
+        "!node_modules/onnxruntime-node/bin/napi-v6/!(win32){,/**/*}"
+      ],
       "signExts": [
         "!ave-path-kind.exe",
         "!srt-win.exe",
