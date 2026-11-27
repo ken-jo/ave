@@ -7,11 +7,14 @@ import type * as Sdk from "@microsoft/mxc-sdk/v1";
 import { MxcIntegrityError, verifyMxcSdk, verifyMxcSupervisorRuntime } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 import PINS from "./mxc-launcher-pins.json" with { type: "json" };
 import { MxcCapabilityUnavailableError } from "./mxc-extension-errors.js";
+import type { WindowsDirectoryHandleSource } from "../shared/windows-path-facts.js";
+import { adoptMxcSupervisorDirectoryHold } from "./mxc-supervisor-cwd-hold.js";
 
 export interface MxcSupervisorRuntime {
   readonly ownerHandle: string;
   readonly sdk: Pick<typeof Sdk, "spawn" | "probe">;
   pinProcess(id: number): { value: string; close(): void };
+  holdDirectory?(source: WindowsDirectoryHandleSource): () => void;
   auditModules(): string[];
 }
 
@@ -138,6 +141,7 @@ async function bootstrap(nodeModules: string, arch: string, environment: NodeJS.
   const sdk = await deps.importSdk(winPath.join(installed.sdkRoot, "dist", "v1", "index.js"));
   assertModules();
   return { sdk, ownerHandle, auditModules: assertModules,
+    holdDirectory: source => adoptMxcSupervisorDirectoryHold(kernel, source),
     pinProcess(id) {
       if (!Number.isSafeInteger(id) || id <= 0 || id > 0xffffffff) throw new MxcCapabilityUnavailableError("Native container PID is unavailable");
       // Retain only query/synchronize rights; observing termination must not
