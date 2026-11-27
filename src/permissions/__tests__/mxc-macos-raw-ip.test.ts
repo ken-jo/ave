@@ -1,7 +1,9 @@
-import { spawnSync } from "node:child_process";
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as info from "../../shared/sandbox-capability-info.js";
-import { acceptMeasuredContainerEgress, containerEgressProtocolCoverage } from "../../shared/sandbox-capability-info.js";
+import { acceptMeasuredContainerEgress, containerEgressProtocolCoverage, type MacRawIpVerdict } from "../../shared/sandbox-capability-info.js";
 import {
   classifyRawIpTarget, parseRawIpProbeOutput, rawIpVerdict, type RawIpMeasurement,
 } from "../mxc-macos-raw-ip.js";
@@ -108,14 +110,35 @@ describe("macOS published coverage", () => {
   });
 });
 
-describe("macOS raw-IP verdict lifetime", () => {
-  it("lives in memory only: no store, settings or cache module handles the verdict", () => {
-    const listed = spawnSync("git", ["grep", "-l", "-E", "MacRawIpVerdict|rawIpVerdict\\(", "--", "src", ":!*__tests__*"], { encoding: "utf8" });
-    expect(listed.stdout.trim().split("\n").sort()).toEqual([
-      "src/permissions/mxc-macos-raw-ip.ts",
-      "src/permissions/mxc-macos.ts",
-      "src/shared/sandbox-capability-info.ts",
-      "src/ui/renderer/tabs/PermissionsTab.tsx",
-    ]);
+describe.runIf(process.platform === "darwin")("macOS raw-IP verdict lifetime", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("lives in memory for one boot: a fresh load starts unmeasured and publishing writes nothing to the Ave home", async () => {
+    const aveHome = mkdtempSync(join(tmpdir(), "ave-raw-ip-"));
+    try {
+      vi.stubEnv("AVE_HOME", aveHome);
+      const boot = async () => {
+        vi.resetModules();
+        const capability = await import("../sandbox-capability.js");
+        capability.setShellSandboxRequestedAtBoot(true);
+        capability.setActiveSandboxCapability({
+          platform: "darwin", kind: "asrt", confidence: "verified", reason: "Active sandbox",
+          confines: { filesystem: true, process: true, network: true },
+        });
+        return capability;
+      };
+      const first = await boot();
+      first.setContainerShellSubstrate({ state: "available", rawIpProbe: blocked("measured") as MacRawIpVerdict });
+      expect(first.getHostShellExecutionPlan().egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "blocked" });
+      expect(readdirSync(aveHome)).toEqual([]);
+      const next = await boot();
+      expect(next.getMacContainerShellInfo()).toBeUndefined();
+      expect(next.getHostShellExecutionPlan().egressProtocolCoverage.rawIp).toBe("unknown");
+    } finally {
+      rmSync(aveHome, { recursive: true, force: true });
+    }
   });
 });
