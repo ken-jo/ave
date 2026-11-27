@@ -165,11 +165,16 @@ describe.runIf(process.platform === "win32")("drive locality is proven in each d
     });
     setWindowsDriveQueryForTest(query);
 
+    const refusal = expect.objectContaining({
+      code: "ENETWORKSHAREPATH",
+      path: `\\\\?\\GLOBALROOT\\??\\${other}`,
+      cause: expect.toSatisfy((cause: unknown) => cause === failure),
+    });
     expect(() => withLocalityDecision(() => {
       expect(localDriveExists(drive)).toBe(true);
-      expect(() => localDriveExists(other)).toThrow(failure);
-      expect(() => localDriveExists(drive)).toThrow(failure);
-    })).toThrow(failure);
+      expect(() => localDriveExists(other)).toThrow(refusal);
+      expect(() => localDriveExists(drive)).toThrow(refusal);
+    })).toThrow(refusal);
     expect(query.mock.calls).toEqual([[drive], [other]]);
     expect(localDriveExists(drive)).toBe(true);
   });

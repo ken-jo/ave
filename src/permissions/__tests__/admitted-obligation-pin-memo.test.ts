@@ -94,7 +94,11 @@ describe.runIf(process.platform === "win32")("pin facts within one decision", ()
       expect(() => admitObligations({
         purpose: "worker-grant", principal: "srt-sandbox",
         rows: [a, `${laterDrive}/later-target`].map(path => ({ spelling: path, polarity: { effect: "allow", access: "read" }, source: "worker-request" })),
-      })).toThrow(failure);
+      })).toThrow(expect.objectContaining({
+        code: "ENETWORKSHAREPATH",
+        path: `\\\\?\\GLOBALROOT\\??\\${laterDrive}`,
+        cause: expect.toSatisfy((cause: unknown) => cause === failure),
+      }));
       expect(query.mock.calls).toEqual([[firstDrive], [laterDrive]]);
       expect(pins()).toBe(0);
     } finally {

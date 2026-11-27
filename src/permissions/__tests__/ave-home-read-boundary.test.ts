@@ -377,7 +377,11 @@ describe("a profile-child Ave home on Windows", () => {
     pinnedFirstPaths.length = 0;
     setWindowsDriveQueryForTest(() => { throw failure; });
     try {
-      expect(() => getDefaultSensitiveReadDenyPaths()).toThrow(failure);
+      expect(() => getDefaultSensitiveReadDenyPaths()).toThrow(expect.objectContaining({
+        code: "ENETWORKSHAREPATH",
+        path: `\\\\?\\GLOBALROOT\\??\\${profile.slice(0, 2).toUpperCase()}`,
+        cause: expect.toSatisfy((cause: unknown) => cause === failure),
+      }));
       expect(pinnedFirstPaths).toEqual([]);
     } finally {
       setWindowsDriveQueryForTest(localDrive);
