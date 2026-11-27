@@ -43,10 +43,6 @@ export function selectSrtWinTestReceipts(
   }));
 }
 
-export function readSrtWinTestInput(arch: string): Buffer {
-  return readFileSync(join(vendor, "srt-win", arch, "srt-win.exe"));
-}
-
 export function hasNativeSrtWinBuildReceipt(arch = process.arch): boolean {
   const generated = require("../../permissions/generated/srt-win-build-receipts.json") as Record<string, SrtWinBuildReceipt>;
   return Object.hasOwn(generated, arch);

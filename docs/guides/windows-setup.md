@@ -156,7 +156,7 @@ The local install copies the build folder, so the app runs the installed copy, n
 ## 5. Windows-specific features
 
 - **Background shell commands** run under a Windows job object launched by `resources/windows-job/<arch>/ave-job.exe` (`src/main/windows-job-launcher.ts`). The executable is git-ignored, not checked in. Build it with `bun run build:windows-job`, which needs the C++ build tools. Without it, a background shell command fails with "Windows job launcher is missing". Foreground commands are unaffected.
-- **OS tool sandbox** is off by default. When turned on in Settings, Permissions, it needs a one-time administrator setup. On Windows it confines filesystem and network access, not processes; see [Sandbox isolation](../research/sandbox-isolation.md). If live sandbox tests skip with an access-denied warning, follow the sandbox troubleshooting steps in the [README](../../README.md).
+- **OS tool sandbox** is configured in Settings, Permissions. For details, see [Sandbox isolation](../research/sandbox-isolation.md). If the Windows sandbox account cannot start a process because access is denied, follow the [README recovery steps](../../README.md#asrt-sandbox-access-denied-createprocesswithlogonw-0x80070005).
 
 ## 6. Path-sensitive validation
 
@@ -164,7 +164,7 @@ Windows path spelling (drive letters, `\` separators, case folding, file locking
 
 ```powershell
 bun run check:plugin-host-protocol-schema
-bun run test -- src/permissions/__tests__/allowed-directories.test.ts src/permissions/__tests__/sensitive-paths-canonicalize.test.ts src/shared/__tests__/ave-home.test.ts src/lib/__tests__/atomic-file.test.ts src/lib/__tests__/with-file-lock.test.ts src/tools/__tests__/bash-dialect.test.ts src/tools/__tests__/shell-windows-partial-plan-b.test.ts src/permissions/__tests__/windows-sandbox-logic.test.ts src/permissions/__tests__/asrt-windows-support.test.ts src/main/__tests__/windows-job-launcher.test.ts
+bun run test -- src/permissions/__tests__/allowed-directories.test.ts src/permissions/__tests__/sensitive-paths-canonicalize.test.ts src/shared/__tests__/ave-home.test.ts src/lib/__tests__/atomic-file.test.ts src/lib/__tests__/with-file-lock.test.ts src/tools/__tests__/bash-dialect.test.ts src/tools/__tests__/shell-windows-partial-plan-b.test.ts src/permissions/__tests__/windows-sandbox-logic.test.ts src/permissions/__tests__/sandbox-start-failure.test.ts src/main/__tests__/windows-job-launcher.test.ts
 ```
 
 When CI requires native platform checks, eight regular Windows x64 shards run the collected Vitest suites outside the native tier, with two workers per shard. The build job balances estimated worker loads using `config/windows-test-times.json`. It uses Windows samples first, then Mac durations scaled to Windows, then a 1 s default, and adds a per-suite allowance for collection and startup. Each shard re-derives the inventory from its own checkout and refuses a plan that omits, repeats or adds a suite. The three tier shards run the native and census workloads when selected.

@@ -234,7 +234,7 @@ it("derives independent receipts for preparation, validation and shard jobs", as
     "windows-native-preparation": [
       "verify-native-background-process-ownership-1",
       "verify-windows-folder-classification-1",
-      "build-and-test-patched-windows-sandbox-helper-1", "build-and-test-patched-windows-sandbox-helper-2",
+      "build-and-test-patched-windows-sandbox-helper-1",
     ],
     "windows-payload-packaging": ["verify-both-windows-native-payload-packages-1", "verify-both-windows-native-payload-packages-2"],
     "windows-script-tests": ["run-script-tests-1"],
@@ -248,6 +248,9 @@ it("derives independent receipts for preparation, validation and shard jobs", as
   for (const [job, ids] of Object.entries(expected)) {
     const manifest = containedSteps(workflow, job);
     assert.deepEqual(manifest.map(({ id }) => id), ids);
+    if (job === "windows-native-preparation") {
+      assert.equal(manifest.at(-1)?.invocation, "node scripts/build-srt-win.mjs --test-native");
+    }
     const lines = windowsRunSteps(workflow).filter(({ jobId }) => jobId === job)
       .flatMap(({ lines }) => lines).filter(line => line.includes("run-in-job.mjs"))
       .map(line => line.trim().replace("node .github/scripts/run-in-job.mjs ", ""));

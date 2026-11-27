@@ -19,7 +19,7 @@ export class SrtWinIntegrityError extends Error {
   }
 }
 
-export function assertSrtWinDigest(bytes: Uint8Array, arch: string): void {
+function assertSrtWinDigest(bytes: Uint8Array, arch: string): void {
   const receipt = Object.hasOwn(SRT_WIN_BUILD_RECEIPTS, arch) ? SRT_WIN_BUILD_RECEIPTS[arch] : undefined;
   const target = arch === "x64" ? "x86_64-pc-windows-msvc" : arch === "arm64" ? "aarch64-pc-windows-msvc" : undefined;
   if (!receipt || !target || receipt.schemaVersion !== 1 ||
@@ -178,7 +178,7 @@ function runDirectoryCommand(command: string, env: Record<string, string>): void
 }
 
 // Older names still require the complete shape and a valid owner marker.
-export function sweepStaleSrtWinDirectories(): void {
+function sweepStaleSrtWinDirectories(): void {
   if (type() !== "Windows_NT") return;
   try {
     runDirectoryCommand(SWEEP_COMMAND, {
@@ -343,10 +343,6 @@ export function markSrtWinRuntimeReleasePending(): void {
 
 export function markSrtWinRuntimeReleased(): void {
   runtimeReleasePending = false;
-}
-
-export function isSrtWinRuntimeReleasePending(): boolean {
-  return runtimeReleasePending;
 }
 
 process.once("exit", () => {

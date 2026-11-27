@@ -232,7 +232,7 @@ PowerShell 5.x may also require `[Console]::OutputEncoding` updates because `chc
 
 ### ASRT sandbox access denied (`CreateProcessWithLogonW`, `0x80070005`)
 
-If `src/permissions/__tests__/asrt-sandbox.test.ts` logs a `[asrt-sandbox] Windows OS sandbox cannot spawn as \`srt-sandbox\`` warning and **skips** its live-init tests on Windows — the sandbox provisioned but `CreateProcessWithLogonW(srt-sandbox)` is `Access is denied (0x80070005)`, so it provides no OS isolation — use the following recovery sequence to enable it (the tests then run for real instead of skipping):
+If the provisioned Windows sandbox reports `CreateProcessWithLogonW(srt-sandbox): Access is denied (0x80070005)` when it tries to start a process, use the following recovery sequence:
 
 1. **Root cause — grant `srt-sandbox` read+execute on the ASRT backend.** The sandbox runs the egress probe / tool runner AS the low-privilege `srt-sandbox` user, which cannot read/execute `srt-win.exe` (or the ASRT package files) under a path whose ACL does not grant it — e.g. a per-user / workspace `node_modules`. Grant the ASRT-created `sandbox-runtime-users` group (srt-sandbox is a member) RX, recursively:
    - `icacls node_modules\@anthropic-ai\sandbox-runtime /grant "sandbox-runtime-users:(OI)(CI)(RX)" /T /C`
@@ -241,10 +241,13 @@ If `src/permissions/__tests__/asrt-sandbox.test.ts` logs a `[asrt-sandbox] Windo
    - `Get-Service seclogon` → `Start-Service seclogon` (Secondary Logon must be running)
    - `net user srt-sandbox` → confirm active and still in `sandbox-runtime-users`
    - re-provision if the account/group looks wrong: `srt-win.exe uninstall` then `srt-win.exe install`
-3. Re-run validation:
-   - `bun run test:vitest -- run src/permissions/__tests__/asrt-sandbox.test.ts` → expect `46 passed`
+3. Restart Ave, check the Windows sandbox status in **Settings > Permissions**, and retry the operation that reported access denied.
 
-Known-good: granting `sandbox-runtime-users:(OI)(CI)(RX)` on the ASRT package dir made the direct probe report `OK: spawn works` and the test file pass (`46 passed`).
+For source changes, run the Windows policy and startup-error checks:
+
+```powershell
+bun run test:vitest -- run src/permissions/__tests__/windows-sandbox-logic.test.ts src/permissions/__tests__/sandbox-start-failure.test.ts
+```
 
 ## Environment Variables
 

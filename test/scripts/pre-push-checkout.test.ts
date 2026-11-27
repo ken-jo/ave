@@ -26,8 +26,6 @@ beforeAll(() => {
   mkdirSync(join(repo, "docs/notes"), { recursive: true });
   writeFileSync(join(repo, "package.json"), '{"name":"ave"}\n');
   writeFileSync(join(repo, NOTES), "Initial notes.\n");
-  writeFileSync(join(repo, "test/scripts/check-asrt-version-claims.test.mjs"),
-    'import { test } from "node:test"; test("fixture check", () => {});\n');
   writeFileSync(join(repo, "scripts/check-asrt-version-claims.mjs"),
     'import { writeFileSync } from "node:fs"; writeFileSync("checks-ran", "yes");\n');
   writeFileSync(join(repo, "test/scripts/retired-name.test.mjs"),
