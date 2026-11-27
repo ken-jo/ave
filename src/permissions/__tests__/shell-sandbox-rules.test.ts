@@ -49,8 +49,8 @@ beforeEach(() => {
   manager.setMode("default");
   setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform, reason: "fixture full shell containment", confines: { filesystem: true, process: true, network: true } });
-  // Full shell containment on macOS is the published container shell; the wrap alone leaves shells on the no-confinement floor.
-  if (process.platform === "darwin") setContainerShellSubstrate({ state: "available" });
+  // Shell containment requires the boot canary’s container proof.
+  if (process.platform === "darwin" || process.platform === "linux") setContainerShellSubstrate(process.platform, { state: "available" });
 });
 afterEach(async () => {
   await Promise.all(auditLoggers.splice(0).map((logger) => logger.close()));

@@ -386,6 +386,19 @@ it("shows and answers the requested-output approval while the gate call is pendi
   expect(screen.getByRole("dialog", { name: item.title })).toBeVisible();
 });
 
+it("shows the tool approval chip for a pending output of the current run with the run dialog closed", async () => {
+  const { setQueue } = mount([{ ...item, runPin: pin, templateRunState: "running" }]);
+  const chip = await screen.findByTestId("work-board-live-chip");
+  const output = approvalRequest({ toolName: "send", sessionId: `workflow-output:${item.id}:${item.runId}:invocation` }) as unknown as ApprovalRequest;
+  setQueue([{ ...output, sessionId: `workflow-output:${item.id}:old-run:invocation` }]);
+  expect(chip).toHaveAttribute("data-state", "executing");
+  setQueue([output]);
+  expect(chip).toHaveAttribute("data-state", "tool-approval");
+  expect(chip).toHaveTextContent(t("workBoard.liveChipToolApproval"));
+  setQueue([]);
+  expect(chip).toHaveAttribute("data-state", "executing");
+});
+
 it("the gate card of a push to an https remote shows the help text, and the card of a push to an ssh remote does not", () => {
   const binding = { runId: "run-a", stageId: "summarize", attempt: 1, resultHash: graphHash, outputHash: "b".repeat(64) };
   const card = (url: string) => <WorkflowDecisionCard itemId={item.id} onChanged={vi.fn()}

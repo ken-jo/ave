@@ -47,6 +47,8 @@ vi.mock("../mxc-posix-shell-launch.js", async () => {
       containerLaunch.prepared?.();
       return {
         carvedReadLimitedAt: undefined, proxyPort: 1, narrowedWriteRoots: [],
+        // As the real route: macOS spends a permit at the workload's grant, Linux before start.
+        spendsPermitAtGrant: process.platform !== "linux",
         start(_label: string, authorize: (grant: () => boolean) => Promise<boolean>) {
           containerLaunch.authorize = authorize;
           const child = Object.assign(new ChildProcess(), { stdout: new PassThrough(), stderr: new PassThrough(), stdin: null });
@@ -64,7 +66,11 @@ vi.mock("../mxc-posix-shell-launch.js", async () => {
 // The real spawn-directory check runs; the spy shows which authorization reached it.
 vi.mock("../../permissions/host-shell-execution-permit.js", async (original) => {
   const actual = await original<typeof import("../../permissions/host-shell-execution-permit.js")>();
-  return { ...actual, assertHostShellSpawnDirectoryCurrent: vi.fn(actual.assertHostShellSpawnDirectoryCurrent) };
+  return {
+    ...actual,
+    assertHostShellSpawnDirectory: vi.fn(actual.assertHostShellSpawnDirectory),
+    assertHostShellSpawnDirectoryCurrent: vi.fn(actual.assertHostShellSpawnDirectoryCurrent),
+  };
 });
 // Real helper image verification has native tests.
 vi.mock("../../permissions/srt-win-integrity.js", async (original) => ({
@@ -76,7 +82,7 @@ import { forceKillManagedChildProcess } from "../../main/managed-child-processes
 import * as sandbox from "../../permissions/asrt-sandbox.js";
 import { __resetActiveSandboxCapabilityForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setContainerShellSubstrate, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import {
-  assertHostShellSpawnDirectoryCurrent, buildHostShellExecutionPermitBinding, HOST_SHELL_AUTHORIZATION_REVOKED_ERROR,
+  assertHostShellSpawnDirectory, assertHostShellSpawnDirectoryCurrent, buildHostShellExecutionPermitBinding, HOST_SHELL_AUTHORIZATION_REVOKED_ERROR,
   mintHostShellExecutionPermit, recordHostShellPolicyAuthorization,
 } from "../../permissions/host-shell-execution-permit.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -122,16 +128,18 @@ it("waits for the conversation terminal teardown before reporting session cleanu
   expect(settled).toBe(true);
 });
 
-// The plain route and the ASRT wrap route ("sandbox"). macOS shells are never ASRT-wrapped: a requested macOS shell
-// sandbox runs in the container, whose completion has its own block below. The wrap route therefore runs as Linux on a
-// macOS host, and PowerShell, which has no wrap route on its POSIX stand-in platform otherwise, runs as Linux too.
+// The plain route and the ASRT wrap route ("sandbox"). POSIX shells are never ASRT-wrapped: a requested macOS or Linux
+// shell sandbox runs in its container, whose completion has its own block below. The wrap route is live only for bash
+// on Windows, so it runs on a Windows host, as Windows. PowerShell has no live wrap route: on Windows its startup is
+// pinned only in the MXC container (`isPowerShellStartupPinned`), so a wrapped PowerShell is refused before it spawns.
 function routePlatform(route: "plain" | "sandbox", dialect: "bash" | "powershell"): NodeJS.Platform {
   if (route === "plain") return dialect === "powershell" ? "darwin" : HOST_PLATFORM;
-  return dialect === "bash" && HOST_PLATFORM !== "darwin" ? HOST_PLATFORM : "linux";
+  return "win32";
 }
+const ROUTES = HOST_PLATFORM === "win32" ? ["plain", "sandbox"] as const : ["plain"] as const;
 
-describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {
-  describe.each(["bash", "powershell"] as const)("%s", (dialect) => {
+describe.each(ROUTES)("%s shell completion", (route) => {
+  describe.each(route === "sandbox" ? ["bash"] as const : ["bash", "powershell"] as const)("%s", (dialect) => {
     beforeEach(() => { setProcessPlatform(routePlatform(route, dialect)); });
     const temporaryRoots = new Set<string>();
     async function start(captureFactory?: () => ToolOutputCapture, failure?: "abort" | "empty" | "sync-throw") {
@@ -332,25 +340,25 @@ describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {
   });
 });
 
-// macOS sandboxed shells run in the container; their completion comes from the supervisor's outcome, not a child exit.
-describe("macOS container shell completion", () => {
+// macOS and Linux sandboxed shells run in the container; their completion comes from the supervisor's outcome, not a child exit.
+describe.each(["darwin", "linux"] as const)("%s container shell completion", (platform) => {
   const exited: Parameters<NonNullable<typeof containerLaunch.settle>>[0] = { code: 0, timedOut: false, cancelled: false, rejected: false, cleanupUnverified: false };
   beforeEach(() => {
-    setProcessPlatform("darwin");
+    setProcessPlatform(platform);
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
-      kind: "asrt", confidence: "verified", platform: "darwin",
+      kind: "asrt", confidence: "verified", platform,
       reason: "Controlled wrapper", confines: { filesystem: true, process: true, network: true },
     });
-    setContainerShellSubstrate({ state: "available" });
+    setContainerShellSubstrate(platform, { state: "available" });
     containerLaunch.settle = undefined;
     containerLaunch.child = undefined;
   });
-  afterEach(() => { setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" }); });
+  afterEach(() => { setContainerShellSubstrate(platform, { state: "unavailable", reason: "shell-start-failed" }); });
 
-  async function run(outcome: Partial<typeof exited>, stdout = "") {
+  async function run(outcome: Partial<typeof exited>, stdout = "", captureFactory?: () => ToolOutputCapture) {
     const pending = new BashTool().execute({ command: "echo ready", timeoutSeconds: 1 }, {
-      cwd: process.cwd(), extraAllowedDirectories: [], metadata: {},
+      cwd: process.cwd(), extraAllowedDirectories: [], metadata: captureFactory ? { toolOutputCaptureFactory: captureFactory } : {},
     });
     await vi.waitFor(() => expect(containerLaunch.settle).toBeTypeOf("function"));
     if (stdout) containerLaunch.child?.stdout.write(stdout);
@@ -365,6 +373,29 @@ describe("macOS container shell completion", () => {
     [255, "partial\n", "Shell command exited with code 255.\npartial", true],
   ] as const)("reports a literal exit %s with its output", async (code, stdout, expected, isError) => {
     expect(await run({ code }, stdout)).toMatchObject({ output: expected, isError, metadata: { returncode: code, sandboxed: true } });
+  });
+
+  it.each([
+    ["an exit", { code: 7 }, false],
+    ["a cancel", { code: null, cancelled: true }, true],
+    ["a timeout", { code: null, timedOut: true }, true],
+  ] as const)("publishes the output artifact once after %s, partial when interrupted", async (_name, outcome, interrupted) => {
+    const chunks: Buffer[] = [];
+    const finish = vi.fn(async (partial?: boolean) => ({
+      version: 1 as const, captureId: "3138f9c6-89f0-4645-85ea-2c205f9523f4",
+      status: partial ? "partial" as const : "complete" as const, ...(partial ? { reason: "interrupted" as const } : {}),
+      capturedBytes: 15_006, observedBytes: 15_006, capturedChars: 15_006, sha256: "a".repeat(64),
+    }));
+    const output = `${"a".repeat(15_000)}stdout`;
+    const result = await run(outcome, output, () => ({
+      captureId: "3138f9c6-89f0-4645-85ea-2c205f9523f4",
+      append: (bytes) => { chunks.push(Buffer.from(bytes)); return true; },
+      waitForDrain: async () => {}, finish,
+    }));
+    expect(finish).toHaveBeenCalledExactlyOnceWith(interrupted);
+    expect(result.isError).toBe(true);
+    expect(result.metadata?.outputArtifact).toMatchObject({ status: interrupted ? "partial" : "complete" });
+    expect(Buffer.concat(chunks).toString()).toBe(output);
   });
 
   it("reports the SDK's -1 as a shell that left no exit code, never as exit code -1", async () => {
@@ -409,18 +440,18 @@ describe("macOS container shell completion", () => {
   });
 });
 
-// The tree's final check before spawn: a permit-bearing launch must still match its directory. The macOS container
+// The tree's final check before spawn: a permit-bearing launch must still match its directory. The POSIX container
 // returns before either wrap, so its own runner makes that check just before the supervisor starts.
-describe.runIf(HOST_PLATFORM !== "win32")("macOS container shell spawn directory", () => {
+describe.runIf(HOST_PLATFORM !== "win32").each(["darwin", "linux"] as const)("%s container shell spawn directory", (platform) => {
   let directory: string;
   beforeEach(() => {
-    setProcessPlatform("darwin");
+    setProcessPlatform(platform);
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
-      kind: "asrt", confidence: "verified", platform: "darwin",
+      kind: "asrt", confidence: "verified", platform,
       reason: "Controlled wrapper", confines: { filesystem: true, process: true, network: true },
     });
-    setContainerShellSubstrate({ state: "available" });
+    setContainerShellSubstrate(platform, { state: "available" });
     containerLaunch.settle = undefined;
     containerLaunch.child = undefined;
     containerLaunch.prepared = undefined;
@@ -429,13 +460,13 @@ describe.runIf(HOST_PLATFORM !== "win32")("macOS container shell spawn directory
   });
   afterEach(async () => {
     containerLaunch.prepared = undefined;
-    setContainerShellSubstrate({ state: "unavailable", reason: "shell-start-failed" });
+    setContainerShellSubstrate(platform, { state: "unavailable", reason: "shell-start-failed" });
     await cleanupTmpDir(directory);
   });
 
   function permitted(cwd: string, toolUseId: string, toolName: "bash" | "powershell" = "bash") {
     const plan = getHostShellExecutionPlan();
-    expect(plan).toMatchObject({ platform: "darwin", substrate: "mxc" });
+    expect(plan).toMatchObject({ platform, substrate: "mxc" });
     const input = { command: toolName === "bash" ? "echo ready" : "Write-Output ready", timeoutSeconds: 1 };
     const binding = buildHostShellExecutionPermitBinding({
       plan, toolName, toolUseId, rawInput: input, executionCwd: cwd, extraAllowedDirectories: [],
@@ -446,6 +477,9 @@ describe.runIf(HOST_PLATFORM !== "win32")("macOS container shell spawn directory
     expect(permit).toBeDefined();
     return { input, context: { cwd, extraAllowedDirectories: [], metadata: { toolUseId }, hostShellExecutionPlan: plan, hostShellExecutionPermit: permit } };
   }
+
+  // The pre-start check this platform runs: macOS keeps the permit for the grant, Linux spends it here.
+  const preStartCheck = () => vi.mocked(platform === "darwin" ? assertHostShellSpawnDirectoryCurrent : assertHostShellSpawnDirectory);
 
   it("refuses an approved command whose directory was replaced before launch, and starts no supervisor", async () => {
     const approved = join(directory, "work");
@@ -460,8 +494,8 @@ describe.runIf(HOST_PLATFORM !== "win32")("macOS container shell spawn directory
     // Revoked, as the wrap route words it: not a container refusal, and no isolation claim for a run that never started.
     expect(result.output).toBe(`spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`);
     expect(result.metadata).not.toHaveProperty("isolation");
-    expect(vi.mocked(assertHostShellSpawnDirectoryCurrent)).toHaveBeenCalledOnce();
-    expect(vi.mocked(assertHostShellSpawnDirectoryCurrent).mock.calls[0]?.[0]).toMatchObject({ cwdIdentity: { realpath: approved } });
+    expect(preStartCheck()).toHaveBeenCalledOnce();
+    expect(preStartCheck().mock.calls[0]?.[0]).toMatchObject({ cwdIdentity: { realpath: approved } });
     expect(containerLaunch.child).toBeUndefined();
     expect(containerLaunch.settle).toBeUndefined();
   });
@@ -488,8 +522,8 @@ describe.runIf(HOST_PLATFORM !== "win32")("macOS container shell spawn directory
     const result = await pending;
     expect(result.isError).toBe(true);
     expect(result.output).toContain(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
-    expect(vi.mocked(assertHostShellSpawnDirectoryCurrent)).toHaveBeenCalledOnce();
-    expect(vi.mocked(assertHostShellSpawnDirectoryCurrent).mock.calls[0]?.[0]).toMatchObject({ cwdIdentity: { realpath: approved } });
+    expect(preStartCheck()).toHaveBeenCalledOnce();
+    expect(preStartCheck().mock.calls[0]?.[0]).toMatchObject({ cwdIdentity: { realpath: approved } });
     expect(containerLaunch.child).toBeUndefined();
     expect(containerLaunch.settle).toBeUndefined();
   });
@@ -500,19 +534,20 @@ describe.runIf(HOST_PLATFORM !== "win32")("macOS container shell spawn directory
     const { input, context } = permitted(approved, "mxc-matching-cwd");
     const pending = new BashTool().execute(input, context);
     await vi.waitFor(() => expect(containerLaunch.settle).toBeTypeOf("function"));
-    // The grant spends the permit once: a second grant for the same launch is refused.
+    // On macOS the grant spends the permit once: a second grant for the same launch is refused. Linux spent it before start.
     const grant = vi.fn(() => true);
-    expect(await containerLaunch.authorize?.(grant)).toBe(true);
+    if (platform === "darwin") expect(await containerLaunch.authorize?.(grant)).toBe(true);
     expect(await containerLaunch.authorize?.(grant)).toBe(false);
-    expect(grant).toHaveBeenCalledOnce();
+    expect(grant).toHaveBeenCalledTimes(platform === "darwin" ? 1 : 0);
     containerLaunch.child?.stdout.write("ready\n");
     containerLaunch.settle?.({ code: 0, timedOut: false, cancelled: false, rejected: false, cleanupUnverified: false });
     expect(await pending).toMatchObject({ output: "ready", isError: false, metadata: { returncode: 0, sandboxed: true } });
-    expect(vi.mocked(assertHostShellSpawnDirectoryCurrent)).toHaveBeenCalledOnce();
-    expect(vi.mocked(assertHostShellSpawnDirectoryCurrent).mock.calls[0]?.[0]).toMatchObject({ cwdIdentity: { realpath: approved } });
+    expect(preStartCheck()).toHaveBeenCalledOnce();
+    expect(preStartCheck().mock.calls[0]?.[0]).toMatchObject({ cwdIdentity: { realpath: approved } });
   });
 
-  it("withholds the grant when the approved directory is replaced after the supervisor started, and reports it revoked", async () => {
+  // Linux has no workload grant; its route is unchanged.
+  it.runIf(platform === "darwin")("withholds the grant when the approved directory is replaced after the supervisor started, and reports it revoked", async () => {
     const approved = join(directory, "work");
     mkdirSync(approved);
     const { input, context } = permitted(approved, "mxc-replaced-before-grant");
@@ -528,7 +563,7 @@ describe.runIf(HOST_PLATFORM !== "win32")("macOS container shell spawn directory
     expect(result).toMatchObject({ isError: true, output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, metadata: { sandboxed: false } });
   });
 
-  it("reports a workload's own cwd refusal on an unpermitted launch as not started", async () => {
+  it.runIf(platform === "darwin")("reports a workload's own cwd refusal on an unpermitted launch as not started", async () => {
     const cwd = join(directory, "work");
     mkdirSync(cwd);
     const pending = new BashTool().execute({ command: "echo ready", timeoutSeconds: 1 }, { cwd, extraAllowedDirectories: [], metadata: {} });

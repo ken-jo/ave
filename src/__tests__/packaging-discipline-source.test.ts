@@ -1568,6 +1568,7 @@ describe("installer smoke and packaging discipline", () => {
     const scopes = [
       ["macos-permission-tests", "macos"],
       ["linux-confinement-tests", "linux"],
+      ["linux-confinement-x64", "linux-x64"],
     ];
     for (const [job, platform] of scopes) {
       const concurrency = workflow.jobs[job!]!.concurrency!;
@@ -1649,7 +1650,7 @@ describe("installer smoke and packaging discipline", () => {
       SHARD_JOB_EVIDENCE: jobEvidence(jobs ?? Array.from({ length: Number(count) }, (_, index) => completedShard(index + 1))),
       SHARD_JOB_EXIT: jobExit,
       PLATFORM_CHECKS: selected, WINDOWS_PREPARATION_RESULT: native,
-      WINDOWS_PACKAGING_RESULT: native, WINDOWS_SCRIPTS_RESULT: native, WINDOWS_DEV_BOOT_RESULT: native, WINDOWS_RESULT: native, MACOS_RESULT: native, LINUX_RESULT: native,
+      WINDOWS_PACKAGING_RESULT: native, WINDOWS_SCRIPTS_RESULT: native, WINDOWS_DEV_BOOT_RESULT: native, WINDOWS_RESULT: native, MACOS_RESULT: native, LINUX_RESULT: native, LINUX_X64_RESULT: native,
       WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
       VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: "false", WINDOWS_TIER_RESULT: "skipped",
     } });
@@ -1673,7 +1674,7 @@ describe("installer smoke and packaging discipline", () => {
       SHARD_JOB_EVIDENCE: jobEvidence([completedShard(1)]), SHARD_JOB_EXIT: "0",
       DOCS_ONLY: "false", PLATFORM_CHECKS: "true", WINDOWS_PREPARATION_RESULT: preparation,
       WINDOWS_PACKAGING_RESULT: "success", WINDOWS_SCRIPTS_RESULT: "success", WINDOWS_DEV_BOOT_RESULT: "success",
-      WINDOWS_RESULT: shards, MACOS_RESULT: "success", LINUX_RESULT: "success",
+      WINDOWS_RESULT: shards, MACOS_RESULT: "success", LINUX_RESULT: "success", LINUX_X64_RESULT: "success",
       WINDOWS_ARM64_PATH_KIND: "true", WINDOWS_ARM64_PATH_KIND_RESULT: "success",
       VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: "false", WINDOWS_TIER_RESULT: "skipped",
     } });
@@ -1693,7 +1694,7 @@ describe("installer smoke and packaging discipline", () => {
           VITEST_SHARD_COUNT: "1", VITEST_SHARDS: "[1]",
           SHARD_JOB_EVIDENCE: jobEvidence([completedShard(1)]), SHARD_JOB_EXIT: "0",
           DOCS_ONLY: docs, PLATFORM_CHECKS: "false", WINDOWS_PREPARATION_RESULT: "skipped",
-          WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
+          WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped", LINUX_X64_RESULT: "skipped",
           GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", [variable]: result,
         } });
         expect(run.status, run.stderr + run.stdout).toBe(1);
@@ -1896,7 +1897,7 @@ describe("installer smoke and packaging discipline", () => {
     // a cancellation cannot skip either, fails unless both succeeded.
     // Independent gates must report success through the required aggregate.
     const body = verification as string;
-    expect(body).toMatch(/^ {4}needs: \[build, background-ui, vitest, vitest-tiers, windows-native-preparation, windows-payload-packaging, windows-script-tests, windows-dev-boot, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins\]$/mu);
+    expect(body).toMatch(/^ {4}needs: \[build, background-ui, vitest, vitest-tiers, windows-native-preparation, windows-payload-packaging, windows-script-tests, windows-dev-boot, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, linux-confinement-x64, gate-core, mxc-pins\]$/mu);
     expect(body).toMatch(/^ {4}if: always\(\)$/mu);
     expect(body).not.toContain("cancelled()");
     expect(body).toContain("      - name: Require the build and every Vitest shard\n        if: always()\n");
@@ -1961,7 +1962,8 @@ describe("installer smoke and packaging discipline", () => {
 
   it.each([
     ["vitest", SHARD_GATE, "bubblewrap socat ripgrep zsh", "bwrap socat rg zsh"],
-    ["linux-confinement-tests", DOCS_GATE, "bubblewrap socat ripgrep xvfb bash zsh", "bwrap socat rg xvfb-run bash zsh"],
+    ["linux-confinement-tests", DOCS_GATE, "bubblewrap slirp4netns iptables iproute2 openssl python3 curl git socat ripgrep xvfb bash zsh",
+      "bwrap slirp4netns iptables ip socat rg xvfb-run bash zsh"],
   ])("uses cached packages and proves the sandbox in %s", (jobId, gate, packages, commands) => {
     const source = readRepoFile(".github/workflows/ci.yml");
     const workflow = parseYaml(source);

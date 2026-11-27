@@ -43,12 +43,17 @@ export async function stageMxcShellRequest(
     || (expected !== undefined && !sameShellWorkingDirectoryIdentity(identity, expected))) {
     throw new MxcCwdChangedError();
   }
-  const bytes = Buffer.from(JSON.stringify(request));
-  await writeFile(requestPath, bytes, { flag: "wx", mode: 0o600 });
   return {
-    type: "shell-start", requestPath, requestSha256: createHash("sha256").update(bytes).digest("hex"),
+    type: "shell-start", ...await writeMxcShellRequest(requestPath, request),
     cwdIdentity: { realpath: identity.realpath, dev: String(identity.dev), ino: String(identity.ino) },
   };
+}
+
+/** Write the request bytes once, private and new, and name their digest. The Linux route stages with this alone. */
+export async function writeMxcShellRequest(requestPath: string, request: object): Promise<{ requestPath: string; requestSha256: string }> {
+  const bytes = Buffer.from(JSON.stringify(request));
+  await writeFile(requestPath, bytes, { flag: "wx", mode: 0o600 });
+  return { requestPath, requestSha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
 /** The container shell's working directory is not, or is no longer, the directory its request was staged for. */

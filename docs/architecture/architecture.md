@@ -3378,7 +3378,7 @@ The container route table selects shell tools and holders independently.
 | --- | --- | --- |
 | macOS | On | Off |
 | Windows | On | On |
-| Linux | Off | Off |
+| Linux | On | Off |
 
 On macOS, Bash and PowerShell run through the pinned SDK's streaming handle
 with pipes and one invocation-specific profile. Hooks, extensions and the
@@ -3468,6 +3468,102 @@ kill. A stop the backend did not confirm, or a supervisor that exits without
 a terminal receipt, is reported as an error that the command was stopped
 but its processes could not be confirmed gone, never as cancelled.
 
+### Linux agent shells in containers
+
+Bash and PowerShell use the pinned Linux container launcher. Hooks,
+extensions, MCP servers and the workspace terminal use the existing wrap.
+Each tool invocation gives the launcher a private request under the verified
+runtime root. The launcher builds the bubblewrap arguments, sets up the
+network namespace and proxy firewall, and owns its child processes. Ave
+provides the ranked filesystem rows, a separate HOME and temp directory, and
+one proxy listener per invocation. The launcher only resolves tools through
+root-owned directories with no group or other write access.
+
+The most specific row governs each path. Broad reads use readable children
+of `/` and leave `/proc`, `/dev` and `/run` to the container. `/sys` and
+`/tmp` remain read-only. Between a writable root and a protected name, each
+intervening directory gets its own writable bind mount. The same holds between
+a nested writable root, such as a working directory below an extra allowed
+folder, and the writable root that encloses it. The kernel refuses to rename
+these mount points and ordinary sibling writes remain possible.
+
+For absent protected names under a writable grant, Ave creates any missing
+intervening directories and pins them before launch. An empty directory
+carries the protected leaf's deny, including when the leaf normally names a
+file. Absent paths beneath read-only rows need no mount and a subsequent
+command ranks any names the host creates there. The 400-row limit includes
+parent pins, leaf masks and the read-only filter grant.
+
+The saved-session read grant carries the same credential exclusions as the
+Linux wrap. The existing deny resolver turns its patterns into literal
+paths before the ranker runs. A directory the resolver cannot enumerate
+stays masked, and a grant that would reopen it refuses the launch.
+
+The runtime root holds a PID-marker registry of the created directories and
+their owners. Concurrent launches retain shared entries until their last owner
+exits. Boot and the next launch sweep entries whose recorded owners are gone,
+checking process start identities to detect PID reuse. Cleanup only removes
+empty directories whose identities and parents still match. A parent containing
+an ordinary sibling written by the command stays in place. Linux shells use
+the existing Git quarantine for controls created during the command and defer
+host Git reads until it completes.
+
+The static shell filter adds Unix socket and nested user and mount namespace
+restrictions inside the container. The network namespace only permits direct
+TCP to the invocation proxy and the command's own loopback. The proxy resolves
+names, and approval scopes retain shared egress identity. The command excludes
+localhost from proxy use so its own loopback services remain reachable.
+
+Boot proves the launcher and filter hashes, the runtime root, and the required
+system tools. This includes bubblewrap, slirp4netns, iptables with its restore
+tools, and the namespace and interface commands from util-linux and iproute2.
+The backend must advertise proxy enforcement and a canary must exercise a real
+launch and its filesystem, loopback, socket and namespace boundaries. Host
+settings that restrict user namespaces can prevent that proof.
+
+After those checks pass, the same canary container measures raw-IP coverage
+by the verdict rules shared with macOS and Windows. A bash prober runs every
+target at once, each with a 3 s deadline, under a 12 s bound, and writes only
+to its own file, so it cannot change availability. The control is a CONNECT
+through the container's proxy to a per-boot `<nonce>.localhost`. The
+container must read the listener's 403 refusal, and the host must record the
+nonce. The other targets are `192.0.2.1:443` and `[2001:db8::1]:443`, a
+just-closed port and a TCP arrival listener on the host's primary IPv4, and a
+UDP nonce sent to a host-side listener, which is checked by arrival only. `rawIp` is `blocked`
+only when the control passed, both documentation addresses were refused, and
+nothing reached the host. A refusal is local (EPERM or EACCES), or, for the IPv6
+target with no route, a network namespace holding only `lo`.
+The launcher's slirp4netns network drops direct connects rather than refusing
+them, so on it a timeout alone is never evidence. A dropped target counts as
+refused by arrival only when all of these hold:
+- a TCP listener on the host's primary IPv4 took an unconfined connect from Ave;
+- the listener recorded nothing else while the container also connected to it;
+- the namespace holds only `lo` and `tap0`;
+- the firewall the launcher programmed drops all egress but loopback and the
+  proxy. The container cannot read its own firewall, so Ave reads the restore
+  payloads the launcher's network supervisor applied while the container runs.
+
+Any arrival, at either listener, makes the verdict `unknown`, and a listener
+that cannot bind leaves it `unknown` without making the container unavailable.
+The published evidence kind is `measured`, `structural` or `arrival`.
+The verdict lives in memory for the boot. An unmeasured or unavailable
+container reports `unknown`. Settings names
+missing packages and provides distribution-specific install commands. An
+unavailable shell route applies the existing no-confinement floor, including
+its session waiver and exact saved host-command rule when the floor is the only
+reason to ask. Headless runs deny. A failed contained launch is refused.
+
+Cancellation sends TERM to the launcher and escalates to its process group
+after two seconds if necessary. The launcher also enforces the command deadline,
+and a run it ends that way is reported as timed out. Git quarantine runs after
+every launch. The command shares stderr with the launcher, so an error line
+there is never read as the launcher's verdict. A refused start is read only
+from the launcher's own log, which it writes into the request's staging folder
+under the runtime root, out of the container's reach. The request staging and
+placeholder holds are released after exit. The extra
+network setup adds roughly 0.1–0.2 seconds to a typical command on the measured
+arm64 host.
+
 ### Windows agent shells in Microsoft Execution Containers
 
 **Identity and network (measured 2026-11-11).** On the installed per-machine
@@ -3524,7 +3620,7 @@ Empty `node-pty/.bun-tag-<16 lowercase hex digits>` patch-install markers are de
 
 Before-pack source verification also requires the original package-manifest byte hashes; semantic verification applies to normalized packaged manifests. `bun run update:mxc-pins` regenerates file hashes, semantic manifest fields and both native architectures deterministically from installed sources. `bun run check:mxc-pins` (`node scripts/update-mxc-pins.mjs --check`) fails on drift without rewriting pins. Missing optional target addons are staged from their separately verified archives into temporary sources and cleaned up; `--no-download` requires all sources locally. Archive, launcher and license trust anchors remain explicit review inputs. The required CI aggregate includes generated pin checks and packages both Windows and both Linux launcher targets using lock-keyed runtime archive caches. The Windows native payload packaging job runs both targets under the containment launcher with a cached runtime download to cover the native-host collector path. Successful packaging checks delete their owned temporary trees, failures retain and report the exact path. Strict packaged inventory checks include the FFI, PTY and nested semver trees; unknown scripts, manifests, binaries and redirects fail closed. Retained source/declaration/license allowances are scoped by path and extension. Unused PTY local build/source directories and non-target prebuilds are declared packaging exclusions; unknown selected-target files remain available for rejection.
 
-**POSIX native packaging.** macOS arm64 ships no launcher. It ships the SDK's `libmxc_ffi.dylib` in `app.asar.unpacked`, excluded from signing so it keeps its Microsoft signature; the after-pack and after-sign hooks check its bytes against `targets.darwin-arm64.library`, and every shell supervisor checks it again at start. koffi's darwin addon is unpacked and signed by the app, so its upstream hash is pinned before signing and verified at packaging. The `targets.darwin-arm64.launcher` pin remains a record of the tarball. Linux ships `<resources>/mxc/<arch>/lxc-exec` for x64 and arm64; packaging stages it from the installed SDK when available and verifies the SHA-256 in its `targets` entry. The POSIX library pins can be regenerated with `bun run update:mxc-pins --launchers-only --no-download` alongside the launcher pins. Launcher packaging checks default to the host targets and accept `--target <platform-arch>` for explicit checks. The [macOS shell route](#macos-agent-shells-in-containers) uses its pinned library when boot proves containment. Linux keeps its existing routes.
+**POSIX native packaging.** macOS arm64 ships no launcher. It ships the SDK's `libmxc_ffi.dylib` in `app.asar.unpacked`, excluded from signing so it keeps its Microsoft signature; the after-pack and after-sign hooks check its bytes against `targets.darwin-arm64.library`, and every shell supervisor checks it again at start. koffi's darwin addon is unpacked and signed by the app, so its upstream hash is pinned before signing and verified at packaging. The `targets.darwin-arm64.launcher` pin remains a record of the tarball. Linux ships `<resources>/mxc/<arch>/lxc-exec` for x64 and arm64; packaging stages it from the installed SDK when available and verifies the SHA-256 in its `targets` entry. The POSIX library pins can be regenerated with `bun run update:mxc-pins --launchers-only --no-download` alongside the launcher pins. Launcher packaging checks default to the host targets and accept `--target <platform-arch>` for explicit checks. The [macOS shell route](#macos-agent-shells-in-containers) uses its pinned library when boot proves containment. The [Linux shell route](#linux-agent-shells-in-containers) also ships a hash-pinned static musl filter for each architecture. Deb and RPM packages recommend the three system packages used for the network namespace.
 
 Windows x64 preparation runs the launcher ownership and path-classification proofs and the sandbox helper checks. It publishes checked helpers and the interpreter mirror for the regular and tier shards, which also consume the build job's exact-tree plan. The eight regular shards use two workers each. Payload packaging, script tests, and the development build and boot smoke run in separate contained jobs alongside the matrices when preparation is selected. All three results feed the required `build-and-test` aggregate.
 

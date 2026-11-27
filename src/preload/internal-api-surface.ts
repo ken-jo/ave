@@ -943,6 +943,11 @@ export function buildInternalApiSurface() {
     >,
   listRoutineOccurrences: async (query: { projectRoot?: string; from: string; to: string }) =>
     ipcRenderer.invoke(ROUTINES.listOccurrences, query) as Promise<import("../shared/routines-types.js").RoutineOccurrencesResult>,
+  onRoutinesChanged: (handler: () => void) => {
+    const listener = () => handler();
+    ipcRenderer.on(ROUTINES.changed, listener);
+    return () => ipcRenderer.removeListener(ROUTINES.changed, listener);
+  },
   onRoutineFired: (
     handler: (event: import("../shared/routines-types.js").RoutineFiredPayload) => void,
   ) => {
