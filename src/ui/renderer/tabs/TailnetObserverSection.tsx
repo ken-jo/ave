@@ -7,7 +7,7 @@ import { Input } from "../../../components/ui/input.js";
 import { Switch } from "../../../components/ui/switch.js";
 import { SettingsSection, type SettingsSectionFeedback } from "../components/PageShell.js";
 import {
-  DEFAULT_TAILNET_OBSERVER_VIEW_PORT,
+  DEFAULT_TAILNET_OBSERVER_PORT,
   TAILNET_OBSERVER_CONFIG_KEYS,
   TAILNET_CONFINED_RANGE_UNVERIFIED,
   TAILNET_PORT_CONFINED_WORKER_RANGE,
@@ -37,7 +37,7 @@ const RESET_CONFIG: TailnetObserverConfigView = Object.freeze({
   // Starting over lands on the default boundary, not on a half-filled advanced one: identity mode needs nothing typed to be
   // valid.
   authorization: { kind: "tailnet-identity" as const },
-  port: DEFAULT_TAILNET_OBSERVER_VIEW_PORT,
+  port: DEFAULT_TAILNET_OBSERVER_PORT,
   controllerEnabled: false,
   pairedSharingEnabled: false,
   webEnabled: false,

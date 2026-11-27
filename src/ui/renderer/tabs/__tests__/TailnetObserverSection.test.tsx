@@ -1,4 +1,5 @@
 import "../../../../../test/renderer/setup.js";
+import { DEFAULT_TAILNET_OBSERVER_PORT } from "../../../../shared/tailnet-observer-config.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
@@ -33,7 +34,7 @@ const CAPABILITY = "ave.example.com/cap/conversation-observer";
 const OFF: TailnetObserverConfigView = {
   enabled: false,
   authorization: { kind: "tailnet-identity" },
-  port: 46_173,
+  port: DEFAULT_TAILNET_OBSERVER_PORT,
   controllerEnabled: false,
   pairedSharingEnabled: false,
   webEnabled: false,
@@ -340,8 +341,8 @@ describe("TailnetObserverSection", () => {
 
   describe("putting the listener on the tailnet", () => {
     const listening = (overrides: Partial<TailnetObserverSnapshot> = {}) => snapshotOf({
-      listeningPort: 46_173,
-      serveCommand: "tailscale serve --bg --https=443 http://127.0.0.1:46173",
+      listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
+      serveCommand: `tailscale serve --bg --https=443 http://127.0.0.1:${DEFAULT_TAILNET_OBSERVER_PORT}`,
       ...overrides,
     });
 
@@ -352,7 +353,7 @@ describe("TailnetObserverSection", () => {
 
       const command = await screen.findByTestId("tailnet-observer-serve-command");
       expect(command.textContent)
-        .toBe("tailscale serve --bg --https=443 http://127.0.0.1:46173");
+        .toBe(`tailscale serve --bg --https=443 http://127.0.0.1:${DEFAULT_TAILNET_OBSERVER_PORT}`);
       // Shown, not run: nothing executes until the owner asks for it.
       expect(configureServe).not.toHaveBeenCalled();
     });

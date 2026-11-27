@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { DEFAULT_TAILNET_OBSERVER_PORT } from "../../shared/tailnet-observer-config.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -19,12 +20,12 @@ function wrap(profile = "(version 1)\n(allow default)", command = "printf 'safe 
 
 describe("typed repository marker rules", () => {
   it("denies the live Tailnet port while retaining the invocation proxy permit", () => {
-    const release = reserveTailnetListenerPort(46173);
+    const release = reserveTailnetListenerPort(DEFAULT_TAILNET_OBSERVER_PORT);
     try {
       const proxyPermit = '(allow network-outbound (remote ip "localhost:46174"))';
       const wrapped = hardenMacSandboxGitMetadata(wrap(`(version 1)\n(deny default)\n${proxyPermit}`));
       const profile = parseSandboxWrappedWords(wrapped.argv[2] ?? "")[4]?.value;
-      expect(profile).toContain('(deny network-outbound (remote ip "*:46173"))');
+      expect(profile).toContain(`(deny network-outbound (remote ip "*:${DEFAULT_TAILNET_OBSERVER_PORT}"))`);
       expect(profile).toContain(proxyPermit);
     } finally {
       release();

@@ -350,8 +350,6 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
           )}
           <p className="text-sm text-muted-foreground" data-testid="tailnet-setup-status-port">
             {`${t("tailnetObserver.portLabel")}: ${listeningPort ?? chosenPort ?? ""}`}
-            {/* A port nothing in the file names is one this desktop chose, and
-                saying so is what keeps "why is it not 46173" answerable. */}
             {snapshot.provenance.port === "unset" ? ` (${t("tailnetSetup.statusPortAuto")})` : ""}
           </p>
           <p className="text-sm text-muted-foreground" data-testid="tailnet-setup-status-serve">

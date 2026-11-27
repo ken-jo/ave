@@ -1,4 +1,5 @@
 import "../../../../../test/renderer/setup.js";
+import { DEFAULT_TAILNET_OBSERVER_PORT } from "../../../../shared/tailnet-observer-config.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
@@ -23,7 +24,7 @@ const SAFE_SNAPSHOT: TailnetSharingSnapshot = {
 const OBSERVER_OFF = {
   enabled: false,
   authorization: { kind: "tailnet-identity" as const },
-  port: 46_173,
+  port: DEFAULT_TAILNET_OBSERVER_PORT,
   controllerEnabled: false,
   pairedSharingEnabled: false,
   webEnabled: false,
@@ -98,7 +99,7 @@ function makeApi(options: { observerUnavailable?: boolean; sharingDisabled?: boo
         ok: true as const,
         snapshot: observerSnapshot(),
         webOrigin: "https://" + OBSERVER_DNS_NAME,
-        port: 46_173,
+        port: DEFAULT_TAILNET_OBSERVER_PORT,
         serve: "configured" as const,
       })),
     },

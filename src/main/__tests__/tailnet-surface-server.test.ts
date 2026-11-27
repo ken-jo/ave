@@ -1,5 +1,6 @@
 async function runGuardedOwnerOperation<T>(guard: () => void, operation: () => Promise<T>): Promise<T> { guard(); const result = await operation(); guard(); return result; }
 import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
+import { DEFAULT_TAILNET_OBSERVER_PORT } from "../../shared/tailnet-observer-config.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { createServer } from "node:net";
 import { occupyLoopbackPort as occupy, useTempDirs as trackTempDirs } from "../../__tests__/test-helpers.js";
@@ -19,7 +20,6 @@ import type { TailnetPairingDeviceStatus } from "../../api/tailnet-surface-serve
 import {
   chooseObserverPort,
   configureTailscaleServe,
-  DEFAULT_TAILNET_OBSERVER_PORT,
   getTailnetObserverRuntimeState,
   getTailnetPairedSharingRuntime,
   loadTailnetObserverConfig,
@@ -665,7 +665,7 @@ describe("Tailnet observer configuration surface", () => {
       [],
       "enabled",
       { enabled: "1" },
-      { enabled: true, port: "46173" },
+      { enabled: true, port: String(DEFAULT_TAILNET_OBSERVER_PORT) },
       { enabled: true, unknownKey: true },
       { enabled: true, authorization: "tailnet-identity" },
       { enabled: true, authorization: { kind: "app-capability" } },
@@ -733,7 +733,7 @@ describe("Tailscale environment probe", () => {
           kind: "ran",
           code: 0,
           stdout: JSON.stringify({
-            Web: { "desk.example-tailnet.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:46173" } } } },
+            Web: { "desk.example-tailnet.ts.net:443": { Handlers: { "/": { Proxy: `http://127.0.0.1:${DEFAULT_TAILNET_OBSERVER_PORT}` } } } },
           }),
           stderr: "",
         },
@@ -745,7 +745,7 @@ describe("Tailscale environment probe", () => {
     expect(environment.dnsName).toBe("desk.example-tailnet.ts.net");
     expect(environment.tailnetName).toBe("example-tailnet.ts.net");
     expect(environment.serveConfigured).toBe(true);
-    expect(environment.serveTargetPort).toBe(46_173);
+    expect(environment.serveTargetPort).toBe(DEFAULT_TAILNET_OBSERVER_PORT);
   });
 
   it("names a logged-out node instead of reporting an empty tailnet", async () => {
@@ -839,25 +839,25 @@ describe("Tailscale environment probe", () => {
 
 describe("Tailscale Serve configuration", () => {
   it("shows the command it will run, built from the argv it runs", () => {
-    expect(tailscaleServeCommandText("tailscale", 46_173))
-      .toBe("tailscale serve --bg --https=443 http://127.0.0.1:46173");
+    expect(tailscaleServeCommandText("tailscale", DEFAULT_TAILNET_OBSERVER_PORT))
+      .toBe(`tailscale serve --bg --https=443 http://127.0.0.1:${DEFAULT_TAILNET_OBSERVER_PORT}`);
   });
 
   it("runs the command for the owner and reports success", async () => {
     const runCommand = vi.fn(async () => ({ kind: "ran" as const, code: 0, stdout: "", stderr: "" }));
 
-    await expect(configureTailscaleServe({ cliPath: "tailscale", port: 46_173, runCommand }))
+    await expect(configureTailscaleServe({ cliPath: "tailscale", port: DEFAULT_TAILNET_OBSERVER_PORT, runCommand }))
       .resolves.toEqual({ ok: true });
     expect(runCommand).toHaveBeenCalledWith(
       "tailscale",
-      ["serve", "--bg", "--https=443", "http://127.0.0.1:46173"],
+      ["serve", "--bg", "--https=443", `http://127.0.0.1:${DEFAULT_TAILNET_OBSERVER_PORT}`],
     );
   });
 
   it("hands back what Tailscale printed when the command fails", async () => {
     const outcome = await configureTailscaleServe({
       cliPath: "tailscale",
-      port: 46_173,
+      port: DEFAULT_TAILNET_OBSERVER_PORT,
       runCommand: async () => ({
         kind: "ran" as const,
         code: 1,
@@ -1353,7 +1353,7 @@ describe("own-device admission", () => {
 describe("private work decision ingress", () => {
   const origin = "https://desk.example-tailnet.ts.net";
   const key = "desk.example-tailnet.ts.net:443";
-  const port = 46_173;
+  const port = DEFAULT_TAILNET_OBSERVER_PORT;
   const web = { [key]: { Handlers: { "/": { Proxy: `http://127.0.0.1:${port}` } } } };
   const config = { TCP: { "443": { HTTPS: true } }, Web: web };
 

@@ -1,6 +1,7 @@
 /** Every connection has one row; deep links must expand collapsed rows before locating their anchors. */
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
+import { DEFAULT_TAILNET_OBSERVER_PORT } from "../../../../shared/tailnet-observer-config.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { MarketplaceInstalledMessagingConnection } from "../../../../shared/marketplace-package-assets.js";
@@ -33,7 +34,7 @@ const TELEGRAM: MarketplaceInstalledMessagingConnection = {
 const OBSERVER_CONFIG = {
   enabled: false,
   authorization: { kind: "tailnet-identity" as const },
-  port: 46_173,
+  port: DEFAULT_TAILNET_OBSERVER_PORT,
   controllerEnabled: false,
   pairedSharingEnabled: false,
   webEnabled: false,
@@ -108,7 +109,7 @@ function makeApi(options: {
         ok: true as const,
         snapshot: observerSnapshot(),
         webOrigin: `https://${DNS_NAME}`,
-        port: 46_173,
+        port: DEFAULT_TAILNET_OBSERVER_PORT,
         serve: "configured" as const,
       })),
       setOwnDeviceAdmission: vi.fn(async () => ({ ok: true as const })),
@@ -271,7 +272,7 @@ describe("RemoteSurfacesTab", () => {
   describe("the folded Tailnet line", () => {
     const LISTENING = {
       effective: { ...OBSERVER_CONFIG, enabled: true },
-      listeningPort: 46_173,
+      listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
     };
 
     async function rowStateFor(snapshot: Record<string, unknown> | "rejected" | "unavailable") {
@@ -294,7 +295,7 @@ describe("RemoteSurfacesTab", () => {
     it("reads connected only once the listener is up and behind Serve", async () => {
       expect(await rowStateFor({
         ...LISTENING,
-        environment: { ...observerSnapshot().environment, serveConfigured: true, serveTargetPort: 46_173 },
+        environment: { ...observerSnapshot().environment, serveConfigured: true, serveTargetPort: DEFAULT_TAILNET_OBSERVER_PORT },
       })).toBe("연결됨");
       // Listening but not fronted by Serve: reachable from this desktop only.
       expect(await rowStateFor(LISTENING)).toBe("설정 필요");

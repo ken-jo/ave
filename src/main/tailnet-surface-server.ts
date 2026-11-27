@@ -20,6 +20,7 @@ import {
 } from "../api/tailnet-surface-server.js";
 import type { TailnetWorkDecisions } from "./tailnet-work-decisions.js";
 import {
+  DEFAULT_TAILNET_OBSERVER_PORT,
   isTailnetAppCapabilityKey,
   parseTailnetAuthorization,
   TAILNET_PORT_CONFINED_WORKER_RANGE,
@@ -46,8 +47,6 @@ import {
 import { TAILNET_WORK_DECISION_PATH } from "../shared/tailnet-work-decisions.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { assertTailnetListenerPortAllowed, readTailnetListenerPortPolicy } from "../permissions/tailnet-listener-policy.js";
-
-export const DEFAULT_TAILNET_OBSERVER_PORT = 46_173;
 
 export interface TailnetObserverConfig {
   readonly port: number;

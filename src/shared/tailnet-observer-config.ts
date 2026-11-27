@@ -136,7 +136,7 @@ export interface TailnetObserverConfigApi {
   setOwnDeviceAdmission(enabled: boolean): Promise<TailnetObserverMutationResult>;
 }
 
-export const DEFAULT_TAILNET_OBSERVER_VIEW_PORT = 46_173;
+export const DEFAULT_TAILNET_OBSERVER_PORT = 28_173;
 
 /** Reject spaces that split grant tokens and prototype-sensitive keys that index parsed headers. */
 export function isTailnetAppCapabilityKey(value: unknown): value is string {

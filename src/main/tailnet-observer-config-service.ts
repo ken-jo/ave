@@ -3,7 +3,6 @@ import { assertTailnetListenerPortAllowed } from "../permissions/tailnet-listene
 import {
   chooseObserverPort,
   configureTailscaleServe,
-  DEFAULT_TAILNET_OBSERVER_PORT,
   getTailnetObserverRuntimeState,
   isTailnetOwnDeviceAdmissionEnabled,
   loadTailnetObserverConfig,
@@ -21,7 +20,7 @@ import {
   type TailscaleEnvironment,
 } from "./tailnet-surface-server.js";
 import {
-  DEFAULT_TAILNET_OBSERVER_VIEW_PORT,
+  DEFAULT_TAILNET_OBSERVER_PORT,
   type TailnetGuidedSetupResult,
   type TailnetObserverConfigView,
   type TailnetObserverSnapshot,
@@ -70,7 +69,7 @@ function savedView(file: TailnetObserverConfigFile | null): TailnetObserverConfi
   return Object.freeze({
     enabled: file?.enabled === true,
     authorization: file?.authorization ?? { kind: "tailnet-identity" as const },
-    port: file?.port ?? DEFAULT_TAILNET_OBSERVER_VIEW_PORT,
+    port: file?.port ?? DEFAULT_TAILNET_OBSERVER_PORT,
     controllerEnabled: file?.controllerEnabled === true,
     pairedSharingEnabled: file?.pairedSharingEnabled === true,
     webEnabled: file?.webEnabled === true,

@@ -1,4 +1,5 @@
 import "../../../../../test/renderer/setup.js";
+import { DEFAULT_TAILNET_OBSERVER_PORT } from "../../../../shared/tailnet-observer-config.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
@@ -17,7 +18,7 @@ const WEB_ORIGIN = "https://" + DNS_NAME;
 const OFF: TailnetObserverConfigView = {
   enabled: false,
   authorization: { kind: "tailnet-identity" },
-  port: 46_173,
+  port: DEFAULT_TAILNET_OBSERVER_PORT,
   controllerEnabled: false,
   pairedSharingEnabled: false,
   webEnabled: false,
@@ -72,9 +73,9 @@ function configuredSnapshot(overrides: Partial<TailnetObserverSnapshot> = {}): T
   return snapshotOf({
     saved: ON,
     effective: ON,
-    listeningPort: 46_173,
-    serveCommand: "tailscale serve --bg --https=443 http://127.0.0.1:46173",
-    environment: { ...READY_ENVIRONMENT, serveConfigured: true, serveTargetPort: 46_173 },
+    listeningPort: DEFAULT_TAILNET_OBSERVER_PORT,
+    serveCommand: `tailscale serve --bg --https=443 http://127.0.0.1:${DEFAULT_TAILNET_OBSERVER_PORT}`,
+    environment: { ...READY_ENVIRONMENT, serveConfigured: true, serveTargetPort: DEFAULT_TAILNET_OBSERVER_PORT },
     ...overrides,
   });
 }
@@ -98,7 +99,7 @@ function makeApi(options: {
     ok: true as const,
     snapshot: configuredSnapshot(),
     webOrigin: WEB_ORIGIN,
-    port: 46_173,
+    port: DEFAULT_TAILNET_OBSERVER_PORT,
     serve: "configured" as const,
   }));
   const apply = vi.fn(async () => ({ ok: true as const }));
@@ -175,7 +176,7 @@ describe("TailnetSetupCard", () => {
           ok: true as const,
           snapshot: configuredSnapshot(),
           webOrigin: WEB_ORIGIN,
-          port: 46_173,
+          port: DEFAULT_TAILNET_OBSERVER_PORT,
           serve: "configured" as const,
         };
       });
@@ -409,7 +410,7 @@ describe("TailnetSetupCard", () => {
       render(<TailnetSetupCard api={api} onCreateInvitation={() => undefined} />);
 
       expect(await screen.findByTestId("tailnet-setup-status-port")).toHaveTextContent(
-        "46173 (chosen automatically)",
+        `${DEFAULT_TAILNET_OBSERVER_PORT} (chosen automatically)`,
       );
     });
 

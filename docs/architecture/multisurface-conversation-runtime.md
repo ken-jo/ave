@@ -49,7 +49,7 @@ AVE_TAILNET_OBSERVER=1
 AVE_TAILNET_OBSERVER_AUTHORIZATION=tailnet-identity
 # ...or the advanced boundary:
 # AVE_TAILNET_OBSERVER_AUTHORIZATION=app-capability:<owned-domain>/cap/ave-conversation
-AVE_TAILNET_OBSERVER_PORT=46173   # optional; fixed nonzero port
+# AVE_TAILNET_OBSERVER_PORT=<listener-port>  # optional; fixed nonzero port
 AVE_TAILNET_CONTROLLER=1          # optional; default OFF; requires paired sharing
 AVE_TAILNET_PAIRED_SHARING=1      # required for owner pairing/share and Web
 AVE_TAILNET_WEB=1                 # optional same-origin browser adapter
@@ -287,8 +287,10 @@ A Tailnet deployment owner may configure a matching, non-Funnel Serve target,
 for example:
 
 ~~~text
-tailscale serve --accept-app-caps=<owned-domain>/cap/ave-conversation http://127.0.0.1:46173
+tailscale serve --accept-app-caps=<owned-domain>/cap/ave-conversation http://127.0.0.1:<listener-port>
 ~~~
+
+Use the configured listener port or the [default port](../../src/shared/tailnet-observer-config.ts).
 
 This command is intentionally not executed by Ave. Do not leave a persistent
 Serve target pointing at the fixed port after the app exits: another local
