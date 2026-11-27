@@ -12,7 +12,7 @@ export class MxcExtensionChannel {
   private pending = 0;
   private tail: Promise<void> = Promise.resolve();
   private closed = false;
-  private failed = false;
+  private windowsWriteFailed = false;
   private readonly decoder: MxcFrameDecoder;
 
   constructor(readonly input: Readable, readonly output: Writable, private readonly generation: string,
@@ -20,27 +20,38 @@ export class MxcExtensionChannel {
     this.decoder = new MxcFrameDecoder(generation, key, role === "host" ? "supervisor" : "host", protocol);
   }
 
-  /** `admit` runs in the step that writes the frame. Its refusal sends nothing, takes no sequence number and leaves the
-   * channel open for the frames that end the process. */
   send(payload: MxcFramePayload, admit?: () => void): Promise<void> {
     if (this.pending >= 4 || this.closed || this.output.destroyed) return Promise.reject(new MxcProcessContractError("Supervisor send is not available"));
+    if (this.protocol === "windows-extension") return this.sendWindowsExtensionFrame(payload, admit);
+    const frame = encodeMxcFrame({ ...payload, version: 1, generation: this.generation, sequence: this.sequence++ } as MxcStreamFrame, this.key, this.role);
     this.pending += 1;
     const sent = this.tail.then(() => new Promise<void>((resolve, reject) => {
-      if (this.failed) { reject(new MxcProcessContractError("Supervisor send is not available")); return; }
+      this.output.write(frame, (error) => error ? reject(error) : resolve());
+    })).finally(() => { this.pending -= 1; });
+    this.tail = sent;
+    void sent.catch(() => { this.closed = true; });
+    return sent;
+  }
+
+  /** A refusal at the write boundary sends nothing and leaves the sequence and channel available. */
+  private sendWindowsExtensionFrame(payload: MxcFramePayload, admit: (() => void) | undefined): Promise<void> {
+    this.pending += 1;
+    const sent = this.tail.then(() => new Promise<void>((resolve, reject) => {
+      if (this.windowsWriteFailed) { reject(new MxcProcessContractError("Supervisor send is not available")); return; }
       let writing = false;
       const write = (): void => {
         writing = true;
-        const frame = encodeMxcFrame({ ...payload, version: 1, generation: this.generation, sequence: this.sequence++ } as MxcStreamFrame, this.key, this.role, this.protocol);
+        const frame = encodeMxcFrame({ ...payload, version: 1, generation: this.generation, sequence: this.sequence++ } as MxcStreamFrame, this.key, this.role, "windows-extension");
         this.output.write(frame, (error) => {
           if (!error) { resolve(); return; }
-          this.fail();
+          this.failWindowsWrite();
           reject(error);
         });
       };
       try {
         if (admit === undefined) write(); else commitUnderAdmission(admit, write);
       } catch (error) {
-        if (writing) this.fail();
+        if (writing) this.failWindowsWrite();
         reject(error as Error);
       }
     })).finally(() => { this.pending -= 1; });
@@ -48,8 +59,8 @@ export class MxcExtensionChannel {
     return sent;
   }
 
-  private fail(): void {
-    this.failed = true;
+  private failWindowsWrite(): void {
+    this.windowsWriteFailed = true;
     this.closed = true;
   }
 
