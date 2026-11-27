@@ -1019,12 +1019,13 @@ describe("Tailnet observer port state table", () => {
   interface PortCase {
     id: string;
     file: "none" | "on" | "off" | number;
-    route: "foreground" | "background" | "absent" | "failed" | "unavailable" | "unrelated";
+    route: "foreground" | "background" | "background-default" | "background-override" | "absent" | "failed" | "unavailable" | "unrelated";
     enable?: boolean;
     override?: number;
     priorListener?: boolean;
     occupied?: number;
     holdsDefault?: boolean;
+    removeOverride?: boolean;
     edit?: number;
     boot: number | null;
     draft: number;
@@ -1097,11 +1098,19 @@ describe("Tailnet observer port state table", () => {
       id: "C2 E6 B5 listener holds the default", file: "none", route: "absent", enable: true, override: defaultPort,
       holdsDefault: true, boot: defaultPort, draft: defaultPort, guided: defaultPort,
     },
+    {
+      id: "C11 E5 B3 override removed with existing default route", file: defaultPort, route: "background-default", enable: true,
+      override: overridePort, removeOverride: true, boot: overridePort, draft: defaultPort, guided: defaultPort,
+    },
+    {
+      id: "C11 E5 B3 route already on override", file: defaultPort, route: "background-override", enable: true,
+      override: overridePort, boot: overridePort, draft: defaultPort, guided: defaultPort,
+    },
   ];
 
   it.each(cases.flatMap(row => (["boot", "Settings", "guided setup"] as const).map(entry => ({ ...row, entry }))))(
     "$id through $entry",
-    async ({ file, route, enable, override, priorListener, occupied, holdsDefault, edit, boot, draft, guided, entry }) => {
+    async ({ file, route, enable, override, priorListener, occupied, holdsDefault, removeOverride, edit, boot, draft, guided, entry }) => {
       const dir = makeTempDir();
       const configPath = join(dir, "observer.json");
       const namespace = {
@@ -1123,14 +1132,26 @@ describe("Tailnet observer port state table", () => {
       const readConfigFile = () => readTailnetObserverConfigFile(namespace, env);
       const writeConfigFile = vi.fn((next: TailnetObserverConfigFile) => writeTailnetObserverConfigFile(next, namespace));
       let currentRoute = priorListener ? "background" : route;
+      const routePort = () => {
+        switch (currentRoute) {
+          case "foreground":
+          case "background": return legacyPort;
+          case "background-default": return defaultPort;
+          case "background-override": return overridePort;
+          case "unrelated": return 39_000;
+          default: return null;
+        }
+      };
+      let configuredRoutePort: number | null = null;
       const probeEnvironment = () => {
+        const routeTarget = configuredRoutePort ?? routePort();
         const Web = {
           "desk.example-tailnet.ts.net:443": {
-            Handlers: { "/": { Proxy: "http://127.0.0.1:" + (currentRoute === "unrelated" ? 39_000 : legacyPort) } },
+            Handlers: { "/": { Proxy: "http://127.0.0.1:" + routeTarget } },
           },
         };
         const serveStatus = currentRoute === "foreground" ? { Foreground: { session: { Web } } }
-          : currentRoute === "background" || currentRoute === "unrelated" ? { Web } : {};
+          : routeTarget !== null ? { Web } : {};
         return probeTailscaleEnvironment({
           platform: "linux",
           runCommand: runner({
@@ -1149,7 +1170,10 @@ describe("Tailnet observer port state table", () => {
         if (port === occupied) throw Object.assign(new Error("listen failed"), { code: "EADDRINUSE" });
         return { host: "127.0.0.1", port, close: vi.fn(async () => undefined) };
       });
-      const runServe = vi.fn(async () => ({ ok: true as const }));
+      const runServe = vi.fn(async ({ port }: { port: number }) => {
+        configuredRoutePort = port;
+        return { ok: true as const };
+      });
       const settings = createTailnetObserverConfigService({
         pairedSharingBootstrapFailed: () => false, env, readConfigFile, writeConfigFile, probeEnvironment, runServe,
         readOwnDeviceAdmission: async () => false,
@@ -1175,11 +1199,12 @@ describe("Tailnet observer port state table", () => {
             blocker.listen({ host: "127.0.0.1", port: defaultPort, exclusive: true }, resolve);
           });
         }
-        await assertBind(maybeStartTailnetObserverServer({
+        const start = () => maybeStartTailnetObserverServer({
           ...input,
           dependencies: { ...input.dependencies, readConfigFile, probeEnvironment },
           tailnetPairedSharingRuntime: fakeRuntime(fakeStore()),
-        }), boot);
+        });
+        await assertBind(start(), boot);
         if (priorListener) {
           currentRoute = route;
           await assertBind(restartTailnetObserverServer(), boot);
@@ -1226,9 +1251,22 @@ describe("Tailnet observer port state table", () => {
           expect(result).toMatchObject({ ok: false, error: TAILNET_OBSERVER_PORT_BLOCKED });
           expect(getTailnetObserverRuntimeState().portBlock).toMatchObject({ port: runtimePort });
           expect(runServe).not.toHaveBeenCalled();
+        } else if (override !== undefined && override !== writtenPort) {
+          const conflict = { ok: false, error: "tailnet-serve-port-override-conflict" };
+          expect.soft(result).toMatchObject(conflict);
+          await expect.soft(settings.configureServe()).resolves.toMatchObject(conflict);
+          expect.soft(runServe).not.toHaveBeenCalled();
+          if (removeOverride) {
+            await stopTailnetObserverServer();
+            resetTailnetObserverServerForTests();
+            delete env.AVE_TAILNET_OBSERVER_PORT;
+            await assertBind(start(), draft);
+            const after = await settings.snapshot();
+            expect(after.environment.serveTargetPort).toBe(after.listeningPort);
+          }
         } else {
           expect(result).toMatchObject({ ok: true, port: runtimePort });
-          if ((route === "foreground" || route === "background") && runtimePort === legacyPort) {
+          if (routePort() === runtimePort) {
             expect(runServe).not.toHaveBeenCalled();
           } else {
             expect(runServe).toHaveBeenCalledExactlyOnceWith({ cliPath: "tailscale", port: runtimePort });

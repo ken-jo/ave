@@ -251,15 +251,20 @@ interface TailnetObserverPortEvidence {
   readonly listeningPort?: number | null;
 }
 
+export function tailnetObserverPortOverride(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const override = env[ENV_KEY.port];
+  return override === undefined ? undefined : parseFixedPort(override);
+}
+
 export function resolveTailnetObserverPort(
   file: TailnetObserverConfigFile | null,
   env: NodeJS.ProcessEnv = process.env,
   evidence?: TailnetObserverPortEvidence,
   entryPoint: "boot" | "settings" | "guided-setup" = "boot",
 ): { port: number; canChoosePort: boolean } {
-  const override = env[ENV_KEY.port];
-  if (entryPoint === "boot" && override !== undefined) {
-    return { port: parseFixedPort(override), canChoosePort: false };
+  const override = entryPoint === "boot" ? tailnetObserverPortOverride(env) : undefined;
+  if (override !== undefined) {
+    return { port: override, canChoosePort: false };
   }
   if (file?.port !== undefined) {
     return { port: parseFixedPort(String(file.port)), canChoosePort: false };

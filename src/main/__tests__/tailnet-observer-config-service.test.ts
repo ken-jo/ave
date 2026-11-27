@@ -522,8 +522,8 @@ describe("Tailnet observer configuration service", () => {
           config: { port: DEFAULT_TAILNET_OBSERVER_PORT },
         });
       } else {
-        expect.soft(result).toMatchObject({ ok: true, port: override });
-        expect(runServe).toHaveBeenCalledExactlyOnceWith({ cliPath: "tailscale", port: override });
+        expect.soft(result).toMatchObject({ ok: false, error: "tailnet-serve-port-override-conflict" });
+        expect(runServe).not.toHaveBeenCalled();
       }
     });
 
@@ -541,8 +541,8 @@ describe("Tailnet observer configuration service", () => {
       }).guidedSetup();
 
       expect(writeConfigFile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port: savedPort }));
-      expect(runServe).toHaveBeenCalledExactlyOnceWith({ cliPath: "tailscale", port: override });
-      expect(result).toMatchObject({ ok: true, port: override });
+      expect(runServe).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ ok: false, error: "tailnet-serve-port-override-conflict" });
     });
 
     it("keeps a saved port this process is already listening on", async () => {

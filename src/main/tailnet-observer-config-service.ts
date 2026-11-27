@@ -13,6 +13,7 @@ import {
   restartTailnetObserverServer,
   setTailnetOwnDeviceAdmission,
   tailnetObserverEnableOverride,
+  tailnetObserverPortOverride,
   tailnetWebOriginFor,
   tailscaleServeCommandText,
   writeTailnetObserverConfigFile,
@@ -27,6 +28,8 @@ import {
   type TailnetServeResult,
   type TailscaleEnvironmentView,
 } from "../shared/tailnet-observer-config.js";
+
+const SERVE_PORT_OVERRIDE_CONFLICT = "tailnet-serve-port-override-conflict";
 
 export interface TailnetObserverConfigService {
   snapshot(): Promise<TailnetObserverSnapshot>;
@@ -238,7 +241,7 @@ export function createTailnetObserverConfigService(
     },
 
     async configureServe(): Promise<TailnetServeResult> {
-      const { listeningPort } = runtimeState();
+      const { listeningPort, establishedPort } = runtimeState();
       if (listeningPort === null) return serveFailure("tailnet-serve-not-listening", null);
       const environment = await probeEnvironment();
       if (environment.state !== "ready" || environment.cliPath === null) {
@@ -246,6 +249,15 @@ export function createTailnetObserverConfigService(
       }
       if (environment.dnsName === null) {
         return serveFailure("tailnet-serve-magic-dns-missing", null);
+      }
+      try {
+        if (tailnetObserverPortOverride(options.env) !== undefined) {
+          const file = await readConfigFile();
+          const durable = resolveTailnetObserverPort(file, options.env, { environment, establishedPort }, "settings");
+          if (durable.port !== listeningPort) return serveFailure(SERVE_PORT_OVERRIDE_CONFLICT, null);
+        }
+      } catch (err) {
+        return serveFailure(guidedErrorCode(err), null);
       }
       const outcome = await runServe({ cliPath: environment.cliPath, port: listeningPort });
       if (!outcome.ok) {
@@ -273,11 +285,13 @@ export function createTailnetObserverConfigService(
         file = null;
       }
 
+      let savedPort: number;
       try {
         const { establishedPort, listeningPort } = runtimeState();
         const selection = resolveTailnetObserverPort(file, options.env, { environment, establishedPort, listeningPort }, "guided-setup");
         const port = selection.canChoosePort ? await chooseObserverPort() : selection.port;
         if (port === null) return guidedFailure("tailnet-guided-setup-port-unavailable");
+        savedPort = port;
         await saveAndRestart(
           proposalToFile(recommendedConfig(port), tailnetWebOriginFor(environment.dnsName)),
         );
@@ -287,6 +301,9 @@ export function createTailnetObserverConfigService(
 
       const { listeningPort: port } = runtimeState();
       if (port === null) return guidedFailure("tailnet-serve-not-listening");
+      if (tailnetObserverPortOverride(options.env) !== undefined && port !== savedPort) {
+        return guidedFailure(SERVE_PORT_OVERRIDE_CONFLICT);
+      }
 
       // Serve already pointing at this exact port is the finished state, not a reason to run a command: re-running it is harmless but asks Tailscale for a
       // certificate the owner may not be able to obtain.

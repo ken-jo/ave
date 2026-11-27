@@ -6048,6 +6048,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "tailnetObserver.errorPairedSharingRuntime": "페어링 공유를 시작하지 못해, 리스너가 페어링 관문 없이 실행하기를 거부했습니다.",
   "tailnetObserver.errorListenerUnreachable": "이 세션에서 리스너가 실행 중이 아니어서 변경을 적용하지 못했습니다. 앱을 다시 시작하세요.",
   "tailnetObserver.errorServeNotListening": "테일넷에 올리기 전에 리스너를 먼저 실행하세요.",
+  "tailnetObserver.errorServePortOverride": "Serve를 구성하려면 환경 변수의 포트 재정의를 제거하고 앱을 다시 시작하거나 설정에서 해당 포트를 저장하세요.",
   "tailnetObserver.errorMagicDnsMissing": "Tailscale이 이 컴퓨터의 MagicDNS 이름을 보고하지 않아, 서비스할 주소가 없습니다.",
   "tailnetObserver.errorServeCommandFailed": "Tailscale이 Serve 명령을 완료하지 못했습니다. 아래가 그 출력입니다.",
   "tailnetObserver.errorKeyboardIntent": "이 창에서 작업을 직접 클릭해 확인하세요.",

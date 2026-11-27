@@ -6046,6 +6046,7 @@ export const en = {
   "tailnetObserver.errorPairedSharingRuntime": "Paired sharing could not start, so the listener refused to run without its pairing gate.",
   "tailnetObserver.errorListenerUnreachable": "The listener is not running in this session, so the change could not be applied. Restart the app.",
   "tailnetObserver.errorServeNotListening": "Start the listener before putting it on your tailnet.",
+  "tailnetObserver.errorServePortOverride": "Remove the environment port override and restart, or save that port in Settings before configuring Serve.",
   "tailnetObserver.errorMagicDnsMissing": "Tailscale did not report a MagicDNS name for this computer, so there is no address to serve.",
   "tailnetObserver.errorServeCommandFailed": "Tailscale did not complete the Serve command. Its output is below.",
   "tailnetObserver.errorKeyboardIntent": "Click the action directly in this window to confirm it.",
