@@ -2,7 +2,7 @@ import { answerEpochsOf, personAnswerStands } from "../permissions/pending-answe
 import { RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
-import { isConfinedHostShellExecution, requiresUnsandboxedShellAsk } from "../permissions/host-shell-execution-plan.js";
+import { isConfinedHostShellExecution, isWindowsContainerShell, requiresUnsandboxedShellAsk } from "../permissions/host-shell-execution-plan.js";
 import { randomUUID } from "node:crypto";
 import type { Tool } from "./base.js";
 import type { RuntimePlugin } from "../plugins/types.js";
@@ -361,7 +361,7 @@ export async function authorizeToolInvocation(
           runsSandboxed: isConfinedHostShellExecution(hostShellExecutionPlan, invocationPermissionContext.disposableSubstrate)
             || invocationPermissionContext.disposableSubstrate !== undefined,
           pathPolicyRelaxations: hostShellPathPolicyRelaxations ?? [],
-          ...(shellDialect === "bash" && preparedShellInvocation !== undefined && hostShellExecutionPlan.substrate !== "mxc"
+          ...(shellDialect === "bash" && preparedShellInvocation !== undefined && !isWindowsContainerShell(hostShellExecutionPlan)
             && invocationPermissionContext.disposableSubstrate === undefined
             ? { environmentSnapshot: preparedShellFacts(preparedShellInvocation).environment } : {}),
         } : terminalScope !== undefined

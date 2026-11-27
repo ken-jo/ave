@@ -125,12 +125,12 @@ describe("POSIX container filesystem ranking", () => {
 
   it("keeps a carved Library child readable with a nested deny in the deny block", () => {
     const home = lookups.home;
-    const library = home + "/Library";
-    const keychains = library + "/Keychains";
-    const ave = home + "/.ave";
+    const library = `${home}/Library`;
+    const keychains = `${library}/Keychains`;
+    const ave = `${home}/.ave`;
     const children = (path: string) => path === home ? ["Library", ".ave"] : [];
     const ranked = rankPosixContainerRows(model([deny(ave, "ave-home"), deny(keychains, "secrets")],
-      read(home), read(ave + "/open")), "seatbelt", { ...lookups, children });
+      read(home), read(`${ave}/open`)), "seatbelt", { ...lookups, children });
     expect(ranked.readonly).toContain(library);
     expect(ranked.denied).toContain(keychains);
   });

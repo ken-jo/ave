@@ -4,7 +4,7 @@ import { containerPlatform, containerTarget, isContainerHolderRouteEnabled, isCo
 describe("container platforms", () => {
   it.each([
     ["win32", "process-container", true, true, ["x64", "arm64"], "wxc-exec.exe"],
-    ["darwin", "seatbelt", false, false, ["arm64"], "mxc-exec-mac"],
+    ["darwin", "seatbelt", true, false, ["arm64"], "mxc-exec-mac"],
     ["linux", "bubblewrap", false, false, ["x64", "arm64"], "lxc-exec"],
   ] as const)("describes the backend and current route on %s", (platform, backend, shellRoute, holderRoute, arches, launcherFile) => {
     expect(containerPlatform(platform)).toEqual({ backend, shellRoute, holderRoute, arches, launcherFile });

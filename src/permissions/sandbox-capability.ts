@@ -363,15 +363,20 @@ export function detectPluginWorkerSandboxCapability(): SandboxCapability {
   };
 }
 // Resolve the boot-sealed shell plan from the capability that applies to the selected child.
-export function getHostShellExecutionPlan(executionMode: HostShellExecutionRequest = "default"): HostShellExecutionPlan {
+export function getHostShellExecutionPlan(
+  executionMode: HostShellExecutionRequest = "default",
+  consumer: "shell" | "hook" = "shell",
+): HostShellExecutionPlan {
   const generation = getSandboxGeneration();
-  const mxc = detectMxcShellCapability();
+  const darwin = process.platform === "darwin";
+  const selectsMacContainer = darwin && consumer === "shell" && isContainerShellRouteEnabled("darwin");
+  const mxc = darwin && consumer === "hook" ? undefined : detectMxcShellCapability();
   const privacyFailure = getAveHomePrivacyFailure();
   const plan = buildHostShellExecutionPlan({
     platform: process.platform,
     requestedSandbox: isShellSandboxRequestedAtBoot(),
     activeCapability: mxc ?? detectShellSandboxCapability(),
-    shellSubstrate: mxc === undefined ? "asrt" : "mxc",
+    shellSubstrate: mxc !== undefined ? "mxc" : selectsMacContainer ? "none" : "asrt",
     executionMode,
     unavailableCauses: _bootOutcome?.causes,
     unavailableSandboxRequiresAsk: privacyFailure !== undefined || windowsDenyUnenforceableAtBoot() !== undefined,

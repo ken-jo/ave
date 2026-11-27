@@ -27,6 +27,7 @@ export function splitSeatbeltPolicyRows(model: PolicyModel): {
   const literalRows: PolicyModel["rows"][number][] = [];
   const patternRows: PolicyFloorRow[] = [];
   for (const row of model.rows) {
+    checkProfileString(row.path);
     const unanchored = !posix.isAbsolute(row.path) && row.path !== "~" && !row.path.startsWith("~/");
     if (row.literal || !(unanchored || PATTERN_SPELLING.test(row.path))) {
       literalRows.push(row);
@@ -118,8 +119,8 @@ const SHELL_BASELINE = `(version 1)
 (allow file-read* (subpath "/dev/fd"))`;
 
 const FILE_WRITE_DENY = "file-write* file-write-create file-write-unlink";
-const WRITE_DENY = FILE_WRITE_DENY + " network-bind network-outbound";
-const READ_DENY = "file-read* file-read-metadata " + WRITE_DENY;
+const WRITE_DENY = `${FILE_WRITE_DENY} network-bind network-outbound`;
+const READ_DENY = `file-read* file-read-metadata ${WRITE_DENY}`;
 const MOVE_DENY = "file-write-unlink file-write-create";
 const RESERVED_PROFILE_TEXT = "com.microsoft.mxc.run.";
 
@@ -128,21 +129,21 @@ function checkProfileString(value: string): void {
     throw new SeatbeltDenyError("profile-control-character", "Container profile string contains a control character");
   }
   if (Buffer.byteLength(value) > MAX_SEATBELT_STRING_BYTES) {
-    throw new SeatbeltDenyError("profile-string-too-long", "Container profile string exceeds the limit: " + value);
+    throw new SeatbeltDenyError("profile-string-too-long", `Container profile string exceeds the limit: ${value}`);
   }
   if (value.includes(RESERVED_PROFILE_TEXT)) {
-    throw new SeatbeltDenyError("profile-reserved-name", "Container profile string uses a reserved name: " + value);
+    throw new SeatbeltDenyError("profile-reserved-name", `Container profile string uses a reserved name: ${value}`);
   }
 }
 
 function pathFilter(operation: "literal" | "subpath", path: string): string {
   checkProfileString(path);
-  if (!posix.isAbsolute(path)) throw new SeatbeltDenyError("relative-row", "Invalid container profile path: " + path);
-  return "(" + operation + " " + JSON.stringify(path) + ")";
+  if (!posix.isAbsolute(path)) throw new SeatbeltDenyError("relative-row", `Invalid container profile path: ${path}`);
+  return `(${operation} ${JSON.stringify(path)})`;
 }
 
 function addDeny(forms: string[], operations: string, filters: readonly string[]): void {
-  if (filters.length > 0) forms.push("(deny " + operations + " " + filters.join(" ") + ")");
+  if (filters.length > 0) forms.push(`(deny ${operations} ${filters.join(" ")})`);
 }
 
 function patternBase(path: string, lookups: SuffixLookups): string | undefined {
@@ -154,8 +155,8 @@ function patternBase(path: string, lookups: SuffixLookups): string | undefined {
 
 function caseVariantFilter(path: string, root: string): string {
   const tail = path.slice(root.length).replace(/[a-z]|[^a-z]+/giu, part => /^[a-z]$/iu.test(part)
-    ? "[" + part.toLowerCase() + part.toUpperCase() + "]" : escapeRegex(part));
-  return regexFilter("^" + escapeRegex(root) + tail + "(/.*)?$");
+    ? `[${part.toLowerCase()}${part.toUpperCase()}]` : escapeRegex(part));
+  return regexFilter(`^${escapeRegex(root)}${tail}(/.*)?$`);
 }
 
 export function buildSeatbeltShellProfile(input: {
@@ -169,7 +170,6 @@ export function buildSeatbeltShellProfile(input: {
   if (!Number.isInteger(proxyPort) || proxyPort < 1 || proxyPort > 65535) {
     throw new SeatbeltDenyError("proxy-invalid", "Container profile requires a valid loopback proxy port");
   }
-  for (const row of model.rows) checkProfileString(row.path);
   const { literalModel, patternRows } = splitSeatbeltPolicyRows(model);
   const { readwrite, readonly, denied, chainFolders, ungrantedDenies } = grants;
   const subpath = (path: string) => pathFilter("subpath", path);
@@ -179,18 +179,20 @@ export function buildSeatbeltShellProfile(input: {
   const rows = [...readwrite, ...readonly].toSorted((a, b) => a.split("/").length - b.split("/").length);
   const writable = new Set(readwrite);
   const forms = [SHELL_BASELINE, ...rows.map(path =>
-    "(allow file-read*" + (writable.has(path) ? " file-write*" : "") + " " + subpath(path) + ")")];
+    `(allow file-read*${writable.has(path) ? " file-write*" : ""} ${subpath(path)})`)];
   for (const root of unixSocketRoots) {
-    forms.push("(allow network-bind (local unix-socket " + subpath(root) + "))");
-    forms.push("(allow network-outbound (remote unix-socket " + subpath(root) + "))");
+    forms.push(`(allow network-bind (local unix-socket ${subpath(root)}))`);
+    forms.push(`(allow network-outbound (remote unix-socket ${subpath(root)}))`);
   }
-  forms.push('(allow network-outbound (remote ip "localhost:' + proxyPort + '"))');
+  forms.push(`(allow network-outbound (remote ip "localhost:${proxyPort}"))`);
 
-  const strips = readonly.filter(path => readwrite.some(root => atOrBelow(path, root)));
-  addDeny(forms, WRITE_DENY, strips.map(subpath));
+  const strips = readonly.flatMap(path => {
+    const root = readwrite.filter(parent => atOrBelow(path, parent)).sort((a, b) => b.length - a.length)[0];
+    return root === undefined ? [] : [{ path, root }];
+  });
+  addDeny(forms, WRITE_DENY, strips.map(({ path }) => subpath(path)));
   if (!lookups.foldsCase) {
-    for (const path of strips) {
-      const root = readwrite.filter(root => atOrBelow(path, root)).sort((a, b) => b.length - a.length)[0]!;
+    for (const { path, root } of strips) {
       addDeny(forms, WRITE_DENY, [caseVariantFilter(path, root)]);
     }
   }
@@ -204,13 +206,13 @@ export function buildSeatbeltShellProfile(input: {
     ];
     if (exceptions.length === 0) plainDenies.push(filter);
     else addDeny(forms, READ_DENY, ["(require-all " + filter + " " +
-      exceptions.map(exception => "(require-not " + exception + ")").join(" ") + ")"]);
+      exceptions.map(exception => `(require-not ${exception})`).join(" ") + ")"]);
   }
   addDeny(forms, READ_DENY, plainDenies);
 
   forms.push(macWriteRootNameRules(readwrite), macWriteRootLinkedNameRules(readwrite), GIT_METADATA_RULES);
   const pins = new Set<string>();
-  for (const path of [...strips, ...denied, ...literalModel.rows.filter(row => row.access === "ro" && isPolicyFloorRow(row))
+  for (const path of [...strips.map(strip => strip.path), ...denied, ...literalModel.rows.filter(row => row.access === "ro" && isPolicyFloorRow(row))
     .map(row => canonicalPath(row.path, row.literal, lookups))]) {
     for (let parent = posix.dirname(path); parent !== "/"; parent = posix.dirname(parent)) pins.add(parent);
   }
@@ -219,12 +221,12 @@ export function buildSeatbeltShellProfile(input: {
       [regexFilter(seatbeltDenyGlob(row.path, row.reason === "protected-name", lookups))]);
     const base = patternBase(row.path, lookups);
     if (base !== undefined) {
-      if (!posix.isAbsolute(base)) throw new SeatbeltDenyError("relative-row", "Invalid container pattern base: " + base);
+      if (!posix.isAbsolute(base)) throw new SeatbeltDenyError("relative-row", `Invalid container pattern base: ${base}`);
       for (let parent = posix.normalize(base).replace(/\/+$/u, "") || "/"; parent !== "/"; parent = posix.dirname(parent)) pins.add(parent);
     }
   }
   addDeny(forms, MOVE_DENY, [...pins].map(literal));
-  const profile = forms.filter(Boolean).join("\n") + "\n";
+  const profile = `${forms.filter(Boolean).join("\n")}\n`;
   if (profile.includes(RESERVED_PROFILE_TEXT)) {
     throw new SeatbeltDenyError("profile-reserved-name", "Container profile uses a reserved name");
   }

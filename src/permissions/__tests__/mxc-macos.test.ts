@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { _detectMxcMacShellSupportForTest, _seatbeltCanaryPassedForTest } from "../mxc-macos.js";
+import { _detectMxcMacShellSupportForTest, _seatbeltCanaryPassedForTest, buildSeatbeltShellRequest } from "../mxc-macos.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-model.js";
 
 describe("macOS container shell detector", () => {
   function makeDependencies() {
@@ -88,5 +89,42 @@ describe("macOS container shell canary evidence", () => {
     ["ancestor move", { protectedParentInPlace: false }],
   ] as const)("fails on %s", (_case, evidence) => {
     expect(_seatbeltCanaryPassedForTest({ ...success, ...evidence })).toBe(false);
+  });
+});
+
+describe("macOS container shell request", () => {
+  const model = buildPolicyModel({
+    floors: [policyFloorRow("/fixture/private", "denied", "read-boundary", true)],
+    launchGrants: [policyGrantRow("/fixture", "ro", "launch-grant", true),
+      policyGrantRow("/fixture/private/open", "rw", "launch-grant", true)],
+    userGrants: [], extensionManifests: [],
+  });
+  const input = {
+    model, cwd: "/fixture", proxyUrl: "http://127.0.0.1:8444", timeoutMs: 2500,
+    env: { HOME: "/fixture/private/open", PATH: "/usr/bin:/bin", HTTPS_PROXY: "http://example.invalid", NO_PROXY: "*" },
+    lookups: { home: "/fixture", foldsCase: true, exists: () => true, canonical: (path: string) => path, children: () => [] },
+    commandLine: "exec '/bin/sh' '-c' 'printf control'",
+  };
+
+  it("serializes one profile override and admits the carved cwd with an explicit environment", () => {
+    const { request } = buildSeatbeltShellRequest(input);
+    const { profileOverride, ...seatbelt } = request.seatbelt;
+    expect(profileOverride).toContain('(allow network-outbound (remote ip "localhost:8444"))');
+    expect({ ...request, seatbelt }).toEqual({
+      version: "1.0.0", containment: "seatbelt",
+      process: { commandLine: "exec '/bin/sh' '-c' 'printf control'", cwd: "/fixture", timeout: 2500,
+        inheritDefaultEnv: false, env: ["HOME=/fixture/private/open", "PATH=/usr/bin:/bin"] },
+      filesystem: { readwritePaths: ["/fixture/private/open"], readonlyPaths: [], deniedPaths: [] },
+      network: { egress: { default: "deny" }, ingress: { default: "deny", hostLoopback: "deny" } },
+      runtimeConfig: { networkProxy: "http://127.0.0.1:8444" }, seatbelt: { nestedPty: false },
+      ui: { disable: true, clipboard: "none", injection: false },
+    });
+  });
+
+  it("refuses an ungranted cwd and a non-loopback proxy by name", () => {
+    expect(() => buildSeatbeltShellRequest({ ...input, cwd: "/fixture/private/sealed" }))
+      .toThrow(expect.objectContaining({ code: "cwd-ungranted" }));
+    expect(() => buildSeatbeltShellRequest({ ...input, proxyUrl: "https://127.0.0.1:8444" }))
+      .toThrow(expect.objectContaining({ code: "proxy-invalid" }));
   });
 });

@@ -111,7 +111,7 @@ describe("Seatbelt shell profile", () => {
 
   it.each([
     ["/unsafe\npath", "profile-control-character"],
-    ["/" + "é".repeat(500), "profile-string-too-long"],
+    [`/${"é".repeat(500)}`, "profile-string-too-long"],
     ["/com.microsoft.mxc.run.reserved", "profile-reserved-name"],
   ])("refuses invalid profile strings with a named reason", (path, code) => {
     expect(() => buildSeatbeltShellProfile({ ...fixture(), unixSocketRoots: [path] }))

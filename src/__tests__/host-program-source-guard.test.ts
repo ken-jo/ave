@@ -87,6 +87,7 @@ const LAUNCH_FILES = [
   "shared/windows-path-facts.ts",
   "tools/grep-search.ts",
   "tools/image-preparation.ts",
+  "tools/mxc-posix-shell-launch.ts",
   "tools/preview-document-process.ts",
   "tools/shell-tools.ts",
 ];

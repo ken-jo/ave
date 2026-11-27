@@ -61,7 +61,7 @@ import {
   POWERSHELL_RECURSIVE_TRAVERSAL_REASON,
 } from "../shared/powershell-recursive-traversal.js";
 import { getPolicyHome } from "../shared/policy-home.js";
-import { hostPathForShellPath } from "../lib/shell-resolver.js";
+import { hostPathForShellPath, shellQuote } from "../lib/shell-resolver.js";
 import { ShellCwdProbeFilter, type ShellCwdProbe } from "./shell-cwd-probe.js";
 import { clearShellSessionCwd, recordShellSessionCwd } from "./shell-session-cwd.js";
 import { createLiveOutputStream, toolOutputProgressFromMetadata, type ToolOutputProgressSink } from "./tool-output-progress.js";
@@ -94,6 +94,7 @@ import {
 import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
 import { isWindowsPathAtOrUnder, MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
+import { prepareMxcPosixShellLaunch } from "./mxc-posix-shell-launch.js";
 import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
 import { deferWatchedReceipt } from "../permissions/windows-watched-rows.js";
 import { createContainedShellLifecycle } from "./contained-shell-lifecycle.js";
@@ -109,6 +110,7 @@ import {
   getHostShellExecutionPlanAuditProjection,
   HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL,
   isHomePrivacyHelperUnavailablePlan,
+  isWindowsContainerShell,
   requiresExplicitHostShellApproval,
   type HostShellExecutionPlan,
 } from "../permissions/host-shell-execution-plan.js";
@@ -1809,7 +1811,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
         metadata: { sandboxed: false, isolation: "none" },
       };
     }
-    if (!disposableExecution && hostShellPlan.mode === "asrt" && hostShellPlan.substrate === "mxc") {
+    if (!disposableExecution && hostShellPlan.mode === "asrt" && isWindowsContainerShell(hostShellPlan)) {
       // Git Bash (MSYS2) cannot start inside an MXC container: its runtime is
       // denied the named-object directory it creates at startup (measured,
       // 0xC0000022, in every session). The PowerShell tool runs contained;
@@ -1839,7 +1841,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
         resolvedCwd,
         writePaths,
         input.timeoutSeconds, prepared, ctx.abortSignal, outputCapture,
-        outputProgress, holdsOutput, boundarySessionOf(ctx),
+        outputProgress, holdsOutput, boundarySessionOf(ctx), hostShellPlan,
       ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
       if (checked.refused) return checked.result;
       return withBackgroundUnavailable(
@@ -2541,6 +2543,109 @@ function powerShellParserEnding(aborted: boolean, timedOut: boolean, timeoutSeco
   return code === null ? "PowerShell parser ended without an exit code." : `PowerShell parser exited with code ${code}.`;
 }
 
+async function runPosixContainerShell(input: {
+  readonly command: string;
+  readonly commandLine: string;
+  readonly cwd: string;
+  readonly writePaths: readonly string[];
+  readonly readPaths: readonly string[];
+  readonly homePath: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly timeoutSeconds: number;
+  readonly toolName: "bash" | "powershell";
+  readonly toolUseId: string | undefined;
+  readonly sessionId: string | undefined;
+  readonly signal: AbortSignal | undefined;
+  readonly outputCaptureFactory: BoundOutputCaptureFactory | undefined;
+  readonly progress: ToolOutputProgressSink | undefined;
+  readonly cwdProbe?: ShellCwdProbe;
+}): Promise<SpawnResult> {
+  const lifecycle = createContainedShellLifecycle();
+  const label = `tool:${input.toolName}:mxc-posix`;
+  let result: SpawnResult;
+  let observation: AgentTerminalObservationLease | undefined;
+  let collector: ReturnType<typeof createOutputCollector> | undefined;
+  try {
+    input.signal?.throwIfAborted();
+    const writePaths = [...input.writePaths, input.homePath];
+    const boundary = createAveHomeBoundarySnapshot(input.sessionId);
+    const read = getBuiltinShellReadPolicy(
+      [input.cwd, ...writePaths, ...input.readPaths], getPolicyHome(), input.homePath, boundary, "mxc",
+    );
+    const egress = openEgressInvocation({
+      kind: "shell", toolName: input.toolName, toolUseId: input.toolUseId,
+      requiresListener: true, context: ambientShellEgressContext(),
+    }, input.signal ? { abortSignal: input.signal } : {});
+    lifecycle.onRevoke(() => egress.release());
+    const timeoutMs = resolveShellTimeoutMs(input.timeoutSeconds);
+    const launch = await boundary.run(() => prepareMxcPosixShellLaunch({
+      egressToken: egress.token, commandLine: input.commandLine, cwd: input.cwd,
+      allowRead: read.allowRead, allowWrite: writePaths, denyRead: read.denyRead, floorPierces: read.floorPierces,
+      env: input.env, timeoutMs,
+    }, lifecycle));
+    await refreshShellRemoteAuthority();
+    input.signal?.throwIfAborted();
+    observation = startShellObservation(input.command, input.cwd,
+      { mode: "isolated", detail: "filesystem/process confinement" }, egress.token);
+    assertShellRemoteAuthority();
+    assertManagedChildProcessAdmissionOpen(label);
+    const { child, completion } = launch.start(label);
+    // Own the spawned supervisor even when output setup throws.
+    void completion.catch(() => {});
+    collector = createOutputCollector(child, {
+      captureFactory: input.outputCaptureFactory, progress: input.progress, observation, cwdProbe: input.cwdProbe,
+    });
+    child.stdout.on("data", collector.collect);
+    child.stderr.on("data", collector.collectStderr);
+    const exit = await completion;
+    const interrupted = exit.cancelled || exit.timedOut || exit.signal !== null;
+    const artifact = await collector.finish(interrupted);
+    collector.finishObservation(exit.code, exit.cancelled ? "cancelled" : interrupted || exit.rejected ? "failed" : undefined);
+    if (exit.rejected) {
+      result = {
+        output: t("sandboxPolicy.containerStartRefused"), isError: true,
+        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+      };
+    } else {
+      const policyNotices = [...read.policyNotices,
+        ...(launch.carvedReadLimitedAt?.map(folder => t("sandboxPolicy.carvedReadLimited", { folder })) ?? []),
+        ...launch.narrowedWriteRoots.map(({ root }) => t("sandboxPolicy.containerWriteWithheld", { root })),
+      ];
+      const format = interrupted || exit.code === 255
+        ? collector.format() : collector.format({ code: exit.code, signal: exit.signal });
+      const ending = exit.cancelled ? t("sandboxPolicy.containerShellCancelled")
+        : exit.timedOut ? t("sandboxPolicy.containerShellTimedOut", { seconds: timeoutMs / 1000 })
+          : exit.code === 255 ? t("sandboxPolicy.containerShellExit255") : "";
+      const output = await annotateWithSandboxViolations(egress.token, [format, ending].filter(Boolean).join("\n"), undefined, policyNotices);
+      result = {
+        output, isError: interrupted || exit.code !== 0,
+        reportedCwd: collector.reportedCwd(),
+        metadata: { ...artifact, returncode: exit.code, timedOut: exit.timedOut, sandboxed: true,
+          ...(exit.cancelled ? { aborted: true } : {}) },
+      };
+      if (!interrupted && exit.code !== null && exit.code !== 0) {
+        result = await attachFilesystemBlock(result, egress.token, input.command, input.cwd);
+      }
+    }
+  } catch (error) {
+    lifecycle.revoke();
+    const failures = await runReleaseSteps([
+      async () => { await collector?.finish(true); },
+      () => collector ? collector.finishObservation(null, "failed") : observation?.finish(null, "failed"),
+    ]);
+    logReleaseFailures(label, failures);
+    if (error instanceof Error && error.message === "remote-controller-revoked") {
+      logReleaseFailures(label, await lifecycle.dispose());
+      throw error;
+    }
+    result = input.signal?.aborted
+      ? { output: t("sandboxPolicy.containerShellCancelled"), isError: true, metadata: { aborted: true, sandboxed: false } }
+      : { output: t("sandboxPolicy.containerShellRefused", { reason: shellFailureText([error], "code") }), isError: true,
+        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } };
+  }
+  return withReleaseFailures(result, await lifecycle.dispose(), "code");
+}
+
 export async function spawnWithSandbox(
   command: string,
   resolvedCwd: string,
@@ -2552,12 +2657,22 @@ export async function spawnWithSandbox(
   progress?: ToolOutputProgressSink,
   waitForClose = false,
   sessionId?: string,
+  plan?: HostShellExecutionPlan,
 ): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
   try {
   signal?.throwIfAborted();
-  const { shell, homePath, hostHome: home } = preparedShellCommand(prepared);
+  const { shell, homePath, hostHome: home, environment } = preparedShellCommand(prepared);
   if (!homePath) throw new Error("Sandbox shell preparation has no owned HOME");
+  if (plan?.platform === "darwin" && plan.substrate === "mxc") {
+    const { argv, probe } = preparedShellCwdProbe(prepared);
+    return await runPosixContainerShell({
+      command, commandLine: `exec ${[shell.cmd, ...argv].map(shellQuote).join(" ")}`, cwd: resolvedCwd,
+      writePaths, readPaths: [...preparedShellExecutableReadPaths(prepared), shell.cmd], homePath, env: environment,
+      timeoutSeconds, toolName: "bash", toolUseId: preparedShellToolUseId(prepared), sessionId,
+      signal, outputCaptureFactory, progress, ...(probe === undefined ? {} : { cwdProbe: probe }),
+    });
+  }
   // Compose broad reads while retaining protected paths and private sessions.
   const sandboxWritePaths = [...writePaths, homePath];
   // One Ave home boundary snapshot serves this command's read policy and its wrap.
@@ -3543,7 +3658,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       const runtimeReads = powerShellHostScriptReadPaths(commandAst, input.command);
       const command = runtimeReads.length > 0 ? awaitedHostScriptCommand(input.command, commandAst.commands[0]!) : input.command;
       if (command === null) return { output: "PowerShell command blocked: host script runtime has no parser extent", isError: true };
-      if (hostShellPlan.substrate === "mxc") {
+      if (isWindowsContainerShell(hostShellPlan)) {
         const checked = await checkedShellResult(() => spawnPowerShellInMxc(
           command,
           resolvedCwd,
@@ -3564,7 +3679,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         input.timeoutSeconds, ctx.abortSignal, outputCapture,
         outputProgress,
         typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
-        runtimeReads, verified, boundarySessionOf(ctx), commandReadPaths,
+        runtimeReads, verified, boundarySessionOf(ctx), commandReadPaths, hostShellPlan,
       ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
       const block = sandboxBlockForResult(checked.result);
       if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
@@ -3930,6 +4045,7 @@ async function spawnPowerShellWithSandbox(
   verified?: VerifiedPowerShellExecution,
   sessionId?: string,
   commandReadPaths: readonly string[] = [],
+  plan?: HostShellExecutionPlan,
 ): Promise<ToolExecutionResult> {
   const waitForClose = verified !== undefined && verifiedShellRequiresResultCheck(verified.handle, verified.identity);
   signal?.throwIfAborted();
@@ -3952,6 +4068,18 @@ async function spawnPowerShellWithSandbox(
   catch (error) { sandboxHome.cleanup(); throw error; }
   const sandboxCommand = isWindows ? powerShellLaunch.args.at(-1)!
     : [executable, ...powerShellLaunch.args].map(posixSingleQuote).join(" ");
+  if (plan?.platform === "darwin" && plan.substrate === "mxc") {
+    try {
+      return await runPosixContainerShell({
+        command, commandLine: `exec ${sandboxCommand}`, cwd, writePaths,
+        readPaths: [executable, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])],
+        homePath: sandboxHome.path, env: powerShellExecutionEnvironment(verified, powerShellLaunch.env),
+        timeoutSeconds, toolName: "powershell", toolUseId, sessionId, signal, outputCaptureFactory, progress,
+      });
+    } finally {
+      sandboxHome.cleanup();
+    }
+  }
   const binShell = isWindows
     ? { exe: executable, args: powerShellLaunch.args.slice(0, -1) } : undefined;
 

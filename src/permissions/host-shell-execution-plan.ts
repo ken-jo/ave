@@ -211,7 +211,7 @@ export function buildHostShellExecutionPlan(input: {
   requestedSandbox: boolean;
   activeCapability: SandboxCapability;
   // What would confine a sandboxed child: `mxc` only when the host's MXC route is live and `activeCapability` is that route's capability. Defaults to the ASRT wrap.
-  shellSubstrate?: "asrt" | "mxc";
+  shellSubstrate?: "asrt" | "mxc" | "none";
   executionMode?: HostShellExecutionRequest;
   // Boot could not establish Ave home privacy (any category but helper-unavailable, which `unconfinedShellDenied` blocks): every plain host shell
   // then needs a human ask for every command.
@@ -256,7 +256,7 @@ export function buildHostShellExecutionPlan(input: {
   const noConfinementAskSuffix = (input.homePrivacyVerified === true && !askEveryCommand ? EXACT_RULE_PASS_MARKER : "") + ASK_EVERY_COMMAND_SUFFIX;
 
   if (executionRequest === "host") {
-    const forcedAsk = askEveryCommand || (requestedSandbox && !hasShellContainment(input.activeCapability));
+    const forcedAsk = askEveryCommand || (requestedSandbox && (shellSubstrate === "none" || !hasShellContainment(input.activeCapability)));
     return Object.freeze({
       version: HOST_SHELL_EXECUTION_PLAN_VERSION,
       platform: input.platform,
@@ -294,7 +294,7 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  if (!hasShellContainment(input.activeCapability)) {
+  if (shellSubstrate === "none" || !hasShellContainment(input.activeCapability)) {
     const missing = input.activeCapability.kind === "none";
     const fallbackReason: HostShellFallbackReason = missing
       ? "requested-sandbox-unavailable"
@@ -401,6 +401,10 @@ export function parseHostShellExecutionInput(
 
 // Only the actual host-shell confinement plan establishes proxy-limited egress.
 // A broker guest has its own network policy and cannot inherit this authority.
+export function isWindowsContainerShell(plan: Pick<HostShellExecutionPlan, "platform" | "substrate"> | undefined): boolean {
+  return plan?.platform === "win32" && plan.substrate === "mxc";
+}
+
 export function isConfinedHostShellExecution(
   plan: HostShellExecutionPlan | undefined,
   disposableSubstrate: DisposableSubstrate | undefined,

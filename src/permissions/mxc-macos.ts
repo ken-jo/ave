@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, lstatSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
@@ -9,7 +8,7 @@ import { raceWithTimeout } from "../shared/abortable-deadline.js";
 import type { SandboxMacContainerShellSupport, SandboxMacContainerShellUnavailableReason } from "../shared/sandbox-capability-info.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
-import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
+import { launcherPathFor, resolveHostLauncherPath } from "./mxc-launcher.js";
 import { atOrUnder, canonicalPath, posixPolicyLookups, rankPosixContainerRows, type PosixPolicyLookups } from "./mxc-posix.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "./policy-model.js";
@@ -45,11 +44,11 @@ export function buildSeatbeltShellRequest(input: {
   const inChain = grants.chainFolders.some(root => coversCwd(root) && atOrUnder(root, cwd, lookups.foldsCase));
   if (!lookups.exists(cwd) || grants.denied.some(coversCwd)
     || (!inChain && ![...grants.readonly, ...grants.readwrite].some(coversCwd))) {
-    throw new SeatbeltShellRequestError("cwd-ungranted", "Container shell working directory is outside its filesystem grants: " + cwd);
+    throw new SeatbeltShellRequestError("cwd-ungranted", `Container shell working directory is outside its filesystem grants: ${cwd}`);
   }
   const profileOverride = buildSeatbeltShellProfile({ model, grants, lookups, unixSocketRoots: [], proxyPort });
   const env = Object.entries(input.env).flatMap(([key, value]) =>
-    key && !key.includes("=") && !PROXY_ENV_KEYS.has(key.toLowerCase()) ? [key + "=" + value] : []);
+    key && !key.includes("=") && !PROXY_ENV_KEYS.has(key.toLowerCase()) ? [`${key}=${value}`] : []);
   return {
     grants,
     request: {
@@ -93,19 +92,6 @@ async function detectMxcMacShellSupport(deps: MacShellProbeDependencies): Promis
   return verdict === "available" ? { state: "available" } : unavailable(verdict);
 }
 
-const verifiedLaunchers = new Map<string, Promise<boolean>>();
-
-function verifyLauncher(launcher: string): Promise<boolean> {
-  const previous = verifiedLaunchers.get(launcher);
-  if (previous !== undefined) return previous;
-  const verified = readFile(launcher).then(
-    bytes => createHash("sha256").update(bytes).digest("hex") === pinnedLauncherSha256("darwin-arm64"),
-    () => false,
-  );
-  verifiedLaunchers.set(launcher, verified);
-  return verified;
-}
-
 export function detectHostMxcMacShellSupport(resourcePath: string, signal?: AbortSignal): Promise<SandboxMacContainerShellSupport> {
   signal?.throwIfAborted();
   if (!isAbsolute(resourcePath)) throw new Error("Container launcher resources must be absolute");
@@ -113,7 +99,7 @@ export function detectHostMxcMacShellSupport(resourcePath: string, signal?: Abor
     arch: process.arch,
     launcherPath: () => launcherPathFor(resourcePath, "darwin", process.arch),
     exists: existsSync,
-    verifyPin: verifyLauncher,
+    verifyPin: () => resolveHostLauncherPath("darwin-arm64", resourcePath).then(() => true, () => false),
     requireRuntimeRoot: requireMxcContainerStartRoot,
     async canary(launcher, root) {
       try {
@@ -218,7 +204,7 @@ async function runSeatbeltCanary(launcher: string, root: string, signal?: AbortS
     const floors = [
       policyFloorRow(sealed, "denied", "read-boundary", true),
       policyFloorRow(protectedChild, "ro", "protected-name", true),
-      policyFloorRow(working + "/**/*.locked", "ro", "protected-name", false),
+      policyFloorRow(`${working}/**/*.locked`, "ro", "protected-name", false),
     ];
     const model = buildPolicyModel({
       floors, userGrants: [], extensionManifests: [],
@@ -243,14 +229,14 @@ async function runSeatbeltCanary(launcher: string, root: string, signal?: AbortS
       `/usr/bin/nc -z -w 1 127.0.0.1 ${proxyPort} || exit 15`,
       `if /usr/bin/nc -z -w 1 127.0.0.1 ${otherPort}; then exit 16; fi`,
       `if /bin/mv ${quoteSandboxWrappedWord(parent)} ${quoteSandboxWrappedWord(renamed)}; then exit 17; fi`,
-      "if /usr/bin/stat " + quoteSandboxWrappedWord(protectedFile) + "; then exit 18; fi",
-      "if /usr/bin/nc -z -U " + quoteSandboxWrappedWord(unixPath) + "; then exit 19; fi",
+      `if /usr/bin/stat ${quoteSandboxWrappedWord(protectedFile)}; then exit 18; fi`,
+      `if /usr/bin/nc -z -U ${quoteSandboxWrappedWord(unixPath)}; then exit 19; fi`,
       "/bin/mkdir later || exit 20",
-      "if (printf x > " + quoteSandboxWrappedWord(laterFile) + "); then exit 21; fi",
+      `if (printf x > ${quoteSandboxWrappedWord(laterFile)}); then exit 21; fi`,
     ].join("\n");
     const { request } = buildSeatbeltShellRequest({
       model, lookups, commandLine, cwd: working, timeoutMs: TOOL_TIMEOUT_POLICY.mxcMacShellProbeMs,
-      env: { HOME: working, PATH: "/usr/bin:/bin" }, proxyUrl: "http://127.0.0.1:" + proxyPort,
+      env: { HOME: working, PATH: "/usr/bin:/bin" }, proxyUrl: `http://127.0.0.1:${proxyPort}`,
     });
     await writeFile(config, JSON.stringify(request), { flag: "wx", mode: 0o600 });
     const dryRun = await runCanaryRequest(launcher, config, ["--dry-run"], signal).catch(() => {

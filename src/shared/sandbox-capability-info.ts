@@ -231,7 +231,7 @@ export type EgressIdentityStrength = "kernel-channel" | "shared";
 
 /** Protocol coverage is independent of proxy endpoint scoping and identity. */
 export interface EgressProtocolCoverage {
-  readonly dns: "host-resolver" | "brokered" | "unknown";
+  readonly dns: "host-resolver" | "brokered" | "blocked" | "unknown";
   readonly rawIp: "unknown" | "blocked";
 }
 
@@ -242,8 +242,11 @@ export function egressProtocolCoverageFor(substrate: "mxc" | "asrt" | "srt-win" 
   return substrate === "mxc" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
 }
 
+const SEATBELT_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "blocked", rawIp: "blocked" });
+
 export function containerEgressProtocolCoverage(backend: ContainerBackend): EgressProtocolCoverage {
-  return backend === "process-container" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
+  if (backend === "process-container") return MXC_EGRESS_PROTOCOL_COVERAGE;
+  return backend === "seatbelt" ? SEATBELT_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
 }
 
 /** The scopes an egress grant can be given. A shell tool call's card offers Deny plus once, session, project, always (owner 2026-10-25, five-choice network card); a workspace terminal

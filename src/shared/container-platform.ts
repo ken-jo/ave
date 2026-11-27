@@ -17,7 +17,7 @@ export interface ContainerPlatform {
 
 const CONTAINER_PLATFORMS: Readonly<Partial<Record<NodeJS.Platform, ContainerPlatform>>> = Object.freeze({
   win32: { backend: "process-container", shellRoute: true, holderRoute: true, arches: ["x64", "arm64"], launcherFile: "wxc-exec.exe" },
-  darwin: { backend: "seatbelt", shellRoute: false, holderRoute: false, arches: ["arm64"], launcherFile: "mxc-exec-mac" },
+  darwin: { backend: "seatbelt", shellRoute: true, holderRoute: false, arches: ["arm64"], launcherFile: "mxc-exec-mac" },
   linux: { backend: "bubblewrap", shellRoute: false, holderRoute: false, arches: ["x64", "arm64"], launcherFile: "lxc-exec" },
 });
 
