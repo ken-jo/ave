@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -96,6 +96,32 @@ describe.runIf(process.platform !== "win32")("Linux container shell exit classif
 
   it("keeps a launcher timeout after the command started as timed out", async () => {
     await expect(run(TIMED_OUT, "", 255, { started: true })).resolves.toMatchObject({ rejected: false, runFailed: false, timedOut: true });
+  });
+
+  it.runIf(process.platform === "linux")("removes its own launcher's network state folder after a killed run, and no other", async () => {
+    const staging = mkdtempSync(join(root, "shell-"));
+    const own = mkdtempSync("/tmp/mxc-bwrap-proxy-");
+    const other = mkdtempSync("/tmp/mxc-bwrap-proxy-");
+    try {
+      const launcher = join(staging, "launcher");
+      // As the pinned launcher: its network supervisor is a child named by its argv, handed the state folder.
+      writeFileSync(launcher, `#!/bin/sh\nsh -c 'sleep 3' mxc-bwrap-proxy-supervisor ${JSON.stringify(own)} > /dev/null 2>&1 4>&- &\n`
+        + "printf '\\n' >&4\nexec 4>&-\nwait\n");
+      chmodSync(launcher, 0o755);
+      const controller = new AbortController();
+      const { completion, child } = startMxcLinuxShell({ launcher, helper: "/bin/true", env: { PATH: "/usr/bin:/bin" } },
+        stage(staging), 10_000, controller.signal, () => {}, "test:linux-shell-state");
+      child.stdout.resume();
+      child.stderr.resume();
+      await new Promise(resolve => setTimeout(resolve, 300));
+      controller.abort();
+      await expect(completion).resolves.toMatchObject({ cancelled: true });
+      expect(existsSync(own)).toBe(false);
+      expect(existsSync(other)).toBe(true);
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+      rmSync(other, { recursive: true, force: true });
+    }
   });
 
   it("refuses to reuse an existing launcher log", async () => {

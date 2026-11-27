@@ -1,6 +1,6 @@
 import { createSocket } from "node:dgram";
 import { constants } from "node:fs";
-import { lstat, open, readdir, readFile } from "node:fs/promises";
+import { lstat, open, readdir, readFile, rm } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { networkInterfaces } from "node:os";
 import { posix } from "node:path";
@@ -383,6 +383,20 @@ function ownedPrivately(stats: { readonly uid: number; readonly mode: number }):
   return stats.uid === process.getuid?.() && (stats.mode & 0o022) === 0;
 }
 
+/**
+ * Removes a launcher's state folder that is still there after the launcher exited, as a launcher stopped by a signal
+ * leaves it. Only a folder named the launcher's way, directly in `tmp`, owned by this account and not a link.
+ */
+export async function removeLinuxLauncherStateDir(dir: string, tmp: string): Promise<void> {
+  if (posix.dirname(dir) !== tmp || !STATE_DIR.test(posix.basename(dir))) return;
+  const stats = await lstat(dir).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (stats === undefined || !stats.isDirectory() || stats.uid !== process.getuid?.()) return;
+  await rm(dir, { recursive: true, force: true });
+}
+
 async function folderOwned(path: string): Promise<boolean> {
   const stats = await lstat(path);
   return stats.isDirectory() && ownedPrivately(stats);
@@ -403,8 +417,11 @@ async function readOwnedFile(path: string): Promise<string | undefined> {
   }
 }
 
-/** The pinned launcher's network supervisor among `launcherPid`'s children, and the state folder it was handed. */
-async function supervisorStateDir(launcherPid: number): Promise<string | undefined> {
+/**
+ * The pinned launcher's network supervisor among `launcherPid`'s children, and the state folder it was handed. Read
+ * while the launcher runs: the folder is named by that launcher's own child, so it is this launcher's.
+ */
+export async function linuxLauncherStateDir(launcherPid: number): Promise<string | undefined> {
   const tasks = await readdir(`/proc/${launcherPid}/task`);
   for (const task of tasks) {
     const children = (await readFile(`/proc/${launcherPid}/task/${task}/children`, "utf8")).trim().split(/\s+/u);
@@ -448,7 +465,7 @@ export async function readLinuxLauncherFirewall(
       if (await started()) break;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    const dir = await supervisorStateDir(launcherPid);
+    const dir = await linuxLauncherStateDir(launcherPid);
     if (dir === undefined) return false;
     const [v4, v6] = await Promise.all([readLinuxFirewallFamilyPayload(dir, 4), readLinuxFirewallFamilyPayload(dir, 6)]);
     return v4 !== undefined && v6 !== undefined && !ended()

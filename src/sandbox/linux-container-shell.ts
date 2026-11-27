@@ -3,9 +3,14 @@ import { createHash } from "node:crypto";
 import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
+import { createLogger } from "../lib/logger.js";
 import { trackManagedChildProcess } from "../main/managed-child-processes.js";
 import { LINUX_SHELL_READY_FD, linuxShellExtraDescriptors, type MxcLinuxShellPrograms } from "../permissions/mxc-linux.js";
+import { linuxLauncherStateDir, removeLinuxLauncherStateDir } from "../permissions/mxc-linux-raw-ip.js";
+import { errorMessage } from "../shared/error-message.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+
+const log = createLogger("linux-container-shell");
 
 export interface LinuxContainerShellExit {
   readonly code: number | null;
@@ -98,8 +103,14 @@ export function startMxcLinuxShell(
   let launchError = false;
   // Only the filter helper, once its filter is on, writes here; it closes the descriptor before the command runs.
   let started = false;
+  // The launcher's network state folder, learned from its supervisor's argv once the command started. A launcher
+  // stopped by a signal cannot remove it, so the launch does, after the launcher is gone.
+  let stateDir: Promise<string | undefined> | undefined;
   const ready = child.stdio[LINUX_SHELL_READY_FD] as Readable | null;
-  ready?.on("data", () => { started = true; });
+  ready?.on("data", () => {
+    if (!started && child.pid !== undefined) stateDir = linuxLauncherStateDir(child.pid).catch(() => undefined);
+    started = true;
+  });
   const completion = new Promise<LinuxContainerShellExit>((resolve, reject) => {
     child.on("error", () => { launchError = true; });
     child.once("close", (code) => {
@@ -111,11 +122,19 @@ export function startMxcLinuxShell(
         reject(error);
         return;
       }
+      const removed = stateDir?.then(dir => dir === undefined ? undefined
+        : removeLinuxLauncherStateDir(dir, programs.env.TMPDIR ?? "/tmp"));
       const timedOut = timeout || outcome === "timed-out";
       // A run that ended by a signal has no launcher verdict, so it is never reported as a refused start.
       const refused = !timedOut && !cancelled && outcome === "refused" && (launchError || code !== null);
-      resolve({ code: code ?? -1, timedOut, cancelled: cancelled && !timedOut, cleanupUnverified: false,
-        rejected: refused && !started, runFailed: refused && started });
+      const exit = { code: code ?? -1, timedOut, cancelled: cancelled && !timedOut, cleanupUnverified: false,
+        rejected: refused && !started, runFailed: refused && started };
+      if (removed === undefined) resolve(exit);
+      // A folder that cannot be removed never costs the command its result: the command ran.
+      else removed.then(() => resolve(exit), (error: unknown) => {
+        log.warn("Linux launcher state folder not removed: %s", errorMessage(error));
+        resolve(exit);
+      });
     });
   });
   trackManagedChildProcess(child, { label, killProcessGroup: true, cooperativeStop: stop });

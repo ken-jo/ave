@@ -467,6 +467,8 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
 
   it("stops a separate-session descendant and removes placeholders after cancellation", async () => {
     startEgressRelayService({ ask: async () => false });
+    const stateDirs = () => new Set(readdirSync("/tmp").filter(name => name.startsWith("mxc-bwrap-proxy-")));
+    const before = stateDirs();
     const { launch, lease } = await prepare("setsid /bin/sh -c 'while :; do echo tick >> ticks; sleep 0.02; done' & wait");
     const result = run(launch);
     const ticks = join(work, "ticks");
@@ -477,6 +479,8 @@ ${address6 === undefined ? "print('refused')" : `print(tcp(socket.AF_INET6, ('${
     const stopped = readFileSync(ticks, "utf8");
     await new Promise(resolve => setTimeout(resolve, 150));
     expect(readFileSync(ticks, "utf8")).toBe(stopped);
+    // The launcher was killed before it could remove its own network state folder; the launch removed it.
+    expect([...stateDirs()].filter(name => !before.has(name))).toEqual([]);
   });
 
   it("passes through command exit status, including 255 without a launcher error", async () => {
