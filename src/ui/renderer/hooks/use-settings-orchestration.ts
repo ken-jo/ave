@@ -52,6 +52,7 @@ type PendingSave =
 type LiveSettingsValues = {
   idlePreferenceRefresh: boolean;
   idleMemoryConsolidation: boolean;
+  automaticSkillMemory: boolean;
   subAgentAutonomousWake: boolean;
   subAgentMaxRounds: number;
 };
@@ -60,6 +61,7 @@ function liveSettingsValues(settings: AppSettings): LiveSettingsValues {
   return {
     idlePreferenceRefresh: settings.features?.idlePreferenceRefresh ?? false,
     idleMemoryConsolidation: settings.features?.idleMemoryConsolidation ?? false,
+    automaticSkillMemory: settings.features?.automaticSkillMemory ?? true,
     subAgentAutonomousWake: settings.features?.subAgentAutonomousWake ?? false,
     subAgentMaxRounds: settings.chat.subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT,
   };
@@ -111,6 +113,8 @@ export interface SettingsOrchestrationState {
   setIdlePreferenceRefresh: (v: boolean) => void;
   idleMemoryConsolidation: boolean;
   setIdleMemoryConsolidation: (v: boolean) => void;
+  automaticSkillMemory: boolean;
+  setAutomaticSkillMemory: (v: boolean) => void;
   subAgentAutonomousWake: boolean;
   subAgentMaxRounds: number;
   setSubAgentMaxRounds: (next: number) => void;
@@ -206,11 +210,12 @@ export function useSettingsOrchestration(
   const [piiRedactEnabled, setPiiRedactEnabledState] = useState(false);
   const [idlePreferenceRefresh, setIdlePreferenceRefresh] = useState(false);
   const [idleMemoryConsolidation, setIdleMemoryConsolidation] = useState(false);
+  const [automaticSkillMemory, setAutomaticSkillMemory] = useState(true);
   const [subAgentAutonomousWake, setSubAgentAutonomousWake] = useState(false);
   const [subAgentMaxRounds, setSubAgentMaxRounds] = useState(SUBAGENT_MAX_ROUNDS_DEFAULT);
-  const liveRevisionsRef = useRef({ idlePreferenceRefresh: 0, idleMemoryConsolidation: 0, subAgentAutonomousWake: 0, subAgentMaxRounds: 0 });
+  const liveRevisionsRef = useRef({ idlePreferenceRefresh: 0, idleMemoryConsolidation: 0, automaticSkillMemory: 0, subAgentAutonomousWake: 0, subAgentMaxRounds: 0 });
   const livePendingRef = useRef(new Set<keyof LiveSettingsValues>());
-  const liveAuthoritativeRef = useRef<LiveSettingsValues>({ idlePreferenceRefresh: false, idleMemoryConsolidation: false, subAgentAutonomousWake: false, subAgentMaxRounds: SUBAGENT_MAX_ROUNDS_DEFAULT });
+  const liveAuthoritativeRef = useRef<LiveSettingsValues>({ idlePreferenceRefresh: false, idleMemoryConsolidation: false, automaticSkillMemory: true, subAgentAutonomousWake: false, subAgentMaxRounds: SUBAGENT_MAX_ROUNDS_DEFAULT });
   const [marketplaceProviderPresetId, setMarketplaceProviderPresetId] = useState("");
   const [marketplaceProviderPresets, setMarketplaceProviderPresets] = useState<MarketplaceInstalledProviderPreset[]>([]);
   const [saving, setSaving] = useState(false);
@@ -329,6 +334,7 @@ export function useSettingsOrchestration(
       liveAuthoritativeRef.current = liveValues;
       setIdlePreferenceRefresh(liveValues.idlePreferenceRefresh);
       setIdleMemoryConsolidation(liveValues.idleMemoryConsolidation);
+      setAutomaticSkillMemory(liveValues.automaticSkillMemory);
       setSubAgentAutonomousWake(liveValues.subAgentAutonomousWake);
       setSubAgentMaxRounds(liveValues.subAgentMaxRounds);
       setFallbackChainState(s.llm.fallbackChain.map((e) => ({ provider: e.provider, model: e.model })));
@@ -381,6 +387,7 @@ export function useSettingsOrchestration(
       liveAuthoritativeRef.current = liveValues;
       if (!livePendingRef.current.has("idlePreferenceRefresh")) setIdlePreferenceRefresh(liveValues.idlePreferenceRefresh);
       if (!livePendingRef.current.has("idleMemoryConsolidation")) setIdleMemoryConsolidation(liveValues.idleMemoryConsolidation);
+      if (!livePendingRef.current.has("automaticSkillMemory")) setAutomaticSkillMemory(liveValues.automaticSkillMemory);
       if (!livePendingRef.current.has("subAgentAutonomousWake")) setSubAgentAutonomousWake(liveValues.subAgentAutonomousWake);
       if (!livePendingRef.current.has("subAgentMaxRounds")) setSubAgentMaxRounds(liveValues.subAgentMaxRounds);
       if (!processingDisplayLevelDraftRef.current.dirty) {
@@ -814,6 +821,9 @@ export function useSettingsOrchestration(
   const setIdleMemoryConsolidationLive = useCallback((next: boolean) => {
     if (next !== idleMemoryConsolidation) persistLiveSetting("idleMemoryConsolidation", next, setIdleMemoryConsolidation);
   }, [idleMemoryConsolidation, persistLiveSetting]);
+  const setAutomaticSkillMemoryLive = useCallback((next: boolean) => {
+    if (next !== automaticSkillMemory) persistLiveSetting("automaticSkillMemory", next, setAutomaticSkillMemory);
+  }, [automaticSkillMemory, persistLiveSetting]);
   const setSubAgentAutonomousWakeLive = useCallback((next: boolean) => {
     if (next !== subAgentAutonomousWake) persistLiveSetting("subAgentAutonomousWake", next, setSubAgentAutonomousWake);
   }, [subAgentAutonomousWake, persistLiveSetting]);
@@ -847,6 +857,7 @@ export function useSettingsOrchestration(
     piiRedactEnabled, setPiiRedactEnabled,
     idlePreferenceRefresh, setIdlePreferenceRefresh: setIdlePreferenceRefreshLive,
     idleMemoryConsolidation, setIdleMemoryConsolidation: setIdleMemoryConsolidationLive,
+    automaticSkillMemory, setAutomaticSkillMemory: setAutomaticSkillMemoryLive,
     subAgentAutonomousWake, setSubAgentAutonomousWake: setSubAgentAutonomousWakeLive,
     subAgentMaxRounds, setSubAgentMaxRounds: setSubAgentMaxRoundsLive,
     marketplaceProviderPresetId,

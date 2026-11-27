@@ -475,6 +475,8 @@ export interface FeatureFlags {
   /** When true, idle IDLE_SCAN may send eligible active global and current explicit-project raw memories to the
    * configured LLM to update a derived long-term overview. Default false: manual consolidation remains available. */
   idleMemoryConsolidation?: boolean;
+  /** Review verified skill invocations at task or session completion. */
+  automaticSkillMemory?: boolean;
   /** When true, a queued background sub-agent Message may start a new parent turn while that exact parent
    * session is loaded and idle. Default false: the durable mailbox joins the user's next turn instead. */
   subAgentAutonomousWake?: boolean;

@@ -1906,6 +1906,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "chatTab.idleRefreshHint": "유휴 상태일 때 선호도 소스를 설정한 모델에 보내 프로필을 갱신합니다.",
   "chatTab.idleMemoryConsolidationLabel": "유휴 상태에서 장기 기억 통합",
   "chatTab.idleMemoryConsolidationHint": "유휴 상태일 때 전역·현재 프로젝트 기억을 설정한 모델에 보내 개요를 갱신합니다. Roles의 수동 통합은 계속 사용할 수 있습니다.",
+  "chatTab.automaticSkillMemoryLabel": "스킬 메모리 자동 개선",
+  "chatTab.automaticSkillMemoryHint": "작업이나 세션이 완료되면 조건을 충족한 입력을 검토합니다. 참석 실행의 교훈은 스킬 메모리에 저장하고, 헤드리스·예약 실행의 교훈은 검토 대기에 둡니다.",
   "chatTab.subAgentWakeLabel": "서브에이전트 메시지로 부모 자동 깨우기",
   "chatTab.subAgentMaxRoundsLabel": "서브에이전트 라운드 예산",
   "chatTab.subAgentMaxRoundsHint": "서브에이전트 한 번 실행의 최대 도구 라운드 수입니다. {min}~{max} 사이의 정수를 입력하세요.",

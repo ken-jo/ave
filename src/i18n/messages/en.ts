@@ -1904,6 +1904,8 @@ export const en = {
   "chatTab.idleRefreshHint": "When idle, sends eligible preference sources to the configured model to refresh your profile.",
   "chatTab.idleMemoryConsolidationLabel": "Consolidate long-term memory while idle",
   "chatTab.idleMemoryConsolidationHint": "When idle, sends eligible global and current-project memories to the configured model to update their overviews. Manual consolidation in Roles stays available.",
+  "chatTab.automaticSkillMemoryLabel": "Automatically improve skill memory",
+  "chatTab.automaticSkillMemoryHint": "After a completed task or session, review eligible input for skill lessons. Attended lessons are saved in skill memory. Headless and scheduled lessons wait for review.",
   "chatTab.subAgentWakeLabel": "Autonomously wake parent for sub-agent messages",
   "chatTab.subAgentMaxRoundsLabel": "Sub-agent round budget",
   "chatTab.subAgentMaxRoundsHint": "Maximum tool rounds for one sub-agent run. Enter a whole number from {min} to {max}.",

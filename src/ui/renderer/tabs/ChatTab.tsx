@@ -44,6 +44,8 @@ export interface ChatTabProps {
   setIdlePreferenceRefresh?: (v: boolean) => void;
   idleMemoryConsolidation?: boolean;
   setIdleMemoryConsolidation?: (v: boolean) => void;
+  automaticSkillMemory?: boolean;
+  setAutomaticSkillMemory?: (v: boolean) => void;
   subAgentAutonomousWake?: boolean;
   subAgentMaxRounds?: number;
   setSubAgentMaxRounds?: (next: number) => void;
@@ -66,6 +68,8 @@ export function ChatTab({
   setIdlePreferenceRefresh,
   idleMemoryConsolidation,
   setIdleMemoryConsolidation,
+  automaticSkillMemory,
+  setAutomaticSkillMemory,
   subAgentAutonomousWake,
   subAgentMaxRounds,
   setSubAgentMaxRounds,
@@ -213,6 +217,25 @@ export function ChatTab({
             <p className="text-sm font-medium">{t("chatTab.idleMemoryConsolidationLabel")}</p>
             <p className="text-dense text-muted-foreground">
               {t("chatTab.idleMemoryConsolidationHint")}
+            </p>
+          </div>
+        </div>
+        <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3" data-setting-row="features.automaticSkillMemory">
+          <Switch
+            checked={automaticSkillMemory ?? true}
+            disabled={!settingsLoaded}
+            aria-label={t("chatTab.automaticSkillMemoryLabel")}
+            data-testid="automatic-skill-memory-toggle"
+            data-setting-id="features.automaticSkillMemory"
+            className="shrink-0"
+            onCheckedChange={(checked) => {
+              setAutomaticSkillMemory?.(checked === true);
+            }}
+          />
+          <div className="space-y-0.5">
+            <p className="text-sm font-medium">{t("chatTab.automaticSkillMemoryLabel")}</p>
+            <p className="text-dense text-muted-foreground">
+              {t("chatTab.automaticSkillMemoryHint")}
             </p>
           </div>
         </div>
