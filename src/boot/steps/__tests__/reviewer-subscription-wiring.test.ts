@@ -105,6 +105,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
         async *streamTurn() {},
       };
       const subscriptionProviderFactory = vi.fn(() => subscriptionProvider);
+      let connected = true;
       const settingsService = {
         onChanged: vi.fn(),
         get: vi.fn((key: string) => {
@@ -132,6 +133,8 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
         getMainWindow: () => null,
         bootAuditLogger: { log: vi.fn() },
         subscriptionProviderFactory,
+        isSubscriptionConnected: async () => connected,
+        rewireReviewerAgent: undefined as (() => Promise<void>) | undefined,
       };
 
       await wireReviewerAndPermissions(context as never);
@@ -149,6 +152,19 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
       // A forged/legacy API-key identity cannot fall through while a subscription runtime owns the active reviewer transport.
       expect(options.streamProviderFor("claude")).toBeNull();
       expect(subscriptionProviderFactory).toHaveBeenCalledOnce();
+      connected = false;
+      await context.rewireReviewerAgent!();
+      const disconnected = wireReviewerAgent.mock.calls.at(-1)?.[0] as typeof options;
+      expect(disconnected.streamProviderFor("subscription:codex")).toBeNull();
+      expect(disconnected.streamProviderFor("claude")).toBeNull();
+      expect(subscriptionProviderFactory).toHaveBeenCalledOnce();
+
+      connected = true;
+      await context.rewireReviewerAgent!();
+      const restored = wireReviewerAgent.mock.calls.at(-1)?.[0] as typeof options;
+      expect(restored.readActiveLlm()).toEqual(options.readActiveLlm());
+      expect(restored.streamProviderFor("subscription:codex")).toBe(subscriptionProvider);
+      expect(subscriptionProviderFactory).toHaveBeenCalledTimes(2);
       expect(settingsService.getSecret).not.toHaveBeenCalled();
     } finally {
       vi.doUnmock("electron");

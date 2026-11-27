@@ -5,6 +5,8 @@ import type {
   SubscriptionRuntimeStatus,
 } from "../../../shared/subscription-runtime.js";
 import { MAX_COMPOSER_ATTACHMENT_COUNT, MAX_COMPOSER_IMAGE_BYTES } from "../../../shared/composer-image-input.js";
+import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace } from "../../../__tests__/support/subscription-runtime-namespace.js";
+import type { CodexSubscriptionStatus } from "../../../shared/codex-subscription.js";
 import { SETTINGS } from "../../../shared/ipc-channels.js";
 import { deferred } from "../../../__tests__/test-helpers.js";
 import { makeAppIpcInvoker } from "./test-helpers.js";
@@ -12,7 +14,7 @@ import { makeAppIpcInvoker } from "./test-helpers.js";
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const runtimeServiceMock = vi.hoisted(() => ({
   get: vi.fn(),
-  onAutoVerified: vi.fn((_listener: (provider: string) => void) => vi.fn()),
+  onAutoVerified: vi.fn((_listener: (provider: SubscriptionRuntimeId, connected?: boolean) => void) => vi.fn()),
   errorCode: vi.fn((error: unknown) => {
     if (
       error !== null
@@ -457,6 +459,71 @@ describe("common subscription runtime IPC", () => {
     const unsubscribe = runtimeServiceMock.onAutoVerified.mock.results.at(-1)!.value as ReturnType<typeof vi.fn>;
     dispose();
     expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("publishes each transport connection change to the active model and reviewer once", async () => {
+    const actual = await vi.importActual<typeof import("../../../main/subscription-runtime-service.js")>(
+      "../../../main/subscription-runtime-service.js",
+    );
+    const selection = { kind: "subscription", provider: "codex", model: "saved-model" } as const;
+    const connected: CodexSubscriptionStatus = {
+      runtime: "ready", connection: "connected", planType: "plus", pendingLogin: null, pendingDeviceCode: null, version: "test",
+    };
+    let status = connected;
+    const getStatus = vi.fn(async () => status);
+    const verifyIsolation = vi.fn(async () => {});
+    const service = await actual.SubscriptionRuntimeService.create(async () => {}, {
+      namespace: createSubscriptionRuntimeNamespace(),
+      claimRuntimeDirectories: claimFakeRuntimeDirectories,
+      claudeCodeClient: { stop: vi.fn() } as never,
+      codexClient: { getStatus, stop: vi.fn() } as never,
+      acpRegistry: { stopAll: vi.fn() } as never,
+      createCodexConversationRuntime: () => ({ verifyIsolation, stop: vi.fn() }) as never,
+    });
+    runtimeServiceMock.get.mockResolvedValue(service);
+    runtimeServiceMock.onAutoVerified.mockImplementationOnce((listener) => vi.fn(actual.onSubscriptionRuntimeStatusChanged(listener)));
+    const { deps, currentLlm } = makeStatefulSelectionDeps({
+      provider: "openai", vendors: { openai: { model: "unused", baseUrl: null } }, activeChatRuntime: selection,
+    });
+    const isSubscriptionConnected = async () => (await service.getStatus(selection.provider, { allowCached: true })).connection === "connected";
+    const send = vi.fn();
+    deps.getAppWindows = vi.fn(() => [{ isDestroyed: () => false, webContents: { isDestroyed: () => false, send } }]);
+    deps.rewireReviewerAgent.mockImplementation(isSubscriptionConnected);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    const dispose = registerSettingsHandlers({ ...deps, isSubscriptionConnected } as never);
+    try {
+      await service.verify(selection.provider);
+      const initial = await invoke("ave:settings:get");
+      const selected = { kind: "subscription", provider: selection.provider, model: selection.model };
+      expect(initial).toMatchObject({ activeChatModel: selected });
+      const held = deferred<CodexSubscriptionStatus>();
+      getStatus.mockImplementationOnce(() => held.promise);
+      const older = service.getStatus(selection.provider);
+      status = { ...connected, connection: "signed-out" };
+      await expect(service.openTextSession(selection)).rejects.toMatchObject({ code: "subscription-chat-unavailable" });
+      await vi.waitFor(() => expect(deps.rewireReviewerAgent).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({
+        activeChatModel: { kind: "none", reason: "no-connected-provider" },
+      })));
+      held.resolve(connected);
+      await older;
+      expect(await isSubscriptionConnected()).toBe(false);
+      await expect(deps.rewireReviewerAgent.mock.results[0]?.value).resolves.toBe(false);
+
+      status = connected;
+      await invoke("ave:settings:subscription:status", selection.provider, { refresh: true });
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({ activeChatModel: selected })));
+      await expect(deps.rewireReviewerAgent.mock.results[1]?.value).resolves.toBe(true);
+      expect(deps.rewireReviewerAgent).toHaveBeenCalledTimes(2);
+      expect(send.mock.calls.filter(([channel]) => channel === SETTINGS.updated)).toHaveLength(2);
+      expect(send.mock.calls.filter(([channel]) => channel === "ave:settings:subscription:status-updated")).toHaveLength(2);
+      expect(currentLlm().activeChatRuntime).toEqual(selection);
+      expect(deps.settingsService.patch).not.toHaveBeenCalled();
+      expect(verifyIsolation).toHaveBeenCalledOnce();
+    } finally {
+      dispose();
+      await service.stop();
+    }
   });
 
   it("announces the subscription restored when overlapping switches fail to save", async () => {

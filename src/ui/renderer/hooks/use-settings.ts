@@ -320,6 +320,15 @@ export function useSettings(api: AveApi): UseSettingsResult {
   }, [api]);
 
   useEffect(() => {
+    const handleFocus = () => {
+      const provider = activeSubscriptionRuntimeRef.current?.provider;
+      if (provider) void api.subscriptionRuntimeStatus(provider, { refresh: true }).catch(() => {});
+    };
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [api]);
+
+  useEffect(() => {
     if (!activeSubscriptionRuntime) {
       subscriptionStatusRequestRef.current += 1;
       setSubscriptionRuntimeCapabilities(null);

@@ -1092,6 +1092,8 @@ export class SubscriptionRuntimeService {
   private readonly cachedCatalogs = new Map<SubscriptionRuntimeId, CachedRead<SubscriptionRuntimeCatalog>>();
   private readonly readGenerationByProvider = new Map<SubscriptionRuntimeId, number>();
   private readonly mutationsInFlight = new Map<SubscriptionRuntimeId, number>();
+  private readonly observedConnections = new Map<SubscriptionRuntimeId, { connected: boolean; revision: number }>();
+  private statusReadRevision = 0;
   // Terminal per-instance guard for callers that retained a service reference during shutdown.
   private stopped = false;
   private stopPromise: Promise<void> | null = null;
@@ -1213,13 +1215,19 @@ export class SubscriptionRuntimeService {
     return this.withStableErrors(() => this.readThrough(this.cachedStatuses, runtimeId, options, async () => {
       if (runtimeId === "codex") {
         const refreshPlanUsage = options.allowCached !== true || !this.planUsage.get("codex");
-        return this.projectCodexStatus(await this.codexClient.getStatus(refreshPlanUsage));
+        const status = await this.codexClient.getStatus(refreshPlanUsage);
+        return (current) => this.projectCodexStatus(status, current);
       }
-      if (runtimeId === "chatgpt-plan") return this.chatGptPlanStatus();
+      if (runtimeId === "chatgpt-plan") {
+        const status = await this.chatGptPlanStatus();
+        return () => status;
+      }
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
-        return this.projectClaudeCodeStatus(await this.claudeCodeClient.getStatus());
+        const status = await this.claudeCodeClient.getStatus();
+        return (current) => this.projectClaudeCodeStatus(status, current);
       }
-      return this.projectAcpStatus(await this.acpRegistry.getStatus(runtimeId));
+      const status = await this.acpRegistry.getStatus(runtimeId);
+      return (current) => this.projectAcpStatus(status, current);
     }, (status) => status));
   }
 
@@ -1240,7 +1248,7 @@ export class SubscriptionRuntimeService {
       return this.claudeCodeStatusProjection(this.claudeCodeClient.getCachedStatus());
     }
     if (runtimeId !== "codex") return undefined;
-    return this.projectCodexStatus(this.codexClient.getCachedStatus());
+    return this.projectCodexStatus(this.codexClient.getCachedStatus(), false);
   }
 
   // Point a runtime at an executable the user picked. Only the ACP runtimes take one: Ave finds the `codex` and `claude` CLIs itself, and those runtimes
@@ -1282,6 +1290,7 @@ export class SubscriptionRuntimeService {
     if (runtimeId !== "chatgpt-plan" && this.safetyEpochIsCurrent(runtimeId, verificationEpoch)) {
       this.invalidateCachedReads(runtimeId);
       if (isSettledStatus(status)) this.cachedStatuses.set(runtimeId, this.cachedRead(status));
+      this.rememberConnection(status, ++this.statusReadRevision);
     }
     return status;
   }
@@ -1439,14 +1448,14 @@ export class SubscriptionRuntimeService {
       if (runtimeId !== "codex") return { status: await this.getStatus(runtimeId, options), models: [] };
       return this.readThrough(this.cachedCatalogs, runtimeId, options, async () => {
         const result = await this.codexClient.listModels();
-        return {
-          status: this.projectCodexStatus(result.status),
+        return (current) => ({
+          status: this.projectCodexStatus(result.status, current),
           models: result.models.map((model) => ({
             id: model.id,
             displayName: model.displayName,
             isDefault: model.isDefault,
           })),
-        };
+        });
       }, (catalog) => catalog.status);
     });
   }
@@ -1622,22 +1631,22 @@ export class SubscriptionRuntimeService {
     return this.chatGptPlan ? this.chatGptPlan.getStatus() : Promise.resolve(notConfiguredChatGptPlanStatus());
   }
 
-  private projectCodexStatus(status: CodexSubscriptionStatus): SubscriptionRuntimeStatus {
-    this.reconcileSafety("codex", status);
-    return this.withPlanUsage(codexStatus(status, this.safelyVerified.has("codex")));
+  private projectCodexStatus(status: CodexSubscriptionStatus, current = true): SubscriptionRuntimeStatus {
+    if (current) this.reconcileSafety("codex", status);
+    return this.withPlanUsage(codexStatus(status, this.safelyVerified.has("codex")), current);
   }
 
-  private projectAcpStatus(status: AcpSubscriptionStatus): SubscriptionRuntimeStatus {
-    this.reconcileSafety(status.provider, status);
-    return this.withPlanUsage(acpStatus(status, this.safelyVerified.has(status.provider)));
+  private projectAcpStatus(status: AcpSubscriptionStatus, current = true): SubscriptionRuntimeStatus {
+    if (current) this.reconcileSafety(status.provider, status);
+    return this.withPlanUsage(acpStatus(status, this.safelyVerified.has(status.provider)), current);
   }
 
-  private projectClaudeCodeStatus(status: ClaudeCodeSubscriptionStatus): SubscriptionRuntimeStatus {
-    this.reconcileSafety(status.provider, status);
-    return this.claudeCodeStatusProjection(status);
+  private projectClaudeCodeStatus(status: ClaudeCodeSubscriptionStatus, current = true): SubscriptionRuntimeStatus {
+    if (current) this.reconcileSafety(status.provider, status);
+    return this.claudeCodeStatusProjection(status, current);
   }
 
-  private claudeCodeStatusProjection(status: ClaudeCodeSubscriptionStatus): SubscriptionRuntimeStatus {
+  private claudeCodeStatusProjection(status: ClaudeCodeSubscriptionStatus, current = false): SubscriptionRuntimeStatus {
     return this.withPlanUsage({
       provider: status.provider,
       runtime: status.runtime,
@@ -1651,7 +1660,7 @@ export class SubscriptionRuntimeService {
         status.provider,
         this.safelyVerified.has(status.provider) && isConnectedAndReady(status),
       ),
-    });
+    }, current);
   }
 
   private recordPlanUsage(provider: SubscriptionRuntimeId, windows: readonly SubscriptionPlanUsageUpdate[]): void {
@@ -1660,9 +1669,9 @@ export class SubscriptionRuntimeService {
     notifyStatusChanged(provider);
   }
 
-  private withPlanUsage(status: SubscriptionRuntimeStatus): SubscriptionRuntimeStatus {
+  private withPlanUsage(status: SubscriptionRuntimeStatus, current: boolean): SubscriptionRuntimeStatus {
     if (!isConnectedAndReady(status)) {
-      this.planUsage.clear(status.provider);
+      if (current) this.planUsage.clear(status.provider);
       return status;
     }
     const planUsage = this.planUsage.get(status.provider);
@@ -1681,10 +1690,12 @@ export class SubscriptionRuntimeService {
 
   // A state change bumps the read generation when it starts (invalidateSafety) and again when it ends, and no read that
   // overlaps it is kept: a status read while a logout is still running would otherwise cache the account as connected.
-  private async mutating<T>(provider: SubscriptionRuntimeId, mutation: () => Promise<T>): Promise<T> {
+  private async mutating(provider: SubscriptionRuntimeId, mutation: () => Promise<SubscriptionRuntimeStatus>): Promise<SubscriptionRuntimeStatus> {
     this.mutationsInFlight.set(provider, (this.mutationsInFlight.get(provider) ?? 0) + 1);
     try {
-      return await mutation();
+      const status = await mutation();
+      this.rememberConnection(status, ++this.statusReadRevision);
+      return status;
     } finally {
       const remaining = (this.mutationsInFlight.get(provider) ?? 1) - 1;
       if (remaining === 0) this.mutationsInFlight.delete(provider);
@@ -1698,25 +1709,42 @@ export class SubscriptionRuntimeService {
     cache: Map<SubscriptionRuntimeId, CachedRead<T>>,
     runtimeId: SubscriptionRuntimeId,
     options: SubscriptionReadOptions,
-    read: () => Promise<T>,
+    read: () => Promise<(current: boolean) => T>,
     statusOf: (value: T) => SubscriptionRuntimeStatus,
   ): Promise<T> {
-    if (runtimeId === "chatgpt-plan") return read();
-    if (options.allowCached === true) {
+    const cacheEnabled = runtimeId !== "chatgpt-plan";
+    if (cacheEnabled && options.allowCached === true) {
       const cached = cache.get(runtimeId);
       if (cached && cached.expiresAt > Date.now()) return cached.value;
     }
     const generation = this.readGeneration(runtimeId);
-    const value = await read();
-    if (
-      !this.stopped
-      && !this.mutationsInFlight.has(runtimeId)
-      && this.readGeneration(runtimeId) === generation
-      && isSettledStatus(statusOf(value))
-    ) {
+    const safetyEpoch = this.safetyEpoch(runtimeId);
+    const revision = ++this.statusReadRevision;
+    const project = await read();
+    // An overtaken reply can settle its caller, but cannot change the live connection or its safety proof.
+    const current = !this.stopped && !this.mutationsInFlight.has(runtimeId)
+      && this.safetyEpochIsCurrent(runtimeId, safetyEpoch)
+      && revision > (this.observedConnections.get(runtimeId)?.revision ?? 0);
+    const cacheable = cacheEnabled && current && this.readGeneration(runtimeId) === generation;
+    const value = project(current);
+    if (!current) return value;
+
+    const status = statusOf(value);
+    const changed = this.rememberConnection(status, revision);
+    if (changed) this.invalidateCachedReads(runtimeId);
+    if ((cacheable || (cacheEnabled && changed)) && isSettledStatus(status)) {
       cache.set(runtimeId, this.cachedRead(value));
+      if (changed) this.cachedStatuses.set(runtimeId, this.cachedRead(status));
     }
+    if (changed) notifyStatusChanged(runtimeId, status.connection === "connected");
     return value;
+  }
+
+  private rememberConnection(status: SubscriptionRuntimeStatus, revision: number): boolean {
+    const connected = status.connection === "connected";
+    const previous = this.observedConnections.get(status.provider);
+    this.observedConnections.set(status.provider, { connected, revision });
+    return previous !== undefined && previous.connected !== connected;
   }
 
   private cachedRead<T>(value: T): CachedRead<T> {
@@ -1894,16 +1922,16 @@ export class SubscriptionRuntimeService {
   }
 }
 
-const statusChangedListeners = new Set<(provider: SubscriptionRuntimeId) => void>();
+const statusChangedListeners = new Set<(provider: SubscriptionRuntimeId, connected?: boolean) => void>();
 
-// Account gauges and a turn's re-proof change status outside settings mutations.
-export function onSubscriptionRuntimeStatusChanged(listener: (provider: SubscriptionRuntimeId) => void): () => void {
+// Live connection observations, account gauges and turn verification can change status outside settings mutations.
+export function onSubscriptionRuntimeStatusChanged(listener: (provider: SubscriptionRuntimeId, connected?: boolean) => void): () => void {
   statusChangedListeners.add(listener);
   return () => { statusChangedListeners.delete(listener); };
 }
 
-function notifyStatusChanged(provider: SubscriptionRuntimeId): void {
-  for (const listener of statusChangedListeners) listener(provider);
+function notifyStatusChanged(provider: SubscriptionRuntimeId, connected?: boolean): void {
+  for (const listener of statusChangedListeners) listener(provider, connected);
 }
 
 let service: SubscriptionRuntimeService | null = null;

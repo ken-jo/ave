@@ -374,7 +374,6 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     };
     broadcastToAppWindows(deps, CHANNELS.settings.subscriptionRuntimeStatusUpdated, event);
   };
-  const stopStatusChangedListener = onSubscriptionRuntimeStatusChanged(publishSubscriptionRuntimeStatusUpdated);
 
   const auditSubscriptionMutation = (
     action: string,
@@ -452,28 +451,36 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     ) => Promise<SubscriptionRuntimeStatus>,
   ): Promise<SubscriptionRuntimeActionResult> => {
     const result = await runSubscriptionAction(provider, operation);
-    await refreshActiveSubscriptionConnection(provider, result.status);
+    if (result.status) await refreshActiveSubscriptionConnection(provider, result.status.connection === "connected");
     publishSubscriptionRuntimeStatusUpdated(provider);
     return result;
   };
   const refreshActiveSubscriptionConnection = async (
     provider: SubscriptionRuntimeId,
-    status: SubscriptionRuntimeStatus | undefined,
+    connected: boolean,
   ): Promise<void> => {
     const active = settingsService.get("llm").activeChatRuntime;
     if (active?.kind !== "subscription" || active.provider !== provider) return;
-    const connected = status?.connection === "connected";
     if (observedSubscriptionConnection?.provider === provider && observedSubscriptionConnection.connected === connected) return;
     const observation = { provider, connected };
     observedSubscriptionConnection = observation;
     try {
       await deps.rewireReviewerAgent?.();
     } catch (err) {
-      if (observedSubscriptionConnection === observation) observedSubscriptionConnection = undefined;
       log.warn({ err }, "Could not refresh the reviewer after a subscription connection change");
     }
-    await broadcastSettingsSnapshot(deps);
+    await broadcastSettingsSnapshot({ ...deps, isSubscriptionConnected: (candidate) => candidate === provider
+      ? Promise.resolve(connected) : deps.isSubscriptionConnected?.(candidate) ?? Promise.resolve(false) },
+      () => observedSubscriptionConnection === observation);
   };
+  const stopStatusChangedListener = onSubscriptionRuntimeStatusChanged((provider, connected) => {
+    publishSubscriptionRuntimeStatusUpdated(provider);
+    if (connected !== undefined) {
+      void refreshActiveSubscriptionConnection(provider, connected).catch((err) => {
+        log.warn({ err }, "Could not publish the subscription connection change");
+      });
+    }
+  });
   const runSubscriptionModels = async (
     provider: SubscriptionRuntimeId,
   ): Promise<SubscriptionRuntimeModelsResult> => {
@@ -1025,12 +1032,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (!isSubscriptionRuntimeId(providerValue)) {
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
-    // Only the user's explicit "check again" re-runs discovery; other card reads may reuse a settled status.
+    // Explicit refreshes re-run discovery; ordinary reads may reuse a settled status.
     const refresh = typeof optionsValue === "object" && optionsValue !== null
       && (optionsValue as { refresh?: unknown }).refresh === true;
-    const result = await runSubscriptionAction(providerValue, (runtime, provider) => runtime.getStatus(provider, { allowCached: !refresh }));
-    await refreshActiveSubscriptionConnection(providerValue, result.status);
-    return result;
+    return runSubscriptionAction(providerValue, (runtime, provider) => runtime.getStatus(provider, { allowCached: !refresh }));
   });
   ipcMain.handle(CHANNELS.settings.subscriptionChooseRuntime, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {
@@ -1055,7 +1060,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     });
     const executable = selected.filePaths[0];
     const result = selected.canceled || !executable
-      ? await runSubscriptionMutation(providerValue, (runtime, provider) => runtime.getStatus(provider))
+      ? await runSubscriptionAction(providerValue, (runtime, provider) => runtime.getStatus(provider))
       : await runSubscriptionMutation(providerValue, (runtime, provider) => runtime.chooseExecutable(provider, executable));
     auditSubscriptionMutation(
       "choose-runtime",
@@ -1182,7 +1187,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         detail: "This clears only Ave's isolated Grok Build session. Other provider sessions are unchanged.",
       });
       if (confirmation?.response !== 1) {
-        const status = await runSubscriptionMutation(providerValue, (runtime, provider) => runtime.getStatus(provider));
+        const status = await runSubscriptionAction(providerValue, (runtime, provider) => runtime.getStatus(provider));
         auditSubscriptionMutation("logout", providerValue, status.ok ? "cancelled" : "failed", status.ok ? undefined : status.error);
         return status;
       }

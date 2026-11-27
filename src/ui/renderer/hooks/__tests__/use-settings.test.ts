@@ -9,6 +9,8 @@ import { FALLBACK_CONTEXT_WINDOW } from "../../../../shared/model-host-policy.js
 import { llmModelListCacheKey } from "../../../../shared/llm-model-list.js";
 import { useCostEstimate } from "../use-cost-estimate.js";
 import { activeModelCatalog, installModelCatalog } from "../../../../shared/model-catalog/active.js";
+import { deferred } from "../../../../../test/renderer/helpers.js";
+import { DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES, type SubscriptionRuntimeActionResult } from "../../../../shared/subscription-runtime.js";
 import { requiredFixture } from "../../../../__tests__/support/required-fixture.js";
 
 function makeSettings(): AppSettings {
@@ -561,6 +563,53 @@ describe("useSettings", () => {
     expect(result.current.subscriptionRuntimePolicy.chatUnavailable).toBe(false);
     expect(result.current.subscriptionImagesReady).toBe(false);
     expect(result.current.subscriptionFilesReady).toBe(false);
+  });
+
+  it("refreshes the mounted subscription on focus and ignores a pre-disconnect status reply", async () => {
+    const settings = makeSettings();
+    const selection = { kind: "subscription", provider: "codex", model: "saved-model" } as const;
+    settings.llm.activeChatRuntime = selection;
+    settings.activeChatModel = selection;
+    const { api, emitSubscriptionRuntimeStatusUpdated } = makeMockAveApi({ settings, hasApiKey: false });
+    const status = {
+      ok: true,
+      status: {
+        provider: selection.provider, runtime: "ready", connection: "connected", planType: null, pendingLogin: null,
+        pendingDeviceCode: null, canOpenVerificationUrl: false, version: "test",
+        capabilities: { ...DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES, chat: true },
+      },
+    } as const satisfies SubscriptionRuntimeActionResult;
+    const oldReply = deferred<SubscriptionRuntimeActionResult>();
+    api.subscriptionRuntimeStatus = vi.fn()
+      .mockResolvedValueOnce(status)
+      .mockReturnValueOnce(oldReply.promise)
+      .mockResolvedValueOnce({
+        ...status, status: { ...status.status, connection: "signed-out", capabilities: DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES },
+      })
+      .mockResolvedValue(status);
+    const { result } = renderHook(() => useSettings(api as unknown as AveApi));
+    await waitFor(() => expect(result.current.subscriptionChatReady).toBe(true));
+    const push = api.onSettingsUpdated.mock.calls[0]![0];
+    act(() => emitSubscriptionRuntimeStatusUpdated({ provider: selection.provider, revision: 1 }));
+    await waitFor(() => expect(api.subscriptionRuntimeStatus).toHaveBeenCalledTimes(2));
+    act(() => {
+      emitSubscriptionRuntimeStatusUpdated({ provider: selection.provider, revision: 2 });
+      push({ ...settings, activeChatModel: { kind: "none", reason: "no-connected-provider" } });
+    });
+    await waitFor(() => expect(result.current.subscriptionChatReady).toBe(false));
+    await act(async () => oldReply.resolve(status));
+    expect(result.current.subscriptionChatReady).toBe(false);
+    expect(result.current.activeChatModel).toEqual({ kind: "none", reason: "no-connected-provider" });
+
+    act(() => window.dispatchEvent(new Event("focus")));
+    expect(api.subscriptionRuntimeStatus).toHaveBeenLastCalledWith(selection.provider, { refresh: true });
+    act(() => {
+      emitSubscriptionRuntimeStatusUpdated({ provider: selection.provider, revision: 3 });
+      push(settings);
+    });
+    await waitFor(() => expect(result.current.subscriptionChatReady).toBe(true));
+    expect(result.current.activeChatModel).toEqual(selection);
+    expect(result.current.activeSubscriptionRuntime).toEqual(selection);
   });
 
   it("fails closed synchronously when an active subscription status revision arrives", async () => {
