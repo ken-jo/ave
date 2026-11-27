@@ -197,15 +197,17 @@ export class ClaudeCodeConversationRuntime {
           reader.write(chunk);
         } catch { fail(operationFailed()); }
       };
-      const transportFailed = () => {
+      const transportFailed = (error: Error) => {
         if (child !== spawned || ended || failure) return;
         this.options.connectionEvidence?.({ kind: "transport-lost", source: spawned });
-        fail(new ClaudeCodeSubscriptionError("claude-code-runtime-unavailable"));
+        fail(error);
       };
-      spawned.on("error", transportFailed);
-      spawned.stdout?.on("error", () => fail(operationFailed()));
-      spawned.stderr?.on("error", () => fail(operationFailed()));
-      spawned.stdin?.on("error", () => fail(operationFailed()));
+      const processFailed = () => transportFailed(new ClaudeCodeSubscriptionError("claude-code-runtime-unavailable"));
+      const pipeFailed = () => transportFailed(operationFailed());
+      spawned.on("error", processFailed);
+      spawned.stdout?.on("error", pipeFailed);
+      spawned.stderr?.on("error", pipeFailed);
+      spawned.stdin?.on("error", pipeFailed);
       spawned.stdout?.on("data", consume);
       spawned.stderr?.on("data", (chunk: Buffer | string) => {
         if (failure || ended) return;
@@ -234,7 +236,7 @@ export class ClaudeCodeConversationRuntime {
           reader.write("\n");
           reader.close();
           if (failure) return;
-          if (exitSignal) { transportFailed(); return; }
+          if (exitSignal) { processFailed(); return; }
           if (code !== 0) {
             throw !stream.initialized && code !== null && rejectedArguments
               ? new ClaudeCodeSubscriptionError("claude-code-runtime-incompatible") : operationFailed();
@@ -246,9 +248,9 @@ export class ClaudeCodeConversationRuntime {
           notify();
         } catch (error) { fail(error instanceof ClaudeCodeSubscriptionError ? error : operationFailed()); }
       });
-      if (!spawned.stdin || !spawned.stdout || !spawned.stderr) fail(operationFailed());
+      if (!spawned.stdin || !spawned.stdout || !spawned.stderr) pipeFailed();
       assertActive();
-      spawned.stdin!.end(text, (error?: Error | null) => { if (error) fail(operationFailed()); });
+      spawned.stdin!.end(text, (error?: Error | null) => { if (error) pipeFailed(); });
       while (true) {
         if (failure) throw failure;
         const next = queue.shift();

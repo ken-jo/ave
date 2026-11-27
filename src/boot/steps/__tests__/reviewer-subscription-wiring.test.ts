@@ -25,6 +25,7 @@ import { codexExecutableArtifactFixture, normalizeFixtureAncestorPermissions } f
 import { createPrivateDirectory } from "../../../main/codex-executable-location.js";
 import { CodexConversationRuntime } from "../../../main/codex-conversation-runtime.js";
 import { CodexAppServerClient } from "../../../main/codex-app-server-client.js";
+import { ClaudeCodeConversationRuntime } from "../../../main/claude-code-conversation-runtime.js";
 import { ClaudeCodeSubscriptionClient } from "../../../main/claude-code-subscription-client.js";
 import { claudeCodeSubscriptionStatus } from "../../../shared/claude-code-subscription.js";
 
@@ -193,7 +194,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
 });
 
 it.each([
-  "sign-out batched with initialization", "live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog",
+  "sign-out batched with initialization", "prompt pipe loss", "live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog",
   "logout during failed login", "cancel detects sign-out during failed login",
   "account notification confirmation", "account notification overtaken by logout", "account notification retries after rejection",
   "account notification retries after supersession", "account notification retry withdrawn by sign-out",
@@ -228,7 +229,8 @@ it.each([
   const getClaudeStatus = vi.fn(async () => status);
   const cancelStarted = deferred<void>();
   const cancelReply = deferred<void>();
-  const provider = scenario === "live disconnect" || scenario === "logout during failed login" || scenario === "cancel detects sign-out during failed login" ? "claude-code" : "codex";
+  const promptPipeLoss = scenario === "prompt pipe loss";
+  const provider = promptPipeLoss || scenario === "live disconnect" || scenario === "logout during failed login" || scenario === "cancel detects sign-out during failed login" ? "claude-code" : "codex";
   const heldLogout = deferred<void>();
   const logoutStarted = deferred<void>();
   const heldLogin = deferred<void>();
@@ -253,13 +255,13 @@ it.each([
   let child: RuntimeProcessFixture | undefined;
   let accountConnected = true;
   let runtimeHome = tempDir;
-  if (startupSignOut || holdsCatalog || usesAccountNotification || realCancelRace) {
+  if (startupSignOut || holdsCatalog || usesAccountNotification || realCancelRace || promptPipeLoss) {
     if (process.platform !== "win32") normalizeFixtureAncestorPermissions(tempDir);
     runtimeHome = join(tempDir, "runtime");
     await createPrivateDirectory(runtimeHome);
   }
   const artifact = startupSignOut || holdsCatalog || usesAccountNotification ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
-  const cliArtifact = realCancelRace ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
+  const cliArtifact = realCancelRace || promptPipeLoss ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
   const realCli = cliArtifact && new ClaudeCodeSubscriptionClient({
     runtimeHome, workspaceDir: runtimeHome, runtimeTempDir: runtimeHome,
     releaseFetch: async () => { throw new Error("Unexpected release request"); },
@@ -305,7 +307,15 @@ it.each([
     },
   });
 
+  const printChild = new RuntimeProcessFixture();
   const runtime = await SubscriptionRuntimeService.create(async () => {}, {
+    ...(promptPipeLoss ? { createClaudeCodeConversationRuntime: (options) => new ClaudeCodeConversationRuntime({
+      ...options,
+      spawn: () => {
+        printChild.stdin._final = (callback) => callback(Object.assign(new Error("Broken pipe"), { code: "EPIPE" }));
+        return printChild as unknown as ChildProcess;
+      },
+    }) } : {}),
     namespace: createSubscriptionRuntimeNamespace(),
     claimRuntimeDirectories: claimFakeRuntimeDirectories,
     claudeCodeClient: realCli ?? subscriptionAccountFixture({
@@ -412,6 +422,7 @@ it.each([
   let stopListening: (() => void) | undefined;
   try {
     const { wireReviewerAndPermissions } = await import("../reviewer-permission-wiring.js");
+    if (promptPipeLoss) await runtime.verify(provider);
     dispose = await wireReviewerAndPermissions(context as never);
     expect((await dispatch(false)).review.outcome).toBe("fresh");
     expect((await dispatch(false)).review.outcome).toBe("cache");
@@ -437,6 +448,18 @@ it.each([
       } finally {
         request.child.stdout.write(JSON.stringify({ id: request.id, error: { code: -32603, message: "Turn ended" } }) + "\n");
         await settled;
+        await session.stop();
+      }
+    } else if (promptPipeLoss) {
+      const session = await runtime.openTextSession(selection);
+      try {
+        const readCount = authReadCount;
+        await expect(session.streamTurn("fixture prompt")[Symbol.asyncIterator]().next()).rejects.toThrow();
+        expect(authReadCount).toBe(readCount);
+        expect(await (immediate ?? dispatch(true))).toMatchObject({ result: { decision: "deny", reasonCode: "no-approver" } });
+        expect(await runtime.getCachedStatus(provider)).toMatchObject({ connection: "unknown" });
+      } finally {
+        printChild.emit("close", 1, null);
         await session.stop();
       }
     } else if (holdsCatalog) {
