@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { rankPosixContainerRows, type PosixPolicyLookups } from "../mxc-posix.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel, type PolicyRow } from "../policy-model.js";
-import { _seatbeltDenyGlobForTest, buildSeatbeltShellProfile, splitSeatbeltPolicyRows } from "../seatbelt-profile.js";
+import { _seatbeltDenyGlobForTest, buildSeatbeltShellProfile, seatbeltProfileAllowsOnlyProxyIpEgress, splitSeatbeltPolicyRows } from "../seatbelt-profile.js";
 
 const lookups: PosixPolicyLookups = {
   home: "/users/example", foldsCase: true, canonical: path => path,
@@ -149,5 +149,37 @@ describe("Seatbelt shell profile", () => {
       policyFloorRow("/f/required", "ro", "required-write-deny", true),
     ];
     expect(splitSeatbeltPolicyRows({ rows } as unknown as PolicyModel).literalModel.rows).toEqual(rows);
+  });
+});
+
+describe("Seatbelt structural IP egress evidence", () => {
+  const built = (unixSocketRoots: string[] = []) => buildSeatbeltShellProfile({ ...fixture(), unixSocketRoots });
+
+  it("holds for the profile the builder writes, with or without Unix-socket roots", () => {
+    expect(seatbeltProfileAllowsOnlyProxyIpEgress(built(), 9000)).toBe(true);
+    expect(seatbeltProfileAllowsOnlyProxyIpEgress(built(["/test/socket-root"]), 9000)).toBe(true);
+  });
+
+  it("judges the rules, not the text: a rule's words inside a path literal open nothing", () => {
+    const quoted = `${built()}\n(allow file-read* (literal "/x (allow network* (remote ip \\"*:*\\"))"))`;
+    expect(seatbeltProfileAllowsOnlyProxyIpEgress(quoted, 9000)).toBe(true);
+  });
+
+  it.each([
+    ["another proxy port", (profile: string) => profile, 9001],
+    ["a second IP allow", (profile: string) => `${profile}\n(allow network* (remote ip "*:*"))`, 9000],
+    ["an IP allow split across lines", (profile: string) => `${profile}\n(allow network-outbound\n    (remote ip "*:*"))`, 9000],
+    ["an unfiltered network allow", (profile: string) => `${profile}\n(allow network-outbound)`, 9000],
+    ["a TCP filter", (profile: string) => `${profile}\n(allow network-outbound (remote tcp "*:443"))`, 9000],
+    ["the proxy filter beside another one", (profile: string) =>
+      profile.replace('(allow network-outbound (remote ip "localhost:9000"))', '(allow network-outbound (remote ip "localhost:9000") (remote ip "*:*"))'), 9000],
+    ["an allow default", (profile: string) => `${profile}\n(allow default)`, 9000],
+    ["no default deny", (profile: string) => profile.replace("(deny default)", ""), 9000],
+    ["no proxy allow", (profile: string) => profile.replace('(allow network-outbound (remote ip "localhost:9000"))', ""), 9000],
+    ["two proxy allows", (profile: string) => `${profile}\n(allow network-outbound (remote ip "localhost:9000"))`, 9000],
+    ["an unbalanced form", (profile: string) => `${profile}\n(allow network-outbound (remote ip "*:*")`, 9000],
+    ["an unterminated string", (profile: string) => `${profile}\n(allow file-read* (literal "/x))`, 9000],
+  ])("does not hold with %s", (_name, edit, port) => {
+    expect(seatbeltProfileAllowsOnlyProxyIpEgress(edit(built()), port)).toBe(false);
   });
 });

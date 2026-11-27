@@ -61,17 +61,6 @@ export function parseRawIpProbeOutput(text: string): RawIpProbeOutput {
   return control === undefined ? { targets } : { control, targets };
 }
 
-/**
- * Structural IPv6 evidence for macOS: the Ave-generated profile denies by default and its only outbound network allow
- * is the invocation proxy port on loopback. Read from the exact profile text staged for the probe run.
- */
-export function seatbeltProfileAllowsOnlyProxyEgress(profile: string, proxyPort: number): boolean {
-  const lines = profile.split("\n").map((line) => line.trim());
-  if (!lines.includes("(deny default)")) return false;
-  const allows = lines.filter((line) => line.startsWith("(allow") && /network/u.test(line));
-  return allows.length === 1 && allows[0] === `(allow network-outbound (remote ip "localhost:${proxyPort}"))`;
-}
-
 export interface RawIpMeasurement {
   /** False when the probe did not run in a proven container (the shell canary did not pass). */
   readonly ran: boolean;
@@ -84,7 +73,7 @@ export interface RawIpMeasurement {
   readonly tlRan: boolean;
   /** What the host-side UDP listener saw of the nonce: `unmeasured` when nothing was sent or the listener failed. */
   readonly udpArrival: MxcRawIpUdpArrival;
-  /** The staged profile is a default deny whose only outbound allow is the proxy port. */
+  /** The staged profile's rules deny by default and allow IP egress only to the proxy port (`seatbelt-profile.ts`). */
   readonly structuralIpv6: boolean;
 }
 

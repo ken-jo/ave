@@ -12,13 +12,13 @@ import { INVOCATION_PROXY_REFUSED_STATUS, openInvocationProxyListener } from "./
 import pins from "./mxc-launcher-pins.json" with { type: "json" };
 import { openMxcRawIpUdpListener, type MxcRawIpUdpSend } from "./mxc-raw-ip-udp.js";
 import {
-  parseRawIpProbeOutput, RAW_IP_PROBE_BUDGET_S, RAW_IP_PROBER, rawIpProbeShellLines, RAW_IP_TARGET_DEADLINE_S, rawIpVerdict, seatbeltProfileAllowsOnlyProxyEgress,
+  parseRawIpProbeOutput, RAW_IP_PROBE_BUDGET_S, RAW_IP_PROBER, rawIpProbeShellLines, RAW_IP_TARGET_DEADLINE_S, rawIpVerdict,
 } from "./mxc-macos-raw-ip.js";
 import { atOrUnder, canonicalPath, posixPolicyLookups, rankPosixContainerRows, type PosixPolicyLookups } from "./mxc-posix.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
 import { mxcShellSupervisorLocation, stageMxcShellRequest, startMxcShellSupervisor } from "./mxc-shell-supervisor-client.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "./policy-model.js";
-import { buildSeatbeltShellProfile, splitSeatbeltPolicyRows } from "./seatbelt-profile.js";
+import { buildSeatbeltShellProfile, seatbeltProfileAllowsOnlyProxyIpEgress, splitSeatbeltPolicyRows } from "./seatbelt-profile.js";
 import { quoteSandboxWrappedWord } from "./sandbox-wrapped-command.js";
 
 const PROXY_ENV_KEYS = new Set(["http_proxy", "https_proxy", "all_proxy", "no_proxy", "ftp_proxy"]);
@@ -378,7 +378,7 @@ async function runSeatbeltCanary(
       rawIpProbe: rawIpVerdict({
         ran: true, ...(output === undefined ? {} : { output }), expectedStatus: INVOCATION_PROXY_REFUSED_STATUS,
         nonceRecorded, tlRan: host !== undefined, udpArrival,
-        structuralIpv6: seatbeltProfileAllowsOnlyProxyEgress(request.seatbelt.profileOverride, proxyPort),
+        structuralIpv6: seatbeltProfileAllowsOnlyProxyIpEgress(request.seatbelt.profileOverride, proxyPort),
       }),
     };
   } finally {

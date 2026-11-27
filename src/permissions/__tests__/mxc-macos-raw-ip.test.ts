@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import * as info from "../../shared/sandbox-capability-info.js";
 import { acceptMeasuredContainerEgress, containerEgressProtocolCoverage } from "../../shared/sandbox-capability-info.js";
 import {
-  classifyRawIpTarget, parseRawIpProbeOutput, rawIpVerdict, seatbeltProfileAllowsOnlyProxyEgress, type RawIpMeasurement,
+  classifyRawIpTarget, parseRawIpProbeOutput, rawIpVerdict, type RawIpMeasurement,
 } from "../mxc-macos-raw-ip.js";
 
 describe("macOS raw-IP target classification", () => {
@@ -26,7 +26,6 @@ describe("macOS raw-IP target classification", () => {
   });
 });
 
-const PROXY = 4321;
 const blockedRun = (targets: Record<string, string>, extra: Partial<RawIpMeasurement> = {}): RawIpMeasurement => ({
   ran: true, expectedStatus: 403, nonceRecorded: true, tlRan: true, udpArrival: "absent", structuralIpv6: true,
   output: { control: { status: "403", refusal: "loopback destination" }, targets: { T4: "1", T6: "1", TL: "1", UA: "1", ...targets } },
@@ -92,29 +91,6 @@ describe("macOS raw-IP verdict", () => {
     expect(rawIpVerdict(blockedRun({ T4: "51" }))).toEqual(unknown("no-route"));
     expect(rawIpVerdict(blockedRun({ T4: "deadline" }))).toEqual(unknown("timeout"));
     expect(rawIpVerdict(blockedRun({ T4: "nosocket" }))).toEqual(unknown("unclassified"));
-  });
-});
-
-describe("macOS structural network evidence", () => {
-  const profile = (network: string) => ["(version 1)", "(deny default)", "(allow file-read* (subpath \"/x\"))", network,
-    "(deny file-write* network-outbound (subpath \"/y\"))"].join("\n");
-
-  it("holds only for a default deny whose single outbound allow is the proxy port", () => {
-    expect(seatbeltProfileAllowsOnlyProxyEgress(profile(`(allow network-outbound (remote ip "localhost:${PROXY}"))`), PROXY)).toBe(true);
-  });
-
-  it.each([
-    ["another port", `(allow network-outbound (remote ip "localhost:${PROXY + 1}"))`],
-    ["all outbound", "(allow network-outbound)"],
-    ["a second allow", `(allow network-outbound (remote ip "localhost:${PROXY}"))\n(allow network* (remote ip "*:*"))`],
-    ["no allow at all", ""],
-  ])("does not hold with %s", (_name, network) => {
-    expect(seatbeltProfileAllowsOnlyProxyEgress(profile(network), PROXY)).toBe(false);
-  });
-
-  it("does not hold without a default deny", () => {
-    const open = profile(`(allow network-outbound (remote ip "localhost:${PROXY}"))`).replace("(deny default)", "(allow default)");
-    expect(seatbeltProfileAllowsOnlyProxyEgress(open, PROXY)).toBe(false);
   });
 });
 
