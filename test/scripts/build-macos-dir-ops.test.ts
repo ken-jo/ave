@@ -127,12 +127,12 @@ describe("buildMacosDirOps", () => {
 describe("macOS download file helper wiring", () => {
   const packageJson = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
 
-  it("restricts both installer formats to arm64 while preserving the OS floor", () => {
+  it("restricts both installer formats to arm64 while keeping the macOS 15 floor", () => {
     expect(packageJson.build.mac.target).toEqual([
       { target: "dmg", arch: ["arm64"] },
       { target: "zip", arch: ["arm64"] },
     ]);
-    expect(packageJson.build.mac.minimumSystemVersion).toBe("13.0");
+    expect(packageJson.build.mac.minimumSystemVersion).toBe("15.0");
   });
 
   it("builds the helper with the app and before tests, and its fault-injecting variants only for tests", () => {
