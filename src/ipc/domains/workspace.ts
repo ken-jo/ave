@@ -1372,12 +1372,11 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     };
   }
 
-  function auditProjectFileOpen(channel: string, sessionId: string, _rootPath: string, _path: string, _error: string | null): void {
-    try {
-      logPermissionEvent("workspace_root_action", { sessionId: permissionLogId(sessionId), channel: permissionLogId(channel) });
-    } catch {
-      // An audit sink failure must not change what the user was told.
-    }
+  function logProjectFileAction(channel: string, sessionId: string, error: string | null): void {
+    logPermissionEvent("workspace_root_action", {
+      sessionId: permissionLogId(sessionId), channel, outcome: error === null ? "ok" : "failed",
+      reasonCode: permissionLogId(error),
+    });
   }
 
   // Open one in-project file with the OS default app.
@@ -1388,8 +1387,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       if (!admitted.ok) return admitted.refusal;
       // The requested spelling goes in, not the resolved one, so a `.sh` name that links to a text file is still refused.
       const opened = await openVerifiedExternalFile(admitted.rawPath, admitted.authorize);
-      auditProjectFileOpen(CHANNELS.workspace.openPath, "workspace-open-path", admitted.rootPath,
-        opened.ok ? opened.real : admitted.resolved, opened.ok ? null : opened.error);
+      logProjectFileAction(CHANNELS.workspace.openPath, "workspace-open-path", opened.ok ? null : opened.error);
       return opened.ok ? { ok: true } : { ok: false, error: opened.error };
     },
   );
@@ -1418,8 +1416,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           return argv.ok && await launchEditor(argv.program, argv.args);
         },
       });
-      auditProjectFileOpen(CHANNELS.workspace.openInEditor, "workspace-open-in-editor", admitted.rootPath,
-        opened.ok ? opened.real : admitted.resolved, opened.ok ? null : opened.error);
+      logProjectFileAction(CHANNELS.workspace.openInEditor, "workspace-open-in-editor", opened.ok ? null : opened.error);
       if (opened.ok) return { ok: true };
       return { ok: false, error: opened.error === "open-failed" ? "launch-failed" : opened.error };
     },
@@ -1443,7 +1440,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       launch: async (real) => { outcome = await act(real, () => admitted.authorize(real, "final") === null); return true; },
     });
     const error = !verified.ok ? verified.error : outcome?.ok === false ? (outcome as { error?: string }).error ?? "failed" : null;
-    auditProjectFileOpen(channel, auditSession, admitted.rootPath, verified.ok ? verified.real : admitted.resolved, error);
+    logProjectFileAction(channel, auditSession, error);
     if (!verified.ok) {
       if (verified.error === "open-failed") throw new Error("edit hand-off reported a failed launch");
       return { ok: false, error: verified.error };

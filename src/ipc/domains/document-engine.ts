@@ -45,7 +45,7 @@ export function registerDocumentEngineHandlers(deps: IpcDeps): void {
   };
   const failure = (error: unknown): DocumentEngineInstallationError => {
     const code = error instanceof DocumentEngineInstallError ? error.code : "install-failed";
-    logPermissionEvent("document_engine_install_failed", { sessionId: permissionLogId("document-engine-installation") }, "warn");
+    logPermissionEvent("document_engine_install_failed", { sessionId: permissionLogId("document-engine-installation"), reasonCode: code }, "warn");
     return code;
   };
   const refresh = async (): Promise<DocumentEngineInstallationState> => {

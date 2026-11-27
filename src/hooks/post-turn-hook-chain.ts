@@ -1,5 +1,5 @@
 import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
-
+import { maskSensitiveData } from "../shared/dlp.js";
 
 import type { RunModelSettings } from "../shared/run-model-settings.js";
 import { detectFromStream, type DetectorResult } from "../engine/checkpoint-detector.js";
@@ -32,7 +32,7 @@ export interface PostTurnHookContext {
   memoryCaptureTaint?: readonly MemoryCaptureTaintReason[];
   output: string;
   toolCalls: Array<{ name: string; isError: boolean }>;
-  // Provider input tokens include cache; audit normalizes them to the cost contract before persisting.
+  // Provider input token totals can include cached tokens.
   tokenUsage?: TokenUsage;
   usageByModel?: TokenUsageByModel[];
   // Separate non-billable subscription telemetry; never enters price normalization.
@@ -157,20 +157,20 @@ export class PostTurnHookChain {
       log.warn("update-title failed: %s", err);
     }
 
-    // Audit token-bearing routes as provider/model; use the captured model rather than live settings.
+    // Use the captured route for token-bearing turns, with only validated model identifiers.
     try {
       const llmSettings = this.deps.settingsService?.get("llm");
       const provider = ctx.vendorProvider ?? llmSettings?.provider;
       const model =
         ctx.vendorModel ??
         (llmSettings ? activeLlmRouteModel(llmSettings) : undefined);
-      const auditRoute =
-        ctx.tokenUsage && provider && model
-          ? `${provider}/${model}`
-          : ctx.route;
-      logPermissionEvent("post_turn_hook_finished", { sessionId: permissionLogId(ctx.sessionId), route: permissionLogId(auditRoute) });
+      const providerId = permissionLogId(provider);
+      const modelId = model && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model)
+        && maskSensitiveData(model).detections.length === 0 ? model : undefined;
+      const route = ctx.tokenUsage && providerId && modelId ? `${providerId}/${modelId}` : permissionLogId(ctx.route);
+      logPermissionEvent("post_turn_hook_finished", { sessionId: permissionLogId(ctx.sessionId), route });
     } catch (err) {
-      log.warn("audit failed: %s", err);
+      log.warn("turn completion logging failed: %s", err);
     }
 
     try {

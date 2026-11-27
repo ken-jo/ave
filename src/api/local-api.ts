@@ -148,7 +148,7 @@ export function createLocalApi(deps: LocalApiDeps): LocalApi {
         }
         if (approval.approved !== true) {
           const approvalOutcome = approval.outcome;
-          logPermissionEvent("external_permission_refused", { sessionId: permissionLogId(ipc.conversationLoop.getSessionId()) }, "warn");
+          logPermissionEvent("external_permission_refused", { sessionId: permissionLogId(ipc.conversationLoop.getSessionId()), channel, outcome: approvalOutcome }, "warn");
           return { ok: false, error: EXTERNAL_MUTATION_DENIED, approvalOutcome };
         }
         const data = await routeExternalMutation(channel, args, origin);

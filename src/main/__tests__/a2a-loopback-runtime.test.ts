@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startLocalApiHttpServer, type LocalApiHttpServer } from "../../api/http-server.js";
 import { createStreamBroadcaster } from "../../api/stream-broadcaster.js";
@@ -69,6 +70,8 @@ afterEach(async () => {
   for (const server of current) await server.close();
 });
 
+const permissionEvents = trackPermissionEvents();
+
 describe("A2A production loopback runtime", () => {
   it("derives a DLP-safe opaque stable Windows address from source identity", async () => {
     const first = deriveA2ALoopbackHandlerId("C:\\Profiles\\Reviewer.md", "win32");
@@ -126,7 +129,6 @@ describe("A2A production loopback runtime", () => {
 
   it.each(["denied", "rejected", "expired", "unavailable", "cancelled"] as const)("retains the remote receiver approval outcome for actual mutations (%s)", async (outcome) => {
     const approveAgentAction = vi.fn(async () => ({ approved: false as const, outcome }));
-    const auditLog = vi.fn();
     let captured: A2ARequestHandler | undefined;
     const runtime = await createA2ALoopbackRuntime(makeOptions([
       profile("alpha", "C:/profiles/alpha.md"),
@@ -159,9 +161,9 @@ describe("A2A production loopback runtime", () => {
       reason: "[A2A Wire: Remote] Approve the remote mutation?",
       trustOrigin: "a2a-remote-wire",
     }));
-    expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "a2a-remote-wire",
-      input: expect.stringMatching(new RegExp(`a2a-remote-wire:task-lifecycle:dropped:consent-denied:.*:approval=${outcome}$`)),
+    expect(permissionEvents()).toContainEqual(expect.objectContaining({
+      event: "local_agent_delivery_refused", sessionId: "a2a-remote-wire", scope: "a2a-remote-wire",
+      outcome: "dropped", reasonCode: "consent-denied", approvalOutcome: outcome,
     }));
     await runtime!.dispose();
   });

@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { captureWorkBoardTestGesture, invokeWithWorkBoardTestKey, pressWorkBoardTestKey, workBoardTestSender } from "../../../__tests__/support/work-board-ipc.js";
 import { beforeEach, expect, it, vi } from "vitest";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
@@ -36,11 +37,12 @@ const allScope = { kind: "all" } as const;
 const gesture = { inputOrigin: "user-keyboard", userActivation: true };
 const confirmTemplateWithGesture = async (event: ReturnType<typeof setup>["event"], id: string, request: unknown) =>
   handler(WORK_BOARD.templateConfirm)(event, id, request, await captureWorkBoardTestGesture(handler, event, WORK_BOARD.templateConfirm, id, request));
+const permissionEvents = trackPermissionEvents();
+
 function setup(extra: Partial<IpcDeps> = {}) {
   const sender = workBoardTestSender(); const window = { isDestroyed: () => false, webContents: sender };
   const changed = new ChangeSignal(() => {});
   const store = { list: vi.fn(async () => []), get: vi.fn(async (id: string) => ({ template: { id, scope: { kind: "all" }, currentVersion: 1 } })), draft: vi.fn(async () => { changed.emit(); return {}; }), confirmDraft: vi.fn(async () => { changed.emit(); return { version: { templateId: "t", version: 1 }, unattended: { ok: true } }; }), archive: vi.fn(async () => { changed.emit(); }), attachSchedule: vi.fn(async () => { changed.emit(); return {}; }), detachSchedule: vi.fn(async () => true), getAttachment: vi.fn(async () => ({ templateId: "t", scheduleId: "daily" })), changed };
-  const auditLog = vi.fn();
   const remove = vi.fn(async () => true);
   const routinesStore = {
     list: vi.fn(() => [{ id: "daily", execution: "template-run" }]),
@@ -50,7 +52,7 @@ function setup(extra: Partial<IpcDeps> = {}) {
   const deps = { workflowTemplateStore: store, toolRegistry: new ToolRegistry(), routinesStore, getMainWindow: () => window, getAppWindows: () => [window], ...extra } as unknown as IpcDeps;
   registerWorkBoardHandlers(deps);
   registerRoutineHandlers(deps);
-  return { store, auditLog, remove, event: { sender, senderFrame: sender.mainFrame } };
+  return { store, remove, event: { sender, senderFrame: sender.mainFrame } };
 }
 beforeEach(() => { h.clear(); vi.mocked(validateHostRendererSender).mockReturnValue(true); vi.mocked(broadcastToAppWindows).mockClear(); });
 const proposalToolName = "workflow_template_propose";
@@ -94,7 +96,6 @@ async function withTemplateProposal<T>(body: (fixture: {
   store: WorkflowTemplateStore;
   path: string;
   event: ReturnType<typeof setup>["event"];
-  auditLog: ReturnType<typeof setup>["auditLog"];
   propose: (draft: unknown, options?: { headless?: boolean; sessionId?: string }) => Promise<{ isError: boolean; output: string }>;
 }) => Promise<T>): Promise<T> {
   const directory = await mkdtemp(join(tmpdir(), "template-proposals-"));
@@ -102,10 +103,10 @@ async function withTemplateProposal<T>(body: (fixture: {
   const store = new WorkflowTemplateStore(path);
   try {
     const registry = proposalRegistry(store);
-    const { event, auditLog } = setup({ workflowTemplateStore: store, toolRegistry: registry });
+    const { event } = setup({ workflowTemplateStore: store, toolRegistry: registry });
     const tool = registry.getVisibleTools().find(entry => entry.name === proposalToolName);
     if (!tool) throw new Error("Workflow template proposal tool is missing from host registration");
-    return await body({ store, path, event, auditLog, propose: (draft, { headless = false, sessionId = reportSessionId } = {}) =>
+    return await body({ store, path, event, propose: (draft, { headless = false, sessionId = reportSessionId } = {}) =>
       tool.execute(draft, { cwd: directory, extraAllowedDirectories: [], metadata: { sessionId }, headless }) });
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -136,7 +137,7 @@ it("holds a valid draft with the graph hash and saves nothing before confirmatio
 });
 
 it("saves a new version only through a matching user confirmation", async () => {
-  await withTemplateProposal(async ({ event, store, auditLog, propose }) => {
+  await withTemplateProposal(async ({ event, store, propose }) => {
     const { proposalId, graphHash } = JSON.parse((await propose(reportWithEnvelope)).output);
     const decision = { expectedGraphHash: graphHash, expectedDraftRevision: proposalId };
     const confirmProposal = handler(WORK_BOARD.templateConfirm);
@@ -152,10 +153,9 @@ it("saves a new version only through a matching user confirmation", async () => 
     expect(await store.getVersion(template.id, 1)).toMatchObject({
       graphHash, version: 1, stages: reportWithEnvelope.stages, confirmation: { who: "user", origin: "local-desktop" },
     });
-    expect(auditLog).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(auditLog.mock.calls[0][0].output)).toEqual({
-      event: "template_confirmed", proposalId, templateId: template.id, version: 1, graphHash, origin: "local-desktop",
-    });
+    expect(permissionEvents().filter((entry) => entry.event === "template_confirmed")).toEqual([
+      expect.objectContaining({ proposalId, templateId: template.id, version: 1, graphHash, origin: "local-desktop" }),
+    ]);
     expect(await handler(WORK_BOARD.templateProposalGet)(event, proposalId)).toEqual({ ok: false, error: "no-draft" });
   });
 });

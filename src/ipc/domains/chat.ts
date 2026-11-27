@@ -2038,7 +2038,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     ) {
       return { ok: false, error: "invalid-args" };
     }
-    logPermissionEvent("chat_feedback", { sessionId: permissionLogId(sessionId) }, "warn");
+    logPermissionEvent("chat_feedback", { sessionId: permissionLogId(sessionId), messageIndex, rating }, "warn");
     if (rating === "up" && starredStore) {
       const existing = starredStore.list().find(
         (s) => s.sessionId === sessionId && s.messageIndex === messageIndex,

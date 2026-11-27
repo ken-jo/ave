@@ -1,4 +1,4 @@
-import { logPermissionEvent, permissionLogId } from "../lib/permission-log.js";
+import { logPermissionEvent, permissionLogId, permissionLogReasonCode } from "../lib/permission-log.js";
 /** Spawn isolated child history with scoped tools, a host-assigned round budget, labeled approval prompts, and streamed status.
  * Only an opted-in workflow stage can expose agent_spawn inside a child loop. */
 import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
@@ -1826,19 +1826,24 @@ export class SubAgentRunner {
   }
 
   private auditWorkBoardSteer(
-    _type: "info" | "warn",
-    _input: { originSessionId: string; childSessionId: string; messageId: string },
-    _outcome: string,
+    level: "info" | "warn",
+    input: { originSessionId: string; childSessionId: string; messageId: string },
+    disposition: string,
   ): void {
-    logPermissionEvent("work_board_steer_delivery", { sessionId: permissionLogId("unknown") });
+    logPermissionEvent("work_board_steer_delivery", {
+      sessionId: permissionLogId(input.originSessionId) ?? "unknown", disposition: permissionLogReasonCode(disposition),
+    }, level);
   }
 
   private auditParentDirective(
-    _type: "info" | "warn",
+    level: "info" | "warn",
     input: { originSessionId: string; childSessionId: string; messageId: string },
-    _outcome: string,
+    disposition: string,
   ): void {
-    logPermissionEvent("work_board_steer_response", { sessionId: permissionLogId(isValidSessionId(input.originSessionId) ? input.originSessionId : "unknown") });
+    logPermissionEvent("work_board_steer_response", {
+      sessionId: permissionLogId(isValidSessionId(input.originSessionId) ? input.originSessionId : "unknown"),
+      disposition: permissionLogReasonCode(disposition),
+    }, level);
   }
 
   reserveQuestionWait(

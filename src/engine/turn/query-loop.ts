@@ -2791,7 +2791,7 @@ export async function gateCrossAgentInterceptedMetaTools(
     if (failure === undefined) {
       approved.push(toolUse);
     } else {
-      logPermissionEvent("cross_agent_approval_failed", { sessionId: permissionLogId(sessionId) }, "warn");
+      logPermissionEvent("cross_agent_approval_failed", { sessionId: permissionLogId(sessionId), tool: toolUse.name, outcome: failure }, "warn");
       denied.push({
         toolUseId: toolUse.id,
         toolName: toolUse.name,

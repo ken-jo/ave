@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { describe, expect, it, vi } from "vitest";
 import { A2ATaskState } from "../../shared/a2a.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
@@ -95,9 +96,11 @@ const questionControl = {
   prompt: "Which option?",
 };
 
+const permissionEvents = trackPermissionEvents();
+
 describe("A2A question control and causal propagation", () => {
   it.each(["denied", "rejected", "expired", "unavailable", "cancelled", "replayed"] as const)(
-    "preserves %s at the intercepted approval result and audit", async (outcome) => {
+    "preserves %s at the intercepted approval result and log", async (outcome) => {
       const controller = new AbortController();
       const sessionId = "recipient";
       const toolUse = { id: "meta-call", name: "tool_search", input: {} };
@@ -113,7 +116,6 @@ describe("A2A question control and causal propagation", () => {
       } else if (outcome === "rejected") {
         vi.spyOn(gate, "requestAndWait").mockImplementation(async ({ id }) => ({ requestId: id, choice: "deny-once" }));
       }
-      const log = vi.fn();
       const self = { deps: { approvalGate: outcome === "unavailable" ? undefined : gate },
         currentAbortController: controller };
       const status = outcome === "replayed" ? "rejected" : outcome;
@@ -121,7 +123,7 @@ describe("A2A question control and causal propagation", () => {
       expect.soft(result).toEqual({ approved: [], denied: [expect.objectContaining({
         toolUseId: toolUse.id, content: expect.stringContaining(`cross-agent-approval-${status}`),
       })] });
-      expect(log).toHaveBeenCalledWith(expect.objectContaining({ input: `cross-agent-meta-approval-${status}:tool_search` }));
+      expect(permissionEvents()).toContainEqual(expect.objectContaining({ event: "cross_agent_approval_failed", sessionId, tool: toolUse.name, outcome: status }));
       expect(controller.signal.aborted).toBe(false);
     },
   );

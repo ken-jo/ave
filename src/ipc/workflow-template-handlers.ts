@@ -117,7 +117,8 @@ export function registerWorkflowTemplateHandlers(
     }
     const result = await store.confirmDraft(id, input, { who: "user", origin: "local-desktop" }, createToolEffectResolver(deps.toolRegistry));
     const { version } = result;
-    logPermissionEvent("template_confirmed", { sessionId: permissionLogId(`work-board:${version.templateId}`), templateId: permissionLogId(version.templateId), version: version.version });
+    logPermissionEvent("template_confirmed", { proposalId: permissionLogId(proposalId), templateId: permissionLogId(version.templateId),
+      version: version.version, graphHash: permissionLogId(version.graphHash), origin: "local-desktop", });
     return result;
   });
   handle(WORK_BOARD.templateArchive, async (store, _event, id, ...args) => { requireTemplate(args.length === 0); const record = await load(id); await store.archive(record.template.id); return null; });

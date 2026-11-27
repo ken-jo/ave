@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 // Only the host-recorded root parent may direct a child; delivery requires a live or resumable run.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -50,11 +51,12 @@ function volatileNamespace(): FeatureNamespaceHandle {
   };
 }
 
+const permissionEvents = trackPermissionEvents();
+
 type MetadataById = Record<string, Record<string, unknown>>;
 
 function stubbedRunner(metadataById: MetadataById) {
   const mailbox = new ParentDirectiveMailbox(volatileNamespace());
-  const audited: string[] = [];
   const runner = new SubAgentRunner({
     subAgentMemoryManager: {
       sessions: {
@@ -66,7 +68,7 @@ function stubbedRunner(metadataById: MetadataById) {
       settingsService: { get: () => ({ subAgentMaxRounds: 60 }) },
     },
   } as never);
-  return { runner, mailbox, audited };
+  return { runner, mailbox };
 }
 
 function suspendedChild(originSessionId = ROOT_SESSION): Record<string, unknown> {
@@ -81,19 +83,19 @@ function suspendedChild(originSessionId = ROOT_SESSION): Record<string, unknown>
 
 describe("SubAgentRunner.queueParentMessageToChild — authorization", () => {
   it("refuses a child this session never spawned", async () => {
-    const { runner, audited } = stubbedRunner({});
+    const { runner } = stubbedRunner({});
     const refused = await runner.queueParentMessageToChild(
       ROOT_SESSION,
       OWNED_CHILD,
       "change direction",
     );
     expect(refused).toEqual({ ok: false, reason: "unknown-recipient" });
-    expect(audited.join("\n")).toContain("dropped:unknown-recipient");
+    expect(permissionEvents()).toContainEqual(expect.objectContaining({ event: "work_board_steer_response", disposition: "dropped:unknown-recipient" }));
   });
 
   it("refuses another parent's child as cross-origin", async () => {
     // Distinguish foreign children from unknown IDs so callers do not retry impossible ownership.
-    const { runner, audited } = stubbedRunner({
+    const { runner } = stubbedRunner({
       [FOREIGN_CHILD]: suspendedChild(OTHER_ROOT),
     });
     const refused = await runner.queueParentMessageToChild(
@@ -102,7 +104,7 @@ describe("SubAgentRunner.queueParentMessageToChild — authorization", () => {
       "change direction",
     );
     expect(refused).toEqual({ ok: false, reason: "cross-origin" });
-    expect(audited.join("\n")).toContain("dropped:cross-origin");
+    expect(permissionEvents()).toContainEqual(expect.objectContaining({ event: "work_board_steer_response", disposition: "dropped:cross-origin" }));
   });
 
   it("refuses a sub-agent posing as the sender — one hop, downward only", async () => {
@@ -311,21 +313,21 @@ describe("SubAgentRunner.queueHostDirectiveToWorkBoardChild — authorization", 
   const WORK_BOARD_ORIGIN = "work-board:5";
 
   it("refuses an ordinary session origin; agent_guide directives never take this path", async () => {
-    const { runner, audited } = stubbedRunner({ [OWNED_CHILD]: suspendedChild() });
+    const { runner } = stubbedRunner({ [OWNED_CHILD]: suspendedChild() });
     expect(runner.queueHostDirectiveToWorkBoardChild(ROOT_SESSION, OWNED_CHILD, "change direction"))
       .toEqual({ ok: false, reason: "unknown-recipient" });
     expect(runner.queueHostDirectiveToWorkBoardChild("work-board-briefing:daily", OWNED_CHILD, "change direction"))
       .toEqual({ ok: false, reason: "unknown-recipient" });
-    expect(audited.join("\n")).toContain("work-board:steer:dropped:unknown-recipient");
+    expect(permissionEvents()).toContainEqual(expect.objectContaining({ event: "work_board_steer_delivery", disposition: "dropped:unknown-recipient" }));
   });
 
   it("refuses a child with no live turn and stores nothing for a later resume", async () => {
-    const { runner, mailbox, audited } = stubbedRunner({ [OWNED_CHILD]: suspendedChild(WORK_BOARD_ORIGIN) });
+    const { runner, mailbox } = stubbedRunner({ [OWNED_CHILD]: suspendedChild(WORK_BOARD_ORIGIN) });
     expect(runner.queueHostDirectiveToWorkBoardChild(WORK_BOARD_ORIGIN, OWNED_CHILD, "change direction"))
       .toEqual({ ok: false, reason: "recipient-unavailable" });
     expect(await mailbox.peek(OWNED_CHILD, WORK_BOARD_ORIGIN)).toHaveLength(0);
-    expect(audited.join("\n")).toContain("work-board:steer:dropped:recipient-unavailable");
-    expect(audited.join("\n")).not.toContain("change direction");
+    expect(permissionEvents()).toContainEqual(expect.objectContaining({ event: "work_board_steer_delivery", disposition: "dropped:recipient-unavailable" }));
+    expect(JSON.stringify(permissionEvents())).not.toContain("change direction");
   });
 
   it("refuses malformed ids, empty or control-laden text, and oversized text", () => {

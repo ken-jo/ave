@@ -1,3 +1,4 @@
+import { trackPermissionEvents } from "../../../__tests__/support/permission-events.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import { CHANNELS, isPublicChannel } from "../../../contract/app-contract.js";
@@ -28,7 +29,6 @@ const ABSENT: DocumentEngineInstallationState = { phase: "absent", version: "26.
 let event: IpcMainInvokeEvent;
 let deps: IpcDeps;
 let registered: boolean;
-let audit: ReturnType<typeof vi.fn>;
 
 function invoke(channel: string, sender = event, ...args: unknown[]) {
   const handler = mocks.handlers.get(channel);
@@ -43,7 +43,6 @@ beforeEach(() => {
   const frame = { url: "file:///app/index.html", detached: false, isDestroyed: () => false };
   const sender = { mainFrame: frame, isDestroyed: () => false, getType: () => "window", session: mocks.session };
   event = { sender, senderFrame: frame } as unknown as IpcMainInvokeEvent;
-  audit = vi.fn();
   deps = { getMainWindow: () => null,
     getAppWindows: () => registered ? [{ webContents: sender, isDestroyed: () => false }] : [],
     singleHopNetworkFetch: vi.fn(),
@@ -56,6 +55,7 @@ beforeEach(() => {
   registerDocumentEngineHandlers(deps);
 });
 afterEach(() => { mocks.handlers.clear(); });
+const permissionEvents = trackPermissionEvents();
 
 describe("optional document engine local installation", () => {
   it("keeps all installation channels private and binds the host network transport", () => {
@@ -140,7 +140,7 @@ describe("optional document engine local installation", () => {
     mocks.install.mockRejectedValueOnce(new DocumentEngineInstallError("signature-failed", "Signature was refused"));
     await invoke(CHANNELS.documentEngine.install);
     await vi.waitFor(async () => expect(await invoke(CHANNELS.documentEngine.status)).toMatchObject({ state: { phase: "error", error: "signature-failed" } }));
-    expect(audit).toHaveBeenCalled();
+    expect(permissionEvents()).toContainEqual(expect.objectContaining({ event: "document_engine_install_failed", reasonCode: "signature-failed" }));
     mocks.state.mockResolvedValue({ ...ABSENT, phase: "ready" });
     expect(await invoke(CHANNELS.documentEngine.install)).toEqual({ ok: true });
     expect(mocks.install).toHaveBeenCalledTimes(1);

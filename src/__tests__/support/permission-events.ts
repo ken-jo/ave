@@ -26,6 +26,13 @@ export function collectPermissionEvents() {
   };
 }
 
+export function trackPermissionEvents() {
+  let capture: ReturnType<typeof collectPermissionEvents>;
+  beforeEach(() => { capture = collectPermissionEvents(); });
+  afterEach(() => { capture.restore(); });
+  return () => capture.events;
+}
+
 export async function captureInvocationCorrelations() {
   const runner = await import("../../tools/invocation-runner.js");
   const run = runner.runToolInvocation;
