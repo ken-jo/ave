@@ -185,6 +185,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
   // extraction).
   const isMountedRef = useRef(true);
   const snapshotRevisionRef = useRef(0);
+  const hostRevisionRef = useRef(0);
   const activeSubscriptionRuntimeRef = useRef<SubscriptionChatRuntimeSelection | null>(null);
   const subscriptionStatusRequestRef = useRef(0);
   const subscriptionStatusRevisionByProviderRef = useRef(new Map<string, number>());
@@ -197,7 +198,8 @@ export function useSettings(api: AveApi): UseSettingsResult {
 
   const applySettingsSnapshot = useCallback(
     (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current || settings.subscriptionRevision < hostRevisionRef.current) return;
+      hostRevisionRef.current = Math.max(hostRevisionRef.current, settings.subscriptionRevision);
       const provider = narrowLlmVendor(settings.llm.provider);
       const block = getLlmVendorSettings(settings.llm.vendors, provider);
       setLlmVendor(provider);
@@ -310,6 +312,11 @@ export function useSettings(api: AveApi): UseSettingsResult {
         subscriptionStatusRevisionByProviderRef.current.get(event.provider) ?? 0;
       if (event.revision <= previousRevision) return;
       subscriptionStatusRevisionByProviderRef.current.set(event.provider, event.revision);
+      hostRevisionRef.current = Math.max(hostRevisionRef.current, event.revision);
+      if (event.connected === false) {
+        setActiveChatModel((model) => model?.kind === "subscription" && model.provider === event.provider
+          ? { kind: "none", reason: "no-connected-provider" } : model);
+      }
       // Invalidate synchronously before React schedules the re-probe. A status response that was already in flight must not put
       // stale capabilities back after logout, login, verification, or a runtime reconfiguration.
       subscriptionStatusRequestRef.current += 1;
@@ -342,6 +349,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     void api.subscriptionRuntimeStatus(activeSubscriptionRuntime.provider)
       .then((result) => {
         if (!isMountedRef.current || requestId !== subscriptionStatusRequestRef.current) return;
+        if (result.status?.revision !== undefined && result.status.revision < (subscriptionStatusRevisionByProviderRef.current.get(activeSubscriptionRuntime.provider) ?? 0)) return;
         if (
           result.ok !== true
           || result.status.provider !== activeSubscriptionRuntime.provider
@@ -349,7 +357,8 @@ export function useSettings(api: AveApi): UseSettingsResult {
           setSubscriptionRuntimeCapabilities(DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES);
           return;
         }
-        setSubscriptionRuntimeProvableOnUse(result.status.runtime === "ready" && result.status.connection === "connected");
+        setSubscriptionRuntimeProvableOnUse(result.status.connection === "connected"
+          && (result.status.runtime === "ready" || (result.status.provider === "claude-code" && result.status.runtime === "unverified")));
         setSubscriptionRuntimeCapabilities(
           result.status.capabilities ?? DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES,
         );

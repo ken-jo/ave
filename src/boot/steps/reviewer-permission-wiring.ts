@@ -23,16 +23,11 @@ import type { BootContext } from "../context.js";
 import { createRecentlyDeniedReplayResolver } from "../../permissions/reviewer/recently-denied-replay.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { SubscriptionRuntimeId } from "../../shared/subscription-runtime.js";
-import { onSubscriptionRuntimeStatusChanged } from "../../main/subscription-runtime-service.js";
+import { onSubscriptionRuntimeStatusChanged, subscriptionConnectionProjection } from "../../main/subscription-runtime-service.js";
 import { UnavailableRationaleScopeReviewer } from "../../permissions/reviewer/rationale-scope-reviewer.js";
 import { UnavailableApprovalSentenceSelector } from "../../permissions/reviewer/approval-sentence-selector.js";
 
 const log = createLogger("ave");
-
-interface SubscriptionConnectionObservation {
-  provider: SubscriptionRuntimeId;
-  connected: boolean;
-}
 
 export async function wireReviewerAndPermissions(ctx: BootContext): Promise<() => void> {
   const {
@@ -154,7 +149,7 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<() =
   let currentReconfiguration: object;
   const rewireReviewerAgentNow = async (
     reconfiguration: object,
-    observation?: SubscriptionConnectionObservation,
+    fromConnectionChange: boolean,
   ): Promise<void> => {
     if (currentReconfiguration !== reconfiguration) return;
     // Reapply the read fence on every settings rewire; its generation invalidates verdicts from the prior policy.
@@ -176,8 +171,8 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<() =
     const activeRuntime = settingsService.get("llm").activeChatRuntime;
     let connectedSubscription: SubscriptionRuntimeId | undefined;
     if (!selectedReviewerModel && !judgeSettings.modelRejected && activeRuntime?.kind === "subscription") {
-      const connected = observation?.provider === activeRuntime.provider
-        ? observation.connected : await isSubscriptionConnected(activeRuntime.provider);
+      const connected = (fromConnectionChange ? subscriptionConnectionProjection(activeRuntime.provider)?.connected : undefined)
+        ?? await isSubscriptionConnected(activeRuntime.provider);
       if (connected) connectedSubscription = activeRuntime.provider;
     }
     const reviewerModelSelection = judgeSettings.modelRejected === true
@@ -196,6 +191,7 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<() =
         : []),
     ]);
     if (currentReconfiguration !== reconfiguration) return;
+    const subscriptionScope = connectedSubscription ? subscriptionConnectionProjection(connectedSubscription)?.scope : undefined;
     const reviewerResult = wireReviewerAgent({
       permissionManager,
       networkFetch: singleHopNetworkFetch,
@@ -206,6 +202,7 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<() =
         ? (vendor) => reviewerStreamProviderFor(secrets, vendor, selectedReviewerModel.model, selectedReviewerModel.route)
         : (vendor) => reviewerStreamProviderFor(secrets, vendor, undefined, undefined, connectedSubscription),
       ...(reviewerModelSelection ? { selectedModel: reviewerModelSelection } : {}),
+      ...(subscriptionScope ? { subscriptionScope } : {}),
       onRecentlyDeniedChanged: (summary) => {
         for (const window of ctx.host.desktop?.getAppWindows() ?? [getMainWindow()]) {
           sendToWindow(window, PERMISSIONS.recentlyDeniedChanged, summary, log);
@@ -235,10 +232,10 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<() =
     permissionManager.completeReviewerReconfiguration(reconfiguration);
   };
   let latestRewire: Promise<void> = Promise.resolve();
-  const queueReviewerRewire = (observation?: SubscriptionConnectionObservation): Promise<void> => {
+  const queueReviewerRewire = (fromConnectionChange = false): Promise<void> => {
     const reconfiguration = permissionManager.beginReviewerReconfiguration();
     currentReconfiguration = reconfiguration;
-    const run = latestRewire.catch(() => undefined).then(() => rewireReviewerAgentNow(reconfiguration, observation));
+    const run = latestRewire.catch(() => undefined).then(() => rewireReviewerAgentNow(reconfiguration, fromConnectionChange));
     latestRewire = run;
     return run;
   };
@@ -258,7 +255,7 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<() =
       ctx.rationaleScopeReviewer = new UnavailableRationaleScopeReviewer();
       ctx.approvalSentenceSelector = new UnavailableApprovalSentenceSelector();
     }
-    void queueReviewerRewire({ provider, connected }).catch((err) => {
+    void queueReviewerRewire(true).catch((err) => {
       log.warn({ err }, "Could not refresh the reviewer after a subscription connection change");
     });
   });

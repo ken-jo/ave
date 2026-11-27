@@ -67,7 +67,10 @@ import {
 } from "../../shared/subscription-runtime.js";
 import {
   getSubscriptionRuntimeService,
+  nextSubscriptionHostRevision,
   onSubscriptionRuntimeStatusChanged,
+  subscriptionConnectionProjection,
+  subscriptionHostRevision,
   subscriptionRuntimeErrorCode,
   SubscriptionRuntimeServiceError,
   type SubscriptionRuntimeService,
@@ -86,7 +89,6 @@ import { applyShortcutBindingsPatch, ShortcutBindingsPatchError, shortcutPlatfor
 import { createLogger } from "../../lib/logger.js";
 
 const log = createLogger("settings-ipc");
-let subscriptionRuntimeStatusRevision = 0;
 
 function normalizeSubscriptionLoginMethod(value: unknown): SubscriptionLoginMethod | null {
   return value === "browser" || value === "device-code" ? value : null;
@@ -105,6 +107,7 @@ function normalizeSubscriptionModel(value: unknown): string | undefined | null {
  * Main projects the active model and project-authenticated route availability using host settings and credentials. */
 export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstreamProxy" | "memoryEmbedding"> & {
   readonly activeChatModel: ActiveChatModel;
+  readonly subscriptionRevision: number;
   readonly vertexProjectConfigured: boolean;
 };
 
@@ -113,11 +116,23 @@ export async function rendererSettingsSnapshot(
   snapshot: AppSettings = settingsService.getAll(),
   isSubscriptionConnected?: SubscriptionConnectionReader,
 ): Promise<RendererSettingsSnapshot> {
-  // `upstreamProxy` has its own channels (permissions upstreamProxyGet/Set).
+  let revision: number;
+  let activeChatModel: ActiveChatModel;
+  for (;;) {
+    revision = subscriptionHostRevision();
+    const route = canonicalStringify(settingsService.get("llm").activeChatRuntime);
+    activeChatModel = await resolveMainActiveChatModel(settingsService, undefined, async (provider) => {
+      const sampled = await isSubscriptionConnected?.(provider);
+      return subscriptionConnectionProjection(provider)?.connected ?? sampled ?? false;
+    });
+    if (revision === subscriptionHostRevision() && route === canonicalStringify(settingsService.get("llm").activeChatRuntime)) break;
+    snapshot = settingsService.getAll();
+  }
   const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, memoryEmbedding: _embeddingConfig, ...projected } = structuredClone(snapshot);
   return {
     ...projected,
-    activeChatModel: await resolveMainActiveChatModel(settingsService, undefined, isSubscriptionConnected),
+    activeChatModel,
+    subscriptionRevision: revision,
     vertexProjectConfigured: isVertexProjectConfigured(projected.llm?.vendors?.["vertex-ai"]?.vertexProject),
   };
 }
@@ -372,11 +387,13 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   let activeChatRuntimeTransitionRevision = 0;
   // Handler-start ownership prevents a slow verify/model lookup from applying an older subscription choice after a newer provider/API selection.
   let activeChatRuntimeSelectionIntentRevision = 0;
-  let observedSubscriptionConnection: { provider: SubscriptionRuntimeId; connected: boolean } | undefined;
-  const publishSubscriptionRuntimeStatusUpdated = (provider: SubscriptionRuntimeId): void => {
+  const publishSubscriptionRuntimeStatusUpdated = (
+    provider: SubscriptionRuntimeId, revision = nextSubscriptionHostRevision(), connected?: boolean,
+  ): void => {
     const event: SubscriptionRuntimeStatusUpdatedEvent = {
       provider,
-      revision: ++subscriptionRuntimeStatusRevision,
+      revision,
+      ...(connected !== undefined ? { connected } : {}),
     };
     broadcastToAppWindows(deps, CHANNELS.settings.subscriptionRuntimeStatusUpdated, event);
   };
@@ -439,7 +456,15 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     let runtime: SubscriptionRuntimeService | null = null;
     try {
       runtime = await getSubscriptionRuntime();
-      return { ok: true, status: await operation(runtime, provider) };
+      let status = await operation(runtime, provider);
+      let current = subscriptionConnectionProjection(provider);
+      while (status.revision !== undefined && current && current.revision > status.revision) {
+        const projected = await runtime.getCachedStatus(provider);
+        if (!projected) throw new SubscriptionRuntimeServiceError("subscription-status-superseded");
+        status = projected;
+        current = subscriptionConnectionProjection(provider);
+      }
+      return { ok: true, status };
     } catch (error) {
       const code = subscriptionRuntimeErrorCode(error);
       const status = code === "subscription-status-superseded" ? undefined : await runtime?.getCachedStatus(provider);
@@ -463,20 +488,20 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   };
   const publishActiveSubscriptionConnection = async (
     provider: SubscriptionRuntimeId,
-    connected: boolean,
+    revision: number,
   ): Promise<void> => {
     const active = settingsService.get("llm").activeChatRuntime;
     if (active?.kind !== "subscription" || active.provider !== provider) return;
-    const observation = { provider, connected };
-    observedSubscriptionConnection = observation;
-    await broadcastSettingsSnapshot({ ...deps, isSubscriptionConnected: (candidate) => candidate === provider
-      ? Promise.resolve(connected) : deps.isSubscriptionConnected?.(candidate) ?? Promise.resolve(false) },
-      () => observedSubscriptionConnection === observation);
+    const routeIntent = activeChatRuntimeSelectionIntentRevision;
+    await broadcastSettingsSnapshot({ ...deps, isSubscriptionConnected: async (candidate) =>
+      subscriptionConnectionProjection(candidate)?.connected ?? false },
+    () => routeIntent === activeChatRuntimeSelectionIntentRevision
+      && subscriptionConnectionProjection(provider)?.revision === revision);
   };
-  const stopStatusChangedListener = onSubscriptionRuntimeStatusChanged((provider, connected) => {
-    publishSubscriptionRuntimeStatusUpdated(provider);
+  const stopStatusChangedListener = onSubscriptionRuntimeStatusChanged((provider, connected, revision) => {
+    publishSubscriptionRuntimeStatusUpdated(provider, revision, connected);
     if (connected !== undefined) {
-      void publishActiveSubscriptionConnection(provider, connected).catch((err) => {
+      void publishActiveSubscriptionConnection(provider, revision).catch((err) => {
         log.warn({ err }, "Could not publish the subscription connection change");
       });
     }
@@ -488,6 +513,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     try {
       runtime = await getSubscriptionRuntime();
       const result = await runtime.listModels(provider, { allowCached: true });
+      const current = subscriptionConnectionProjection(provider);
+      if (result.status.revision !== undefined && current && current.revision > result.status.revision) {
+        throw new SubscriptionRuntimeServiceError("subscription-status-superseded");
+      }
       return { ok: true, ...result };
     } catch (error) {
       const code = subscriptionRuntimeErrorCode(error);
@@ -569,7 +598,6 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     activeChatRuntime: LLMSettings["activeChatRuntime"],
   ): Promise<void> => {
     const previousLlm = settingsService.get("llm");
-    observedSubscriptionConnection = undefined;
     const previousSubscriptionProvider = previousLlm.activeChatRuntime?.kind === "subscription"
       ? previousLlm.activeChatRuntime.provider
       : null;
@@ -664,9 +692,13 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     return { ok: true, path: result.canceled ? null : result.filePaths[0] };
   });
 
-  ipcMain.handle(CHANNELS.settings.get, (event) => {
+  ipcMain.handle(CHANNELS.settings.get, async (event) => {
     if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.settings.get, event); return UNAUTHORIZED_FRAME; }
-    return rendererSettingsSnapshot(settingsService, undefined, deps.isSubscriptionConnected);
+    for (;;) {
+      const routeIntent = activeChatRuntimeSelectionIntentRevision;
+      const snapshot = await rendererSettingsSnapshot(settingsService, undefined, deps.isSubscriptionConnected);
+      if (routeIntent === activeChatRuntimeSelectionIntentRevision) return snapshot;
+    }
   });
 
   // Read-only, and presence only: the answer is a list of settings paths the environment is forcing ON, never the value of any variable. A control that
@@ -1257,7 +1289,11 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         }
         status = models.status;
       }
-      if (status.capabilities?.chat !== true) {
+      const connectionChanged = () => {
+        const current = subscriptionConnectionProjection(providerValue);
+        return status.revision !== undefined && current !== undefined && current.revision > status.revision;
+      };
+      if (status.capabilities?.chat !== true || connectionChanged()) {
         const failure: SubscriptionRuntimeActionResult = {
           ok: false,
           error: "subscription-chat-unavailable",
@@ -1282,6 +1318,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
           provider: providerValue,
           ...(model ? { model } : {}),
         });
+        if (connectionChanged() || selectionIntentRevision !== activeChatRuntimeSelectionIntentRevision) {
+          auditSubscriptionMutation("use-for-chat", providerValue, "cancelled", "subscription-status-superseded");
+          return { ok: false as const, error: "subscription-status-superseded" as const };
+        }
         auditSubscriptionMutation("use-for-chat", providerValue, "succeeded");
         return { ok: true as const, status };
       } catch (error) {
