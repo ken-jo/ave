@@ -198,7 +198,6 @@ describe("desktop host resource startup", () => {
     const { app } = await import("electron");
     const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
     const { protectedControlEntryFor } = await import("../../permissions/sensitive-paths.js");
-    const { openLocalityDecision, withLocalityDecision } = await import("../../shared/local-path-io.js");
     Object.defineProperty(app, "isPackaged", { value: true });
     io.accessHelper.mockImplementationOnce(() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); });
     io.lstat.mockClear();
@@ -209,14 +208,9 @@ describe("desktop host resource startup", () => {
       expect(io.realpath).not.toHaveBeenCalled();
       expect(io.lstat).not.toHaveBeenCalled();
 
-      vi.stubEnv("AVE_HOME", "C:\\ave-home");
-      const unknownPhysicalPath = "C:\\physical\\settings.json";
-      expect(withLocalityDecision(
-        () => protectedControlEntryFor(unknownPhysicalPath),
-        openLocalityDecision(PACKAGED_RESOURCES),
-      )).toBe("runtime-settings-file");
+      expect(protectedControlEntryFor("C:\\physical\\settings.json")).toBe("runtime-settings-file");
+      expect(io.lstat).not.toHaveBeenCalled();
     } finally {
-      vi.unstubAllEnvs();
       await host.close();
     }
   });

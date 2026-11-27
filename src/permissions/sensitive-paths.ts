@@ -640,6 +640,7 @@ export function protectedControlEntryFor(path: string, canonicalize: (path: stri
         normalizePath(target).normalize("NFC").toLowerCase() === normalized))) return "runtime-settings-file";
       return undefined;
     }
+    if ([...runtimeSettingsScopes.values()].some(({ canonicalKnown }) => !canonicalKnown)) return "runtime-settings-file";
     const homes = [pathResolve(aveHome()), canonicalize(aveHome()), pathResolve(homedir(), ".config", "ave")]
       .map((home) => normalizePath(home).normalize("NFC").toLowerCase().replace(/\/+$/u, ""));
     // The exception keys on the platform's case rule and never applies to an uncollapsed `..` spelling.
@@ -648,7 +649,7 @@ export function protectedControlEntryFor(path: string, canonicalize: (path: stri
       .map((home) => caseFoldForMatch(normalizePath(home).normalize("NFC")).replace(/\/+$/u, "") + "/workspace")
       .find((base) => folded === base || folded.startsWith(base + "/"));
     if (!workspace && homes.some((base) => normalized === base || normalized.startsWith(base + "/"))) return "application-home";
-    if ([...runtimeSettingsScopes.values()].some(({ targets, canonicalKnown }) => !canonicalKnown || [...targets].some((target) => {
+    if ([...runtimeSettingsScopes.values()].some(({ targets }) => [...targets].some((target) => {
       const base = normalizePath(target).toLowerCase();
       return normalized === base;
     }))) return "runtime-settings-file";
