@@ -1086,6 +1086,7 @@ type ConnectionObservation = {
   readonly status: SubscriptionRuntimeStatus;
   readonly probeFailed: boolean;
   readonly reconnectAfterRevision: number | undefined;
+  readonly accountEvidenceRevision: number;
 };
 
 type VerificationSample = { proven: boolean; project: () => SubscriptionRuntimeStatus };
@@ -1108,6 +1109,7 @@ export class SubscriptionRuntimeService {
   private readonly mutationsInFlight = new Map<SubscriptionRuntimeId, number>();
   private readonly observedConnections = new Map<SubscriptionRuntimeId, ConnectionObservation>();
   private readonly accountIdentities = new WeakMap<object, string>();
+  private pendingAccountConfirmation: number | undefined;
   private statusReadRevision = 0;
   // Terminal per-instance guard for callers that retained a service reference during shutdown.
   private stopped = false;
@@ -1128,7 +1130,7 @@ export class SubscriptionRuntimeService {
     private readonly audit?: SubscriptionRuntimeAuditSink,
     private readonly chatGptPlan: ChatGptPlanRuntime | null = null,
   ) {
-    this.codexClient.onAccountChanged = (status, revision) => this.recordAccountChange(status, revision);
+    this.codexClient.onAccountChanged = (status, revision, advertisedConnected) => this.recordAccountChange(status, revision, advertisedConnected);
   }
 
   static async create(
@@ -1747,6 +1749,7 @@ export class SubscriptionRuntimeService {
       if (remaining === 0) this.mutationsInFlight.delete(provider);
       else this.mutationsInFlight.set(provider, remaining);
       this.invalidateCachedReads(provider);
+      if (provider === "codex") this.confirmAdvertisedAccount();
     }
     const accepted = this.acceptObservation(provider, order, () => status, { source: "mutation" });
     return accepted?.status ?? this.latestStatus(provider);
@@ -1805,14 +1808,14 @@ export class SubscriptionRuntimeService {
     return { accountRevision: this.accountRevision(provider), serviceRevision: ++this.statusReadRevision };
   }
 
-  private isCurrentOrder(provider: SubscriptionRuntimeId, order: ConnectionOrder, bypassAuthFence = false): boolean {
+  private isCurrentOrder(provider: SubscriptionRuntimeId, order: ConnectionOrder, closesLatch = false): boolean {
     this.assertRunning();
-    const previous = this.observedConnections.get(provider)?.order;
+    const previous = this.observedConnections.get(provider);
     return order.accountRevision === this.accountRevision(provider)
-      && (bypassAuthFence || (!this.mutationsInFlight.has(provider)
+      && (closesLatch || (!this.mutationsInFlight.has(provider)
         && order.serviceRevision >= (this.authChangeRevisionByProvider.get(provider) ?? 0)))
-      && (previous === undefined || order.accountRevision > previous.accountRevision
-        || order.serviceRevision > previous.serviceRevision);
+      && (previous === undefined || order.accountRevision > previous.order.accountRevision
+        || order.serviceRevision > (closesLatch ? previous.accountEvidenceRevision : previous.order.serviceRevision));
   }
 
   private latestStatus(provider: SubscriptionRuntimeId): SubscriptionRuntimeStatus {
@@ -1827,12 +1830,21 @@ export class SubscriptionRuntimeService {
     throw new SubscriptionRuntimeServiceError("subscription-status-superseded");
   }
 
-  private recordAccountChange(status: CodexSubscriptionStatus, accountRevision: number): void {
+  private recordAccountChange(status: CodexSubscriptionStatus, accountRevision: number, advertisedConnected: boolean): void {
     if (this.stopped) return;
-    const advertisedConnected = status.connection === "connected";
+    this.pendingAccountConfirmation = advertisedConnected ? accountRevision : undefined;
     this.acceptObservation("codex", { accountRevision, serviceRevision: ++this.statusReadRevision },
-      () => advertisedConnected ? { ...this.projectCodexStatus(status), connection: "unknown", planType: null } : this.projectCodexStatus(status),
+      () => advertisedConnected ? { ...this.projectCodexStatus(status), connection: "unknown" } : this.projectCodexStatus(status),
       { source: advertisedConnected ? "advertisement" : "disconnect" });
+    this.confirmAdvertisedAccount();
+  }
+
+  private confirmAdvertisedAccount(): void {
+    const revision = this.pendingAccountConfirmation;
+    if (this.stopped || revision === undefined || this.mutationsInFlight.has("codex")) return;
+    this.pendingAccountConfirmation = undefined;
+    if (revision !== this.accountRevision("codex")) return;
+    void this.getStatus("codex").catch(() => undefined);
   }
 
   private acceptObservation(
@@ -1876,12 +1888,15 @@ export class SubscriptionRuntimeService {
       if (!isConnectedAndReady(status)) this.planUsage.clear(provider);
     }
     if (identity !== undefined) this.accountIdentities.set(status, identity);
+    const confirmsAccount = source === "disconnect" || (source === "read" && (connected || closesLatch));
+    const accountEvidenceRevision = confirmsAccount ? order.serviceRevision : previous?.accountEvidenceRevision ?? 0;
     // Order the latch at completion so only a subsequent read can reopen it.
-    const reconnectAfterRevision = closesLatch ? ++this.statusReadRevision : connected ? undefined : reconnectAfter;
-    const accepted = { order, status, probeFailed, reconnectAfterRevision };
+    const acceptedOrder = closesLatch ? this.nextConnectionOrder(provider) : order;
+    const reconnectAfterRevision = closesLatch ? acceptedOrder.serviceRevision : connected ? undefined : reconnectAfter;
+    const accepted = { order: acceptedOrder, status, probeFailed, reconnectAfterRevision, accountEvidenceRevision };
     this.observedConnections.set(provider, accepted);
-    const publish = accountChange || verification?.proven === true || (previousStatus === undefined
-      ? closesLatch || status.runtime === "unavailable"
+    const publish = accountChange || (closesLatch && reconnectAfter === undefined) || verification?.proven === true || (previousStatus === undefined
+      ? status.runtime === "unavailable"
       : (previousStatus.connection === "connected") !== connected);
     if (publish) {
       this.invalidateCachedReads(provider);

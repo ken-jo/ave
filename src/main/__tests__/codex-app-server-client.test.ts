@@ -366,8 +366,11 @@ describe("CodexAppServerClient", () => {
       rateLimits: { limitId: "codex", primary: { usedPercent: 80, resetsAt: 1730947200 } },
     } })}\n`);
     await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(harness.client.getCachedStatus().connection).toBe(authMode === null ? "signed-out" : "connected");
+    expect(harness.client.getCachedStatus().connection).toBe("signed-out");
     expect(onPlanUsage).not.toHaveBeenCalled();
+    if (authMode === "chatgpt") {
+      await expect(harness.client.getStatus(false)).resolves.toMatchObject({ connection: "connected", planType: "plus" });
+    }
   });
 
   it("reads reported quota for a connected account and consumes account updates", async () => {

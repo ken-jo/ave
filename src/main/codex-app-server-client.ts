@@ -138,7 +138,7 @@ function runtimeResolutionError(error: unknown): CodexAppServerError {
 // Main-process adapter for the stable App Server account APIs. The server owns browser callbacks, credential persistence, and token refresh. This client
 // intentionally never reads Codex auth files or token values.
 export class CodexAppServerClient {
-  onAccountChanged?: (status: CodexSubscriptionStatus, revision: number) => void;
+  onAccountChanged?: (status: CodexSubscriptionStatus, revision: number, advertisedConnected: boolean) => void;
   private readonly onPlanUsage: CodexAppServerClientOptions["onPlanUsage"];
   private readonly openAuthorizationUrl: OpenOAuthLogin;
   private readonly resolveRuntime: () => Promise<CodexResolvedRuntime>;
@@ -180,6 +180,7 @@ export class CodexAppServerClient {
   }
 
   async getStatus(refreshPlanUsage = true): Promise<CodexSubscriptionStatus> {
+    const accountRevision = this.accountRevisionValue;
     try {
       await this.ensureStarted();
     } catch (error) {
@@ -189,7 +190,7 @@ export class CodexAppServerClient {
       }
       throw error;
     }
-    const accountRevision = this.accountRevisionValue;
+    if (accountRevision !== this.accountRevisionValue) throw new CodexAppServerError("codex-operation-failed");
     const result = await this.request("account/read", { refreshToken: false });
     if (accountRevision !== this.accountRevisionValue) throw new CodexAppServerError("codex-operation-failed");
     this.accountStatus = this.projectAccountStatus(result);
@@ -599,24 +600,12 @@ export class CodexAppServerClient {
     }
     if (method === "account/updated" && payload) {
       this.invalidatePlanUsage();
-      if (payload.authMode === "chatgpt") {
-        this.pendingLogin?.window.finish();
-        this.pendingLogin = null;
-        this.completedLoginError = null;
-        this.accountStatus = {
-          runtime: "ready",
-          connection: "connected",
-          planType: boundedString(payload.planType, MAX_PLAN_TYPE_LENGTH),
-          pendingLogin: null,
-          pendingDeviceCode: null,
-          version: null,
-        };
-      } else {
-        this.pendingLogin?.window.finish();
-        this.pendingLogin = null;
-        this.accountStatus = blankStatus("ready");
-      }
-      this.publishAccountChange();
+      const advertisedConnected = payload.authMode === "chatgpt";
+      this.pendingLogin?.window.finish();
+      this.pendingLogin = null;
+      if (advertisedConnected) this.completedLoginError = null;
+      this.accountStatus = blankStatus("ready");
+      this.publishAccountChange(advertisedConnected);
       return;
     }
     if (method === "account/login/completed" && payload) {
@@ -666,9 +655,9 @@ export class CodexAppServerClient {
     this.publishPlanUsage(null);
   }
 
-  private publishAccountChange(): void {
+  private publishAccountChange(advertisedConnected = false): void {
     this.accountRevisionValue += 1;
-    this.onAccountChanged?.(this.currentStatus(), this.accountRevisionValue);
+    this.onAccountChanged?.(this.currentStatus(), this.accountRevisionValue, advertisedConnected);
   }
 
   private abortTransport(

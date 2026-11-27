@@ -209,6 +209,41 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     }
   });
 
+  it.each(["failed probe", "login cleanup"] as const)("latches a held disconnect after a subsequent %s", async (operation) => {
+    const { client } = claudeClient();
+    const runtime = await service({ claude: client });
+    const changed = vi.fn();
+    const unsubscribe = onSubscriptionRuntimeStatusChanged(changed);
+    const disconnected = deferred<ClaudeCodeSubscriptionStatus>();
+    const connected = deferred<ClaudeCodeSubscriptionStatus>();
+    try {
+      const ready = await client.getStatus();
+      await runtime.getStatus("claude-code");
+      client.getStatus.mockImplementationOnce(() => disconnected.promise);
+      const earlier = runtime.getStatus("claude-code");
+      if (operation === "failed probe") {
+        client.getStatus.mockRejectedValueOnce(new Error("Probe failed"));
+        await expect(runtime.getStatus("claude-code")).rejects.toMatchObject({ code: "subscription-operation-failed" });
+      } else {
+        await runtime.cancelLogin("claude-code");
+      }
+      changed.mockClear();
+      client.getStatus.mockImplementationOnce(() => connected.promise);
+      const later = runtime.getStatus("claude-code");
+      disconnected.resolve(claudeCodeSubscriptionStatus("unverified", "signed-out", "2.1.0"));
+      const disconnect = await earlier;
+      connected.resolve(ready);
+      const stale = await later;
+      expect(disconnect.connection).toBe("signed-out");
+      expect(stale.connection).toBe("signed-out");
+      expect(changed.mock.calls).toEqual([["claude-code", false]]);
+      await expect(runtime.getStatus("claude-code")).resolves.toMatchObject({ connection: "connected" });
+    } finally {
+      unsubscribe();
+      await runtime.stop();
+    }
+  });
+
   it("returns the winning disconnect for an earlier ready sample", async () => {
     const { client, setStatus } = claudeClient();
     const runtime = await service({ claude: client });

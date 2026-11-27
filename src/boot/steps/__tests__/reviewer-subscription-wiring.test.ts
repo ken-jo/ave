@@ -191,7 +191,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
 
 it.each([
   "live disconnect", "model discovery account probe failure", "sign-out during catalog", "process exit during catalog",
-  "logout during failed login",
+  "logout during failed login", "account notification confirmation", "account notification overtaken by logout",
 ] as const)("invalidates a cached windowless reviewer verdict on %s and restores the saved route", async (scenario) => {
   const tempDir = mkdtempSync(join(tmpdir(), "windowless-reviewer-"));
   vi.resetModules();
@@ -231,16 +231,19 @@ it.each([
     request, stop: vi.fn(),
   };
   const holdsCatalog = scenario === "sign-out during catalog" || scenario === "process exit during catalog";
+  const usesAccountNotification = scenario === "account notification confirmation" || scenario === "account notification overtaken by logout";
+  const accountReads: number[] = [];
+  let holdAccountReads = false;
   const catalogStarted = deferred<number>();
   let child: RuntimeProcessFixture | undefined;
   let accountConnected = true;
   let runtimeHome = tempDir;
-  if (holdsCatalog) {
+  if (holdsCatalog || usesAccountNotification) {
     if (process.platform !== "win32") normalizeFixtureAncestorPermissions(tempDir);
     runtimeHome = join(tempDir, "runtime");
     await createPrivateDirectory(runtimeHome);
   }
-  const artifact = holdsCatalog ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
+  const artifact = holdsCatalog || usesAccountNotification ? await codexExecutableArtifactFixture(runtimeHome) : undefined;
   const runtime = await SubscriptionRuntimeService.create(async () => {}, {
     namespace: createSubscriptionRuntimeNamespace(),
     claimRuntimeDirectories: claimFakeRuntimeDirectories,
@@ -270,6 +273,7 @@ it.each([
             for (const line of String(chunk).trim().split("\n")) {
               const { method, id } = JSON.parse(line);
               if (method === "model/list") catalogStarted.resolve(id);
+              else if (method === "account/read" && holdAccountReads) accountReads.push(id);
               else if (id !== undefined) server.stdout.write(`${JSON.stringify({
                 id, result: method === "account/read" && accountConnected
                   ? { account: { type: "chatgpt", planType: "plus" } } : {},
@@ -349,6 +353,33 @@ it.each([
       const sessionOutcome = await outcome;
       expect(invalidatedWhileHeld).toBe(true);
       expect(sessionOutcome).toBe("rejected");
+    } else if (usesAccountNotification) {
+      const server = requiredFixture(child);
+      holdAccountReads = true;
+      const oldRead = runtime.getStatus(provider);
+      await vi.waitFor(() => expect(accountReads).toHaveLength(1));
+      const replyConnected = (id: number) => server.stdout.write(`${JSON.stringify({
+        id, result: { account: { type: "chatgpt", planType: "plus" } },
+      })}\n`);
+      server.stdout.write(`${JSON.stringify({ method: "account/updated", params: { authMode: "chatgpt" } })}\n`);
+      expect(immediate).toBeDefined();
+      replyConnected(requiredFixture(accountReads[0]));
+      await expect(oldRead).resolves.toMatchObject({ connection: "unknown" });
+      expect((await dispatch(true)).result.decision).toBe("deny");
+      await vi.waitFor(() => expect(accountReads).toHaveLength(2));
+      if (scenario === "account notification confirmation") {
+        replyConnected(requiredFixture(accountReads[1]));
+        await vi.waitFor(() => expect(wired.at(-1)?.runtimeMode).toBe("llm"));
+        expect((await dispatch(true)).result.decision).toBe("allow");
+        expect(accountReads).toHaveLength(2);
+        return;
+      }
+      await expect(runtime.logout(provider)).resolves.toMatchObject({ connection: "signed-out" });
+      replyConnected(requiredFixture(accountReads[1]));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(accountReads).toHaveLength(2);
+      expect(subscriptionProviderFactory).toHaveBeenCalledTimes(wiringsBeforeDisconnect);
+      holdAccountReads = false;
     } else if (provider === "codex") {
       const catalogError = new Error("Catalog unavailable");
       request.mockRejectedValueOnce(catalogError);
