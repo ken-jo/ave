@@ -1589,7 +1589,7 @@ describe("installer smoke and packaging discipline", () => {
     });
   });
 
-  const mockShardJobs = 'gh() { printf "%s" "$SHARD_JOB_EVIDENCE"; return "${SHARD_JOB_EXIT:-0}"; }\n';
+  const mockShardJobs = 'gh() { printf "%s" "$SHARD_JOB_EVIDENCE"; return "$SHARD_JOB_EXIT"; }\n';
   const completedShard = (shard: number, conclusion = "success") => ({
     name: `Vitest shard ${shard}`, status: "completed", conclusion,
   });
@@ -1823,6 +1823,30 @@ describe("installer smoke and packaging discipline", () => {
     const steps = jobs.vitest.steps.filter((step: { run?: string }) => step.run === "bun run test:scripts");
     expect(steps).toHaveLength(1);
     expect(steps[0].if).toBe("matrix.shard == 1");
+  });
+
+  it("recomputes the Linux shard count from the uploaded CI plan", () => {
+    const { jobs } = parseYaml(readRepoFile(".github/workflows/ci.yml"));
+    const steps = jobs["build-and-test"].steps as { if?: string; run?: string; with?: { name?: string } }[];
+    const downloadIndex = steps.findIndex((step) => step.with?.name === "ci-plan");
+    const verifyIndex = steps.findIndex((step) => step.run === "node scripts/run-ci-suite.mjs --verify-shard-count");
+    const download = steps[downloadIndex];
+    const temp = githubExpression("runner.temp");
+    expect(download).toMatchObject({
+      if: "needs.build.outputs.docs_only != 'true'",
+      uses: expect.stringMatching(/^actions\/download-artifact@/u),
+      with: { name: "ci-plan", path: `${temp}/ci-plan` },
+    });
+    expect(steps[verifyIndex]).toMatchObject({
+      if: download?.if,
+      "working-directory": "ave",
+      env: {
+        AVE_CI_PLAN_FILE: `${temp}/ci-plan/ci-plan.json`,
+        PLATFORM_CHECKS: githubExpression("needs.build.outputs.platform_checks"),
+        VITEST_SHARD_COUNT: githubExpression("needs.build.outputs.shard_count"),
+      },
+    });
+    expect(verifyIndex).toBeGreaterThan(downloadIndex);
   });
 
   it("requires independent gates through the build-and-test aggregate", () => {

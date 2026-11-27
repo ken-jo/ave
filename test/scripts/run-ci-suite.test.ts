@@ -25,6 +25,7 @@ import {
   runsRepoCodeOutOfProcess,
   selectCiTests,
   testRunsRepoCodeOutOfProcess,
+  validateCiShardCount,
 } from "../../scripts/run-ci-suite.mjs";
 import { parseGitRawDiff } from "../../scripts/hooks/pre-push-ref-updates.mjs";
 import { isCollectedVitestFile } from "../../scripts/hooks/pre-push-source-policy.mjs";
@@ -285,6 +286,20 @@ describe("CI test selection fallbacks", () => {
       join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", "--shard=1/2", "./src/a.test.ts",
     ]);
     expect(() => ciSuiteArguments(fullPlan, true, "1/4")).toThrow("a coverage run cannot be sharded");
+  });
+
+  it.each([
+    ["full", "push", true, "2", "1"],
+    ["full", "push", false, "4", "2"],
+    ["full", "schedule", true, "1", "2"],
+    ["full", "workflow_dispatch", false, "1", "4"],
+    ["affected", "pull_request", true, "1", "2"],
+    ["affected", "pull_request", false, "1", "4"],
+  ] as const)("validates the reported count for %s/%s with native checks %s", (mode, event, platforms, expected, wrong) => {
+    const plan = readPlanFile(JSON.stringify({ mode, reason: "planned", tests: [] }));
+    expect(() => validateCiShardCount(plan, runsCoverage(event), platforms, wrong))
+      .toThrow(`expected ${expected} Vitest shard(s)`);
+    expect(() => validateCiShardCount(plan, runsCoverage(event), platforms, expected)).not.toThrow();
   });
 
   it("selects every project and file in the full plan exactly once across the two native-check shards", async () => {

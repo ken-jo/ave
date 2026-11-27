@@ -813,11 +813,24 @@ jobs:
         if: needs.build.outputs.docs_only != 'true'
         with:
           path: ave
-          # Only the CI budget report reads this tree; diff/ancestry planning
-          # stays in the build job with full history.
+          # Diff/ancestry planning stays in the build job with full history.
           fetch-depth: 1
           # No later step pushes or fetches with the job token.
           persist-credentials: false
+      - name: Download the suite plan
+        if: needs.build.outputs.docs_only != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+      - name: Verify the planned shard count
+        if: needs.build.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          AVE_CI_PLAN_FILE: ${{ runner.temp }}/ci-plan/ci-plan.json
+          PLATFORM_CHECKS: ${{ needs.build.outputs.platform_checks }}
+          VITEST_SHARD_COUNT: ${{ needs.build.outputs.shard_count }}
+        run: node scripts/run-ci-suite.mjs --verify-shard-count
       - name: Report the total runner budget
         if: always() && needs.build.outputs.docs_only != 'true' && hashFiles('ave/scripts/report-ci-budget.mjs') != ''
         # Timing service failures are advisory; product checks above stay required.

@@ -145,6 +145,13 @@ export function ciShardCount(plan, coverage, nativeChecks = false) {
   return nativeChecks ? 2 : FULL_RUN_SHARDS;
 }
 
+export function validateCiShardCount(plan, coverage, nativeChecks, reportedCount) {
+  const expected = ciShardCount(plan, coverage, nativeChecks);
+  if (reportedCount !== String(expected)) {
+    throw new Error(`expected ${expected} Vitest shard(s) for the CI plan, got ${JSON.stringify(reportedCount)}`);
+  }
+}
+
 // Reject malformed shard values so the aggregate cannot misreport coverage.
 export function parseCiShard(value) {
   if (value === undefined || value === "") return null;
@@ -477,7 +484,9 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     // Write the plan once; shards read it without replanning.
     const writePlanAt = process.argv[2] === "--write-plan" ? process.argv[3] : undefined;
     if (process.argv[2] === "--write-plan" && !writePlanAt) throw new Error("--write-plan needs a file path");
+    const verifyShardCount = process.argv[2] === "--verify-shard-count";
     const planFile = process.env.AVE_CI_PLAN_FILE;
+    if (verifyShardCount && !planFile) throw new Error("--verify-shard-count requires AVE_CI_PLAN_FILE");
     const plan = planFile && !writePlanAt
       ? readPlanFile(readFileSync(planFile, "utf8"))
       : planCiSuite(process.env.GITHUB_EVENT_NAME, {
@@ -489,6 +498,12 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     const eventName = process.env.GITHUB_EVENT_NAME;
     const coverage = runsCoverage(eventName);
     if (coverage && plan.mode !== "full") throw new Error(`${eventName} must plan a full run to enforce coverage`);
+    if (verifyShardCount) {
+      const platforms = process.env.PLATFORM_CHECKS;
+      if (platforms !== "true" && platforms !== "false") throw new Error("native platform selection was not resolved");
+      validateCiShardCount(plan, coverage, platforms === "true", process.env.VITEST_SHARD_COUNT);
+      process.exit(0);
+    }
     if (writePlanAt) {
       writeFileSync(writePlanAt, `${JSON.stringify(plan)}\n`, "utf8");
       let changes;
