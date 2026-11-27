@@ -81,14 +81,18 @@ describe("user hook model feedback and permission precedence", () => {
       });
       const [result] = await probe.run();
       expect(result.is_error).toBe(true);
+      expect(result.tool_use_id).toBe("contract-tool");
       expect(probe.requestAndWait).toHaveBeenCalledOnce();
       expect(probe.execute).not.toHaveBeenCalled();
       expect(probe.targetRequestAndWait).not.toHaveBeenCalled();
       expect(probe.commitStagedAllowSaves).not.toHaveBeenCalled();
       expect(existsSync(marker)).toBe(false);
       const terminal = capture.events.filter((event) => event.event === "permission_decision" &&
-        event.toolUseId === "contract-tool" && event.decision !== "ask");
-      expect(terminal).toEqual([expect.objectContaining({ decision: "deny", trustOrigin, terminalKind: "denied" })]);
+        event.sessionId === "contract-session" && event.decision !== "ask");
+      expect(terminal).toEqual([expect.objectContaining({
+        decision: "deny", trustOrigin, terminalKind: "denied",
+        correlationId: expect.stringMatching(/^[a-f0-9]{32}$/),
+      })]);
     } finally {
       capture.restore();
     }

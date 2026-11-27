@@ -1,3 +1,4 @@
+import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
@@ -83,7 +84,7 @@ describe("tool approval expiration attribution", () => {
   }
 
   function permissions() {
-    return logs.events.filter((event) => event.event === "permission_decision" && event.toolUseId === "approval-expiry-call");
+    return logs.events.filter((event) => event.event === "permission_decision" && event.correlationId === permissionLogCorrelationId("approval-expiry-call"));
   }
 
   it.each([

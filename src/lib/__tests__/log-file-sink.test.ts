@@ -22,6 +22,7 @@ import {
 } from "../log-file-sink.js";
 import { LOG_RETENTION_DAYS as SHARED_LOG_RETENTION_DAYS } from "../../shared/log-retention.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { utcDateKey as todayDateStr } from "../../shared/local-date.js";
 
 let logDir: string;
@@ -163,8 +164,8 @@ describe("createLogFileSink — size-based sequence rolling", () => {
     const sink = createLogFileSink({ dir: logDir, maxBytes: 4 });
     const write = fs.write;
     let release: (() => void) | undefined;
-    const held = Promise.withResolvers<void>();
-    const later = Promise.withResolvers<void>();
+    const held = deferred<void>();
+    const later = deferred<void>();
     const spy = vi.spyOn(fs, "write").mockImplementation((...args: Parameters<typeof write>) => {
       const text = String(args[1]);
       if (text.includes("ask\n") && !release) {

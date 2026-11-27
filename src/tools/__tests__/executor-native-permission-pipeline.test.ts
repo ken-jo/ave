@@ -1,3 +1,4 @@
+import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 useConfigurationOwner();
@@ -154,7 +155,7 @@ describe("native invocation permission evidence", () => {
     expect.soft(result.is_error).toBe(true);
     if (order === "stop-before-scope") expect.soft(result.content).not.toContain("project-scope-changed");
     else expect.soft(result.content).toContain("project-scope-changed");
-    const terminal = logs.events.findLast((row) => row.event === "permission_decision" && row.toolUseId === "cancelled-folder");
+    const terminal = logs.events.findLast((row) => row.event === "permission_decision" && row.correlationId === permissionLogCorrelationId("cancelled-folder"));
     expect(terminal).toMatchObject({ decision: "deny", terminalKind: "cancelled", trustOrigin: order === "stop-before-scope" ? "user-keyboard" : "unknown" });
     expect(grant).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
@@ -965,7 +966,7 @@ describe("native invocation permission evidence", () => {
     expect(outcome.outcome).toBe("rationale-required");
     turn.abort();
     const rows = async () => logs.events
-      .filter((row) => row.toolUseId === "outside-stop" && row.decision !== "ask");
+      .filter((row) => row.correlationId === permissionLogCorrelationId("outside-stop") && row.decision !== "ask");
     await vi.waitFor(async () => expect(await rows()).toHaveLength(1));
     await new Promise<void>((done) => setImmediate(done));
     expect(await rows()).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "cancelled" })]);
@@ -997,7 +998,7 @@ describe("native invocation permission evidence", () => {
     expect(turn.signal.aborted).toBe(false);
     expect(coordinator.signal.aborted).toBe(true);
     const rows = logs.events
-      .filter((row) => row.toolUseId === "coordinator-stop" && row.decision !== "ask");
+      .filter((row) => row.correlationId === permissionLogCorrelationId("coordinator-stop") && row.decision !== "ask");
     expect(rows).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "cancelled" })]);
     expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
   });
@@ -1079,7 +1080,7 @@ describe("native invocation permission evidence", () => {
       }
     }
     const readRows = async () => logs.events
-      .filter((row) => row.toolUseId === "rationale-history" && row.decision !== "ask");
+      .filter((row) => row.correlationId === permissionLogCorrelationId("rationale-history") && row.decision !== "ask");
     await vi.waitFor(async () => expect(await readRows()).toHaveLength(1));
 
     const rows = await readRows();

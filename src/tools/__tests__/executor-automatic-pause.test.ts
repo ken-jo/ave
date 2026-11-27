@@ -1,3 +1,4 @@
+import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { InMemoryHostInvocationStartCasStore } from "../pipeline/rationale-ticket-lifecycle.js";
 import { registerRunSession, __resetRunGrantsForTest } from "../../permissions/run-grants.js";
@@ -62,7 +63,7 @@ function projectedDecisions() {
 }
 
 function decisions(toolUseId?: string) {
-  return logs.events.filter((entry) => entry.event === "permission_decision" && (toolUseId === undefined || entry.toolUseId === toolUseId));
+  return logs.events.filter((entry) => entry.event === "permission_decision" && (toolUseId === undefined || entry.correlationId === permissionLogCorrelationId(toolUseId)));
 }
 
 afterEach(async () => {

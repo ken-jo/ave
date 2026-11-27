@@ -1,3 +1,4 @@
+import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -516,7 +517,7 @@ describe("ToolExecutor plugin operation governance", () => {
       expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("could not safely restart") });
       expect(read).not.toHaveBeenCalled();
 
-      expect(decisions()).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "denied", toolUseId: "mutated-call" })]);
+      expect(decisions()).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "denied", correlationId: permissionLogCorrelationId("mutated-call") })]);
       expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
     } finally {
       vi.restoreAllMocks();
@@ -1446,7 +1447,7 @@ describe("ToolExecutor plugin operation governance", () => {
     expect(lifecycle).not.toHaveBeenCalled();
     // The abort's row is the attempt's one terminal row; the admission's settle adds no host row.
     await new Promise<void>((resolve) => setImmediate(resolve));
-    const terminalRows = decisions().filter((entry) => entry.toolUseId === "queued-abort" && entry.event === "permission_decision");
+    const terminalRows = decisions().filter((entry) => entry.correlationId === permissionLogCorrelationId("queued-abort") && entry.event === "permission_decision");
     expect(terminalRows).toEqual([expect.objectContaining({ decision: "deny", terminationReason: "user-abort" })]);
 
     releaseHolder();

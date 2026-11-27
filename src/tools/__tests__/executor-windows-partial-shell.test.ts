@@ -1,4 +1,5 @@
 import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
+import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
@@ -297,7 +298,8 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(result?.is_error).toBeUndefined();
     expect(second.map((entry) => entry.is_error)).toEqual(competing ? [undefined] : []);
     expect(execute).toHaveBeenCalledTimes(competing ? 2 : 1);
-    const rows = (id: string) => capture.events.filter((entry) => entry.toolUseId === id && entry.decision !== "ask");
+    const rows = (id: string) => capture.events.filter((entry) =>
+      entry.correlationId === permissionLogCorrelationId(id) && entry.decision !== "ask");
     expect(rows("card-rule")).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
     if (competing) {
       expect(rows("competing-card-rule")).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);

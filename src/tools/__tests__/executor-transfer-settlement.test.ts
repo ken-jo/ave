@@ -1,3 +1,4 @@
+import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { mkdtempSync } from "node:fs";
@@ -123,7 +124,7 @@ async function startInvocation(options: {
     signal,
     onToolEnd,
     returned: () => returned,
-    terminalLogs: () => logs.events.filter((entry) => entry.event === "permission_decision" && entry.toolUseId === "settlement-invocation" && entry.terminationReason !== undefined),
+    terminalLogs: () => logs.events.filter((entry) => entry.event === "permission_decision" && entry.correlationId === permissionLogCorrelationId("settlement-invocation") && entry.terminationReason !== undefined),
     async interrupt(reason: Interruption) {
       if (reason === "ceiling") {
         await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs);

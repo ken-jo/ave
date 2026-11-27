@@ -1,3 +1,4 @@
+import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import type { UserOwnedSurfaceChoice } from "../../shared/permissions-events.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
@@ -353,9 +354,9 @@ describe("browser tools", () => {
       }[outcome];
       expect.soft(result).toMatchObject({ isError: true, output: expect.stringContaining(detail) });
       const terminal = capture.events.filter((event) => event.event === "permission_decision" &&
-        event.toolUseId === "call-1" && event.decision !== "ask").at(-1);
+        event.correlationId === permissionLogCorrelationId("call-1") && event.decision !== "ask").at(-1);
       expect(terminal).toMatchObject({
-        toolUseId: "call-1", decision: "deny", terminalKind: outcome === "cancelled" ? "cancelled" : "denied",
+        correlationId: permissionLogCorrelationId("call-1"), decision: "deny", terminalKind: outcome === "cancelled" ? "cancelled" : "denied",
         trustOrigin: outcome === "denied" ? "user-keyboard" : "unknown",
       });
       expect(navigated).toBe(false);

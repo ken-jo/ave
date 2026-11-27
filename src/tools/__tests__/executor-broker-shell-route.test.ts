@@ -1,3 +1,4 @@
+import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { lstatSync, mkdtempSync, realpathSync } from "node:fs";
@@ -206,7 +207,7 @@ describe("executor broker shell route", () => {
     expect(permissionCheck.mock.calls[0]?.[4]?.guestCwd).toBe(expectedCwd);
     expect(permissionCheck.mock.calls[0]?.[4]?.fileWritePolicy).toBeUndefined();
     expect(logs.events).toContainEqual(expect.objectContaining({
-      event: "permission_decision", toolUseId: "tu-broker-guest-shell", sandboxRoute: "disposable-container",
+      event: "permission_decision", correlationId: permissionLogCorrelationId("tu-broker-guest-shell"), sandboxRoute: "disposable-container",
     }));
   });
 

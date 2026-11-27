@@ -92,8 +92,9 @@ describe("shutdown invocation settlement", () => {
     });
     gate = new Gate(wc as never);
     const observed: Record<string, unknown>[] = [];
+    const { permissionLogCorrelationId } = await import("../../lib/permission-log.js");
     watchPermissionEvents((event) => {
-      if (event.event !== "permission_decision" || event.toolUseId !== "shutdown-write-probe") return;
+      if (event.event !== "permission_decision" || event.correlationId !== permissionLogCorrelationId("shutdown-write-probe")) return;
       observed.push(event);
       if (brokenLog && event.decision === "deny") throw new Error("log sink unavailable");
     });

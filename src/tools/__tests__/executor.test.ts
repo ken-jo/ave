@@ -1,3 +1,4 @@
+import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import * as decisionProjection from "../pipeline/audit-entries.js";
 import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import * as persistenceGuards from "../../permissions/approval-persistence-guard.js";
@@ -4398,7 +4399,7 @@ describe("ToolExecutor — script hook denial surfaces in audit hookChain (#811 
       expect(executeSpy).not.toHaveBeenCalled();
       expect(scriptHookManager.runPreToolUse).toHaveBeenCalledOnce();
 
-      expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", decision: "deny", toolUseId: "tu-hookchain" }));
+      expect(capture.events).toContainEqual(expect.objectContaining({ event: "permission_decision", decision: "deny", correlationId: permissionLogCorrelationId("tu-hookchain") }));
       const denyEntry = projected.mock.results.map((record) => record.value).find((entry) => entry.decision === "deny");
       expect(denyEntry).toBeDefined();
       expect(denyEntry?.hookChain).toBeDefined();

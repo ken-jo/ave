@@ -1,3 +1,4 @@
+import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -312,7 +313,7 @@ async function fixture() {
   };
   const terminalEvents: Record<string, unknown>[] = [];
   const log = watchPermissionEvents((event) => {
-    if (event.event === "permission_decision" && event.toolUseId === "sealed-use" && event.decision !== "ask") {
+    if (event.event === "permission_decision" && event.correlationId === permissionLogCorrelationId("sealed-use") && event.decision !== "ask") {
       terminalEvents.push(event);
       order.push("terminal-log");
     }

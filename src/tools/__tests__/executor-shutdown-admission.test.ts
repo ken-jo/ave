@@ -17,8 +17,9 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
+let permissionLogCorrelationId: typeof import("../../lib/permission-log.js").permissionLogCorrelationId;
 /** Every row that ends an invocation; each terminal path must leave exactly one. */
-const terminalRows = (all: Array<Record<string, unknown>>, toolUseId: string) => all.filter((row) => row.toolUseId === toolUseId && row.decision !== "ask");
+const terminalRows = (all: Array<Record<string, unknown>>, toolUseId: string) => all.filter((row) => row.correlationId === permissionLogCorrelationId(toolUseId) && row.decision !== "ask");
 
 /** Holds the batch inside one tool's result callback, as a pending turn journal would. */
 function holdResultOf(toolUseId: string) {
@@ -41,6 +42,7 @@ async function freshExecutor(
   } = {},
 ) {
   vi.resetModules();
+  ({ permissionLogCorrelationId } = await import("../../lib/permission-log.js"));
   await import("../../__tests__/vitest-approval-presentation.js");
   const ledger = await import("../invocation-ledger.js");
   // The gate's host-decision markers live in its module, so it comes from the same fresh graph as the executor.
@@ -94,7 +96,7 @@ async function freshExecutor(
   const capture = collectPermissionEvents();
   const rows = () => capture.events.filter((event) => event.event === "permission_decision");
   const hostShutdownRows = (all: Array<Record<string, unknown>>, toolUseId: string) => all.filter((row) =>
-    row.toolUseId === toolUseId && row.decision === "deny" && row.terminalKind === "cancelled");
+    row.correlationId === permissionLogCorrelationId(toolUseId) && row.decision === "deny" && row.terminalKind === "cancelled");
   const toolUses = executes.map((_, index) => ({ id: `tu-queued-${index}`, name: `queued_probe_${index}`, input: { value: String(index) } }));
   const cancelled = t("be_executor.toolExecutionCancelled");
   return { ledger, executor, executes, capture, manager, rows, hostShutdownRows, toolUses, cancelled, gate, asked: asked.promise, cards };
@@ -348,7 +350,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(result).toMatchObject({ tool_use_id: "tu-queued-0", is_error: true, content: cancelled });
     expect(call.acquireExact).not.toHaveBeenCalled();
     expect(executes[0]).not.toHaveBeenCalled();
-    expect(rows().filter((row) => row.toolUseId === "tu-queued-0")).toEqual([
+    expect(rows().filter((row) => row.correlationId === permissionLogCorrelationId("tu-queued-0"))).toEqual([
       expect.objectContaining({ decision: "deny", terminalKind: "cancelled" }),
     ]);
     expect(call.callbacks.onToolEnd).toHaveBeenCalledWith("queued_probe_0", cancelled, true,
@@ -370,7 +372,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(call.acquireExact).not.toHaveBeenCalled();
     expect(executes[0]).not.toHaveBeenCalled();
     expect(call.callbacks.onToolStart).not.toHaveBeenCalled();
-    expect(rows().filter((row) => row.toolUseId === "tu-queued-0")).toEqual([
+    expect(rows().filter((row) => row.correlationId === permissionLogCorrelationId("tu-queued-0"))).toEqual([
       expect.objectContaining({ terminalKind: "cancelled" }),
     ]);
   });
@@ -546,6 +548,7 @@ describe("ToolExecutor admission across the quit seal", () => {
 
   it("withdraws the queued tools of a batch that stopped for a rationale control", async () => {
     vi.resetModules();
+    ({ permissionLogCorrelationId } = await import("../../lib/permission-log.js"));
     const ledger = await import("../invocation-ledger.js");
     const { ToolExecutor } = await import("../executor.js");
     const { ToolRegistry } = await import("../registry.js");
@@ -671,7 +674,7 @@ describe("forced shutdown with parked executors", () => {
     expect(results.every((result) => result.is_error)).toBe(true);
     for (const execute of executes) expect(execute).not.toHaveBeenCalled();
     for (const toolUse of toolUses) {
-      expect(rowsAtClose.filter((row) => row.toolUseId === toolUse.id && row.decision === "ask")).toHaveLength(1);
+      expect(rowsAtClose.filter((row) => row.correlationId === permissionLogCorrelationId(toolUse.id) && row.decision === "ask")).toHaveLength(1);
       expect(hostShutdownRows(rowsAtClose, toolUse.id)).toEqual([expect.objectContaining({ trustOrigin: "unknown", category: "write" })]);
       expect(terminalRows(rowsAtClose, toolUse.id)).toHaveLength(1);
       expect(terminalRows(rows(), toolUse.id)).toHaveLength(1);
@@ -686,7 +689,7 @@ describe("forced shutdown with parked executors", () => {
       const { AuditWriter } = await import("../pipeline/audit-writer.js");
       const order: string[] = [];
       watchPermissionEvents((entry) => {
-        if (entry.toolUseId === toolUses[0].id && entry.event === "permission_decision" && entry.decision !== "ask") {
+        if (entry.correlationId === permissionLogCorrelationId(toolUses[0].id) && entry.event === "permission_decision" && entry.decision !== "ask") {
           order.push("row");
           capture.events.push(entry);
         }
@@ -724,6 +727,7 @@ describe("forced shutdown with parked executors", () => {
 describe("a rationale control suspended before its card", () => {
   async function suspendedControl() {
     vi.resetModules();
+    ({ permissionLogCorrelationId } = await import("../../lib/permission-log.js"));
     const ledger = await import("../invocation-ledger.js");
     const { ToolExecutor } = await import("../executor.js");
     const { ToolRegistry } = await import("../registry.js");

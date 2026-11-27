@@ -1,3 +1,4 @@
+import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -91,7 +92,7 @@ describe("hook replacement permission reentry", () => {
       const [result] = await probe.run();
       expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("could not safely restart") });
 
-      expect(capture.events.filter((event) => event.event === "permission_decision" && event.toolUseId === "mutated-call" && event.decision !== "ask")).toEqual([
+      expect(capture.events.filter((event) => event.event === "permission_decision" && event.correlationId === permissionLogCorrelationId("mutated-call") && event.decision !== "ask")).toEqual([
         expect.objectContaining({ event: "permission_decision", decision: "deny", terminalKind: "denied" }),
       ]);
       expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([["PermissionDenied", "mutation-session", "user-keyboard",

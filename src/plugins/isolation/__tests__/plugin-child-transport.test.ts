@@ -1,3 +1,4 @@
+import { permissionLogCorrelationId } from "../../../lib/permission-log.js";
 import { collectPermissionEvents } from "../../../__tests__/support/permission-events.js";
 /** The transport owns framing, call settlement and one termination sequence; faults are not terminal exits. */
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1081,7 +1082,7 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
       });
       return reply;
     };
-    const terminal = (id: string) => logs.events.filter((row) => row.event === "permission_decision" && row.toolUseId === id && row.decision !== "ask");
+    const terminal = (id: string) => logs.events.filter((row) => row.event === "permission_decision" && row.correlationId === permissionLogCorrelationId(id) && row.decision !== "ask");
     const close = async () => {
       logs.restore();
       gate.disposeAll();

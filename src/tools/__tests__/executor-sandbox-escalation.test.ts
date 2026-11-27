@@ -1,3 +1,4 @@
+import { permissionLogCorrelationId } from "../../lib/permission-log.js";
 import { collectPermissionEvents } from "../../__tests__/support/permission-events.js";
 import { lstat, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -148,7 +149,7 @@ it("re-enters normal permission policy before one exact host retry and retains t
   const hostId = calls[1]!.context.metadata.toolUseId;
   expect(hostId).not.toBe("original-sandbox-call");
   // The retry is attempt 2 with its own terminal row; the first attempt's rows carry no attempt.
-  const terminal = (id: string) => capture.events.filter((entry) => entry.event === "permission_decision" && entry.toolUseId === id && entry.decision !== "ask");
+  const terminal = (id: string) => capture.events.filter((entry) => entry.event === "permission_decision" && entry.correlationId === permissionLogCorrelationId(id) && entry.decision !== "ask");
   expect(terminal(String(hostId)).map((entry) => [entry.decision, entry.attempt])).toEqual([["allow", 2]]);
   expect(terminal("original-sandbox-call").map((entry) => entry.attempt)).toEqual([1]);
 });

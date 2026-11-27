@@ -28,6 +28,7 @@ type Source =
 /** Each probe loads a fresh module graph, so a sealed or drained ledger never leaks into another case. */
 async function setup(source: Source) {
   vi.resetModules();
+  const { permissionLogCorrelationId } = await import("../../lib/permission-log.js");
   await import("../../__tests__/vitest-approval-presentation.js");
   (await import("../../main/host-resources.js")).configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
   const ledger = await import("../invocation-ledger.js");
@@ -175,7 +176,7 @@ async function setup(source: Source) {
   const run = () => source === "dir-hook-inherited-abort"
     ? turnExtensionPolicyContext.run({ allowExternalHooks: true, abortSignal: inherited.signal }, execute)
     : execute();
-  const rows = (id = "denied-call") => events.filter((event) => event.toolUseId === id);
+  const rows = (id = "denied-call") => events.filter((event) => event.correlationId === permissionLogCorrelationId(id));
   const denials = () => lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied");
   const cancelledMessage = t("be_executor.toolExecutionCancelled");
   return { ledger, root, permissions, requestAndWait, run, rows, denials, running, release, controller, inherited, cardOpen, gate: realGate, saveStarted, persisted, source, cancelledMessage };
