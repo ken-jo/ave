@@ -102,19 +102,32 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
             const release = await authorized;
             if (!release) return null;
             if (stopping) return null;
-            // The SDK still opens string paths: authorization cannot make its
-            // later native file opens atomic with the owner's identity check.
             // A single argument is deliberate: telemetry options are never passed.
             const requestDigest = mxcRequestDigest(frame.request);
             let nativePending!: ReturnType<MxcSupervisorRuntime["sdk"]["spawn"]>;
-            commitUnderAdmission(() => {
-              if (release !== true) assertMxcReleaseGate(release);
-              else if (requireRelease) throw new MxcProcessContractError("Missing extension authorization at native creation");
-            }, () => {
-              creationStarted = true;
-              spawnPending = true;
-              nativePending = runtime.sdk.spawn(frame.request).catch((error: unknown) => { throw classifyBackendFailure(error); }).finally(() => { spawnPending = false; });
-            });
+            let releaseDirectory: (() => void) | undefined;
+            try {
+              commitUnderAdmission(() => {
+                if (release === true) {
+                  if (requireRelease) throw new MxcProcessContractError("Missing extension authorization at native creation");
+                  return;
+                }
+                const source = assertMxcReleaseGate(release);
+                if (source !== undefined) {
+                  releaseDirectory = runtime.holdDirectory?.(source);
+                  if (releaseDirectory === undefined) throw new MxcProcessContractError("Missing supervisor working directory hold");
+                  assertMxcReleaseGate(release);
+                }
+              }, () => {
+                creationStarted = true;
+                spawnPending = true;
+                nativePending = runtime.sdk.spawn(frame.request).catch((error: unknown) => { throw classifyBackendFailure(error); })
+                  .finally(() => { spawnPending = false; releaseDirectory?.(); });
+              });
+            } catch (error) {
+              releaseDirectory?.();
+              throw error;
+            }
             // Keep adopting a late handle even if the notification channel fails.
             // The failure requests teardown while the native promise remains owned.
             const spawning = Promise.resolve().then(() => channel.send({ type: "spawning" }));

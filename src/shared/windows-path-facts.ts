@@ -297,8 +297,15 @@ export interface HeldWindowsPolicy {
   onFailure(): void;
 }
 
+export interface WindowsDirectoryHandleSource {
+  readonly pid: number;
+  readonly creationTime: string;
+  readonly handles: readonly string[];
+}
+
 export interface HeldWindowsDirectory {
   readonly facts: WindowsPathFacts;
+  readonly source?: WindowsDirectoryHandleSource;
   /** Job launcher arguments for a held command. */
   readonly launcherArgs: readonly string[];
   /** The job launcher invocation that starts `executable` with `launcherArgs`. */
@@ -322,12 +329,12 @@ const HELD_POLICY_REPORT_BYTES = 16;
 
 /** Hold a directory and every ancestor against rename and delete until `release`; undefined when the helper did not hold it.
  * The handles and the kill-on-close job live in the helper, so its exit stops the launcher and everything it started. */
-export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory | undefined> {
+export function holdWindowsDirectory(path: string, forSupervisor = false): Promise<HeldWindowsDirectory | undefined> {
   if (!isAbsolute(path)) return Promise.resolve(undefined);
   let child: ChildProcess;
   try {
     child = runWindowsNative(() => withWindowsPathKindHelper((helper) =>
-      spawn(helper, ["--hold", path], { windowsHide: true, stdio: ["pipe", "pipe", "ignore", "pipe"] })));
+      spawn(helper, [forSupervisor ? "--hold-for-supervisor" : "--hold", path], { windowsHide: true, stdio: ["pipe", "pipe", "ignore", "pipe"] })));
   } catch {
     return Promise.resolve(undefined);
   }
@@ -501,8 +508,9 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     if (lost || released) onLost();
     return run;
   };
-  const held = (facts: WindowsPathFacts): HeldWindowsDirectory => ({
+  const held = (facts: WindowsPathFacts, source?: WindowsDirectoryHandleSource): HeldWindowsDirectory => ({
     facts,
+    ...(source === undefined ? {} : { source }),
     launcherArgs: ["--hold"],
     command: (executable, args, heldPolicy) => ({ executable: resolveWindowsJobLauncher(), args: [heldPolicy ? "--hold-policy-v1" : "--hold", executable, ...args] }),
     stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
@@ -547,8 +555,16 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       chunks.push(newline < 0 ? chunk : chunk.subarray(0, frameBytes));
       if (newline < 0) return;
       try {
-        const [facts] = decodeWindowsPathFacts(decodeWindowsNativeReply(Buffer.concat(chunks, received)), 1, "--pin");
-        settle(facts === undefined || child.pid === undefined ? undefined : held(facts));
+        const output = decodeWindowsNativeReply(Buffer.concat(chunks, received));
+        const [facts] = decodeWindowsPathFacts(output, 1, "--pin");
+        if (facts === undefined || child.pid === undefined) { settle(undefined); return; }
+        if (!forSupervisor) { settle(held(facts)); return; }
+        const [{ creationTime, handles }] = JSON.parse(output) as { creationTime: unknown; handles: unknown }[];
+        const isNativeValue = (value: unknown): value is string => typeof value === "string"
+          && /^[1-9][0-9]{0,19}$/u.test(value) && BigInt(value) < 0xffffffffffffffffn;
+        if (!isNativeValue(creationTime) || !Array.isArray(handles) || handles.length !== facts.ancestors.length + 1
+          || !handles.every(isNativeValue)) { settle(undefined); return; }
+        settle(held(facts, Object.freeze({ pid: child.pid, creationTime, handles: Object.freeze(handles) })));
       } catch {
         settle(undefined);
       }

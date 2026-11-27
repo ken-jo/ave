@@ -131,11 +131,13 @@ import {
   resolveHostShellWorkingDirectory,
   withHostShellExecutionHandoff,
   holdHostShellSpawnDirectory,
+  hostShellPermitDirectoryIdentity,
   HostShellDirectoryHoldError,
   assertHostShellSpawnDirectory,
   type HostShellSpawnAuthorization,
   type HostShellSpawnDirectoryHold,
 } from "../permissions/host-shell-execution-permit.js";
+import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { hostShellWorkingDirectoryPrelude } from "./host-shell-cwd-guard.js";
 import { attachHostShellControlChannel } from "./host-shell-control-channel.js";
 import { containerShellAllowedDirectories, deriveSandboxWritePaths } from "../permissions/sandbox-write-jail.js";
@@ -335,7 +337,7 @@ interface OutputCollectorOptions {
   readonly observation?: AgentTerminalObservationLease;
 }
 
-function createOutputCollector(child: PipedChild, options: OutputCollectorOptions = {}) {
+function createOutputCollector(child: Pick<PipedChild, "stdout" | "stderr">, options: OutputCollectorOptions = {}) {
   const factory = options.captureFactory;
   const cwdProbe = options.cwdProbe;
   // Four bytes cover any UTF-8 code point. The display cap remains in UTF-16
@@ -3892,11 +3894,17 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       }
     }
     const parsesInMxc = hostShellPlan.mode === "asrt" && isWindowsContainerShell(hostShellPlan);
+    const mxcCwdIdentity = parsesInMxc && process.platform === "win32"
+      ? ctx.windowsContainerShellCwd !== undefined ? ctx.windowsContainerShellCwd
+        : ctx.hostShellExecutionPermit !== undefined ? hostShellPermitDirectoryIdentity(ctx.hostShellExecutionPermit)
+          : captureShellWorkingDirectoryIdentity(resolvedCwd)
+      : undefined;
     const markMxcTiming = parsesInMxc ? startMxcPowerShellTiming() : undefined;
     let commandAst: PowerShellAstSummary;
     try {
-      const parsed = parsesInMxc
-        ? await parsePowerShellAstInMxc(input.command, resolvedCwd, ctx, input.timeoutSeconds, markMxcTiming)
+      if (parsesInMxc && mxcCwdIdentity == null) return mxcSpawnFailure("working directory admission is unavailable");
+      const parsed = mxcCwdIdentity != null
+        ? await parsePowerShellAstInMxc(input.command, resolvedCwd, mxcCwdIdentity, ctx, input.timeoutSeconds, markMxcTiming)
         : await parsePowerShellAst(input.command, startupPinned || hostSpawnAuthorization !== undefined);
       if ("failure" in parsed) return parsed.failure;
       commandAst = parsed;
@@ -3909,9 +3917,10 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       return { output: `PowerShell command blocked: ${structuralViolation}`, isError: true };
     }
     const commandReadPaths: string[] = [];
+    const policyCwd = mxcCwdIdentity?.realpath ?? resolvedCwd;
     const commandPathViolation = findPowerShellAstPathViolation(
       commandAst,
-      resolvedCwd,
+      policyCwd,
       ctx.cwd,
       ctx.extraAllowedDirectories,
       ctx.blockReadsOutsideWorkingDirectories === true,
@@ -3951,7 +3960,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       };
     }
     const runtimeReads = powerShellHostScriptReadPaths(commandAst, input.command);
-    const spawnCwd = hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd;
+    const spawnCwd = mxcCwdIdentity?.realpath ?? hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd;
     let workbookIdentity: string | undefined;
     if (commandAst.commands.some(command => isPowerShellWindowsWorkbook(command))) {
       const operand = commandAst.commands[0]?.arguments[2];
@@ -3977,9 +3986,11 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       const command = runtimeReads.length > 0 ? awaitedHostScriptCommand(input.command, commandAst.commands[0]!) : input.command;
       if (command === null) return { output: "PowerShell command blocked: host script runtime has no parser extent", isError: true };
       if (isWindowsContainerShell(hostShellPlan)) {
+        if (mxcCwdIdentity == null) return mxcSpawnFailure("working directory admission is unavailable");
         const checked = await checkedShellResult(() => spawnPowerShellInMxc(
           command,
-          spawnCwd,
+          resolvedCwd,
+          mxcCwdIdentity,
           writePaths,
           input.timeoutSeconds, ctx.abortSignal, outputCapture,
           outputProgress,
@@ -4289,17 +4300,17 @@ function startMxcPowerShellTiming(): MxcPowerShellTiming | undefined {
   };
 }
 
-async function parsePowerShellAstInMxc(command: string, cwd: string, ctx: ToolExecutionContext, timeoutSeconds: number, markTiming?: MxcPowerShellTiming): Promise<PowerShellAstSummary | { failure: ToolExecutionResult }> {
+async function parsePowerShellAstInMxc(command: string, cwd: string, identity: ShellWorkingDirectoryIdentity, ctx: ToolExecutionContext, timeoutSeconds: number, markTiming?: MxcPowerShellTiming): Promise<PowerShellAstSummary | { failure: ToolExecutionResult }> {
   // Only AST input is embedded; decoding never executes the supplied source.
   const input = Buffer.from(command, "utf8").toString("base64");
   const parserScript = POWER_SHELL_AST_PARSER.replace("[Console]::In.ReadToEnd()", `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${input}'))`);
   const writePaths = withLocalityDecision(() => deriveSandboxWritePaths({
     ...(ctx.ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot: ctx.ownerPluginSandboxRoot } : {}),
-    allowedDirectories: containerShellAllowedDirectories(cwd, ctx.extraAllowedDirectories),
+    allowedDirectories: containerShellAllowedDirectories(identity.realpath, ctx.extraAllowedDirectories),
   }));
   markTiming?.("parser-write-roots-ready");
   const response = createPowerShellParserResponse();
-  const result = await spawnPowerShellInMxc(parserScript, cwd, writePaths, timeoutSeconds, ctx.abortSignal, undefined, undefined,
+  const result = await spawnPowerShellInMxc(parserScript, cwd, identity, writePaths, timeoutSeconds, ctx.abortSignal, undefined, undefined,
     typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, response, [], undefined, boundarySessionOf(ctx),
     undefined, [], markTiming);
   if (result.isError) return { failure: result };
@@ -4672,7 +4683,8 @@ async function spawnPowerShellWithSandbox(
  */
 async function spawnPowerShellInMxc(
   command: string,
-  cwd: string,
+  requestedCwd: string,
+  cwdIdentity: ShellWorkingDirectoryIdentity,
   writePaths: readonly string[],
   timeoutSeconds: number,
   signal?: AbortSignal,
@@ -4726,17 +4738,26 @@ async function spawnPowerShellInMxc(
   };
   let token: string;
   let launch: MxcShellLaunch;
-  let child: PipedChild;
+  let child: ChildProcessByStdio<Writable, Readable, Readable>;
   let backendObservation: WindowsBackendObservation;
   let held: HeldWindowsRun | undefined;
   let policyNotices: readonly string[];
+  const cwd = cwdIdentity.realpath;
+  const assertWorkingDirectory = (): void => {
+    if (!matchesShellWorkingDirectoryIdentity(requestedCwd, cwdIdentity)) throw new HostShellDirectoryHoldError();
+  };
   try {
     const sandboxHome = createSandboxProcessHome();
     failurePrefix = "";
     lifecycle.defer(() => sandboxHome.cleanup());
     markParserTiming?.("home-ready");
-    const cwdHold = await holdHostShellSpawnDirectory(spawnAuthorization);
+    assertWorkingDirectory();
+    const cwdHold = await holdHostShellSpawnDirectory(spawnAuthorization, cwdIdentity);
     lifecycle.defer(() => cwdHold.dispose());
+    const holdStdio = cwdHold.stdio;
+    if (holdStdio === undefined) throw new HostShellDirectoryHoldError();
+    assertWorkingDirectory();
+    cwdHold.assertHeld();
     if (parserResponse === undefined) markTiming?.("cwd-hold-ready");
     else markParserTiming?.("cwd-hold-ready");
     const powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome);
@@ -4780,8 +4801,9 @@ async function spawnPowerShellInMxc(
       sandboxHome: sandboxHome.path,
       env: powerShellExecutionEnvironment(verified, powerShellLaunch.env, workbookIdentity),
       timeoutMs: resolveShellTimeoutMs(timeoutSeconds),
-      directoryHeld: cwdHold.stdio !== undefined,
+      directoryHeld: true,
       exists: existsSync,
+      assertWorkingDirectory,
       assertCommand: () => {
         assertInterpreter();
         if (verified !== undefined && verifiedShellExecution(verified.handle, verified.identity) === undefined) {
@@ -4807,12 +4829,11 @@ async function spawnPowerShellInMxc(
     if (cmd === undefined) throw new Error("Container launcher is missing");
     const launcherEnv = buildSafeChildEnv({});
     const bindHeldPolicy = launch.bindHeldPolicy;
-    const holdStdio = cwdHold.stdio;
-    if (bindHeldPolicy !== undefined && holdStdio === undefined) throw new Error("Windows sandbox policy requires a directory hold");
     const target = bindHeldPolicy === undefined ? cwdHold.command(cmd, args) : cwdHold.command(cmd, args, true);
     backendObservation = boundarySnapshot.run(() => launch.activate(() => {
       try {
         assertHostShellSpawnDirectory(spawnAuthorization);
+        assertWorkingDirectory();
         cwdHold.assertHeld();
       } catch (error) {
         throw error instanceof HostShellDirectoryHoldError ? error : launcherError(error);
@@ -4826,12 +4847,12 @@ async function spawnPowerShellInMxc(
         // nothing in the workspace sits beside it; the container's working
         // directory travels in the request.
         cwd: win32Path.dirname(cmd),
-        stdio: holdStdio === undefined ? ["ignore", "pipe", "pipe"] : bindHeldPolicy === undefined ? holdStdio : [...holdStdio, "pipe", "pipe"],
+        stdio: bindHeldPolicy === undefined ? holdStdio : [...holdStdio, "pipe", "pipe"],
         shell: false,
         windowsHide: true,
         // The launcher's own environment: the container's is in the request.
         env: launcherEnv,
-      }) as PipedChild;
+      });
       const launcher = child;
       held = bindForegroundShellHold(cwdHold, launcher, sessionId, bindHeldPolicy === undefined ? undefined : {
         bindReader: (pid, onFailure) => bindHeldPolicy(launcher, pid, onFailure),

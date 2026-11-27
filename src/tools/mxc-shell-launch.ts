@@ -102,6 +102,7 @@ export interface PrepareMxcShellLaunchInput {
   readonly timeoutMs: number;
   readonly directoryHeld?: boolean;
   readonly exists: (path: string) => boolean;
+  readonly assertWorkingDirectory?: () => void;
   readonly assertCommand?: () => void;
   readonly assertDelivery?: () => void;
   readonly markTiming?: (stage: MxcShellPreparationStage) => void;
@@ -208,6 +209,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
       part.exists === true ? windowsObjectKey(part) : null, part.canonical, part.directory, part.reparseTag, part.reparseTarget]));
     assertWriteGrantsOutsideConfinementState(grants.readwrite, statePaths, undefined, home);
     const cwd = resolvePathForPolicy(input.cwd);
+    input.assertWorkingDirectory?.();
     const directory = process.platform === "win32" ? captureShellWorkingDirectoryIdentity(input.cwd) : undefined;
     return {
       cwd,

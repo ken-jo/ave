@@ -97,6 +97,10 @@ export type ShellApprovalDirectory = ReturnType<typeof createShellApprovalDirect
 const permits = new WeakMap<HostShellExecutionPermit, PermitRecord>();
 const pendingHandoffs = new WeakMap<HostShellSpawnAuthorization, PermitRecord>();
 
+export function hostShellPermitDirectoryIdentity(permit: HostShellExecutionPermit): ShellWorkingDirectoryIdentity | undefined {
+  return permits.get(permit)?.cwdIdentity;
+}
+
 // Preserve the permit module's public API while moving the runtime parser to a neutral dependency shared with ApprovalGate.
 export { parseHostShellExecutionInput } from "./host-shell-execution-plan.js";
 export type { ParsedHostShellExecutionInput } from "./host-shell-execution-plan.js";
@@ -325,16 +329,19 @@ const NO_DIRECTORY_HOLD: HostShellSpawnDirectoryHold = Object.freeze({
   launcherArgs: [], stdio: undefined, bind: () => undefined, dispose() {},
 });
 
-/** Windows children open their cwd by path, so a permit-bearing Bash or PowerShell launch holds the approved directory chain
+/** Windows children open their cwd by path, so the shell launch holds the admitted directory chain
  * against rename and delete from before its final check until the run's verdict. The hold helper owns the only handle to a
  * kill-on-close job; the job launcher joins that job before it starts the command, so a helper that is gone refuses the
  * launch and a helper that exits stops the whole tree. The launcher alone decides the run (see HeldWindowsRun): its record
  * is the verdict, and every path without one is unconfirmed. Acquisition failure, an identity mismatch or an observed loss
  * refuses before spawn. Nothing is proven inside the child, and a held leaf whose contents can be removed can still become
  * a junction in place. */
-export async function holdHostShellSpawnDirectory(authorization: HostShellSpawnAuthorization | undefined): Promise<HostShellSpawnDirectoryHold> {
-  if (authorization === undefined || process.platform !== "win32") return NO_DIRECTORY_HOLD;
-  const held = await pinShellWorkingDirectory(authorization.cwdIdentity);
+export async function holdHostShellSpawnDirectory(authorization: HostShellSpawnAuthorization | undefined, identity = authorization?.cwdIdentity): Promise<HostShellSpawnDirectoryHold> {
+  if (identity === undefined || process.platform !== "win32") return NO_DIRECTORY_HOLD;
+  if (authorization !== undefined && !sameShellWorkingDirectoryIdentity(identity, authorization.cwdIdentity)) {
+    throw new HostShellDirectoryHoldError();
+  }
+  const held = await pinShellWorkingDirectory(identity);
   if (held === undefined) throw new HostShellDirectoryHoldError();
   let bound = false;
   return {

@@ -936,6 +936,8 @@ export async function executeAuthorizedToolInvocation(
     ...(preparedShellInvocation ? { preparedShellInvocation } : {}),
     ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
     ...(hostShellExecutionPermit ? { hostShellExecutionPermit } : {}),
+    ...(process.platform === "win32" && hostShellExecutionPlan?.substrate === "mxc"
+      ? { windowsContainerShellCwd: hostShellExecutionPermitBinding?.cwdIdentity ?? null } : {}),
     metadata: {
       // Absent when the invocation has no conversation behind it. Tools that
       // need one refuse without it; a placeholder string here would make every

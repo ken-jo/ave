@@ -217,6 +217,7 @@ import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../../perm
 import { decisionMemo } from "../../shared/local-path-io.js";
 import * as windowsDriveLocality from "../../shared/windows-drive-locality.js";
 import * as windowsPathFacts from "../../shared/windows-path-facts.js";
+import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity } from "../../permissions/shell-working-directory-identity.js";
 
 // The container route goes away: no capability, announced as a status change.
 function endRoute(): () => void {
@@ -266,6 +267,22 @@ afterEach(() => {
 });
 
 describe("prepareMxcShellLaunch", () => {
+  it.runIf(process.platform === "win32")("refuses the replacement already present at the first policy snapshot", async () => {
+    relay();
+    const admitted = captureShellWorkingDirectoryIdentity(WS);
+    if (admitted === undefined) throw new Error("Fixture cwd was not admitted");
+    h.replaced.add(windowsPathFacts.windowsPathKey(WS));
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      await expect(prepareMxcShellLaunch({ ...INPUT, assertWorkingDirectory: () => {
+        if (!matchesShellWorkingDirectoryIdentity(WS, admitted)) throw new Error("Working directory admission changed");
+      } }, lifecycle)).rejects.toThrow("Working directory admission changed");
+      expect(h.openRelay).not.toHaveBeenCalled();
+    } finally {
+      await lifecycle.dispose();
+    }
+  });
+
   it.each(["target", "ancestor"] as const)("refuses a stable %s replacement made after ranking", async replacement => {
     const lifecycle = createContainedShellLifecycle();
     relay();
