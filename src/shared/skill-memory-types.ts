@@ -25,6 +25,8 @@ export interface SkillMemoryChange {
   action: "activate" | "stage" | "apply" | "reject" | "undo";
   at: string;
   actor: "host" | "owner";
+  prevDigest: string | null;
+  digest: string;
   before: SkillMemoryLesson | null;
   after: SkillMemoryLesson | null;
 }
@@ -34,6 +36,7 @@ export interface SkillMemoryGroup {
   active: SkillMemoryLesson[];
   staged: SkillMemoryLesson[];
   history: SkillMemoryChange[];
+  retired: SkillMemoryLesson[];
 }
 
 export type SkillMemoryDecision =

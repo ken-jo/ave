@@ -187,7 +187,7 @@ export interface ConversationDeps {
   /** Broadcast session-directory grants to all permission views, including grants made outside slash dispatch. */
   broadcastPermissionConfigChanged?: () => void;
   /** Per-conversation read-skill registry, cleared on newConversation(). */
-  skillOverlay?: { clear(sessionId: string): void };
+  skillOverlay?: { clear(sessionId: string): void; list?(sessionId: string): readonly { name: string; filePath: string }[] };
   skillMemory?: import("../memory/skill-memory-service.js").SkillMemoryService;
   /** Whether `/<name>` names an indexed skill (routes a typed skill slash to the model). */
   isSkillName?: (name: string) => boolean;

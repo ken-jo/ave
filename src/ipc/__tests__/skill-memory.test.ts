@@ -28,15 +28,16 @@ function fixture() {
   securitySettingsGestures.observe(contents as never);
   const event = { sender: contents, senderFrame: frame };
   const list = vi.fn(() => []);
+  const listCurrent = vi.fn(async () => []);
   const decide = vi.fn(async (_input: unknown, grant: (scope: object, lesson: object) => boolean) => grant({}, {}));
   registerSkillMemoryHandlers({
-    conversationLoop: { deps: { skillMemory: { store: { list, decide } } } }, auditLogger: { log: vi.fn() },
+    conversationLoop: { deps: { skillMemory: { store: { list, listCurrent, decide } } } }, auditLogger: { log: vi.fn() },
   } as never);
   const change = {
     scopeId: sha256Hex("scope"), action: "apply", lessonId: "7c1c6b6e-1b53-4b47-b6ec-9b9ea567c8fe", digest: sha256Hex("lesson"),
   };
   return {
-    contents, event, list, decide, change,
+    contents, event, listCurrent, decide, change,
     invokeList: (...args: unknown[]) => requiredFixture(state.handlers.get(CHANNELS.skillMemory.list))(...args),
     invokeDecision: (...args: unknown[]) => requiredFixture(state.handlers.get(CHANNELS.skillMemory.decide))(...args),
   };
@@ -48,8 +49,10 @@ describe("skill memory IPC", () => {
     expect(PUBLIC_CHANNELS).not.toContain(CHANNELS.skillMemory.list);
     expect(PUBLIC_CHANNELS).not.toContain(CHANNELS.skillMemory.decide);
     expect(await f.invokeList({ ...f.event, senderFrame: { ...f.event.senderFrame } })).toMatchObject({ error: "unauthorized-frame" });
-    expect(f.list).not.toHaveBeenCalled();
+    expect(f.listCurrent).not.toHaveBeenCalled();
+    state.focused = false;
     expect(await f.invokeList(f.event)).toEqual({ ok: true, groups: [] });
+    expect(await f.invokeDecision(f.event, f.change)).toMatchObject({ error: "unauthorized-frame" });
   });
 
   it("requires and consumes a live, one-shot native decision", async () => {

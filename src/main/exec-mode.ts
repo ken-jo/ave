@@ -1,6 +1,7 @@
 // One-shot headless actions use normal host services and shutdown; retained turns wait for explicit release. Keep heavy imports dynamic because the
 // logger imports execModeRequested during module initialization.
 import { statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import type { EventEmitter } from "node:events";
 import { basename, isAbsolute, resolve } from "node:path";
 import {
@@ -468,18 +469,6 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
     const result = skillMemory && request.prompt !== null
       ? await (await import("../memory/skill-memory-service.js")).runWithSkillMemoryOwnerInput(prompt, run)
       : await run();
-    if (skillMemory && boundProjectRoot && request.prompt !== null && result.stopReason === "end_turn" && !result.inputRequired && !result.authorizationRequired) {
-      const sessionId = deps.conversationLoop.getSessionId();
-      await skillMemory.complete({
-        sessionId,
-        projectRoot: boundProjectRoot,
-        completionId: `exec:${sessionId}`,
-        runKind: "headless",
-        isCurrent: () => deps.conversationLoop.getSessionId() === sessionId
-          && sessionBoundProjectRootMatches(deps.conversationLoop.getSessionProjectRoot(), request.cwd)
-          && deps.isAuthorizedProjectRoot(request.cwd),
-      });
-    }
     if (request.output === "json") {
       // An authorization terminal is a control response, not a normal model result. Do not serialize `toolCalls`: they contain raw command/tool arguments and
       // are unnecessary for an operator to resume safely.
@@ -498,6 +487,16 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
           }
         : result;
       deps.stdout.write(`${JSON.stringify(output)}\n`);
+    }
+    if (skillMemory && boundProjectRoot && request.prompt !== null && result.stopReason === "end_turn"
+      && !result.inputRequired && !result.authorizationRequired) {
+      await skillMemory.queueUnattended({
+        sessionId: deps.conversationLoop.getSessionId(),
+        projectRoot: boundProjectRoot,
+        completionId: `exec:${randomUUID()}`,
+        runKind: "headless",
+        flushBeforeExit: !request.keepAlive,
+      });
     }
     return exitCodeForTurnResult(result);
   } catch (err) {

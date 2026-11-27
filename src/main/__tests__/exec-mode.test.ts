@@ -867,13 +867,26 @@ describe("skill memory at the one-shot terminal boundary", () => {
     { prompt: null, stopReason: "end_turn", shouldReview: false },
     { prompt: "Check the type report.", stopReason: "round-cap", shouldReview: false },
   ] as const)("admission for prompt $prompt at $stopReason", async ({ prompt, stopReason, shouldReview }) => {
-    const complete = vi.fn(async () => true);
     const harness = makeDeps({ stdin: "Unverified pipe input", turnResult: { ...COMPLETED_TURN, stopReason } });
-    Object.assign(harness.deps.conversationLoop, { deps: { skillMemory: { complete } }, getSessionId: () => "host-session" });
-    await expect(runExecTurn(harness.deps, turnRequest({ prompt }))).resolves.toBe(0);
-    if (shouldReview) expect(complete).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      completionId: "exec:host-session", runKind: "headless", sessionId: "host-session",
+    const queueUnattended = vi.fn(async () => { expect(harness.stdout.text()).toContain('"stopReason":"end_turn"'); });
+    Object.assign(harness.deps.conversationLoop, { deps: { skillMemory: { queueUnattended } }, getSessionId: () => "host-session" });
+    await expect(runExecTurn(harness.deps, turnRequest({ prompt, output: "json" }))).resolves.toBe(0);
+    if (shouldReview) expect(queueUnattended).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      completionId: expect.stringMatching(/^exec:/), runKind: "headless", sessionId: "host-session", flushBeforeExit: true,
     }));
-    else expect(complete).not.toHaveBeenCalled();
+    else expect(queueUnattended).not.toHaveBeenCalled();
+  });
+
+  it("keeps a retained session's completion IDs per turn and does not wait on its reviewer", async () => {
+    const harness = makeDeps();
+    const queueUnattended = vi.fn(async (_completion: { completionId: string; flushBeforeExit: boolean }) => {});
+    const waitForRelease = vi.fn(async () => {});
+    Object.assign(harness.deps.conversationLoop, { deps: { skillMemory: { queueUnattended } }, getSessionId: () => "retained" });
+    for (const prompt of ["first", "second"]) {
+      await expect(runExecTurn({ ...harness.deps, waitForRelease }, turnRequest({ prompt, keepAlive: true }))).resolves.toBe(0);
+    }
+    expect(queueUnattended).toHaveBeenCalledTimes(2);
+    expect(new Set(queueUnattended.mock.calls.map(([row]) => row.completionId)).size).toBe(2);
+    expect(queueUnattended.mock.calls.map(([row]) => row.flushBeforeExit)).toEqual([false, false]);
   });
 });

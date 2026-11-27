@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { useTranslation } from "../../../i18n/react.js";
+import { formatMediumDateTime } from "../../../shared/format-time.js";
 import type { SkillMemoryApi, SkillMemoryDecision, SkillMemoryGroup, SkillMemoryLesson } from "../../../shared/skill-memory-types.js";
 
 function SkillMemoryLessonText({ lesson }: { lesson: SkillMemoryLesson }) {
@@ -18,7 +19,7 @@ function SkillMemoryLessonText({ lesson }: { lesson: SkillMemoryLesson }) {
 }
 
 export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const [groups, setGroups] = useState<SkillMemoryGroup[]>();
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -70,7 +71,7 @@ export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
     </div>}
     {!failed && !groups && <p className="text-sm" role="status">{t("skillMemory.loading")}</p>}
     {groups?.length === 0 && <p className="text-sm text-muted-foreground">{t("skillMemory.empty")}</p>}
-    {groups?.map(({ scope, active, staged, history }) => <section key={scope.id} className="space-y-4 rounded-lg border p-4">
+    {groups?.map(({ scope, active, staged, retired, history }) => <section key={scope.id} className="space-y-4 rounded-lg border p-4">
       <header>
         <h2 className="break-words font-semibold">{scope.skill}</h2>
         <p className="break-all text-xs text-muted-foreground">{scope.projectRoot}</p>
@@ -91,29 +92,35 @@ export function SkillMemoryContent({ api }: { api: SkillMemoryApi }) {
       </section>}
       {active.length > 0 && <section className="space-y-2">
         <h3 className="text-sm font-semibold">{t("skillMemory.active")}</h3>
-        {active.map(lesson => <article key={lesson.id} className="space-y-2 rounded-md border p-3">
+        {active.map(lesson => {
+          const change = history.findLast(entry => (entry.action === "apply" || entry.action === "activate")
+            && entry.after?.digest === lesson.digest);
+          return <article key={lesson.id} className="space-y-2 rounded-md border p-3">
+            <SkillMemoryLessonText lesson={lesson} />
+            {change && <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void handleDecision({ scopeId: scope.id, action: "undo", changeId: change.id, digest: lesson.digest })}
+            >{t("skillMemory.undo")}</Button>}
+          </article>;
+        })}
+      </section>}
+      {retired.length > 0 && <details>
+        <summary className="cursor-pointer text-sm font-semibold">{t("skillMemory.retired")}</summary>
+        <p className="my-2 text-sm text-muted-foreground">{t("skillMemory.retiredHint")}</p>
+        {retired.map(lesson => <article key={lesson.digest} className="my-2 space-y-2 rounded-md border p-3">
           <SkillMemoryLessonText lesson={lesson} />
         </article>)}
-      </section>}
+      </details>}
       <details>
         <summary className="cursor-pointer text-sm font-semibold">{t("skillMemory.history")}</summary>
         <ul className="mt-2 space-y-2">
           {history.toReversed().map(change => {
             const lesson = change.after ?? change.before;
             return <li key={change.id} className="space-y-2 rounded-md border p-3">
-              <p className="text-xs text-muted-foreground">{actions[change.action]} · <time dateTime={change.at}>{new Date(change.at).toLocaleString()}</time></p>
+              <p className="text-xs text-muted-foreground">{actions[change.action]} · <time dateTime={change.at}>{formatMediumDateTime(change.at, locale)}</time></p>
               {lesson && <SkillMemoryLessonText lesson={lesson} />}
-              {change.after && (change.action === "apply" || change.action === "activate")
-                && active.some(row => row.digest === change.after?.digest) && <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => {
-                    if (change.after) void handleDecision({
-                      scopeId: scope.id, action: "undo", changeId: change.id, digest: change.after.digest,
-                    });
-                  }}
-                >{t("skillMemory.undo")}</Button>}
             </li>;
           })}
         </ul>

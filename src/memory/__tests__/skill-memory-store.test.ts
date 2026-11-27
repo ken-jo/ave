@@ -98,13 +98,15 @@ describe("managed skill memory", () => {
     expect(store.recall({ ...scope, fingerprint: sha256Hex("replacement") })).toEqual([]);
   });
 
-  it("refuses a linked store and tampered persisted text", async () => {
+  it("refuses a linked store and isolates tampered persisted text and ledger actions", async () => {
     const scope = binding();
     await store.record([record(scope)], allow);
+    await store.record([record(scope, "attended", "later", "Valid lesson", "Valid lesson stays available.")], allow);
     const path = join(home, "skill-memory", "lessons.json");
     const snapshot = readFileSync(path, "utf8");
-    writeFileSync(path, snapshot.replace("Check the type report before packaging.", "<ave-skill>"));
-    expect(() => store.recall(scope)).toThrow("Invalid skill memory version");
+    writeFileSync(path, snapshot.replaceAll("Check the type report before packaging.", "<ave-skill>").replace('"action":"activate"', '"action":"undo"'));
+    expect(store.recall(scope).map(row => row.description)).toEqual(["Valid lesson"]);
+    expect(store.list()[0]?.history.map(row => row.action)).toEqual(["activate"]);
     const outside = join(home, "other-directory");
     mkdirSync(outside);
     const alternate = join(home, "alternate");
@@ -132,5 +134,20 @@ describe("managed skill memory", () => {
     expect(store.list()[0]?.active).toHaveLength(100);
     expect(store.list()[0]?.staged).toHaveLength(100);
     expect(store.list()[0]?.history).toHaveLength(200);
+    const original = requiredFixture(store.list()[0]?.active[0]);
+    for (let count = 0; count < 3; count++) {
+      await store.record([record(scope, "attended", `revision-${count}`, "Lesson 1", `Lesson 1 revision ${count}.`)], allow);
+    }
+    const history = requiredFixture(store.list()[0]?.history);
+    expect(history).toHaveLength(200);
+    expect(history).toEqual(expect.arrayContaining([expect.objectContaining({ after: original })]));
+    expect(history.slice(1).map(row => row.prevDigest)).toEqual(history.slice(0, -1).map(row => row.digest));
+
+    const next = { ...scope, fingerprint: sha256Hex("changed content") };
+    await expect(store.record([record(next, "attended", "changed")], allow)).resolves.toBe(true);
+    const display = await store.listCurrent(async (_scope, fingerprint) => fingerprint === next.fingerprint);
+    expect(display[0]?.active).toHaveLength(1);
+    expect(display[0]?.staged).toHaveLength(0);
+    expect(display[0]?.retired).toHaveLength(100);
   });
 });

@@ -1,4 +1,4 @@
-type Source = "chat" | "routine";
+type Source = "chat" | "routine" | "work-board";
 
 interface OwnerInput {
   element: HTMLTextAreaElement;
@@ -11,12 +11,13 @@ const TYPING_INPUT = /^(?:insertText|insertCompositionText|insertLineBreak|inser
 
 function sourceOf(element: HTMLTextAreaElement): Source | undefined {
   const source = element.dataset.skillMemorySource;
-  return source === "chat" || source === "routine" ? source : undefined;
+  return source === "chat" || source === "routine" || source === "work-board" ? source : undefined;
 }
 
 /** Observe the real textarea before renderer state updates, without making clipboard text part of the IPC protocol. */
-export function installSkillMemoryInputTracking(): void {
-  document.addEventListener("beforeinput", event => {
+export function installSkillMemoryInputTracking(doc = globalThis.document): void {
+  if (!doc) return;
+  doc.addEventListener("beforeinput", event => {
     const input = event as InputEvent;
     const target = input.target;
     if (!(target instanceof HTMLTextAreaElement) || !input.isTrusted) return;
@@ -31,7 +32,7 @@ export function installSkillMemoryInputTracking(): void {
       admission.delete(target);
     }
   }, true);
-  document.addEventListener("input", event => {
+  doc.addEventListener("input", event => {
     const input = event as InputEvent;
     const target = input.target;
     if (!(target instanceof HTMLTextAreaElement) || !input.isTrusted) return;

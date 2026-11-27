@@ -35,9 +35,12 @@ export function sanitizeSkillMemoryText(description: string, body: string) {
   return { description: normalizedDescription, body: normalizedBody };
 }
 
-export function approveSkillMemoryEvidence(input: { id: string; input: unknown; verified: boolean; tainted: boolean }): SkillMemoryEvidence | null {
+export function approveSkillMemoryEvidence(input: { id: string; input: unknown; verified: boolean; tainted: boolean; skillCommand?: string }): SkillMemoryEvidence | null {
   if (!input.verified || input.tainted || typeof input.input !== "string" || Buffer.byteLength(input.input) > EVIDENCE_BYTE_LIMIT) return null;
-  const text = normalizeText(input.input);
+  const command = input.skillCommand;
+  const [selector] = input.input.split(/\s/u, 1);
+  const raw = command && selector === `/${command}` ? input.input.slice(selector.length) : input.input;
+  const text = normalizeText(raw);
   if (!text || text.startsWith("/") || RESERVED_STRUCTURE.test(text) || containsSensitiveText(text)) return null;
   return { id: input.id, text };
 }
@@ -52,15 +55,18 @@ const ProposalSchema = z.object({
 export function parseSkillMemoryReview(raw: string, evidence: readonly SkillMemoryEvidence[], skills: ReadonlySet<string>) {
   if (Buffer.byteLength(raw) > REVIEW_BYTE_LIMIT) return null;
   let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { return null; }
-  const result = z.array(ProposalSchema).max(SKILL_MEMORY_COMPLETION_LIMIT).safeParse(parsed);
+  try { parsed = JSON.parse(raw.trim().replace(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu, "$1")); } catch { return null; }
+  const result = z.array(z.unknown()).max(SKILL_MEMORY_COMPLETION_LIMIT).safeParse(parsed);
   if (!result.success) return null;
   const output: z.infer<typeof ProposalSchema>[] = [];
-  for (const proposal of result.data) {
+  for (const item of result.data) {
+    const parsedProposal = ProposalSchema.safeParse(item);
+    if (!parsedProposal.success) continue;
+    const proposal = parsedProposal.data;
     const source = evidence.find(anchor => anchor.id === proposal.anchor);
     const lesson = sanitizeSkillMemoryText(proposal.description, proposal.body);
     if (!skills.has(proposal.skill) || !source || !lesson || !source.text.includes(lesson.body)
-      || !lesson.body.replace(/\s+/gu, " ").includes(lesson.description)) return null;
+      || !lesson.body.replace(/\s+/gu, " ").includes(lesson.description)) continue;
     output.push({ skill: proposal.skill, anchor: proposal.anchor, ...lesson });
   }
   return output;

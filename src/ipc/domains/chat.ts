@@ -1,4 +1,5 @@
 import { showNativeMessage, pickNativeFiles, pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
+import { randomUUID } from "node:crypto";
 import { isAttendedSkillMemoryOwner, registerSkillMemoryHandlers } from "./skill-memory.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { runWithSkillMemoryOwnerInput } from "../../memory/skill-memory-service.js";
@@ -1656,27 +1657,21 @@ export function registerChatHandlers(deps: IpcDeps): void {
     }
     if (Object.keys(fields).length === 0) return { ok: false, error: "no-fields" };
     const sessionId = raw.sessionId;
-    const holder = fields.archivedAt ? groupHolding(sessionId) : undefined;
-    const loop = holder?.loop;
-    const skillMemory = loop?.deps?.skillMemory;
-    const projectRoot = skillMemory ? loop?.getSessionProjectRoot() : undefined;
-    const epoch = skillMemory ? loop?.getSessionEpoch() : undefined;
-    const ownsSession = () => loop && holder && !loop.hasActiveTurn() && !holder.surfaceRuntime.activity.isBusy()
-      && loop.getSessionId() === sessionId && loop.getSessionEpoch() === epoch
-      && groupTargetContents(holder.owner) === e.sender && isAttendedSkillMemoryOwner(e);
-    const reviewAtArchive = projectRoot && ownsSession() && securitySettingsGestures.consume(e.sender, {
-      channel: CHANNELS.chat.sessionUpdate,
-      payload: { sessionId, archived: true },
-    });
-    await memoryManager.sessions.updateSessionRowFields(sessionId, fields);
-    if (skillMemory && projectRoot && reviewAtArchive && ownsSession()) {
-      void skillMemory.complete({
-        sessionId,
-        projectRoot,
-        completionId: `archive:${sessionId}`,
-        runKind: "attended",
-        isCurrent: () => Boolean(ownsSession() && memoryManager.sessions.loadSessionMetadata(sessionId)?.archivedAt === fields.archivedAt),
+    const skillMemory = deps.conversationLoop.deps?.skillMemory;
+    const metadata = fields.archivedAt && skillMemory ? memoryManager.sessions.loadSessionMetadata(sessionId) : undefined;
+    const holder = metadata ? groupHolding(sessionId) : undefined;
+    const projectRoot = metadata?.projectRoot ?? holder?.loop.getSessionProjectRoot();
+    const archiveAuthority = projectRoot && !metadata?.archivedAt
+      && (!holder || (!holder.loop.hasActiveTurn() && !holder.surfaceRuntime.activity.isBusy()
+        && groupTargetContents(holder.owner) === e.sender))
+      && isAttendedSkillMemoryOwner(e) && securitySettingsGestures.consume(e.sender, {
+        channel: CHANNELS.chat.sessionUpdate,
+        payload: { sessionId, archived: true },
       });
+    await memoryManager.sessions.updateSessionRowFields(sessionId, fields);
+    if (archiveAuthority && projectRoot && fields.archivedAt
+      && memoryManager.sessions.loadSessionMetadata(sessionId)?.archivedAt === fields.archivedAt) {
+      await skillMemory?.queueArchive(sessionId, projectRoot, `archive:${randomUUID()}`);
     }
     return { ok: true };
   });

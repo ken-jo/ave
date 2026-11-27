@@ -272,8 +272,8 @@ describe("skill memory control room", () => {
       const active = { ...lesson, id: "active", digest: "active-digest", body: "Check the type report.", origin: { ...lesson.origin, runKind: "attended" as const } };
       const groups: SkillMemoryGroup[] = [{
         scope: { id: "scope", skill: "review", projectRoot: "/project" },
-        staged: [lesson], active: [active],
-        history: [{ id: "change", action: "activate", actor: "host", before: null, after: active, at: "2026-11-27T00:00:00Z" }],
+        staged: [lesson], active: [active], retired: [],
+        history: [{ id: "change", action: "activate", actor: "host", prevDigest: null, digest: "change-digest", before: null, after: active, at: "2026-11-27T00:00:00Z" }],
       }];
       const decide = vi.fn(async () => ({ ok: true }));
       props.api.skillMemory = { list: async () => ({ ok: true, groups }), decide };
@@ -288,9 +288,11 @@ describe("skill memory control room", () => {
       expect(decide).toHaveBeenLastCalledWith({ scopeId: "scope", action: "apply", lessonId: lesson.id, digest: lesson.digest });
       await click(labels.reject);
       expect(decide).toHaveBeenLastCalledWith({ scopeId: "scope", action: "reject", lessonId: lesson.id, digest: lesson.digest });
-      fireEvent.click(screen.getByText(labels.history));
       await click(labels.undo);
       expect(decide).toHaveBeenLastCalledWith({ scopeId: "scope", action: "undo", changeId: "change", digest: active.digest });
+      fireEvent.click(screen.getByText(labels.history));
+      expect(screen.getByText(new Intl.DateTimeFormat(labels.locale, { dateStyle: "medium", timeStyle: "short" })
+        .format(new Date("2026-11-27T00:00:00Z")))).toBeTruthy();
     } finally {
       setLocale(previous);
     }

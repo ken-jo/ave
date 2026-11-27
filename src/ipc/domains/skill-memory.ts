@@ -16,23 +16,28 @@ const Decision = z.union([
   z.object({ action: z.literal("undo"), scopeId: Hash, changeId: Id, digest: Hash }).strict(),
 ]);
 
+function isSkillMemoryOwnerFrame(event: IpcMainInvokeEvent): boolean {
+  return validateHostRendererSender(event) && !!event.sender && !event.sender.isDestroyed()
+    && event.senderFrame === event.sender.mainFrame;
+}
+
 export function isAttendedSkillMemoryOwner(event: IpcMainInvokeEvent): boolean {
-  if (!validateHostRendererSender(event) || !event.sender || event.sender.isDestroyed()
-    || event.senderFrame !== event.sender.mainFrame) return false;
-  return mainWindowForContents(event.sender)?.isFocused() === true;
+  return isSkillMemoryOwnerFrame(event) && mainWindowForContents(event.sender)?.isFocused() === true;
 }
 
 export function registerSkillMemoryHandlers(deps: IpcDeps): void {
   const { list, decide } = CHANNELS.skillMemory;
   const store = () => deps.conversationLoop.deps?.skillMemory?.store;
-  ipcMain.handle(list, (event, ...args: unknown[]) => {
-    if (!isAttendedSkillMemoryOwner(event)) {
+  ipcMain.handle(list, async (event, ...args: unknown[]) => {
+    if (!isSkillMemoryOwnerFrame(event)) {
       auditUnauthorized(deps.auditLogger, list, event);
       return UNAUTHORIZED_FRAME;
     }
     if (args.length > 0) return { ok: false };
     try {
-      const groups = store()?.list();
+      const groups = await store()?.listCurrent(async (scope, fingerprint) =>
+        isAuthorizedWorkspaceProjectRoot(scope.projectRoot)
+        && isSkillMemoryProposalCurrent(scope, fingerprint, await deps.skillStore?.load(scope.skill)));
       return groups ? { ok: true, groups } : { ok: false };
     } catch { return { ok: false }; }
   });

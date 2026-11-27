@@ -21,6 +21,8 @@ import { AgentsDocMergeService } from "../../memory/agents-doc-merge-service.js"
 import { MemoryConsolidationService, MemoryMaintenanceCoordinator, sessionMemoryProject } from "../../memory/memory-consolidation-service.js";
 import { SkillMemoryService } from "../../memory/skill-memory-service.js";
 import { SkillMemoryStore } from "../../memory/skill-memory-store.js";
+import { observeWorkflowSkillMemory } from "./skill-memory-work-board.js";
+import { hasCurrentSkillMemoryRoutineEvidence } from "../../main/routines-store.js";
 import { MemoryReviewerService } from "../../memory/memory-reviewer-service.js";
 import { SubAgentRunner } from "../../engine/subagent-runner.js";
 import { A2ASubAgentMessageBus } from "../../engine/a2a-subagent-message-bus.js";
@@ -226,8 +228,11 @@ export async function wireConversation(
   });
   const skillMemory = new SkillMemoryService(new SkillMemoryStore(), {
     enabled: () => settingsService.get("features")?.automaticSkillMemory === true,
+    canReviewAttended: () => Boolean(ctx.host.desktop),
     authorizedProject: isAuthorizedWorkspaceProjectRoot,
     loadSkill: (name) => ctx.skillStore.load(name),
+    isScheduledCurrent: (id, digest, root) => ctx.routinesStore.list()
+      .some(routine => routine.id === id && hasCurrentSkillMemoryRoutineEvidence(routine, digest, root)),
   });
   skillMemory.setReviewer(memoryReviewer);
 
@@ -499,6 +504,7 @@ export async function wireConversation(
 
   lateBinding.conversationLoopRef.fn = conversationLoop;
   lateBinding.llmCallerRef.fn = createCallLlm(conversationLoop);
+  if (ctx.host.desktop) skillMemory.resumePending();
   memoryCaptureService.setMemoryReviewer(memoryReviewer);
   lateBinding.pluginCallLlmRef.fn = createCallLlmForPlugin(conversationLoop, bootAuditLogger,
   );
@@ -630,8 +636,10 @@ export async function wireConversation(
   // Create the Work Board engine after its runner dependency exists.
   const unattendedEffects = createToolEffectResolver(ctx.toolRegistry);
   permissionManager.setUnattendedToolEffectResolver(unattendedEffects);
+  const observeWorkflowSkills = ctx.host.desktop ? observeWorkflowSkillMemory(workBoardStore, skillMemory) : undefined;
   const workBoardEngine: WorkBoardEngine = createWorkBoardEngine({
     store: workBoardStore,
+    skillMemory,
     getRunner: () => subAgentRunnerRef.fn,
     getAgentProfile: (name) => agentProfileStore.load(name),
     emitProgress: (event, project) => {
@@ -641,6 +649,7 @@ export async function wireConversation(
       else void workBoardStore.get(event.itemId).then(result => {
         if (result.status === "found") deliver(result.item.projectRoot);
       }).catch((error: unknown) => log.warn("Work board progress scope could not be read: %s", errorMessage(error)));
+      observeWorkflowSkills?.(event, project?.projectRoot);
     },
     // Append bounded project learnings best-effort; memory failures must not fail a run.
     onRunComplete: ({ itemId, title, projectRoot }) =>

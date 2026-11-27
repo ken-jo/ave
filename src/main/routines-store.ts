@@ -273,6 +273,15 @@ interface RoutinesFile {
 // `~/.ave/<feature>/` location stays the single source of truth.
 const defaultPath = (): string => join(openFeatureNamespace("routine").dir, "routines.json");
 
+export function hasCurrentSkillMemoryRoutineEvidence(
+  routine: RoutineRecord, digest: string | undefined, projectRoot: string,
+): boolean {
+  // The routine directory is denied to agent writes. The home trust manifest also covers this file.
+  return digest !== undefined && routine.createdBy === "user" && !routine.source && !routine.pausedAt
+    && !!routine.projectRoot && projectRootEquals(routine.projectRoot, projectRoot)
+    && !!routine.prePrompt && routine.skillMemoryOwnerPromptDigest === digest && sha256Hex(routine.prePrompt) === digest;
+}
+
 function workspaceRootKey(root: string): string | null {
   try {
     const key = caseFoldForMatch(canonicalizePathForMatch(root)).replace(/\/+$/g, "");

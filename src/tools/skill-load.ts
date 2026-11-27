@@ -224,7 +224,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       if (!invocationCurrent()) return interrupted();
       deps.overlay.register(sessionId, skill);
       if (skill.sourceDigest && !skill.mcpOwner && !skill.pluginOwner && !skill.agentPluginOwner) {
-        bindSkillMemoryInvocation(sessionId, skill.name, skill.filePath, skill.sourceDigest, hashSkillMaterial(skillApprovalMaterial(skill)));
+        await bindSkillMemoryInvocation(sessionId, skill.name, skill.filePath, skill.sourceDigest, hashSkillMaterial(skillApprovalMaterial(skill)));
       }
 
       deps.emit({

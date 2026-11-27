@@ -726,6 +726,10 @@ describe("preload contextBridge world shape lock", () => {
             "paneHistory",
             "send",
           ],
+          "skillMemory": [
+            "decide",
+            "list",
+          ],
           "skipAppUpdate": "function",
           "starredAdd": "function",
           "starredList": "function",

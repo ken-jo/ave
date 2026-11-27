@@ -294,7 +294,7 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "ave-home", segments: ["sessions"], kind: "dir", access: "read-only", why: "saved conversation integrity" },
   { anchor: "ave-home", segments: ["host-runtime"], kind: "dir", why: "process ownership lock (replacement creates a second writer)" },
   { anchor: "ave-home", segments: ["browser-downloads"], kind: "dir", why: "browser downloads staged until the user picks where to save them (host-only; a page's file, not the agent's)" },
-  { anchor: "ave-home", segments: ["routine"], kind: "dir", why: "routine session history" },
+  { anchor: "ave-home", segments: ["routine"], kind: "dir", why: "routine schedules, owner prompt evidence and session history" },
   { anchor: "ave-home", segments: ["terminal-state"], kind: "dir", why: "host terminal output kept for restoring a tab: the user's own screen, never an agent's to read" },
   {
     anchor: "ave-home",

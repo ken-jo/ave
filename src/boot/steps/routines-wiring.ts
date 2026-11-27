@@ -8,7 +8,7 @@ import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 import { stageInSuggestionsSession } from "../../main/suggestions-session.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
-import { sanitizeRoutineFailureReason } from "../../main/routines-store.js";
+import { hasCurrentSkillMemoryRoutineEvidence, sanitizeRoutineFailureReason } from "../../main/routines-store.js";
 import type { RoutineRecord, RoutineRunOutcome, RoutineRunMetrics } from "../../shared/routines-types.js";
 import { wakeRoutineChat } from "../../main/app-state.js";
 import { turnExtensionPolicyContext, withholdSessionAuthorityFor } from "../../shared/turn-extension-policy.js";
@@ -120,7 +120,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       let runError: Error | undefined;
       let skipped = false;
       const ownerEvidence: ScheduledEvidence | undefined = skillMemory && routine.createdBy === "user" && !routine.source && routine.prePrompt && routine.projectRoot
-        && sha256Hex(routine.prePrompt) === routine.skillMemoryOwnerPromptDigest
+        && hasCurrentSkillMemoryRoutineEvidence(routine, routine.skillMemoryOwnerPromptDigest, routine.projectRoot)
         ? { input: routine.prePrompt, projectRoot: routine.projectRoot, completionId: sha256Hex(JSON.stringify([routine.id, firedAt])) }
         : undefined;
       const run = () => target !== undefined
@@ -180,16 +180,6 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
         runError ? { ok: false, kind: "error", reason: runError.message } : { ok: true },
         captured.metrics(), routineSessionId ?? captured.sessionId() ?? target,
       );
-      if (committed && !runError && ownerEvidence?.finished && ownerEvidence.sessionId && ownerEvidence.sessionId === routineSessionId) {
-        const { sessionId, projectRoot } = ownerEvidence;
-        await skillMemory?.complete({
-          sessionId, projectRoot, runKind: "scheduled",
-          completionId: ownerEvidence.completionId,
-          isCurrent: () => routinesStore.list().some(current => current.id === routine.id && current.createdBy === "user"
-            && current.prePrompt === ownerEvidence.input && current.skillMemoryOwnerPromptDigest === routine.skillMemoryOwnerPromptDigest
-            && current.projectRoot === projectRoot && !current.source && !current.pausedAt),
-        });
-      }
       const summary = runSummary;
       // Allow-list event fields; spreading the routine could expose private content.
       try {
@@ -204,6 +194,13 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
         } satisfies import("../../shared/routines-types.js").RoutineFiredPayload);
       } catch (err) {
         log.warn("routines llm-session emit failed: %s", (err as Error).message);
+      }
+      if (committed && !runError && ownerEvidence?.finished && ownerEvidence.sessionId === routineSessionId
+        && routineSessionId && routine.skillMemoryOwnerPromptDigest) {
+        void skillMemory?.queueUnattended({
+          sessionId: routineSessionId, projectRoot: ownerEvidence.projectRoot, runKind: "scheduled",
+          completionId: ownerEvidence.completionId, routineId: routine.id, routineDigest: routine.skillMemoryOwnerPromptDigest,
+        });
       }
     })();
   });

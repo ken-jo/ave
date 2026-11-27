@@ -132,6 +132,8 @@ export interface WorkBoardEngineDeps {
   transcriptStorage?: TranscriptStorage;
   /** Invoke learning only after successful persistence; hook failures must not fail a completed run. */
   onRunComplete?: (info: { itemId: number; title: string; projectRoot?: string; projectName?: string }) => void | Promise<void>;
+  skillMemory?: Pick<import("../memory/skill-memory-service.js").SkillMemoryService,
+    "linkWorkBoardSession" | "unlinkWorkBoardSession" | "queueWorkBoard">;
   /** What a template run needs beyond the ordinary run's deps. Absent: an item made from a template refuses to run. */
   workflow?: Omit<StageRunEngineDeps, "store" | "getRunner" | "getAgentProfile" | "emit" | "holdItem" | "releaseItem">;
 }
@@ -530,6 +532,8 @@ export function createWorkBoardEngine(
     try {
       return await body();
     } finally {
+      const child = executingChildByItem.get(itemId);
+      if (child) deps.skillMemory?.unlinkWorkBoardSession(child);
       executingChildByItem.delete(itemId);
       executingTurnByItem.delete(itemId);
       cancelRequested.delete(itemId);
@@ -751,7 +755,7 @@ export function createWorkBoardEngine(
 
   /** Run the approved plan. The decision is already stored and the run already marked executing; full execution scope still passes
    * every tool call through its own permission tree (CHILD → H). */
-  async function executePhase(itemId: number, item: WorkItem, plan: string, profile: LoadedAgentProfile | null, runner: SubAgentRunner, recorder: RunRecorder): Promise<RunItemResult> {
+  async function executePhase(itemId: number, item: WorkItem, plan: string, profile: LoadedAgentProfile | null, runner: SubAgentRunner, recorder: RunRecorder, attended: boolean): Promise<RunItemResult> {
     const originSessionId = workBoardOriginSessionId(itemId);
     emit({ itemId, phase: "executing" });
 
@@ -769,6 +773,8 @@ export function createWorkBoardEngine(
     });
     // Which turn received a steer: read when the loop acknowledges the injection (see steerRun).
     executingTurnByItem.set(itemId, executeActivity.lastTurn);
+    const skillRoot = attended ? item.projectRoot : undefined;
+    let skillSessionId: string | undefined;
     const execResult = await runner.spawn(
       {
         title: `Execute: ${item.title}`,
@@ -781,6 +787,10 @@ export function createWorkBoardEngine(
       },
       {
         onLinked: ({ childSessionId }) => {
+          if (skillRoot) {
+            skillSessionId = childSessionId;
+            deps.skillMemory?.linkWorkBoardSession(itemId, childSessionId, skillRoot);
+          }
           // The host's own record of this run's execute child: steer and stop resolve it here, never from renderer input.
           executingChildByItem.set(itemId, childSessionId);
           emit({ itemId, phase: "executing", runSessionId: childSessionId });
@@ -822,7 +832,7 @@ export function createWorkBoardEngine(
 
     const output = execResult.summary;
 
-    await store.setRunResult(itemId, {
+    const saved = await store.setRunResult(itemId, {
       runStatus: "completed",
       plan,
       output,
@@ -834,6 +844,10 @@ export function createWorkBoardEngine(
       phase: "done",
       runSessionId: execResult.childSessionId,
     });
+    if (saved.status === "updated" && item.runId && skillSessionId === execResult.childSessionId) {
+      void deps.skillMemory?.queueWorkBoard(saved.item, item.runId, [execResult.childSessionId])
+        .catch(() => log.warn("Work board skill memory evidence was unavailable"));
+    }
     await recorder.flush();
     // Persist success before fire-and-forget learning; memory append failure must not change run status.
     if (onRunComplete) {
@@ -932,7 +946,8 @@ export function createWorkBoardEngine(
         const resolved = await resolveProfile(planApproval.agentName);
         if (!resolved.ok) throw new Error(resolved.reason);
         if (status === "approved") {
-          return await executePhase(itemId, item, plan, resolved.profile, runner, recorder);
+          return await executePhase(itemId, item, plan, resolved.profile, runner, recorder,
+            opts.approvalSurface != null && opts.authority === undefined);
         }
         const planTools = planReadOnlyToolNames(runner.parentToolRegistry());
         if (planTools.length === 0) throw new Error(PLAN_TOOLS_EMPTY);

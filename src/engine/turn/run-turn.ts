@@ -221,6 +221,7 @@ async function runTurnInSpan(
     const noApprover = self.deps.headless === true || self.deps.approvalSurface === "unavailable";
     const skillProject = self.deps.skillMemory ? self.getSessionProjectContext().projectRoot : undefined;
     const scheduledOwnerEvidence = skillProject && !options.remoteControllerAuthority && !userKeyboardVerified
+      && self.sessionKind !== "subagent" && !turnExtensionPolicyContext.getStore()?.unattendedStage
       ? claimScheduledSkillEvidence(effectiveSessionId, skillProject, input) : undefined;
     const skillRunKind = scheduledOwnerEvidence ? "scheduled" : options.unattendedAuthority !== undefined ? "headless" : "attended";
     const skillMemory = self.deps.skillMemory?.trackTurn(
@@ -234,12 +235,15 @@ async function runTurnInSpan(
             projectRoot: skillProject,
             runKind: skillRunKind,
             scheduled: scheduledOwnerEvidence,
+            activeSkills: self.deps.skillOverlay?.list
+              ? () => self.deps.skillOverlay?.list?.(effectiveSessionId) ?? [] : undefined,
             isCurrent: () => !turnSignal.aborted && self.sessionEpoch === sessionEpoch
               && self.getSessionProjectContext().projectRoot === skillProject,
           }
         : null,
     );
     let skillEvidenceCommitted = false;
+    let skillCommand: string | undefined;
     // Extension starts nothing confines wait for a person: a verified local turn asks one card each, a turn nobody can answer starts none.
     // Any other turn only runs the ones a backend has come to confine since.
     const personPresent = userKeyboardVerified && !isRemoteControllerTurn && options.unattendedAuthority === undefined && !noApprover;
@@ -325,6 +329,7 @@ async function runTurnInSpan(
         !BUILTIN_SLASH_COMMANDS.has(routeResult.command) &&
         self.deps.isSkillName?.(routeResult.command) === true
       ) {
+        if (isUserKeyboardOrigin(inputOrigin)) skillCommand = routeResult.command;
         // Skills run as model turns with visible loading; builtins and user command files win name collisions.
         routeResult = { route: "llm", input: turnInput };
       } else {
@@ -1064,19 +1069,20 @@ async function runTurnInSpan(
 
     retainHostInjectedMessages = commitsHostInjectedMessages(result.stopReason);
     const succeeded = terminalTranscriptCommitted && result.stopReason === "end_turn" && !result.inputRequired && !result.authorizationRequired && !turnSignal.aborted;
-    skillMemory?.finish(succeeded ? approveSkillMemoryEvidence({
+    await skillMemory?.finish(succeeded ? approveSkillMemoryEvidence({
       id: turnUserMessage.meta.messageId,
       input,
+      skillCommand,
       verified: isDirectSkillMemoryOwnerInput(input) && (userKeyboardVerified || options.unattendedAuthority !== undefined)
         || scheduledOwnerEvidence !== undefined,
       tainted: [...memoryCaptureTaint].some(reason => !scheduledOwnerEvidence || reason !== "non-keyboard-origin")
         || (scheduledOwnerEvidence ? initialToolTrustOrigin("user-keyboard", input) === "file-content" : !isUntaintedToolTrustOrigin(toolTrustOrigin))
         || options.resumesInterruptedTurn === true || customCommandDisplayText !== undefined,
-    }) : null, succeeded);
+    }) : null, succeeded, result.toolCalls.length > 0, skillCommand);
     skillEvidenceCommitted = true;
     return { ...result, route: routeResult.route, endTrustOrigin: lifecycleProvenance.toolTrustOrigin };
   } finally {
-    if (!skillEvidenceCommitted) skillMemory?.finish(null, false);
+    if (!skillEvidenceCommitted) void skillMemory?.finish(null, false);
     try {
     let removedHostInjectionRows = 0;
     if (!retainHostInjectedMessages && initialGuidanceId) {

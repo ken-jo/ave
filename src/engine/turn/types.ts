@@ -323,6 +323,7 @@ export interface ConversationLoopDeps {
   disableSessionPersistence?: boolean;
   // Skill registry authorizes reads but holds no bodies; clear it only when replacing the conversation.
   skillOverlay?: {
+    list?(sessionId: string): readonly { name: string; filePath: string }[];
     clear(sessionId: string): void;
     checkAdmission?(sessionId: string | undefined, toolName: string, input: Record<string, unknown>, visibleSkillResults?: readonly string[]): string | undefined;
   };

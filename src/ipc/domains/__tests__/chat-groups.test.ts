@@ -214,6 +214,7 @@ async function registerWithGroups(
       markMainActiveFresh: vi.fn(async () => undefined),
       markMainActiveResume: vi.fn(async () => undefined),
       saveSessionMetadata: vi.fn(async () => undefined),
+      loadSessionMetadata: vi.fn((_id: string) => null),
       saveSession: vi.fn(async () => undefined),
       pruneCheckpointsDiscardedByRewind: vi.fn(async () => undefined),
       listSessions: vi.fn(() => []),
@@ -246,13 +247,14 @@ async function registerWithGroups(
 function fakeRenderer(): {
   window: {
     isDestroyed: () => boolean;
+    isFocused: () => boolean;
     webContents: { on: (name: string, fn: (...args: unknown[]) => void) => void };
   };
   events: RendererEvents;
 } {
   const events: RendererEvents = {};
   const on = (name: string, fn: (...args: unknown[]) => void) => { (events[name] ??= []).push(fn); };
-  return { window: { isDestroyed: () => false, webContents: { on } }, events };
+  return { window: { isDestroyed: () => false, isFocused: () => true, webContents: { on } }, events };
 }
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
@@ -272,6 +274,59 @@ describe("ave:chat:* with chat groups", () => {
     await expect(invoke(CHANNELS.chat.hasProvider)).rejects.toThrow("chat-group-required");
     await expect(invoke(CHANNELS.chat.hasProvider, "   ")).rejects.toThrow("chat-group-required");
     expect(resolveChatGroupLoop).not.toHaveBeenCalled();
+  });
+
+  it("carries native owner input through asynchronous chat command dispatch only with both proofs", async () => {
+    const { window, events } = fakeRenderer();
+    const { invoke, main } = await registerWithGroups(window);
+    const { securitySettingsGestures } = await import("../../security-settings-gesture.js");
+    const { isDirectSkillMemoryOwnerInput } = await import("../../../memory/skill-memory-service.js");
+    securitySettingsGestures.observe(nativeChatFrameEvent().sender);
+    const verified: boolean[] = [];
+    main.hasProvider.mockReturnValue(true);
+    Object.assign(main, { runTurn: async (input: string) => {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      verified.push(isDirectSkillMemoryOwnerInput(input));
+      return { text: "Done", toolCalls: [], route: "llm", stopReason: "end_turn" };
+    } });
+    const payload = { input: "Verify the build output.", ...KEYBOARD_GESTURE };
+    const gesture = () => events["before-input-event"]?.forEach(listener => { listener({}, { type: "keyDown" }); });
+    gesture();
+    await invoke(CHANNELS.chat.send, payload, MAIN_CHAT_GROUP_ID);
+    await invoke(CHANNELS.chat.send, { ...payload, skillMemoryOwnerInput: true }, MAIN_CHAT_GROUP_ID);
+    await invoke(CHANNELS.chat.send, { ...payload, skillMemoryOwnerInput: true }, MAIN_CHAT_GROUP_ID);
+    gesture();
+    await invoke(CHANNELS.chat.send, { ...payload, skillMemoryOwnerInput: true }, MAIN_CHAT_GROUP_ID);
+    expect(verified).toEqual([false, true, false, true]);
+    expect(isDirectSkillMemoryOwnerInput(payload.input)).toBe(false);
+  });
+
+  it("queues an explicit archive for an unloaded session only after an owner gesture and committed archive", async () => {
+    const { window, events } = fakeRenderer();
+    const { invoke, main, memoryManager } = await registerWithGroups(window);
+    const { securitySettingsGestures } = await import("../../security-settings-gesture.js");
+    securitySettingsGestures.observe(nativeChatFrameEvent().sender);
+    const id = sessionUuid("unloaded-archive");
+    const projectRoot = await realpath(tmpdir());
+    let archivedAt: string | null = null;
+    const queueArchive = vi.fn(async (_id: string, _root: string, _completionId: string) => { expect(archivedAt).toBeTruthy(); });
+    Object.assign(main, { deps: { skillMemory: { queueArchive } } });
+    Object.assign(memoryManager.sessions, {
+      hasSessionMetadataFile: (sessionId: string) => sessionId === id,
+      loadSessionMetadata: (sessionId: string) => sessionId === id ? { archivedAt, projectRoot } : null,
+      updateSessionRowFields: async (_id: string, fields: { archivedAt: string | null }) => { archivedAt = fields.archivedAt; },
+    });
+    const archive = (archived: boolean) => invoke(CHANNELS.chat.sessionUpdate, { sessionId: id, archived });
+    expect(await archive(true)).toEqual({ ok: true });
+    expect(queueArchive).not.toHaveBeenCalled();
+    for (let count = 0; count < 2; count++) {
+      await archive(false);
+      events["before-mouse-event"]?.forEach(listener => { listener({}, { type: "mouseUp" }); });
+      expect(await archive(true)).toEqual({ ok: true });
+    }
+    expect(queueArchive).toHaveBeenCalledTimes(2);
+    expect(queueArchive).toHaveBeenCalledWith(id, projectRoot, expect.stringMatching(/^archive:/));
+    expect(queueArchive.mock.calls[0]).not.toEqual(queueArchive.mock.calls[1]);
   });
 
   it.each([{ operation: "send", pausingGoal: false }, { operation: "send", pausingGoal: true },
