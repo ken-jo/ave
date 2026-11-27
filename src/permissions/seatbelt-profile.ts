@@ -126,7 +126,12 @@ const FILE_WRITE_DENY = "file-write* file-write-create file-write-unlink";
 const WRITE_DENY = `${FILE_WRITE_DENY} network-bind network-outbound`;
 const READ_DENY = `file-read* file-read-metadata ${WRITE_DENY}`;
 const MOVE_DENY = "file-write-unlink file-write-create";
-const RESERVED_PROFILE_TEXT = "com.microsoft.mxc.run.";
+// The SDK's run-cleanup names, and Ave's holder labels: only their own builders write rules for them.
+const RESERVED_PROFILE_TEXT = ["com.microsoft.mxc.run.", "dev.ave.holder."] as const;
+const HOLDER_LABEL_PREFIX = "dev.ave.holder.";
+const HOLDER_LABEL = /^dev\.ave\.holder\.[a-z0-9.]{1,96}$/u;
+/** A holder profile, label included, larger than this is refused before anything is spawned. */
+export const SEATBELT_HOLDER_PROFILE_MAX_BYTES = 512 * 1024;
 
 function checkProfileString(value: string): void {
   if (CONTROL_CHARACTER.test(value)) {
@@ -135,7 +140,7 @@ function checkProfileString(value: string): void {
   if (Buffer.byteLength(value) > MAX_SEATBELT_STRING_BYTES) {
     throw new SeatbeltDenyError("profile-string-too-long", `Container profile string exceeds the limit: ${value}`);
   }
-  if (value.includes(RESERVED_PROFILE_TEXT)) {
+  if (RESERVED_PROFILE_TEXT.some(reserved => value.includes(reserved))) {
     throw new SeatbeltDenyError("profile-reserved-name", `Container profile string uses a reserved name: ${value}`);
   }
 }
@@ -236,15 +241,51 @@ export function seatbeltProfileAllowsOnlyProxyIpEgress(profile: string, proxyPor
   return proxyAllows === 1;
 }
 
-export function buildSeatbeltShellProfile(input: {
+interface SeatbeltProfileInput {
   readonly model: PolicyModel;
   readonly grants: PosixFilesystemGrants;
   readonly lookups: PosixPolicyLookups;
   readonly unixSocketRoots: readonly string[];
-  readonly proxyPort: number;
+}
+
+export function buildSeatbeltShellProfile(input: SeatbeltProfileInput & { readonly proxyPort: number }): string {
+  return buildSeatbeltProfile(input, input.proxyPort);
+}
+
+/** One holder start's label names (`holder-label-sweep.ts`): its own, its app run's, and its instance's. */
+export interface SeatbeltHolderLabels {
+  readonly holder: string;
+  readonly boot: string;
+  readonly instance: string;
+}
+
+/**
+ * A holder's profile: the shell's profile for the same rows, then the label lines, always last. The label is how the
+ * stop finds every process the holder started (`native/macos-holder-sweep/README.md`); no row may render a rule for it.
+ * An offline holder (`proxyPort: null`) has no network allow at all.
+ */
+export function buildSeatbeltHolderProfile(input: SeatbeltProfileInput & {
+  readonly proxyPort: number | null;
+  readonly labels: SeatbeltHolderLabels;
 }): string {
-  const { model, grants, lookups, unixSocketRoots, proxyPort } = input;
-  if (!Number.isInteger(proxyPort) || proxyPort < 1 || proxyPort > 65535) {
+  const { labels } = input;
+  const names = [labels.holder, labels.boot, labels.instance];
+  if (!names.every(name => HOLDER_LABEL.test(name)) || new Set(names).size !== names.length) {
+    throw new SeatbeltDenyError("profile-reserved-name", "Container holder labels are malformed");
+  }
+  const profile = buildSeatbeltProfile(input, input.proxyPort);
+  const withLabels = `${profile}(deny mach-lookup (global-name-prefix ${JSON.stringify(HOLDER_LABEL_PREFIX)}))
+(allow mach-lookup ${names.map(name => `(global-name ${JSON.stringify(name)})`).join(" ")})
+`;
+  if (Buffer.byteLength(withLabels) > SEATBELT_HOLDER_PROFILE_MAX_BYTES) {
+    throw new SeatbeltDenyError("profile-string-too-long", "Container holder profile exceeds the size limit");
+  }
+  return withLabels;
+}
+
+function buildSeatbeltProfile(input: SeatbeltProfileInput, proxyPort: number | null): string {
+  const { model, grants, lookups, unixSocketRoots } = input;
+  if (proxyPort !== null && (!Number.isInteger(proxyPort) || proxyPort < 1 || proxyPort > 65535)) {
     throw new SeatbeltDenyError("proxy-invalid", "Container profile requires a valid loopback proxy port");
   }
   const { literalModel, patternRows } = splitSeatbeltPolicyRows(model);
@@ -261,7 +302,7 @@ export function buildSeatbeltShellProfile(input: {
     forms.push(`(allow network-bind (local unix-socket ${subpath(root)}))`);
     forms.push(`(allow network-outbound (remote unix-socket ${subpath(root)}))`);
   }
-  forms.push(seatbeltProxyEgressAllow(proxyPort));
+  if (proxyPort !== null) forms.push(seatbeltProxyEgressAllow(proxyPort));
 
   const strips = readonly.flatMap(path => {
     const root = readwrite.filter(parent => atOrBelow(path, parent)).sort((a, b) => b.length - a.length)[0];
@@ -304,7 +345,7 @@ export function buildSeatbeltShellProfile(input: {
   }
   addDeny(forms, MOVE_DENY, [...pins].map(literal));
   const profile = `${forms.filter(Boolean).join("\n")}\n`;
-  if (profile.includes(RESERVED_PROFILE_TEXT)) {
+  if (RESERVED_PROFILE_TEXT.some(reserved => profile.includes(reserved))) {
     throw new SeatbeltDenyError("profile-reserved-name", "Container profile uses a reserved name");
   }
   return profile;

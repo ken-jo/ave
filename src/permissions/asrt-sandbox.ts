@@ -1809,6 +1809,24 @@ function getProtectedReadDenyPaths(
 
 // The MXC admitted rank uses this floor to withhold reads under protected paths
 // and recognize the reviewed exceptions carried by the policy.
+/**
+ * The floors every macOS holder profile restates, whatever its caller asked for (`seatbelt-holder-launch.ts`): the
+ * sensitive read floor, the Ave home's read boundary and the sandbox private roots as read boundaries a holder's own
+ * grant may re-open beneath, the protected read floor as secrets, the user's own read denies, and the sensitive write
+ * floor. The write-root protections are added per start from the holder's write roots.
+ */
+export function seatbeltHolderFloorRows(): readonly PolicyFloorRow[] {
+  const userDenies = getUserReadDenies();
+  return Object.freeze([
+    ...[...getDefaultSensitiveReadDenyPaths(), ...aveHomeReadBoundaryRoots(), ...appOwnedSandboxPrivateRoots()]
+      .map((path) => policyFloorRow(path, "denied", "read-boundary", false)),
+    ...getProtectedReadDenyFloor().filter((path) => !userDenies.includes(path)).map((path) => policyFloorRow(path, "denied", "secrets", false)),
+    ...userDenies.map((path) => policyFloorRow(path, "denied", "user-deny", false)),
+    ...getDefaultSensitiveWriteDenyEntries().map((entry) =>
+      policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", typeof entry !== "string")),
+  ]);
+}
+
 export function getProtectedReadDenyFloor(): readonly string[] {
   return getProtectedReadDenyPaths();
 }

@@ -1,5 +1,6 @@
 import { lstatSync, opendirSync, realpathSync } from "node:fs";
 import { posix } from "node:path";
+import { sameFileIdentity } from "../lib/file-identity.js";
 import type { ContainerBackend } from "../shared/container-platform.js";
 import { canonicalWhereItExists } from "./mxc-runtime-root.js";
 import { mxcPolicyRows, type MxcFilesystemGrants, type MxcPolicyRows } from "./mxc-windows.js";
@@ -324,3 +325,19 @@ export function rankPosixContainerRows(
 }
 
 export { assertDenyOutcomes as _assertPosixDenyOutcomesForTest, rankRows as _rankPosixContainerRowsForTest };
+
+/** Whether the volume holding `path` folds case, measured on the first ancestor name with a letter. */
+export function posixPathFoldsCase(path: string): boolean {
+  const device = lstatSync(path, { bigint: true }).dev;
+  for (let entry = path; entry !== "/"; entry = posix.dirname(entry)) {
+    const original = lstatSync(entry, { bigint: true });
+    if (original.dev !== device) break;
+    const name = posix.basename(entry);
+    const variant = name.replace(/[a-z]/iu, letter => letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase());
+    if (variant === name) continue;
+    const other = lstatSync(posix.join(posix.dirname(entry), variant), { bigint: true, throwIfNoEntry: false });
+    return other !== undefined && sameFileIdentity(original, other);
+  }
+  // Unknown volumes retain case-sensitive path keys and the extra write-floor variants.
+  return false;
+}

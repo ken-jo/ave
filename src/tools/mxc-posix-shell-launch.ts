@@ -1,13 +1,11 @@
-import { lstatSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
-import { sameFileIdentity } from "../lib/file-identity.js";
+import { join } from "node:path";
 import {
   aveHomeReadBoundaryCovering, getDefaultSensitiveWriteDenyEntries, getProtectedReadDenyFloor,
   getUserReadDenies, protectedReadDenyMatcher, runWithSandboxWritePreflight,
 } from "../permissions/asrt-sandbox.js";
 import { buildSeatbeltShellRequest } from "../permissions/mxc-macos.js";
-import { posixPolicyLookups } from "../permissions/mxc-posix.js";
+import { posixPathFoldsCase, posixPolicyLookups } from "../permissions/mxc-posix.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
 import { stageMxcShellRequest, startMxcShellSupervisor } from "../permissions/mxc-shell-supervisor-client.js";
 import { policyFloorRow } from "../permissions/policy-model.js";
@@ -23,21 +21,6 @@ interface PreparePosixShellInput extends Pick<PrepareMxcShellLaunchInput, "egres
   readonly allowWrite: readonly string[];
   readonly denyRead: readonly string[];
   readonly floorPierces: readonly string[];
-}
-
-function pathFoldsCase(path: string): boolean {
-  const device = lstatSync(path, { bigint: true }).dev;
-  for (let entry = path; entry !== "/"; entry = dirname(entry)) {
-    const original = lstatSync(entry, { bigint: true });
-    if (original.dev !== device) break;
-    const name = basename(entry);
-    const variant = name.replace(/[a-z]/iu, letter => letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase());
-    if (variant === name) continue;
-    const other = lstatSync(join(dirname(entry), variant), { bigint: true, throwIfNoEntry: false });
-    return other !== undefined && sameFileIdentity(original, other);
-  }
-  // Unknown volumes retain case-sensitive path keys and the extra write-floor variants.
-  return false;
 }
 
 export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, lifecycle: ContainedShellLifecycle) {
@@ -70,7 +53,7 @@ export async function prepareMxcPosixShellLaunch(input: PreparePosixShellInput, 
     policyFloorRow(typeof entry === "string" ? entry : entry.path, "ro", "protected-name", typeof entry !== "string"))]);
   const roots = [hostHome, input.cwd, ...mandatory.allowWrite];
   const lookups = posixPolicyLookups(hostHome, false);
-  const foldsCase = roots.every(path => pathFoldsCase(lookups.canonical(path)));
+  const foldsCase = roots.every(path => posixPathFoldsCase(lookups.canonical(path)));
 
   const listener = await egress.openProxy();
 
