@@ -114,7 +114,7 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", a
 }));
 vi.mock("../srt-win-integrity.js", async original => ({
   ...(await original<typeof import("../srt-win-integrity.js")>()),
-  prepareSrtWinExecutable: (path: string) => path,
+  prepareSrtWinExecutable: () => privateHelper,
 }));
 
 installVerifiedAveHomePrivacy();
@@ -125,6 +125,7 @@ const checkout = process.cwd();
 const makeScratch = trackTempDirs("sandbox-background-");
 const WIN32_WRAPPERS = [["tool", wrapToolCommand], ["worker", wrapWorkerCommand]] as const;
 let fixtureRoot: string;
+let privateHelper: string;
 let succeed: () => void;
 let fail: (error: Error) => void;
 
@@ -193,6 +194,8 @@ function pinWorkerRoot(root: string, directory = true): string[] {
 beforeEach(() => {
   configureHostResources({ resourcePath: resolve(checkout, "resources"), isPackaged: false });
   const scratch = realpathSync.native(makeScratch());
+  privateHelper = resolve(scratch, "account-helper.exe");
+  writeFileSync(privateHelper, "account helper fixture");
   // A foreign drive operand resolves against the host's cwd in the real guard.
   process.chdir(scratch);
   // Granted fixtures need two components below the drive root: Windows refuses a root or one-component grant.
@@ -231,6 +234,7 @@ describe("background session isolation", () => {
       return { target: "127.0.0.1:9", stderr: "" };
     });
     await expect(isWindowsAccountConfinementOperational()).resolves.toBe(false);
+    expect(nativeWorker.verifyWindowsWfpEgress).toHaveBeenCalledOnce();
     expect(effect).not.toHaveBeenCalled();
   });
 
