@@ -76,7 +76,6 @@ const RAW_IMPORTERS: Readonly<Record<string, readonly string[]>> = {
   // Out of scope for this owner: other launch sites with their own lifetime contracts, and boot/shutdown wiring.
   "src/boot/steps/marketplace-setup.ts": ["src/permissions/asrt-sandbox.ts:*"],
   "src/main/app-shutdown.ts": ["releaseAsrtSandboxForExit"],
-  "src/tools/mxc-shell-launch.ts": ["releaseEgressInvocation"],
   "src/main/memory-map/inference-child.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome"],
   "src/main/terminal/pty-manager.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome"],
   "src/mcp/mcp-client.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome", "wrapBundledCommand"],
@@ -84,6 +83,7 @@ const RAW_IMPORTERS: Readonly<Record<string, readonly string[]>> = {
   "src/plugins/isolation/out-of-process-plugin.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome", "holdWindowsFilesystemGrant"],
   "src/tools/powershell-launch.ts": ["createSandboxProcessHome"],
   "src/tools/prepared-shell-invocation.ts": ["createSandboxProcessHome"],
+  "src/tools/shell-egress-admission.ts": ["releaseEgressInvocation"],
   "src/tools/shell-tools.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome"],
 };
 

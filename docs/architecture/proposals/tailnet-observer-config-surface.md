@@ -20,7 +20,7 @@ environment variables. The single resolver is `resolveTailnetObserverConfig`
 |---|---|---|
 | `AVE_TAILNET_OBSERVER` | enable (`"1"`) | anything else → observer OFF |
 | `AVE_TAILNET_OBSERVER_CAP` | expected app-capability key (required when ON) | `isCapabilityKey` (length ≤ 512, no control chars, no proto-pollution keys); missing/invalid → throw `tailnet-observer-capability-missing-or-invalid` |
-| `AVE_TAILNET_OBSERVER_PORT` | listener port | `parseFixedPort`; default `DEFAULT_TAILNET_OBSERVER_PORT` = 46173 |
+| `AVE_TAILNET_OBSERVER_PORT` | listener port | `parseFixedPort`, with 46173 when both override and saved port are absent |
 | `AVE_TAILNET_CONTROLLER` | enable controller commands | must be `"1"` if set; requires `AVE_TAILNET_PAIRED_SHARING=1`, else throw |
 | `AVE_TAILNET_PAIRED_SHARING` | enable P2 paired sharing | must be `"1"` if set, else throw |
 | `AVE_TAILNET_WEB` | enable web surface | requires paired sharing; else throw |
@@ -182,16 +182,20 @@ the connect button reveals the full form inline, and a configured desktop can
 still reveal it from the status card. An app capability, a hand-picked port, and
 the controller are only reachable there.
 
-**The port rule.** Preference order is the port already in the file, then
-`DEFAULT_TAILNET_OBSERVER_PORT`, then whatever the OS hands out for
-`127.0.0.1:0`. The listener binds one fixed port with no fallback, so an
-occupied port is otherwise a start failure with nothing on screen that would
-fix it. The chosen port is persisted: a port re-rolled at each launch would
-move the target out from under Tailscale Serve every restart. A port this
-process is already listening on is kept without probing, because the restart
-releases it. If nothing binds, guided setup refuses with
-`tailnet-guided-setup-port-unavailable` rather than writing a configuration
-that cannot come up.
+**The port rule.** Startup uses the environment port override, the saved port,
+or 46173, in that order. Port selection at startup uses only those inputs.
+Settings and guided setup start with the saved port when present. With no
+saved port, they start with 46173 if the file enables the observer or
+`AVE_TAILNET_OBSERVER=1` is set. Otherwise they propose 28173. Settings Reset
+also uses 28173. Each Apply and guided save stores an explicit port.
+
+Guided setup checks the proposed port before saving and reuses it without a
+bind probe if Ave already listens there. If the port is blocked, it tries
+28173 next, then asks the OS for a free port. If that allocation is outside
+listener policy, it scans for an allowed port. Serve follows the actual bound
+port, including under an environment port override. A blocked listener bind
+reports its port in Settings so the owner can choose another port. On Windows,
+a headless deployment can set `AVE_TAILNET_OBSERVER_PORT` if 46173 is excluded.
 
 **Gate.** The channel is `apply` plus `configureServe` in one press, so it
 carries exactly their gate — host-renderer sender plus a fresh local keyboard

@@ -1,0 +1,42 @@
+{
+  "version": "1.0.0",
+  "containment": "seatbelt",
+  "process": {
+    "commandLine": "exec '/bin/sh' '-c' 'printf control'",
+    "cwd": "/fixture",
+    "timeout": 2500,
+    "inheritDefaultEnv": false,
+    "env": [
+      "HOME=/fixture/private/open",
+      "PATH=/usr/bin:/bin"
+    ]
+  },
+  "filesystem": {
+    "readwritePaths": [
+      "/fixture/private/open"
+    ],
+    "readonlyPaths": [],
+    "deniedPaths": []
+  },
+  "network": {
+    "egress": {
+      "default": "deny"
+    },
+    "ingress": {
+      "default": "deny",
+      "hostLoopback": "deny"
+    }
+  },
+  "runtimeConfig": {
+    "networkProxy": "http://127.0.0.1:8444"
+  },
+  "seatbelt": {
+    "profileOverride": "(version 1)\n(deny default)\n(allow process-fork)\n(allow process-exec)\n(allow signal (target same-sandbox))\n(allow sysctl-read)\n(allow mach-lookup\n    (global-name \"com.apple.system.notification_center\")\n    (global-name \"com.apple.system.logger\")\n    (global-name \"com.apple.distributed_notifications@Uv3\")\n    (global-name \"com.apple.CoreServices.coreservicesd\")\n    (global-name \"com.apple.FSEvents\"))\n(allow file-read-metadata)\n(allow file-read-data (literal \"/\"))\n(allow file-read*\n    (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/usr/bin\") (subpath \"/usr/sbin\")\n    (subpath \"/usr/lib\") (subpath \"/usr/libexec\") (subpath \"/usr/share\") (subpath \"/System\")\n    (subpath \"/Library\") (subpath \"/private/var/db/timezone\") (subpath \"/private/var/db/dyld\")\n    (subpath \"/private/var/select\") (subpath \"/private/etc\"))\n(allow file-read* file-write* (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/random\") (literal \"/dev/urandom\"))\n(allow file-read* (subpath \"/dev/fd\"))\n(allow file-read* file-write* (subpath \"/fixture/private/open\"))\n(allow network-outbound (remote ip \"localhost:8444\"))\n(deny file-read* file-read-metadata file-write* file-write-create file-write-unlink network-bind network-outbound (require-all (subpath \"/fixture/private\") (require-not (subpath \"/fixture/private/open\")) (require-not (literal \"/fixture/private\"))))\n(deny file-write* file-write-create file-write-unlink (regex #\"^/fixture/private/open/(\\.[aA][gG][eE][nN][tT][sS]|\\.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]|\\.[aA][vV][eE]/[hH][oO][oO][kK][sS])(/|$)\"))\n(deny file-write-create file-write-unlink (regex #\"^/fixture/private/open/(\\.[aA][vV][eE])$\"))\n(deny file-write-create file-write-unlink (regex #\"/\\.[gG][iI][tT]$\"))\n(deny file-write* (require-all (regex #\"/\\.[gG][iI][tT]$\") (vnode-type REGULAR-FILE)))\n(deny file-write* file-write-create file-write-unlink (regex #\"/srt-sock-[^/]*(/|$)\"))\n",
+    "nestedPty": false
+  },
+  "ui": {
+    "disable": true,
+    "clipboard": "none",
+    "injection": false
+  }
+}

@@ -35,6 +35,7 @@ import {
   getSandboxGeneration,
   getWindowsExtensionBackendPlan,
   isIssuedHostShellExecutionPlan,
+  onSandboxStatusChanged,
 } from "./sandbox-capability.js";
 import type { HostShellExecutionPlan } from "./host-shell-execution-plan.js";
 import { openMxcEgressLease } from "./egress-host-listener.js";
@@ -49,11 +50,12 @@ import {
   MxcProcessContractError,
   WorkerTransportUnsupportedError,
 } from "./mxc-extension-errors.js";
-import { admitMxcExtensionStart, assertMxcReleaseGateEvidence, createMxcExtensionAdmission, consumeMxcExtensionAdmission } from "./mxc-extension-admission.js";
+import { admitMxcExtensionStart, assertMxcExtensionAdmission, assertMxcReleaseGateEvidence, createMxcExtensionAdmission, consumeMxcExtensionAdmission, onMxcReleaseGateChanged } from "./mxc-extension-admission.js";
+import { onWindowsContainerEvidenceChanged } from "./windows-confinement-evidence.js";
 import type { ExtensionStartPresentation } from "./extension-start-consent.js";
 import type { PluginWorkerControl } from "../plugins/public-contract.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
-import { registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
+import { onMxcHolderLifetimeAdmissionSealed, registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
 import { assertIssuedContainerHomeInPlace, heldIssuedContainerHome, isIssuedContainerHome, issuedContainerHome } from "./sandbox-home-registry.js";
 import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "./confinement-state-paths.js";
@@ -209,6 +211,7 @@ function assertMxcWorkerTransport(owner: WorkerEgressOwner, transport?: PluginWo
 interface NativeHolderBinding {
   readonly plan: object;
   active: boolean;
+  readonly descendantAdmission: AbortSignal;
   readonly children: Set<{ release(): Promise<void> }>;
   readonly footprint: LiveHolderFootprint;
 }
@@ -351,17 +354,18 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       throw new MxcProcessContractError("Container working directory is inside the sandbox runtime root");
     }
   });
+  const parent = spec.parent === undefined ? undefined : nativeHolderBindings.get(spec.parent);
+  const parentAdmission = parent?.descendantAdmission;
   const assertParent = (): void => {
     if (spec.parent === undefined) return;
-    const parent = nativeHolderBindings.get(spec.parent);
-    if (!parent?.active || parent.plan !== plan) throw new MxcProcessContractError("Extension parent backend is no longer admitted");
+    if (!parent?.active || parentAdmission?.aborted || parent.plan !== plan) throw new MxcProcessContractError("Extension parent backend is no longer admitted");
   };
   assertParent();
   spec.assertStillValid?.();
   assertManagedChildProcessAdmissionOpen(spec.label);
   // The floor and the admission share one Ave home boundary snapshot.
   const boundary = createAveHomeBoundarySnapshot();
-  const { admitted, grants, ownRoots } = await runWithSandboxWritePreflight(spec.signal, () => boundary.run(() => withLocalityDecision(() => {
+  const { admitted, grants, ownRoots, footprintPaths } = await runWithSandboxWritePreflight(spec.signal, () => boundary.run(() => withLocalityDecision(() => {
     const admitted = admitMxcExtensionFilesystem({
       allowRead: [...(spec.allowRead ?? [])], allowWrite: [...(spec.allowWrite ?? [])],
       denyWrite: getDefaultSensitiveWriteDenyEntries(),
@@ -392,7 +396,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       privateDirectories: forms([spec.home, spec.temp]),
       command: forms([spec.command]),
     });
-    return { admitted, grants, ownRoots };
+    return { admitted, grants, ownRoots, footprintPaths };
   })));
   const assertNesting = (): void => assertNoCoHolderNesting(ownRoots);
   assertNesting();
@@ -450,20 +454,29 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     if (spec.parent) nativeHolderBindings.get(spec.parent)!.children.add(lifetime);
   } catch (error) { egress.release(); throw error; }
   try {
-    lease = await openMxcEgressLease(egress.token);
-    const proxyUrl = lease.url;
-    // Each synchronous launch pass is one judgment: revalidation, nesting and the executable measured on the same observations.
-    const { request, admissionInput, admission } = withLocalityDecision(() => {
+    const assertHolder = () => {
+      signal.throwIfAborted();
       spec.assertStillValid?.();
+      assertParent();
       admitted.assertStillValid();
       if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before admission");
+    };
+    lease = await openMxcEgressLease(egress.token, () => withLocalityDecision(assertHolder));
+    const proxyUrl = lease.url;
+    const { request, admissionInput, admission } = withLocalityDecision(() => {
+      assertHolder();
       const request = buildMxcConfinedChildRequest({ ...spec, grants, proxyUrl });
       assertNesting();
       const admissionInput = { request, holder: spec.holder, executableIdentity: measureExecutableIdentity(spec.command), bootPlan: plan };
-      // A separate snapshot, so the callback cannot mutate the production request.
       spec.assertRequest?.(structuredClone(request));
       return { request, admissionInput, admission: createMxcExtensionAdmission(admissionInput) };
     });
+    const currentIdentity = () => ({ ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
+    const assertPreparation = () => {
+      assertHolder();
+      assertManagedChildProcessAdmissionOpen(spec.label);
+    };
+    let spent = false;
     let child!: OwnedMxcExtensionProcess;
     // Readiness is this holder's own start: admitted only once its ready frame carries the start evidence for this request.
     // A refusal here can follow native creation; the catch below disposes it through the lifetime owner.
@@ -471,20 +484,41 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       child = await spawnMxcExtensionProcess(request, {
         signal: startSignal,
         onOwned: (owned) => { native = owned; },
+        paths: [...footprintPaths.keys(), ...[...footprintPaths.values()].map(path => path.target)],
+        beforeSupervisor: () => withLocalityDecision(() => {
+          assertPreparation();
+          assertNesting();
+          assertMxcExtensionAdmission(admission, currentIdentity());
+        }),
         beforeSpawn: () => {
-          const assertBeforeSpawn = (): void => {
-            assertParent();
-            if (signal.aborted) throw new MxcProcessContractError("Extension start was cancelled");
-            spec.assertStillValid?.();
-            admitted.assertStillValid();
-            assertManagedChildProcessAdmissionOpen(spec.label);
-            if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before native creation");
+          const assertBeforeSpawn = () => {
+            assertPreparation();
             assertNesting();
             assertHomeOutsideState();
-            consumeMxcExtensionAdmission(admission, { ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
+            consumeMxcExtensionAdmission(admission, currentIdentity());
           };
           if (watchedClaim === undefined) withLocalityDecision(assertBeforeSpawn);
           else watchedClaim.start(assertBeforeSpawn);
+          spent = true;
+        },
+        watchRelease: revoke => {
+          const check = () => {
+            try {
+              withLocalityDecision(() => {
+                assertPreparation();
+                assertNesting();
+                assertMxcExtensionAdmission(admission, currentIdentity(), spent);
+              });
+            } catch { revoke(); }
+          };
+          const unsubscribe = [onMxcReleaseGateChanged(check), onWindowsContainerEvidenceChanged(check), onSandboxStatusChanged(check),
+            onMxcHolderLifetimeAdmissionSealed(revoke)];
+          parentAdmission?.addEventListener("abort", revoke, { once: true });
+          if (parentAdmission?.aborted) revoke();
+          return () => {
+            parentAdmission?.removeEventListener("abort", revoke);
+            for (const stop of unsubscribe) stop();
+          };
         },
       });
       return child.startEvidence;
@@ -498,7 +532,8 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       assertManagedChildProcessAdmissionOpen(spec.label);
       if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed during native start");
     });
-    binding = { plan, active: true, children: new Set(), footprint: ownRoots };
+    const descendantAdmission = parentAdmission === undefined ? signal : AbortSignal.any([signal, parentAdmission]);
+    binding = { plan, active: true, descendantAdmission, children: new Set(), footprint: ownRoots };
     const result: MxcConfinedChildSpawn = Object.freeze({ process: child, confinement: "windows-mxc", release: lifetime.release });
     nativeHolderBindings.set(result, binding);
     spec.signal?.addEventListener("abort", releaseOnAbort, { once: true });
@@ -704,9 +739,7 @@ async function resolveSpawnLine(
   egress?: EgressInvocation;
   targetLaunch?: SandboxTargetLaunch;
 }> {
-  // The inference child is host-owned code, outside the extension-start floor: never asked, no consent route. Its own gate
-  // below decides, and today it refuses without the OS sandbox. The ruled Settings switch (OQ-14, on by default, unconfined
-  // with no backend) is not built. Every other owner is an extension start.
+  // Host-owned offline inference uses its own runtime gate. This adapter only handles its confined route.
   assertExtensionStartAllowed(isOfflineOwner(spec) ? { hostOwned: true }
     : { ...(spec.extensionStart ? { start: { ...spec.extensionStart, spend: true } } : {}) });
   // An offline owner's refusal is enforced by the wrap, so it never runs without one; it follows the offline-service gate, not the extension setting.

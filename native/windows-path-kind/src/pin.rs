@@ -234,12 +234,50 @@ pub fn redirects(tag: Tag) -> bool {
 
 pub fn pin(input: &[u16], content: bool) -> Option<PinnedPath> {
     let components = components(input)?;
-    pin_components(&components, content, false)
+    pin_components(&components, content, false, open_root)
+}
+
+pub fn pin_local(input: &[u16], content: bool) -> Option<PinnedPath> {
+    pin_local_with(input, content, dos_device_mapping, open_volume_root)
+}
+
+fn pin_local_with(
+    input: &[u16],
+    content: bool,
+    mapping: impl Fn(&[u16]) -> Result<Vec<u16>, u32>,
+    open: impl Fn(&[u16], u32, u32) -> Result<Handle, u32>,
+) -> Option<PinnedPath> {
+    let components = components(input)?;
+    let drive = components.first()?.strip_suffix(&[SEPARATOR])?;
+    if !matches!(drive, [65..=90 | 97..=122, 58]) {
+        return None;
+    }
+    let device = mapping(drive).ok()?;
+    let local = [r"\Device\HarddiskVolume", r"\Device\CdRom", r"\Device\Floppy"]
+        .into_iter()
+        .any(|prefix| {
+            device.strip_prefix(ascii(prefix).as_slice()).is_some_and(|suffix| {
+                !suffix.is_empty() && suffix.iter().all(|unit| matches!(unit, 48..=57))
+            })
+        });
+    if !local {
+        return None;
+    }
+    let volume = volume_guid(&device)?;
+    let pinned = pin_components(&components, content, false, |_, access, share| {
+        let handle = open(&volume, access, share)?;
+        // Check for a changed alias before the first relative child open.
+        if !volume_root_matches(handle.raw(), &device) || mapping(drive)? != device {
+            return Err(21);
+        }
+        Ok(handle)
+    })?;
+    (mapping(drive).ok()? == device).then_some(pinned)
 }
 
 pub fn hold(input: &[u16]) -> Option<(PinnedPath, Vec<u16>)> {
     let mut components = components(input)?;
-    let pinned = pin_components(&components, false, true)?;
+    let pinned = pin_components(&components, false, true, open_root)?;
     let leaf = pinned.facts.last()?;
     if pinned.handles.len() != components.len() || leaf.tag.attributes & DIRECTORY == 0 {
         return None;
@@ -260,7 +298,12 @@ pub fn leaf_still_pinned(pinned: &PinnedPath, leaf: &[u16]) -> bool {
             })
 }
 
-fn pin_components(components: &[Vec<u16>], content: bool, hold: bool) -> Option<PinnedPath> {
+fn pin_components(
+    components: &[Vec<u16>],
+    content: bool,
+    hold: bool,
+    open: impl Fn(&[u16], u32, u32) -> Result<Handle, u32>,
+) -> Option<PinnedPath> {
     // Hold permits writes and traversal while denying delete sharing on every component.
     let (access, share) = if hold {
         (TRAVERSE, SHARE_READ | SHARE_WRITE)
@@ -285,7 +328,7 @@ fn pin_components(components: &[Vec<u16>], content: bool, hold: bool) -> Option<
         let access =
             access | READ_ATTRIBUTES | READ_CONTROL | if content && last { READ_DATA } else { 0 };
         let opened = if index == 0 {
-            open_root(component, access, share)
+            open(component, access, share)
         } else {
             open_relative(
                 pinned.handles.last()?.raw(),
@@ -330,6 +373,50 @@ fn pin_components(components: &[Vec<u16>], content: bool, hold: bool) -> Option<
 mod tests {
     use super::*;
     use std::os::windows::ffi::OsStrExt;
+
+    fn current_path_and_device() -> (Vec<u16>, Vec<u16>) {
+        let path: Vec<_> = std::env::current_dir().unwrap().as_os_str().encode_wide().collect();
+        let parts = components(&path).unwrap();
+        let device = dos_device_mapping(&parts[0][..2]).unwrap();
+        (path, device)
+    }
+
+    #[test]
+    fn local_pin_opens_the_proved_volume_guid() {
+        let (path, device) = current_path_and_device();
+        let volume = volume_guid(&device).unwrap();
+        let pinned = pin_local_with(&path, false, dos_device_mapping, |root, access, share| {
+            assert_eq!(root, volume);
+            assert!(root.starts_with(&ascii(r"\\?\Volume{")));
+            open_volume_root(root, access, share)
+        })
+        .unwrap();
+        assert_eq!(pinned.handles.len(), components(&path).unwrap().len());
+    }
+
+    #[test]
+    fn local_pin_refuses_a_mapping_change_during_root_open() {
+        let (path, device) = current_path_and_device();
+        let volume = volume_guid(&device).unwrap();
+        let changed = std::cell::Cell::new(false);
+        let mapping = |_: &[u16]| Ok(if changed.get() { ascii(r"\Device\Mup\example\share") } else { device.clone() });
+        let pinned = pin_local_with(&path, false, mapping, |root, access, share| {
+            changed.set(true);
+            assert_eq!(root, volume);
+            open_volume_root(root, access, share)
+        });
+        assert!(changed.get());
+        assert!(pinned.is_none());
+    }
+
+    #[test]
+    fn local_pin_refuses_an_initial_remote_mapping_without_a_root_open() {
+        let (path, _) = current_path_and_device();
+        let pinned = pin_local_with(&path, false, |_| Ok(ascii(r"\Device\Mup\example\share")), |_, _, _| {
+            panic!("a remote mapping reached the root open")
+        });
+        assert!(pinned.is_none());
+    }
 
     #[test]
     fn hold_refuses_missing_paths_and_files_and_rechecks_the_issued_directory() {

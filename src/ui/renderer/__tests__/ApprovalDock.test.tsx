@@ -3,6 +3,7 @@
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, fireEvent, waitFor } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { ApprovalDock, ApprovalLaneCard, blockingSurfaceCovers, unattributedRequestLabel } from "../components/permissions/ApprovalDock.js";
 import { FloatingRightLane } from "../components/FloatingRightLane.js";
 import type { ApprovalRequest, PermissionEvaluationContext } from "../types.js";
@@ -11,7 +12,9 @@ import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../../../shared/permissio
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 import { HOME_FOLDER_REFUSED } from "../../../shared/permissions-events.js";
 import { ApprovalSurfaceProvider, type ApprovalSurfaceContextValue } from "../hooks/use-approval.js";
-import { selectDecision } from "../components/__tests__/support/decision-bar.js";
+import { openDecisionMenu } from "../components/__tests__/support/decision-bar.js";
+
+const waitForApprovalArming = () => new Promise<void>((resolve) => setTimeout(resolve, 500));
 
 function makeEvaluationContext(overrides: Partial<PermissionEvaluationContext> = {}): PermissionEvaluationContext {
   return {
@@ -227,6 +230,91 @@ describe("ApprovalDock", () => {
     expect(onDecide.mock.calls[0]?.[0]).toMatch(/allow/);
   });
 
+  it.each(["ok{Enter}", "yeah"])("keeps approval pending while the user types %s across its arrival", async (keys) => {
+    const onDecide = vi.fn();
+    const tree = (queue: ApprovalRequest[]) => (
+      <main data-approval-scope>
+        <div data-composer-placement="bottom"><textarea aria-label="Draft" /></div>
+        <ApprovalDock conversationLabel="conversation" queue={queue} onDecide={onDecide} />
+      </main>
+    );
+    const user = userEvent.setup();
+    const { getByRole, getByTestId, rerender } = render(tree([]));
+    const draft = getByRole("textbox", { name: "Draft" });
+    await user.click(draft);
+    await user.keyboard(keys.charAt(0));
+    rerender(tree([makeRequest()]));
+    await user.keyboard(keys.slice(1));
+    expect(onDecide).not.toHaveBeenCalled();
+    expect(getByTestId(TEST_IDS.approvalDock)).toBeVisible();
+    expect(draft).toHaveFocus();
+    expect((draft as HTMLTextAreaElement).value.trimEnd()).toBe(keys.replace("{Enter}", ""));
+    await user.tab();
+    expect(getByTestId(TEST_IDS.approvalDock).contains(document.activeElement)).toBe(true);
+  });
+
+  it.each(["{Enter}", " ", "a", "d", "{Escape}"])("blocks %s inside the card during arming", async (keys) => {
+    const onDecide = vi.fn();
+    const user = userEvent.setup();
+    const { getByTestId } = render(
+      <ApprovalDock conversationLabel="conversation" queue={[makeRequest()]} onDecide={onDecide} />,
+    );
+    const reject = getByTestId(TEST_IDS.denyButton);
+    reject.focus();
+    await user.keyboard(keys);
+    expect(onDecide).not.toHaveBeenCalled();
+    await user.click(reject);
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith("deny-once", undefined);
+  });
+
+  it("requires a fresh keydown after arming", async () => {
+    const onDecide = vi.fn();
+    const user = userEvent.setup();
+    const { getByTestId } = render(
+      <ApprovalDock conversationLabel="conversation" queue={[makeRequest()]} onDecide={onDecide} />,
+    );
+    const reject = getByTestId(TEST_IDS.denyButton);
+    reject.focus();
+    const earlyKey = new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true });
+    await user.keyboard("[Space>]");
+    await waitForApprovalArming();
+    await user.keyboard("[/Space]");
+    fireEvent(reject, earlyKey);
+    expect(earlyKey.defaultPrevented).toBe(true);
+    fireEvent.keyDown(reject, { key: "a", repeat: true });
+    expect(onDecide).not.toHaveBeenCalled();
+    await user.keyboard("{Enter}");
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith("deny-once", undefined);
+    onDecide.mockClear();
+    await user.keyboard(" ");
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith("deny-once", undefined);
+  });
+
+  it("arms the modified Enter shortcut only for focus inside the card", async () => {
+    const onDecide = vi.fn();
+    const { getByRole, getByTestId } = render(
+      <>
+        <textarea aria-label="Draft" />
+        <ApprovalDock conversationLabel="conversation" queue={[makeRequest({ userOwnedSurface: "browser" })]} onDecide={onDecide} />
+      </>,
+    );
+    const draft = getByRole("textbox", { name: "Draft" });
+    const confirm = getByTestId("user-owned-surface-confirm");
+    confirm.focus();
+    fireEvent.keyDown(confirm, { key: "Enter", ctrlKey: true });
+    expect(onDecide).not.toHaveBeenCalled();
+
+    await waitForApprovalArming();
+    draft.focus();
+    fireEvent.keyDown(draft, { key: "Enter", ctrlKey: true });
+    fireEvent.keyDown(confirm, { key: "Enter", ctrlKey: true });
+    expect(onDecide).not.toHaveBeenCalled();
+
+    confirm.focus();
+    fireEvent.keyDown(confirm, { key: "Enter", ctrlKey: true });
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith("allow-once", undefined, { userOwnedSurfaceChoice: "ask" });
+  });
+
   it("does not convert Enter on a focused deny button into allow-once", async () => {
     const onDecide = vi.fn();
     render(
@@ -271,6 +359,7 @@ describe("ApprovalDock", () => {
     expect(denyBtn).toBeTruthy();
     denyBtn!.focus();
 
+    await waitForApprovalArming();
     // The advertised A shortcut is the narrow, non-durable decision.
     fireEvent.keyDown(denyBtn!, { key: "a", code: "KeyA" });
     expect(onDecide).toHaveBeenCalledWith("allow-once", undefined);
@@ -350,6 +439,7 @@ describe("ApprovalDock", () => {
     expect(onDecide).not.toHaveBeenCalled();
 
     panel.focus();
+    await waitForApprovalArming();
     fireEvent.keyDown(panel, { key: "d", code: "KeyD" });
     expect(onDecide).toHaveBeenCalledWith("deny-once", undefined);
   });
@@ -375,7 +465,7 @@ describe("ApprovalDock", () => {
     expect(onDecide).not.toHaveBeenCalled();
   });
 
-  it("focuses an enabled decision on first mount and FIFO advance, then restores route focus", async () => {
+  it("focuses the card on first mount and FIFO advance, then restores route focus", async () => {
     const onDecide = vi.fn();
     const first = makeRequest({ id: "req-focus-1" });
     const second = makeRequest({ id: "req-focus-2", toolName: "write_file" });
@@ -396,7 +486,7 @@ describe("ApprovalDock", () => {
     );
     await waitFor(() => {
       expect(document.activeElement).toBe(
-        container.querySelector(testIdSelector(TEST_IDS.denyButton)),
+        container.querySelector('[data-testid="tool-approval-panel"]'),
       );
     });
 
@@ -408,9 +498,13 @@ describe("ApprovalDock", () => {
       </main>,
     );
     await waitFor(() => {
-      expect(document.activeElement).toBe(container.querySelector(testIdSelector(TEST_IDS.denyButton)));
+      expect(document.activeElement).toBe(container.querySelector('[data-testid="tool-approval-panel"]'));
     });
     const secondDecision = container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.denyButton))!;
+    secondDecision.focus();
+    fireEvent.keyDown(secondDecision, { key: "d", code: "KeyD" });
+    expect(onDecide).not.toHaveBeenCalled();
+    await waitForApprovalArming();
     fireEvent.keyDown(secondDecision, { key: "d", code: "KeyD" });
     expect(onDecide).toHaveBeenCalledWith("deny-once", undefined);
 
@@ -438,7 +532,7 @@ describe("ApprovalDock", () => {
     const guest = container.querySelector<HTMLButtonElement>('[data-testid="browser-guest"]')!;
     returnTarget.focus();
     rerender(tree([request]));
-    await waitFor(() => expect(document.activeElement).toBe(container.querySelector(testIdSelector(TEST_IDS.denyButton))));
+    await waitFor(() => expect(document.activeElement).toBe(container.querySelector('[data-testid="tool-approval-panel"]')));
 
     // The card closes; before its focus handoff runs, the agent clicks into a browser tab (the page's <webview> takes focus in the host document).
     rerender(tree([]));
@@ -472,10 +566,13 @@ describe("ApprovalDock", () => {
         <ApprovalDock conversationLabel="conversation" queue={[request]} onDecide={vi.fn()} />
       </main>,
     );
+    expect(textarea).toHaveFocus();
+    expect(composer).not.toHaveAttribute("inert");
+    container.querySelector<HTMLElement>('[data-testid="tool-approval-panel"]')?.focus();
     await waitFor(() => {
       expect(composer).toHaveAttribute("inert");
       expect(composer).toHaveAttribute("aria-hidden", "true");
-      expect(document.activeElement).toBe(container.querySelector(testIdSelector(TEST_IDS.denyButton)));
+      expect(document.activeElement).toBe(container.querySelector('[data-testid="tool-approval-panel"]'));
     });
     expect(background).not.toHaveAttribute("inert");
     expect(background).not.toHaveAttribute("aria-hidden");
@@ -594,8 +691,9 @@ describe("ApprovalDock", () => {
         <ApprovalDock conversationLabel="conversation" queue={[request]} onDecide={vi.fn()} />
       </main>,
     );
+    container.querySelector<HTMLElement>('[data-testid="tool-approval-panel"]')?.focus();
     await waitFor(() => {
-      expect(document.activeElement).toBe(container.querySelector(testIdSelector(TEST_IDS.denyButton)));
+      expect(document.activeElement).toBe(container.querySelector('[data-testid="tool-approval-panel"]'));
     });
 
     rerender(
@@ -653,7 +751,7 @@ describe("ApprovalDock", () => {
     );
     const { container, rerender } = render(tree([request]));
     await waitFor(() => {
-      expect(document.activeElement).toBe(container.querySelector(testIdSelector(TEST_IDS.denyButton)));
+      expect(document.activeElement).toBe(container.querySelector('[data-testid="tool-approval-panel"]'));
     });
 
     rerender(tree([]));
@@ -861,7 +959,7 @@ describe("ApprovalDock", () => {
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(document.body.textContent).toContain("/Users/example/Documents/project/notes.md");
     // Always deny is selected from the Deny dropdown; its Edit rule opens the exact deny in Settings.
-    selectDecision("deny-always");
+    fireEvent.click(openDecisionMenu("deny-always"));
     fireEvent.click(container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.openPermanentDenySettings))!);
     expect(onOpenPermanentDeny).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "out-of-allowed-dir", toolName: "read_file" }),
@@ -892,7 +990,7 @@ describe("ApprovalDock", () => {
       />,
     );
 
-    selectDecision("deny-always");
+    fireEvent.click(openDecisionMenu("deny-always"));
     fireEvent.click(
       container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.openPermanentDenySettings))!,
     );
@@ -1063,7 +1161,7 @@ describe("ApprovalDock", () => {
     expect(details).toBeTruthy();
     expect(details!.open).toBe(false);
     expect(document.body.textContent).toContain("대상·영향·보호 조치·전체 입력을 펼쳐서 확인");
-    selectDecision("deny-always");
+    fireEvent.click(openDecisionMenu("deny-always"));
     fireEvent.click(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.openPermanentDenySettings))!);
     expect(onOpenPermanentDeny).toHaveBeenCalledWith(
       expect.objectContaining({ id: "req-1", toolName: "read_file" }),
@@ -1078,7 +1176,7 @@ describe("ApprovalDock", () => {
       <ApprovalDock conversationLabel="conversation" queue={[makeRequest()]} onDecide={onDecide} />,
     );
     await waitFor(() => expect(document.body.textContent).toContain("read_file"));
-    selectDecision("allow-project");
+    fireEvent.click(openDecisionMenu("allow-project"));
     const alwaysBtn = Array.from(document.body.querySelectorAll("button")).find(
       (b) => b.textContent === "이 프로젝트에서 항상 허용",
     );
@@ -1113,6 +1211,8 @@ describe("ApprovalDock", () => {
       expect(document.body.querySelector<HTMLButtonElement>('[data-testid="approval-allow-menu"]')).toBeDisabled();
     });
     const panel = document.body.querySelector<HTMLElement>('[data-testid="tool-approval-panel"]')!;
+    panel.focus();
+    await waitForApprovalArming();
     fireEvent.keyDown(panel, { key: "d" });
     fireEvent.keyDown(panel, { key: "Escape" });
     expect(onDecide).not.toHaveBeenCalled();

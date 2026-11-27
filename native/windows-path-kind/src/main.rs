@@ -101,27 +101,18 @@ fn print_system() -> u8 {
 }
 
 fn print_mapping(name: &[u16]) -> u8 {
-    let name = c_wide(name);
-    let mut buffer = vec![0; 1024];
-    loop {
-        if unsafe { QueryDosDeviceW(name.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) } != 0
-        {
-            break;
-        }
-        let error = last_error();
-        if error == 122 && buffer.len() < 1 << 20 {
-            buffer.resize(buffer.len() * 4, 0);
-        } else {
+    let mapping = match dos_device_mapping(name) {
+        Ok(mapping) => mapping,
+        Err(error) => {
             diagnose(&format!("QueryDosDeviceW failed: {error}"));
             return 1;
         }
-    }
-    let mapping = before_nul(&buffer);
+    };
     if mapping.is_empty() {
         diagnose("QueryDosDeviceW returned an empty mapping");
         return 1;
     }
-    if emit(&String::from_utf16_lossy(mapping)).is_err() {
+    if emit(&String::from_utf16_lossy(&mapping)).is_err() {
         diagnose("could not write the mapping");
         return 3;
     }

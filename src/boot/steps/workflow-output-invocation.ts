@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import type { ApprovalGate } from "../../permissions/approval-gate.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
+import { workflowOutputSessionPrefix } from "../../shared/workflow-run-view.js";
 import { canonicalWorkflowJson } from "../../shared/workflow-template-output.js";
 import type { RequestedOutputDecl } from "../../shared/workflow-template-types.js";
 import type { Tool } from "../../tools/base.js";
@@ -23,7 +24,7 @@ export function governedWorkflowOutput(registry: ToolRegistry, executor: ToolExe
       const tool = resolveTool(decl);
       if (!tool || (tool.source !== "plugin" && tool.source !== "mcp")) return "output-execution-not-dispatched";
       if (!canExecute() || signal.aborted || (!controller && surface?.isDestroyed() !== false && !gate.hasRequestedOutputPage(projectRoot))) return "denied";
-      const sessionId = `workflow-output:${randomUUID()}`;
+      const sessionId = workflowOutputSessionPrefix(binding.itemId, binding.runId) + randomUUID();
       const remoteControllerAuthority = controller === undefined ? undefined : bindRemoteControllerToSession(controller, sessionId);
       if (surface && !surface.isDestroyed()) updateApprovalSurface({ kind: "attach", sessionId, surface });
       else updateApprovalSurface({ kind: "attach-project", sessionId, project: { itemId: binding.itemId, projectRoot } });

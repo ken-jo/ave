@@ -21,7 +21,7 @@ import { existingWindowsGrants, expandWindowsGrantRequests, pinWindowsFilesystem
 import { assertWindowsGrantGrammar, expandWindowsGrantPath, windowsGrantBase, type ExpandedWindowsGrant } from "./windows-grant-targets.js";
 import { admittedWindowsEntry, assertWindowsAclPolicyBudget, expandWindowsAclDenyLists, expandWindowsFsPaths, isAdmittedWindowsEntry, setWindowsAclRecoveryListener, WindowsSandboxError, type WindowsAclRecoveryReport, type WindowsAdmission } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { readAsrtSignalReleaseClaim } from "./asrt-signal-ownership.js";
-import { getSrtWinArchitecture, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
+import { getSrtWinArchitecture, getSrtWinIntegrityEpoch, invalidateSrtWinIntegrity, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { listAuthorizedWorkspaceRoots } from "./workspace-authorized-roots.js";
@@ -124,7 +124,12 @@ export function getVendoredSrtWinExePath(): string {
 
 // The verified private execution image; the package path is never executed.
 export function getVerifiedSrtWinExePath(): string {
-  return prepareSrtWinExecutable(getVendoredSrtWinExePath());
+  try {
+    return prepareSrtWinExecutable(getVendoredSrtWinExePath());
+  } catch (error) {
+    invalidateSrtWinIntegrity();
+    throw error;
+  }
 }
 
 // ASRT's vendored seccomp arch directories (`getVendorArchitecture`); ia32 and others have none.
@@ -455,9 +460,11 @@ interface WindowsWrapDenies {
 }
 
 type WindowsDocumentsQuery = (signal?: AbortSignal) => Promise<string>;
+type WindowsAccountRuntime = Pick<typeof import("@anthropic-ai/sandbox-runtime"), "getWindowsSandboxUserStatus" | "getWindowsSandboxUserStatusAsync" | "resolveSrtWin" | "verifyWindowsWfpEgress">;
 
 interface AsrtSandboxSession {
   readonly linuxWrapperPrograms?: LinuxWrapperPrograms;
+  readonly windowsAccountRuntime?: WindowsAccountRuntime;
   readonly queryWindowsDocumentsPath?: WindowsDocumentsQuery;
   sharedWindowsDocumentsPath?: () => string;
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
@@ -1391,6 +1398,10 @@ async function loadSandboxManager() {
   return mod.SandboxManager;
 }
 
+async function loadWindowsSandboxRuntime() {
+  return await import("@anthropic-ai/sandbox-runtime");
+}
+
 // Whether initializeAsrtSandbox has run to completion in this process. This is the host-tool spawn path's gate: tool code (bash.ts/powershell.ts) asks THIS module — not the settings service — whether to route through ASRT, so the gate is decided once at boot and cannot be re-evaluated mid-run. That preserves the seal-after-boot security property the registry had: there is no runtime channel to flip the sandbox on/off after boot. Set to `true` only on a successful `initialize`; stays `false` after resetAsrtSandbox.
 let active = false;
 let sandboxInitializationPending = false;
@@ -1406,6 +1417,56 @@ export function isAsrtSandboxActive(): boolean {
 /** Offline host processes always require OS isolation, independently of shell and extension routing. */
 export function isOfflineProcessConfinementActive(): boolean {
   return active && !windowsExternalConfinement && getAveHomePrivacyFailure() === undefined;
+}
+
+function requireWindowsSandboxUserSid(user: ReturnType<WindowsAccountRuntime["getWindowsSandboxUserStatus"]>): string {
+  if (user.provisioned !== true || user.credPresent !== true || !user.sid) {
+    throw new Error("Windows sandbox user is not provisioned");
+  }
+  return user.sid;
+}
+
+/** The background gate must account for a live account runtime or a live container proxy. */
+export function isWindowsBackgroundConfinementRuntimeActive(): boolean {
+  return active;
+}
+
+/** Identities that every piece of Windows confinement evidence is bound to: the session, its liveness and its deny protection. */
+export function getWindowsConfinementRoute(): readonly unknown[] {
+  return [sandboxSession, active, sandboxSession?.windowsDenyFailure];
+}
+
+/** Binds evidence to the verified private executable and any intervening integrity refusal. */
+export function getWindowsAccountConfinementHelperIdentity(): string | undefined {
+  if (process.platform !== "win32" || sandboxSession?.windowsAccountRuntime === undefined || !isOfflineProcessConfinementActive()) return undefined;
+  const helper = getVerifiedSrtWinExePath();
+  const stamp = lstatSync(helper, { bigint: true });
+  if (!stamp.isFile()) throw new Error("Windows sandbox helper identity is unavailable");
+  return JSON.stringify([helper, ...[stamp.dev, stamp.ino, stamp.size, stamp.ctimeNs, stamp.mtimeNs].map(String), getSrtWinIntegrityEpoch()]);
+}
+
+/** Asks the helper, off the event loop, whether the live session still has its account, credential, identity and egress enforcement. */
+export async function isWindowsAccountConfinementOperational(): Promise<boolean> {
+  const session = sandboxSession;
+  const runtime = session?.windowsAccountRuntime;
+  if (process.platform !== "win32" || session === undefined || runtime === undefined || !isOfflineProcessConfinementActive()) return false;
+  try {
+    assertWindowsDenyProtection();
+    const identity = getWindowsAccountConfinementHelperIdentity();
+    if (identity === undefined) return false;
+    const resolved = runtime.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
+    const assertHelper = () => {
+      assertWindowsSession(session);
+      if (getWindowsAccountConfinementHelperIdentity() !== identity) throw new Error("Windows sandbox helper changed before spawn");
+    };
+    const srtWin = Object.freeze({ ...resolved, get exe() { assertHelper(); return resolved.exe; } });
+    requireWindowsSandboxUserSid(await runtime.getWindowsSandboxUserStatusAsync({ srtWin }));
+    await runtime.verifyWindowsWfpEgress({ proxyPortRange: [...getWindowsProxyPortRange()], srtWin });
+    assertHelper();
+    return isOfflineProcessConfinementActive();
+  } catch {
+    return false;
+  }
 }
 
 // Host-shell spawn gate (bash / powershell tools, the workspace terminal): ASRT is active AND the shell sandbox (`features.osToolSandbox`) was requested at boot.
@@ -1816,6 +1877,10 @@ export function getProtectedReadDenyFloor(): readonly string[] {
 /** The read denies the user configured, which no host pierce covers. */
 export function getUserReadDenies(): readonly string[] {
   return _baseTrustedSettings?.denyRead ?? [];
+}
+
+export function getUserWriteDenies(): readonly FilesystemPathEntry[] {
+  return _baseTrustedSettings?.denyWrite ?? [];
 }
 
 // The protected read deny covering `path`, if any. A plugin's chosen directory is refused when one does: its read half would re-allow the deny on every platform, and on Linux its write half would too.
@@ -3256,8 +3321,11 @@ async function initializeSandboxRuntime(
     assertAveHomePrivacyForConfinement();
   }
   // Containers confine this session's Windows children, so only the egress relay serves them: the wrap runtime stays unloaded.
-  const SandboxManager = process.platform === "win32" && trustedSettings.windows?.externalConfinement === true
-    ? undefined : await loadSandboxManager();
+  const isWindows = process.platform === "win32";
+  const runtime = isWindows && trustedSettings.windows?.externalConfinement !== true
+    ? await loadWindowsSandboxRuntime()
+    : undefined;
+  const SandboxManager = isWindows ? runtime?.SandboxManager : await loadSandboxManager();
   startupSignal?.throwIfAborted();
   const linuxWrapperPrograms = process.platform === "linux" ? preflightLinuxPrograms ?? requireLinuxWrapperPrograms() : undefined;
   const backgroundInitialization = process.platform === "win32"
@@ -3268,7 +3336,8 @@ async function initializeSandboxRuntime(
     : trustedSettings;
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = initialSettings;
-  sandboxSession = { linuxWrapperPrograms, queryWindowsDocumentsPath, sharedWindowsDocumentsPath: trustedSettings.resolveWindowsDocumentsPath,
+  sandboxSession = { linuxWrapperPrograms, windowsAccountRuntime: process.platform === "win32" ? runtime : undefined,
+    queryWindowsDocumentsPath, sharedWindowsDocumentsPath: trustedSettings.resolveWindowsDocumentsPath,
     windowsLiveGrants: new Map(), windowsLiveGrantCount: 0, windowsLiveGrantRevision: 0, windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Map(), windowsPendingWrapDenies: new Set(), windowsDenyRevision: 0 };
   const session = sandboxSession;
   let fullConfig: SandboxRuntimeConfig;
@@ -3366,18 +3435,33 @@ export async function checkAsrtDependencies(): Promise<{
   errors: string[];
   warnings: string[];
   dependencyFailure?: unknown;
+  /** Affirmative Windows inventory evidence. Dependency and setup errors cannot supply it. */
+  accountBackendAbsent?: true;
   linuxWrapperPrograms?: LinuxWrapperPrograms;
 }> {
   if (process.platform === "win32") {
     const mod = await import("@anthropic-ai/sandbox-runtime");
     // A missing bundled binary is a failed check, not a boot crash: ASRT's own implicit-resolve path reports it the same way, and the gate turns it into `windows-sandbox-missing` (sandbox-start-failure.ts).
-    let srtWin: ReturnType<typeof mod.resolveSrtWin>;
     try {
-      srtWin = mod.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
+      const srtWin = mod.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
+      const { user, wfp } = await mod.checkWindowsSandboxStatusAsync({ srtWin });
+      if (user.provisioned === false && user.groupExists === false && user.credPresent === false
+        && user.inBuiltinUsers === false && user.inSandboxGroup === false && user.hiddenFromLogon === false
+        && user.sid === undefined && user.groupSid === undefined && user.markerVersion === undefined
+        && user.caCertThumb === undefined && user.caCertPem === undefined
+        && wfp.state === "absent" && wfp.filters === 0 && wfp.userSid === undefined
+        && wfp.portRange === undefined && wfp.hint === undefined) {
+        return { errors: [], warnings: [], accountBackendAbsent: true };
+      }
+      if (user.provisioned !== true || user.groupExists !== true || user.credPresent !== true) {
+        return { errors: [`Windows sandbox account setup is incomplete. ${mod.windowsInstallInstructions(undefined)}`], warnings: [] };
+      }
+      // When enumeration is unavailable, initialization still requires the behavioral egress probe.
+      if (wfp.state === "installed" || wfp.state === "cannot-read") return { errors: [], warnings: [] };
+      return { errors: [`Windows sandbox network filters are unavailable. ${mod.windowsInstallInstructions(undefined)}`], warnings: [] };
     } catch (error) {
       return { errors: [errorMessage(error)], warnings: [], dependencyFailure: error };
     }
-    return mod.checkWindowsDependenciesAsync({ srtWin });
   }
   const SandboxManager = await loadSandboxManager();
   if (process.platform === "linux" && SandboxManager.isSupportedPlatform()) {
@@ -3899,12 +3983,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
 
   const srtWin = timeStep("srtWinPrepMs", () => resolveSrtWin({ path: getVerifiedSrtWinExePath() }));
   const user = timeStep("userStatusMs", () => getWindowsSandboxUserStatus({ srtWin }));
-  const sandboxUserSid = user.sid;
-  if (!user.provisioned || !user.credPresent || sandboxUserSid === undefined) {
-    throw new Error(
-      "grantWindowsWorkerFilesystemAccess: Windows sandbox user is not provisioned",
-    );
-  }
+  const sandboxUserSid = requireWindowsSandboxUserSid(user);
 
   const { requests, allowRead, allowWrite, writeIdentities } = withLocalityDecision(() => {
     // Keep the identity that passed admission through the native grant and rollback.

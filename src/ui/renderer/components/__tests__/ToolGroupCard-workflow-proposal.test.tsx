@@ -2,6 +2,10 @@
 import "../../../../../test/renderer/setup.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
+import { useState } from "react";
+import { deferred } from "../../../../__tests__/support/deferred.js";
+import { Composer } from "../Composer.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { t } from "../../../../i18n/runtime.js";
 import type { ToolEntryItem } from "../../../../lib/chat-stream-state.js";
@@ -80,6 +84,66 @@ it("reviews the host graph and only confirms after the user clicks save", async 
   expect(confirmWorkflowTemplate).toHaveBeenCalledExactlyOnceWith(proposal.id, {
     expectedGraphHash: proposal.graphHash, expectedDraftRevision: proposal.id,
   });
+});
+
+function ProposalConversation({ send }: { send: (text: string) => void }) {
+  const [text, setText] = useState("");
+  return (
+    <TooltipProvider>
+      <ToolGroupCard group={{
+        kind: "tool_group", groupId: "proposals", groupIds: ["proposals"], status: "done", tools: [tool],
+      }} />
+      <Composer
+        text={text}
+        onTextChange={setText}
+        attachments={[]}
+        onAttachmentsChange={vi.fn()}
+        allocateN={() => 1}
+        saveClipboardImage={vi.fn(async () => ({ ok: false }))}
+        onSend={() => send(text)}
+      />
+    </TooltipProvider>
+  );
+}
+
+it("sends the entire composer draft with Enter after saving a proposal", async () => {
+  vi.stubGlobal("aveApi", {
+    getWorkflowTemplateProposal: async () => ({ ok: true, value: proposal }),
+    confirmWorkflowTemplate: async () => ({ ok: true, value: { unattended: { ok: true } } }),
+  });
+  const send = vi.fn();
+  const user = userEvent.setup();
+  render(<ProposalConversation send={send} />);
+  await user.click(screen.getByRole("button", { name: t("workflowTemplates.review") }));
+  const dialog = within(await screen.findByRole("dialog", { name: proposal.draft.name }));
+  await user.click(dialog.getByRole("button", { name: t("workflowTemplates.confirmSave") }));
+  expect(await screen.findByText(t("workflowTemplates.saved"))).toHaveFocus();
+
+  const composer = screen.getByRole("textbox");
+  await user.click(composer);
+  await user.keyboard("full draft{Enter}");
+  expect(send).toHaveBeenCalledExactlyOnceWith("full draft");
+  expect(composer).toHaveFocus();
+});
+
+it("leaves focus alone if it has left the dialog before the proposal saves", async () => {
+  const pending = deferred<{ ok: true; value: { unattended: { ok: true } } }>();
+  vi.stubGlobal("aveApi", {
+    getWorkflowTemplateProposal: async () => ({ ok: true, value: proposal }),
+    confirmWorkflowTemplate: () => pending.promise,
+  });
+  const user = userEvent.setup();
+  showToolResult(tool);
+  await user.click(screen.getByRole("button", { name: t("workflowTemplates.review") }));
+  const dialog = within(await screen.findByRole("dialog", { name: proposal.draft.name }));
+  const confirm = dialog.getByRole("button", { name: t("workflowTemplates.confirmSave") });
+  await user.click(confirm);
+  confirm.blur();
+  expect(document.body).toHaveFocus();
+  pending.resolve({ ok: true, value: { unattended: { ok: true } } });
+
+  expect(await screen.findByText(t("workflowTemplates.saved"))).not.toHaveFocus();
+  expect(document.body).toHaveFocus();
 });
 
 it("keeps a lookalike external result out of the confirmation surface", () => {

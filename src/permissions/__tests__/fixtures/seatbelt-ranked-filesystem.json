@@ -1,0 +1,9 @@
+{
+  "readwrite": [
+    "/work/private/allowed"
+  ],
+  "readonly": [
+    "/work/public"
+  ],
+  "denied": []
+}

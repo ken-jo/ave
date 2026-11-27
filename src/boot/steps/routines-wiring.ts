@@ -19,6 +19,9 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
   const { routinesScheduler, routineEngine, routinesStore, getMainWindow, notificationService, memoryManager } = ctx;
   // Routine state is app-wide: every open main window shows it.
   const appWindows = () => ctx.host.desktop?.getAppWindows() ?? [getMainWindow()];
+  routinesStore.changed.subscribe(() => {
+    fanOutToAllWindows(appWindows(), ROUTINES.changed, undefined);
+  });
   // Create and promote the Suggestions conversation in the same tick as each card send.
   const announce = (channel: string, payload: unknown): void => {
     stageInSuggestionsSession(memoryManager);

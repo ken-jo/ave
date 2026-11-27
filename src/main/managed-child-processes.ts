@@ -1,5 +1,6 @@
-import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { Writable } from "node:stream";
+import { spawn, spawnSync, type ChildProcess, type ChildProcessByStdio, type SpawnOptions } from "node:child_process";
+import { createInterface } from "node:readline";
+import { type Readable, Writable } from "node:stream";
 import { readFile, rm } from "node:fs/promises";
 import { parse, resolve, sep } from "node:path";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
@@ -182,6 +183,17 @@ export function trackManagedChildProcess(
   options: TrackManagedChildProcessOptions = {},
 ): () => void {
   return trackChild(child, options);
+}
+
+/** Launch the relay's own entry within the Windows job it already holds. */
+export function spawnInferenceRelayTarget(env: NodeJS.ProcessEnv): ChildProcessByStdio<Writable, Readable, null> {
+  const entry = process.argv[1];
+  if (entry === undefined) throw new Error("Inference target entry is missing");
+  return spawnManaged(process.execPath, [...process.execArgv, entry], {
+    env,
+    stdio: ["pipe", "pipe", "ignore"],
+    shell: false,
+  }, { label: "memory-inference-relay-target" }) as ChildProcessByStdio<Writable, Readable, null>;
 }
 
 function trackChild(
@@ -742,6 +754,27 @@ export function observeManagedProcessGroup(child: ChildProcess, resources?: Mana
     wait: (signal?: AbortSignal) => raceWithAbort(closed, signal),
     confirmExit: async (stopReason?: string) => await waitForManagedProcessGroupExit(child, closed, stopReason) ? recordExit() : undefined,
   };
+}
+
+/** Observe the private stderr of a trusted relay that emits a verdict only after its target tree is gone. */
+export function observeManagedWindowsRelayTreeExit(child: ChildProcess, resources: ManagedResources, receiptLine: string) {
+  const recordExit = acquireManagedExit<ConfirmedExit>(resources, "confirmed");
+  return new Promise<ConfirmedExit | undefined>(resolve => {
+    let confirmed = false;
+    const lines = child.stderr && createInterface({ input: child.stderr, crlfDelay: Infinity });
+    lines?.on("line", line => { if (line === receiptLine) confirmed = true; });
+    lines?.on("error", () => settle(false));
+    const settle = (exited: boolean) => {
+      lines?.close();
+      child.off("close", onClose);
+      child.off("error", onError);
+      resolve(exited ? recordExit() : undefined);
+    };
+    const onClose = () => settle(confirmed);
+    const onError = () => { if (child.pid === undefined) settle(true); };
+    child.once("close", onClose);
+    child.on("error", onError);
+  });
 }
 
 // Relay settlement is main's Windows evidence, so it gets the weaker receipt kind. Native job-empty receipts are separate.

@@ -3,6 +3,7 @@ import type { AveApi, ApprovalRequest } from "../../types.js";
 import type { WorkBoardToolApprovalSurface, WorkItemResolved } from "../../../../shared/work-board-types.js";
 import { isWorkBoardToolApprovalSurface } from "../../../../shared/work-board-types.js";
 import { useApprovalSurface } from "../../hooks/use-approval.js";
+import { workflowOutputSessionPrefix } from "../../../../shared/workflow-run-view.js";
 import { projectRootEquals } from "../../../../shared/project-identity.js";
 import type { RunStateMap } from "../../hooks/use-work-board-run.js";
 
@@ -71,6 +72,8 @@ export function stageApprovalLanes(requests: readonly ApprovalRequest[]): readon
 export interface BoardApprovals {
   /** The requests this board draws, per item, head first. */
   byItem: ReadonlyMap<number, readonly ApprovalRequest[]>;
+  /** Pending output approvals are visible on the board even when another surface owns the card. */
+  pendingOutputItemIds: ReadonlySet<number>;
   /** Answer the head of `itemId`'s requests through the window's one signed decision path. */
   surface: ReturnType<typeof useApprovalSurface>;
 }
@@ -89,11 +92,21 @@ export function workBoardApprovalMatchesProject(
  * the decision stay the window's.
  */
 export function useBoardApprovals(
-  items: readonly WorkItemResolved[], runState: RunStateMap, scopeRoot: string | undefined, isDefault: boolean,
+  items: readonly WorkItemResolved[], runState: RunStateMap, scopeRoot: string | undefined, isDefault: boolean, openRun?: WorkItemResolved,
 ): BoardApprovals {
   const surface = useApprovalSurface();
   const { claims, queue } = surface;
   const surfaceId = `work-board:${useId()}`;
+
+  const pendingOutputItemIds = useMemo(() => {
+    const pending = new Set<number>();
+    for (const item of items) {
+      if (!item.runId) continue;
+      const prefix = workflowOutputSessionPrefix(item.id, item.runId);
+      if (queue.some(request => request.sessionId?.startsWith(prefix))) pending.add(item.id);
+    }
+    return pending;
+  }, [items, queue]);
 
   // Session → item, for the children of the items this board lists. The run state also holds runs of items another project's board lists
   // (progress is window-wide); claiming those would hold their cards off the lane with no card here to draw them.
@@ -103,7 +116,12 @@ export function useBoardApprovals(
       if (item.runSessionId) map.set(item.runSessionId, item.id);
       for (const id of runState[item.id]?.sessionIds ?? []) map.set(id, item.id);
     }
+    const outputPrefix = openRun?.runId ? workflowOutputSessionPrefix(openRun.id, openRun.runId) : undefined;
     for (const request of queue) {
+      if (openRun && outputPrefix && request.sessionId?.startsWith(outputPrefix)) {
+        map.set(request.sessionId, openRun.id);
+        continue;
+      }
       const route = request.workBoardProjectApproval;
       if (!route || route.parked || request.sessionId === undefined) continue;
       const inScope = workBoardApprovalMatchesProject(route, scopeRoot, isDefault);
@@ -111,7 +129,7 @@ export function useBoardApprovals(
       else map.delete(request.sessionId);
     }
     return map;
-  }, [items, runState, queue, scopeRoot, isDefault]);
+  }, [items, runState, queue, scopeRoot, isDefault, openRun]);
   const signature = [...sessionToItem.keys()].sort().join("\n");
 
   // Re-claim whenever the set changes: the claim's version bump re-renders the window's routing, so a request that arrived before its
@@ -137,5 +155,5 @@ export function useBoardApprovals(
     return map;
   }, [queue, sessionToItem, claims, surfaceId, claimsVersion]);
 
-  return { byItem, surface };
+  return { byItem, pendingOutputItemIds, surface };
 }

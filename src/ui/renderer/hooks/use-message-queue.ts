@@ -83,6 +83,8 @@ export interface UseMessageQueueParams {
    * through it, so ⌘⏎ cannot slip past what Enter honours.
    */
   interceptSubmit?: (text: string) => boolean;
+  /** Pause chat submission while still accepting local composer commands from the interceptor. */
+  chatSubmitBlocked?: boolean;
 }
 
 export interface UseMessageQueueResult {
@@ -109,6 +111,7 @@ export function useMessageQueue({
   guide,
   onAbort,
   interceptSubmit,
+  chatSubmitBlocked = false,
   isCurrentTurnEvent,
 }: UseMessageQueueParams): UseMessageQueueResult {
   const { t } = useTranslation();
@@ -404,6 +407,7 @@ export function useMessageQueue({
         setQuestion("");
         return;
       }
+      if (chatSubmitBlocked) return;
       if (streaming) {
         // Busy: 큐에 추가. cap 초과 throw catch 해서 textarea 보존.
         if (text.trim().length > 0) {
@@ -427,7 +431,7 @@ export function useMessageQueue({
     },
     [
       question, appSource, attachments, streaming, messageQueueStore, onAsk,
-      setQuestion, setAttachments, interceptSubmit, startQueueTurn,
+      setQuestion, setAttachments, interceptSubmit, chatSubmitBlocked, startQueueTurn,
     ],
   );
 

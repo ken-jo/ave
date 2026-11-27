@@ -7,6 +7,7 @@ import { XLSX_EDIT_LIMITS } from "../shared/xlsx-edit.js";
 export interface WorkbookFileSnapshot { data: Buffer; identity: fs.BigIntStats }
 export interface WorkbookEditIo {
   write?: (descriptor: number, bytes: Buffer, offset: number, length: number) => number;
+  windowsIdentity?: string;
 }
 export interface WorkbookEditResult { editedCells: number; needsRecalculation: true; backup: string | null }
 
@@ -49,13 +50,19 @@ function createWorkbookFileSnapshot(path: string, data: Buffer, identity: fs.Big
 }
 
 /** Reads bounded source bytes and binds their descriptor identity to a canonical parent. */
-export function readWorkbookSnapshot(path: string): WorkbookFileSnapshot {
+export function readWorkbookSnapshot(path: string, windowsIdentity?: string): WorkbookFileSnapshot {
   path = resolve(path);
   requireCondition(extname(path).toLowerCase() === ".xlsx", "Only .xlsx files can be edited.");
   const parent = fs.realpathSync.native(dirname(path));
   const location = { path: join(parent, basename(path)), parent, identity: fs.lstatSync(parent, { bigint: true }) };
   requireCondition(location.identity.isDirectory(), "Workbook parent must be a directory.");
   const before = fs.lstatSync(location.path, { bigint: true });
+  if (process.platform === "win32" && windowsIdentity !== undefined) {
+    const [, device, inode, change] = /^(0x[0-9a-f]{16}):(0x[0-9a-f]{16}):(0x[0-9a-f]{16})$/u.exec(windowsIdentity) ?? [];
+    if (device === undefined || inode === undefined || change === undefined
+      || before.dev !== BigInt(device) || before.ino !== BigInt(inode)
+      || before.ctimeNs !== (BigInt(change) - 116444736000000000n) * 100n) stale();
+  }
   requireCondition(before.isFile() && before.nlink === 1n, "Workbook must be a singly linked regular file.");
   requireCondition(before.size <= BigInt(XLSX_EDIT_LIMITS.maxFileBytes), "Workbook exceeds 20 MiB.");
   const descriptor = fs.openSync(location.path, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
@@ -105,6 +112,32 @@ function verifyStagedBytes(path: string, bytes: Buffer, message: string): void {
   requireCondition(saved.length === bytes.length && sha256(saved) === sha256(bytes), message);
 }
 
+/** Exclusive create keeps any existing entry, links included, and needs no hard-link right. A copy that fails verification is removed. */
+function writeRecoveryCopy(path: string, bytes: Buffer, io: WorkbookEditIo, verifySource: () => void): void {
+  if (fs.lstatSync(path, { throwIfNoEntry: false }) !== undefined) {
+    throw Object.assign(new Error(`Recovery path already exists: ${path}`), { code: "EEXIST" });
+  }
+  const descriptor = fs.openSync(path, "wx", 0o600);
+  let created: fs.BigIntStats | undefined;
+  try {
+    try {
+      const opened = fs.fstatSync(descriptor, { bigint: true });
+      const named = fs.lstatSync(path, { bigint: true });
+      requireCondition(named.isFile() && named.dev === opened.dev && named.ino === opened.ino, "Recovery path changed while opening.");
+      created = opened;
+      writeAndSync(descriptor, bytes, io);
+    } finally { fs.closeSync(descriptor); }
+    verifyStagedBytes(path, bytes, "Backup verification failed.");
+    verifySource();
+  } catch (error) {
+    try {
+      const current = fs.lstatSync(path, { bigint: true });
+      if (created && current.dev === created.dev && current.ino === created.ino) fs.unlinkSync(path);
+    } catch { /* leave whatever now holds the name */ }
+    throw error;
+  }
+}
+
 /** Callers validate the output package before publication. A completed recovery copy remains on later failure.
  * The final path check and rename still have a same-user race; this is not a power-loss transaction. */
 export function publishWorkbookEdit(path: string, snapshot: WorkbookFileSnapshot, output: Buffer,
@@ -120,7 +153,12 @@ export function publishWorkbookEdit(path: string, snapshot: WorkbookFileSnapshot
   const backupPath = `${path}.ave-bak`;
   path = location.path;
   let backup: string | null = null;
-  if (snapshot.data.length > XLSX_EDIT_LIMITS.backupBytes) {
+  const needsBackup = snapshot.data.length > XLSX_EDIT_LIMITS.backupBytes;
+  if (needsBackup && process.platform === "win32") {
+    backup = backupPath;
+    checkSource(requestedPath, snapshot, location);
+    writeRecoveryCopy(`${path}.ave-bak`, snapshot.data, io, () => checkSource(requestedPath, snapshot, location));
+  } else if (needsBackup) {
     backup = backupPath;
     const staged = temporaryFile(path);
     try {

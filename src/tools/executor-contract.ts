@@ -55,6 +55,8 @@ export interface ToolResult {
   tool_use_id: string;
   content: string;
   is_error?: boolean;
+  /** Host refusal evidence for workflow verdicts. Tool output cannot set this field. */
+  hostRefused?: true;
   uiPayload?: McpUiPayload;
   /** Host-internal raw tool result for non-LLM plugin invocation surfaces. */
   rawResult?: unknown;

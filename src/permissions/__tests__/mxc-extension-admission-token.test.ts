@@ -4,6 +4,7 @@ import {
   admitMxcExtensionStart, assertMxcReleaseGateEvidence, consumeMxcExtensionAdmission, createMxcExtensionAdmission,
   registerMxcReleaseGateEvidence, type MxcExtensionAdmission,
 } from "../mxc-extension-admission.js";
+import { invalidateWindowsBackendEvidence } from "../windows-confinement-evidence.js";
 import { MxcCapabilityUnavailableError } from "../mxc-extension-errors.js";
 import { mxcRequestDigest, type MxcExtensionStartEvidence, type MxcExtensionStartRecord } from "../mxc-extension-protocol.js";
 import { planWindowsExtensionHolder, type MxcExtensionReleaseGateEvidence } from "../mxc-extension-readiness.js";
@@ -53,6 +54,18 @@ describe("native request admission receipt", () => {
     const captured = identity();
     const receipt = createMxcExtensionAdmission(captured);
     consumeMxcExtensionAdmission(receipt, captured);
+    expect(() => consumeMxcExtensionAdmission(receipt, captured)).toThrow(/does not match/);
+  });
+
+  it.each(["shared backend loss", "release evidence replacement"] as const)("revokes an unspent holder receipt after %s", failure => {
+    withReleaseGate();
+    const captured = identity();
+    const receipt = createMxcExtensionAdmission(captured);
+    if (failure === "shared backend loss") invalidateWindowsBackendEvidence("container");
+    else {
+      unregister?.();
+      withReleaseGate();
+    }
     expect(() => consumeMxcExtensionAdmission(receipt, captured)).toThrow(/does not match/);
   });
 

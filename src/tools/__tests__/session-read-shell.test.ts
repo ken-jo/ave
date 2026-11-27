@@ -1,13 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildNativeShellSupervisor } from "../../__tests__/support/mxc-shell-supervisor-native.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { detectHostMxcMacShellSupport } from "../../permissions/mxc-macos.js";
+import { detectHostMxcLinuxShellSupport } from "../../permissions/mxc-linux.js";
 import { establishMxcRuntimeRoot } from "../../permissions/mxc-runtime-root.js";
 import { appOwnedSandboxHomeRoot, cleanupAsrtSandboxAfterCommand, getBuiltinShellSessionReadPolicy, initializeAsrtSandbox, isAsrtSandboxActive, registerWorkerUnixSocketDir, resetAsrtSandbox, unregisterWorkerUnixSocketDir, useAppOwnedSandboxTempRoot } from "../../permissions/asrt-sandbox.js";
 import * as sandboxWritePolicy from "../../permissions/sandbox-write-policy.js";
@@ -15,6 +16,7 @@ import { spawnConfinedChild } from "../../permissions/confined-child.js";
 import { baseAllowedDirectories } from "../../permissions/base-allowed-directories.js";
 import {
   __resetActiveSandboxCapabilityForTest,
+  __resetContainerShellSubstrateForTest,
   __resetSandboxRequestedAtBootForTest,
   setActiveSandboxCapability,
   setContainerShellSubstrate,
@@ -62,6 +64,7 @@ afterEach(async () => {
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
   __resetSandboxRequestedAtBootForTest();
   __resetActiveSandboxCapabilityForTest();
+  __resetContainerShellSubstrateForTest();
   setShellSandboxRequestedAtBoot(false);
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
@@ -201,6 +204,18 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
 
   it.runIf(process.platform !== "darwin" || process.arch === "arm64")("public BashTool reads a configured session on the active shell route", async (test) => {
     await requireSandboxCases(test);
+    if (process.platform === "linux") {
+      const runtime = mkdtempSync("/tmp/ave-session-runtime-");
+      vi.stubEnv("AVE_TEST_SANDBOX_BASE", runtime);
+      test.onTestFinished(() => cleanupTmpDir(runtime));
+      const resources = { resourcePath: resolve("resources"), isPackaged: false };
+      configureHostResources(resources);
+      establishMxcRuntimeRoot();
+      const support = await detectHostMxcLinuxShellSupport(resources);
+      // Availability is what this case needs; the Linux canary's raw-IP measurement is proved by its own suite.
+      expect(support).toMatchObject({ state: "available" });
+      setContainerShellSubstrate("linux", support);
+    }
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true }, async () => false);
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
@@ -215,8 +230,9 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
       configureHostResources(supervisor.resources);
       establishMxcRuntimeRoot();
       const support = await detectHostMxcMacShellSupport(supervisor.resources);
-      expect(support).toEqual({ state: "available" });
-      setContainerShellSubstrate(support);
+      // The boot canary also measures raw IP; its verdict rides on the available state.
+      expect(support).toMatchObject({ state: "available", rawIpProbe: { rawIp: expect.stringMatching(/^(?:blocked|unknown)$/u) } });
+      setContainerShellSubstrate("darwin", support);
     }
     const context = { cwd, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true, metadata: {} };
     const read = await new BashTool().execute({ command: "cat " + shellQuote(transcript), timeoutSeconds: 15 }, context);

@@ -19,7 +19,7 @@ import {
 import { formatLlmStatusMessage } from "../../../lib/llm-status-message.js";
 import { detectFromStream } from "../../../lib/stream-markers.js";
 import type { UserContentPart } from "../../../engine/llm/types.js";
-import type { ActiveWorkspaceSurface } from "../../../shared/browser-surface.js";
+import type { PaneChatSurface } from "../../../shared/browser-surface.js";
 import type { SerializedHistoryMessage } from "../../../shared/chat-history.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { historyToEntries } from "../utils/history.js";
@@ -48,7 +48,7 @@ interface SideChatSendOptions {
   /** The gesture's one-shot keyboard intent for a user send; preload consumes it and main verifies it. A queue drain has none. */
   userIntent?: UserKeyboardIntentSnapshot;
   /** The pane tab this chat is bound to (a pane's own chat), named on every turn. */
-  surface?: ActiveWorkspaceSurface;
+  surface?: PaneChatSurface;
   /** The conversation this side chat belongs to. Sent on every turn; the host records it once, on the turn that first gives
    * the side chat a file, and the sidebar lists the row under that conversation. */
   originSessionId?: string;
@@ -62,6 +62,8 @@ export interface UseSideChat {
   turnSummaryByTurnStart: Map<number, TurnSummary>;
   isStreaming: boolean;
   sessionId: string | null;
+  getSessionIdentity: () => symbol | undefined;
+  beginPaneReset: () => (() => void) | null;
   send: (text: string, opts?: SideChatSendOptions) => Promise<void>;
   newSession: () => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
@@ -140,6 +142,8 @@ function createSideChatRuntime(retained: boolean) {
     maxStreamIdRef: runtimeRef<number>(-1),
     isStreamingRef: runtimeRef(false),
   };
+  let sessionIdentity = Symbol();
+  let paneResetPending = false;
   const update = (patch: Partial<SideChatSnapshot>) => {
     runtime.snapshot = { ...runtime.snapshot, ...patch };
     for (const listener of runtime.listeners) listener();
@@ -154,7 +158,18 @@ function createSideChatRuntime(retained: boolean) {
       update({ entries: typeof next === "function" ? next(runtime.snapshot.entries) : next });
     },
     setIsStreaming: (isStreaming: boolean) => update({ isStreaming }),
-    setSessionId: (sessionId: string | null) => update({ sessionId }),
+    // A fresh draft has a lifetime even before the host assigns it a session ID.
+    getSessionIdentity: () => paneResetPending ? undefined : sessionIdentity,
+    beginPaneReset: () => {
+      if (paneResetPending) return null;
+      sessionIdentity = Symbol();
+      paneResetPending = true;
+      return () => { paneResetPending = false; };
+    },
+    setSessionId: (sessionId: string | null) => {
+      sessionIdentity = Symbol();
+      update({ sessionId });
+    },
   });
 }
 
@@ -854,6 +869,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     turnSummaryByTurnStart,
     isStreaming,
     sessionId,
+    getSessionIdentity: runtime.getSessionIdentity,
+    beginPaneReset: runtime.beginPaneReset,
     send,
     newSession,
     loadSession,

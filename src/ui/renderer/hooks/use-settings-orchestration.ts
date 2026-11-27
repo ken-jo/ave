@@ -66,6 +66,8 @@ function liveSettingsValues(settings: AppSettings): LiveSettingsValues {
 }
 
 export interface SettingsOrchestrationState {
+  sessionIndexingWithoutContainment: boolean | undefined;
+  setSessionIndexingWithoutContainment: (enabled: boolean) => Promise<void>;
   /** The provider chat runs on — `llm.provider`. Moved only by an explicit pick. */
   vendor: string;
   /** One draft per expanded provider row: rows expand independently, so a half-typed key on one must survive the user opening
@@ -811,6 +813,11 @@ export function useSettingsOrchestration(
   const setIdlePreferenceRefreshLive = useCallback((next: boolean) => {
     if (next !== idlePreferenceRefresh) persistLiveSetting("idlePreferenceRefresh", next, setIdlePreferenceRefresh);
   }, [idlePreferenceRefresh, persistLiveSetting]);
+  const setSessionIndexingWithoutContainment = useCallback(async (enabled: boolean) => {
+    const updated = requirePersistedResult(await api.updateSettings({ features: { sessionIndexingWithoutContainment: enabled } }));
+    if (updated.features?.sessionIndexingWithoutContainment !== enabled) throw new Error("Session indexing setting was not saved");
+    setSettingsSnapshot(updated);
+  }, [api, setSettingsSnapshot]);
   const setIdleMemoryConsolidationLive = useCallback((next: boolean) => {
     if (next !== idleMemoryConsolidation) persistLiveSetting("idleMemoryConsolidation", next, setIdleMemoryConsolidation);
   }, [idleMemoryConsolidation, persistLiveSetting]);
@@ -827,6 +834,8 @@ export function useSettingsOrchestration(
     loadError, retryLoad,
     vendor,
     retiredLlmProvider: settingsSnapshot?.llm.retiredProvider ?? null,
+    sessionIndexingWithoutContainment: settingsSnapshot?.features?.sessionIndexingWithoutContainment,
+    setSessionIndexingWithoutContainment,
     providerCredentialDrafts, setProviderCredentialDrafts,
     saveProviderCredential,
     selectApiVendorModel,

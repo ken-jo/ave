@@ -22,7 +22,7 @@ const WINDOWS_VALIDATION_RESULTS = {
 };
 const BASE_AGGREGATE_JOBS = [
   "build", "background-ui", "vitest", "vitest-tiers", "windows-native-preparation", "windows-permission-tests", "windows-tier-tests",
-  "windows-arm64-path-kind", "macos-permission-tests", "linux-confinement-tests", "gate-core", "mxc-pins",
+  "windows-arm64-path-kind", "macos-permission-tests", "linux-confinement-tests", "linux-confinement-x64", "gate-core", "mxc-pins",
 ];
 const SHARD_JOB_EVIDENCE = JSON.stringify([{
   total_count: 1,
@@ -115,7 +115,7 @@ it("requires every extracted Windows validation whenever preparation is selected
           VITEST_RESULT: "success", DOCS_ONLY: "false", PLATFORM_CHECKS: String(platform),
           WINDOWS_PREPARATION_RESULT: expected,
           WINDOWS_RESULT: platform ? "success" : "skipped", MACOS_RESULT: platform ? "success" : "skipped",
-          LINUX_RESULT: platform ? "success" : "skipped", WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
+          LINUX_RESULT: platform ? "success" : "skipped", LINUX_X64_RESULT: platform ? "success" : "skipped", WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
           VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: String(tiers),
           WINDOWS_TIER_RESULT: tiers ? "success" : "skipped",
           ...Object.fromEntries(values.map(key => [key, expected])), [variable]: result,
@@ -181,11 +181,32 @@ it("fails when a required PowerShell parser cannot launch", () => {
   }), /Missing parser: pwsh/);
 });
 
+for (const [name, result, expected] of [
+  ["output overflow", { error: Object.assign(new Error("overflow"), { code: "ENOBUFS" }) }, /pwsh parser output exceeded the 1048576-byte buffer limit/],
+  ["timeout", { error: Object.assign(new Error("timeout"), { code: "ETIMEDOUT" }) }, error =>
+    error.message === "Cannot launch required pwsh parser" && error.cause?.code === "ETIMEDOUT"],
+  ["truncated JSON", { status: 0, stdout: '{"steps":[' }, SyntaxError],
+  ["missing records", { status: 0, stdout: '{"steps":[],"resolutions":[]}' }, /Incomplete pwsh parser result/],
+]) {
+  it(`rejects parser ${name}`, t => {
+    const launch = t.mock.method(childProcess, "spawnSync", () => result);
+    syncBuiltinESMExports();
+    try {
+      const steps = [{ name: "example", shell: "pwsh", run: "Write-Output 'example'" }];
+      assert.throws(() => powerShellCommandProblems(steps), expected);
+      assert.equal(launch.mock.calls[0].arguments[2].timeout, 15_000);
+    } finally {
+      launch.mock.restore();
+      syncBuiltinESMExports();
+    }
+  });
+}
+
 for (const systemRootName of ["SystemRoot", "SYSTEMROOT"]) {
   it(`launches the system parser with literal command lookup and an edition-specific environment (${systemRootName})`, t => {
     const originalEnv = process.env;
     const launch = t.mock.method(childProcess, "spawnSync", () => ({
-      status: 0, stdout: JSON.stringify({ cmdlets: [], aliases: [], steps: [{ errors: [], functions: [], commands: [] }] }),
+      status: 0, stdout: JSON.stringify({ resolutions: [{ cmdlets: [], aliases: [] }], steps: [{ errors: [], functions: [], commands: [] }] }),
     }));
     syncBuiltinESMExports();
     const env = Object.fromEntries(Object.entries(originalEnv).filter(([key]) => !/^systemroot$/i.test(key)));
@@ -259,8 +280,7 @@ it("uses the configured edition, its aliases, and the enclosing function scopes"
   const problems = powerShellCommandProblems(steps, (edition, sources) => {
     calls.push([edition, sources]);
     return edition === "pwsh" ? {
-      cmdlets: [],
-      aliases: ["alice"],
+      resolutions: [{ cmdlets: [], aliases: ["alice"] }],
       steps: [{
         errors: [],
         functions: [{ name: "shared", scope: 0 }, { name: "example", scope: 10 }],
@@ -270,8 +290,7 @@ it("uses the configured edition, its aliases, and the enclosing function scopes"
         ],
       }],
     } : {
-      cmdlets: [],
-      aliases: ["bob"],
+      resolutions: [{ cmdlets: [], aliases: ["bob"] }],
       steps: [{ errors: [], functions: [], commands: [command("alice", 1, [0]), command("bob", 2, [0])] }],
     };
   });
@@ -358,8 +377,8 @@ function parsedCommand(source, line, { text = source, redirected = false, operat
 const KEYWORD_RE = /^(?:if|elseif|else|foreach|for|while|switch|try|catch|finally|throw|exit|return)\b/iu;
 // Reports what the parser reports for this workflow's simple lines: statements split at braces, one command per
 // pipeline element, and none for keywords, comments or expressions.
-function parsedLines(_shell, sources) {
-  return { cmdlets: ["ConvertFrom-Json"], aliases: [], steps: sources.map(source => ({ errors: [], functions: [],
+function parsedLines(_shell, sources, groupSizes = [sources.length]) {
+  return { resolutions: groupSizes.map(() => ({ cmdlets: ["ConvertFrom-Json"], aliases: [] })), steps: sources.map(source => ({ errors: [], functions: [],
     commands: source.split("\n").flatMap((line, index) => line.split(/[{}]/u).flatMap(statement => {
       const pipeline = statement.trim().replace(/^\$\w+\s*=\s*/u, "");
       if (!pipeline || /^[#$[('"]/u.test(pipeline) || KEYWORD_RE.test(pipeline)) return [];
@@ -372,8 +391,71 @@ it("accepts the workflow's contained commands and stated exemptions", realParser
   checkWindowsWorkflow(workflow);
 });
 
+it("reports invalid PowerShell syntax with its job and step", realParser, () => {
+  const changed = changedWorkflow(steps => {
+    steps.unshift({ name: "Invalid example", shell: "pwsh", run: "if (" });
+  }, "windows-dev-boot");
+  assert.throws(() => checkWindowsWorkflow(changed), /windows-dev-boot: Invalid example: line 1:/);
+});
+
+it("accepts an edition batch whose parser output exceeds one MiB", realParser, t => {
+  const parsed = parse(workflow);
+  for (const id of ["windows-permission-tests", "windows-tier-tests", "windows-dev-boot", "windows-script-tests", "windows-payload-packaging"]) {
+    const { steps } = parsed.jobs[id];
+    const setup = steps.findIndex(step => step.run === "node ave/.github/scripts/isolate-job-home.mjs");
+    assert.ok(setup >= 0);
+    steps.splice(setup, 0, ...Array.from({ length: 6 }, (_, index) => ({
+      name: `Write example ${index + 1}`, shell: "pwsh", run: `Write-Output '${"x".repeat(18_000)}'`,
+    })));
+  }
+  const launch = t.mock.method(childProcess, "spawnSync");
+  syncBuiltinESMExports();
+  try {
+    checkWindowsWorkflow(stringify(parsed));
+    assert.equal(launch.mock.callCount(), 2);
+    const [pwsh] = launch.mock.calls;
+    assert.equal(pwsh.arguments[0], "pwsh");
+    const previousLimit = 1024 * 1024;
+    assert.ok(Buffer.byteLength(pwsh.result.stdout) > previousLimit);
+    const { groupSizes } = JSON.parse(pwsh.arguments[2].input);
+    const { steps, resolutions } = JSON.parse(pwsh.result.stdout);
+    let offset = 0;
+    for (const [index, size] of groupSizes.entries()) {
+      const group = { steps: steps.slice(offset, offset + size), resolutions: [resolutions[index]] };
+      assert.ok(Buffer.byteLength(JSON.stringify(group)) <= previousLimit);
+      offset += size;
+    }
+  } finally {
+    launch.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
 it("accepts the workflow's contained commands and stated exemptions from parsed lines", () => {
   checkWindowsWorkflow(workflow, parsedLines);
+});
+
+it("inspects every workflow source in one launch per edition and keeps later job diagnostics", () => {
+  function runGuard(source) {
+    const calls = new Map();
+    checkWindowsWorkflow(source, (edition, sources, groupSizes) => {
+      if (calls.has(edition)) throw Object.assign(new Error("Second parser launch"), { code: "ETIMEDOUT" });
+      calls.set(edition, sources);
+      const inspection = parsedLines(edition, sources, groupSizes);
+      return { ...inspection.resolutions[0], ...inspection };
+    });
+    const steps = windowsRunSteps(source);
+    for (const edition of ["pwsh", "powershell"]) {
+      const expected = steps.filter(step => step.shell.split(/[ .]/u)[0].toLowerCase() === edition).map(step => step.run);
+      assert.ok(expected.length > 0);
+      assert.deepEqual(calls.get(edition).toSorted(), expected.toSorted());
+    }
+  }
+  runGuard(workflow);
+  const changed = changedWorkflow(steps => {
+    steps.splice(-1, 0, { name: "Malformed command", run: "unknown-example-command" });
+  }, "windows-dev-boot");
+  assert.throws(() => runGuard(changed), /windows-dev-boot: Malformed command: line 1: unrecognized command unknown-example-command/);
 });
 
 // Every command after job-root setup is a manifest invocation or one of the guard's stated exemptions.
@@ -454,7 +536,7 @@ for (const [name, commands, expected] of [
 ]) {
   it(`checks parsed contained commands: ${name}`, () => {
     const steps = [{ name: "example", shell: "pwsh", run: "example", contained: true }];
-    const inspect = () => ({ cmdlets: [], aliases: [], steps: [{ errors: [], functions: [], commands }] });
+    const inspect = () => ({ resolutions: [{ cmdlets: [], aliases: [] }], steps: [{ errors: [], functions: [], commands }] });
     assert.deepEqual(powerShellCommandProblems(steps, inspect, EXAMPLE_MANIFEST), expected);
   });
 }
@@ -543,7 +625,7 @@ it("requires the arm64 result for selected runs, including docs-only main pushes
         GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
         VITEST_RESULT: docs === "true" ? "skipped" : "success", DOCS_ONLY: docs, PLATFORM_CHECKS: "false",
         ...Object.fromEntries(Object.values(WINDOWS_VALIDATION_RESULTS).map(variable => [variable, "skipped"])),
-        WINDOWS_PREPARATION_RESULT: "skipped", WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
+        WINDOWS_PREPARATION_RESULT: "skipped", WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped", LINUX_X64_RESULT: "skipped",
         WINDOWS_ARM64_PATH_KIND: selected, WINDOWS_ARM64_PATH_KIND_RESULT: arm64,
         VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: "false", WINDOWS_TIER_RESULT: "skipped",
       });
@@ -632,7 +714,7 @@ it("requires selected Windows tiers when the platform matrix is skipped", () => 
       GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
       VITEST_RESULT: "success", DOCS_ONLY: "false", PLATFORM_CHECKS: "false",
       ...Object.fromEntries(Object.values(WINDOWS_VALIDATION_RESULTS).map(variable => [variable, tiers === "true" ? "success" : "skipped"])),
-      WINDOWS_PREPARATION_RESULT: preparation, WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
+      WINDOWS_PREPARATION_RESULT: preparation, WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped", LINUX_X64_RESULT: "skipped",
       WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
       VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: tiers, WINDOWS_TIER_RESULT: tierResult,
     });

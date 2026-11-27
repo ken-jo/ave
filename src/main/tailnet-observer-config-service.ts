@@ -1,10 +1,11 @@
 // Revalidate renderer proposals with the boot resolver and persist in the tailnet namespace; settings cannot grant this authority.
+import { resolveTailnetObserverApply } from "./tailnet-observer-apply.js";
 import { assertTailnetListenerPortAllowed } from "../permissions/tailnet-listener-policy.js";
 import {
   chooseObserverPort,
   configureTailscaleServe,
-  DEFAULT_TAILNET_OBSERVER_PORT,
   getTailnetObserverRuntimeState,
+  IMPLICIT_TAILNET_OBSERVER_PORT,
   isTailnetOwnDeviceAdmissionEnabled,
   loadTailnetObserverConfig,
   probeTailscaleEnvironment,
@@ -21,8 +22,9 @@ import {
   type TailscaleEnvironment,
 } from "./tailnet-surface-server.js";
 import {
-  DEFAULT_TAILNET_OBSERVER_VIEW_PORT,
+  DEFAULT_TAILNET_OBSERVER_PORT,
   type TailnetGuidedSetupResult,
+  type TailnetObserverApplyStatus,
   type TailnetObserverConfigView,
   type TailnetObserverSnapshot,
   type TailnetServeResult,
@@ -31,7 +33,7 @@ import {
 
 export interface TailnetObserverConfigService {
   snapshot(): Promise<TailnetObserverSnapshot>;
-  apply(config: TailnetObserverConfigView): Promise<void>;
+  apply(config: TailnetObserverConfigView): Promise<TailnetObserverApplyStatus>;
   // Run the Serve command the owner has just been shown and approved.
   configureServe(): Promise<TailnetServeResult>;
   // Derive the recommended port and web origin from host state rather than asking the owner.
@@ -54,7 +56,7 @@ export interface TailnetObserverConfigServiceOptions {
   // @internal deterministic injection for tests.
   readonly probeEnvironment?: () => Promise<TailscaleEnvironment>;
   // @internal deterministic injection for tests.
-  readonly restartListener?: () => Promise<unknown>;
+  readonly restartListener?: (mode?: "apply") => Promise<unknown>;
   // @internal deterministic injection for tests.
   readonly runServe?: typeof configureTailscaleServe;
   // @internal deterministic injection for tests.
@@ -65,12 +67,17 @@ export interface TailnetObserverConfigServiceOptions {
   readonly writeOwnDeviceAdmission?: (enabled: boolean) => Promise<void>;
 }
 
-// Project file values, not merged overrides; displayed authorization defaults remain unset until explicitly saved.
-function savedView(file: TailnetObserverConfigFile | null): TailnetObserverConfigView {
+function observerDraftPort(file: TailnetObserverConfigFile | null, env: NodeJS.ProcessEnv): number {
+  const inForce = file?.enabled === true || tailnetObserverEnableOverride(env) === true;
+  return file?.port ?? (inForce ? IMPLICIT_TAILNET_OBSERVER_PORT : DEFAULT_TAILNET_OBSERVER_PORT);
+}
+
+// Display saved settings with a port for the draft.
+function savedView(file: TailnetObserverConfigFile | null, port: number): TailnetObserverConfigView {
   return Object.freeze({
     enabled: file?.enabled === true,
     authorization: file?.authorization ?? { kind: "tailnet-identity" as const },
-    port: file?.port ?? DEFAULT_TAILNET_OBSERVER_VIEW_PORT,
+    port,
     controllerEnabled: file?.controllerEnabled === true,
     pairedSharingEnabled: file?.pairedSharingEnabled === true,
     webEnabled: file?.webEnabled === true,
@@ -114,7 +121,7 @@ function proposalToFile(
     ...(config.enabled ? { enabled: true } : {}),
     // Authorization is always a chosen value, never a negative: the form has no "no boundary" position, so persisting it is persisting what was picked.
     authorization: config.authorization,
-    ...(config.port === DEFAULT_TAILNET_OBSERVER_PORT ? {} : { port: config.port }),
+    port: config.port,
     ...(config.controllerEnabled ? { controllerEnabled: true } : {}),
     ...(config.pairedSharingEnabled ? { pairedSharingEnabled: true } : {}),
     ...web,
@@ -164,6 +171,7 @@ function recommendedConfig(port: number): TailnetObserverConfigView {
 export function createTailnetObserverConfigService(
   options: TailnetObserverConfigServiceOptions,
 ): TailnetObserverConfigService {
+  const env = options.env ?? process.env;
   const readConfigFile = options.readConfigFile ?? (() => readTailnetObserverConfigFile());
   const writeConfigFile = options.writeConfigFile
     ?? ((file: TailnetObserverConfigFile) => writeTailnetObserverConfigFile(file));
@@ -177,16 +185,23 @@ export function createTailnetObserverConfigService(
   const writeOwnDeviceAdmission = options.writeOwnDeviceAdmission
     ?? ((enabled: boolean) => setTailnetOwnDeviceAdmission(enabled));
 
-  async function saveAndRestart(file: TailnetObserverConfigFile): Promise<void> {
-    const enableOverride = tailnetObserverEnableOverride(options.env);
-    const forceOn = !file.enabled && enableOverride === true;
-    const { config } = (file.enabled && enableOverride !== false) || forceOn
-      ? await loadTailnetObserverConfig({ env: options.env, readConfigFile: async () => file })
-      : { config: null };
-    if (file.enabled && config) await assertTailnetListenerPortAllowed(config.port);
+  async function saveAndRestart(
+    file: TailnetObserverConfigFile,
+    mode: "apply" | "guided",
+  ): Promise<TailnetObserverApplyStatus> {
+    const enableOverride = tailnetObserverEnableOverride(env);
+    const { config } = await loadTailnetObserverConfig({ env, readConfigFile: async () => file });
+    const reduceOnly = mode === "apply" && config !== null && file.enabled !== true && enableOverride === true;
+    if (config && !reduceOnly) await assertTailnetListenerPortAllowed(config.port);
     await writeConfigFile(file);
-    if (forceOn && config) await reduceTailnetObserverCapabilities(config);
-    else await restartListener();
+    let startupFailed = false;
+    if (reduceOnly) await reduceTailnetObserverCapabilities(config);
+    else startupFailed = await restartListener(mode === "apply" ? "apply" : undefined) === "startup-failed";
+
+    const { listeningPort, portBlock, lastStartError } = runtimeState();
+    return resolveTailnetObserverApply(file.enabled === true, enableOverride, config?.port ?? null, {
+      boundPort: listeningPort, startupFailed, portBlock, lastStartError,
+    }).status;
   }
 
   const service: TailnetObserverConfigService = Object.freeze({
@@ -202,11 +217,11 @@ export function createTailnetObserverConfigService(
           ? err.message
           : "tailnet-observer-config-file-unreadable";
       }
-      const saved = savedView(file);
       const resolution = await loadTailnetObserverConfig({
-        ...(options.env === undefined ? {} : { env: options.env }),
+        env,
         readConfigFile: async () => file,
       });
+      const saved = savedView(file, observerDraftPort(file, env));
       const effective = effectiveView(resolution, saved);
       const state = runtimeState();
       const environment = await probeEnvironment();
@@ -216,6 +231,7 @@ export function createTailnetObserverConfigService(
         provenance: resolution.provenance,
         listeningPort: state.listeningPort,
         lastStartError: state.lastStartError,
+        portBlock: state.portBlock,
         pairedSharingBootstrapFailed: options.pairedSharingBootstrapFailed(),
         ownDeviceAdmission: await readOwnDeviceAdmission(),
         environment: environmentView(environment),
@@ -227,9 +243,9 @@ export function createTailnetObserverConfigService(
       });
     },
 
-    async apply(config: TailnetObserverConfigView): Promise<void> {
+    async apply(config: TailnetObserverConfigView) {
       const environment = await probeEnvironment();
-      await saveAndRestart(proposalToFile(config, tailnetWebOriginFor(environment.dnsName)));
+      return saveAndRestart(proposalToFile(config, tailnetWebOriginFor(environment.dnsName)), "apply");
     },
 
     // No restart: the listener reads this policy per request, so a running remote session is not dropped to change who may skip an approval click.
@@ -255,7 +271,8 @@ export function createTailnetObserverConfigService(
     },
 
     async guidedSetup(): Promise<TailnetGuidedSetupResult> {
-      if (tailnetObserverEnableOverride(options.env) === false) return guidedFailure("tailnet-serve-not-listening");
+      const enableOverride = tailnetObserverEnableOverride(env);
+      if (enableOverride === false) return guidedFailure("tailnet-serve-not-listening");
       const environment = await probeEnvironment();
       // Only `ready` can be set up. Every other state needs an action outside this app — install, sign in, start the daemon — and the surface that asked for
       // this already knows the sentence for each one.
@@ -272,20 +289,23 @@ export function createTailnetObserverConfigService(
         file = null;
       }
 
-      const preferred = file?.port ?? null;
-      const reusable = preferred ?? DEFAULT_TAILNET_OBSERVER_PORT;
-      // A port this process is already listening on is not a conflict — the restart below releases it — and probing it would move a working setup to a new
-      // port every time the owner pressed the button.
-      let port: number | null;
+      const preferred = observerDraftPort(file, env);
       try {
-        port = runtimeState().listeningPort === reusable ? reusable : await choosePort(preferred);
+        const port = await choosePort(preferred, {
+          explicit: file?.port !== undefined,
+          listeningPort: runtimeState().listeningPort,
+        });
         if (port === null) return guidedFailure("tailnet-guided-setup-port-unavailable");
         await saveAndRestart(
           proposalToFile(recommendedConfig(port), tailnetWebOriginFor(environment.dnsName)),
+          "guided",
         );
       } catch (err) {
         return guidedFailure(guidedErrorCode(err));
       }
+
+      const { listeningPort: port } = runtimeState();
+      if (port === null) return guidedFailure("tailnet-serve-not-listening");
 
       // Serve already pointing at this exact port is the finished state, not a reason to run a command: re-running it is harmless but asks Tailscale for a
       // certificate the owner may not be able to obtain.

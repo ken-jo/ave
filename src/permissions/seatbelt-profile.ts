@@ -1,7 +1,7 @@
 import { posix } from "node:path";
 import { GIT_METADATA_RULES, MAX_SEATBELT_STRING_BYTES, macWriteRootLinkedNameRules, macWriteRootNameRules } from "./macos-sandbox-wrap.js";
 import { atOrUnder, canonicalPath, type PosixFilesystemGrants, type PosixPolicyLookups } from "./mxc-posix.js";
-import { isPolicyFloorRow, type PolicyFloorRow, type PolicyModel } from "./policy-model.js";
+import { isPolicyFloorRow, isPolicyGrantRow, type PolicyFloorRow, type PolicyModel } from "./policy-model.js";
 
 interface SuffixLookups {
   readonly home: string;
@@ -13,7 +13,7 @@ const PATTERN_SPELLING = /[*?[\]{}]/u;
 const CONTROL_CHARACTER = /[\p{Cc}\p{Cs}]/u;
 
 class SeatbeltDenyError extends Error {
-  constructor(readonly code: "pattern-row" | "pattern-undecidable" | "relative-row"
+  constructor(readonly code: "unknown-row" | "pattern-row" | "pattern-undecidable" | "relative-row"
     | "profile-control-character" | "profile-string-too-long" | "profile-reserved-name" | "proxy-invalid", detail: string) {
     super(detail);
     this.name = "SeatbeltDenyError";
@@ -27,6 +27,10 @@ export function splitSeatbeltPolicyRows(model: PolicyModel): {
   const literalRows: PolicyModel["rows"][number][] = [];
   const patternRows: PolicyFloorRow[] = [];
   for (const row of model.rows) {
+    // The kind is checked before anything reads the row: past this boundary a row that is not a floor is a grant.
+    if (!isPolicyFloorRow(row) && !isPolicyGrantRow(row)) {
+      throw new SeatbeltDenyError("unknown-row", `Container row has an unknown reason: ${String((row as { reason: unknown }).reason)}`);
+    }
     checkProfileString(row.path);
     const unanchored = !posix.isAbsolute(row.path) && row.path !== "~" && !row.path.startsWith("~/");
     if (row.literal || !(unanchored || PATTERN_SPELLING.test(row.path))) {
@@ -159,6 +163,79 @@ function caseVariantFilter(path: string, root: string): string {
   return regexFilter(`^${escapeRegex(root)}${tail}(/.*)?$`);
 }
 
+/** The profile's one IP egress rule: outbound to the invocation proxy's loopback port, nothing else. */
+function seatbeltProxyEgressAllow(proxyPort: number): string {
+  return `(allow network-outbound (remote ip "localhost:${proxyPort}"))`;
+}
+
+type SeatbeltForm = string | readonly SeatbeltForm[];
+
+/** The profile's top-level forms, with string and regex literals kept whole; undefined if it does not parse. */
+function parseSeatbeltForms(profile: string): readonly SeatbeltForm[] | undefined {
+  const stack: SeatbeltForm[][] = [[]];
+  for (let index = 0; index < profile.length;) {
+    const character = profile[index] as string;
+    if (/\s/u.test(character)) {
+      index += 1;
+    } else if (character === ";") {
+      const end = profile.indexOf("\n", index);
+      index = end === -1 ? profile.length : end + 1;
+    } else if (character === "(") {
+      stack.push([]);
+      index += 1;
+    } else if (character === ")") {
+      const form = stack.pop();
+      const parent = stack.at(-1);
+      if (form === undefined || parent === undefined) return undefined;
+      parent.push(form);
+      index += 1;
+    } else if (character === "\"" || profile.startsWith("#\"", index)) {
+      let end = index + (character === "#" ? 2 : 1);
+      while (end < profile.length && profile[end] !== "\"") end += profile[end] === "\\" ? 2 : 1;
+      if (end >= profile.length) return undefined;
+      (stack.at(-1) as SeatbeltForm[]).push(profile.slice(index, end + 1));
+      index = end + 1;
+    } else {
+      const atom = /^[^\s()";]+/u.exec(profile.slice(index))?.[0];
+      if (atom === undefined) return undefined;
+      (stack.at(-1) as SeatbeltForm[]).push(atom);
+      index += atom.length;
+    }
+  }
+  return stack.length === 1 ? stack[0] : undefined;
+}
+
+const sameForm = (left: SeatbeltForm, right: SeatbeltForm): boolean => typeof left === "string" || typeof right === "string"
+  ? left === right : left.length === right.length && left.every((item, index) => sameForm(item, right[index] as SeatbeltForm));
+
+/**
+ * Structural IPv6 evidence: the profile, as staged, denies by default and its only IP egress allow is exactly the rule
+ * the builder emits for the proxy port. Judged on the parsed rules, not on lines: an allow that names any network
+ * operation (or `default`) passes only with Unix-socket filters or that one proxy filter, and an allow with no filter
+ * at all opens every address. The rule is compared with what `buildSeatbeltShellProfile` itself writes.
+ */
+export function seatbeltProfileAllowsOnlyProxyIpEgress(profile: string, proxyPort: number): boolean {
+  const forms = parseSeatbeltForms(profile);
+  const proxyAllow = parseSeatbeltForms(seatbeltProxyEgressAllow(proxyPort))?.[0];
+  if (forms === undefined || proxyAllow === undefined || typeof proxyAllow === "string") return false;
+  if (!forms.some(form => sameForm(form, ["deny", "default"]))) return false;
+  let proxyAllows = 0;
+  for (const form of forms) {
+    if (typeof form === "string" || form[0] !== "allow") continue;
+    const operations = form.slice(1).filter((item): item is string => typeof item === "string");
+    if (!operations.some(operation => operation === "default" || operation.startsWith("network"))) continue;
+    if (sameForm(form, proxyAllow)) {
+      proxyAllows += 1;
+      continue;
+    }
+    const filters = form.slice(1).filter(item => typeof item !== "string");
+    const unixSocketOnly = filters.length > 0 && filters.every(filter => filter.length === 3
+      && (filter[0] === "local" || filter[0] === "remote") && filter[1] === "unix-socket");
+    if (!unixSocketOnly) return false;
+  }
+  return proxyAllows === 1;
+}
+
 export function buildSeatbeltShellProfile(input: {
   readonly model: PolicyModel;
   readonly grants: PosixFilesystemGrants;
@@ -184,7 +261,7 @@ export function buildSeatbeltShellProfile(input: {
     forms.push(`(allow network-bind (local unix-socket ${subpath(root)}))`);
     forms.push(`(allow network-outbound (remote unix-socket ${subpath(root)}))`);
   }
-  forms.push(`(allow network-outbound (remote ip "localhost:${proxyPort}"))`);
+  forms.push(seatbeltProxyEgressAllow(proxyPort));
 
   const strips = readonly.flatMap(path => {
     const root = readwrite.filter(parent => atOrBelow(path, parent)).sort((a, b) => b.length - a.length)[0];

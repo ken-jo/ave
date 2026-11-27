@@ -1,6 +1,8 @@
 import "../../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { setLocale, t } from "../../../../../i18n/runtime.js";
+import { formatMediumDateTime } from "../../../../../shared/format-time.js";
 import { userEvent } from "@testing-library/user-event";
 import { SchedulePanel } from "../SchedulePanel.js";
 import { ScheduleItemPopover } from "../ScheduleItemPopover.js";
@@ -8,6 +10,7 @@ import type { AveApi } from "../../../types.js";
 import type { RoutineOccurrence, RoutineRecord, RoutineRun } from "../../../../../shared/routines-types.js";
 import { applyInstalledContent, resetInstalledContentForTests } from "../../../installed-content.js";
 import type { AgentPluginRoutineTemplate } from "../../../../../shared/agent-plugin-routine-template.js";
+import { deferred } from "../../../../../__tests__/support/deferred.js";
 
 const NOW = new Date(2026, 10, 4, 11, 20);
 const at = (day: number, h: number, m = 0) => new Date(2026, 10, day, h, m).toISOString();
@@ -39,6 +42,7 @@ function makeApi(state: { routines: RoutineRecord[]; occurrences?: RoutineOccurr
     listPluginCards: vi.fn(async () => []),
     addRoutine: vi.fn(async () => ({ ok: true, routine: routine() })),
     onRoutineFired: vi.fn(() => () => {}),
+    onRoutinesChanged: vi.fn((_handler: () => void) => () => {}),
     onRoutineRunningStarted: vi.fn(() => () => {}),
     onRoutineRunningFinished: vi.fn(() => () => {}),
     onRoutineFailed: vi.fn(() => () => {}),
@@ -528,4 +532,53 @@ it.each(["{Enter}", "[Space]"])("guides a refused pointer attachment to keyboard
   await user.keyboard(key);
   expect(attach).toHaveBeenNthCalledWith(2, { ...pin, scheduleId: "build", expectedScope: scope });
   expect((await within(dialog).findByRole("alert")).textContent).toContain("범위");
+});
+
+it.each(["en", "ko"] as const)("shows the breaker reason and resumes a template schedule in %s", async locale => {
+  setLocale(locale);
+  const pausedAt = at(4, 10);
+  const paused = routine({ execution: "template-run", attachmentId: "attached", pausedAt, pausedBy: "schedule-breaker" });
+  const resumed = routine({ execution: "template-run", attachmentId: "attached" });
+  const state = { routines: [paused], occurrences: [{ routineId: paused.id, at: at(5, 9), status: "paused" as const }] };
+  const api = makeApi(state);
+  const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+  try {
+    const reason = t("schedulePanel.pausedByScheduleBreaker", { when: formatMediumDateTime(pausedAt) });
+    await view.findByText(reason);
+    expect(view.queryByRole("button", { name: t("workflowSchedule.runNow") })).toBeNull();
+    fireEvent.click(await view.findByTestId("schedule-chip"));
+    const popover = within(await view.findByRole("dialog"));
+    expect(popover.getByText(reason)).toBeTruthy();
+    state.routines = [resumed];
+    await act(async () => { fireEvent.click(popover.getByRole("button", { name: t("schedulePanel.resume") })); });
+    expect(api.resumeRoutine).toHaveBeenCalledExactlyOnceWith(paused.id);
+    await waitFor(() => expect(view.queryByText(reason)).toBeNull());
+    expect(view.getAllByRole("button", { name: t("workflowSchedule.runNow") }).length).toBeGreaterThan(0);
+  } finally {
+    view.unmount();
+    setLocale("ko");
+  }
+});
+
+it("updates a failed schedule row when the host writes the breaker pause", async () => {
+  const attached = routine({ execution: "template-run", attachmentId: "attached", lastFailure: { kind: "error", firedAt: at(4, 9), at: at(4, 9), reason: "stage-failed" } });
+  const state = { routines: [attached] };
+  const api = makeApi(state);
+  const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+  await view.findByText(t("workflowSchedule.failed"));
+  expect(view.getByRole("button", { name: t("workflowSchedule.runNow") })).toBeEnabled();
+  expect(api.onRoutinesChanged).toHaveBeenCalledOnce();
+  const changed = api.onRoutinesChanged.mock.calls[0]?.[0];
+  if (!changed) throw new Error("Missing routine change subscription");
+  const stale = deferred<Awaited<ReturnType<typeof api.listRoutines>>>();
+  api.listRoutines.mockReturnValueOnce(stale.promise);
+  act(changed);
+  const pausedAt = at(4, 10);
+  state.routines = [{ ...attached, pausedAt, pausedBy: "schedule-breaker" }];
+  await act(async () => { changed(); });
+  await act(async () => { stale.resolve({ routines: [attached], invalid: [] }); });
+  expect(view.getByText(t("schedulePanel.pausedByScheduleBreaker", { when: formatMediumDateTime(pausedAt) }))).toBeVisible();
+  expect(view.getByRole("button", { name: t("schedulePanel.resume") })).toBeEnabled();
+  expect(view.queryByRole("button", { name: t("workflowSchedule.runNow") })).toBeNull();
+  view.unmount();
 });

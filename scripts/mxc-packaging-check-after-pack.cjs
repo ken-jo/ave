@@ -10,7 +10,7 @@ module.exports = async function afterPack(context) {
   const product = context.packager.appInfo.productFilename;
   const resources = platform === "darwin"
     ? join(context.appOutDir, `${product}.app`, "Contents", "Resources") : join(context.appOutDir, "resources");
-  const { assertPackagedLauncher, finalizePackagedMxcSdk, prunePackagedMxcSdk } = await import("./lib/mxc-sdk-packaging.mjs");
+  const { assertPackagedLauncher, finalizePackagedMxcSdk, prunePackagedMxcSdk, stagePackagedLinuxShellFilter } = await import("./lib/mxc-sdk-packaging.mjs");
   if (platform === "darwin") {
     prunePackagedMxcSdk(resources, arch, platform);
     return;
@@ -20,5 +20,6 @@ module.exports = async function afterPack(context) {
     finalizePackagedMxcSdk(resources, arch, join(context.appOutDir, `${product}.exe`));
   } else {
     rmSync(join(resources, "app.asar.unpacked", "node_modules", "@microsoft", "mxc-sdk", "bin"), { recursive: true, force: true });
+    if (platform === "linux") stagePackagedLinuxShellFilter(resources, arch);
   }
 };

@@ -1,3 +1,4 @@
+import { isHostRefusal, markHostRefusal } from "./host-refusal.js";
 import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { appendToolInvocationAudit, trackDetachedToolInvocation } from "./invocation-ledger.js";
 import { isHostExitAbort } from "../shared/host-exit-abort.js";
@@ -519,6 +520,7 @@ export async function executeAuthorizedToolInvocation(
   }
   let content: string;
   let isError = false;
+  let handlerRefused = false;
   let uiPayload: import("../mcp/types.js").McpUiPayload | undefined;
   let rawResult: unknown;
   let image: ToolResultImage | undefined;
@@ -814,7 +816,7 @@ export async function executeAuthorizedToolInvocation(
     ...(isCanonicalBrowserTool(tool) ? {
       authorizeBrowserSite: async (url: string, lifecycleSignal?: AbortSignal): Promise<void> => {
         const unattended = unattendedApprovalDenial();
-        if (unattended) throw new Error(unattended);
+        if (unattended) throw markHostRefusal(new Error(unattended));
         const siteSignal = AbortSignal.any([...(abortSignal ? [abortSignal] : []), ...(lifecycleSignal ? [lifecycleSignal] : [])]);
         const manager = services.permissionManager;
         const gate = services.approvalGate;
@@ -1518,6 +1520,7 @@ export async function executeAuthorizedToolInvocation(
       context.onHostTerminalWriteRefused?.(terminalReapproval.generation, terminalReapproval.policyEpoch);
     }
     sandboxBlock = sandboxBlockForResult(result);
+    handlerRefused = isHostRefusal(result);
     content = result.output;
     isError = result.isError;
     if (authorizationRequiredStateOf(result.authorizationRequired)) {
@@ -1540,6 +1543,7 @@ export async function executeAuthorizedToolInvocation(
     if (browserPreview) meta.browserPreview = browserPreview;
     if (isError) terminationReason = "error";
   } else {
+    handlerRefused = outcome.reason === "error" && isHostRefusal(outcome.error);
     if (
       outcome.reason === "ceiling" ||
       outcome.reason === "user-abort"
@@ -1984,6 +1988,8 @@ export async function executeAuthorizedToolInvocation(
     tool_use_id: toolUse.id,
     content,
     ...(isError && { is_error: true }),
+    ...(isError && (handlerRefused || sandboxBlock !== undefined || auditedPermissionResult?.decision === "deny")
+      && { hostRefused: true }),
     ...(uiPayload && { uiPayload }),
     ...(rawResult !== undefined && { rawResult }),
     ...(image && { image }),

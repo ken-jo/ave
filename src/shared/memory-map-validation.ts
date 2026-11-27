@@ -21,3 +21,8 @@ export const StoredMemoryGraphSchema = z.object({
     edges: z.array(z.object({ a: z.string(), b: z.string(), similarity: z.number().min(-1).max(1), kind: z.literal('semantic-neighbour') }).strict()).max(17000),
   }).strict().nullable(),
 }).strict().refine(({ snapshot, cache }) => snapshot ? (snapshot.model.dimensions === snapshot.model.namespace.dimensions && Object.values(cache).every(vector => vector.length === snapshot.model.namespace.dimensions)) : Object.keys(cache).length === 0, 'Stored embedding dimensions differ');
+
+export const WindowsMemoryEmbeddingSettingsSchema = z.union([
+  MemoryEmbeddingSettingsSchema,
+  z.object({ localInferenceWithoutSandbox: z.boolean() }).strict(),
+]);

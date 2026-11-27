@@ -116,6 +116,9 @@ function refuse(socketOrResponse: http.ServerResponse | Duplex, status: number, 
   socketOrResponse.end(`HTTP/1.1 ${status} ${phrase}\r\nx-ave-egress-refused: ${reason}\r\nconnection: close\r\n\r\n`);
 }
 
+/** The status a destination refused at the listener is answered with, beside its `x-ave-egress-refused` reason. */
+export const INVOCATION_PROXY_REFUSED_STATUS = 403;
+
 const DEFAULT_MAX_UPSTREAM_HEAD_BYTES = 16 * 1024;
 const MAX_LISTENER_BIND_ATTEMPTS = 16;
 
@@ -159,7 +162,7 @@ export async function openInvocationProxyListener(
     const refused = refusedInvocationProxyDestination(hostname);
     if (refused !== undefined) {
       report(hostname, refused);
-      refuse(res, 403, refused);
+      refuse(res, INVOCATION_PROXY_REFUSED_STATUS, refused);
       return;
     }
     const upstream = options.upstream();
@@ -200,7 +203,7 @@ export async function openInvocationProxyListener(
     const refused = refusedInvocationProxyDestination(hostname);
     if (refused !== undefined) {
       report(hostname, refused);
-      refuse(client, 403, refused);
+      refuse(client, INVOCATION_PROXY_REFUSED_STATUS, refused);
       return;
     }
     const upstream = options.upstream();
@@ -339,6 +342,10 @@ export async function openInvocationProxyListener(
       if (candidate === undefined) throw new Error("invocation proxy listener could not bind outside shared proxy port range");
       const held = candidate;
       let failure: string | undefined;
+      if (process.platform === "win32") {
+        options.admission?.assertCanBind();
+        if (closeRequested) throw new Error("invocation proxy listener closed while binding");
+      }
       binding = new Promise<void>((resolve) => {
         const failed = (error: NodeJS.ErrnoException): void => {
           failure = error.code ?? "bind failed";

@@ -259,6 +259,10 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     const surface = p.surface === undefined ? null : parseActiveSurface(p.surface);
     if (surface === undefined) return { ok: false as const, error: "invalid-surface" };
     if (surface !== null && !senderWindow) return { ok: false as const, error: "invalid-surface" };
+    const browserSlotEmpty = (p.surface as { browserSlotEmpty?: unknown } | undefined)?.browserSlotEmpty;
+    if (browserSlotEmpty !== undefined && (surface?.kind !== "browser" || typeof browserSlotEmpty !== "boolean")) {
+      return { ok: false as const, error: "invalid-surface" };
+    }
     if (p.sendRequestId !== undefined && !isChatSendRequestId(p.sendRequestId)) {
       return { ok: false as const, error: "invalid-input" };
     }
@@ -305,7 +309,10 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     const turnSideChatSessionId = loop.getSessionId();
     // Bind pane identity before tools run; rail turns leave pane bindings unchanged.
     if (surface !== null) {
-      const binding = browserTabRegistry.bindConversationSurface(turnSideChatSessionId, { windowId: senderWindow!.id, surface });
+      const binding = browserTabRegistry.bindConversationSurface(turnSideChatSessionId, {
+        windowId: senderWindow!.id,
+        surface: { ...surface, ...(typeof browserSlotEmpty === "boolean" ? { browserSlotEmpty } : {}) },
+      });
       if (!binding.ok) {
         panes.release(senderWindow!.id, surface.tabId);
         return binding;
