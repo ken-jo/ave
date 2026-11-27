@@ -173,7 +173,7 @@ type MxcRawIpProbeVerdict = {
   | { readonly rawIp: "unknown"; readonly reason: MxcRawIpUnknownReason });
 type MxcStartDiagnostic = "STATUS_DLL_INIT_FAILED" | "nonzero-exit" | "launch-rejected" | "startup-deadline"
   | "unsupported-arch" | "runtime-root-unproved";
-type MxcStartSupport = (Extract<MxcSupport, { state: "unavailable" }> & { readonly detail: MxcStartDiagnostic })
+type MxcStartSupport = Extract<MxcSupport, { state: "unavailable" }>
   | (Extract<MxcSupport, { state: "available" }> & { readonly rawIpProbe?: MxcRawIpProbeVerdict });
 type MxcLanProbeTarget = { readonly address: string; readonly port: number };
 
@@ -520,14 +520,15 @@ async function closeMxcStartupListener(release: () => Promise<void>): Promise<bo
 export async function probeMxcPowerShellStart(
   deps: DetectMxcSupportDeps, openListener?: typeof openInvocationProxyListener,
 ): Promise<MxcStartSupport> {
-  const unavailable = (reason: MxcUnavailableReason, detail: MxcStartDiagnostic): MxcStartSupport => ({
+  const isWindows = deps.platform === "win32";
+  const unavailable = (reason: MxcUnavailableReason, detail: string): MxcStartSupport => ({
     state: "unavailable",
     reason,
     windowsBuild: deps.windowsBuild,
     detail,
   });
   const wxcExec = wxcExecPathFor(deps.resourcePath, deps.arch);
-  if (wxcExec === undefined) return unavailable("unsupported-arch", "unsupported-arch");
+  if (wxcExec === undefined) return unavailable("unsupported-arch", isWindows ? "unsupported-arch" : `arch ${deps.arch}`);
   const launch = async (script: string, proxyUrl: string, timeoutMs: number) => {
     const request = buildMxcShellRequest({
       commandLine: powerShellMxcCommandLine(deps.systemRoot, script, deps.probeDirectory),
@@ -547,7 +548,7 @@ export async function probeMxcPowerShellStart(
     return { request, started };
   };
 
-  const measure = deps.platform === "win32" && openListener !== undefined;
+  const measure = isWindows && openListener !== undefined;
   const available = { state: "available", windowsBuild: deps.windowsBuild } as const;
   let rawIpProbe: MxcRawIpProbeVerdict = { rawIp: "unknown", reason: "listener-unavailable", reachableTargets: [], udpArrival: "unmeasured" };
   let result: Awaited<ReturnType<typeof launch>> | undefined;
@@ -639,6 +640,12 @@ export async function probeMxcPowerShellStart(
       result = await launch("exit 0", "http://127.0.0.1:9", MXC_START_PROBE_TIMEOUT_MS);
     }
     const { request, started } = result;
+    if (!isWindows && started.code !== 0) {
+      const { code, stdout, stderr } = started;
+      const detail = (outputLines(stdout, stderr)[0] ?? `exit ${String(code)}`).slice(0, 500);
+      const isSessionFailure = code === 0xc0000142 || /STATUS_DLL_INIT_FAILED|0xC0000142/i.test(`${stdout}\n${stderr}`);
+      return unavailable(isSessionFailure ? "unverified-session" : "powershell-start-failed", detail);
+    }
     const start = classifyMxcStartProbe(started.code, started.stdout, started.stderr);
     if (!start.ok) return unavailable(start.reason, start.detail);
     if (!measure) return available;
@@ -646,8 +653,8 @@ export async function probeMxcPowerShellStart(
       network: request.network, windowsBuild: deps.windowsBuild }, "MXC raw IP startup measurement");
     if (rawIpProbe.udpArrival !== "arrived" && rawIpProbe.reachableTargets.length > 0) log.warn("raw-ip-reachable");
     return { ...available, rawIpProbe };
-  } catch {
-    return unavailable("powershell-start-failed", "launch-rejected");
+  } catch (error) {
+    return unavailable("powershell-start-failed", isWindows ? "launch-rejected" : errorMessage(error));
   } finally {
     if (rawIpProbe.udpArrival === "arrived") log.warn("raw-ip-reachable (udp)");
   }

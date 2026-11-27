@@ -238,12 +238,30 @@ describe("detectMxcSupport", () => {
   });
 });
 
+describe("probeMxcPowerShellStart off Windows", () => {
+  it.each([
+    { outcome: { code: 1, stdout: "\n  first output line \r\nsecond line", stderr: "stderr line" }, reason: "powershell-start-failed", detail: "first output line" },
+    { outcome: { code: 7, stdout: " ", stderr: "\r\n" }, reason: "powershell-start-failed", detail: "exit 7" },
+    { outcome: { code: 1, stdout: "first output line", stderr: "prefix_STATUS_DLL_INIT_FAILED_suffix" }, reason: "unverified-session", detail: "first output line" },
+    { outcome: new Error("launcher denied the request"), reason: "powershell-start-failed", detail: "launcher denied the request" },
+  ])("preserves the plain probe result ($reason, $detail)", async ({ outcome, reason, detail }) => {
+    const d = deps({ platform: "darwin", runs: { "--config-base64": outcome } });
+    await expect(probeMxcPowerShellStart(d)).resolves.toEqual({
+      state: "unavailable",
+      windowsBuild: d.windowsBuild,
+      reason,
+      detail,
+    });
+  });
+});
+
 describe("classifyMxcStartProbe", () => {
   it("treats exit 0 as a start and a UI-subsystem init failure as an unverified session", () => {
     expect(classifyMxcStartProbe(0, "", "")).toEqual({ ok: true });
     expect(classifyMxcStartProbe(3221225794, "", "")).toMatchObject({ ok: false, reason: "unverified-session" });
     expect(classifyMxcStartProbe(-1, START_DLL_INIT_FAILED, "")).toMatchObject({ ok: false, reason: "unverified-session" });
     expect(classifyMxcStartProbe(1, "", "Access is denied.")).toEqual({ ok: false, reason: "powershell-start-failed", detail: "nonzero-exit" });
+    expect(classifyMxcStartProbe(1, "", "prefix_STATUS_DLL_INIT_FAILED_suffix")).toEqual({ ok: false, reason: "powershell-start-failed", detail: "nonzero-exit" });
   });
 });
 
