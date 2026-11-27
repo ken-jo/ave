@@ -380,6 +380,8 @@ export interface SandboxWindowsSubstrateInfo {
   /** Absent only in older snapshots; absence cannot establish MXC readiness. New boot producers always set it. */
   readonly extensionPlan?: SandboxWindowsExtensionPlan;
   readonly shellEgressIdentity: EgressIdentityStrength;
+  /** Boot measurement for the Windows shell route, when published. */
+  readonly shellEgressProtocolCoverage?: EgressProtocolCoverage;
   readonly extensionEgressIdentity: EgressIdentityStrength;
 }
 
